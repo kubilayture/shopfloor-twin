@@ -2,7 +2,7 @@
 
 ## Current phase: 00 – Foundations (started 2026-10-10)
 
-## Exit criteria progress: 0 / 4 met
+## Exit criteria progress: 0 / 4 met (criterion 1 passes on the #2 branch; counts once merged)
 
 ## Done since last update
 
@@ -11,8 +11,8 @@
 
 ## In progress
 
-- #1 Docs skeleton, STATUS, Phase 0 plan, ADR-0001 and ADR-0004 (in review)
-- #2 Monorepo tooling and `pnpm verify`
+- #1 Docs skeleton, STATUS, Phase 0 plan, ADR-0001 and ADR-0004 (in review, PR #7)
+- #2 Monorepo tooling and `pnpm verify` (in review, stacked on PR #7)
 
 ## Next up
 

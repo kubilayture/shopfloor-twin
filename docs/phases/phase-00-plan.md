@@ -8,14 +8,14 @@ Repository, monorepo tooling, TypeScript and lint configuration, CI, issue and P
 
 ## Issues
 
-| # | Task | Depends on |
-| --- | --- | --- |
-| [#1](https://github.com/kubilayture/shopfloor-twin/issues/1) | Docs skeleton, STATUS, Phase 0 plan, ADR-0001 and ADR-0004 | – |
-| [#2](https://github.com/kubilayture/shopfloor-twin/issues/2) | pnpm + Turborepo monorepo with strict TypeScript and `pnpm verify`; ADR-0002, ADR-0003 | #1 |
-| [#3](https://github.com/kubilayture/shopfloor-twin/issues/3) | ESLint type-checked config, dependency rules, Prettier, pre-commit hook | #2 |
-| [#4](https://github.com/kubilayture/shopfloor-twin/issues/4) | CI workflow, issue and PR templates, CODEOWNERS, Renovate | #3 |
-| [#5](https://github.com/kubilayture/shopfloor-twin/issues/5) | Docker Compose with TimescaleDB and Mosquitto | #1 |
-| [#6](https://github.com/kubilayture/shopfloor-twin/issues/6) | Close Phase 0: report, learning notes, tag | all |
+| #                                                            | Task                                                                                   | Depends on |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------- | ---------- |
+| [#1](https://github.com/kubilayture/shopfloor-twin/issues/1) | Docs skeleton, STATUS, Phase 0 plan, ADR-0001 and ADR-0004                             | –          |
+| [#2](https://github.com/kubilayture/shopfloor-twin/issues/2) | pnpm + Turborepo monorepo with strict TypeScript and `pnpm verify`; ADR-0002, ADR-0003 | #1         |
+| [#3](https://github.com/kubilayture/shopfloor-twin/issues/3) | ESLint type-checked config, dependency rules, Prettier, pre-commit hook                | #2         |
+| [#4](https://github.com/kubilayture/shopfloor-twin/issues/4) | CI workflow, issue and PR templates, CODEOWNERS, Renovate                              | #3         |
+| [#5](https://github.com/kubilayture/shopfloor-twin/issues/5) | Docker Compose with TimescaleDB and Mosquitto                                          | #1         |
+| [#6](https://github.com/kubilayture/shopfloor-twin/issues/6) | Close Phase 0: report, learning notes, tag                                             | all        |
 
 ## Exit criteria
 

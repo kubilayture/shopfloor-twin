@@ -8,15 +8,15 @@ ShopFloor Twin simulates one plant (Orbis Components, Gebze) and runs the softwa
 
 ## 2. Containers
 
-| Container | Status |
-| --- | --- |
+| Container                       | Status       |
+| ------------------------------- | ------------ |
 | `db` (PostgreSQL + TimescaleDB) | Phase 0 (#5) |
-| `broker` (Mosquitto) | Phase 0 (#5) |
-| `simulator` | Phase 1–2 |
-| `edge-gateway` | Phase 3 |
-| `mes-server` | Phase 4 |
-| `erp-mock` | Phase 7 |
-| `web` | Phase 4 |
+| `broker` (Mosquitto)            | Phase 0 (#5) |
+| `simulator`                     | Phase 1–2    |
+| `edge-gateway`                  | Phase 3      |
+| `mes-server`                    | Phase 4      |
+| `erp-mock`                      | Phase 7      |
+| `web`                           | Phase 4      |
 
 ## 3. Runtime views
 

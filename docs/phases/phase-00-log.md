@@ -12,3 +12,4 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 
 - Merged #7 (#1): docs skeleton, STATUS, ADR-0001, ADR-0004, plan rev. 3.
 - Deviation: #8 (#2) was stacked on the #1 branch and merged into it instead of `main`. Re-opened as #9 against `main`. Lesson: no stacked PRs; a dependent task waits until its base is merged.
+- Decision change: all documentation in English, including learning notes and PR "Concepts" (plan rev. 4). Concepts sections of #7, #8, #10 and #11 translated.

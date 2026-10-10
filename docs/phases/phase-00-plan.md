@@ -28,4 +28,4 @@ Repository, monorepo tooling, TypeScript and lint configuration, CI, issue and P
 
 - Repository is private on GitHub Free; branch protection is unavailable, so merge rules are working rules (ADR-0004).
 - Learning files and PR "Concepts" notes are written in Turkish.
-- The GitHub Project board needs the `project` token scope; it is set up once the owner grants it (see STATUS blockers).
+- GitHub Project board: https://github.com/users/kubilayture/projects/1

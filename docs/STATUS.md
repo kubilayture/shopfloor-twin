@@ -8,6 +8,7 @@
 
 - Repository created; plan rev. 2 on `main`.
 - Labels, milestone "Phase 00 – Foundations" and issues #1–#6 created.
+- GitHub Project board with Status (Backlog → Done) and Phase fields; Phase 0 issues added.
 
 ## In progress
 
@@ -22,7 +23,7 @@
 
 ## Blockers and open questions for the owner
 
-- GitHub Project board: needs the `project` scope on your GitHub CLI token. Run `gh auth refresh -s project` once, then Claude creates the board.
+- None. Project board: https://github.com/users/kubilayture/projects/1
 
 ## Health: CI on main, coverage, open bugs
 

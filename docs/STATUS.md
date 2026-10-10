@@ -8,12 +8,12 @@
 
 - Repository created; plan rev. 2 on `main`.
 - Labels, milestone "Phase 00 – Foundations" and issues #1–#6 created.
+- #1 merged (PR #7): docs skeleton, ADR-0001, ADR-0004.
 - GitHub Project board with Status (Backlog → Done) and Phase fields; Phase 0 issues added.
 
 ## In progress
 
-- #1 Docs skeleton, STATUS, Phase 0 plan, ADR-0001 and ADR-0004 (in review, PR #7)
-- #2 Monorepo tooling and `pnpm verify` (in review, stacked on PR #7)
+- #2 Monorepo tooling and `pnpm verify` (in review, PR #9; PR #8 was merged into the #1 branch by mistake of stacking)
 
 ## Next up
 

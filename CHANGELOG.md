@@ -12,3 +12,6 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - pnpm workspace with version catalog, Turborepo, strict shared TypeScript config, Prettier and `pnpm verify` (#2).
 - `@shopfloor/contracts` with the UNS equipment-topic builder (#2).
 - ADR-0002: stack and versions; ADR-0003: monorepo layout and TypeScript without a build step (#2).
+- `@shopfloor/eslint-config`: type-checked ESLint rules, Prettier compatibility and the plan's dependency rules with tests; `pnpm verify` now lints (#3).
+- Pre-commit hook (lefthook) that formats and lints staged files (#3).
+- ADR-0005: enforce dependency rules with `no-restricted-imports` (#3).

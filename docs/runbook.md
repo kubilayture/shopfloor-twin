@@ -15,4 +15,6 @@ pnpm install
 pnpm verify
 ```
 
+`pnpm install` also installs a git pre-commit hook (lefthook) that formats and lints the files you stage. To skip it for one commit in an emergency: `git commit --no-verify`. CI runs the same checks (from #4).
+
 Start, stop and reset procedures are added with the Compose stack in #5.

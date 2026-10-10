@@ -1,11 +1,12 @@
-# Status — updated 2026-10-10
+# Status — updated 2026-10-11
 
 ## Current phase: 00 – Foundations (started 2026-10-10)
 
-## Exit criteria progress: 0 / 4 met (criterion 1 passes on the #2 branch; counts once merged)
+## Exit criteria progress: 2 / 4 met (fresh-clone verify; STATUS in place)
 
 ## Done since last update
 
+- #2 merged (PR #9): pnpm + Turborepo monorepo, strict TypeScript, `pnpm verify`, ADR-0002, ADR-0003.
 - Repository created; plan rev. 2 on `main`.
 - Labels, milestone "Phase 00 – Foundations" and issues #1–#6 created.
 - #1 merged (PR #7): docs skeleton, ADR-0001, ADR-0004.
@@ -13,13 +14,12 @@
 
 ## In progress
 
-- #2 Monorepo tooling and `pnpm verify` (in review, PR #9; PR #8 was merged into the #1 branch by mistake of stacking)
+- #3 ESLint, dependency rules and pre-commit hook (in review)
 
 ## Next up
 
-- #3 ESLint, dependency rules, Prettier, pre-commit hook
-- #4 CI workflow and templates
 - #5 Docker Compose with TimescaleDB and Mosquitto
+- #4 CI workflow and templates (after #3)
 
 ## Blockers and open questions for the owner
 

@@ -1,0 +1,10 @@
+pre-commit:
+  parallel: false
+  jobs:
+    - name: format
+      glob: '*.{ts,tsx,js,json,yml,yaml,md,css,html}'
+      run: pnpm exec prettier --write --ignore-unknown {staged_files}
+      stage_fixed: true
+    - name: lint
+      glob: '*.{ts,tsx,js}'
+      run: pnpm exec eslint --no-warn-ignored {staged_files}

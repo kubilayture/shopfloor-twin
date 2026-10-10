@@ -8,11 +8,14 @@
   },
   "scripts": {
     "typecheck": "tsc",
+    "lint": "eslint .",
     "test": "vitest run"
   },
   "devDependencies": {
+    "@shopfloor/eslint-config": "workspace:*",
     "@shopfloor/tsconfig": "workspace:*",
     "@types/node": "catalog:",
+    "eslint": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

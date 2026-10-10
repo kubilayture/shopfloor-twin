@@ -27,5 +27,5 @@ Repository, monorepo tooling, TypeScript and lint configuration, CI, issue and P
 ## Decisions taken at phase start
 
 - Repository is private on GitHub Free; branch protection is unavailable, so merge rules are working rules (ADR-0004).
-- Learning files and PR "Concepts" notes are written in Turkish.
+- All documentation is in English, including learning files and PR "Concepts" notes (plan rev. 4; rev. 3 had Turkish for these).
 - GitHub Project board: https://github.com/users/kubilayture/projects/1

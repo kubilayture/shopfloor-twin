@@ -7,13 +7,18 @@
     "node": ">=26.11.1 <27"
   },
   "scripts": {
-    "verify": "pnpm format:check && turbo run typecheck test",
+    "verify": "pnpm format:check && turbo run lint typecheck test",
+    "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "prepare": "lefthook install"
   },
   "devDependencies": {
+    "@shopfloor/eslint-config": "workspace:*",
+    "eslint": "catalog:",
+    "lefthook": "catalog:",
     "prettier": "catalog:",
     "turbo": "catalog:",
     "typescript": "catalog:"

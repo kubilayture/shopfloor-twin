@@ -11,7 +11,11 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "stack:up": "docker compose up -d --wait",
+    "stack:down": "docker compose down",
+    "stack:reset": "docker compose down --volumes",
+    "stack:smoke": "sh scripts/stack-smoke.sh"
   },
   "devDependencies": {
     "prettier": "catalog:",

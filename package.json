@@ -1,0 +1,21 @@
+{
+  "name": "shopfloor-twin",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.11.2",
+  "engines": {
+    "node": ">=26.11.1 <27"
+  },
+  "scripts": {
+    "verify": "pnpm format:check && turbo run typecheck test",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "catalog:",
+    "turbo": "catalog:",
+    "typescript": "catalog:"
+  }
+}

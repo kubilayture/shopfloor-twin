@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+
+catalog:
+  '@types/node': 26.6.5
+  prettier: 3.9.9
+  turbo: 2.11.7
+  typescript: 6.0.3
+  vitest: 4.1.11
+
+engineStrict: true

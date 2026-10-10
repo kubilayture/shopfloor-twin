@@ -5,6 +5,8 @@ Oct 10, 2026 · @Kubilay
 > **Change note — rev. 2 (10 Oct 2026).** Review fixes before Phase 0: (1) new machine state `Stopped` for short self-clearing stops; the simulator reports raw states and only the MES classifies micro-stops, with ground truth using the same threshold (sections 4, 7). (2) Interim "scheduled time" rule for Phases 1–6, before orders exist (section 7). (3) Lossless OPC UA delivery of state changes and events at 60×, decided by a Phase 2 spike (sections 5, 11, 12). (4) State intervals split at hour as well as shift boundaries for continuous aggregates (sections 7, 11). (5) Night shift and production-week boundaries defined (section 3). (6) Short breakdowns stay availability loss; OEE dashboard separates own and external availability loss (section 7).
 >
 > **Change note — rev. 3 (10 Oct 2026).** Repository is private on GitHub Free, so branch protection is unavailable; the owner's merge is the approval and "CI green before merge" is a working rule, see ADR-0004 (sections 2, 8). Learning files and PR "Concepts" notes are written in Turkish (sections 2, 10).
+>
+> **Change note — rev. 4 (11 Oct 2026).** All documentation, including learning files and PR "Concepts" notes, is written in English; the Turkish rule of rev. 3 is withdrawn because mixed languages read as inconsistent (sections 2, 10).
 
 ShopFloor Twin is a realistic simulation of a discrete-manufacturing plant plus a working MES core built on top of it, developed end to end in TypeScript. The simulator plays the role of the physical shop floor; everything above it (edge gateway, MQTT Unified Namespace, historian, MES, operator and management UIs) is built the way it would be in a real plant, so the same software could in principle be pointed at real machines.
 
@@ -65,7 +67,7 @@ Claude writes the code; the owner reviews every change, runs it, and must be abl
 
 - What changed and why, linked to the issue and to the plan section.
 - A "How to review" walkthrough: which files to read first, in what order.
-- A "Concepts" note: the industrial or engineering ideas involved, in plain language, written in Turkish.
+- A "Concepts" note: the industrial or engineering ideas involved, in plain language.
 - Test evidence: which tests were added, and the CI result.
 - Docs touched: README, architecture, ADR, API or UNS spec, changelog.
 
@@ -501,7 +503,7 @@ Every document has one owner-facing purpose and a fixed update trigger, so nothi
 ## Health: CI on main, coverage, open bugs
 ```
 
-**Learning file layout (`docs/learning/phase-NN.md`)**, written in Turkish; code identifiers and standard terms stay in English
+**Learning file layout (`docs/learning/phase-NN.md`)**
 
 1. Concepts introduced in this phase, in plain language, with links to primary sources.
 2. Reading order: which files to read first and what to look for.

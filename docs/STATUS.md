@@ -6,6 +6,8 @@
 
 ## Done since last update
 
+- PR #15 merged: Phase 0 report and learning notes.
+- Owner decision: pull requests are merged with "Squash and merge" from now on, as plan section 8 says.
 - #4 merged (PR #14): CI (`verify`, `stack smoke`), PR template, issue forms, CODEOWNERS, Renovate config. First CI run on `main` green.
 - #5 merged (PR #11): Docker Compose with TimescaleDB 2.30 / PostgreSQL 18 and Mosquitto 2.1, `pnpm stack:*`, smoke test.
 - #3 merged (PR #10): type-checked ESLint, dependency rules with tests, pre-commit hook, ADR-0005.
@@ -18,7 +20,7 @@
 
 ## In progress
 
-- #6 Phase 0 close: report and learning notes (in review). The phase closes after the owner's answers and exercise.
+- #6 Phase 0 close: waiting for the owner's review answers and exercise PR, then the `phase-00` tag.
 
 ## Next up
 
@@ -27,7 +29,6 @@
 ## Blockers and open questions for the owner
 
 - Answer the review questions and complete the exercise in `docs/learning/phase-00.md` (closes Phase 0).
-- Merge method: plan section 8 says squash-merge; PRs so far used merge commits. Use squash, or the plan changes (see phase report).
 - Install the Renovate GitHub app for this repository.
 
 Project board: https://github.com/users/kubilayture/projects/1

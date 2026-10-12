@@ -20,3 +20,5 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Merged #13 (#12): English-only documentation, plan rev. 4.
 - Merged #11 (#5): Docker Compose stack; conflicts with #10 in shared docs resolved by merging `main` into the branch.
 - Merged #14 (#4): CI and templates. First run on `main` green: all four exit criteria met.
+- Merged #15 (#6): phase report and learning notes.
+- Owner decision: "Squash and merge" from now on (plan section 8 unchanged). Earlier PRs remain as merge commits.

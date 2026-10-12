@@ -1,0 +1,30 @@
+name: Spike
+description: A time-boxed investigation that ends in a decision or an ADR.
+labels: ['type:spike']
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question to answer
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options to evaluate
+    validations:
+      required: true
+  - type: input
+    id: timebox
+    attributes:
+      label: Time box
+      placeholder: 'One session'
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Expected output
+      value: |
+        - [ ] Findings written up in the pull request
+        - [ ] ADR proposed with the decision

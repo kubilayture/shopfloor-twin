@@ -15,4 +15,5 @@ All notable changes to this project are recorded here. The format follows [Keep 
 - `@shopfloor/eslint-config`: type-checked ESLint rules, Prettier compatibility and the plan's dependency rules with tests; `pnpm verify` now lints (#3).
 - Pre-commit hook (lefthook) that formats and lints staged files (#3).
 - ADR-0005: enforce dependency rules with `no-restricted-imports` (#3).
+- GitHub Actions CI (`verify` and `stack smoke` jobs) on every pull request and on `main`; PR template with the Definition of Done; issue forms for task, bug, spike and ADR proposal; CODEOWNERS; Renovate config (#4).
 - Docker Compose stack with PostgreSQL 18 + TimescaleDB 2.30 and Mosquitto 2.1 (authentication on, persistence, healthchecks), `pnpm stack:*` commands and a smoke test (#5).

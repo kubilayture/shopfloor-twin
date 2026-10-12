@@ -1,0 +1,24 @@
+name: Bug
+description: Something behaves differently from the plan, the docs or the tests.
+labels: ['type:fix']
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+      description: Cite the plan section, doc or test that defines the expected behaviour.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Seed, scenario and commands, so the fix can start with a failing test.
+    validations:
+      required: true

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "timezone": "Europe/Istanbul",
+  "schedule": ["before 9am on monday"],
+  "minimumReleaseAge": "3 days",
+  "prConcurrentLimit": 2,
+  "labels": ["type:chore", "area:infra"],
+  "dependencyDashboard": true,
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["prio:high"],
+      "prBodyNotes": ["Major upgrade: needs an ADR in the same pull request (plan section 6)."]
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["timescale/timescaledb"],
+      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-pg(?<compatibility>\\d+)$"
+    }
+  ]
+}

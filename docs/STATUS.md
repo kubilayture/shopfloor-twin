@@ -1,11 +1,12 @@
-# Status — updated 2026-10-11
+# Status — updated 2026-10-12
 
 ## Current phase: 00 – Foundations (started 2026-10-10)
 
-## Exit criteria progress: 2 / 4 met (fresh-clone verify; STATUS in place)
+## Exit criteria progress: 3 / 4 met (fresh-clone verify; healthy Compose stack; STATUS in place). Remaining: CI green on `main`
 
 ## Done since last update
 
+- #5 merged (PR #11): Docker Compose with TimescaleDB 2.30 / PostgreSQL 18 and Mosquitto 2.1, `pnpm stack:*`, smoke test.
 - #3 merged (PR #10): type-checked ESLint, dependency rules with tests, pre-commit hook, ADR-0005.
 - #12 merged (PR #13): all documentation in English (plan rev. 4).
 - #2 merged (PR #9): pnpm + Turborepo monorepo, strict TypeScript, `pnpm verify`, ADR-0002, ADR-0003.
@@ -16,12 +17,11 @@
 
 ## In progress
 
-- #5 Docker Compose with TimescaleDB and Mosquitto (in review, PR #11)
+- #4 CI workflow, templates, CODEOWNERS, Renovate (in review)
 
 ## Next up
 
-- #4 CI workflow and templates
-- #6 Phase 0 close
+- #6 Phase 0 close: report, learning notes, tag
 
 ## Blockers and open questions for the owner
 

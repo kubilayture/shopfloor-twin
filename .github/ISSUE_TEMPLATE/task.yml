@@ -1,0 +1,28 @@
+name: Task
+description: A unit of work that becomes one branch and one pull request.
+labels: ['type:feat']
+body:
+  - type: input
+    id: plan
+    attributes:
+      label: Plan reference
+      description: Section of docs/project-plan.md this task implements.
+      placeholder: 'Section 7, oee module'
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What this task delivers and why.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: A checklist; the pull request is done when every box is ticked.
+      value: |
+        - [ ]
+    validations:
+      required: true

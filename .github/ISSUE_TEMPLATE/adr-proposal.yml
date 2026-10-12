@@ -1,0 +1,27 @@
+name: ADR proposal
+description: Propose a decision that is not already in the plan.
+labels: ['type:docs', 'area:docs']
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and problem statement
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Considered options
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed decision and consequences
+    validations:
+      required: true
+  - type: input
+    id: plan
+    attributes:
+      label: Plan sections affected
+      description: The plan is edited in the same pull request as the ADR (plan section 2, change control).

@@ -22,3 +22,20 @@ Every third-party dependency and why it exists. A dependency is not added withou
 | ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `timescale/timescaledb:2.30.2-pg18` | `db`     | PostgreSQL 18 with TimescaleDB for MES data and time series (plan section 6). The plain image, not `timescaledb-ha`, which is several times larger |
 | `eclipse-mosquitto:2.1.2-alpine`    | `broker` | MQTT broker for the Unified Namespace (plan section 6). Mosquitto 2.1 is published only as Alpine images                                           |
+
+## CI actions
+
+Pinned to a full commit SHA (the tag in the trailing comment), so a moved or compromised tag cannot change what runs. Renovate updates the SHA and the comment together.
+
+| Action                      | Why                                                                |
+| --------------------------- | ------------------------------------------------------------------ |
+| `actions/checkout` v7.0.1   | Check out the repository                                           |
+| `pnpm/action-setup` v6.1.0  | Install the pnpm version from `packageManager` and cache its store |
+| `actions/setup-node` v7.1.0 | Install the Node.js version from `.nvmrc`                          |
+| `actions/cache` v6.1.0      | Keep Turborepo's task cache between runs                           |
+
+## Services
+
+| Service               | Why                                                                                                                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Renovate (GitHub app) | Opens upgrade pull requests on Mondays, at most two at a time, for versions at least three days old; majors are labelled `prio:high` and need an ADR. Config: `renovate.json` |

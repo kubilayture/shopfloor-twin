@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Changed
+
+- Plan rev. 5: Phases 1–6 run from a weekly production schedule file; Phase 1 plan with issues #18–#30 (#17).
+
 ### Added
 
 - Project plan (rev. 3), documentation skeleton, `docs/STATUS.md`, Phase 0 plan and log (#1).

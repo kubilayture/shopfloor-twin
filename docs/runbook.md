@@ -17,6 +17,17 @@ pnpm verify
 
 `pnpm install` also installs a git pre-commit hook (lefthook) that formats and lints the files you stage. To skip it for one commit in an emergency: `git commit --no-verify`. CI runs the same checks (from #4).
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`:
+
+| Job           | What it runs                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `verify`      | `pnpm install --frozen-lockfile`, then `pnpm verify` (format check, lint, typecheck, tests)                                           |
+| `stack smoke` | Creates a throw-away `.env` with random passwords, runs `scripts/stack-smoke.sh`, prints container logs on failure, removes the stack |
+
+A pull request is merged only when both jobs are green (ADR-0004). If CI fails but `pnpm verify` passes locally, check the Node.js and pnpm versions first: CI uses exactly `.nvmrc` and `packageManager`. A lockfile change that was not committed fails `--frozen-lockfile`.
+
 ## Infrastructure stack (database and broker)
 
 First time only: create your local secrets file. It is git-ignored; never commit it.

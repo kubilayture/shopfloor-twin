@@ -6,6 +6,8 @@
 
 ## Done since last update
 
+- #3 merged (PR #10): type-checked ESLint, dependency rules with tests, pre-commit hook, ADR-0005.
+- #12 merged (PR #13): all documentation in English (plan rev. 4).
 - #2 merged (PR #9): pnpm + Turborepo monorepo, strict TypeScript, `pnpm verify`, ADR-0002, ADR-0003.
 - Repository created; plan rev. 2 on `main`.
 - Labels, milestone "Phase 00 – Foundations" and issues #1–#6 created.
@@ -14,12 +16,12 @@
 
 ## In progress
 
-- #3 ESLint, dependency rules and pre-commit hook (in review)
+- #5 Docker Compose with TimescaleDB and Mosquitto (in review, PR #11)
 
 ## Next up
 
-- #5 Docker Compose with TimescaleDB and Mosquitto
-- #4 CI workflow and templates (after #3)
+- #4 CI workflow and templates
+- #6 Phase 0 close
 
 ## Blockers and open questions for the owner
 

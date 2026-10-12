@@ -1,0 +1,52 @@
+name: shopfloor-twin
+
+services:
+  db:
+    image: timescale/timescaledb:2.30.2-pg18
+    command: ['postgres', '-c', 'timescaledb.telemetry_level=off']
+    environment:
+      POSTGRES_DB: ${DB_NAME:-shopfloor}
+      POSTGRES_USER: ${DB_USER:-shopfloor}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env (copy .env.example)}
+      TS_TUNE_MEMORY: ${DB_TUNE_MEMORY:-512MB}
+      TS_TUNE_NUM_CPUS: ${DB_TUNE_CPUS:-2}
+    ports:
+      - '127.0.0.1:${DB_PORT:-5442}:5432'
+    volumes:
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  broker:
+    image: eclipse-mosquitto:2.1.2-alpine
+    entrypoint: ['/bin/sh', '/mosquitto/config/entrypoint.sh']
+    environment:
+      MQTT_USERS: >-
+        healthcheck:${MQTT_HEALTHCHECK_PASSWORD:?Set MQTT_HEALTHCHECK_PASSWORD in .env}
+        dev:${MQTT_DEV_PASSWORD:?Set MQTT_DEV_PASSWORD in .env}
+      MQTT_HEALTHCHECK_PASSWORD: ${MQTT_HEALTHCHECK_PASSWORD}
+    ports:
+      - '127.0.0.1:${MQTT_PORT:-1883}:1883'
+    volumes:
+      - ./config/mosquitto:/mosquitto/config:ro
+      - broker-data:/mosquitto/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'mosquitto_sub -h localhost -u healthcheck -P "$${MQTT_HEALTHCHECK_PASSWORD}" -t "\$$SYS/broker/uptime" -C 1 -W 3',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  broker-data:

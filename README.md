@@ -9,6 +9,10 @@ Requires Node.js 26, pnpm and Docker.
 ```bash
 pnpm install
 pnpm verify
+cp .env.example .env   # then set your own passwords
+pnpm stack:up
 ```
+
+`pnpm stack:up` starts PostgreSQL + TimescaleDB and the Mosquitto MQTT broker and waits until both are healthy.
 
 Current progress is in [docs/STATUS.md](docs/STATUS.md); operations in [docs/runbook.md](docs/runbook.md).

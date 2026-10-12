@@ -15,3 +15,10 @@ Every third-party dependency and why it exists. A dependency is not added withou
 | `eslint-config-prettier` | `eslint-config`     | Turns off lint rules that conflict with Prettier's formatting                                                                                                                    |
 | `globals`                | `eslint-config`     | Declares Node.js global variables for ESLint                                                                                                                                     |
 | `lefthook`               | root                | Git pre-commit hook: formats and lints staged files. Its install script is denied in `pnpm-workspace.yaml` (`allowBuilds`); the root `prepare` script installs the hooks instead |
+
+## Container images
+
+| Image                               | Service  | Why                                                                                                                                                |
+| ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timescale/timescaledb:2.30.2-pg18` | `db`     | PostgreSQL 18 with TimescaleDB for MES data and time series (plan section 6). The plain image, not `timescaledb-ha`, which is several times larger |
+| `eclipse-mosquitto:2.1.2-alpine`    | `broker` | MQTT broker for the Unified Namespace (plan section 6). Mosquitto 2.1 is published only as Alpine images                                           |

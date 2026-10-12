@@ -13,7 +13,11 @@
     "test": "turbo run test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepare": "lefthook install"
+    "prepare": "lefthook install",
+    "stack:up": "docker compose up -d --wait",
+    "stack:down": "docker compose down",
+    "stack:reset": "docker compose down --volumes",
+    "stack:smoke": "sh scripts/stack-smoke.sh"
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",

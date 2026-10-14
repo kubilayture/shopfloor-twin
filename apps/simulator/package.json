@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@shopfloor/plant-config": "workspace:*",
-    "@shopfloor/sim-core": "workspace:*"
+    "@shopfloor/sim-core": "workspace:*",
+    "node-opcua": "catalog:"
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",

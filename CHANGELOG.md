@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Spike #47: node-opcua servers, companion model and lossless delivery measured; ADR-0008 (address space) and ADR-0009 (lossless delivery); `node-opcua` 2.187.3 (#47).
 - Phase 2 plan with issues #46–#57 (#46).
 - Phase 1 sign-off: owner's realism check recorded; exit criteria 5 / 5 (#30).
 - Phase 1 report, realism check of the golden week with 12 questions for the owner, learning notes (#30).

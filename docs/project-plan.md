@@ -561,7 +561,7 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 **Open decisions (to be closed by ADRs in the phase shown)**
 
 - [ ] Alarm representation in OPC UA: Alarms & Conditions or state variables (Phase 2)
-- [ ] Lossless state and event delivery from OPC UA: events or queued monitored items (Phase 2)
+- [x] Lossless state and event delivery from OPC UA: events with sequence numbers, exception-based values (ADR-0009)
 - [ ] Modbus library confirmation (Phase 3)
 - [ ] Micro-stop threshold and auto-classification rules for downtime (Phase 5)
 - [ ] Load-testing tool and performance targets (Phase 9)

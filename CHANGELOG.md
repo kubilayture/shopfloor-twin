@@ -13,6 +13,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Phase 2 plan with issues #46–#57 (#46).
 - Phase 1 sign-off: owner's realism check recorded; exit criteria 5 / 5 (#30).
 - Phase 1 report, realism check of the golden week with 12 questions for the owner, learning notes (#30).
 - Invariant checker (part conservation, time accounting, material conservation) after every simulation step; golden scenario `week-01` with committed summary and event-log hash; `pnpm test:golden` (`--update` to rewrite) and a CI step (#29).

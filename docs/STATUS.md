@@ -2,10 +2,11 @@
 
 ## Current phase: 02 – Device layer: OPC UA (planning, started 2026-10-14)
 
-## Exit criteria progress: Phase 2 plan in preparation
+## Exit criteria progress: 0 / 5 met
 
 ## Done since last update
 
+- Phase 2 plan with issues #46–#57 under milestone "Phase 02 – Device layer: OPC UA".
 - **Phase 1 closed** and tagged `phase-01`: all 5 exit criteria met; the owner accepted the realism check as is.
 - #30 merged (PR #44 and the sign-off PR #45).
 - #29 merged (PR #43): invariant checker (independent time tally, parts by identity, material per lot), golden scenario `week-01`, `pnpm test:golden` in CI; leak readings rounded to instrument resolution after the first CI golden run found a cross-platform float difference.
@@ -26,11 +27,12 @@
 
 ## In progress
 
-- Phase 2 planning: phase plan and issues
+- #46 Phase 2 plan (in review)
 
 ## Next up
 
-- Phase 2 spikes: alarm representation in OPC UA, lossless state and event delivery (plan sections 5 and 12)
+- #47 Spike: OPC UA server per machine, address-space model, lossless delivery at 60× (ADR-0008, ADR-0009)
+- #49 Live run mode (independent of the spikes)
 
 ## Blockers and open questions for the owner
 

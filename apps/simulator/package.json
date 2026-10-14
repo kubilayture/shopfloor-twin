@@ -14,6 +14,7 @@
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",
+    "@shopfloor/test-kit": "workspace:*",
     "@shopfloor/tsconfig": "workspace:*",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",

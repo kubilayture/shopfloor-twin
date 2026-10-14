@@ -22,3 +22,8 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Merged #14 (#4): CI and templates. First run on `main` green: all four exit criteria met.
 - Merged #15 (#6): phase report and learning notes.
 - Owner decision: "Squash and merge" from now on (plan section 8 unchanged). Earlier PRs remain as merge commits.
+
+## 2026-10-14
+
+- Merged #31 (#17): Phase 1 plan and plan rev. 5.
+- Phase 0 closed and tagged `phase-00`; learning step skipped by owner decision.

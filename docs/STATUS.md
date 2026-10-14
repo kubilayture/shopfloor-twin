@@ -2,10 +2,11 @@
 
 ## Current phase: 01 – Simulation core (started 2026-10-14)
 
-## Exit criteria progress: 0 / 5 met
+## Exit criteria progress: 4 / 5 met (criterion 5, the owner's realism check, is open)
 
 ## Done since last update
 
+- #29 merged (PR #43): invariant checker (independent time tally, parts by identity, material per lot), golden scenario `week-01`, `pnpm test:golden` in CI; leak readings rounded to instrument resolution after the first CI golden run found a cross-platform float difference.
 - #28 merged (PR #42, squash, merged by Claude after review agent and green CI): headless runner, event log, ground-truth summary.
 - #27 merged (PR #41): material lots, consumption, genealogy events.
 - Owner decision (2026-10-14): until Phase 1 is finished, Claude reviews and merges the Phase 1 pull requests itself (squash, CI green, separate review agent per PR); temporary override of ADR-0004.
@@ -23,14 +24,15 @@
 
 ## In progress
 
-- #29 Invariants, determinism and golden scenario (in review)
+- #30 Close Phase 1: report, realism check, learning notes (in review). The `phase-01` tag waits for the owner's realism answers.
 
 ## Next up
 
-- #30 close Phase 1: report, learning notes, owner's realism check of a simulated week, tag
+- Phase 02 – Device layer: OPC UA (planning), after Phase 1 is tagged
 
 ## Blockers and open questions for the owner
 
+- **Realism check (Phase 1 exit criterion 5):** answer the 12 questions in `docs/phases/phase-01-realism-check.md`.
 - Install the Renovate GitHub app for this repository (carried over from Phase 0).
 
 Project board: https://github.com/users/kubilayture/projects/1
@@ -38,5 +40,6 @@ Project board: https://github.com/users/kubilayture/projects/1
 ## Health: CI on main, coverage, open bugs
 
 - CI on `main`: green (`verify`, `stack smoke`).
-- Coverage: `sim-core` floor 95% lines / 90% branches enforced; currently 98.9% / 97.3%.
+- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 100 / 91 (floor 90 / 85), simulator about 96 / 89 (floor 80 / 70).
+- Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

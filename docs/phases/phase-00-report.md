@@ -55,6 +55,10 @@ Period: 2026-10-10 to 2026-10-12. Milestone: [Phase 00 – Foundations](https://
 1. **Merge method:** plan section 8 asks for squash-merge (one commit per PR on `main`). So far PRs were merged with merge commits. Either use "Squash and merge" from now on, or the plan is changed to allow merge commits.
 2. **Renovate:** install the GitHub app for this repository only (https://github.com/apps/renovate → Configure → `shopfloor-twin`).
 
+## Phase close
+
+Closed on 2026-10-14 and tagged `phase-00`. The owner decided to skip the phase's learning step (review questions and the `systemTopic()` exercise in `docs/learning/phase-00.md`), so Definition of Done items "owner completed the hands-on exercise and answered the review questions" are not met. This is recorded here as a deliberate deviation.
+
 ## Lessons
 
 - Stacked pull requests do not fit a merge-button workflow: GitHub merges into whatever base the PR has. Dependent tasks now wait until their base is merged.

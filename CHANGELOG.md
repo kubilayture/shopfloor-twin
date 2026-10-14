@@ -10,6 +10,9 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- `@shopfloor/sim-core`: event queue ordered by (time, sequence), simulation kernel with schedule, cancel, step, run and run-until; property tests; 95/90 coverage floor (#18).
+- Lint rule banning wall-clock reads and unseeded randomness in deterministic code (#18).
+- ADR-0006: simulation time as integer milliseconds (#18).
 - Project plan (rev. 3), documentation skeleton, `docs/STATUS.md`, Phase 0 plan and log (#1).
 - ADR-0001: record architecture decisions in MADR format (#1).
 - ADR-0004: review and merge policy without branch protection (#1).

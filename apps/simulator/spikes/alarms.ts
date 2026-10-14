@@ -18,6 +18,7 @@ const server = new OPCUAServer({
 await server.initialize();
 const addressSpace = server.engine.addressSpace;
 if (!addressSpace) throw new Error('no address space');
+addressSpace.installAlarmsAndConditionsService();
 const ns = addressSpace.getOwnNamespace();
 const objects = addressSpace.rootFolder.objects;
 const machine = ns.addObject({ browseName: 'CNC-01', organizedBy: objects, eventNotifier: 1 });
@@ -144,7 +145,8 @@ await wait(200);
 dump('after ack');
 await wait(400);
 setSequence();
-alarm.deactivateAlarm();
+alarm.deactivateAlarm(false);
+alarm.raiseNewCondition({ message: 'Spindle overload cleared', severity: 800, retain: false });
 await wait(400);
 dump('after deactivate');
 console.log('client A saw:');
@@ -159,11 +161,12 @@ alarm.raiseNewCondition({ message: 'Spindle overload again', severity: 800, reta
 await wait(300);
 dump('after second activate');
 const b = await connect();
-await b.session.call({
-  objectId: 'i=2253',
+const refresh = await b.session.call({
+  objectId: 'i=2782',
   methodId: 'i=3875',
   inputArguments: [{ dataType: DataType.UInt32, value: b.subscriptionId }],
 });
+console.log('ConditionRefresh status', refresh.statusCode.toString());
 await wait(500);
 console.log('client B after ConditionRefresh saw:');
 b.seen.forEach((e) => {

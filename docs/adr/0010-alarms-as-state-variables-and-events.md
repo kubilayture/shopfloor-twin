@@ -10,20 +10,27 @@ Plan section 12 left open how machine alarms are represented in OPC UA: Alarms &
 
 ## What the spike found (#48, node-opcua 2.187.3)
 
-A machine with a custom `AlarmConditionType` subtype (with a `Sequence` property) went through: activate, acknowledge by a client, deactivate, re-activate, ConditionRefresh from a second client.
+A machine with a custom `AlarmConditionType` subtype (with a `Sequence` property) went through: activate, acknowledge by a client, deactivate, re-activate, then ConditionRefresh from a second client.
 
-- **Works:**
-  - raising an active, unacknowledged alarm, delivered as an event with the custom `Sequence`;
-  - the standard `Acknowledge` method from a client: the server receives the comment, and the acknowledged state is delivered as an event.
-- **Inconsistent with OPC 10000-9 within the time box:**
-  - after acknowledging, `Retain` went to false although the alarm was still active;
-  - after deactivating, `Retain` went to true, and the client got no event;
-  - a second client's ConditionRefresh delivered nothing.
-- **Setup friction:**
-  - each alarm needs an `inputNode`;
-  - the machine must be wired as an event source (`HasEventSource`) before a condition can be instantiated.
+**With correct usage, A&C works:**
 
-Some of this may be misuse of a large API, but A&C would put the least predictable part of the stack exactly where the plan needs the most reliability.
+- The active alarm is delivered as an event with the custom `Sequence`.
+- The standard `Acknowledge` method works: the server receives the comment, and the acknowledged state comes back as an event.
+- Clearing works, as `deactivateAlarm(false)` followed by `raiseNewCondition`.
+- ConditionRefresh delivers RefreshStart, the retained condition and RefreshEnd, once the A&C service is installed and the method is called on ConditionType.
+
+**One genuine deviation from OPC 10000-9:** after an acknowledgement, node-opcua sets `Retain` to false even while the alarm is still active, because the condition has no ConfirmedState. It can be worked around by setting Retain again, or by adding ConfirmedState.
+
+**Setup that must be known:**
+
+- every alarm needs an `inputNode`;
+- the machine must be an event source (`HasEventSource` from the Server object);
+- `installAlarmsAndConditionsService()` must be called before ConditionRefresh works;
+- `deactivateAlarm` raises no event by itself.
+
+The first version of the spike missed two of these points and reported them wrongly as library inconsistencies. The independent review found the errors, and the spike was corrected (see `docs/spikes/0048-opcua-alarms.md`).
+
+**Sequence numbers:** events that the library raises itself (the acknowledgement event, refresh brackets, branch events) don't advance the project's per-machine `Sequence`. The acknowledgement event carried the same sequence as the activation.
 
 ## Considered options
 
@@ -34,6 +41,12 @@ Some of this may be misuse of a large API, but A&C would put the least predictab
 ## Decision outcome
 
 Chosen option: 3. The device side is option 2; A&C may be added later as a read-only view without changing the MES.
+
+The reason is not that A&C doesn't work. It works, with one workaround and some non-obvious setup. The reasons are:
+
+- **Ownership:** plan section 7 already assigns the alarm lifecycle (active, acknowledged, cleared, shelved, priorities, flood detection) to the MES `alarms` module. A&C on the device would duplicate that lifecycle in a second place.
+- **ISA-18.2 practice:** acknowledgement is an operator action in the alarm system or HMI, not on the controller.
+- **One delivery path:** alarms use the same project event mechanism and the same per-machine sequence counter as state and cycle events. ADR-0009 measured that path as lossless.
 
 On each machine, under `ShopFloor/Alarms`, there is one Boolean variable per alarm source, `<CODE>.Active`, plus `ActiveCount`. They are served exception-based (ADR-0009).
 
@@ -61,5 +74,5 @@ The plan section 12 open decision on alarm representation is closed.
 
 - Good: alarm delivery uses the same mechanism as state and cycle events, which ADR-0009 measured as lossless. One sequence counter covers everything a machine reports.
 - Good: one place owns the alarm lifecycle, the MES. That matches ISA-18.2 practice, where acknowledgement is an operator action in the HMI or alarm system, not on the controller.
-- Bad: a generic A&C client (for example an off-the-shelf alarm viewer) can't use the machines' alarms. If needed, option 3 adds an A&C view later.
+- Bad: a generic A&C client (for example an off-the-shelf alarm viewer) can't use the machines' alarms. If needed, option 3 adds an A&C view later. That view would be _outside_ the completeness guarantee: library-raised A&C events don't carry new sequence numbers, so the gateway would keep reading the project events.
 - Bad: "acknowledge from a client", as written in #53, moves to Phase 6.

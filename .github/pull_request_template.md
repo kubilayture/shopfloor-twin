@@ -22,7 +22,8 @@ Closes #<!-- issue -->. Plan: section <!-- N -->.
 
 - [ ] Acceptance criteria in the issue are met
 - [ ] Unit tests added or updated; integration or E2E tests where the change crosses a process boundary
-- [ ] `pnpm verify` passes locally and **CI is green** (required before merge, ADR-0004)
+- [ ] `pnpm verify` passes locally and **CI is green** on the latest commit (required before merge, ADR-0011)
+- [ ] Independent review agent run; findings fixed or answered in this description (ADR-0011)
 - [ ] No new lint suppressions without a comment explaining why
 - [ ] Public contracts (OPC UA address space, UNS topics, REST API, DB schema) documented and versioned
 - [ ] `CHANGELOG.md` entry under "Unreleased"

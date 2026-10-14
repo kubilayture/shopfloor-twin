@@ -6,13 +6,13 @@
 
 ## Done since last update
 
+- Owner decision (2026-10-15): Claude merges from now on, after an independent review agent and a green CI (ADR-0011, plan rev. 6).
 - Phase 2 plan with issues #46–#57 under milestone "Phase 02 – Device layer: OPC UA".
 - **Phase 1 closed** and tagged `phase-01`: all 5 exit criteria met; the owner accepted the realism check as is.
 - #30 merged (PR #44 and the sign-off PR #45).
 - #29 merged (PR #43): invariant checker (independent time tally, parts by identity, material per lot), golden scenario `week-01`, `pnpm test:golden` in CI; leak readings rounded to instrument resolution after the first CI golden run found a cross-platform float difference.
 - #28 merged (PR #42, squash, merged by Claude after review agent and green CI): headless runner, event log, ground-truth summary.
 - #27 merged (PR #41): material lots, consumption, genealogy events.
-- Owner decision (2026-10-14): until Phase 1 is finished, Claude reviews and merges the Phase 1 pull requests itself (squash, CI green, separate review agent per PR); temporary override of ADR-0004.
 - #25 merged (PR #40): tool wear, OP10 scrap, leak test, rework loop.
 - #26 merged (PR #39): shift calendar, breaks, operators; default schedule raised to fill the week.
 - #24 merged (PR #38): breakdowns, minor stops, repairs, running-time clocks.

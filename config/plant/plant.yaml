@@ -19,7 +19,13 @@ areas:
       - id: line-a1
         name: Line A1
         equipment:
-          - { id: asm-01, name: Manual assembly station, operation: OP30, interface: opcua }
+          - {
+              id: asm-01,
+              name: Manual assembly station,
+              operation: OP30,
+              interface: opcua,
+              requiresOperator: true,
+            }
           - { id: lkt-01, name: Leak tester, operation: OP40, interface: opcua }
           - { id: pck-01, name: Pack and label, operation: OP50, interface: opcua }
 

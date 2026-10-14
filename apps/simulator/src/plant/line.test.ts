@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import { formatIssues, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import { HOUR, MINUTE, RandomSource, Simulation } from '@shopfloor/sim-core';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { continuousOperation } from './testing.ts';
 import { ProductionLine, type LineEvent, type PlantEvent } from './line.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
@@ -19,6 +20,7 @@ type Schedule = PlantConfig['schedule']['machines'];
 
 function run(schedule: Schedule, duration: number, seed = 1, configure?: (c: PlantConfig) => void) {
   const config = structuredClone(defaults);
+  continuousOperation(config);
   config.schedule.machines = schedule;
   config.failures.equipment = {};
   configure?.(config);

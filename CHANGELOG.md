@@ -6,10 +6,12 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Changed
 
+- Default weekly schedule raised to 1,500 VB-100 and 700 VB-200 and stock to match, so the program fills the week; shift breaks optional in the schema (#26).
 - Plan rev. 5: Phases 1–6 run from a weekly production schedule file; Phase 1 plan with issues #18–#30 (#17).
 
 ### Added
 
+- Shift calendar (Temporal, DST-safe, handovers, weekend), breaks and shift ends as `PlannedStop` / `Off` with exact resume; operators with absences, skills and speed factors; ASM-01 needs a qualified operator; `shift` and `operator` events (#26).
 - Plant model breakdowns (Weibull in running hours, one per failure mode), minor stops (Poisson arrivals, exponential durations) and repairs by a limited technician pool; running-time clocks so interrupted cycles resume; `repair-start` / `repair-end` events (#24).
 - Plant model material flow: stations, finite buffers with blocking and starving, parallel CNCs, log-normal cycle times, serials at OP10, changeovers from the weekly schedule; transitions Running→Setup, Blocked→Starved and Blocked→Setup added (#23).
 - `sim-core` distributions: uniform, Bernoulli, exponential, Poisson arrivals, normal, log-normal (three parameterizations), Weibull, each with a fixed draw count; `@shopfloor/test-kit` with Kolmogorov–Smirnov and chi-square helpers; statistical tests with fixed seeds (#20).

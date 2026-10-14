@@ -24,6 +24,11 @@ Legal transitions (source of truth: `apps/simulator/src/plant/machine-state.ts`;
 ```mermaid
 stateDiagram-v2
   Off --> Idle
+  Off --> Running
+  Off --> Starved
+  Off --> Blocked
+  Off --> Setup
+  Off --> PlannedStop
   Off --> Maintenance
   Idle --> Running
   Idle --> Starved
@@ -37,12 +42,15 @@ stateDiagram-v2
   Running --> Stopped
   Running --> Starved
   Running --> Blocked
-  Running --> Down
   Running --> Setup
+  Running --> Down
   Running --> PlannedStop
+  Running --> Off
   Stopped --> Running
+  Stopped --> Idle
   Stopped --> Down
   Stopped --> PlannedStop
+  Stopped --> Off
   Starved --> Running
   Starved --> Idle
   Starved --> Setup
@@ -58,12 +66,18 @@ stateDiagram-v2
   Blocked --> Off
   Setup --> Idle
   Setup --> Running
+  Setup --> Starved
   Setup --> Down
   Setup --> PlannedStop
+  Setup --> Off
   Down --> Idle
   Down --> Running
+  Down --> PlannedStop
+  Down --> Off
   PlannedStop --> Idle
   PlannedStop --> Running
+  PlannedStop --> Starved
+  PlannedStop --> Blocked
   PlannedStop --> Setup
   PlannedStop --> Maintenance
   PlannedStop --> Off
@@ -73,7 +87,8 @@ stateDiagram-v2
 
 Rules behind the table:
 
-- A breakdown can interrupt any active state, but a machine that is `Down` stays `Down` through breaks and shift ends until the repair finishes. Its time stays an availability loss, as in a real plant.
+- A breakdown can interrupt any active state, but a machine that is `Down` stays `Down` through breaks and shift ends until the repair finishes, then goes to `PlannedStop` or `Off` if the plant is not working. Its downtime stays an availability loss, as in a real plant.
+- Breaks and shift ends move working machines (`Running`, `Stopped`, `Starved`, `Blocked`, `Idle`) to `PlannedStop` or `Off`. At the next shift start or break end they continue straight into whatever state they now need: `Off` and `PlannedStop` can lead directly to `Running`, `Starved`, `Blocked` or `Setup`.
 - `Stopped` returns to `Running` (the interrupted cycle continues), escalates to `Down`, or is overtaken by a planned break.
 - `Setup` starts only between cycles, never mid-cycle: right after a cycle ends (`Running` or `Blocked`, when the next campaign needs another product) or from `Idle`, `Starved` or `PlannedStop`.
 - A transition to the same state is illegal: it would mean the model lost track of what the machine is doing.
@@ -203,6 +218,71 @@ Reference week, default plant, seed 1, VB-100 only, running continuously (shifts
 | ASM-01  | 97.3%   | 2.4%    | 0.0% | 0.2%    | 0.0%    | 0 / 514                |
 | LKT-01  | 58.5%   | 0.8%    | 0.4% | 0.0%    | 40.4%   | 1 / 92                 |
 | PCK-01  | 19.5%   | 0.9%    | 0.0% | 0.0%    | 79.6%   | 0 / 53                 |
+
+## Shifts, breaks and operators
+
+Source: `apps/simulator/src/plant/calendar.ts`, `crew.ts` and `line.ts`. Parameters: `config/plant/shifts.yaml` and `operators.yaml`.
+
+### Calendar
+
+- Shifts are defined in local time (`timeZone`, default Europe/Istanbul) and converted to UTC instants with `Temporal`. Start and end are wall-clock times: across a daylight-saving change, a night shift really is 7 or 9 hours long. A test with Europe/Berlin proves this.
+- A shift belongs to the date it starts on, and only runs if that date is a workday (plan rev. 2). With the default Monday-to-Friday week, the Friday night shift ends Saturday 06:00, and there is no Sunday night shift.
+- Back-to-back shifts hand over without a stop: no `shift-end` is emitted when another shift starts at the same instant. The only `shift-end` of the default week is Saturday 06:00.
+- The line emits a `shift` event for every boundary: `shift-start`, `break-start`, `break-end`, `shift-end`. The MES will use these to split intervals by shift (plan section 7).
+- Breaks are optional per shift in the schema. The defaults give every shift 30 minutes.
+
+### What a break or shift end does
+
+| Machine state at the boundary | Effect                                                                                                                                                                        |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Running`, `Stopped`          | Interrupted at once and moved to `PlannedStop` (break) or `Off` (shift end). Running-time clocks pause, so the cycle resumes afterwards; the rest of a minor stop is dropped. |
+| `Starved`, `Blocked`, `Idle`  | Moved to `PlannedStop` or `Off`.                                                                                                                                              |
+| `Setup`, `Down`               | Continue: setters and technicians work through the break. When they finish, the machine goes to `PlannedStop` or `Off`.                                                       |
+
+Assumption to review: the whole line stops for the break. In many plants CNCs keep running unattended through breaks.
+
+### Operators
+
+- Stations with `requiresOperator: true` (default: ASM-01) need a qualified operator.
+- At each shift start, every operator rostered on that shift is absent with probability `absenceProbabilityPerShift` (default 3%), with one draw per operator per shift from their own stream.
+- The first present operator in roster order who is qualified for the station takes it, and an `operator` event records who, plus the list of absent operators.
+- The operator's `speedFactor` multiplies the station's mean cycle time: 1.1 means 10% slower than ideal. This is the main source of performance loss at the manual bottleneck.
+- With no qualified operator present, the station is `Idle` with cause `NO-OPERATOR` for the shift. Upstream fills up and blocks; downstream starves.
+
+### Validation
+
+`calendar.test.ts`:
+
+- the boundaries of a normal day, including handovers and the break of the night shift;
+- the weekend boundary;
+- the shift at a given instant, with its date;
+- the DST case.
+
+`shifts.test.ts`:
+
+- In a steady week, every machine is `Off` for exactly 48 h and in `PlannedStop` for exactly 15 × 30 min.
+- `PlannedStop` only ever starts inside a break, and `Off` only outside shifts.
+- Interrupted OP10 cycles still take exactly 240 s of running time.
+- Repairs continue through breaks and end in `PlannedStop`.
+- A speed factor of 1.2 gives exactly 180 s at ASM-01.
+- With nobody present, ASM-01 never runs (`NO-OPERATOR`).
+- Absences occur at the configured rate (chi-square test).
+- Over two weeks with every model on, time accounting and conservation stay exact and the run is deterministic.
+
+### Reference week
+
+Default plant, seed 1: the full model so far, with the default schedule and its changeover, shifts, operators, failures and minor stops. The whole weekly program was finished: 1,500 VB-100 and 700 VB-200. Hours per state over the 168-hour week:
+
+| Machine | Running | Stopped | Down | Setup | Blocked | Starved | Idle | PlannedStop | Off  |
+| ------- | ------- | ------- | ---- | ----- | ------- | ------- | ---- | ----------- | ---- |
+| CNC-01  | 82.2    | 1.9     | 0.6  | 0.4   | 18.1    | 0.0     | 9.2  | 7.5         | 48.0 |
+| CNC-02  | 82.0    | 1.6     | 0.2  | 0.4   | 18.9    | 0.0     | 9.4  | 7.5         | 48.0 |
+| WSH-01  | 36.7    | 0.1     | 0.0  | 0.0   | 65.1    | 10.6    | 0.0  | 7.5         | 48.0 |
+| ASM-01  | 104.0   | 2.3     | 0.0  | 0.0   | 0.0     | 6.2     | 0.0  | 7.5         | 48.0 |
+| LKT-01  | 55.0    | 0.8     | 0.0  | 0.0   | 0.0     | 56.7    | 0.0  | 7.5         | 48.0 |
+| PCK-01  | 18.4    | 1.0     | 0.0  | 0.0   | 0.0     | 93.2    | 0.0  | 7.5         | 48.0 |
+
+The CNCs are `Idle` for about 9 h at the end of the week because their schedule is finished. The default schedule and stock were raised in this change (1,500 + 700 instead of 1,200 + 500), because the first reference run finished the program by Thursday.
 
 ## Random numbers and distributions
 

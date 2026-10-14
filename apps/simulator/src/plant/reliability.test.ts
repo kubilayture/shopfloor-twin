@@ -3,6 +3,7 @@ import { formatIssues, loadPlantConfig, type PlantConfig } from '@shopfloor/plan
 import { HOUR, MINUTE, RandomSource, SECOND, Simulation } from '@shopfloor/sim-core';
 import { exponentialCdf, ksTest, logNormalCdf, weibullCdf } from '@shopfloor/test-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { continuousOperation, runningTimeBetween } from './testing.ts';
 import { ProductionLine, type LineEvent, type PlantEvent } from './line.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
@@ -19,6 +20,7 @@ beforeAll(async () => {
 
 function run(duration: number, configure: (c: PlantConfig) => void = () => undefined, seed = 3) {
   const config = structuredClone(defaults);
+  continuousOperation(config);
   config.schedule.machines = {
     'cnc-01': [{ product: 'VB-100', quantity: 1_000_000 }],
     'cnc-02': [{ product: 'VB-100', quantity: 1_000_000 }],
@@ -41,36 +43,6 @@ function run(duration: number, configure: (c: PlantConfig) => void = () => undef
 
 const stateEvents = (events: PlantEvent[], machineId: string) =>
   events.flatMap((e) => (e.type === 'state' && e.machineId === machineId ? [e] : []));
-
-function runningTimeBetween(
-  events: PlantEvent[],
-  machineId: string,
-  isMark: (e: PlantEvent) => boolean,
-): number[] {
-  const gaps: number[] = [];
-  let running = 0;
-  let runningSince: number | undefined;
-  for (const event of events) {
-    if (event.machineId !== machineId) {
-      continue;
-    }
-    if (event.type === 'state') {
-      if (runningSince !== undefined) {
-        running += event.at - runningSince;
-        runningSince = undefined;
-      }
-      if (event.to === 'Running') {
-        runningSince = event.at;
-      }
-    }
-    if (isMark(event)) {
-      const extra = runningSince === undefined ? 0 : event.at - runningSince;
-      gaps.push(running + extra);
-      running = -extra;
-    }
-  }
-  return gaps;
-}
 
 const singleCncModel = (c: PlantConfig): void => {
   c.failures.equipment = {

@@ -12,6 +12,7 @@ const equipment = z.strictObject({
   name: z.string().min(1),
   operation,
   interface: z.enum(['opcua', 'modbus']),
+  requiresOperator: z.boolean().default(false),
 });
 
 export const plantSchema = z.strictObject({
@@ -63,7 +64,9 @@ export const shiftsSchema = z.strictObject({
         id: z.string().regex(/^[A-Z]$/, 'single capital letter'),
         start: clockTime,
         end: clockTime,
-        break: z.strictObject({ start: clockTime, minutes: z.number().int().positive() }),
+        break: z
+          .strictObject({ start: clockTime, minutes: z.number().int().positive() })
+          .optional(),
       }),
     )
     .min(1),

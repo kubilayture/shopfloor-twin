@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
-import { shiftAt } from '../plant/calendar.ts';
 import { ProductionLine, type LineEvent } from '../plant/line.ts';
 import { RUN_SCHEMA, EVENT_SCHEMA, SUMMARY_SCHEMA, isoTime, stableStringify } from './serialize.ts';
 import { GroundTruth, type GroundTruthSummary } from './summary.ts';
@@ -34,8 +33,8 @@ export function runHeadless(
   { config, seed, start, end }: HeadlessOptions,
   writeLine: (line: string) => void,
 ): HeadlessResult {
-  if (!(end > start)) {
-    throw new RangeError('end must be after start');
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) {
+    throw new RangeError('start and end must be integer milliseconds with end after start');
   }
   const header: RunHeader = {
     schema: RUN_SCHEMA,
@@ -51,8 +50,6 @@ export function runHeadless(
     equipment.map((e) => e.id),
     start,
   );
-  const initial = shiftAt(config.shifts, start);
-  truth.setInitialShift(initial && `${initial.shiftDate}/${initial.shiftId}`);
 
   let sequence = 0;
   const line = new ProductionLine({
@@ -69,7 +66,7 @@ export function runHeadless(
   });
   const simulation = new Simulation<LineEvent>(start);
   line.start(simulation);
-  simulation.runUntil(end, (event, sim) => {
+  simulation.runUntil(end - 1, (event, sim) => {
     line.handle(event, sim);
   });
 

@@ -389,7 +389,7 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 
 - **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the validated plant configuration. Any change to a YAML value changes the hash.
 - **Every other line is one event** with `schema: sim-event/1`, a run-wide sequence number `seq` starting at 1, and `at` in ISO 8601 UTC. Lines are in simulation-time order; events at the same millisecond keep the order in which the model produced them.
-- **Byte stability:** keys are sorted alphabetically at every level, and undefined fields are dropped. One function, `stableStringify`, writes every line, so the bytes depend only on the data, never on how an object was built.
+- **Byte stability:** keys are sorted at every level (string order, except that integer-like keys come first in numeric order, as JSON objects always do), and undefined fields are dropped. Values that are not plain JSON (`Map`, `Set`, `Temporal` objects, functions) are rejected instead of being written as `{}`. One function, `stableStringify`, writes every line, so the bytes depend only on the data, never on how an object was built.
 
 | `type`                       | Fields besides `at`, `seq`, `schema`                                                                        | Emitted when                             |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
@@ -410,7 +410,9 @@ These are the simulator's internal facts, the "truth". They are not the UNS payl
 - `production`: parts started (blanks consumed), finished per product, and scrapped per product and reason.
 - `lots`: remaining quantity of every lot.
 
-The summary is built only from the events, by `GroundTruth`. A test runs the same seed through the plant directly and checks that every machine's own time accounting equals the summary exactly. From Phase 5 on, the summary also gets KPIs computed with `oee-core` (plan rev. 2).
+`GroundTruth` builds the state times and cycle counts only from the events; `production` and `lots` are read from the model at the end of the run. A test runs the same seed through the plant directly and checks that every machine's own time accounting equals the summary exactly.
+
+A run covers the half-open interval [start, end): no event at or after `end` is written. The shift running at `start` (and its break, if the run starts inside one) is announced by `shift` events at `start`, so the log is self-contained. From Phase 5 on, the summary also gets KPIs computed with `oee-core` (plan rev. 2).
 
 ## Random numbers and distributions
 

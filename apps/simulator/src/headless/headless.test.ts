@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -37,9 +37,12 @@ describe('stableStringify', () => {
     expect(() => stableStringify({ value })).toThrow(RangeError);
   });
 
-  it('refuses values JSON cannot represent', () => {
-    expect(() => stableStringify({ f: () => 1 })).toThrow(TypeError);
-  });
+  it.each([() => 1, new Map([['a', 1]]), new Set([1]), Temporal.Instant.fromEpochMilliseconds(0)])(
+    'refuses %s instead of silently writing {}',
+    (value) => {
+      expect(() => stableStringify({ value })).toThrow(TypeError);
+    },
+  );
 });
 
 describe('runHeadless (plan section 4, headless mode)', () => {
@@ -121,6 +124,33 @@ describe('runHeadless (plan section 4, headless mode)', () => {
     expect(configHash(structuredClone(config))).toBe(configHash(config));
   });
 
+  it('covers [start, end): nothing at or after the end, and the running shift opens at the start', () => {
+    const { lines } = headless(2, START + 24 * HOUR);
+    const events = lines
+      .slice(1)
+      .map((line) => JSON.parse(line) as { type: string; at: string; action?: string });
+    expect(events.every((e) => Date.parse(e.at) < START + 24 * HOUR)).toBe(true);
+    expect(events[0]).toMatchObject({
+      type: 'shift',
+      action: 'shift-start',
+      at: '2026-10-12T03:00:00.000Z',
+    });
+  });
+
+  it('accounts correctly for a run that starts in the middle of a break', () => {
+    const breakStart = START + 4 * HOUR + 10 * 60_000;
+    const lines: string[] = [];
+    const result = runHeadless(
+      { config, seed: 4, start: breakStart, end: breakStart + 8 * HOUR },
+      (l) => lines.push(l),
+    );
+    const first = lines.slice(1, 3).map((l) => JSON.parse(l) as { action?: string });
+    expect(first.map((e) => e.action)).toEqual(['shift-start', 'break-start']);
+    const shiftA = result.summary.machines['cnc-01']?.byShift['2026-10-12/A'];
+    expect(shiftA?.PlannedStop).toBe(20 * 60_000);
+    expect(Object.keys(result.summary.machines['cnc-01']?.byShift ?? {})[0]).toBe('2026-10-12/A');
+  });
+
   it('rejects an end time that is not after the start', () => {
     expect(() => headless(1, START)).toThrow(RangeError);
   });
@@ -153,7 +183,51 @@ describe('headless CLI', () => {
     }
   });
 
-  it('exits with status 2 on invalid arguments', async () => {
-    await expect(run(process.execPath, [cli, '--days', 'zero'])).rejects.toMatchObject({ code: 2 });
+  it.each([
+    ['--days', 'zero'],
+    ['--days', 'Infinity'],
+    ['--days', '1e-9'],
+    ['--seed', '4294967296'],
+    ['--seed', '0x10'],
+    ['--seed', ''],
+    ['--start', '2026-10-12T06:00:00'],
+    ['--bogus', '1'],
+    ['stray-positional'],
+  ])('exits with status 2 on invalid arguments %j', async (...args) => {
+    await expect(run(process.execPath, [cli, ...args])).rejects.toMatchObject({ code: 2 });
+  });
+
+  it('fails with a non-zero status and leaves no summary when the event log cannot be written', async () => {
+    const out = await mkdtemp(join(tmpdir(), 'sim-headless-'));
+    try {
+      await mkdir(join(out, 'events.jsonl.partial'));
+      await expect(run(process.execPath, [cli, '--days', '1', '--out', out])).rejects.toMatchObject(
+        {
+          code: 1,
+        },
+      );
+      await expect(readFile(join(out, 'summary.json'), 'utf8')).rejects.toThrow();
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  });
+
+  it('writes identical bytes in separate processes, whatever the machine time zone', async () => {
+    const outs = await Promise.all([1, 2].map(() => mkdtemp(join(tmpdir(), 'sim-headless-'))));
+    try {
+      await Promise.all(
+        ['UTC', 'Asia/Tokyo'].map((tz, i) =>
+          run(process.execPath, [cli, '--seed', '77', '--days', '2', '--out', outs[i] ?? ''], {
+            env: { ...process.env, TZ: tz },
+          }),
+        ),
+      );
+      for (const file of ['events.jsonl', 'summary.json']) {
+        const [a, b] = await Promise.all(outs.map((dir) => readFile(join(dir, file))));
+        expect(a?.equals(b ?? Buffer.alloc(0))).toBe(true);
+      }
+    } finally {
+      await Promise.all(outs.map((dir) => rm(dir, { recursive: true, force: true })));
+    }
   });
 });

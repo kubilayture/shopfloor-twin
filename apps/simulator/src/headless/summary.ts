@@ -73,10 +73,6 @@ export class GroundTruth {
     }
   }
 
-  setInitialShift(shiftKey: string | undefined): void {
-    this.#shift = shiftKey ?? NO_SHIFT;
-  }
-
   finish(end: SimTime, line: ProductionLine, lotIds: readonly string[]): GroundTruthSummary {
     this.#closeAll(end);
     const machines = Object.fromEntries(
@@ -92,7 +88,15 @@ export class GroundTruth {
     const scrapped = Object.fromEntries(
       [...this.#scrapped].map(([product, reasons]) => [product, Object.fromEntries(reasons)]),
     );
-    const lots = Object.fromEntries(lotIds.map((id) => [id, line.inventory.remaining(id) ?? 0]));
+    const lots = Object.fromEntries(
+      lotIds.map((id) => {
+        const remaining = line.inventory.remaining(id);
+        if (remaining === undefined) {
+          throw new RangeError(`unknown lot "${id}"`);
+        }
+        return [id, remaining];
+      }),
+    );
     return { machines, production: { started: line.producedParts, finished, scrapped }, lots };
   }
 

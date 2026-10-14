@@ -25,20 +25,20 @@ Runs the plant as fast as possible, with no network servers, and writes an event
 pnpm sim:headless --seed 42 --days 7 --out runs/week-42
 ```
 
-| Option     | Default                     | Meaning                                                                          |
-| ---------- | --------------------------- | -------------------------------------------------------------------------------- |
-| `--seed`   | 1                           | Master seed: the same seed, config and options always give byte-identical output |
-| `--days`   | 7                           | Simulated duration                                                               |
-| `--start`  | `2026-10-12T06:00:00+03:00` | Simulation start, ISO 8601 (Monday 06:00 Istanbul)                               |
-| `--config` | `config/plant`              | Plant configuration directory                                                    |
-| `--out`    | `runs/latest`               | Output directory (`runs/` is git-ignored)                                        |
+| Option     | Default                     | Meaning                                                                                                                                         |
+| ---------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--seed`   | 1                           | Master seed: the same seed, config and options always give byte-identical output                                                                |
+| `--days`   | 7                           | Simulated duration                                                                                                                              |
+| `--start`  | `2026-10-12T06:00:00+03:00` | Simulation start, ISO 8601 with an offset or `Z` (a time without an offset is rejected, so the result never depends on the machine's time zone) |
+| `--config` | `config/plant`              | Plant configuration directory                                                                                                                   |
+| `--out`    | `runs/latest`               | Output directory (`runs/` is git-ignored)                                                                                                       |
 
 Output:
 
 - `events.jsonl`: one JSON object per line. The first line is the run header (`sim-run/1`: seed, start, end, SHA-256 of the configuration); every other line is an event (`sim-event/1`).
 - `summary.json`: the ground truth (`sim-summary/1`): time in every state per machine, in total and per shift instance; cycles per result; parts started, finished and scrapped by reason; remaining quantity per lot.
 
-A week takes about 0.2 s and about 6 MB of events. The event and summary formats are described in `docs/simulation-model.md`.
+A week takes about 0.2 s and about 6 MB of events. The files are written under temporary names and renamed at the end, so a failed run never leaves a mix of old and new files. Invalid options exit with status 2, other failures with status 1. The event and summary formats are described in `docs/simulation-model.md`.
 
 ## Continuous integration
 

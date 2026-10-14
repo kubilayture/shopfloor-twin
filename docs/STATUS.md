@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #26 merged (PR #39): shift calendar, breaks, operators; default schedule raised to fill the week.
 - #24 merged (PR #38): breakdowns, minor stops, repairs, running-time clocks.
 - #23 merged (PR #37): material flow, buffers, blocking and starving, changeovers.
 - #20 merged (PR #36): `sim-core` distributions, `test-kit` goodness-of-fit helpers.
@@ -18,13 +19,13 @@
 
 ## In progress
 
-- #26 Plant model: shifts, breaks and operators (in review)
+- #25 Plant model: tool wear, OP10 scrap, leak test and rework (in review)
 
 ## Next up
 
-- #25 tool wear, OP10 scrap, leak test and rework
 - #27 material lots and consumption
 - #28 headless runner, event log and ground-truth summary
+- #29 invariants, determinism and golden scenario
 
 ## Blockers and open questions for the owner
 

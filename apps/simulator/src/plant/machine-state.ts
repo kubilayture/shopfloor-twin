@@ -16,14 +16,24 @@ export type MachineState = (typeof MACHINE_STATES)[number];
 export const TRANSITIONS: Readonly<Record<MachineState, readonly MachineState[]>> = {
   Off: ['Idle', 'Running', 'Starved', 'Blocked', 'Setup', 'PlannedStop', 'Maintenance'],
   Idle: ['Running', 'Starved', 'Blocked', 'Setup', 'Down', 'PlannedStop', 'Maintenance', 'Off'],
-  Running: ['Idle', 'Stopped', 'Starved', 'Blocked', 'Setup', 'Down', 'PlannedStop', 'Off'],
+  Running: [
+    'Idle',
+    'Stopped',
+    'Starved',
+    'Blocked',
+    'Setup',
+    'Down',
+    'PlannedStop',
+    'Maintenance',
+    'Off',
+  ],
   Stopped: ['Running', 'Idle', 'Down', 'PlannedStop', 'Off'],
-  Starved: ['Running', 'Idle', 'Setup', 'Down', 'PlannedStop', 'Off'],
-  Blocked: ['Running', 'Idle', 'Starved', 'Setup', 'Down', 'PlannedStop', 'Off'],
+  Starved: ['Running', 'Idle', 'Setup', 'Down', 'PlannedStop', 'Maintenance', 'Off'],
+  Blocked: ['Running', 'Idle', 'Starved', 'Setup', 'Down', 'PlannedStop', 'Maintenance', 'Off'],
   Setup: ['Idle', 'Running', 'Starved', 'Down', 'PlannedStop', 'Off'],
   Down: ['Idle', 'Running', 'PlannedStop', 'Off'],
   PlannedStop: ['Idle', 'Running', 'Starved', 'Blocked', 'Setup', 'Maintenance', 'Off'],
-  Maintenance: ['Idle', 'Off'],
+  Maintenance: ['Idle', 'Running', 'Starved', 'PlannedStop', 'Off'],
 };
 
 export const canTransition = (from: MachineState, to: MachineState): boolean =>

@@ -11,10 +11,12 @@ tool:
     - { wear: 1.0, probability: 0.05 }
 
 leakTest:
+  operation: OP40
+  reworkOperation: OP30
   unit: Pa/min
   mean: 2.0
-  sigma: 0.35
-  upperLimit: 3.5
+  sigma: 0.45
+  upperLimit: 3.2
   driftPerDay: 0.04
   calibrationIntervalDays: 7
   calibrationMinutes: 20

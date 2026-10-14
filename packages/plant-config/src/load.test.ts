@@ -205,6 +205,13 @@ describe('cross-file checks', () => {
       'wear points must rise strictly from 0 to 1',
     ],
     [
+      'a leak test on an unknown operation',
+      (c) => {
+        c.process.leakTest.operation = 'OP99';
+      },
+      'leakTest.operation: unknown operation "OP99"',
+    ],
+    [
       'a lot of a material no product uses',
       (c) => {
         c.stock.lots.push({ id: 'XX-1', material: 'UNOBTAINIUM', quantity: 1 });

@@ -114,6 +114,8 @@ export const processSchema = z.strictObject({
     defectProbability: z.array(z.strictObject({ wear: probability, probability })).min(2),
   }),
   leakTest: z.strictObject({
+    operation,
+    reworkOperation: operation,
     unit: z.string().min(1),
     mean: positive,
     sigma: positive,

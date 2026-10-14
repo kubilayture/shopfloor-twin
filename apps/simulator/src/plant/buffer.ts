@@ -2,6 +2,7 @@ export interface Part {
   readonly id: number;
   readonly product: string;
   serial?: string;
+  leakFailures?: number;
 }
 
 export class PartBuffer {

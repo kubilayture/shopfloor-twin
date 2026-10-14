@@ -108,6 +108,12 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
     .forEach((op) => {
       report('process', 'cycleTimeCv', `missing coefficient of variation for ${op}`);
     });
+  for (const key of ['operation', 'reworkOperation'] as const) {
+    const op = config.process.leakTest[key];
+    if (!operations.includes(op)) {
+      report('process', `leakTest.${key}`, `unknown operation "${op}"`);
+    }
+  }
   const curve = config.process.tool.defectProbability;
   const wears = curve.map((point) => point.wear);
   if (

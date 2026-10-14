@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { formatIssues, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
-import type { PlantEvent } from './line.ts';
+import type { PlantEvent, ProductionLine } from './line.ts';
 
 export async function loadDefaultConfig(): Promise<PlantConfig> {
   const result = await loadPlantConfig(resolve(import.meta.dirname, '../../../../config/plant'));
@@ -55,4 +55,11 @@ export function runningTimeBetween(
     }
   }
   return gaps;
+}
+
+export function partsAccountedFor(line: ProductionLine): number {
+  const inBuffers = line.buffers.reduce((sum, buffer) => sum + buffer.size, 0);
+  const inMachines = line.stations.filter((station) => station.part !== undefined).length;
+  const inRework = line.stations.reduce((sum, station) => sum + (station.rework?.length ?? 0), 0);
+  return line.finished.length + line.scrapped.length + inBuffers + inMachines + inRework;
 }

@@ -45,6 +45,7 @@ stateDiagram-v2
   Running --> Setup
   Running --> Down
   Running --> PlannedStop
+  Running --> Maintenance
   Running --> Off
   Stopped --> Running
   Stopped --> Idle
@@ -56,6 +57,7 @@ stateDiagram-v2
   Starved --> Setup
   Starved --> Down
   Starved --> PlannedStop
+  Starved --> Maintenance
   Starved --> Off
   Blocked --> Running
   Blocked --> Idle
@@ -63,6 +65,7 @@ stateDiagram-v2
   Blocked --> Setup
   Blocked --> Down
   Blocked --> PlannedStop
+  Blocked --> Maintenance
   Blocked --> Off
   Setup --> Idle
   Setup --> Running
@@ -82,6 +85,9 @@ stateDiagram-v2
   PlannedStop --> Maintenance
   PlannedStop --> Off
   Maintenance --> Idle
+  Maintenance --> Running
+  Maintenance --> Starved
+  Maintenance --> PlannedStop
   Maintenance --> Off
 ```
 
@@ -283,6 +289,55 @@ Default plant, seed 1: the full model so far, with the default schedule and its 
 | PCK-01  | 18.4    | 1.0     | 0.0  | 0.0   | 0.0     | 93.2    | 0.0  | 7.5         | 48.0 |
 
 The CNCs are `Idle` for about 9 h at the end of the week because their schedule is finished. The default schedule and stock were raised in this change (1,500 + 700 instead of 1,200 + 500), because the first reference run finished the program by Thursday.
+
+## Tool wear, scrap, leak test and rework
+
+Source: `apps/simulator/src/plant/quality.ts` and `line.ts`. Parameters: `config/plant/process.yaml` (all values are assumptions).
+
+### Tool wear and OP10 scrap
+
+- Each CNC counts the cycles since its last tool change. Wear is `cycles / lifeCycles`.
+- The defect probability of a cycle is read from the piecewise-linear `defectProbability` curve at the wear **before** that cycle. Defaults: 0.2% for a new tool, 0.5% at 80% wear, 5% at end of life.
+- A defective part still gets its serial (the DMC is laser-marked at the end of the cycle). It is then scrapped at OP10 with reason `DIMENSIONAL` and never goes downstream.
+- After `lifeCycles` (default 400), the next cycle waits for a tool change: `Setup` with cause `TOOL-CHANGE` for `changeMinutes` (default 8).
+- The weekly schedule counts blanks started, so scrap reduces good output.
+
+### Leak test (OP40)
+
+- Reading = normal(mean + drift, sigma), where drift = `driftPerDay` × days since the last calibration (defaults: mean 2.0 Pa/min, sigma 0.45, drift 0.04 per day). A reading above `upperLimit` (3.2) fails.
+- Every reading is reported on the LKT-01 `cycle-complete` event as a `measurement` (characteristic `leak-rate`, value, unit, upper limit). Phase 8's SPC will use it.
+- First-test failure rate: about 0.4% right after calibration, rising to about 2% after 7 days of drift.
+- Calibration every `calibrationIntervalDays` (7) is planned `Maintenance` with cause `CALIBRATION` for `calibrationMinutes` (20). It starts between parts, and resets the drift.
+
+### Rework loop
+
+- A first leak failure gives `cycle-complete` with result `rework`, reason `LEAK`. The part goes to a **rework queue at OP30**, separate from the OP20→OP30 buffer, as a rework rack would be. ASM-01 takes rework parts before new ones.
+- After rework the part is tested again. A second failure gives result `scrap`, reason `LEAK`.
+- The separate queue avoids a deadlock: with all buffers full, sending a part back into the normal OP20→OP30 buffer could block the line permanently.
+- Not modelled yet: whether rework consumes new components. That is decided with material consumption in #27.
+
+### Validation
+
+`apps/simulator/src/plant/quality.test.ts`:
+
+- curve interpolation, tool-life and calibration logic as unit tests;
+- one tool change per 400 cycles on each CNC;
+- scrap rate equal to the mean of the wear curve over a tool life (chi-square; run with 10× probabilities so that a 20% error is detected);
+- scrapped parts never reach WSH-01;
+- standardized leak readings, after removing the drift since the last calibration, follow N(0, 1) (KS test; a 0.1-sigma shift is detected);
+- calibration every 7 days;
+- with a strict limit, parts follow the three possible histories: pass; fail, rework, pass; fail, rework, fail, scrap. No part is reworked twice, and parts are conserved, counting scrap and the rework queue;
+- the default first-test failure rate lies between 0.2% and 3%.
+
+Reference week, default plant, seed 1, full model so far: 2,200 blanks started and 2,183 good parts finished.
+
+| Quantity                         | Value                                                     |
+| -------------------------------- | --------------------------------------------------------- |
+| OP10 scrap (`DIMENSIONAL`)       | 17 of 2,200 (0.8%)                                        |
+| Tool changes                     | 4 (2 per CNC)                                             |
+| Leak tests / rework / leak scrap | 2,198 / 15 / 0                                            |
+| First-pass leak yield            | 99.32%                                                    |
+| Calibrations                     | 1 (start of the following Monday, 7 days after the start) |
 
 ## Random numbers and distributions
 

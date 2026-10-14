@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #28 merged (PR #42, squash, merged by Claude after review agent and green CI): headless runner, event log, ground-truth summary.
 - #27 merged (PR #41): material lots, consumption, genealogy events.
 - Owner decision (2026-10-14): until Phase 1 is finished, Claude reviews and merges the Phase 1 pull requests itself (squash, CI green, separate review agent per PR); temporary override of ADR-0004.
 - #25 merged (PR #40): tool wear, OP10 scrap, leak test, rework loop.
@@ -22,12 +23,11 @@
 
 ## In progress
 
-- #28 Headless runner, event log and ground-truth summary
+- #29 Invariants, determinism and golden scenario (in review)
 
 ## Next up
 
-- #29 invariants, determinism and golden scenario
-- #30 close Phase 1 (owner's realism check of a simulated week)
+- #30 close Phase 1: report, learning notes, owner's realism check of a simulated week, tag
 
 ## Blockers and open questions for the owner
 

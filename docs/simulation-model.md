@@ -381,6 +381,37 @@ Reference week, default plant, seed 1, full Phase 1 model: no material starvatio
 | SP100-2610-01 | 1,800   | 311       |
 | SP200-2610-01 | 900     | 206       |
 
+## Headless output
+
+Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
+
+### Event log (`events.jsonl`)
+
+- **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the validated plant configuration. Any change to a YAML value changes the hash.
+- **Every other line is one event** with `schema: sim-event/1`, a run-wide sequence number `seq` starting at 1, and `at` in ISO 8601 UTC. Lines are in simulation-time order; events at the same millisecond keep the order in which the model produced them.
+- **Byte stability:** keys are sorted alphabetically at every level, and undefined fields are dropped. One function, `stableStringify`, writes every line, so the bytes depend only on the data, never on how an object was built.
+
+| `type`                       | Fields besides `at`, `seq`, `schema`                                                                        | Emitted when                             |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `state`                      | `machineId`, `from`, `to`, `cause?`                                                                         | A machine changes state                  |
+| `cycle-complete`             | `machineId`, `product`, `partId`, `serial`, `result` (`good`, `scrap`, `rework`), `reason?`, `measurement?` | A station finishes a cycle               |
+| `material-consumed`          | `machineId`, `partId`, `material`, `lotId`                                                                  | A unit of a lot is consumed              |
+| `repair-start`, `repair-end` | `machineId`, `failureCode`                                                                                  | A technician starts or finishes a repair |
+| `shift`                      | `action` (`shift-start`, `break-start`, `break-end`, `shift-end`), `shiftId`, `shiftDate`                   | A calendar boundary is reached           |
+| `operator`                   | `machineId`, `operatorId` (or null), `absent`                                                               | A station is staffed at shift start      |
+
+These are the simulator's internal facts, the "truth". They are not the UNS payloads of plan section 5; the MES sees the plant only through OPC UA and MQTT from Phase 2 on.
+
+### Ground-truth summary (`summary.json`)
+
+- `machines.<id>.stateMs`: milliseconds in each of the ten states. They sum to the run length.
+- `machines.<id>.byShift`: the same, split per shift instance (`2026-10-13/B`, …), plus `no-shift` for time outside shifts. Intervals are cut exactly at shift boundaries, as the MES must do (plan section 7).
+- `machines.<id>.cycles`: completed cycles by result.
+- `production`: parts started (blanks consumed), finished per product, and scrapped per product and reason.
+- `lots`: remaining quantity of every lot.
+
+The summary is built only from the events, by `GroundTruth`. A test runs the same seed through the plant directly and checks that every machine's own time accounting equals the summary exactly. From Phase 5 on, the summary also gets KPIs computed with `oee-core` (plan rev. 2).
+
 ## Random numbers and distributions
 
 ### Random streams

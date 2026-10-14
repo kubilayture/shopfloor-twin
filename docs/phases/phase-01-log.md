@@ -16,3 +16,5 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Merged #38 (#24): breakdowns, minor stops and repairs.
 - Merged #39 (#26): shifts, breaks and operators.
 - Merged #40 (#25): quality model.
+- Merged #41 (#27): materials.
+- Owner decision: until Phase 1 closes, Claude reviews and merges the remaining Phase 1 PRs itself, with squash, a green CI and a separate review agent per PR. This temporarily overrides ADR-0004's "Claude never merges".

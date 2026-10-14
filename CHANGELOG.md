@@ -13,6 +13,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Phase 1 report, realism check of the golden week with 12 questions for the owner, learning notes (#30).
 - Invariant checker (part conservation, time accounting, material conservation) after every simulation step; golden scenario `week-01` with committed summary and event-log hash; `pnpm test:golden` (`--update` to rewrite) and a CI step (#29).
 - Headless runner: `pnpm sim:headless` writes a versioned JSONL event log with a run header and a ground-truth summary (state time per machine in total and per shift, cycles, production, lots); deterministic, byte-stable serialization (#28).
 - Material lots with FIFO consumption: blanks at OP10, components at OP30, a new seal kit on rework; `MATERIAL:<code>` starvation; blocking and releasing lots; `material-consumed` events for genealogy (#27).

@@ -233,6 +233,37 @@ importers:
         specifier: 'catalog:'
         version: 6.0.3
 
+  apps/simulator:
+    dependencies:
+      '@shopfloor/sim-core':
+        specifier: workspace:*
+        version: link:../../packages/sim-core
+    devDependencies:
+      '@shopfloor/eslint-config':
+        specifier: workspace:*
+        version: link:../../packages/eslint-config
+      '@shopfloor/tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.5
+      '@vitest/coverage-v8':
+        specifier: 'catalog:'
+        version: 4.1.11(vitest@4.1.11)
+      eslint:
+        specifier: 'catalog:'
+        version: 10.12.0(supports-color@7.2.0)
+      fast-check:
+        specifier: 'catalog:'
+        version: 4.10.2
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.11(@types/node@26.6.5)(@vitest/coverage-v8@4.1.11)(vite@8.3.4(@types/node@26.6.5)(yaml@2.9.1))
+
   packages/contracts:
     devDependencies:
       '@shopfloor/eslint-config':

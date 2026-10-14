@@ -6,12 +6,14 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Changed
 
+- `products.yaml` gains `componentsOperation` and per-product `reworkComponents` (#27).
 - Leak-test defaults widened (sigma 0.45, limit 3.2) so that failures and rework actually occur; `leakTest.operation` and `reworkOperation` added to `process.yaml` (#25).
 - Default weekly schedule raised to 1,500 VB-100 and 700 VB-200 and stock to match, so the program fills the week; shift breaks optional in the schema (#26).
 - Plan rev. 5: Phases 1–6 run from a weekly production schedule file; Phase 1 plan with issues #18–#30 (#17).
 
 ### Added
 
+- Material lots with FIFO consumption: blanks at OP10, components at OP30, a new seal kit on rework; `MATERIAL:<code>` starvation; blocking and releasing lots; `material-consumed` events for genealogy (#27).
 - Tool wear with OP10 dimensional scrap and tool changes; leak-test readings with drift and weekly calibration (`Maintenance`); rework loop through a rework queue at OP30, scrap on a second failure; `result`, `reason` and `measurement` on `cycle-complete` events (#25).
 - Shift calendar (Temporal, DST-safe, handovers, weekend), breaks and shift ends as `PlannedStop` / `Off` with exact resume; operators with absences, skills and speed factors; ASM-01 needs a qualified operator; `shift` and `operator` events (#26).
 - Plant model breakdowns (Weibull in running hours, one per failure mode), minor stops (Poisson arrivals, exponential durations) and repairs by a limited technician pool; running-time clocks so interrupted cycles resume; `repair-start` / `repair-end` events (#24).

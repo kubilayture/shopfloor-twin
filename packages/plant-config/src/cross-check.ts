@@ -62,6 +62,15 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
   for (const product of config.products.products) {
     materials.add(product.blank);
     product.components.forEach((component) => materials.add(component));
+    product.reworkComponents
+      .filter((component) => !product.components.includes(component))
+      .forEach((component) => {
+        report(
+          'products',
+          `${product.id}.reworkComponents`,
+          `"${component}" is not a component of ${product.id}`,
+        );
+      });
     for (const op of operations) {
       if (product.idealCycleSeconds[op] === undefined) {
         report('products', `${product.id}.idealCycleSeconds`, `missing ideal cycle time for ${op}`);
@@ -108,6 +117,13 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
     .forEach((op) => {
       report('process', 'cycleTimeCv', `missing coefficient of variation for ${op}`);
     });
+  if (!operations.includes(config.products.componentsOperation)) {
+    report(
+      'products',
+      'componentsOperation',
+      `unknown operation "${config.products.componentsOperation}"`,
+    );
+  }
   for (const key of ['operation', 'reworkOperation'] as const) {
     const op = config.process.leakTest[key];
     if (!operations.includes(op)) {

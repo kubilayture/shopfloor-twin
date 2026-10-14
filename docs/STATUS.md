@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #25 merged (PR #40): tool wear, OP10 scrap, leak test, rework loop.
 - #26 merged (PR #39): shift calendar, breaks, operators; default schedule raised to fill the week.
 - #24 merged (PR #38): breakdowns, minor stops, repairs, running-time clocks.
 - #23 merged (PR #37): material flow, buffers, blocking and starving, changeovers.
@@ -19,13 +20,13 @@
 
 ## In progress
 
-- #25 Plant model: tool wear, OP10 scrap, leak test and rework (in review)
+- #27 Plant model: material lots and consumption (in review)
 
 ## Next up
 
-- #27 material lots and consumption
 - #28 headless runner, event log and ground-truth summary
 - #29 invariants, determinism and golden scenario
+- #30 close Phase 1
 
 ## Blockers and open questions for the owner
 

@@ -40,6 +40,7 @@ export const plantSchema = z.strictObject({
 export const productsSchema = z.strictObject({
   operations: z.array(operation).min(1),
   changeoverMinutes: positive,
+  componentsOperation: operation,
   products: z
     .array(
       z.strictObject({
@@ -48,6 +49,7 @@ export const productsSchema = z.strictObject({
         blank: code,
         idealCycleSeconds: z.record(operation, positive),
         components: z.array(code),
+        reworkComponents: z.array(code).default([]),
       }),
     )
     .min(1),

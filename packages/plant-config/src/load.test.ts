@@ -205,6 +205,21 @@ describe('cross-file checks', () => {
       'wear points must rise strictly from 0 to 1',
     ],
     [
+      'a rework component that is not a component',
+      (c) => {
+        const product = c.products.products[0];
+        if (product) product.reworkComponents = ['SP-200'];
+      },
+      '"SP-200" is not a component of VB-100',
+    ],
+    [
+      'components consumed at an unknown operation',
+      (c) => {
+        c.products.componentsOperation = 'OP77';
+      },
+      'componentsOperation: unknown operation "OP77"',
+    ],
+    [
       'a leak test on an unknown operation',
       (c) => {
         c.process.leakTest.operation = 'OP99';

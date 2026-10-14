@@ -5,6 +5,8 @@ operations: [OP10, OP20, OP30, OP40, OP50]
 
 changeoverMinutes: 25
 
+componentsOperation: OP30
+
 products:
   - id: VB-100
     name: 2-way valve block
@@ -13,6 +15,7 @@ products:
     components: # consumed at OP30, one each per part
       - SK-1
       - SP-100
+    reworkComponents: [SK-1] # assumption: a reworked part gets a new seal kit
   - id: VB-200
     name: 4-way valve block
     blank: BLANK-200 # assumption
@@ -20,3 +23,4 @@ products:
     components:
       - SK-2
       - SP-200
+    reworkComponents: [SK-2] # assumption

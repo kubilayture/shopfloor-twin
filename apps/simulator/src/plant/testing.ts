@@ -25,6 +25,11 @@ export function continuousOperation(config: PlantConfig): void {
     { id: 'op-test', shift: 'A', skills: ['asm-01', 'lkt-01', 'pck-01'], speedFactor: 1 },
   ];
   config.operators.absenceProbabilityPerShift = 0;
+  unlimitedMaterial(config);
+}
+
+export function unlimitedMaterial(config: PlantConfig): void {
+  config.stock.lots = config.stock.lots.map((lot) => ({ ...lot, quantity: 1_000_000_000 }));
 }
 
 export function runningTimeBetween(

@@ -18,6 +18,7 @@ import {
 import { PartBuffer, type Part } from './buffer.ts';
 import { shiftAt, shiftBoundaries, type CalendarBoundary } from './calendar.ts';
 import { Crew, type Assignment } from './crew.ts';
+import { Inventory } from './materials.ts';
 import { LeakTester, ToolWear } from './quality.ts';
 import { Machine, type StateChange } from './machine.ts';
 import type { MachineState } from './machine-state.ts';
@@ -53,6 +54,14 @@ export type PlantEvent =
       readonly at: SimTime;
       readonly machineId: string;
       readonly failureCode: string;
+    }
+  | {
+      readonly type: 'material-consumed';
+      readonly at: SimTime;
+      readonly machineId: string;
+      readonly partId: number;
+      readonly material: string;
+      readonly lotId: string;
     }
   | {
       readonly type: 'shift';
@@ -147,6 +156,7 @@ export class ProductionLine {
   readonly buffers: readonly PartBuffer[];
   readonly finished: Part[] = [];
   readonly scrapped: Part[] = [];
+  readonly inventory: Inventory;
   readonly #config: PlantConfig;
   readonly #onEvent: (event: PlantEvent) => void;
   readonly #repairQueue: Station[] = [];
@@ -162,6 +172,7 @@ export class ProductionLine {
     this.#now = startTime;
     this.#freeTechnicians = config.plant.maintenanceTechnicians;
     this.#crew = new Crew(config, random);
+    this.inventory = new Inventory(config.stock);
     this.buffers = config.plant.buffers.map((b) => new PartBuffer(b.from, b.to, b.capacity));
     const equipment = config.plant.areas.flatMap((a) => a.workCenters.flatMap((w) => w.equipment));
     this.stations = equipment.map((item) => {
@@ -589,8 +600,50 @@ export class ProductionLine {
       });
       return undefined;
     }
+    const blank = this.#product(campaign.product).blank;
+    if (!this.inventory.available(blank)) {
+      this.#enter(station, 'Starved', `MATERIAL:${blank}`);
+      return undefined;
+    }
     campaign.remaining--;
-    return { id: this.#nextPartId++, product: campaign.product };
+    const part: Part = { id: this.#nextPartId++, product: campaign.product, lots: [] };
+    this.#consume(station, part, [blank]);
+    return part;
+  }
+
+  #product(id: string): PlantConfig['products']['products'][number] {
+    const product = this.#config.products.products.find((p) => p.id === id);
+    if (!product) {
+      throw new RangeError(`unknown product "${id}"`);
+    }
+    return product;
+  }
+
+  #consume(station: Station, part: Part, materials: readonly string[]): void {
+    for (const material of materials) {
+      const lotId = this.inventory.consume(material);
+      part.lots.push({ material, lotId });
+      this.#onEvent({
+        type: 'material-consumed',
+        at: this.#now,
+        machineId: station.id,
+        partId: part.id,
+        material,
+        lotId,
+      });
+    }
+  }
+
+  blockLot(lotId: string, blocked: boolean, simulation: Simulation<LineEvent>): void {
+    this.#now = simulation.now;
+    this.inventory.setBlocked(lotId, blocked);
+    if (!blocked) {
+      this.stations.forEach((station) => {
+        if (station.machine.state === 'Starved') {
+          this.#tryStart(station, simulation);
+        }
+      });
+    }
   }
 
   #occupy(
@@ -607,10 +660,28 @@ export class ProductionLine {
   }
 
   #takeFromInput(station: Station): Part | undefined {
-    const part = station.rework?.shift() ?? station.input?.shift();
-    if (!part) {
+    const rework = station.rework?.length ? station.rework : undefined;
+    const next = rework ? rework[0] : station.input?.peek();
+    if (!next) {
       this.#enter(station, 'Starved');
+      return undefined;
     }
+    const needed =
+      station.operation !== this.#config.products.componentsOperation
+        ? []
+        : rework
+          ? this.#product(next.product).reworkComponents
+          : this.#product(next.product).components;
+    const missing = needed.find((material) => !this.inventory.available(material));
+    if (missing) {
+      this.#enter(station, 'Starved', `MATERIAL:${missing}`);
+      return undefined;
+    }
+    const part = rework ? rework.shift() : station.input?.shift();
+    if (!part) {
+      return undefined;
+    }
+    this.#consume(station, part, needed);
     return part;
   }
 

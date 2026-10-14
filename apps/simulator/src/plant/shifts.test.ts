@@ -4,7 +4,12 @@ import { chiSquareTest } from '@shopfloor/test-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { shiftAt } from './calendar.ts';
 import { ProductionLine, type LineEvent, type PlantEvent } from './line.ts';
-import { loadDefaultConfig, runningTimeBetween, partsAccountedFor } from './testing.ts';
+import {
+  loadDefaultConfig,
+  partsAccountedFor,
+  runningTimeBetween,
+  unlimitedMaterial,
+} from './testing.ts';
 
 const MONDAY_0600 = Date.UTC(2026, 9, 12, 3);
 const WEEK = 7 * 24 * HOUR;
@@ -44,6 +49,7 @@ const steady = (c: PlantConfig): void => {
     'cnc-02': [{ product: 'VB-100', quantity: 1_000_000 }],
   };
   c.operators.absenceProbabilityPerShift = 0;
+  unlimitedMaterial(c);
 };
 
 describe('shift calendar in the running plant (plan section 3)', () => {

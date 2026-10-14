@@ -3,6 +3,7 @@ export interface Part {
   readonly product: string;
   serial?: string;
   leakFailures?: number;
+  readonly lots: { readonly material: string; readonly lotId: string }[];
 }
 
 export class PartBuffer {
@@ -30,6 +31,10 @@ export class PartBuffer {
       throw new RangeError(`buffer ${this.from}→${this.to} is full`);
     }
     this.#items.push(part);
+  }
+
+  peek(): Part | undefined {
+    return this.#items[0];
   }
 
   shift(): Part | undefined {

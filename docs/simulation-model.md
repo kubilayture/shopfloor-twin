@@ -314,7 +314,7 @@ Source: `apps/simulator/src/plant/quality.ts` and `line.ts`. Parameters: `config
 - A first leak failure gives `cycle-complete` with result `rework`, reason `LEAK`. The part goes to a **rework queue at OP30**, separate from the OP20→OP30 buffer, as a rework rack would be. ASM-01 takes rework parts before new ones.
 - After rework the part is tested again. A second failure gives result `scrap`, reason `LEAK`.
 - The separate queue avoids a deadlock: with all buffers full, sending a part back into the normal OP20→OP30 buffer could block the line permanently.
-- Not modelled yet: whether rework consumes new components. That is decided with material consumption in #27.
+- Rework consumes the product's `reworkComponents` (default: the seal kit); see "Material lots and consumption".
 
 ### Validation
 
@@ -338,6 +338,48 @@ Reference week, default plant, seed 1, full model so far: 2,200 blanks started a
 | Leak tests / rework / leak scrap | 2,198 / 15 / 0                                            |
 | First-pass leak yield            | 99.32%                                                    |
 | Calibrations                     | 1 (start of the following Monday, 7 days after the start) |
+
+## Material lots and consumption
+
+Source: `apps/simulator/src/plant/materials.ts` and `line.ts`. Parameters: `config/plant/stock.yaml` and `products.yaml` (lot sizes and rework components are assumptions). In Phases 1–6 the stock comes from this file; from Phase 7 the ERP mock issues it (plan section 4).
+
+### Consumption
+
+- **OP10:** when a cycle starts, a CNC consumes one blank of the variant (`blank`).
+- **`componentsOperation` (default OP30):** when a cycle starts, ASM-01 consumes one unit of each of the variant's `components` (seal kit and spool).
+- **Rework:** a reworked part consumes only its `reworkComponents` (default: the seal kit). A reworked VB-100 therefore has two SK-1 consumptions and one SP-100.
+- **Lot order:** lots of a material are used first in, first out, in file order.
+- **Genealogy events:** every unit consumed emits a `material-consumed` event with machine, part id, material and lot. Joined with the serial on `cycle-complete`, this gives the serial → blank lot → component lots genealogy that the MES rebuilds in Phase 8 (plan section 3).
+
+### Shortage and blocked lots
+
+- When no usable lot of a needed material is left, the station is `Starved` with cause `MATERIAL:<material>`, for example `MATERIAL:SK-1`.
+- ASM-01 checks its components **before** taking the part from the buffer, so the part stays in the buffer and the line upstream fills and blocks, as it would in a real plant.
+- A lot can be blocked and released (`ProductionLine.blockLot`, used by the control API in Phase 9 to simulate a quality hold). A blocked lot is skipped as if it were empty. Releasing it wakes every starved station.
+
+### Validation
+
+`apps/simulator/src/plant/materials.test.ts`:
+
+- FIFO, blocking and exhaustion in `Inventory`;
+- every finished part links to exactly one blank lot and one spool lot, plus at least one seal-kit lot;
+- blank lots are used strictly in order;
+- running out of blanks or seal kits starves the right station with the right cause, and parts are still conserved;
+- a blocked seal-kit lot stops output until it is released;
+- reworked parts consume one extra seal kit per extra ASM-01 cycle and never an extra spool;
+- for every lot, units consumed = initial quantity − remaining.
+
+Reference week, default plant, seed 1, full Phase 1 model: no material starvation. Lots consumed:
+
+| Lot           | Initial | Remaining |
+| ------------- | ------- | --------- |
+| BL100-2610-01 | 900     | 0         |
+| BL100-2610-02 | 900     | 300       |
+| BL200-2610-01 | 900     | 200       |
+| SK1-2610-01   | 1,800   | 300       |
+| SK2-2610-01   | 900     | 202       |
+| SP100-2610-01 | 1,800   | 311       |
+| SP200-2610-01 | 900     | 206       |
 
 ## Random numbers and distributions
 

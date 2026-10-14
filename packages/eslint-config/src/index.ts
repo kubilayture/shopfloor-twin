@@ -15,7 +15,7 @@ export interface ConfigOptions {
 
 export function createConfig({ rootDir }: ConfigOptions): Linter.Config[] {
   return [
-    { ignores: ['**/node_modules/', '**/dist/', '**/coverage/', '**/.turbo/'] },
+    { ignores: ['**/node_modules/', '**/dist/', '**/coverage/', '**/.turbo/', '**/spikes/'] },
     { linterOptions: { reportUnusedDisableDirectives: 'error' } },
     js.configs.recommended,
     ...(tseslint.configs.strictTypeChecked as Linter.Config[]),

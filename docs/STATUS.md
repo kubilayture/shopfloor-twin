@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #46 merged (PR #58): Phase 2 plan, ADR-0011.
 - Owner decision (2026-10-15): Claude merges from now on, after an independent review agent and a green CI (ADR-0011, plan rev. 6).
 - Phase 2 plan with issues #46–#57 under milestone "Phase 02 – Device layer: OPC UA".
 - **Phase 1 closed** and tagged `phase-01`: all 5 exit criteria met; the owner accepted the realism check as is.
@@ -27,12 +28,12 @@
 
 ## In progress
 
-- #46 Phase 2 plan (in review)
+- #47 Spike: OPC UA server per machine, address space, lossless delivery (in review): ADR-0008, ADR-0009
 
 ## Next up
 
-- #47 Spike: OPC UA server per machine, address-space model, lossless delivery at 60× (ADR-0008, ADR-0009)
-- #49 Live run mode (independent of the spikes)
+- #48 Spike: alarm representation (ADR-0010)
+- #49 Live run mode
 
 ## Blockers and open questions for the owner
 

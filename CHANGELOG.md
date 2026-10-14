@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Changed
 
+- Plan rev. 6 and ADR-0011: Claude merges after an independent review agent and a green CI; ADR-0004's merge rule superseded; PR template checklist updated (#46).
 - `products.yaml` gains `componentsOperation` and per-product `reworkComponents` (#27).
 - Leak-test defaults widened (sigma 0.45, limit 3.2) so that failures and rework actually occur; `leakTest.operation` and `reworkOperation` added to `process.yaml` (#25).
 - Default weekly schedule raised to 1,500 VB-100 and 700 VB-200 and stock to match, so the program fills the week; shift breaks optional in the schema (#26).
@@ -13,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Phase 2 plan with issues #46–#57 (#46).
 - Phase 1 sign-off: owner's realism check recorded; exit criteria 5 / 5 (#30).
 - Phase 1 report, realism check of the golden week with 12 questions for the owner, learning notes (#30).
 - Invariant checker (part conservation, time accounting, material conservation) after every simulation step; golden scenario `week-01` with committed summary and event-log hash; `pnpm test:golden` (`--update` to rewrite) and a CI step (#29).

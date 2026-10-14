@@ -1,0 +1,9 @@
+# Shift pattern from plan section 3 (rev. 2 week boundaries).
+# Break start times are assumptions; the plan gives one 30-minute break per shift.
+
+timeZone: Europe/Istanbul
+workdays: [MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY]
+shifts:
+  - { id: A, start: '06:00', end: '14:00', break: { start: '10:00', minutes: 30 } }
+  - { id: B, start: '14:00', end: '22:00', break: { start: '18:00', minutes: 30 } }
+  - { id: C, start: '22:00', end: '06:00', break: { start: '02:00', minutes: 30 } }

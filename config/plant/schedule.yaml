@@ -1,0 +1,10 @@
+# Weekly production schedule for Phases 1–6 (plan rev. 5); replaced by released orders in Phase 7.
+# Campaigns run in order on each machine; a product change is a changeover. Quantities are assumptions.
+
+machines:
+  cnc-01:
+    - { product: VB-100, quantity: 600 }
+    - { product: VB-200, quantity: 250 }
+  cnc-02:
+    - { product: VB-100, quantity: 600 }
+    - { product: VB-200, quantity: 250 }

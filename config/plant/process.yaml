@@ -1,0 +1,20 @@
+# Cycle-time variation, tool wear and leak testing, plan sections 3 and 4. Every number is an assumption.
+
+cycleTimeCv: { OP10: 0.03, OP20: 0.02, OP30: 0.12, OP40: 0.02, OP50: 0.05 }
+
+tool:
+  lifeCycles: 400
+  changeMinutes: 8
+  defectProbability: # piecewise linear over wear fraction 0..1
+    - { wear: 0.0, probability: 0.002 }
+    - { wear: 0.8, probability: 0.005 }
+    - { wear: 1.0, probability: 0.05 }
+
+leakTest:
+  unit: Pa/min
+  mean: 2.0
+  sigma: 0.35
+  upperLimit: 3.5
+  driftPerDay: 0.04
+  calibrationIntervalDays: 7
+  calibrationMinutes: 20

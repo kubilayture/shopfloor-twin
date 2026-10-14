@@ -1,0 +1,12 @@
+# Operator roster. Every value is an assumption: the plan defines only the concept (section 3).
+# speedFactor > 1 is slower than ideal; skills list the stations an operator is qualified for.
+
+operators:
+  - { id: op-a1, shift: A, skills: [asm-01, lkt-01, pck-01], speedFactor: 1.0 }
+  - { id: op-a2, shift: A, skills: [asm-01], speedFactor: 1.1 }
+  - { id: op-b1, shift: B, skills: [asm-01, pck-01], speedFactor: 0.95 }
+  - { id: op-b2, shift: B, skills: [asm-01, lkt-01], speedFactor: 1.05 }
+  - { id: op-c1, shift: C, skills: [asm-01], speedFactor: 1.15 }
+  - { id: op-c2, shift: C, skills: [asm-01, lkt-01, pck-01], speedFactor: 1.0 }
+
+absenceProbabilityPerShift: 0.03

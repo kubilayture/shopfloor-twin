@@ -16,6 +16,8 @@ Every third-party dependency and why it exists. A dependency is not added withou
 | `globals`                | `eslint-config`               | Declares Node.js global variables for ESLint                                                                                                                                     |
 | `fast-check`             | `sim-core` (tests)            | Property-based tests: generates thousands of inputs to check invariants such as event ordering (plan section 9)                                                                  |
 | `@vitest/coverage-v8`    | packages with coverage floors | Measures test coverage and enforces the floors of plan section 9                                                                                                                 |
+| `zod`                    | `plant-config`                | Validates configuration at runtime and gives TypeScript types from the same schema (plan section 6)                                                                              |
+| `yaml`                   | `plant-config`                | Reads the YAML files in `config/plant/` (plan section 4: parameters in YAML)                                                                                                     |
 | `lefthook`               | root                          | Git pre-commit hook: formats and lints staged files. Its install script is denied in `pnpm-workspace.yaml` (`allowBuilds`); the root `prepare` script installs the hooks instead |
 
 ## Container images

@@ -414,6 +414,25 @@ These are the simulator's internal facts, the "truth". They are not the UNS payl
 
 A run covers the half-open interval [start, end): no event at or after `end` is written. The shift running at `start` (and its break, if the run starts inside one) is announced by `shift` events at `start`, so the log is self-contained. From Phase 5 on, the summary also gets KPIs computed with `oee-core` (plan rev. 2).
 
+## Invariants and golden scenarios
+
+Source: `apps/simulator/src/headless/invariants.ts` and `golden.ts`.
+
+`InvariantChecker` runs after **every** simulation step, once the step has been handled. In the middle of a step a part can legitimately be in transit, for example taken from a buffer but not yet in the machine, which is why it doesn't run after every emitted event. Each check verifies three things (plan section 4, built-in validation):
+
+1. **Conservation of parts:** parts started = finished + scrapped + in buffers + in machines + in the rework queue.
+2. **Time accounting:** for every machine, the time in all states sums exactly to the elapsed time.
+3. **Conservation of material:** for every lot, units consumed (from `material-consumed` events) + remaining = initial quantity.
+
+The first violation stops the run with an `InvariantViolation` naming the time and the quantities. Tests prove the checker catches each kind of violation: a lost part, a wrong start time, a unit consumed without an event.
+
+Coverage:
+
+- the three 5-day production weeks (Monday 06:00 to Saturday 06:00, seeds 1–3) in the test suite;
+- the golden scenario `week-01` (seed 20261012, 7 days, default plant), about 12,600 checks per run.
+
+The golden snapshot pins the run byte for byte: its summary file, and the SHA-256 of its 35,760-line event log. CI runs it on every pull request.
+
 ## Random numbers and distributions
 
 ### Random streams

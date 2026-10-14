@@ -38,6 +38,7 @@ jobs:
           restore-keys: turbo-${{ runner.os }}-
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
+      - run: pnpm test:golden
 
   stack:
     name: stack smoke

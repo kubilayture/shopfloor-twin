@@ -40,13 +40,30 @@ Output:
 
 A week takes about 0.2 s and about 6 MB of events. The files are written under temporary names and renamed at the end, so a failed run never leaves a mix of old and new files. Invalid options exit with status 2, other failures with status 1. The event and summary formats are described in `docs/simulation-model.md`.
 
+## Golden scenarios
+
+A golden scenario is a fixed seed and configuration whose expected output is committed (plan section 9). Each one lives in `apps/simulator/golden/<name>/`:
+
+- `scenario.json`: seed, start, number of days, configuration directory;
+- `summary.json`: the expected ground-truth summary, byte for byte;
+- `events.sha256`: the SHA-256 and line count of the expected event log. The log itself (about 6 MB per week) is not committed; its hash pins every byte.
+
+| Task                                           | Command                     |
+| ---------------------------------------------- | --------------------------- |
+| Check every scenario against its snapshot      | `pnpm test:golden`          |
+| Rewrite the snapshots after an intended change | `pnpm test:golden --update` |
+
+Each run also checks the conservation and time-accounting invariants after every simulation step, and fails on the first violation.
+
+**When a snapshot changes:** any change to the plant model, its random draws or the default configuration changes the snapshot. That is the point. Run `--update` only when the change is intended, and explain in the pull request what changed in the simulated behaviour and why (plan section 9). The diff of `summary.json` shows the effect in numbers.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`:
 
 | Job           | What it runs                                                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `verify`      | `pnpm install --frozen-lockfile`, then `pnpm verify` (format check, lint, typecheck, tests)                                           |
+| `verify`      | `pnpm install --frozen-lockfile`, then `pnpm verify` (format check, lint, typecheck, tests), then `pnpm test:golden`                  |
 | `stack smoke` | Creates a throw-away `.env` with random passwords, runs `scripts/stack-smoke.sh`, prints container logs on failure, removes the stack |
 
 A pull request is merged only when both jobs are green (ADR-0004). If CI fails but `pnpm verify` passes locally, check the Node.js and pnpm versions first: CI uses exactly `.nvmrc` and `packageManager`. A lockfile change that was not committed fails `--frozen-lockfile`.

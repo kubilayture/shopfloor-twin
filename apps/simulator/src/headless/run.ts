@@ -3,6 +3,7 @@ import type { PlantConfig } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { ProductionLine, type LineEvent } from '../plant/line.ts';
 import { RUN_SCHEMA, EVENT_SCHEMA, SUMMARY_SCHEMA, isoTime, stableStringify } from './serialize.ts';
+import { InvariantChecker } from './invariants.ts';
 import { GroundTruth, type GroundTruthSummary } from './summary.ts';
 
 export interface HeadlessOptions {
@@ -10,6 +11,7 @@ export interface HeadlessOptions {
   readonly seed: number;
   readonly start: SimTime;
   readonly end: SimTime;
+  readonly checkInvariants?: boolean;
 }
 
 export interface RunHeader {
@@ -23,6 +25,7 @@ export interface RunHeader {
 export interface HeadlessResult {
   readonly header: RunHeader;
   readonly eventCount: number;
+  readonly invariantChecks: number;
   readonly summary: GroundTruthSummary;
 }
 
@@ -30,7 +33,7 @@ export const configHash = (config: PlantConfig): string =>
   createHash('sha256').update(stableStringify(config)).digest('hex');
 
 export function runHeadless(
-  { config, seed, start, end }: HeadlessOptions,
+  { config, seed, start, end, checkInvariants = false }: HeadlessOptions,
   writeLine: (line: string) => void,
 ): HeadlessResult {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) {
@@ -52,22 +55,29 @@ export function runHeadless(
   );
 
   let sequence = 0;
+  let checker: InvariantChecker | undefined;
   const line = new ProductionLine({
     config,
     random: new RandomSource(seed),
     startTime: start,
     onEvent: (event) => {
       truth.record(event);
+      checker?.record(event);
       sequence++;
       writeLine(
         stableStringify({ ...event, schema: EVENT_SCHEMA, seq: sequence, at: isoTime(event.at) }),
       );
     },
   });
+  if (checkInvariants) {
+    checker = new InvariantChecker(line, config, start);
+  }
   const simulation = new Simulation<LineEvent>(start);
   line.start(simulation);
+  checker?.check(start);
   simulation.runUntil(end - 1, (event, sim) => {
     line.handle(event, sim);
+    checker?.check(sim.now);
   });
 
   const summary = truth.finish(
@@ -75,7 +85,7 @@ export function runHeadless(
     line,
     config.stock.lots.map((lot) => lot.id),
   );
-  return { header, eventCount: sequence, summary };
+  return { header, eventCount: sequence, invariantChecks: checker?.checks ?? 0, summary };
 }
 
 export const summaryDocument = (result: HeadlessResult): string =>

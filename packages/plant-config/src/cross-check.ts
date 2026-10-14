@@ -39,6 +39,13 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
     }
   });
 
+  allEquipment
+    .filter((item) => item.requiresOperator)
+    .filter((item) => !config.operators.operators.some((op) => op.skills.includes(item.id)))
+    .forEach((item) => {
+      report('operators', 'operators', `no operator is qualified for "${item.id}"`);
+    });
+
   config.plant.buffers.forEach((buffer, index) => {
     const from = operations.indexOf(buffer.from);
     if (from < 0 || operations[from + 1] !== buffer.to) {
@@ -64,6 +71,9 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
 
   const shiftIds = new Set(config.shifts.shifts.map((shift) => shift.id));
   for (const shift of config.shifts.shifts) {
+    if (!shift.break) {
+      continue;
+    }
     const length = shiftLength(shift.start, shift.end);
     const breakEnd = offsetInShift(shift.start, shift.break.start) + shift.break.minutes;
     if (breakEnd > length) {

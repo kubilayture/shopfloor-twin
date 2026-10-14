@@ -40,7 +40,9 @@ describe('transition table', () => {
   });
 
   it('keeps a Down machine down until repaired (plan section 7: availability loss)', () => {
-    expect(TRANSITIONS.Down).toEqual(['Idle', 'Running']);
+    expect(TRANSITIONS.Down).toEqual(['Idle', 'Running', 'PlannedStop', 'Off']);
+    expect(TRANSITIONS.Down).not.toContain('Stopped');
+    expect(TRANSITIONS.Down).not.toContain('Setup');
   });
 
   it('matches the state diagram in docs/simulation-model.md', async () => {
@@ -72,10 +74,10 @@ describe('Machine transitions', () => {
   });
 
   it('names the machine and both states in the error', () => {
-    const machine = new Machine('lkt-01', 'Off', T0);
+    const machine = new Machine('lkt-01', 'Maintenance', T0);
     expect(() => {
       machine.transition('Running', T0);
-    }).toThrow('lkt-01: illegal transition Off → Running');
+    }).toThrow('lkt-01: illegal transition Maintenance → Running');
   });
 
   it('rejects a transition earlier than the previous one', () => {

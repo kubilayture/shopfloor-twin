@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #24 merged (PR #38): breakdowns, minor stops, repairs, running-time clocks.
 - #23 merged (PR #37): material flow, buffers, blocking and starving, changeovers.
 - #20 merged (PR #36): `sim-core` distributions, `test-kit` goodness-of-fit helpers.
 - #22 merged (PR #35): machine state machine, `docs/simulation-model.md`.
@@ -17,12 +18,13 @@
 
 ## In progress
 
-- #24 Plant model: breakdowns, minor stops and repairs (in review)
+- #26 Plant model: shifts, breaks and operators (in review)
 
 ## Next up
 
-- #26 shifts, breaks and operators (after #24, same code area)
-- #25 quality and #27 materials
+- #25 tool wear, OP10 scrap, leak test and rework
+- #27 material lots and consumption
+- #28 headless runner, event log and ground-truth summary
 
 ## Blockers and open questions for the owner
 

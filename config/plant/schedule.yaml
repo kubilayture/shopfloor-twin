@@ -3,8 +3,8 @@
 
 machines:
   cnc-01:
-    - { product: VB-100, quantity: 600 }
-    - { product: VB-200, quantity: 250 }
+    - { product: VB-100, quantity: 750 }
+    - { product: VB-200, quantity: 350 }
   cnc-02:
-    - { product: VB-100, quantity: 600 }
-    - { product: VB-200, quantity: 250 }
+    - { product: VB-100, quantity: 750 }
+    - { product: VB-200, quantity: 350 }

@@ -15,15 +15,22 @@ import {
   type Simulation,
 } from '@shopfloor/sim-core';
 import { PartBuffer, type Part } from './buffer.ts';
+import { shiftAt, shiftBoundaries, type CalendarBoundary } from './calendar.ts';
+import { Crew, type Assignment } from './crew.ts';
 import { Machine, type StateChange } from './machine.ts';
 import type { MachineState } from './machine-state.ts';
 import { RunningClock } from './running-clock.ts';
 
-export type LineEvent =
+type StationEvent =
   | { readonly type: 'clock'; readonly station: string }
   | { readonly type: 'setup-end'; readonly station: string }
   | { readonly type: 'stop-end'; readonly station: string }
   | { readonly type: 'repair-end'; readonly station: string };
+
+export type LineEvent =
+  | StationEvent
+  | { readonly type: 'calendar'; readonly boundary: CalendarBoundary }
+  | { readonly type: 'calendar-refill'; readonly until: SimTime };
 
 export type PlantEvent =
   | ({ readonly type: 'state' } & StateChange)
@@ -40,7 +47,25 @@ export type PlantEvent =
       readonly at: SimTime;
       readonly machineId: string;
       readonly failureCode: string;
+    }
+  | {
+      readonly type: 'shift';
+      readonly at: SimTime;
+      readonly action: CalendarBoundary['action'];
+      readonly shiftId: string;
+      readonly shiftDate: string;
+    }
+  | {
+      readonly type: 'operator';
+      readonly at: SimTime;
+      readonly machineId: string;
+      readonly operatorId: string | null;
+      readonly absent: readonly string[];
     };
+
+type Unavailable = 'Off' | 'PlannedStop';
+
+const CALENDAR_WINDOW = 7 * 24 * HOUR;
 
 const CYCLE = 'cycle';
 const MINOR_STOP = 'minor-stop';
@@ -81,6 +106,9 @@ interface Station {
   readonly input: PartBuffer | undefined;
   readonly output: PartBuffer | undefined;
   readonly campaigns: Campaign[] | undefined;
+  readonly requiresOperator: boolean;
+  operator: Assignment | undefined;
+  stopEnd: EventHandle | undefined;
   loadedProduct: string | undefined;
   part: Part | undefined;
   busy: boolean;
@@ -104,6 +132,8 @@ export class ProductionLine {
   readonly #config: PlantConfig;
   readonly #onEvent: (event: PlantEvent) => void;
   readonly #repairQueue: Station[] = [];
+  readonly #crew: Crew;
+  #unavailable: Unavailable | undefined = 'Off';
   #freeTechnicians: number;
   #nextPartId = 1;
   #now: SimTime;
@@ -113,6 +143,7 @@ export class ProductionLine {
     this.#onEvent = onEvent ?? (() => undefined);
     this.#now = startTime;
     this.#freeTechnicians = config.plant.maintenanceTechnicians;
+    this.#crew = new Crew(config, random);
     this.buffers = config.plant.buffers.map((b) => new PartBuffer(b.from, b.to, b.capacity));
     const equipment = config.plant.areas.flatMap((a) => a.workCenters.flatMap((w) => w.equipment));
     this.stations = equipment.map((item) => {
@@ -160,7 +191,7 @@ export class ProductionLine {
       return {
         id: item.id,
         operation: item.operation,
-        machine: new Machine(item.id, 'Idle', startTime, (change) => {
+        machine: new Machine(item.id, 'Off', startTime, (change) => {
           this.#onEvent({ type: 'state', ...change });
         }),
         cycle: random.stream(`${item.id}/cycle`),
@@ -170,6 +201,9 @@ export class ProductionLine {
         input: this.buffers.find((b) => b.to === item.operation),
         output: this.buffers.find((b) => b.from === item.operation),
         campaigns,
+        requiresOperator: item.requiresOperator,
+        operator: undefined,
+        stopEnd: undefined,
         loadedProduct: campaigns?.[0]?.product,
         part: undefined,
         busy: false,
@@ -185,13 +219,31 @@ export class ProductionLine {
 
   start(simulation: Simulation<LineEvent>): void {
     this.#now = simulation.now;
+    this.#scheduleCalendar(simulation, this.#now + 1, this.#now + CALENDAR_WINDOW);
+    const current = shiftAt(this.#config.shifts, this.#now);
+    if (current) {
+      this.#staff(current.shiftId);
+      this.#unavailable = current.inBreak ? 'PlannedStop' : undefined;
+    }
     this.stations.forEach((station) => {
-      this.#tryStart(station, simulation);
+      if (this.#unavailable) {
+        this.#enter(station, this.#unavailable);
+      } else {
+        this.#activate(station, simulation);
+      }
     });
   }
 
   handle(event: LineEvent, simulation: Simulation<LineEvent>): void {
     this.#now = simulation.now;
+    if (event.type === 'calendar') {
+      this.#onCalendar(event.boundary, simulation);
+      return;
+    }
+    if (event.type === 'calendar-refill') {
+      this.#scheduleCalendar(simulation, event.until, event.until + CALENDAR_WINDOW);
+      return;
+    }
     const station = this.#station(event.station);
     switch (event.type) {
       case 'clock':
@@ -200,9 +252,14 @@ export class ProductionLine {
         break;
       case 'setup-end':
         station.busy = false;
-        this.#tryStart(station, simulation);
+        if (this.#canWork(station)) {
+          this.#tryStart(station, simulation);
+        } else {
+          this.#enter(station, this.#unavailable ?? 'Idle', this.#unavailableCause(station));
+        }
         break;
       case 'stop-end':
+        station.stopEnd = undefined;
         this.#run(station, simulation);
         break;
       case 'repair-end':
@@ -217,6 +274,102 @@ export class ProductionLine {
       throw new RangeError(`unknown station "${id}"`);
     }
     return station;
+  }
+
+  #scheduleCalendar(simulation: Simulation<LineEvent>, from: SimTime, until: SimTime): void {
+    for (const boundary of shiftBoundaries(this.#config.shifts, from, until)) {
+      simulation.schedule(boundary.at, { type: 'calendar', boundary });
+    }
+    simulation.schedule(until, { type: 'calendar-refill', until });
+  }
+
+  #onCalendar(boundary: CalendarBoundary, simulation: Simulation<LineEvent>): void {
+    const { action, shiftId, shiftDate } = boundary;
+    this.#onEvent({ type: 'shift', at: this.#now, action, shiftId, shiftDate });
+    if (action === 'shift-start') {
+      this.#staff(shiftId);
+    }
+    this.#unavailable =
+      action === 'break-start' ? 'PlannedStop' : action === 'shift-end' ? 'Off' : undefined;
+    for (const station of this.stations) {
+      if (this.#unavailable) {
+        this.#interrupt(
+          station,
+          this.#unavailable,
+          action === 'shift-end' ? 'SHIFT-END' : 'BREAK',
+          simulation,
+        );
+      } else {
+        this.#activate(station, simulation);
+      }
+    }
+  }
+
+  #staff(shiftId: string): void {
+    const crew = this.#crew.forShift(shiftId);
+    for (const station of this.stations.filter((s) => s.requiresOperator)) {
+      station.operator = crew.assignments.get(station.id);
+      this.#onEvent({
+        type: 'operator',
+        at: this.#now,
+        machineId: station.id,
+        operatorId: station.operator?.operatorId ?? null,
+        absent: crew.absent,
+      });
+    }
+  }
+
+  #canWork(station: Station): boolean {
+    return (
+      this.#unavailable === undefined &&
+      (!station.requiresOperator || station.operator !== undefined)
+    );
+  }
+
+  #unavailableCause(station: Station): string | undefined {
+    return this.#unavailable === undefined && station.requiresOperator && !station.operator
+      ? 'NO-OPERATOR'
+      : undefined;
+  }
+
+  #interrupt(
+    station: Station,
+    to: MachineState,
+    cause: string,
+    simulation: Simulation<LineEvent>,
+  ): void {
+    const state = station.machine.state;
+    if (state === 'Setup' || state === 'Down' || state === to) {
+      return;
+    }
+    if (station.stopEnd) {
+      simulation.cancel(station.stopEnd);
+      station.stopEnd = undefined;
+    }
+    this.#halt(station, simulation);
+    this.#enter(station, to, cause);
+  }
+
+  #activate(station: Station, simulation: Simulation<LineEvent>): void {
+    const state = station.machine.state;
+    if (state === 'Setup' || state === 'Down') {
+      return;
+    }
+    if (!this.#canWork(station)) {
+      this.#interrupt(station, 'Idle', 'NO-OPERATOR', simulation);
+      return;
+    }
+    const waiting = state === 'Off' || state === 'PlannedStop' || state === 'Idle';
+    if (!waiting) {
+      return;
+    }
+    if (station.part && station.clock.remaining(CYCLE) !== undefined) {
+      this.#run(station, simulation);
+    } else if (station.part) {
+      this.#unload(station, simulation);
+    } else {
+      this.#tryStart(station, simulation);
+    }
   }
 
   #enter(station: Station, to: MachineState, cause?: string): void {
@@ -279,7 +432,7 @@ export class ProductionLine {
     );
     const cause = stops.causes[Math.floor(stops.cause.nextFloat() * stops.causes.length)];
     this.#enter(station, 'Stopped', cause);
-    simulation.scheduleIn(millis(exponential(stops.duration, stops.mean)), {
+    station.stopEnd = simulation.scheduleIn(millis(exponential(stops.duration, stops.mean)), {
       type: 'stop-end',
       station: station.id,
     });
@@ -334,12 +487,16 @@ export class ProductionLine {
     });
     station.failure = undefined;
     this.#freeTechnicians++;
-    this.#run(station, simulation);
+    if (this.#canWork(station)) {
+      this.#run(station, simulation);
+    } else {
+      this.#enter(station, this.#unavailable ?? 'Idle', this.#unavailableCause(station));
+    }
     this.#dispatchTechnicians(simulation);
   }
 
   #tryStart(station: Station, simulation: Simulation<LineEvent>): void {
-    if (station.busy) {
+    if (station.busy || !this.#canWork(station)) {
       return;
     }
     const part = station.campaigns
@@ -398,7 +555,8 @@ export class ProductionLine {
     if (ideal === undefined || cv === undefined) {
       throw new RangeError(`no cycle time for ${product} at ${station.operation}`);
     }
-    const seconds = cv > 0 ? logNormalFromMeanCv(station.cycle, ideal, cv) : ideal;
+    const mean = ideal * (station.operator?.speedFactor ?? 1);
+    const seconds = cv > 0 ? logNormalFromMeanCv(station.cycle, mean, cv) : mean;
     return millis(seconds * SECOND);
   }
 

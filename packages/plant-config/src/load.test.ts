@@ -157,6 +157,13 @@ describe('cross-file checks', () => {
       'unknown time zone "Europe/Gebze"',
     ],
     [
+      'a station that needs an operator nobody is qualified for',
+      (c) => {
+        c.operators.operators = c.operators.operators.map((op) => ({ ...op, skills: ['lkt-01'] }));
+      },
+      'no operator is qualified for "asm-01"',
+    ],
+    [
       'an operator on an unknown shift',
       (c) => {
         const operator = c.operators.operators[0];

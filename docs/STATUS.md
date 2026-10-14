@@ -1,11 +1,13 @@
 # Status — updated 2026-10-14
 
-## Current phase: 01 – Simulation core (started 2026-10-14)
+## Current phase: 02 – Device layer: OPC UA (planning, started 2026-10-14)
 
-## Exit criteria progress: 4 / 5 met (criterion 5, the owner's realism check, is open)
+## Exit criteria progress: Phase 2 plan in preparation
 
 ## Done since last update
 
+- **Phase 1 closed** and tagged `phase-01`: all 5 exit criteria met; the owner accepted the realism check as is.
+- #30 merged (PR #44 and the sign-off PR #45).
 - #29 merged (PR #43): invariant checker (independent time tally, parts by identity, material per lot), golden scenario `week-01`, `pnpm test:golden` in CI; leak readings rounded to instrument resolution after the first CI golden run found a cross-platform float difference.
 - #28 merged (PR #42, squash, merged by Claude after review agent and green CI): headless runner, event log, ground-truth summary.
 - #27 merged (PR #41): material lots, consumption, genealogy events.
@@ -24,15 +26,14 @@
 
 ## In progress
 
-- #30 Close Phase 1: report, realism check, learning notes (in review). The `phase-01` tag waits for the owner's realism answers.
+- Phase 2 planning: phase plan and issues
 
 ## Next up
 
-- Phase 02 – Device layer: OPC UA (planning), after Phase 1 is tagged
+- Phase 2 spikes: alarm representation in OPC UA, lossless state and event delivery (plan sections 5 and 12)
 
 ## Blockers and open questions for the owner
 
-- **Realism check (Phase 1 exit criterion 5):** answer the 12 questions in `docs/phases/phase-01-realism-check.md`.
 - Install the Renovate GitHub app for this repository (carried over from Phase 0).
 
 Project board: https://github.com/users/kubilayture/projects/1

@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #22 merged (PR #35): machine state machine, `docs/simulation-model.md`.
 - #19 merged (PR #34): `sim-core` random streams (xoshiro128**), ADR-0007.
 - #21 merged (PR #33): `plant-config` schema, loader and default plant files.
 - #18 merged (PR #32): `sim-core` event queue and kernel, ADR-0006, determinism lint rule.
@@ -14,12 +15,11 @@
 
 ## In progress
 
-- #22 Plant model: machine state machine (in review, PR #35)
+- #20 `sim-core`: distributions and goodness-of-fit helpers (in review)
 
 ## Next up
 
-- #20 `sim-core`: distributions and goodness-of-fit helpers
-- #23 Plant model: material flow (after #20 and #22)
+- #23 Plant model: material flow, buffers and changeovers (after #20)
 
 ## Blockers and open questions for the owner
 

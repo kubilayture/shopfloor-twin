@@ -119,7 +119,8 @@ describe('golden scenarios (plan section 9)', () => {
   it('has at least one scenario and runs it deterministically', async () => {
     const names = scenarioNames();
     expect(names).toContain('week-01');
-    const [a, b] = await Promise.all([runScenario('week-01'), runScenario('week-01')]);
+    const a = await runScenario('week-01');
+    const b = await runScenario('week-01');
     expect(b).toEqual(a);
     expect(a.events).toMatch(/^[0-9a-f]{64} {2}\d+ lines\n$/);
   });

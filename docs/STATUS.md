@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #19 merged (PR #34): `sim-core` random streams (xoshiro128**), ADR-0007.
 - #21 merged (PR #33): `plant-config` schema, loader and default plant files.
 - #18 merged (PR #32): `sim-core` event queue and kernel, ADR-0006, determinism lint rule.
 - Phase 0 closed and tagged [`phase-00`](https://github.com/kubilayture/shopfloor-twin/releases/tag/phase-00); learning step skipped by owner decision (phase report).
@@ -13,12 +14,12 @@
 
 ## In progress
 
-- #19 `sim-core`: deterministic random streams, ADR-0007 (in review)
+- #22 Plant model: machine state machine (in review, PR #35)
 
 ## Next up
 
-- #22 Plant model: machine state machine (independent of #19)
-- #20 `sim-core`: distributions and goodness-of-fit helpers (after #19)
+- #20 `sim-core`: distributions and goodness-of-fit helpers
+- #23 Plant model: material flow (after #20 and #22)
 
 ## Blockers and open questions for the owner
 

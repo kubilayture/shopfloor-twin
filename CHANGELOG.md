@@ -11,6 +11,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 ### Added
 
 - `sim-core` random streams: xoshiro128** generator verified against the reference C implementation, one stream per entity key derived from the master seed; ADR-0007 (#19).
+- `apps/simulator` with the machine state machine: ten states, exhaustive transition table, time-in-state accounting; `docs/simulation-model.md` with the state diagram, checked against the code by a test (#22).
 - `@shopfloor/sim-core`: event queue ordered by (time, sequence), simulation kernel with schedule, cancel, step, run and run-until; property tests; 95/90 coverage floor (#18).
 - Lint rule banning wall-clock reads and unseeded randomness in deterministic code (#18).
 - ADR-0006: simulation time as integer milliseconds (#18).

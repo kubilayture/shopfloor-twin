@@ -1,0 +1,22 @@
+# Products, routing and components from plan section 3.
+# Blank material ids and the changeover duration per variant pair are named here; the plan gives one default of 25 min.
+
+operations: [OP10, OP20, OP30, OP40, OP50]
+
+changeoverMinutes: 25
+
+products:
+  - id: VB-100
+    name: 2-way valve block
+    blank: BLANK-100 # assumption: one blank material per variant
+    idealCycleSeconds: { OP10: 240, OP20: 60, OP30: 150, OP40: 90, OP50: 30 }
+    components: # consumed at OP30, one each per part
+      - SK-1
+      - SP-100
+  - id: VB-200
+    name: 4-way valve block
+    blank: BLANK-200 # assumption
+    idealCycleSeconds: { OP10: 330, OP20: 60, OP30: 210, OP40: 90, OP50: 30 }
+    components:
+      - SK-2
+      - SP-200

@@ -10,6 +10,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- `@shopfloor/plant-config`: Zod schema, YAML loader with cross-file checks and errors by file and path; default plant files in `config/plant/` from plan section 3, assumptions marked (#21).
 - Project plan (rev. 3), documentation skeleton, `docs/STATUS.md`, Phase 0 plan and log (#1).
 - ADR-0001: record architecture decisions in MADR format (#1).
 - ADR-0004: review and merge policy without branch protection (#1).

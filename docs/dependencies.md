@@ -14,6 +14,8 @@ Every third-party dependency and why it exists. A dependency is not added withou
 | `typescript-eslint`      | `eslint-config`     | TypeScript parser and type-checked rules (`no-floating-promises`, `no-explicit-any`, …)                                                                                          |
 | `eslint-config-prettier` | `eslint-config`     | Turns off lint rules that conflict with Prettier's formatting                                                                                                                    |
 | `globals`                | `eslint-config`     | Declares Node.js global variables for ESLint                                                                                                                                     |
+| `zod`                    | `plant-config`      | Validates configuration at runtime and gives TypeScript types from the same schema (plan section 6)                                                                              |
+| `yaml`                   | `plant-config`      | Reads the YAML files in `config/plant/` (plan section 4: parameters in YAML)                                                                                                     |
 | `lefthook`               | root                | Git pre-commit hook: formats and lints staged files. Its install script is denied in `pnpm-workspace.yaml` (`allowBuilds`); the root `prepare` script installs the hooks instead |
 
 ## Container images

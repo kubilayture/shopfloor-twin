@@ -1,0 +1,62 @@
+# Breakdowns (Down) and minor stops (Stopped), plan section 4. Every number is an assumption.
+# Weibull scale is in running hours; repair times are log-normal around the median.
+
+equipment:
+  cnc-01: &cnc
+    failureModes:
+      - {
+          code: SPINDLE-OVERLOAD,
+          weibullShape: 1.4,
+          weibullScaleHours: 160,
+          repairMedianMinutes: 45,
+          repairSpread: 0.6,
+        }
+      - {
+          code: COOLANT-PRESSURE,
+          weibullShape: 1.1,
+          weibullScaleHours: 60,
+          repairMedianMinutes: 15,
+          repairSpread: 0.5,
+        }
+    minorStops: { ratePerHour: 2.0, meanSeconds: 40, causes: [DOOR-INTERLOCK, CHIP-JAM] }
+  cnc-02: *cnc
+  wsh-01:
+    failureModes:
+      - {
+          code: HEATER-FAULT,
+          weibullShape: 1.3,
+          weibullScaleHours: 200,
+          repairMedianMinutes: 30,
+          repairSpread: 0.5,
+        }
+    minorStops: { ratePerHour: 0.5, meanSeconds: 60, causes: [CONVEYOR-JAM] }
+  asm-01:
+    failureModes:
+      - {
+          code: PRESS-FAULT,
+          weibullShape: 1.2,
+          weibullScaleHours: 300,
+          repairMedianMinutes: 20,
+          repairSpread: 0.5,
+        }
+    minorStops: { ratePerHour: 3.0, meanSeconds: 30, causes: [PART-MISFEED, SCANNER-RETRY] }
+  lkt-01:
+    failureModes:
+      - {
+          code: FIXTURE-SEAL,
+          weibullShape: 1.5,
+          weibullScaleHours: 250,
+          repairMedianMinutes: 25,
+          repairSpread: 0.5,
+        }
+    minorStops: { ratePerHour: 1.0, meanSeconds: 45, causes: [FIXTURE-CLAMP] }
+  pck-01:
+    failureModes:
+      - {
+          code: PRINTER-FAULT,
+          weibullShape: 1.2,
+          weibullScaleHours: 220,
+          repairMedianMinutes: 10,
+          repairSpread: 0.4,
+        }
+    minorStops: { ratePerHour: 1.5, meanSeconds: 90, causes: [LABEL-OUT] }

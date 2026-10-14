@@ -1,0 +1,11 @@
+# Initial material lots for Phases 1–6 (plan section 4); replaced by the ERP mock in Phase 7.
+# Lot sizes are assumptions, chosen to last about one week at the scheduled mix.
+
+lots:
+  - { id: BL100-2610-01, material: BLANK-100, quantity: 800 }
+  - { id: BL100-2610-02, material: BLANK-100, quantity: 800 }
+  - { id: BL200-2610-01, material: BLANK-200, quantity: 600 }
+  - { id: SK1-2610-01, material: SK-1, quantity: 1500 }
+  - { id: SK2-2610-01, material: SK-2, quantity: 700 }
+  - { id: SP100-2610-01, material: SP-100, quantity: 1500 }
+  - { id: SP200-2610-01, material: SP-200, quantity: 700 }

@@ -21,13 +21,12 @@
 
 ## In progress
 
-- #6 Phase 0 close: waiting for the owner's review answers and exercise PR, then the `phase-00` tag.
-- #17 Phase 1 plan and plan rev. 5 (in review). Phase 1 issues #18–#30 created under milestone "Phase 01 – Simulation core".
+- #21 `plant-config`: schema, loader and default plant files (in review)
 
 ## Next up
 
-- #18 `sim-core`: event queue and simulation kernel
-- #21 `plant-config`: schema, loader and default plant files (independent of #18)
+- #18 `sim-core` kernel (in review on its own branch)
+- #19 `sim-core`: deterministic random streams (after #18)
 
 ## Blockers and open questions for the owner
 

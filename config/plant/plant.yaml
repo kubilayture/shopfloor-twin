@@ -1,0 +1,32 @@
+# Equipment hierarchy and buffers from plan section 3.
+
+enterprise: { id: orbis, name: Orbis Components }
+site: { id: gebze, name: Gebze }
+
+areas:
+  - id: machining
+    name: Machining
+    workCenters:
+      - id: cell-m1
+        name: Cell M1
+        equipment:
+          - { id: cnc-01, name: Horizontal machining centre 1, operation: OP10, interface: opcua }
+          - { id: cnc-02, name: Horizontal machining centre 2, operation: OP10, interface: opcua }
+          - { id: wsh-01, name: Conveyor washer, operation: OP20, interface: modbus }
+  - id: assembly
+    name: Assembly
+    workCenters:
+      - id: line-a1
+        name: Line A1
+        equipment:
+          - { id: asm-01, name: Manual assembly station, operation: OP30, interface: opcua }
+          - { id: lkt-01, name: Leak tester, operation: OP40, interface: opcua }
+          - { id: pck-01, name: Pack and label, operation: OP50, interface: opcua }
+
+buffers:
+  - { from: OP10, to: OP20, capacity: 20 }
+  - { from: OP20, to: OP30, capacity: 30 }
+  - { from: OP30, to: OP40, capacity: 5 }
+  - { from: OP40, to: OP50, capacity: 10 }
+
+maintenanceTechnicians: 2 # assumption

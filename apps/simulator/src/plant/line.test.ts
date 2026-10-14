@@ -20,6 +20,7 @@ type Schedule = PlantConfig['schedule']['machines'];
 function run(schedule: Schedule, duration: number, seed = 1, configure?: (c: PlantConfig) => void) {
   const config = structuredClone(defaults);
   config.schedule.machines = schedule;
+  config.failures.equipment = {};
   configure?.(config);
   const events: PlantEvent[] = [];
   const line = new ProductionLine({

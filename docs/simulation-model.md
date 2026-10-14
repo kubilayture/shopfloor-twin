@@ -142,6 +142,68 @@ A reference run with seed 1 over 24 h (VB-100 only) finished 572 parts, against 
 | LKT-01          | 60%     | –       | 40%     |
 | PCK-01          | 20%     | –       | 80%     |
 
+## Breakdowns, minor stops and repairs
+
+Source: `apps/simulator/src/plant/line.ts` and `running-clock.ts`. Parameters: `config/plant/failures.yaml` (all values are assumptions).
+
+### Running-time clocks
+
+Each machine has a `RunningClock` holding several countdowns that advance **only while the machine is `Running`**:
+
+- `cycle`: the remaining time of the current cycle;
+- `failure:<code>`: one per failure mode, the running time left until that mode fails;
+- `minor-stop`: the running time left until the next minor stop.
+
+When the machine leaves `Running` (stop, failure, block, starve, setup), every countdown pauses. When it returns, they continue. Three consequences:
+
+- Failures are measured in running hours, as plan section 4 requires.
+- A machine that is blocked or starved can't break down.
+- An interrupted cycle resumes where it stopped and isn't restarted. This is checked: with a CV of 0 and frequent stops, running time per cycle is exactly 240 s.
+
+When two countdowns end at the same millisecond, the cycle is handled first, then the others by name. The result is deterministic.
+
+### Breakdowns (`Down`)
+
+- Each failure mode has its own Weibull time to failure, in running hours (`weibullShape`, `weibullScaleHours`).
+- When a mode fails, the machine enters `Down` with the failure code as cause. Only that mode gets a new time to failure. Other modes keep their elapsed running time ("as bad as old"), as independent components do.
+- The machine joins a FIFO repair queue. A repair starts as soon as one of the `maintenanceTechnicians` (default 2) is free, and is logged as a `repair-start` event.
+- The repair takes a log-normal time around `repairMedianMinutes`, with `repairSpread` as the sigma of its logarithm. A `repair-end` event follows, the machine returns to `Running` and the technician takes the next machine in the queue.
+- Waiting for a technician is part of the `Down` time, as in a real plant. The waiting share is the difference between `Down` time and repair time.
+
+### Minor stops (`Stopped`)
+
+- Arrivals follow a Poisson process in running time (`ratePerHour`).
+- Each stop takes an exponential time (`meanSeconds`), with a cause drawn uniformly from `causes`. Then the machine returns to `Running`.
+- Durations are not truncated. Some exceed the MES micro-stop threshold, and the MES then counts them as availability loss (plan section 7, rev. 2).
+
+### Validation
+
+`apps/simulator/src/plant/reliability.test.ts` uses a test model with frequent events: Weibull(1.4, 0.5 h), repair median 2 min, 6 minor stops per hour of 30 s each, over 400 simulated hours. It checks:
+
+- Running time between failures follows the Weibull (KS test, p > 0.01).
+- Repair durations follow the log-normal (KS test).
+- Running time between minor stops and minor-stop durations are exponential (KS tests).
+
+A mutation check during development showed that a 10% error in any of these parameters makes the tests fail.
+
+It also checks, on the default plant:
+
+- every failure starts from `Running`;
+- the technician limit is never exceeded, and machines do wait when it is reached;
+- time accounting and part conservation stay exact;
+- the run is deterministic.
+
+Reference week, default plant, seed 1, VB-100 only, running continuously (shifts arrive with #26): 3,929 parts finished against 4,032 at the ideal bottleneck rate (97.4%).
+
+| Machine | Running | Stopped | Down | Blocked | Starved | Failures / minor stops |
+| ------- | ------- | ------- | ---- | ------- | ------- | ---------------------- |
+| CNC-01  | 79.3%   | 1.7%    | 0.6% | 18.4%   | 0.0%    | 3 / 259                |
+| CNC-02  | 78.7%   | 1.6%    | 0.3% | 19.4%   | 0.0%    | 3 / 248                |
+| WSH-01  | 39.3%   | 0.2%    | 0.0% | 59.0%   | 1.5%    | 0 / 23                 |
+| ASM-01  | 97.3%   | 2.4%    | 0.0% | 0.2%    | 0.0%    | 0 / 514                |
+| LKT-01  | 58.5%   | 0.8%    | 0.4% | 0.0%    | 40.4%   | 1 / 92                 |
+| PCK-01  | 19.5%   | 0.9%    | 0.0% | 0.0%    | 79.6%   | 0 / 53                 |
+
 ## Random numbers and distributions
 
 ### Random streams
@@ -175,4 +237,4 @@ Each function always consumes the same number of draws, never a variable number 
 - **Bernoulli:** chi-square test on hit and miss counts, p > 0.01.
 - **Log-normal from mean and CV:** the sample mean and CV match the parameters.
 
-The test helpers are themselves checked against published table values: erf, normal quantiles, Kolmogorov critical values (1.2238, 1.3581 and 1.6276 for alpha = 0.10, 0.05 and 0.01) and chi-square critical values. Long-run checks of MTBF and MTTR in the running plant follow with the breakdown model (#24).
+The test helpers are themselves checked against published table values: erf, normal quantiles, Kolmogorov critical values (1.2238, 1.3581 and 1.6276 for alpha = 0.10, 0.05 and 0.01) and chi-square critical values. Long-run checks of MTBF and MTTR in the running plant are in the breakdown section above.

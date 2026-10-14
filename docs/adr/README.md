@@ -9,3 +9,4 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0003](0003-monorepo-layout.md)                             | Monorepo layout and TypeScript without a build step | accepted |
 | [0004](0004-review-and-merge-without-branch-protection.md)  | Review and merge without branch protection          | accepted |
 | [0005](0005-dependency-rules-with-no-restricted-imports.md) | Enforce dependency rules with no-restricted-imports | accepted |
+| [0006](0006-simulation-time.md)                             | Simulation time as integer milliseconds             | accepted |

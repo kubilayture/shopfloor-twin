@@ -72,7 +72,7 @@ export function dependencyRules(): Linter.Config[] {
 
   const pure = PURE_PACKAGES.map((name) =>
     restrict(
-      sourceFiles(`packages/${name}`),
+      sourceFiles(`packages/${name}/src`),
       [appImports(), relativeEscapeFromPackage, pureOnlyRelative],
       TEST_FILES,
     ),

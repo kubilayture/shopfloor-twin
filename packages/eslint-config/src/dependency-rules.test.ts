@@ -53,6 +53,11 @@ describe('dependency rules (plan section 8)', () => {
     ['a pure package imports its own files', 'packages/sim-core/src/a.ts', './queue.ts'],
     ['a pure package test imports vitest', 'packages/sim-core/src/a.test.ts', 'vitest'],
     [
+      'a pure package tool config imports vitest',
+      'packages/sim-core/vitest.config.ts',
+      'vitest/config',
+    ],
+    [
       'an MES module imports another module index',
       'apps/mes-server/src/modules/oee/calc.ts',
       '../equipment/index.ts',

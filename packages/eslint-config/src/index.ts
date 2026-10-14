@@ -4,8 +4,10 @@ import prettier from 'eslint-config-prettier';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 import { dependencyRules } from './dependency-rules.ts';
+import { determinismRules } from './determinism-rules.ts';
 
 export { APPS, MES_MODULES, PURE_PACKAGES, dependencyRules } from './dependency-rules.ts';
+export { DETERMINISTIC_SOURCES, determinismRules } from './determinism-rules.ts';
 
 export interface ConfigOptions {
   rootDir: string;
@@ -34,6 +36,7 @@ export function createConfig({ rootDir }: ConfigOptions): Linter.Config[] {
       ...(tseslint.configs.disableTypeChecked as Linter.Config),
     },
     ...dependencyRules(),
+    ...determinismRules(),
     prettier,
   ];
 }

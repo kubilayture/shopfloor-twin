@@ -58,8 +58,11 @@ export class LeakTester {
   readonly #stream: RandomStream;
   #calibratedAt: SimTime;
 
+  readonly #decimals: number;
+
   constructor(config: LeakConfig, stream: RandomStream, calibratedAt: SimTime) {
     this.#config = config;
+    this.#decimals = Math.max(0, Math.ceil(-Math.log10(config.resolution) - 1e-9));
     this.#stream = stream;
     this.#calibratedAt = calibratedAt;
   }
@@ -78,7 +81,9 @@ export class LeakTester {
 
   measure(now: SimTime): LeakReading {
     const drift = (this.#config.driftPerDay * (now - this.#calibratedAt)) / DAY;
-    const value = normal(this.#stream, this.#config.mean + drift, this.#config.sigma);
+    const raw = normal(this.#stream, this.#config.mean + drift, this.#config.sigma);
+    const steps = Math.round(raw / this.#config.resolution);
+    const value = Number((steps * this.#config.resolution).toFixed(this.#decimals));
     return { value, drift, pass: value <= this.#config.upperLimit };
   }
 }

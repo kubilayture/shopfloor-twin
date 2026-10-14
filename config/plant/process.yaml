@@ -14,6 +14,7 @@ leakTest:
   operation: OP40
   reworkOperation: OP30
   unit: Pa/min
+  resolution: 0.001 # assumption: smallest step the leak tester reports
   mean: 2.0
   sigma: 0.45
   upperLimit: 3.2

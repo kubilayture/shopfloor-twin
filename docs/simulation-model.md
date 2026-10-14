@@ -304,7 +304,7 @@ Source: `apps/simulator/src/plant/quality.ts` and `line.ts`. Parameters: `config
 
 ### Leak test (OP40)
 
-- Reading = normal(mean + drift, sigma), where drift = `driftPerDay` × days since the last calibration (defaults: mean 2.0 Pa/min, sigma 0.45, drift 0.04 per day). A reading above `upperLimit` (3.2) fails.
+- Reading = normal(mean + drift, sigma), where drift = `driftPerDay` × days since the last calibration (defaults: mean 2.0 Pa/min, sigma 0.45, drift 0.04 per day). It is rounded to the tester's `resolution` (0.001 Pa/min), as a real instrument reports it. A reading above `upperLimit` (3.2) fails.
 - Every reading is reported on the LKT-01 `cycle-complete` event as a `measurement` (characteristic `leak-rate`, value, unit, upper limit). Phase 8's SPC will use it.
 - First-test failure rate: about 0.4% right after calibration, rising to about 2% after 7 days of drift.
 - Calibration every `calibrationIntervalDays` (7) is planned `Maintenance` with cause `CALIBRATION` for `calibrationMinutes` (20). It starts between parts, and resets the drift.
@@ -389,6 +389,7 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 
 - **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the validated plant configuration. Any change to a YAML value changes the hash.
 - **Every other line is one event** with `schema: sim-event/1`, a run-wide sequence number `seq` starting at 1, and `at` in ISO 8601 UTC. Lines are in simulation-time order; events at the same millisecond keep the order in which the model produced them.
+- **No raw floats leave the model:** durations are rounded to whole milliseconds before scheduling (ADR-0006), and measurements are rounded to instrument resolution. The last bits of `Math.log`, `Math.cos` and `**` can differ between CPU architectures; the first golden run in CI (Linux x86) differed from a local run (macOS ARM) in exactly the unrounded leak readings.
 - **Byte stability:** keys are sorted at every level (string order, except that integer-like keys come first in numeric order, as JSON objects always do), and undefined fields are dropped. Values that are not plain JSON (`Map`, `Set`, `Temporal` objects, functions) are rejected instead of being written as `{}`. One function, `stableStringify`, writes every line, so the bytes depend only on the data, never on how an object was built.
 
 | `type`                       | Fields besides `at`, `seq`, `schema`                                                                        | Emitted when                             |

@@ -72,6 +72,19 @@ describe('quality model units', () => {
     expect(tool.cycles).toBe(0);
   });
 
+  it('reports leak readings at the tester resolution, so no platform-specific float bits leave the model', () => {
+    const tester = new LeakTester(
+      defaults.process.leakTest,
+      new RandomSource(9).stream('leak'),
+      T0,
+    );
+    for (let i = 0; i < 1_000; i++) {
+      const { value } = tester.measure(T0 + i * HOUR);
+      expect(value).toBe(Number(value.toFixed(3)));
+      expect(String(value)).toMatch(/^-?\d+(\.\d{1,3})?$/);
+    }
+  });
+
   it('drifts the leak reading by days since calibration and resets on calibration', () => {
     const tester = new LeakTester(
       { ...defaults.process.leakTest, driftPerDay: 0.1 },

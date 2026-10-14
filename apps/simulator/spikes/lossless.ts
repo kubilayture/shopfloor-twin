@@ -102,8 +102,8 @@ const eventItem = await eventSub.monitor(
   TimestampsToReturn.Both,
 );
 eventItem.on('changed', (fields) => {
-  const f = fields as unknown as { value: { text?: string } | null }[];
-  received['events (Server)']?.push(Number(f[0]?.value?.text));
+  const f = fields as unknown as { value: unknown }[];
+  received['events (Server)']?.push(Number(f[1]?.value));
 });
 const eventNodeId = machine.nodeId;
 const evItem = await eventSub.monitor(
@@ -121,10 +121,10 @@ evItem.on('err', (e) => {
 });
 console.log('event item', String(evItem.statusCode), String(evItem.result?.revisedQueueSize));
 evItem.on('changed', (fields) => {
-  const f = fields as unknown as { value: { text?: string } | null }[];
+  const f = fields as unknown as { value: unknown }[];
   if (received.events?.length === 0)
     console.log('first event fields', JSON.stringify(f.map((x) => x.value)));
-  received.events?.push(Number(f[0]?.value?.text));
+  received.events?.push(Number(f[1]?.value));
 });
 await new Promise((r) => setTimeout(r, 500));
 
@@ -132,7 +132,7 @@ let seq = 0;
 const states = ['Running', 'Stopped', 'Running', 'Blocked', 'Running', 'Down'];
 const t0 = performance.now();
 while (seq < CHANGES) {
-  const burst = seq % 50 === 0 ? 3 : 1;
+  const burst = seq % 50 === 0 ? 10 : 1;
   for (let b = 0; b < burst && seq < CHANGES; b++) {
     seq++;
     state.setValueFromSource({
@@ -150,7 +150,7 @@ const sendMs = performance.now() - t0;
 await new Promise((r) => setTimeout(r, 1500));
 
 console.log(
-  `sent ${String(CHANGES)} changes in ${sendMs.toFixed(0)} ms (${(CHANGES / (sendMs / 1000)).toFixed(0)}/s), bursts of 3 every 50`,
+  `sent ${String(CHANGES)} changes in ${sendMs.toFixed(0)} ms (${(CHANGES / (sendMs / 1000)).toFixed(0)}/s), bursts of 10 every 50`,
 );
 for (const [label, values] of Object.entries(received)) {
   const seqs = values.filter((v) => v > 0);

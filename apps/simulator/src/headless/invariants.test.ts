@@ -15,7 +15,10 @@ beforeAll(async () => {
   config = await loadDefaultConfig();
 });
 
-function partialRun(hours: number) {
+function partialRun(
+  hours: number,
+  keep: (event: PlantEvent, index: number) => boolean = () => true,
+) {
   const events: PlantEvent[] = [];
   const line = new ProductionLine({
     config,
@@ -29,10 +32,17 @@ function partialRun(hours: number) {
   simulation.runUntil(MONDAY + hours * HOUR, (event, sim) => {
     line.handle(event, sim);
   });
-  events.forEach((e) => {
-    checker.record(e);
-  });
-  return { line, checker, now: simulation.now };
+  return {
+    line,
+    checker,
+    now: simulation.now,
+    events,
+    feed: () => {
+      for (const event of events.filter(keep)) {
+        checker.record(event);
+      }
+    },
+  };
 }
 
 describe('invariants at every simulation step (plan section 4, exit criterion 2)', () => {
@@ -48,30 +58,56 @@ describe('invariants at every simulation step (plan section 4, exit criterion 2)
   );
 
   it('passes on an untouched run', () => {
-    const { checker, now } = partialRun(6);
+    const { checker, now, feed } = partialRun(6);
+    feed();
     expect(() => {
       checker.check(now);
     }).not.toThrow();
   });
 
   it('detects a lost part', () => {
-    const { line, checker, now } = partialRun(6);
+    const { line, checker, now, feed } = partialRun(6);
+    feed();
     line.finished.pop();
     expect(() => {
+      checker.check(now);
+    }).toThrow(/was started but is nowhere/);
+  });
+
+  it('detects a part that is in two places, even when the count still matches', () => {
+    const { line, checker, now, feed } = partialRun(6);
+    feed();
+    const [first] = line.finished;
+    line.finished.pop();
+    if (first) line.finished.push(first);
+    expect(() => {
+      checker.check(now);
+    }).toThrow(/is both in finished and in finished|was started but is nowhere/);
+  });
+
+  it('detects a state change the machine made but the event log never got', () => {
+    const { checker, now, feed, events } = partialRun(6, (event, index) => index !== 50);
+    expect(events[50]?.type).toBe('state');
+    expect(() => {
+      feed();
       checker.check(now);
     }).toThrow(InvariantViolation);
   });
 
-  it('detects time accounting that does not add up', () => {
-    const { line, now } = partialRun(6);
-    const shifted = new InvariantChecker(line, config, MONDAY + 1);
+  it('detects time charged to the wrong state', () => {
+    const { checker, now, feed } = partialRun(
+      6,
+      (event) => event.type !== 'state' || event.to !== 'Stopped',
+    );
     expect(() => {
-      shifted.check(now);
-    }).toThrow(/time in states/);
+      feed();
+      checker.check(now);
+    }).toThrow(/in the machine but .* in the event log|the event log had it in/);
   });
 
   it('detects a material unit that was consumed without an event', () => {
-    const { line, checker, now } = partialRun(6);
+    const { line, checker, now, feed } = partialRun(6);
+    feed();
     line.inventory.consume('SK-1');
     expect(() => {
       checker.check(now);

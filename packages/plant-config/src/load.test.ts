@@ -227,6 +227,14 @@ describe('cross-file checks', () => {
       'leakTest.operation: unknown operation "OP99"',
     ],
     [
+      'a duplicate lot id',
+      (c) => {
+        const lot = c.stock.lots[0];
+        if (lot) c.stock.lots.push({ ...lot });
+      },
+      'duplicate lot id "BL100-2610-01"',
+    ],
+    [
       'a lot of a material no product uses',
       (c) => {
         c.stock.lots.push({ id: 'XX-1', material: 'UNOBTAINIUM', quantity: 1 });

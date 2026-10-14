@@ -420,11 +420,11 @@ Source: `apps/simulator/src/headless/invariants.ts` and `golden.ts`.
 
 `InvariantChecker` runs after **every** simulation step, once the step has been handled. In the middle of a step a part can legitimately be in transit, for example taken from a buffer but not yet in the machine, which is why it doesn't run after every emitted event. Each check verifies three things (plan section 4, built-in validation):
 
-1. **Conservation of parts:** parts started = finished + scrapped + in buffers + in machines + in the rework queue.
-2. **Time accounting:** for every machine, the time in all states sums exactly to the elapsed time.
+1. **Conservation of parts, by identity:** every part started (ids 1 … n) is in exactly one place: finished, scrapped, a buffer, a machine or the rework queue. A count alone could hide one lost part plus one duplicated part.
+2. **Time accounting from two independent sources:** the checker rebuilds every machine's time per state from the emitted `state` events and compares it, state by state, with the machine's own accounting. Both must also sum to the elapsed time. Every `state` event must also start from the state the log last reported.
 3. **Conservation of material:** for every lot, units consumed (from `material-consumed` events) + remaining = initial quantity.
 
-The first violation stops the run with an `InvariantViolation` naming the time and the quantities. Tests prove the checker catches each kind of violation: a lost part, a wrong start time, a unit consumed without an event.
+The first violation stops the run with an `InvariantViolation` naming the time and the quantities. Tests prove the checker catches each kind of violation: a lost part, a part in two places, a state change missing from the event log, time charged to the wrong state, and a unit consumed without an event.
 
 Coverage:
 

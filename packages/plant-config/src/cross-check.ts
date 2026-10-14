@@ -140,6 +140,14 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
     report('process', 'tool.defectProbability', 'wear points must rise strictly from 0 to 1');
   }
 
+  const lotIds = new Set<string>();
+  for (const lot of config.stock.lots) {
+    if (lotIds.has(lot.id)) {
+      report('stock', `${lot.id}.id`, `duplicate lot id "${lot.id}"`);
+    }
+    lotIds.add(lot.id);
+  }
+
   config.stock.lots
     .filter((lot) => !materials.has(lot.material))
     .forEach((lot) => {

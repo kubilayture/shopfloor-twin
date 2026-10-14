@@ -53,7 +53,7 @@ A golden scenario is a fixed seed and configuration whose expected output is com
 | Check every scenario against its snapshot      | `pnpm test:golden`          |
 | Rewrite the snapshots after an intended change | `pnpm test:golden --update` |
 
-Each run also checks the conservation and time-accounting invariants after every simulation step, and fails on the first violation.
+Each run also checks the conservation and time-accounting invariants after every simulation step, and fails on the first violation. `pnpm verify` (and the pre-commit hook) does not compare snapshots, to stay fast; CI runs `pnpm test:golden` on every pull request.
 
 **When a snapshot changes:** any change to the plant model, its random draws or the default configuration changes the snapshot. That is the point. Run `--update` only when the change is intended, and explain in the pull request what changed in the simulated behaviour and why (plan section 9). The diff of `summary.json` shows the effect in numbers.
 

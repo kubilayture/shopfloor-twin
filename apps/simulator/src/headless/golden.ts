@@ -55,7 +55,7 @@ export async function runScenario(name: string): Promise<GoldenOutcome> {
 
 export const scenarioNames = (): string[] =>
   readdirSync(GOLDEN, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => entry.isDirectory() && existsSync(join(GOLDEN, entry.name, 'scenario.json')))
     .map((entry) => entry.name)
     .sort();
 
@@ -78,7 +78,14 @@ async function main(update: boolean): Promise<number> {
         writeFileSync(path, actual);
         continue;
       }
-      const expected = existsSync(path) ? readFileSync(path, 'utf8') : '';
+      if (!existsSync(path)) {
+        failures++;
+        console.error(
+          `✗ ${name}/${file} is missing — run \`pnpm test:golden --update\` to create it`,
+        );
+        continue;
+      }
+      const expected = readFileSync(path, 'utf8');
       if (expected !== actual) {
         failures++;
         console.error(

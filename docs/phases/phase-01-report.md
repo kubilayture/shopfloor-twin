@@ -35,7 +35,7 @@ Period: 2026-10-14. Milestone: [Phase 01 – Simulation core](https://github.com
 
 - Packages and apps: `sim-core`, `plant-config`, `test-kit`, `apps/simulator` (plus Phase 0 packages).
 - Tests: 376 in total (simulator 215, `sim-core` 67, `plant-config` 27, `test-kit` 28, `eslint-config` 30, `contracts` 9).
-- Coverage: `sim-core` about 99% lines and 98% branches (floor 95 / 90); `plant-config` 100 / 91 (floor 90 / 85); simulator about 96 / 89 (floor 80 / 70).
+- Coverage: `sim-core` about 99% lines and 98% branches (floor 95 / 90); `plant-config` 99 / 90 (floor 90 / 85); simulator 87 / 83 (floor 80 / 70). The plant model alone is about 97 / 91; the headless CLI is tested as a subprocess, which coverage doesn't measure.
 - Performance: one simulated week (about 35,800 events) in about 0.2 s; with invariant checks after every step, about 0.5 s.
 - ADRs: 0006 (simulation time), 0007 (random streams).
 

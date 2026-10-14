@@ -21,14 +21,14 @@ Golden scenario `week-01`: seed 20261012, default configuration, Monday 2026-10-
 
 **Events in the week**
 
-- Breakdowns: 2, both on CNC-01: one `SPINDLE-OVERLOAD`, one `COOLANT-PRESSURE`. Together they cost 1.0 h, including waiting for a technician.
+- Breakdowns: 2, both on CNC-01: one `SPINDLE-OVERLOAD`, one `COOLANT-PRESSURE`. Together they cost 1.0 h of repair (28 and 30 min); a technician was free both times, so there was no waiting.
 - Minor stops: ASM-01 319, CNC-01 168, CNC-02 184, LKT-01 63, PCK-01 32, WSH-01 15.
 - Changeovers: 1 per CNC (VB-100 → VB-200, 25 min). Tool changes: 2 per CNC (8 min each).
 - Leak test: first-test failure 0.73%; 16 parts reworked, all of which passed the second time.
 - Operators: 1 absence in 15 shifts; ASM-01 was always staffed.
 - Material: no shortage. About 200–300 of each component are left at the end of the week.
 
-**Reading.** ASM-01, the manual bottleneck, works 105.8 of 112.5 production hours. Its losses are minor stops (2.6 h) and short starvation (4.1 h), mostly at the start of shifts and after the changeover. The CNCs are blocked about 20 h because they can make parts faster than ASM-01 can assemble them, and idle about 7.5 h at the end of the week because the program is done.
+**Reading.** ASM-01, the manual bottleneck, works 105.8 of 112.5 production hours. Its losses are minor stops (2.6 h) and starvation (4.1 h). Almost all of the starvation (about 4.0 h) is on Saturday morning, after the weekly program is finished and the upstream stations have run dry; only 5 minutes are at the Monday start. The CNCs are blocked about 20 h because they can make parts faster than ASM-01 can assemble them, and idle about 7.5 h at the end of the week because the program is done.
 
 ## Questions
 

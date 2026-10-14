@@ -40,6 +40,6 @@ Project board: https://github.com/users/kubilayture/projects/1
 ## Health: CI on main, coverage, open bugs
 
 - CI on `main`: green (`verify`, `stack smoke`).
-- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 100 / 91 (floor 90 / 85), simulator about 96 / 89 (floor 80 / 70).
+- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 90 (floor 90 / 85), simulator 87 / 83 (floor 80 / 70; `cli.ts` runs only as a subprocess in tests and is not measured).
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

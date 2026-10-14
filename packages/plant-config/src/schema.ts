@@ -119,6 +119,7 @@ export const processSchema = z.strictObject({
     operation,
     reworkOperation: operation,
     unit: z.string().min(1),
+    resolution: positive,
     mean: positive,
     sigma: positive,
     upperLimit: positive,

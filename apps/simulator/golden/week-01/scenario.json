@@ -1,0 +1,7 @@
+{
+  "description": "Default plant, one production week from Monday 06:00 Istanbul, all Phase 1 models on",
+  "seed": 20261012,
+  "start": "2026-10-12T06:00:00+03:00",
+  "days": 7,
+  "config": "config/plant"
+}

@@ -33,6 +33,10 @@ export class PartBuffer {
     this.#items.push(part);
   }
 
+  contents(): Part[] {
+    return [...this.#items];
+  }
+
   peek(): Part | undefined {
     return this.#items[0];
   }

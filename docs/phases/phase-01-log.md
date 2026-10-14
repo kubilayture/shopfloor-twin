@@ -18,3 +18,4 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Merged #40 (#25): quality model.
 - Merged #41 (#27): materials.
 - Owner decision: until Phase 1 closes, Claude reviews and merges the remaining Phase 1 PRs itself, with squash, a green CI and a separate review agent per PR. This temporarily overrides ADR-0004's "Claude never merges".
+- Merged #42 (#28, squash): headless runner. A review agent found no blockers but 4 should-fix points (run boundary, write errors, time-zone-dependent `--start`, argument validation), all fixed before merge.

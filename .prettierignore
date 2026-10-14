@@ -1,2 +1,3 @@
 pnpm-lock.yaml
 docs/project-plan.md
+apps/simulator/golden/**/summary.json

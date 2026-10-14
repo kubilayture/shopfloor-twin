@@ -7,7 +7,8 @@
     "typecheck": "tsc",
     "lint": "eslint .",
     "test": "vitest run --coverage",
-    "headless": "node src/headless/cli.ts"
+    "headless": "node src/headless/cli.ts",
+    "test:golden": "node src/headless/golden.ts"
   },
   "dependencies": {
     "@shopfloor/plant-config": "workspace:*",

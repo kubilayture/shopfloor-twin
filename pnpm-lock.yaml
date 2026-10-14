@@ -352,6 +352,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@shopfloor/test-kit':
+        specifier: workspace:*
+        version: link:../test-kit
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -367,6 +370,27 @@ importers:
       fast-check:
         specifier: 'catalog:'
         version: 4.10.2
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.11(@types/node@26.6.5)(@vitest/coverage-v8@4.1.11)(vite@8.3.4(@types/node@26.6.5)(yaml@2.9.1))
+
+  packages/test-kit:
+    devDependencies:
+      '@shopfloor/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@shopfloor/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.5
+      eslint:
+        specifier: 'catalog:'
+        version: 10.12.0(supports-color@7.2.0)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

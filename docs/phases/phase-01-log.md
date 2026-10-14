@@ -8,3 +8,5 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Phase 1 started after Phase 0 was closed without its learning step (owner decision).
 - Merged #32 (#18): `sim-core` event queue and kernel, ADR-0006, determinism lint rule.
 - Merged #33 (#21): `plant-config` with default plant files; conflicts with #32 resolved by merging `main`.
+- Merged #34 (#19): random streams, ADR-0007.
+- Merged #35 (#22): machine state machine; `docs/simulation-model.md` created.

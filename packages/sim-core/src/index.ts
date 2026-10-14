@@ -1,3 +1,16 @@
+export {
+  bernoulli,
+  exponential,
+  logNormal,
+  logNormalFromMeanCv,
+  logNormalFromMedian,
+  logNormalParametersFromMeanCv,
+  normal,
+  poissonArrivalGap,
+  standardNormal,
+  uniform,
+  weibull,
+} from './distributions.ts';
 export { EventQueue } from './event-queue.ts';
 export type { EventHandle, QueuedEvent } from './event-queue.ts';
 export { RandomSource, Xoshiro128StarStar, fmix32, fnv1a32, streamState } from './random.ts';

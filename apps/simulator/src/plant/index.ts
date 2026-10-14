@@ -7,3 +7,7 @@ export {
   canTransition,
 } from './machine-state.ts';
 export type { MachineState } from './machine-state.ts';
+export { PartBuffer } from './buffer.ts';
+export type { Part } from './buffer.ts';
+export { ProductionLine } from './line.ts';
+export type { LineEvent, LineOptions, PlantEvent } from './line.ts';

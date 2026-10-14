@@ -235,6 +235,9 @@ importers:
 
   apps/simulator:
     dependencies:
+      '@shopfloor/plant-config':
+        specifier: workspace:*
+        version: link:../../packages/plant-config
       '@shopfloor/sim-core':
         specifier: workspace:*
         version: link:../../packages/sim-core

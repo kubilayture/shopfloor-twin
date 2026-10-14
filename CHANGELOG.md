@@ -10,6 +10,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Plant model material flow: stations, finite buffers with blocking and starving, parallel CNCs, log-normal cycle times, serials at OP10, changeovers from the weekly schedule; transitions Running→Setup, Blocked→Starved and Blocked→Setup added (#23).
 - `sim-core` distributions: uniform, Bernoulli, exponential, Poisson arrivals, normal, log-normal (three parameterizations), Weibull, each with a fixed draw count; `@shopfloor/test-kit` with Kolmogorov–Smirnov and chi-square helpers; statistical tests with fixed seeds (#20).
 - `sim-core` random streams: xoshiro128** generator verified against the reference C implementation, one stream per entity key derived from the master seed; ADR-0007 (#19).
 - `apps/simulator` with the machine state machine: ten states, exhaustive transition table, time-in-state accounting; `docs/simulation-model.md` with the state diagram, checked against the code by a test (#22).

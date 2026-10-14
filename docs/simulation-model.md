@@ -38,6 +38,7 @@ stateDiagram-v2
   Running --> Starved
   Running --> Blocked
   Running --> Down
+  Running --> Setup
   Running --> PlannedStop
   Stopped --> Running
   Stopped --> Down
@@ -50,6 +51,8 @@ stateDiagram-v2
   Starved --> Off
   Blocked --> Running
   Blocked --> Idle
+  Blocked --> Starved
+  Blocked --> Setup
   Blocked --> Down
   Blocked --> PlannedStop
   Blocked --> Off
@@ -72,13 +75,72 @@ Rules behind the table:
 
 - A breakdown can interrupt any active state, but a machine that is `Down` stays `Down` through breaks and shift ends until the repair finishes. Its time stays an availability loss, as in a real plant.
 - `Stopped` returns to `Running` (the interrupted cycle continues), escalates to `Down`, or is overtaken by a planned break.
-- `Setup` starts only from a machine that is not producing (`Idle`, `Starved` or `PlannedStop`).
+- `Setup` starts only between cycles, never mid-cycle: right after a cycle ends (`Running` or `Blocked`, when the next campaign needs another product) or from `Idle`, `Starved` or `PlannedStop`.
 - A transition to the same state is illegal: it would mean the model lost track of what the machine is doing.
 - An illegal transition throws `IllegalTransitionError`, a programmer error that stops the run (plan section 4).
 
 ### Time accounting
 
 Each machine accumulates the time spent in every state. At any moment, the durations of all states sum exactly to the time since the machine was created (plan section 4). Time is in integer milliseconds (ADR-0006), so the sum is exact. A property test generates random legal transition sequences and checks this.
+
+## Material flow
+
+Source: `apps/simulator/src/plant/line.ts`. Failures, minor stops, shifts, operators and materials are added by later issues (#24–#27). This section describes the flow they build on.
+
+### Stations and buffers
+
+- One station per piece of equipment in `config/plant/plant.yaml`. Each station works on one part at a time.
+- Finite FIFO buffers join consecutive operations, with capacities from `plant.yaml` (default 20, 30, 5 and 10). CNC-01 and CNC-02 both feed the OP10→OP20 buffer. PCK-01 delivers to finished goods, which is unbounded.
+- A station whose input buffer is empty enters `Starved`. A station whose output buffer is full when a cycle ends keeps the finished part and enters `Blocked`. As soon as a slot frees up, it unloads and starts its next cycle at the same simulated millisecond.
+- When several stations react at the same instant, they are handled in configuration order. The result is deterministic.
+
+### What OP10 makes: the weekly schedule
+
+Each CNC works through its campaigns in `config/plant/schedule.yaml` in order (plan rev. 5).
+
+- A CNC starts the run already set up for its first campaign.
+- When the next campaign is a different product, the CNC enters `Setup` for `changeoverMinutes` (default 25), with cause `CHANGEOVER <from>→<to>`.
+- When all campaigns are done, the CNC goes to `Idle` with cause `SCHEDULE-COMPLETE`.
+- In Phase 1 a CNC never runs out of blanks; material lots arrive with #27.
+
+### Cycle times
+
+A cycle at an operation takes a log-normal time whose **mean** is the product's ideal cycle time (`products.yaml`) and whose coefficient of variation comes from `process.yaml`. A CV of 0 means exactly the ideal time. The time is rounded to whole milliseconds, with a minimum of 1 ms.
+
+Assumption to review: with the mean equal to the ideal, individual cycles are sometimes faster than ideal, and performance over a long run is close to 100%. Performance losses come from minor stops (#24) and operator speed factors (#26), not from the cycle-time noise.
+
+### Serial numbers
+
+A part gets its serial when its OP10 cycle ends: `<product>-<six-digit sequence>`, for example `VB-100-000042`. The sequence is shared by both CNCs and follows the order in which parts were started. Every `cycle-complete` event after OP10 carries the same serial.
+
+### Events
+
+The line reports two kinds of events, which the event log (#28) will write out:
+
+- `state`: every machine state change, with time, from, to and an optional cause;
+- `cycle-complete`: time, machine, product, part id and serial.
+
+### Validation
+
+`apps/simulator/src/plant/line.test.ts`:
+
+- **Bottleneck:** with failures off and only VB-100 scheduled, output over 24 h is within 2% of (24 h − fill time) / 150 s. ASM-01 runs more than 99% of the time. The same holds for VB-200 at 210 s.
+- **Blocking and starving:** the faster upstream machines are blocked and the faster downstream ones are starved, as plan section 3 predicts.
+- **Buffers** never exceed their capacity.
+- **Serials** are unique, assigned at OP10, and arrive at the end of the line unchanged.
+- **Changeover:** takes exactly 25 min and happens only on the CNC whose campaign changes.
+- **Accounting:** time per state sums to elapsed time for every machine, and parts are conserved (produced = finished + buffered + in machines).
+- **Determinism:** the same seed gives identical events.
+
+A reference run with seed 1 over 24 h (VB-100 only) finished 572 parts, against 574 at the ideal bottleneck rate:
+
+| Machine         | Running | Blocked | Starved |
+| --------------- | ------- | ------- | ------- |
+| CNC-01 / CNC-02 | 87%     | 13%     | –       |
+| WSH-01          | 42%     | 48%     | 10%     |
+| ASM-01          | 99.7%   | –       | 0.3%    |
+| LKT-01          | 60%     | –       | 40%     |
+| PCK-01          | 20%     | –       | 80%     |
 
 ## Random numbers and distributions
 

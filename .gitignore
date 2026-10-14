@@ -10,3 +10,5 @@ packages/*/src/**/*.js
 apps/*/src/**/*.js
 packages/*/vitest.config.js
 apps/*/vitest.config.js
+runs/
+apps/*/runs/

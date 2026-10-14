@@ -57,7 +57,8 @@ describe('shift calendar in the running plant (plan section 3)', () => {
     const { events, durations, line } = run(WEEK, steady);
     const shifts = events.filter((e) => e.type === 'shift');
     const starts = shifts.filter((e) => e.action === 'shift-start').map((e) => e.at);
-    expect(starts.filter((at) => at < MONDAY_0600 + WEEK)).toHaveLength(14);
+    expect(starts.filter((at) => at < MONDAY_0600 + WEEK)).toHaveLength(15);
+    expect(starts[0]).toBe(MONDAY_0600);
     expect(starts.at(-1)).toBe(MONDAY_0600 + WEEK);
     expect(shifts.filter((e) => e.action === 'shift-end').map((e) => e.at)).toEqual([
       MONDAY_0600 + 5 * 24 * HOUR,

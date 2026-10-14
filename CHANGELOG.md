@@ -13,6 +13,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Headless runner: `pnpm sim:headless` writes a versioned JSONL event log with a run header and a ground-truth summary (state time per machine in total and per shift, cycles, production, lots); deterministic, byte-stable serialization (#28).
 - Material lots with FIFO consumption: blanks at OP10, components at OP30, a new seal kit on rework; `MATERIAL:<code>` starvation; blocking and releasing lots; `material-consumed` events for genealogy (#27).
 - Tool wear with OP10 dimensional scrap and tool changes; leak-test readings with drift and weekly calibration (`Maintenance`); rework loop through a rework queue at OP30, scrap on a second failure; `result`, `reason` and `measurement` on `cycle-complete` events (#25).
 - Shift calendar (Temporal, DST-safe, handovers, weekend), breaks and shift ends as `PlannedStop` / `Off` with exact resume; operators with absences, skills and speed factors; ASM-01 needs a qualified operator; `shift` and `operator` events (#26).

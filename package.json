@@ -17,7 +17,8 @@
     "stack:up": "docker compose up -d --wait",
     "stack:down": "docker compose down",
     "stack:reset": "docker compose down --volumes",
-    "stack:smoke": "sh scripts/stack-smoke.sh"
+    "stack:smoke": "sh scripts/stack-smoke.sh",
+    "sim:headless": "pnpm --filter @shopfloor/simulator headless"
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",

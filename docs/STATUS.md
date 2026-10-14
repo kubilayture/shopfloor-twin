@@ -6,6 +6,8 @@
 
 ## Done since last update
 
+- #27 merged (PR #41): material lots, consumption, genealogy events.
+- Owner decision (2026-10-14): until Phase 1 is finished, Claude reviews and merges the Phase 1 pull requests itself (squash, CI green, separate review agent per PR); temporary override of ADR-0004.
 - #25 merged (PR #40): tool wear, OP10 scrap, leak test, rework loop.
 - #26 merged (PR #39): shift calendar, breaks, operators; default schedule raised to fill the week.
 - #24 merged (PR #38): breakdowns, minor stops, repairs, running-time clocks.
@@ -20,13 +22,12 @@
 
 ## In progress
 
-- #27 Plant model: material lots and consumption (in review)
+- #28 Headless runner, event log and ground-truth summary
 
 ## Next up
 
-- #28 headless runner, event log and ground-truth summary
 - #29 invariants, determinism and golden scenario
-- #30 close Phase 1
+- #30 close Phase 1 (owner's realism check of a simulated week)
 
 ## Blockers and open questions for the owner
 

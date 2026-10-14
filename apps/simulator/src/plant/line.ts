@@ -262,7 +262,12 @@ export class ProductionLine {
     this.#scheduleCalendar(simulation, this.#now + 1, this.#now + CALENDAR_WINDOW);
     const current = shiftAt(this.#config.shifts, this.#now);
     if (current) {
-      this.#staff(current.shiftId);
+      const { shiftId, shiftDate } = current;
+      this.#onEvent({ type: 'shift', at: this.#now, action: 'shift-start', shiftId, shiftDate });
+      if (current.inBreak) {
+        this.#onEvent({ type: 'shift', at: this.#now, action: 'break-start', shiftId, shiftDate });
+      }
+      this.#staff(shiftId);
       this.#unavailable = current.inBreak ? 'PlannedStop' : undefined;
     }
     this.stations.forEach((station) => {

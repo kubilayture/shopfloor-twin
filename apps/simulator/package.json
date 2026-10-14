@@ -6,7 +6,8 @@
   "scripts": {
     "typecheck": "tsc",
     "lint": "eslint .",
-    "test": "vitest run --coverage"
+    "test": "vitest run --coverage",
+    "headless": "node src/headless/cli.ts"
   },
   "dependencies": {
     "@shopfloor/plant-config": "workspace:*",

@@ -76,8 +76,8 @@ describe('Machine transitions', () => {
   it('names the machine and both states in the error', () => {
     const machine = new Machine('lkt-01', 'Maintenance', T0);
     expect(() => {
-      machine.transition('Running', T0);
-    }).toThrow('lkt-01: illegal transition Maintenance → Running');
+      machine.transition('Blocked', T0);
+    }).toThrow('lkt-01: illegal transition Maintenance → Blocked');
   });
 
   it('rejects a transition earlier than the previous one', () => {

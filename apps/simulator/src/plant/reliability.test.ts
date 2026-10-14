@@ -3,7 +3,7 @@ import { formatIssues, loadPlantConfig, type PlantConfig } from '@shopfloor/plan
 import { HOUR, MINUTE, RandomSource, SECOND, Simulation } from '@shopfloor/sim-core';
 import { exponentialCdf, ksTest, logNormalCdf, weibullCdf } from '@shopfloor/test-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { continuousOperation, runningTimeBetween } from './testing.ts';
+import { continuousOperation, runningTimeBetween, partsAccountedFor } from './testing.ts';
 import { ProductionLine, type LineEvent, type PlantEvent } from './line.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
@@ -158,9 +158,7 @@ describe('breakdowns, minor stops and repairs (plan section 4)', () => {
       const durations = station.machine.durations(T0 + duration);
       expect(Object.values(durations).reduce((s, d) => s + d, 0)).toBe(duration);
     });
-    const inBuffers = line.buffers.reduce((s, b) => s + b.size, 0);
-    const inMachines = line.stations.filter((s) => s.part !== undefined).length;
-    expect(line.producedParts).toBe(line.finished.length + inBuffers + inMachines);
+    expect(line.producedParts).toBe(partsAccountedFor(line));
   });
 
   it('is deterministic with failures on', () => {

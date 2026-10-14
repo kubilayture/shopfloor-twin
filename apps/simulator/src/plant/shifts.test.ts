@@ -4,7 +4,7 @@ import { chiSquareTest } from '@shopfloor/test-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { shiftAt } from './calendar.ts';
 import { ProductionLine, type LineEvent, type PlantEvent } from './line.ts';
-import { loadDefaultConfig, runningTimeBetween } from './testing.ts';
+import { loadDefaultConfig, runningTimeBetween, partsAccountedFor } from './testing.ts';
 
 const MONDAY_0600 = Date.UTC(2026, 9, 12, 3);
 const WEEK = 7 * 24 * HOUR;
@@ -160,9 +160,7 @@ describe('full model over two weeks', () => {
       const total = Object.values(a.durations(station.id)).reduce((s, d) => s + d, 0);
       expect(total).toBe(duration);
     }
-    const inBuffers = a.line.buffers.reduce((s, b) => s + b.size, 0);
-    const inMachines = a.line.stations.filter((s) => s.part !== undefined).length;
-    expect(a.line.producedParts).toBe(a.line.finished.length + inBuffers + inMachines);
+    expect(a.line.producedParts).toBe(partsAccountedFor(a.line));
     expect(JSON.stringify(run(duration).events)).toBe(JSON.stringify(a.events));
   });
 });

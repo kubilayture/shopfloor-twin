@@ -14,3 +14,4 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Merged #37 (#23): material flow; transitions Running→Setup, Blocked→Starved, Blocked→Setup added.
 - Decision: #24 and #26 are done one after the other, not in parallel, because both change how running is interrupted in `line.ts`.
 - Merged #38 (#24): breakdowns, minor stops and repairs.
+- Merged #39 (#26): shifts, breaks and operators.

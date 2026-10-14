@@ -3,6 +3,7 @@ import {
   HOUR,
   MINUTE,
   SECOND,
+  bernoulli,
   exponential,
   logNormalFromMeanCv,
   logNormalFromMedian,
@@ -17,6 +18,7 @@ import {
 import { PartBuffer, type Part } from './buffer.ts';
 import { shiftAt, shiftBoundaries, type CalendarBoundary } from './calendar.ts';
 import { Crew, type Assignment } from './crew.ts';
+import { LeakTester, ToolWear } from './quality.ts';
 import { Machine, type StateChange } from './machine.ts';
 import type { MachineState } from './machine-state.ts';
 import { RunningClock } from './running-clock.ts';
@@ -25,7 +27,8 @@ type StationEvent =
   | { readonly type: 'clock'; readonly station: string }
   | { readonly type: 'setup-end'; readonly station: string }
   | { readonly type: 'stop-end'; readonly station: string }
-  | { readonly type: 'repair-end'; readonly station: string };
+  | { readonly type: 'repair-end'; readonly station: string }
+  | { readonly type: 'maintenance-end'; readonly station: string };
 
 export type LineEvent =
   | StationEvent
@@ -41,6 +44,9 @@ export type PlantEvent =
       readonly product: string;
       readonly partId: number;
       readonly serial: string;
+      readonly result: 'good' | 'scrap' | 'rework';
+      readonly reason?: string;
+      readonly measurement?: Measurement;
     }
   | {
       readonly type: 'repair-start' | 'repair-end';
@@ -62,6 +68,13 @@ export type PlantEvent =
       readonly operatorId: string | null;
       readonly absent: readonly string[];
     };
+
+export interface Measurement {
+  readonly characteristic: string;
+  readonly value: number;
+  readonly unit: string;
+  readonly upperLimit: number;
+}
 
 type Unavailable = 'Off' | 'PlannedStop';
 
@@ -107,6 +120,10 @@ interface Station {
   readonly output: PartBuffer | undefined;
   readonly campaigns: Campaign[] | undefined;
   readonly requiresOperator: boolean;
+  readonly tool: ToolWear | undefined;
+  readonly defects: RandomStream;
+  readonly leak: LeakTester | undefined;
+  readonly rework: Part[] | undefined;
   operator: Assignment | undefined;
   stopEnd: EventHandle | undefined;
   loadedProduct: string | undefined;
@@ -129,6 +146,7 @@ export class ProductionLine {
   readonly stations: readonly Station[];
   readonly buffers: readonly PartBuffer[];
   readonly finished: Part[] = [];
+  readonly scrapped: Part[] = [];
   readonly #config: PlantConfig;
   readonly #onEvent: (event: PlantEvent) => void;
   readonly #repairQueue: Station[] = [];
@@ -202,6 +220,17 @@ export class ProductionLine {
         output: this.buffers.find((b) => b.from === item.operation),
         campaigns,
         requiresOperator: item.requiresOperator,
+        tool: campaigns ? new ToolWear(config.process.tool) : undefined,
+        defects: random.stream(`${item.id}/quality/defect`),
+        leak:
+          item.operation === config.process.leakTest.operation
+            ? new LeakTester(
+                config.process.leakTest,
+                random.stream(`${item.id}/quality/leak`),
+                startTime,
+              )
+            : undefined,
+        rework: item.operation === config.process.leakTest.reworkOperation ? [] : undefined,
         operator: undefined,
         stopEnd: undefined,
         loadedProduct: campaigns?.[0]?.product,
@@ -264,6 +293,15 @@ export class ProductionLine {
         break;
       case 'repair-end':
         this.#finishRepair(station, simulation);
+        break;
+      case 'maintenance-end':
+        station.leak?.calibrate(this.#now);
+        station.busy = false;
+        if (this.#canWork(station)) {
+          this.#tryStart(station, simulation);
+        } else {
+          this.#enter(station, this.#unavailable ?? 'Idle', this.#unavailableCause(station));
+        }
         break;
     }
   }
@@ -339,7 +377,7 @@ export class ProductionLine {
     simulation: Simulation<LineEvent>,
   ): void {
     const state = station.machine.state;
-    if (state === 'Setup' || state === 'Down' || state === to) {
+    if (state === 'Setup' || state === 'Down' || state === 'Maintenance' || state === to) {
       return;
     }
     if (station.stopEnd) {
@@ -352,7 +390,7 @@ export class ProductionLine {
 
   #activate(station: Station, simulation: Simulation<LineEvent>): void {
     const state = station.machine.state;
-    if (state === 'Setup' || state === 'Down') {
+    if (state === 'Setup' || state === 'Down' || state === 'Maintenance') {
       return;
     }
     if (!this.#canWork(station)) {
@@ -499,6 +537,29 @@ export class ProductionLine {
     if (station.busy || !this.#canWork(station)) {
       return;
     }
+    if (station.tool?.needsChange) {
+      station.tool.change();
+      this.#occupy(
+        station,
+        'Setup',
+        'TOOL-CHANGE',
+        this.#config.process.tool.changeMinutes,
+        'setup-end',
+        simulation,
+      );
+      return;
+    }
+    if (station.leak?.calibrationDue(this.#now)) {
+      this.#occupy(
+        station,
+        'Maintenance',
+        'CALIBRATION',
+        this.#config.process.leakTest.calibrationMinutes,
+        'maintenance-end',
+        simulation,
+      );
+      return;
+    }
     const part = station.campaigns
       ? this.#nextBlank(station, simulation)
       : this.#takeFromInput(station);
@@ -532,8 +593,21 @@ export class ProductionLine {
     return { id: this.#nextPartId++, product: campaign.product };
   }
 
+  #occupy(
+    station: Station,
+    state: MachineState,
+    cause: string,
+    minutes: number,
+    end: 'setup-end' | 'maintenance-end',
+    simulation: Simulation<LineEvent>,
+  ): void {
+    station.busy = true;
+    this.#enter(station, state, cause);
+    simulation.scheduleIn(millis(minutes * MINUTE), { type: end, station: station.id });
+  }
+
   #takeFromInput(station: Station): Part | undefined {
-    const part = station.input?.shift();
+    const part = station.rework?.shift() ?? station.input?.shift();
     if (!part) {
       this.#enter(station, 'Starved');
     }
@@ -568,15 +642,74 @@ export class ProductionLine {
     if (station.campaigns) {
       part.serial = `${part.product}-${String(part.id).padStart(6, '0')}`;
     }
-    this.#onEvent({
-      type: 'cycle-complete',
-      at: this.#now,
-      machineId: station.id,
-      product: part.product,
-      partId: part.id,
-      serial: part.serial ?? '',
-    });
+    const complete = (
+      result: 'good' | 'scrap' | 'rework',
+      extra: { reason?: string; measurement?: Measurement } = {},
+    ): void => {
+      this.#onEvent({
+        type: 'cycle-complete',
+        at: this.#now,
+        machineId: station.id,
+        product: part.product,
+        partId: part.id,
+        serial: part.serial ?? '',
+        result,
+        ...extra,
+      });
+    };
+    if (station.tool) {
+      const defective = bernoulli(station.defects, station.tool.defectProbability());
+      station.tool.recordCycle();
+      if (defective) {
+        complete('scrap', { reason: 'DIMENSIONAL' });
+        this.#scrap(station, part, simulation);
+        return;
+      }
+    }
+    if (station.leak) {
+      const config = this.#config.process.leakTest;
+      const reading = station.leak.measure(this.#now);
+      const measurement = {
+        characteristic: 'leak-rate',
+        value: reading.value,
+        unit: config.unit,
+        upperLimit: config.upperLimit,
+      };
+      if (!reading.pass) {
+        part.leakFailures = (part.leakFailures ?? 0) + 1;
+        if (part.leakFailures === 1) {
+          complete('rework', { reason: 'LEAK', measurement });
+          this.#sendToRework(station, part, simulation);
+        } else {
+          complete('scrap', { reason: 'LEAK', measurement });
+          this.#scrap(station, part, simulation);
+        }
+        return;
+      }
+      complete('good', { measurement });
+    } else {
+      complete('good');
+    }
     this.#unload(station, simulation);
+  }
+
+  #scrap(station: Station, part: Part, simulation: Simulation<LineEvent>): void {
+    this.scrapped.push(part);
+    station.part = undefined;
+    station.busy = false;
+    this.#tryStart(station, simulation);
+  }
+
+  #sendToRework(station: Station, part: Part, simulation: Simulation<LineEvent>): void {
+    const target = this.stations.find((s) => s.rework !== undefined);
+    if (!target?.rework) {
+      throw new RangeError('no rework station configured');
+    }
+    target.rework.push(part);
+    station.part = undefined;
+    station.busy = false;
+    this.#tryStart(target, simulation);
+    this.#tryStart(station, simulation);
   }
 
   #unload(station: Station, simulation: Simulation<LineEvent>): void {

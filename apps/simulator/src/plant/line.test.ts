@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import { formatIssues, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import { HOUR, MINUTE, RandomSource, Simulation } from '@shopfloor/sim-core';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { continuousOperation } from './testing.ts';
+import { continuousOperation, partsAccountedFor } from './testing.ts';
 import { ProductionLine, type LineEvent, type PlantEvent } from './line.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
@@ -143,9 +143,7 @@ describe('material flow with failures off (plan section 3)', () => {
 
   it('conserves parts: produced = finished + in buffers + in machines', () => {
     const { line } = run(lots('VB-100', 5_000), 7 * HOUR + 13 * MINUTE);
-    const inBuffers = line.buffers.reduce((s, b) => s + b.size, 0);
-    const inMachines = line.stations.filter((s) => s.part !== undefined).length;
-    expect(line.producedParts).toBe(line.finished.length + inBuffers + inMachines);
+    expect(line.producedParts).toBe(partsAccountedFor(line));
   });
 
   it('is deterministic: the same seed gives the same events, another seed different ones', () => {

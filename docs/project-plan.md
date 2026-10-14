@@ -49,13 +49,13 @@ ShopFloor Twin is a realistic simulation of a discrete-manufacturing plant plus 
 
 ## 2. Working model
 
-Claude writes the code; the owner reviews every change, runs it, and must be able to explain it before a phase closes. The repository is the shared memory: Claude sessions do not remember each other, so every session starts by reading the tracking files and ends by updating them.
+Claude writes the code; an independent review agent reviews every change before Claude merges it, and the owner approves the plan and every phase close (ADR-0011). The repository is the shared memory: Claude sessions do not remember each other, so every session starts by reading the tracking files and ends by updating them.
 
 **Roles**
 
 | Role | Responsibilities |
 | --- | --- |
-| Owner (you) | Creates the GitHub repo and connects it to Claude; approves the plan and every phase; approves the plan and every phase, including its realism or demo checks; may review, comment on or revert any pull request (ADR-0011); completes the learning exercise of each phase if they wish; decides on open questions |
+| Owner (you) | Creates the GitHub repo and connects it to Claude; approves the plan and every phase, including its realism or demo checks; may review, comment on or revert any pull request (ADR-0011); completes the learning exercise of each phase if they wish; decides on open questions |
 | Claude (developer) | Implements tasks on branches; writes tests and docs with the code; opens pull requests with an explanation aimed at learning; has each one reviewed by an independent review agent, fixes the findings and squash-merges when CI is green (ADR-0011); updates tracking files; proposes ADRs for any decision not already in this plan |
 
 **Unit of work.** One task = one GitHub issue = one branch = one pull request. A task is sized to be reviewable in under one hour (as a guideline, roughly 400 changed lines excluding generated files and fixtures).
@@ -79,7 +79,8 @@ Claude writes the code; the owner reviews every change, runs it, and must be abl
 
 - [ ] Acceptance criteria in the issue are met
 - [ ] Unit tests added or updated; integration or E2E tests where the task crosses a process boundary
-- [ ] `pnpm verify` passes locally and CI is green
+- [ ] `pnpm verify` passes locally and CI is green on the latest commit
+- [ ] Independent review agent run; findings fixed or answered in the pull request (ADR-0011)
 - [ ] No new lint suppressions without a comment explaining why
 - [ ] Public contracts (OPC UA address space, UNS topics, REST API, DB schema) documented and versioned
 - [ ] `CHANGELOG.md` entry under "Unreleased"
@@ -91,7 +92,7 @@ Claude writes the code; the owner reviews every change, runs it, and must be abl
 - [ ] Exit criteria of the phase (section 11) demonstrated and recorded
 - [ ] Phase report written in `docs/phases/phase-NN-report.md`
 - [ ] Learning notes written in `docs/learning/phase-NN.md`, with review questions
-- [ ] Owner completed the phase's hands-on exercise and answered the review questions
+- [ ] Owner approved the phase close, including its realism or demo checks (the hands-on exercise and review answers are optional for the owner; the learning notes themselves are required)
 - [ ] Git tag `phase-NN` created and release notes published on GitHub
 
 **Change control.** This plan is the source of truth for scope and design. A change to scope, architecture or technology needs an ADR in `docs/adr/` and a matching edit to this plan in the same pull request, so the two never disagree.
@@ -538,7 +539,7 @@ The golden scenario grows phase by phase: from simulator-only output in Phase 1 
 
 ## 12. Risks, constraints and open decisions
 
-The biggest risk is not technical: it is the scope outgrowing the owner's review capacity, so the plan limits task size and requires a learning gate per phase. Technical risks are known and each has a planned response.
+The biggest risk is not technical: it is the scope outgrowing the owner's review capacity, so the plan limits task size, puts an independent review on every change and requires the owner's approval at every phase close. Technical risks are known and each has a planned response.
 
 | Risk | Likelihood | Impact | Response |
 | --- | --- | --- | --- |

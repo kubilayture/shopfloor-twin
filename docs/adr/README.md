@@ -11,3 +11,4 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0005](0005-dependency-rules-with-no-restricted-imports.md) | Enforce dependency rules with no-restricted-imports     | accepted |
 | [0006](0006-simulation-time.md)                             | Simulation time as integer milliseconds                 | accepted |
 | [0007](0007-random-streams.md)                              | Random streams with xoshiro128** derived per entity key | accepted |
+| [0011](0011-claude-merges-after-independent-review.md)      | Claude merges after an independent review               | accepted |

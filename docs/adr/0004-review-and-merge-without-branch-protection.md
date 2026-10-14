@@ -1,6 +1,6 @@
 # ADR-0004: Review and merge without branch protection
 
-- Status: accepted
+- Status: superseded by ADR-0011 (merge rule only; branch protection is still unavailable)
 - Date: 2026-10-10
 - Deciders: owner
 

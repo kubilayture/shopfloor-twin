@@ -9,6 +9,8 @@ Oct 10, 2026 · @Kubilay
 > **Change note — rev. 4 (11 Oct 2026).** All documentation, including learning files and PR "Concepts" notes, is written in English; the Turkish rule of rev. 3 is withdrawn because mixed languages read as inconsistent (sections 2, 10).
 >
 > **Change note — rev. 5 (12 Oct 2026).** Phases 1–6 run from a fixed weekly production schedule file (variant campaigns per CNC), the counterpart of the initial stock file, until released orders replace it in Phase 7 (sections 4, 11). Found while planning Phase 1: the plan defined what is in stock but not what to make.
+>
+> **Change note — rev. 6 (15 Oct 2026).** Claude merges pull requests after an independent review agent and a green CI; the owner approves plans and phases and may review or revert any PR (ADR-0011, superseding ADR-0004's merge rule; sections 2, 8, 12).
 
 ShopFloor Twin is a realistic simulation of a discrete-manufacturing plant plus a working MES core built on top of it, developed end to end in TypeScript. The simulator plays the role of the physical shop floor; everything above it (edge gateway, MQTT Unified Namespace, historian, MES, operator and management UIs) is built the way it would be in a real plant, so the same software could in principle be pointed at real machines.
 
@@ -53,8 +55,8 @@ Claude writes the code; the owner reviews every change, runs it, and must be abl
 
 | Role | Responsibilities |
 | --- | --- |
-| Owner (you) | Creates the GitHub repo and connects it to Claude; approves the plan and every phase; reviews and merges pull requests (the merge is the approval, see ADR-0004); completes the learning exercise of each phase; decides on open questions |
-| Claude (developer) | Implements tasks on branches; writes tests and docs with the code; opens pull requests with an explanation aimed at learning; updates tracking files; proposes ADRs for any decision not already in this plan |
+| Owner (you) | Creates the GitHub repo and connects it to Claude; approves the plan and every phase; approves the plan and every phase, including its realism or demo checks; may review, comment on or revert any pull request (ADR-0011); completes the learning exercise of each phase if they wish; decides on open questions |
+| Claude (developer) | Implements tasks on branches; writes tests and docs with the code; opens pull requests with an explanation aimed at learning; has each one reviewed by an independent review agent, fixes the findings and squash-merges when CI is green (ADR-0011); updates tracking files; proposes ADRs for any decision not already in this plan |
 
 **Unit of work.** One task = one GitHub issue = one branch = one pull request. A task is sized to be reviewable in under one hour (as a guideline, roughly 400 changed lines excluding generated files and fixtures).
 
@@ -403,7 +405,7 @@ shopfloor-twin/
 
 - Trunk-based: `main` is always green and releasable; short-lived branches named `<type>/<issue>-<slug>`, for example `feat/42-oee-calculator`.
 - Conventional Commits; squash-merge so each pull request becomes one commit on `main`.
-- Merge rules: CI green and the owner's merge (which is the approval). The repository is private on GitHub Free, where branch protection is not available, so these are working rules rather than enforced settings; Claude never merges or pushes to `main` directly. See ADR-0004; switch to enforced protection if the repository becomes public or moves to GitHub Pro.
+- Merge rules (ADR-0011): Claude squash-merges a pull request after an independent review agent has reviewed it, its findings are fixed or answered in the PR, and CI is green on the latest commit. A review comment from the owner blocks the merge until answered. The repository is private on GitHub Free, where branch protection is not available, so these are working rules rather than enforced settings; nobody pushes to `main` directly (tags excepted).
 - Tags: `phase-NN` at each phase close, `v1.0.0` at release; Semantic Versioning for the release.
 
 ## 9. Testing and verification
@@ -540,7 +542,7 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 
 | Risk | Likelihood | Impact | Response |
 | --- | --- | --- | --- |
-| Review backlog: code is produced faster than the owner can understand it | High | High | Task size limit (section 2); a phase cannot close without the owner's learning file; Claude pauses new work when more than two pull requests await review |
+| Owner understanding: code is produced and merged faster than the owner follows it | High | Medium | Task size limit (section 2); independent review agent per PR (ADR-0011); at most two open pull requests; phase reports, owner-approved realism or demo checks at every phase close; optional learning notes |
 | Realism drift: simulator behaviour is plausible but not validated | Medium | Medium | Every model documented with parameters and validated statistically; owner checks behaviour against his factory experience at each Phase 1 review |
 | node-opcua feature gaps (for example Alarms & Conditions details or companion nodesets) | Medium | Medium | Spike in Phase 2 before committing; fallback to state variables recorded in an ADR |
 | Modbus library limitations | Low | Low | Spike in Phase 3; the washer is a single device, so a swap is cheap |

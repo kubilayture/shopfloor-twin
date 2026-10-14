@@ -52,4 +52,6 @@ Defaults are what the model does now. Values are in `config/plant/*.yaml`; behav
 11. **Weekly start:** CNCs start Monday already set up for their first campaign; the program counts blanks, so scrap lowers output, with no scrap allowance. OK?
 12. **Rework:** goes through a separate rework queue at ASM-01 (not back into the OP20→OP30 buffer) and gets a new seal kit, but not a new spool. OK?
 
-When all answers are in, the Phase 1 tag (`phase-01`) is created.
+## Owner's answer
+
+**2026-10-14: all 12 accepted as they are ("hepsi OK").** The defaults and behaviours above stay unchanged, and exit criterion 5 is met.

@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #20 merged (PR #36): `sim-core` distributions, `test-kit` goodness-of-fit helpers.
 - #22 merged (PR #35): machine state machine, `docs/simulation-model.md`.
 - #19 merged (PR #34): `sim-core` random streams (xoshiro128**), ADR-0007.
 - #21 merged (PR #33): `plant-config` schema, loader and default plant files.
@@ -15,11 +16,11 @@
 
 ## In progress
 
-- #20 `sim-core`: distributions and goodness-of-fit helpers (in review)
+- #23 Plant model: material flow, buffers and changeovers (in review)
 
 ## Next up
 
-- #23 Plant model: material flow, buffers and changeovers (after #20)
+- #24 breakdowns and minor stops, #25 quality, #26 shifts and operators, #27 materials (after #23; two at a time)
 
 ## Blockers and open questions for the owner
 

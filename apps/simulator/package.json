@@ -9,6 +9,7 @@
     "test": "vitest run --coverage"
   },
   "dependencies": {
+    "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/sim-core": "workspace:*"
   },
   "devDependencies": {

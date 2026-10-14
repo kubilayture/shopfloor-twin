@@ -10,3 +10,4 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Merged #33 (#21): `plant-config` with default plant files; conflicts with #32 resolved by merging `main`.
 - Merged #34 (#19): random streams, ADR-0007.
 - Merged #35 (#22): machine state machine; `docs/simulation-model.md` created.
+- Merged #36 (#20): distributions and goodness-of-fit helpers.

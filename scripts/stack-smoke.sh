@@ -23,17 +23,40 @@ if docker compose exec -T broker mosquitto_pub -h localhost -t smoke/anon -m x 2
 fi
 echo "ok: anonymous MQTT client refused"
 
-topic=orbis/gebze/_sys/smoke
-mqtt() {
-  docker compose exec -T broker "$@" -h localhost -u dev -P "$MQTT_DEV_PASSWORD"
+as_user() {
+  user=$1
+  password=$2
+  shift 2
+  docker compose exec -T broker "$@" -h localhost -u "$user" -P "$password"
 }
-mqtt mosquitto_pub -q 1 -r -t "$topic" -m persisted
+
+topic=orbis/gebze/_sys/edge-gateway/gw-01/smoke
+as_user gw-01 "$MQTT_GATEWAY_PASSWORD" mosquitto_pub -q 1 -r -t "$topic" -m persisted
 docker compose restart broker >/dev/null
 docker compose up -d --wait >/dev/null
-received=$(mqtt mosquitto_sub -t "$topic" -C 1 -W 5)
-mqtt mosquitto_pub -r -n -t "$topic"
+received=$(as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t "$topic" -C 1 -W 5 || true)
+as_user gw-01 "$MQTT_GATEWAY_PASSWORD" mosquitto_pub -q 1 -r -n -t "$topic"
 [ "$received" = persisted ] || fail "retained message lost across broker restart"
 echo "ok: retained message survives broker restart"
+
+# delivered <publisher> <publisher password> <topic>: does a message from this user reach `mes`?
+delivered() {
+  as_user mes "$MQTT_MES_PASSWORD" mosquitto_sub -t "$3" -C 1 -W 3 >/tmp/smoke-acl.$$ 2>/dev/null &
+  sub=$!
+  sleep 1
+  as_user "$1" "$2" mosquitto_pub -q 1 -t "$3" -m acl 2>/dev/null || true
+  wait "$sub" || true
+  [ "$(cat /tmp/smoke-acl.$$)" = acl ]
+}
+base=orbis/gebze/machining/cell-m1/cnc-01
+delivered gw-01 "$MQTT_GATEWAY_PASSWORD" "$base/state/smoke" || fail "gw-01 may not publish state"
+if delivered gw-01 "$MQTT_GATEWAY_PASSWORD" "$base/mes/smoke"; then fail "gw-01 published MES context"; fi
+if delivered dev "$MQTT_DEV_PASSWORD" "$base/state/smoke"; then fail "dev published although read-only"; fi
+if delivered gw-01 "$MQTT_GATEWAY_PASSWORD" "orbis/gebze/_sys/edge-gateway/gw-02/status"; then
+  fail "gw-01 published another gateway's status"
+fi
+rm -f /tmp/smoke-acl.$$
+echo "ok: broker ACLs (gateway may publish machine data only; dev is read-only)"
 
 status=$(curl -sf "http://127.0.0.1:${SIM_CONTROL_PORT:-4800}/api/v1/status") || fail "simulator control API not reachable"
 case "$status" in

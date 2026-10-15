@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #74 merged (PR #85): WSH-01 Modbus TCP server.
 - #73 merged (PR #84): washer process values, run epoch.
 - #72 merged (PR #83): UNS contracts, ADR-0015.
 - #71 merged (PR #82): `modbus-serial` (ADR-0013), store-and-forward in SQLite (ADR-0014).
@@ -45,11 +46,11 @@
 
 ## In progress
 
-- #74 Modbus server for WSH-01 (in review)
+- #75 gateway skeleton and broker security (in review)
 
 ## Next up
 
-- #75 gateway skeleton and broker security, #76 OPC UA collector
+- #76 OPC UA collector, #77 Modbus poller, #78 store-and-forward
 
 ## Blockers and open questions for the owner
 

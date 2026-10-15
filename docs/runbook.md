@@ -79,6 +79,20 @@ The other commands are `POST /api/v1/pause`, `POST /api/v1/step`, `PUT /api/v1/s
 - Ctrl+C or SIGTERM stops the run, closes the API and shuts the servers down. An invalid environment exits with status 2.
 - After changing a route, regenerate the OpenAPI description with `pnpm --filter @shopfloor/simulator openapi`. A test fails while it is out of date.
 
+## Run the edge gateway
+
+The gateway publishes to the broker of the stack (`pnpm stack:up` first). In Phase 3 it grows its OPC UA and Modbus collectors (#76, #77); for now it connects, announces its `_sys` status and serves health and metrics.
+
+```bash
+MQTT_PASSWORD=<MQTT_GATEWAY_PASSWORD from .env> pnpm --filter @shopfloor/edge-gateway start
+```
+
+- Environment: `GATEWAY_ID` (default `gw-01`), `MQTT_URL` (`mqtt://127.0.0.1:1883`), `MQTT_USERNAME` (`gw-01`), `MQTT_PASSWORD` (required), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4900`), `PLANT_CONFIG_DIR`, `LOG_LEVEL`. An invalid environment exits with status 2, and secrets are never echoed.
+- `GET /health/live`, `/health/ready` (ready while the broker session is up) and `/metrics`.
+- Watch the status: `docker compose exec broker mosquitto_sub -u dev -P <MQTT_DEV_PASSWORD> -t 'orbis/gebze/_sys/#' -v`.
+
+The gateway's tests start a real Mosquitto with Testcontainers, so Docker must be running. Without `DOCKER_HOST` the tests use the active `docker context`, which covers Colima and similar setups.
+
 ## Golden scenarios
 
 A golden scenario is a fixed seed and configuration whose expected output is committed (plan section 9). Each one lives in `apps/simulator/golden/<name>/`:

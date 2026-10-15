@@ -415,6 +415,31 @@ These are the simulator's internal facts, the "truth". They are not the UNS payl
 
 A run covers the half-open interval [start, end): no event at or after `end` is written. The shift running at `start` (and its break, if the run starts inside one) is announced by `shift` events at `start`, so the log is self-contained. From Phase 5 on, the summary also gets KPIs computed with `oee-core` (plan rev. 2).
 
+## Live mode
+
+Source: `apps/simulator/src/live/`. Plan section 4: "two run modes, one engine".
+
+`LivePacer` drives the same `Simulation` and `ProductionLine` as headless mode, but paces simulation time to wall time:
+
+`simNow = simAnchor + floor((wallNow − wallAnchor) × speed)`, with a speed from 0.5× to 60×.
+
+- On each wake-up it processes every simulation event up to `simNow`, then sets a timer for the next event, or for at most 1 s ahead, so the clock stays fresh even when nothing happens.
+- **Pause** freezes simulation time and **resume** re-anchors. **Speed changes** take effect at once without a jump. **Step** (while paused, or before the first start) processes exactly the next event.
+- An optional end time makes the run half-open, [start, end), as in headless mode.
+
+**Pacing decides only _when_ a step runs, never _what_ happens.** A test runs a live run with pauses, 25 single steps and speed changes in between, and its event stream is identical to the headless run with the same seed and end. Determinism and the golden scenario therefore also cover live mode.
+
+**Two clocks:**
+
+- `pacer.simNow()` is the current simulation time, for clocks and displays.
+- `simulation.now` is the time of the last processed step. It can trail `simNow()` by up to 1 s × speed between events.
+
+OPC UA values use the timestamp of the event that changed them (ADR-0009).
+
+**Accuracy** (test with the real clock, 60× for 1.5 s): simulated time is within 3% of wall time × speed. Events are never processed before their time; lateness is bounded by timer resolution and reported as `lagMs` in `status()`.
+
+The wall clock is injected (`WallClock`), so tests use a manual clock and are exact. Only `systemClock` reads `performance.now()`, and it lives outside `src/plant`, which the determinism lint rule still guards.
+
 ## Invariants and golden scenarios
 
 Source: `apps/simulator/src/headless/invariants.ts` and `golden.ts`.

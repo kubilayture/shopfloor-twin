@@ -71,6 +71,16 @@ describe('Simulation', () => {
     expect(simulation.pending).toBe(1);
   });
 
+  it('reports the time of the next pending event, skipping cancelled ones', () => {
+    const simulation = new Simulation<string>(START);
+    expect(simulation.nextEventTime).toBeUndefined();
+    const first = simulation.scheduleIn(SECOND, 'a');
+    simulation.scheduleIn(3 * SECOND, 'b');
+    expect(simulation.nextEventTime).toBe(START + SECOND);
+    simulation.cancel(first);
+    expect(simulation.nextEventTime).toBe(START + 3 * SECOND);
+  });
+
   it('advances the clock to the end time even when no event is due', () => {
     const simulation = new Simulation<string>(START);
     simulation.runUntil(START + MINUTE, () => undefined);

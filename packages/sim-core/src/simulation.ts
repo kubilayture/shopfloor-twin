@@ -20,6 +20,10 @@ export class Simulation<E> {
     return this.#queue.size;
   }
 
+  get nextEventTime(): SimTime | undefined {
+    return this.#queue.peek()?.time;
+  }
+
   schedule(time: SimTime, event: E): EventHandle {
     assertSimTime(time);
     if (time < this.#now) {

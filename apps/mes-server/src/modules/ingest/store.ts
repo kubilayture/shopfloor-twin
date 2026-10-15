@@ -56,6 +56,11 @@ export interface StoredSample {
   readonly epoch: number;
   readonly seq: number;
   readonly sourceTime: Date;
+  /**
+   * The device epoch the value belongs to: a device fact's own epoch, a telemetry sample's
+   * `deviceEpoch` (contract 1.1), or null for telemetry without it.
+   */
+  readonly deviceEpoch: number | null;
 }
 
 /** What a committed message adds, for listeners (sent after commit). */
@@ -66,7 +71,8 @@ export type IngestNotice =
 
 export type FactOutcome =
   | { readonly status: 'stored'; readonly notices: readonly IngestNotice[] }
-  | { readonly status: 'duplicate' }
+  /** `notices`: a row the table had but the cursor didn't, so nobody was told of it yet. */
+  | { readonly status: 'duplicate'; readonly notices?: readonly IngestNotice[] }
   | { readonly status: 'stale' };
 
 type FactInput = Extract<Classified, { kind: 'event' | 'telemetry' | 'incident' }>;
@@ -283,7 +289,17 @@ export class IngestStore {
       return { inserted, next, notices };
     });
     this.#cursors.set(stream, result.next);
-    if (!result.inserted) return { status: 'duplicate' };
+    // Already in the table, unknown to the cursor: a commit that failed on the way back but was
+    // applied (ADR-0017). Its notices were never sent, so they go out now, with the anchor that
+    // commit may have attributed to this epoch (listeners treat a known anchor as a no-op).
+    if (!result.inserted) {
+      const anchor =
+        input.kind === 'event' ? await this.#firstAnchor(input.equipment, epoch) : undefined;
+      return {
+        status: 'duplicate',
+        notices: [...(anchor ? [{ type: 'anchor' as const, anchor }] : []), ...factNotices(input)],
+      };
+    }
     return { status: 'stored', notices: [...result.notices, ...factNotices(input)] };
   }
 
@@ -331,6 +347,19 @@ export class IngestStore {
       recorded += due.length;
     }
     return recorded;
+  }
+
+  async #firstAnchor(equipment: string, deviceEpoch: number): Promise<StateAnchor | undefined> {
+    const row = await this.#db
+      .selectFrom('ingest.state_anchor')
+      .selectAll()
+      .where('equipment', '=', equipment)
+      .where('device_epoch', '=', deviceEpoch)
+      .where('superseded', '=', false)
+      .orderBy('arrival')
+      .limit(1)
+      .executeTakeFirst();
+    return row && toAnchor(row);
   }
 
   async #insertFact(
@@ -520,6 +549,8 @@ function factNotices(input: FactInput): IngestNotice[] {
         epoch: message.epoch,
         seq: message.seq,
         sourceTime,
+        deviceEpoch:
+          input.kind === 'telemetry' ? (input.message.deviceEpoch ?? null) : message.epoch,
       },
     },
   ];

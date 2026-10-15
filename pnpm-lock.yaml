@@ -329,6 +329,9 @@ importers:
       '@shopfloor/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@shopfloor/oee-core':
+        specifier: workspace:*
+        version: link:../../packages/oee-core
       '@shopfloor/plant-config':
         specifier: workspace:*
         version: link:../../packages/plant-config

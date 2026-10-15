@@ -386,6 +386,8 @@ export class ModbusPoller {
         scope: 'topic',
         epoch: this.#options.sequences.epoch,
         seq: this.#options.sequences.next(topic),
+        // The epoch register of the same snapshot read as the values and simTime.
+        deviceEpoch: u32(snapshot, REGISTERS.epoch),
         unit: UNS_TELEMETRY[name].unit,
         value: Number(raw.toFixed(decimalsOf(decimals))),
       };

@@ -5,6 +5,7 @@ import { createDatabase } from './db/database.ts';
 import { migrate } from './db/migrate.ts';
 import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
+import { Equipment } from './modules/equipment/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 
@@ -25,6 +26,7 @@ const db = createDatabase(env.DATABASE_URL);
 const state = { migrated: false, stopping: false };
 
 let ingest: Ingest | undefined;
+let equipment: Equipment | undefined;
 
 const { app, registry } = buildMesHttp({
   // Ready once migrated, the database answers and the UNS subscription is granted.
@@ -48,7 +50,12 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
   // Requests and the UNS session first (nothing unstored is acknowledged), then the pool they use.
-  for (const close of [() => app.close(), async () => ingest?.stop(), () => db.destroy()]) {
+  for (const close of [
+    () => app.close(),
+    async () => ingest?.stop(),
+    async () => equipment?.stop(),
+    () => db.destroy(),
+  ]) {
     await close().catch((error: unknown) => {
       log.error(error);
     });
@@ -67,7 +74,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 await app.listen({ host: env.HTTP_HOST, port: env.HTTP_PORT });
 try {
   const result = await migrate(db, env.MIGRATIONS_DIR);
-  await new MasterData(db).seed(plant.config);
+  const masterData = new MasterData(db);
+  await masterData.seed(plant.config);
   state.migrated = true;
   log.info({ applied: result.applied, alreadyApplied: result.skipped }, 'database migrated');
   ingest = new Ingest({
@@ -81,6 +89,14 @@ try {
     registry,
     log: log.child({ module: 'ingest' }),
   });
+  // Intervals catch up from the tables first, then follow ingest's notices.
+  equipment = new Equipment({
+    db,
+    source: ingest,
+    shiftPattern: await masterData.shiftPattern(),
+    log: log.child({ module: 'equipment' }),
+  });
+  await equipment.start();
   await ingest.start();
 } catch (error) {
   if (state.stopping) await new Promise(() => undefined); // shutdown() owns the exit

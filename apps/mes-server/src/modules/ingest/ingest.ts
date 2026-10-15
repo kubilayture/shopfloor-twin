@@ -89,6 +89,15 @@ class Suspended extends Error {
   }
 }
 
+/** Per (equipment, device epoch): what `factSummary` reports. */
+export interface FactSummary {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly stateFacts: number;
+  readonly lastStateSeq: number | null;
+  readonly latestSourceTime: Date;
+}
+
 export type IngestOutcome = 'stored' | 'duplicate' | 'rejected' | 'anchor' | 'status' | 'retained';
 
 const RETRY_MAX_MS = 10_000;
@@ -122,6 +131,7 @@ export class Ingest {
   #suspended = false;
   /** Suspensions since the last stored delivery: the wait before reconnecting grows with them. */
   #failedResumes = 0;
+  #loaded = false;
 
   constructor(options: IngestOptions) {
     this.#options = options;
@@ -189,6 +199,7 @@ export class Ingest {
   /** Loads the cursors and opens the persistent session. Readiness follows `subscribed`. */
   async start(): Promise<void> {
     await this.#store.load();
+    this.#loaded = true;
     const options = this.#options;
     this.#connect();
     if (options.sweepIntervalMs !== 0) {
@@ -331,6 +342,22 @@ export class Ingest {
     ]);
   }
 
+  /**
+   * Stores one delivery as if the broker had delivered it, without a session: the same
+   * validation, dedup, tables and notices, in the same queue. For tests and replays (the equipment
+   * module's reconciliation feeds the simulator's facts through it); errors are thrown, not retried.
+   */
+  async deliver(topic: string, payload: string | Buffer, retained = false): Promise<void> {
+    await this.#enqueue(async () => {
+      if (!this.#loaded) {
+        await this.#store.load();
+        this.#loaded = true;
+      }
+      const notices = await this.#process(topic, payload, retained);
+      for (const notice of notices) await this.#notify(notice);
+    });
+  }
+
   /** State changes of one equipment in one device epoch, by `seq` (optionally a window). */
   async stateFacts(
     equipment: string,
@@ -355,6 +382,105 @@ export class Ingest {
       cause: row.cause,
       quality: row.quality,
     }));
+  }
+
+  /**
+   * The state changes around `seq` in (equipment, epoch): from the one before it to the one after
+   * it (by `seq`), inclusive, each where it exists. The window a late fact changes.
+   */
+  async stateFactWindow(equipment: string, epoch: number, seq: number): Promise<StateFact[]> {
+    const states = () =>
+      this.#options.db
+        .selectFrom('ingest.equipment_event')
+        .where('equipment', '=', equipment)
+        .where('epoch', '=', epoch)
+        .where('event_type', '=', 'state');
+    const row = await this.#options.db
+      .selectNoFrom(() => [
+        states()
+          .select((eb) => eb.fn.max<number | null>('seq').as('s'))
+          .where('seq', '<', seq)
+          .$asScalar()
+          .as('before'),
+        states()
+          .select((eb) => eb.fn.min<number | null>('seq').as('s'))
+          .where('seq', '>', seq)
+          .$asScalar()
+          .as('after'),
+      ])
+      .executeTakeFirstOrThrow();
+    return this.stateFacts(equipment, epoch, {
+      fromSeq: row.before ?? seq,
+      toSeq: row.after ?? seq,
+    });
+  }
+
+  /**
+   * Per (equipment, device epoch) with stored facts: how many state changes, the last one's `seq`,
+   * and the latest `sourceTime` of any fact (state, cycle, alarm). One pass over the facts, for
+   * the equipment module's catch-up at start-up.
+   */
+  async factSummary(): Promise<FactSummary[]> {
+    const rows = await this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select((eb) => [
+        'equipment',
+        'epoch',
+        eb.fn.countAll<string>().filterWhere('event_type', '=', 'state').as('state_facts'),
+        eb.fn.max('seq').filterWhere('event_type', '=', 'state').as('last_state_seq'),
+        eb.fn.max('source_time').as('latest'),
+      ])
+      .groupBy(['equipment', 'epoch'])
+      .orderBy('equipment')
+      .orderBy('epoch')
+      .execute();
+    return rows.map((row) => ({
+      equipment: row.equipment,
+      epoch: row.epoch,
+      stateFacts: Number(row.state_facts),
+      lastStateSeq: row.last_state_seq,
+      latestSourceTime: row.latest,
+    }));
+  }
+
+  /** The anchor of every (equipment, device epoch) that has one (see `anchor`). */
+  async anchors(): Promise<StateAnchor[]> {
+    const rows = await this.#options.db
+      .selectFrom('ingest.state_anchor')
+      .selectAll()
+      .distinctOn(['equipment', 'device_epoch'])
+      .where('device_epoch', 'is not', null)
+      .where('superseded', '=', false)
+      .orderBy('equipment')
+      .orderBy('device_epoch')
+      .orderBy('arrival')
+      .execute();
+    return rows.map(toAnchor);
+  }
+
+  /** How many state changes (equipment, epoch) has. */
+  async stateFactCount(equipment: string, epoch: number): Promise<number> {
+    const row = await this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select((eb) => eb.fn.countAll<string>().as('n'))
+      .where('equipment', '=', equipment)
+      .where('epoch', '=', epoch)
+      .where('event_type', '=', 'state')
+      .executeTakeFirstOrThrow();
+    return Number(row.n);
+  }
+
+  /** The latest `sourceTime` of the state changes of (equipment, epoch) before `seq`, if any. */
+  async latestStateTime(equipment: string, epoch: number, beforeSeq: number): Promise<Date | null> {
+    const row = await this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select((eb) => eb.fn.max<Date | null>('source_time').as('t'))
+      .where('equipment', '=', equipment)
+      .where('epoch', '=', epoch)
+      .where('event_type', '=', 'state')
+      .where('seq', '<', beforeSeq)
+      .executeTakeFirstOrThrow();
+    return row.t;
   }
 
   /** Device epochs with stored facts for one equipment, oldest first by arrival. */
@@ -414,7 +540,7 @@ export class Ingest {
       // A delivery of a session that was dropped arrives again in the next one.
       if (this.#isStopping() || this.#client !== client || this.#suspended) throw new Suspended();
       try {
-        const notices = await this.#process(packet);
+        const notices = await this.#process(packet.topic, packet.payload, packet.retain);
         for (const notice of notices) await this.#notify(notice);
         await this.#options.beforeAck?.(packet.topic);
         this.#failedResumes = 0;
@@ -470,11 +596,12 @@ export class Ingest {
     });
   }
 
-  async #process(packet: IPublishPacket): Promise<readonly IngestNotice[]> {
-    const { topic } = packet;
-    const retained = packet.retain;
-    const text =
-      typeof packet.payload === 'string' ? packet.payload : packet.payload.toString('utf8');
+  async #process(
+    topic: string,
+    payload: string | Buffer,
+    retained: boolean,
+  ): Promise<readonly IngestNotice[]> {
+    const text = typeof payload === 'string' ? payload : payload.toString('utf8');
     // A NUL in the raw text can't even be stored as the rejected payload.
     const item = text.includes('\u0000')
       ? ({
@@ -529,7 +656,9 @@ export class Ingest {
         }
         if (outcome.status === 'duplicate') {
           this.#counted('duplicate');
-          return [];
+          // Non-empty only for a row the table had but the cursor didn't (a commit that failed on
+          // the way back): its listeners never heard of it, so it is announced now.
+          return outcome.notices ?? [];
         }
         this.#counted('stored');
         if (item.kind === 'incident') {

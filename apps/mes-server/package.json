@@ -7,11 +7,13 @@
     "typecheck": "tsc",
     "lint": "eslint .",
     "test": "vitest run --coverage",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "start": "node src/main.ts",
     "migrate": "node src/db/cli.ts"
   },
   "dependencies": {
     "@shopfloor/contracts": "workspace:*",
+    "@shopfloor/oee-core": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/shift-calendar": "workspace:*",
     "fastify": "catalog:",

@@ -12,6 +12,7 @@ import {
   writeU64,
   type RingEntry,
   type StateCurrent,
+  type Telemetry,
 } from '@shopfloor/contracts';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -297,6 +298,17 @@ describe('Modbus poller against a register map in memory (#77)', () => {
       ['bath-temperature', -1.5, '2026-10-12T04:00:00.000Z'],
       ['conveyor-speed', 2.01, '2026-10-12T04:00:00.000Z'],
     ]);
+    // The device epoch from the same read (contract 1.1), so the MES credits the right run.
+    expect(telemetry.map((p) => (p.message as Telemetry).deviceEpoch)).toEqual([100, 100]);
+    washer.restart(200);
+    writeU64(washer.registers, REGISTERS.simTime, Date.UTC(2026, 9, 12, 3));
+    published.length = 0;
+    await poller.poll();
+    expect(
+      published
+        .filter((p) => p.message.schema === 'uns.telemetry/1')
+        .map((p) => (p.message as Telemetry).deviceEpoch),
+    ).toEqual([200, 200]);
   });
 });
 

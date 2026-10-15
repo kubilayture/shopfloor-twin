@@ -644,7 +644,7 @@
                           },
                           "provisional": {
                             "type": "boolean",
-                            "description": "The open interval: its end moves with the watermark"
+                            "description": "May still change: the piece ends after the last time settled by the machine’s own facts (the open interval, or one behind an open sequence gap); false once its epoch is closed"
                           },
                           "intervalStart": {
                             "type": "string",
@@ -1118,7 +1118,19 @@
                             "type": "integer",
                             "minimum": -9007199254740991,
                             "maximum": 9007199254740991,
-                            "description": "The part of `ms` in the open interval"
+                            "description": "The part of `ms` that may still change: pieces ending after the last time settled by the machine’s own facts (no open sequence gap below), in an epoch not yet closed. 0 for a completed bucket"
+                          },
+                          "revision": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "How often the bucket changed after it was final (a late fill after a gap incident, or a late fact of a closed epoch); 0 while unchanged. The same for every state of an (equipment, epoch)"
+                          },
+                          "incidents": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Sequence-gap incidents of the machine’s device stream over the bucket’s final hours; the same for every state of an (equipment, epoch)"
                           }
                         },
                         "required": [
@@ -1126,7 +1138,9 @@
                           "epoch",
                           "state",
                           "ms",
-                          "provisionalMs"
+                          "provisionalMs",
+                          "revision",
+                          "incidents"
                         ],
                         "additionalProperties": false
                       }

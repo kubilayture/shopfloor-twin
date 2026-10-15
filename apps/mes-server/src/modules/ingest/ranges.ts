@@ -51,3 +51,14 @@ export function missing(ranges: readonly Range[], from: number, to: number): num
 }
 
 export const overlaps = (a: Range, b: Range): boolean => a[0] <= b[1] && b[0] <= a[1];
+
+/**
+ * The highest number with no open hole at or below it (#113): the end of the first range of
+ * `seen` and `reported` together, since a hole already reported holds nothing back any more.
+ * Every epoch numbers from 1 (ADR-0015; a new epoch's sentinel 0 counts too), so a first range
+ * starting above 1 leaves a hole below it: null then, and when nothing was seen.
+ */
+export function settledThrough(seen: readonly Range[], reported: readonly Range[]): number | null {
+  const first = (reported.length === 0 ? seen : union(seen, reported))[0];
+  return first && first[0] <= 1 ? first[1] : null;
+}

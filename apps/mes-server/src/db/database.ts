@@ -24,6 +24,16 @@ export type Database = PublicTables & MasterDataTables & IngestTables & Equipmen
  */
 const types = new pg.TypeOverrides();
 types.setTypeParser(pg.types.builtins.INT8, (value: string) => Number(value));
+/** BIGINT[] (`_int8`, e.g. `equipment.bucket_finality.incident_ids`): numbers as well. */
+const INT8_ARRAY = 1016;
+types.setTypeParser(INT8_ARRAY, (value: string) =>
+  value === '{}'
+    ? []
+    : value
+        .slice(1, -1)
+        .split(',')
+        .map((item) => (item === 'NULL' ? null : Number(item))),
+);
 
 export interface PoolLimits {
   /** Server-side limit per statement (PostgreSQL `statement_timeout`, SQLSTATE 57014). */

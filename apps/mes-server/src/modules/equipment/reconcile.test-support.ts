@@ -257,6 +257,43 @@ async function expectInsideBuckets(db: Kysely<Database>, run: Run): Promise<numb
 }
 
 /**
+ * Interval finality (#113). Delivered complete and gap-free, a machine's pieces are final exactly
+ * up to its own last fact: every piece ending by then is final, every later one provisional (a
+ * machine silent at the end of the run, such as Off over the weekend). Every hour before that has
+ * its final row, with no revision and no incident, and so has every shift bucket. Returns the
+ * (machine, bucket) pairs still provisional, for the log.
+ */
+async function expectFinality(equipment: Equipment, db: Kysely<Database>, run: Run) {
+  const settled = new Map<string, number>();
+  for (const event of run.events) {
+    if (event.machineId && ['state', 'cycle-complete', 'alarm'].includes(event.type)) {
+      settled.set(event.machineId, Date.parse(event.at));
+    }
+  }
+  const settledOf = (machine: string): number => settled.get(machine) ?? -Infinity;
+  const rows = await storedPieces(db);
+  const wrong = rows.filter(
+    (row) => row.provisional !== row.end_time.getTime() > settledOf(row.equipment),
+  );
+  expect(wrong).toEqual([]);
+  const finals = await db.selectFrom('equipment.bucket_finality').selectAll().execute();
+  expect(finals.filter((row) => row.revision !== 0 || row.incident_ids.length > 0)).toEqual([]);
+  const hours = (list: readonly { equipment: string; hour: Date }[]) =>
+    [...new Set(list.map((row) => `${row.equipment} ${row.hour.toISOString()}`))].sort();
+  expect(hours(finals)).toEqual(
+    hours(rows.filter((row) => row.hour.getTime() + HOUR <= settledOf(row.equipment))),
+  );
+  const provisional: string[] = [];
+  for (const key of [...new Set(rows.map((row) => row.shift_key))].sort()) {
+    for (const row of await equipment.shiftTotals(key, { epoch: EPOCH })) {
+      expect([row.revision, row.incidents]).toEqual([0, 0]);
+      if (row.provisionalMs > 0) provisional.push(`${row.equipment} ${key} ${row.state}`);
+    }
+  }
+  return provisional;
+}
+
+/**
  * Per-test limits: the golden week takes about 70 s in order and 125 s shuffled locally. Both
  * limits together (10 min) leave the end-to-end job (20 min, with the gateway's test and the
  * install) room to report a failure rather than be cancelled.
@@ -305,6 +342,11 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         expect(equipment.watermark(EPOCH)).toEqual(new Date(run.end));
         expect(await totals(equipment, db)).toEqual(expected(run.truth));
         expect(await expectInsideBuckets(db, run)).toBeGreaterThan(facts.length / 2);
+        // Every machine shuts down at the end of the last shift (a state fact at its very end):
+        // only the weekend's no-shift bucket, after its last fact, is still provisional.
+        const provisional = await expectFinality(equipment, db, run);
+        expect(provisional.length).toBeGreaterThan(0);
+        expect(provisional.filter((bucket) => !bucket.includes(' no-shift '))).toEqual([]);
         await equipment.stop();
       },
       IN_ORDER_MS,
@@ -323,6 +365,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         await equipment.flush();
         expect(await storedPieces(db)).toEqual(await storedPieces(reference));
         expect(await totals(equipment, db)).toEqual(expected(run.truth));
+        await expectFinality(equipment, db, run);
         await equipment.stop();
       },
       SHUFFLED_MS,

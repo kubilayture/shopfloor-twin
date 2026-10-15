@@ -31,7 +31,8 @@ describe('cutting intervals into hour and shift pieces', () => {
       [point(local(13.5), 'Running', 7), point(local(14) + 20 * 60_000, 'Down', 8)],
       local(14.5),
       pattern,
-      true,
+      // Final through the second fact: the open interval after it is provisional.
+      local(14) + 20 * 60_000,
     );
     expect(
       pieces.map((p) => [
@@ -52,17 +53,31 @@ describe('cutting intervals into hour and shift pieces', () => {
     ]);
   });
 
+  it('flags every piece that ends after the final-through time provisional, closed or open', () => {
+    // A gap below the second fact holds finality at the first one: the closed interval is
+    // provisional too, while a closed epoch (Infinity) makes everything final.
+    const points = [point(local(9), 'Running', 1), point(local(9.5), 'Idle', 3)];
+    expect(cutPieces(points, local(10), pattern, local(9)).map((p) => p.provisional)).toEqual([
+      true,
+      true,
+    ]);
+    expect(cutPieces(points, local(10), pattern, Infinity).map((p) => p.provisional)).toEqual([
+      false,
+      false,
+    ]);
+  });
+
   it('drops zero-length intervals; same-millisecond facts belong to the last by seq', () => {
     const at = local(8);
     const pieces = cutPieces(
       [point(at, 'Idle', 1), point(at, 'Running', 2), point(at + 1_000, 'Down', 3)],
       at + 1_000,
       pattern,
-      true,
+      at + 1_000,
     );
     expect(pieces).toHaveLength(1);
     expect(pieces[0]).toMatchObject({ state: 'Running', startSeq: 2, provisional: false });
-    expect(cutPieces([], at, pattern, true)).toEqual([]);
+    expect(cutPieces([], at, pattern, at)).toEqual([]);
   });
 
   it('clamps facts that go back in time within an epoch', () => {
@@ -82,15 +97,17 @@ describe('cutting intervals into hour and shift pieces', () => {
         fc.integer({ min: 0, max: WEEK }),
         fc.array(fc.integer({ min: 0, max: 6 * HOUR }), { minLength: 1, maxLength: 12 }),
         fc.integer({ min: 0, max: 30 * HOUR }),
-        (offset, gaps, tail) => {
+        fc.integer({ min: -HOUR, max: 40 * HOUR }),
+        (offset, gaps, tail, settled) => {
           let at = MONDAY + offset;
           const points = gaps.map((gap, i) => {
             at += gap;
             return point(at, i % 2 === 0 ? 'Running' : 'Idle', i + 1);
           });
           const end = at + tail;
-          const pieces = cutPieces(points, end, pattern, true);
           const first = points[0];
+          const finalThrough = (first?.at ?? end) + settled;
+          const pieces = cutPieces(points, end, pattern, finalThrough);
           const span = end - (first?.at ?? end);
           const total = [...totalsByState(pieces).values()].reduce((a, b) => a + b, 0);
           expect(total).toBe(span);
@@ -102,8 +119,8 @@ describe('cutting intervals into hour and shift pieces', () => {
             expect(shiftKeyAt(pattern, piece.from)).toBe(piece.shiftKey);
             expect(shiftKeyAt(pattern, piece.to - 1)).toBe(piece.shiftKey);
           }
-          const open = pieces.filter((p) => p.provisional);
-          expect(open.every((p) => p.intervalStart === points.at(-1)?.at)).toBe(true);
+          // Final exactly when the piece ends at or before the final-through time (#113).
+          for (const piece of pieces) expect(piece.provisional).toBe(piece.to > finalThrough);
         },
       ),
       { numRuns: 300 },

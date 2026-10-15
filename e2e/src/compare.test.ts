@@ -12,12 +12,13 @@ const T = Date.UTC(2026, 9, 12, 3);
 
 describe('reconciliation comparisons (#100)', () => {
   it('fills the MES totals into the ground truth shape and sets other epochs apart', () => {
+    const row = { equipment: 'cnc-01', epoch: 7, provisionalMs: 0, revision: 0, incidents: 0 };
     const totals = mesTotals(
       [
-        { equipment: 'cnc-01', epoch: 7, state: 'Running', ms: 1_000, provisionalMs: 0 },
-        { equipment: 'cnc-01', epoch: 7, state: 'Idle', ms: 500, provisionalMs: 500 },
-        { equipment: 'cnc-01', epoch: 6, state: 'Idle', ms: 9, provisionalMs: 0 },
-        { equipment: 'xyz', epoch: 7, state: 'Idle', ms: 9, provisionalMs: 0 },
+        { ...row, state: 'Running', ms: 1_000, provisionalMs: 0, revision: 2, incidents: 1 },
+        { ...row, state: 'Idle', ms: 500, provisionalMs: 500, revision: 2, incidents: 1 },
+        { ...row, epoch: 6, state: 'Idle', ms: 9 },
+        { ...row, equipment: 'xyz', state: 'Idle', ms: 9 },
       ],
       7,
       ['cnc-01', 'wsh-01'],
@@ -25,6 +26,9 @@ describe('reconciliation comparisons (#100)', () => {
     expect(totals.byMachine['cnc-01']).toMatchObject({ Running: 1_000, Idle: 500, Off: 0 });
     expect(Object.values(totals.byMachine['wsh-01'] ?? {}).every((ms) => ms === 0)).toBe(true);
     expect(totals.provisionalMs).toEqual({ 'cnc-01': 500, 'wsh-01': 0 });
+    // Per bucket, not per state: not summed.
+    expect(totals.revision).toEqual({ 'cnc-01': 2, 'wsh-01': 0 });
+    expect(totals.incidents).toEqual({ 'cnc-01': 1, 'wsh-01': 0 });
     expect(totals.unexpected).toHaveLength(2);
   });
 

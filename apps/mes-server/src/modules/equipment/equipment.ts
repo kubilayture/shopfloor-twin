@@ -4,7 +4,9 @@ import { sql, type Kysely, type QueryCreator, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
 import type {
   FactSummary,
+  GapIncident,
   IngestNotice,
+  SettledState,
   StateAnchor,
   StateFact,
   StoredSample,
@@ -25,6 +27,7 @@ export interface StateSource {
   anchor(equipment: string, deviceEpoch: number): Promise<StateAnchor | undefined>;
   anchors(): Promise<StateAnchor[]>;
   factSummary(): Promise<FactSummary[]>;
+  settled(equipment: string, epoch: number, afterSeq?: number): Promise<SettledState>;
 }
 
 export interface EquipmentLog {
@@ -85,8 +88,15 @@ export interface ShiftTotal {
   readonly epoch: number;
   readonly state: string;
   readonly ms: number;
-  /** The part of `ms` in provisional pieces (the open interval). */
+  /** The part of `ms` in provisional pieces: what may still change (#113). */
   readonly provisionalMs: number;
+  /**
+   * The bucket's revision for this (equipment, epoch): how often one of its hours changed after
+   * it was final (the highest count among its hours); 0 while unchanged.
+   */
+  readonly revision: number;
+  /** Sequence-gap incidents of the equipment's device stream over the bucket's final hours. */
+  readonly incidents: number;
 }
 
 /** Sent after the stored intervals of one (equipment, epoch) changed. */
@@ -120,7 +130,42 @@ interface Track {
   stored: Millis | undefined;
   /** First hour or shift boundary after `stored`. */
   nextCut: Millis;
+  /** Highest `seq` of the device stream with no open gap at or below it (#113); null: unknown. */
+  settledSeq: number | null;
+  /** The latest fact time up to `settledSeq`: pieces ending at or before it are final. */
+  finalThrough: Millis;
+  /** Every hour before this has its `bucket_finality` row (Infinity once closed and recorded). */
+  finalEnd: Millis;
+  /** No stored provisional piece ends before this (a lower bound; -Infinity when unknown). */
+  promoteAt: Millis;
+  /** The epoch's gap incidents, placed in time. */
+  incidents: readonly IncidentSpan[];
 }
+
+/** A gap incident's time span: the missing facts lie between `from` and `to`. */
+interface IncidentSpan {
+  readonly id: number;
+  readonly from: Millis;
+  readonly to: Millis;
+}
+
+const spans = (incidents: readonly GapIncident[]): IncidentSpan[] =>
+  incidents.map((incident) => ({
+    id: incident.id,
+    from: incident.after?.getTime() ?? -Infinity,
+    to: incident.before?.getTime() ?? Infinity,
+  }));
+
+const hourOf = (at: Millis): Millis => Math.floor(at / HOUR) * HOUR;
+
+/** The fields #113 adds to a new track: nothing settled or recorded yet. */
+const UNSETTLED = {
+  settledSeq: null,
+  finalThrough: -Infinity,
+  finalEnd: -Infinity,
+  promoteAt: -Infinity,
+  incidents: [],
+} as const;
 
 const INSERT_CHUNK = 1_000;
 const DAY = 24 * HOUR;
@@ -306,13 +351,39 @@ export class Equipment {
       .orderBy('epoch')
       .orderBy('state')
       .execute();
-    return rows.map((row) => ({
-      equipment: row.equipment,
-      epoch: row.epoch,
-      state: row.state,
-      ms: Number(row.ms),
-      provisionalMs: Number(row.provisional_ms),
-    }));
+    // Per (equipment, epoch): the highest revision and the distinct incidents of the bucket's hours.
+    const filters = [
+      sql`p.shift_key = ${shiftKey}`,
+      ...(options.equipment === undefined ? [] : [sql`p.equipment = ${options.equipment}`]),
+      ...(options.epoch === undefined ? [] : [sql`p.epoch = ${options.epoch}`]),
+    ];
+    const buckets = await sql<{
+      equipment: string;
+      epoch: number;
+      revision: number;
+      incidents: number;
+    }>`
+      SELECT f.equipment, f.epoch, max(f.revision) AS revision, count(DISTINCT i.id) AS incidents
+      FROM equipment.bucket_finality f
+      LEFT JOIN LATERAL unnest(f.incident_ids) AS i(id) ON true
+      WHERE (f.equipment, f.epoch, f.hour) IN (
+        SELECT DISTINCT p.equipment, p.epoch, p.hour FROM equipment.equipment_state_interval p
+        WHERE ${sql.join(filters, sql` AND `)})
+      GROUP BY f.equipment, f.epoch`.execute(this.#readDb);
+    const key = (equipment: string, epoch: number): string => `${equipment}\u0000${String(epoch)}`;
+    const bucketOf = new Map(buckets.rows.map((b) => [key(b.equipment, b.epoch), b]));
+    return rows.map((row) => {
+      const bucket = bucketOf.get(key(row.equipment, row.epoch));
+      return {
+        equipment: row.equipment,
+        epoch: row.epoch,
+        state: row.state,
+        ms: Number(row.ms),
+        provisionalMs: Number(row.provisional_ms),
+        revision: bucket?.revision ?? 0,
+        incidents: bucket?.incidents ?? 0,
+      };
+    });
   }
 
   #enqueue<T>(work: () => Promise<T>): Promise<T> {
@@ -328,7 +399,7 @@ export class Equipment {
       switch (notice.type) {
         case 'state':
           track = await this.#track(notice.fact.equipment, notice.fact.epoch);
-          await this.#onState(track, notice.fact);
+          await this.#onState(track, notice.fact, notice.settledSeq);
           break;
         case 'anchor':
           if (notice.anchor.deviceEpoch === null) return;
@@ -336,7 +407,13 @@ export class Equipment {
           await this.#onAnchor(track, notice.anchor);
           break;
         case 'sample':
-          await this.#onSample(notice.sample);
+          await this.#onSample(notice.sample, notice.settledSeq);
+          break;
+        case 'gaps':
+          track = this.#tracks.get(notice.equipment)?.get(notice.epoch);
+          if (!track || track.closed) return;
+          await this.#learn(track, notice.settledSeq);
+          await this.#settle(track);
           break;
       }
     } catch (error) {
@@ -381,6 +458,7 @@ export class Equipment {
       tailStart: undefined,
       stored: undefined,
       nextCut: -Infinity,
+      ...UNSETTLED,
     };
     byEpoch.set(epoch, track);
     for (const older of byEpoch.values()) {
@@ -389,7 +467,10 @@ export class Equipment {
     return track;
   }
 
-  /** A newer epoch started: the old one's open interval becomes final at its watermark. */
+  /**
+   * A newer epoch started: the old one's open interval becomes final at its watermark, and so
+   * does every hour of it (#113: a closed epoch is final everywhere).
+   */
   async #close(track: Track): Promise<void> {
     track.closed = true;
     track.closedAt = this.#watermarks.get(track.epoch);
@@ -398,10 +479,13 @@ export class Equipment {
     } else {
       await this.#db.transaction().execute((trx) => this.#saveSource(trx, track));
     }
+    track.incidents = spans((await this.#source.settled(track.equipment, track.epoch)).incidents);
+    await this.#settle(track);
   }
 
-  async #onState(track: Track, fact: StateFact): Promise<void> {
+  async #onState(track: Track, fact: StateFact, settledSeq: number | null): Promise<void> {
     this.#raise(track.epoch, fact.sourceTime.getTime());
+    await this.#learn(track, settledSeq, { seq: fact.seq, at: fact.sourceTime.getTime() });
     // A track whose last handling failed is recomputed, never patched from a stale state.
     const window = this.#dirty.has(track) ? undefined : await this.#window(track, fact);
     if (!window) {
@@ -417,18 +501,41 @@ export class Equipment {
       // interval) and replaces everything before the successor.
       const points = pred ? span : withAnchor(track.anchor, span);
       const lastSeq = Math.max(track.lastSeq ?? fact.seq, fact.seq);
+      // Nothing before the fact's own (clamped) time changes: the pieces before it are cut alike.
+      const changedFrom = span[index]?.at ?? fact.sourceTime.getTime();
       if (succ) {
-        const pieces = cutPieces(points.slice(0, -1), succ.at, this.#pattern, false);
+        const pieces = cutPieces(points.slice(0, -1), succ.at, this.#pattern, this.#bound(track));
+        const revised = await this.#changedFinalHours(
+          track,
+          changedFrom,
+          { from: pred?.at, to: succ.at },
+          pieces,
+        );
         await this.#replace(track, pred?.at, succ.at, pieces, { facts, lastSeq });
+        await this.#revise(track, revised);
       } else {
         const end = this.#end(track, last.at);
-        const pieces = cutPieces(points, end, this.#pattern, !track.closed);
+        const pieces = cutPieces(points, end, this.#pattern, this.#bound(track));
+        const revised = await this.#changedFinalHours(
+          track,
+          changedFrom,
+          { from: pred?.at },
+          pieces,
+        );
         await this.#replace(track, pred?.at, undefined, pieces, { facts, lastSeq });
+        await this.#revise(track, revised);
         this.#tail(track, last, pieces, end);
+      }
+      // A late fact of a closed epoch may reach an hour that had no piece yet, and so may a fact
+      // earlier than every other (or the anchor before it) below the final hours.
+      if (track.closed) await this.#markFinal(track, hourOf(changedFrom), Infinity);
+      else if (!pred && track.finalEnd > -Infinity) {
+        await this.#markFinal(track, -Infinity, track.finalEnd);
       }
       this.#emit(track, pred?.at, succ?.at);
     }
     await this.#advance(track.epoch);
+    await this.#settle(track);
   }
 
   /**
@@ -487,7 +594,7 @@ export class Equipment {
     await this.#rebuild(track);
   }
 
-  async #onSample(sample: StoredSample): Promise<void> {
+  async #onSample(sample: StoredSample, settledSeq?: number | null): Promise<void> {
     // Telemetry carries the gateway's epoch; only its `deviceEpoch` (contract 1.1) says which
     // run it belongs to. Without one it never moves a watermark.
     const epoch = sample.deviceEpoch;
@@ -498,9 +605,240 @@ export class Equipment {
       const newest = byEpoch && byEpoch.size > 0 ? Math.max(...byEpoch.keys()) : -Infinity;
       if (epoch < newest || byEpoch?.get(epoch)?.closed === true) return;
     }
-    await this.#track(sample.equipment, epoch);
-    this.#raise(epoch, sample.sourceTime.getTime());
+    const track = await this.#track(sample.equipment, epoch);
+    const at = sample.sourceTime.getTime();
+    this.#raise(epoch, at);
+    if (sample.scope === 'device') {
+      // A cycle in an hour that is final already (a late fill, or a late fact of a closed epoch)
+      // changes that hour's count: its revision goes up (#113).
+      if (sample.kind === 'cycle' && this.#isFinalHour(track, hourOf(at))) {
+        await this.#revise(track, [hourOf(at)]);
+      }
+      await this.#learn(track, settledSeq, { seq: sample.seq, at });
+    }
     await this.#advance(epoch);
+    if (sample.scope === 'device') await this.#settle(track);
+  }
+
+  /** The time pieces are final up to: everything once the epoch is closed (#113). */
+  #bound(track: Track): Millis {
+    return track.closed ? Infinity : track.finalThrough;
+  }
+
+  /** Whether `hour` of the track has become final (its `bucket_finality` row exists if it has pieces). */
+  #isFinalHour(track: Track, hour: Millis): boolean {
+    return track.closed || hour < track.finalEnd;
+  }
+
+  /**
+   * Learns how far the device stream is settled (#113). In order, the fact itself moves it by one;
+   * otherwise (a gap filled or reported, or the first fact known) ingest is asked, which also
+   * tells the epoch's incidents.
+   */
+  async #learn(
+    track: Track,
+    settledSeq: number | null | undefined,
+    fact?: { readonly seq: number; readonly at: Millis },
+  ): Promise<void> {
+    if (settledSeq === undefined || settledSeq === null || track.closed) return;
+    const known = track.settledSeq;
+    if (known !== null && settledSeq <= known) return;
+    if (fact && known !== null && fact.seq === settledSeq && known === fact.seq - 1) {
+      track.settledSeq = settledSeq;
+      track.finalThrough = Math.max(track.finalThrough, fact.at);
+      return;
+    }
+    this.#apply(
+      track,
+      await this.#source.settled(track.equipment, track.epoch, known ?? undefined),
+    );
+  }
+
+  #apply(track: Track, state: SettledState): void {
+    track.incidents = spans(state.incidents);
+    if (state.settledSeq === null) return;
+    track.settledSeq = Math.max(track.settledSeq ?? state.settledSeq, state.settledSeq);
+    if (state.settledTime) {
+      track.finalThrough = Math.max(track.finalThrough, state.settledTime.getTime());
+    }
+  }
+
+  /**
+   * Brings stored finality up to the track's bound: provisional pieces that now end at or before
+   * it become final, and every hour before it gets its `bucket_finality` row (all hours once the
+   * epoch is closed). Only hours stored up to the open interval's end count, so an hour is
+   * recorded once all its pieces are.
+   */
+  async #settle(track: Track): Promise<void> {
+    if (this.#dirty.has(track)) return;
+    const bound = this.#bound(track);
+    // promoteAt is Infinity when no stored piece is provisional.
+    if (bound > -Infinity && track.promoteAt !== Infinity && bound >= track.promoteAt) {
+      await this.#promote(track, bound);
+    }
+    if (track.closed) {
+      if (track.finalEnd !== Infinity) {
+        await this.#markFinal(track, track.finalEnd, Infinity);
+        track.finalEnd = Infinity;
+      }
+      return;
+    }
+    if (track.stored === undefined) return;
+    const until = Math.min(hourOf(bound), hourOf(track.stored));
+    if (until > track.finalEnd) {
+      await this.#markFinal(track, track.finalEnd, until);
+      track.finalEnd = until;
+    }
+  }
+
+  /**
+   * Flags the provisional pieces ending at or before `bound` final and finds the next provisional
+   * end, in one statement.
+   */
+  async #promote(track: Track, bound: Millis): Promise<void> {
+    const from = track.promoteAt;
+    let promote = this.#db
+      .updateTable('equipment.equipment_state_interval')
+      .set({ provisional: false })
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch)
+      .where('provisional', '=', true);
+    // Pieces never exceed an hour, and no provisional one ends before `promoteAt`.
+    if (Number.isFinite(from)) promote = promote.where('start_time', '>=', new Date(from - HOUR));
+    if (Number.isFinite(bound)) promote = promote.where('end_time', '<=', new Date(bound));
+    let rest = this.#db
+      .with('promoted', () => promote.returning('start_time'))
+      .selectFrom('equipment.equipment_state_interval')
+      .select((eb) => eb.fn.min<Date | null>('end_time').as('next'))
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch)
+      .where('provisional', '=', true);
+    // The statement sees the rows as before the update: the rest are those ending after `bound`.
+    if (Number.isFinite(bound)) {
+      rest = rest
+        .where('start_time', '>', new Date(bound - HOUR))
+        .where('end_time', '>', new Date(bound));
+    }
+    const row = await rest.executeTakeFirst();
+    track.promoteAt = Number.isFinite(bound) ? (row?.next?.getTime() ?? Infinity) : Infinity;
+    this.#emit(track, Number.isFinite(from) ? from - HOUR : undefined, undefined);
+  }
+
+  /** Records the hours in [from, until) that have pieces as final, with their incidents. */
+  async #markFinal(track: Track, from: Millis, until: Millis): Promise<void> {
+    let query = this.#db
+      .selectFrom('equipment.equipment_state_interval')
+      .select('hour')
+      .distinct()
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch);
+    // `from` and `until` are whole hours, so the key's start_time bounds the hours (and the index).
+    if (Number.isFinite(from)) query = query.where('start_time', '>=', new Date(from));
+    if (Number.isFinite(until)) query = query.where('start_time', '<', new Date(until));
+    const hours = await query.execute();
+    for (let i = 0; i < hours.length; i += INSERT_CHUNK) {
+      await this.#db
+        .insertInto('equipment.bucket_finality')
+        .values(
+          hours.slice(i, i + INSERT_CHUNK).map(({ hour }) => ({
+            equipment: track.equipment,
+            epoch: track.epoch,
+            hour,
+            incident_ids: track.incidents
+              .filter((s) => s.from < hour.getTime() + HOUR && s.to >= hour.getTime())
+              .map((s) => s.id),
+          })),
+        )
+        .onConflict((c) => c.columns(['equipment', 'epoch', 'hour']).doNothing())
+        .execute();
+    }
+  }
+
+  /**
+   * The final hours from `from`'s hour on whose stored pieces in the replaced window
+   * [window.from, window.to) differ from `pieces`: what a change after finality revises. Asked
+   * only when such an hour can exist, so the in-order path never reads.
+   */
+  async #changedFinalHours(
+    track: Track,
+    from: Millis | undefined,
+    window: { readonly from?: Millis | undefined; readonly to?: Millis | undefined },
+    pieces: readonly Piece[],
+  ): Promise<Millis[]> {
+    const { to } = window;
+    const first = from === undefined ? undefined : hourOf(from);
+    const possible =
+      first === undefined
+        ? track.closed || track.finalEnd > -Infinity
+        : this.#isFinalHour(track, first);
+    if (!possible) return [];
+    let finals = this.#db
+      .selectFrom('equipment.bucket_finality')
+      .select('hour')
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch);
+    if (first !== undefined) finals = finals.where('hour', '>=', new Date(first));
+    if (to !== undefined) finals = finals.where('hour', '<', new Date(to));
+    const hours = (await finals.execute()).map((row) => row.hour.getTime());
+    if (hours.length === 0) return [];
+    let query = this.#db
+      .selectFrom('equipment.equipment_state_interval')
+      .select(['start_time', 'end_time', 'state', 'cause', 'interval_start'])
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch)
+      .where(
+        'hour',
+        'in',
+        hours.map((hour) => new Date(hour)),
+      );
+    if (window.from !== undefined) query = query.where('start_time', '>=', new Date(window.from));
+    if (to !== undefined) query = query.where('start_time', '<', new Date(to));
+    const stored = await query.orderBy('start_time').execute();
+    const byHour = (
+      rows: readonly (readonly [Millis, Millis, string, string | null, Millis])[],
+    ) => {
+      const result = new Map<Millis, string>();
+      for (const row of rows) {
+        const hour = hourOf(row[0]);
+        result.set(hour, `${result.get(hour) ?? ''}${JSON.stringify(row)}`);
+      }
+      return result;
+    };
+    const before = byHour(
+      stored.map(
+        (row) =>
+          [
+            row.start_time.getTime(),
+            row.end_time.getTime(),
+            row.state,
+            row.cause,
+            row.interval_start.getTime(),
+          ] as const,
+      ),
+    );
+    const after = byHour(
+      pieces.map(
+        (piece) => [piece.from, piece.to, piece.state, piece.cause, piece.intervalStart] as const,
+      ),
+    );
+    // An hour without stored pieces has nothing to compare (they were removed by hand).
+    return hours.filter((hour) => before.has(hour) && before.get(hour) !== after.get(hour));
+  }
+
+  /** Raises the revision of those of `hours` that are final (#113). */
+  async #revise(track: Track, hours: readonly Millis[]): Promise<void> {
+    if (hours.length === 0) return;
+    await this.#db
+      .updateTable('equipment.bucket_finality')
+      .set((eb) => ({ revision: eb('revision', '+', 1), revised_at: new Date() }))
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch)
+      .where(
+        'hour',
+        'in',
+        hours.map((hour) => new Date(hour)),
+      )
+      .execute();
   }
 
   #raise(epoch: number, at: Millis): void {
@@ -539,7 +877,7 @@ export class Equipment {
     if (!last) return;
     const end = this.#end(track, last.at);
     const from = all ? last.at : (track.tailStart ?? last.at);
-    const pieces = cutPieces([last], end, this.#pattern, !track.closed).filter(
+    const pieces = cutPieces([last], end, this.#pattern, this.#bound(track)).filter(
       (piece) => piece.from >= from,
     );
     await this.#replace(track, from, undefined, pieces, track);
@@ -558,16 +896,25 @@ export class Equipment {
     const { points, clamped } = clamp(withAnchor(anchor, facts.map(factPoint)));
     const last = points.at(-1);
     const end = last ? this.#end(track, last.at) : -Infinity;
-    const pieces = last ? cutPieces(points, end, this.#pattern, !track.closed) : [];
+    const pieces = last ? cutPieces(points, end, this.#pattern, this.#bound(track)) : [];
     track.clamped = clamped;
+    const revised = await this.#changedFinalHours(track, undefined, {}, pieces);
+    // Every piece is replaced: the earliest provisional end is among the new ones.
+    track.promoteAt = Infinity;
     await this.#replace(track, undefined, undefined, pieces, {
       facts: facts.length,
       lastSeq: facts.at(-1)?.seq ?? null,
     });
+    await this.#revise(track, revised);
     track.last = last;
     if (last) this.#tail(track, last, pieces, end);
     this.#dirty.delete(track);
     this.#emit(track, undefined, undefined);
+    // Hours below the final ones may have gained pieces (an anchor or a first fact arriving late).
+    if (track.closed || track.finalEnd > -Infinity) {
+      await this.#markFinal(track, -Infinity, track.closed ? Infinity : track.finalEnd);
+    }
+    await this.#settle(track);
   }
 
   /** Remembers where the open interval is stored up to. */
@@ -605,6 +952,9 @@ export class Equipment {
     pieces: readonly Piece[],
     source: { readonly facts: number; readonly lastSeq: number | null },
   ): Promise<void> {
+    for (const piece of pieces) {
+      if (piece.provisional && piece.to < track.promoteAt) track.promoteAt = piece.to;
+    }
     if (pieces.length <= INSERT_CHUNK) {
       await this.#replaceAtOnce(track, from, to, pieces, source);
       return;
@@ -741,7 +1091,7 @@ export class Equipment {
    * open intervals up to the watermark.
    */
   async #catchUp(): Promise<void> {
-    const [summaries, anchors, sources, stored] = await Promise.all([
+    const [summaries, anchors, sources, stored, finality] = await Promise.all([
       this.#source.factSummary(),
       this.#source.anchors(),
       this.#db.selectFrom('equipment.interval_source').selectAll().execute(),
@@ -755,6 +1105,13 @@ export class Equipment {
         .orderBy('epoch')
         .orderBy('start_time', 'desc')
         .execute(),
+      // The latest final hour of every (equipment, epoch) (#113).
+      this.#db
+        .selectFrom('equipment.bucket_finality')
+        .select(['equipment', 'epoch'])
+        .select((eb) => eb.fn.max('hour').as('last'))
+        .groupBy(['equipment', 'epoch'])
+        .execute(),
     ]);
     const key = (equipment: string, epoch: number): string => `${equipment}\u0000${String(epoch)}`;
     const summaryOf = new Map(summaries.map((s) => [key(s.equipment, s.epoch), s]));
@@ -765,6 +1122,7 @@ export class Equipment {
     );
     const sourceOf = new Map(sources.map((s) => [key(s.equipment, s.epoch), s]));
     const lastPieceOf = new Map(stored.map((s) => [key(s.equipment, s.epoch), s]));
+    const lastFinalOf = new Map(finality.map((f) => [key(f.equipment, f.epoch), f.last.getTime()]));
     for (const summary of summaries) {
       this.#raise(summary.epoch, summary.latestSourceTime.getTime());
     }
@@ -791,6 +1149,9 @@ export class Equipment {
       const source = sourceOf.get(id);
       const lastPiece = lastPieceOf.get(id);
       const closed = epoch < (newest.get(equipment) ?? epoch);
+      const lastFinal = lastFinalOf.get(id);
+      // Closed and recorded before: every hour is final already, nothing to learn.
+      const recorded = closed && source?.closed === true && lastFinal !== undefined;
       const track: Track = {
         equipment,
         epoch,
@@ -807,7 +1168,10 @@ export class Equipment {
         tailStart: undefined,
         stored: undefined,
         nextCut: -Infinity,
+        ...UNSETTLED,
+        finalEnd: recorded ? Infinity : lastFinal === undefined ? -Infinity : lastFinal + HOUR,
       };
+      if (!recorded) this.#apply(track, await this.#source.settled(equipment, epoch));
       let byEpoch = this.#tracks.get(equipment);
       if (!byEpoch) {
         byEpoch = new Map();
@@ -850,8 +1214,33 @@ export class Equipment {
       else if (!closed && this.#watermarks.get(epoch) !== track.stored) {
         await this.#rewriteTail(track, false);
       }
+      await this.#syncFlags(track);
+      await this.#settle(track);
     }
     this.#log.info({ tracks: pairs.size, rebuilt }, 'equipment intervals caught up');
+  }
+
+  /**
+   * Start-up: sets every piece not yet in a final hour to what the track's bound says, both ways,
+   * so pieces stored before #113 (or under an older bound) agree with it.
+   */
+  async #syncFlags(track: Track): Promise<void> {
+    if (track.finalEnd === Infinity) return;
+    const bound = this.#bound(track);
+    const flag = Number.isFinite(bound)
+      ? sql<boolean>`end_time > ${new Date(bound)}`
+      : sql<boolean>`${sql.lit(bound < 0)}`;
+    let query = this.#db
+      .updateTable('equipment.equipment_state_interval')
+      .set({ provisional: flag })
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch)
+      .where(sql<boolean>`provisional IS DISTINCT FROM (${flag})`);
+    if (Number.isFinite(track.finalEnd)) {
+      query = query.where('start_time', '>=', new Date(track.finalEnd));
+    }
+    await query.execute();
+    track.promoteAt = -Infinity;
   }
 
   *#allTracks(): Generator<Track> {

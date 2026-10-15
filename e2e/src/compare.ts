@@ -29,13 +29,20 @@ export interface TotalsRow {
   readonly state: string;
   readonly ms: number;
   readonly provisionalMs: number;
+  /** The bucket's revision for this (equipment, epoch), the same on each of its states (#113). */
+  readonly revision: number;
+  /** Gap incidents over the bucket, the same on each of its states (#113). */
+  readonly incidents: number;
 }
 
 export interface MesTotals {
   /** Per machine, every state (zero when absent), for the epoch asked for. */
   readonly byMachine: Record<string, StateMs>;
-  /** Per machine, the part of its time stored as provisional (the open interval). */
+  /** Per machine, the part of its time that may still change (#113: 0 once the bucket is final). */
   readonly provisionalMs: Record<string, number>;
+  /** Per machine, the bucket's revision and gap incidents (#113). */
+  readonly revision: Record<string, number>;
+  readonly incidents: Record<string, number>;
   /** Rows of other epochs, or of machines or states the ground truth doesn't know. */
   readonly unexpected: readonly TotalsRow[];
 }
@@ -50,6 +57,8 @@ export function mesTotals(
 ): MesTotals {
   const byMachine = Object.fromEntries(machines.map((id) => [id, zero()]));
   const provisionalMs = Object.fromEntries(machines.map((id) => [id, 0]));
+  const revision = Object.fromEntries(machines.map((id) => [id, 0]));
+  const incidents = Object.fromEntries(machines.map((id) => [id, 0]));
   const unexpected: TotalsRow[] = [];
   for (const row of rows) {
     const states = byMachine[row.equipment];
@@ -59,8 +68,10 @@ export function mesTotals(
     }
     states[row.state] = (states[row.state] ?? 0) + row.ms;
     provisionalMs[row.equipment] = (provisionalMs[row.equipment] ?? 0) + row.provisionalMs;
+    revision[row.equipment] = Math.max(revision[row.equipment] ?? 0, row.revision);
+    incidents[row.equipment] = Math.max(incidents[row.equipment] ?? 0, row.incidents);
   }
-  return { byMachine, provisionalMs, unexpected };
+  return { byMachine, provisionalMs, revision, incidents, unexpected };
 }
 
 export interface Difference {

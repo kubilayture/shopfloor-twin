@@ -315,8 +315,18 @@ describe('MES REST API (#97)', () => {
           state: 'Running',
           ms: 80 * MINUTE,
           provisionalMs: 40 * MINUTE,
+          revision: 0,
+          incidents: 0,
         },
-        { equipment: 'cnc-01', epoch: E1, state: 'Stopped', ms: 40 * MINUTE, provisionalMs: 0 },
+        {
+          equipment: 'cnc-01',
+          epoch: E1,
+          state: 'Stopped',
+          ms: 40 * MINUTE,
+          provisionalMs: 0,
+          revision: 0,
+          incidents: 0,
+        },
       ],
     });
     expect(plantSchema.parse((await get('/plant')).body)).toEqual({

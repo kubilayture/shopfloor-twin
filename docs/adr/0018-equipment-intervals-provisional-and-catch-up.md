@@ -1,8 +1,8 @@
 # ADR-0018: Equipment intervals: provisional storage, watermark sources and catch-up
 
-- Status: accepted
+- Status: accepted; amended 2026-10-16 by #113 (interval finality, below)
 - Date: 2026-10-15
-- Deciders: Claude (#96), within the Phase 4 plan; recorded for the owner under the standing instruction of 2026-10-15
+- Deciders: Claude (#96), within the Phase 4 plan; recorded for the owner under the standing instruction of 2026-10-15. Amendment: Claude (#113), within the Phase 5 plan
 
 ## Context and problem statement
 
@@ -41,3 +41,27 @@ Catch-up: (a) recompute everything at every start; (b) a periodic scan of ingest
 - Bad: telemetry from a gateway older than contract 1.1, or sent between a reconnect and the resync, doesn't move any watermark; open intervals then wait for the next fact or a sample that names its run.
 - Bad: a closed epoch's end depends on when the newer epoch was first seen, so it is arrival-dependent by design; a replay that delivers the new run earlier closes the old one earlier.
 - **Retention:** catch-up recomputes an (equipment, epoch) whenever ingest's facts differ from what the intervals were computed from. A future retention policy that deletes old rows of `ingest.equipment_event` would therefore make the next start-up recompute, and so delete, the intervals of those facts. Retention must be designed with this in mind (for example retaining whole epochs, or marking epochs as archived in `interval_source` so catch-up leaves them alone).
+
+## Amendment (#113): interval finality per piece
+
+Phase 4's `provisional` meant "part of the open interval". That is not enough for OEE (Phase 5): a closed interval behind a sequence gap may still change, and an open interval that ended at a shift boundary can't change once its machine reported later. The Phase 5 plan ("Interval finality first") fixes the rule; implementing it left these questions open: how equipment learns the gap state without reading ingest's schema, how "final through" is kept cheap on the acknowledgement path, which changes count as revisions, and what happens to a stream the MES joins in the middle.
+
+### Decision
+
+- **Final through,** per (equipment, device epoch): the latest `sourceTime` of a device fact (state, cycle or alarm) of that equipment whose `seq` has no open gap at or below it. A gap ingest has reported as an incident counts as closed (it is in the cursor's `reported` ranges). A closed epoch is final everywhere. Telemetry never counts: it is no fact of the machine's state.
+- **What ingest exposes (ADR-0016: interface only).** Every device fact notice carries `settledSeq`, the highest `seq` of its stream's epoch with no open gap at or below it, computed from the in-memory cursor at no cost. A sweep that writes gaps off sends a `gaps` notice for each device stream it moved. `Ingest.settled(equipment, epoch, afterSeq?)` returns `settledSeq`, the latest fact time up to it (reading only facts above `afterSeq`) and the epoch's `sequence-gap` incidents, each placed between the times of the facts around it.
+- **Cheap in order.** When a fact's own `seq` is the one that moves `settledSeq` by one, final through becomes the later of the old value and the fact's time, without a query. Only a jump (a hole filled or reported, or the first fact of a track) asks `settled`, which also refreshes the incidents.
+- **History below the first number.** ADR-0017 starts a stream seen for the first time at its first number. For finality, every epoch numbers from 1 (ADR-0015), so the numbers below the first one are held open like a gap: a reordered replay may still deliver them. After the grace period the sweep writes them off into `reported` without an incident ("history"). Without this, a shuffled replay granted finality from whichever fact came first and then revised hundreds of hours.
+- **Per piece.** `cutPieces` flags a piece provisional when it ends after final through (Infinity for a closed epoch), whether its interval is open or closed. When final through moves past the end of the earliest provisional piece the module knows of (`promoteAt`, a lower bound kept on every write), one statement flags the pieces up to it final and returns the next provisional end. A completed bucket whose machine reported after it therefore has `provisionalMs = 0`.
+- **Final hours,** `equipment.bucket_finality` (migration `0005_equipment_finality.sql`): a row per (equipment, epoch, UTC hour) once every piece of it is final, with `final_at` (wall time), `revision`, `revised_at` and `incident_ids` (the ids of the gap incidents whose time span overlaps the hour; no foreign key across schemas). Hours are recorded up to the hour of final through, and only as far as the open interval is stored, so an hour is recorded with all its pieces. A closed epoch records all its hours. An hour that only gains pieces after the hours above it are final (an anchor or a first fact arriving late) is recorded then.
+- **Revisions.** A change to a final hour raises its revision: a late state fact or a recompute compares the stored pieces of the final hours it replaces with the new ones (start, end, state, cause, interval start), and a late cycle raises the revision of its hour (it changes the hour's count for OEE). Alarms change no bucket. The in-order path never reads for this: it touches only hours after the fact's own time, which are not final. Causes are a late fill of a gap already reported, and late facts of an epoch closed by a newer one (ingest still accepts them while its cursor is on that epoch).
+- **API.** `shiftTotals` (and `GET /api/v1/shifts/{date}/{shift}/totals`) report per row `revision` (the highest of the bucket's final hours, for that equipment and epoch) and `incidents` (distinct incidents over them), the same on every state row of the (equipment, epoch).
+- **Restarts.** The table survives restarts. At start-up the module asks `settled` for every open (equipment, epoch), takes the latest final hour from the table, sets the flags of the pieces not yet in a final hour to what final through says (both ways, so pieces stored before #113 agree), and records missing final hours. Revision counts are never recomputed.
+
+### Consequences
+
+- Good: a bucket is final exactly when no fact that can still arrive may change it; a consumer can tell a revised bucket from an unchanged one, and a bucket behind a gap carries `incidents > 0`.
+- Good: the in-order path costs nothing extra per fact, except one statement when final through passes a provisional piece's end (about once per hour boundary or provisional step per machine).
+- Bad: a machine that sends no facts keeps its open interval provisional until its next fact: a machine Down, in Setup or in Maintenance across a shift end, and the weekend's `no-shift` bucket. The live reconciliation waits for each machine's next fact, bounded.
+- Bad: a late cycle missed by a notice (equipment restarted between the commit and the notice) does not raise a revision; catch-up compares state facts only.
+- Bad: a gap incident placed between the facts around it may flag an hour the missing facts did not touch; `incidents` is an upper bound in time.

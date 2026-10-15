@@ -42,12 +42,16 @@ describe('process values (phase 2 plan)', () => {
   it('gives the same value for the same time, however often and in whatever order it is read', () => {
     const a = new ProcessValues(config.process.processValues, 5, T0);
     const b = new ProcessValues(config.process.processValues, 5, T0);
-    for (const v of [a, b]) v.record(state('cnc-01', T0, 'Off', 'Running'));
+    for (const v of [a, b]) {
+      v.record(state('cnc-01', T0, 'Off', 'Running'));
+      v.record(state('wsh-01', T0, 'Off', 'Running'));
+    }
     const times = Array.from({ length: 200 }, (_, i) => T0 + i * 1_337);
-    const once = times.map((t) => a.read('cnc-01', t));
-    const reversedOften = [...times]
-      .reverse()
-      .flatMap((t) => [b.read('cnc-01', t), b.read('cnc-01', t)]);
+    const once = times.map((t) => [a.read('cnc-01', t), a.readWasher(t)]);
+    const reversedOften = [...times].reverse().flatMap((t) => [
+      [b.read('cnc-01', t), b.readWasher(t)],
+      [b.read('cnc-01', t), b.readWasher(t)],
+    ]);
     expect(reversedOften.filter((_, i) => i % 2 === 0).reverse()).toEqual(once);
   });
 
@@ -147,7 +151,7 @@ describe('process values (phase 2 plan)', () => {
   it('yields identical readings in a paced live run and in a headless run fed the same events', () => {
     const end = T0 + 4 * HOUR;
     const clock = new ManualClock();
-    const samples: [number, number, number][] = [];
+    const samples: [number, number, number, number | undefined, number | undefined][] = [];
     const { pacer, processValues } = createLiveRun({
       config,
       seed: 8,
@@ -161,7 +165,16 @@ describe('process values (phase 2 plan)', () => {
       clock.advance(1_234);
       const now = pacer.simNow();
       const reading = processValues.read('cnc-01', now);
-      if (reading) samples.push([now, reading.spindleLoadPercent, reading.coolantCelsius]);
+      const washer = processValues.readWasher(now);
+      if (reading) {
+        samples.push([
+          now,
+          reading.spindleLoadPercent,
+          reading.coolantCelsius,
+          washer?.bathCelsius,
+          washer?.conveyorMetresPerMinute,
+        ]);
+      }
     }
     const headlessValues = new ProcessValues(config.process.processValues, 8, T0);
     const events: PlantEvent[] = [];
@@ -183,9 +196,17 @@ describe('process values (phase 2 plan)', () => {
         if (event) headlessValues.record(event);
       }
       const reading = headlessValues.read('cnc-01', t);
-      return [t, reading?.spindleLoadPercent, reading?.coolantCelsius];
+      const washer = headlessValues.readWasher(t);
+      return [
+        t,
+        reading?.spindleLoadPercent,
+        reading?.coolantCelsius,
+        washer?.bathCelsius,
+        washer?.conveyorMetresPerMinute,
+      ];
     });
     expect(samples.length).toBeGreaterThan(100);
+    expect(samples.filter((sample) => (sample[4] ?? 0) > 0).length).toBeGreaterThan(10);
     expect(replay).toEqual(samples);
   });
 });

@@ -55,3 +55,5 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Merged #89 (#78): store-and-forward.
 - #79: the end-to-end test runs every piece as its own process or container: simulator, Mosquitto (fixed port, so it can be replaced), and the gateway (crashed with SIGKILL and restarted). A consumer validates every message and applies the contract's `Deduplicator`. Every state change, cycle and alarm of all six machines arrives exactly once after dedup, with consecutive device numbers, and every telemetry topic is seen. Stable at about 36 s per run.
 - #79 review: the end-to-end test now proves more. Machine facts (not only telemetry) are in the buffer at the crash; a second broker outage happens with the gateway alive; facts arrive in device order and match in content; no stream other than telemetry and status has holes. The status stream showed exactly the documented reserved-will holes.
+- Merged #90 (#79): gateway container and end-to-end test.
+- Phase 3 closed: 4 / 4 exit criteria met; report and learning notes written. No exit criterion needed the owner.

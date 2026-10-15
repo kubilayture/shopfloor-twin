@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -45,6 +46,8 @@ class Consumer {
   readonly facts = new Map<string, UnsMessage[]>();
   readonly telemetry = new Set<string>();
   readonly invalid: string[] = [];
+  /** Holes in streams closed by an epoch change (a restarted gateway's own counters). */
+  readonly closedGaps: string[] = [];
   duplicates = 0;
   #client: MqttClient | undefined;
 
@@ -67,6 +70,8 @@ class Consumer {
         this.duplicates++;
         return;
       }
+      for (const gap of verdict.closedGaps)
+        this.closedGaps.push(`${gap.stream} ${String(gap.from)}–${String(gap.to)}`);
       const parsedTopic = parseEquipmentTopic(topic);
       if (parsedTopic?.topicClass === 'telemetry')
         this.telemetry.add(`${parsedTopic.equipment}/${parsedTopic.name}`);
@@ -82,6 +87,33 @@ class Consumer {
 
   async close(): Promise<void> {
     await this.#client?.endAsync(true);
+  }
+}
+
+/** The key content of a fact, in the same words for a UNS message and a simulator event. */
+function describeFact(message: UnsMessage): string {
+  switch (message.schema) {
+    case 'uns.state.current/1':
+      return `state ${message.value.state} ${String(message.value.cause)}`;
+    case 'uns.events.cycle-complete/1':
+      return `cycle ${message.value.product} ${String(message.value.partId)} ${message.value.result}`;
+    case 'uns.alarms/1':
+      return `alarm ${message.value.code} ${message.value.transition}`;
+    case 'uns.telemetry/1':
+    case 'uns.sys.status/1':
+    case 'uns.sys.incident/1':
+      return message.schema;
+  }
+}
+
+function describeEvent(event: SimEvent): string {
+  switch (event.type) {
+    case 'state':
+      return `state ${String(event.to)} ${typeof event.cause === 'string' ? event.cause : 'null'}`;
+    case 'cycle-complete':
+      return `cycle ${String(event.product)} ${String(event.partId)} ${String(event.result)}`;
+    default:
+      return `alarm ${String(event.code)} ${String(event.transition)}`;
   }
 }
 
@@ -151,6 +183,17 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
     await simulator.post('/api/v1/pause');
     await wait(1_000);
     await gateway.stop('SIGKILL');
+    // The crash happened with machine facts still in the buffer, not only telemetry.
+    const buffer = new DatabaseSync(gatewayEnv.BUFFER_PATH, { readOnly: true });
+    const bufferedFacts = Number(
+      buffer
+        .prepare(
+          "SELECT count(*) AS n FROM outbox WHERE topic LIKE '%/state/current' OR topic LIKE '%/events/%' OR topic LIKE '%/alarms/%'",
+        )
+        .get()?.n ?? 0,
+    );
+    buffer.close();
+    expect(bufferedFacts).toBeGreaterThan(0);
 
     broker = (await startBroker({ hostPort: BROKER_PORT })).container;
     await consumer.connect();
@@ -159,7 +202,14 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
     await until(async () => (await metric('gateway_buffer_messages')) === 0, 30_000);
 
     await simulator.post('/api/v1/resume');
-    await wait(10_000);
+    await wait(6_000);
+    // A second outage, with the gateway alive: it buffers and replays on its own after reconnecting.
+    await broker.stop();
+    await consumer.close();
+    await wait(5_000);
+    broker = (await startBroker({ hostPort: BROKER_PORT })).container;
+    await consumer.connect();
+    await wait(6_000);
     await simulator.post('/api/v1/pause');
     await wait(3_000);
     await until(async () => (await metric('gateway_buffer_messages')) === 0, 30_000);
@@ -174,12 +224,19 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
     let total = 0;
     for (const machine of MACHINES) {
       const expected = facts(machine);
-      const received = [...(consumer.facts.get(machine) ?? [])].sort((a, b) => a.seq - b.seq);
-      // Exactly once each, with the device's own consecutive numbers and simulation times.
+      const arrived = consumer.facts.get(machine) ?? [];
+      // Ordered sending (ADR-0014): new facts arrive in device order, even across replays.
+      expect(
+        arrived.map((m) => m.seq),
+        `${machine} arrival order`,
+      ).toEqual(arrived.map((m) => m.seq).sort((a, b) => a - b));
+      const received = [...arrived].sort((a, b) => a.seq - b.seq);
+      // Exactly once each, with the device's own consecutive numbers, times and content.
       expect(
         received.map((m) => m.sourceTime),
         machine,
       ).toEqual(expected.map((e) => e.at));
+      expect(received.map(describeFact), machine).toEqual(expected.map(describeEvent));
       const first = received[0]?.seq ?? 0;
       expect(
         received.map((m) => m.seq),
@@ -188,7 +245,13 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
       total += expected.length;
     }
     expect(total).toBeGreaterThan(80);
-    expect(consumer.dedup.gaps()).toEqual([]);
+    // `_sys/…/status` is excluded from gap checks (docs/contracts/uns.md): reserved will numbers.
+    expect(consumer.dedup.gaps().filter((gap) => !gap.stream.endsWith('/status'))).toEqual([]);
+    // A restarted gateway starts new counters for its own streams; only telemetry (sampled, plan
+    // section 5) and status (reserved will numbers) may have holes there, never incidents.
+    expect(
+      consumer.closedGaps.filter((gap) => !gap.includes('/telemetry/') && !gap.includes('/status')),
+    ).toEqual([]);
 
     // Every telemetry topic of every machine was seen.
     const expectedTelemetry = Object.entries(UNS_TELEMETRY).flatMap(([name, t]) =>

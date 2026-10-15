@@ -1,11 +1,13 @@
 # Status — updated 2026-10-16
 
-## Current phase: 04 – MES foundation: historian and equipment states (planning, started 2026-10-15)
+## Current phase: 05 – OEE and downtime (next; Phase 4 closed 2026-10-16)
 
-## Exit criteria progress: 0 / 4 met
+## Exit criteria progress: Phase 4 closed with 4 / 4 met; Phase 5 not planned yet
 
 ## Done since last update
 
+- **Phase 4 closed**: all 4 exit criteria met; tag `phase-04` (report: `docs/phases/phase-04-report.md`; learning notes: `docs/learning/phase-04.md`; data model: `docs/data-model.md`, generated from the database with a drift test).
+- #100 merged (PR #112): full-shift reconciliation through the whole chain, Playwright on the live overview, CI job `reconcile` (10.7 min).
 - #99 merged (PR #111): `mes` and `web` in Compose.
 - #98 merged (PR #110): `apps/web`, ADR-0020.
 - #97 merged (PR #109): REST API and WebSocket push, ADR-0019.
@@ -62,23 +64,24 @@
 
 ## In progress
 
-- #100 Full-shift reconciliation (branch `feat/100-e2e-reconciliation`, in review): simulator ground truth live (`GET /api/v1/ground-truth`), `pnpm test:reconcile` over the Compose stack in the plan's start order, Playwright on the live overview, CI job `reconcile`. Locally green twice: all six machines' shift-A totals equal the ground truth to the ms, 1,221 pieces inside one hour and one shift, no incidents, latest state in the browser within 0.3 s at most (exit criteria 1 and 3, evidence in the phase log; met once the CI job is green on `main`).
+- #101 Phase 4 close (in review)
 
 ## Next up
 
-- #101 Close Phase 4: report, learning notes, `docs/data-model.md` generated from the database, tag
+- Phase 5 plan: OEE and downtime (`oee-core` with reference cases, continuous aggregates, reason codes, downtime coding, OEE dashboard). Open follow-up to schedule: #113 (interval finality per piece).
 
 ## Blockers and open questions for the owner
 
 - Install the Renovate GitHub app for this repository (carried over from Phase 0).
+- Optional: run `pnpm stack:up` and look at the plant overview at <http://localhost:8080> (no exit criterion depends on it).
 - Raise the Docker VM's memory to 4 GiB (now 2 GiB on Colima): the full stack uses about 440 MiB at 60×, but its limits add up to about 2 GiB and the Testcontainers suites run beside it (runbook, "Full stack", Memory).
 
 Project board: https://github.com/users/kubilayture/projects/1
 
 ## Health: CI on main, coverage, open bugs
 
-- CI on `main`: green (`verify`, `end to end`, `stack smoke`); `reconcile` arrives with #100.
-- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 92 / 78 and `mes-server` 95 / 86 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
-- Tests: 654 (plus the end-to-end job: gateway, golden-week reconciliation).
+- CI on `main`: green (`verify`, `end to end`, `stack smoke`, `reconcile`).
+- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 92 / 79, `mes-server` 95 / 85 and web 98 / 89 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
+- Tests: 737 (plus the `end to end` job: gateway, golden-week reconciliation; and the `reconcile` job).
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

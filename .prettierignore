@@ -3,7 +3,8 @@ docs/project-plan.md
 apps/simulator/golden/**/summary.json
 
 # Generated; checked for drift by tests (apps/simulator/src/control/openapi.ts,
-# apps/mes-server/src/openapi.ts)
+# apps/mes-server/src/openapi.ts, apps/mes-server/src/db/data-model.ts)
+docs/data-model.md
 docs/api/*.openapi.json
 docs/api/*.schema.json
 docs/contracts/uns/*.schema.json

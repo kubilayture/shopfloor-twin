@@ -10,7 +10,8 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "start": "node src/main.ts",
     "migrate": "node src/db/cli.ts",
-    "openapi": "node src/openapi.ts"
+    "openapi": "node src/openapi.ts",
+    "data-model": "node src/db/data-model.ts"
   },
   "dependencies": {
     "@fastify/swagger": "catalog:",

@@ -8,6 +8,7 @@ import { parseEnv } from '../env.ts';
 import { buildMesHttp } from '../http.ts';
 import { startDatabase } from '../testing.ts';
 import { DECLARED_COLUMNS, actualColumns, actualTables } from './columns.ts';
+import { DATA_MODEL_FILE, generateDataModel } from './data-model.ts';
 import { createDatabase, type Database } from './database.ts';
 import { migrate, readMigrations } from './migrate.ts';
 
@@ -163,6 +164,23 @@ describe('migrations (ADR-0016)', () => {
     expect(await actualColumns(db, Object.keys(DECLARED_COLUMNS))).toEqual(DECLARED_COLUMNS);
     // And no table in a module schema is left undeclared.
     expect(await actualTables(db)).toEqual(Object.keys(DECLARED_COLUMNS).sort());
+  });
+
+  it('keeps the committed docs/data-model.md in step with the migrations', async () => {
+    const db = await freshDatabase('m_data_model');
+    await migrate(db, MIGRATIONS);
+    const generated = await generateDataModel(db);
+    // Deterministic: a second run over the same database gives the same text.
+    expect(await generateDataModel(db)).toBe(generated);
+    // On a difference: pnpm --filter @shopfloor/mes-server data-model
+    expect(await readFile(DATA_MODEL_FILE, 'utf8')).toBe(generated);
+  });
+
+  it('refuses to document a table without a description', async () => {
+    const db = await freshDatabase('m_data_model_new');
+    await migrate(db, MIGRATIONS);
+    await sql`CREATE TABLE ingest.undescribed (id INT)`.execute(db);
+    await expect(generateDataModel(db)).rejects.toThrow(/describe ingest\.undescribed/);
   });
 });
 

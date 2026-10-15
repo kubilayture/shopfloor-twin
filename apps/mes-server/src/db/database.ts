@@ -1,5 +1,6 @@
 import { Kysely, PostgresDialect, type Generated } from 'kysely';
 import pg from 'pg';
+import type { MasterDataTables } from '../modules/master-data/index.ts';
 
 /** Tables of `public` that the MES itself owns (module schemas add their own types). */
 export interface SchemaMigrationsTable {
@@ -13,7 +14,7 @@ export interface PublicTables {
 }
 
 /** The database as Kysely sees it; each module's tables join this type as the module arrives. */
-export type Database = PublicTables;
+export type Database = PublicTables & MasterDataTables;
 
 export function createDatabase(url: string, maxConnections = 10): Kysely<Database> {
   return new Kysely<Database>({

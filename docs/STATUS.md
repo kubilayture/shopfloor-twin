@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #93 merged (PR #103): `mes-server` skeleton, migrations (ADR-0016); end-to-end tests have their own CI job.
 - #92 merged (PR #102): Phase 4 plan, revised after review.
 - Phase 4 plan with issues #92–#101 under milestone "Phase 04 – MES foundation".
 - #80 merged (PR #91): Phase 3 closed, tagged `phase-03`.
@@ -55,11 +56,11 @@
 
 ## In progress
 
-- #93 `mes-server` skeleton and migrations (in review)
+- #94 shift calendar, `oee-core` intervals, master data (in review)
 
 ## Next up
 
-- #94 shift calendar, `oee-core` intervals and master data, #95 ingest
+- #95 ingest, #96 equipment intervals
 
 ## Blockers and open questions for the owner
 

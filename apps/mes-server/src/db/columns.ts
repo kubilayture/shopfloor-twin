@@ -1,4 +1,5 @@
 import { sql, type Kysely } from 'kysely';
+import { MASTER_DATA_COLUMNS } from '../modules/master-data/index.ts';
 import type { Database } from './database.ts';
 
 /**
@@ -43,4 +44,5 @@ export async function actualColumns(
 /** The declared columns; every module adds its tables here as it adds them to `Database`. */
 export const DECLARED_COLUMNS: ColumnSpec = {
   'public.schema_migrations': ['name', 'checksum', 'applied_at'],
+  ...MASTER_DATA_COLUMNS,
 };

@@ -1,6 +1,5 @@
-import type { PlantConfig } from '@shopfloor/plant-config';
 import { describe, expect, it } from 'vitest';
-import { shiftAt, shiftBoundaries } from './calendar.ts';
+import { shiftAt, shiftBoundaries, type ShiftPattern } from './index.ts';
 
 const istanbul = {
   timeZone: 'Europe/Istanbul',
@@ -11,7 +10,7 @@ const istanbul = {
     { id: 'C', start: '22:00', end: '06:00', break: { start: '02:00', minutes: 30 } },
   ],
 };
-const config: PlantConfig['shifts'] = { ...istanbul, workdays: [...istanbul.workdays] };
+const config: ShiftPattern = { ...istanbul, workdays: [...istanbul.workdays] };
 
 const local = (iso: string, zone = 'Europe/Istanbul'): number =>
   Temporal.PlainDateTime.from(iso).toZonedDateTime(zone).epochMilliseconds;

@@ -44,11 +44,21 @@ async function until(
   }
 }
 
+/**
+ * A probe of the gateway's HTTP endpoints: '' when the gateway is not there, also when the
+ * connection breaks while the body is read, so the polling `until` retries and names the step.
+ */
 const get = (url: string): Promise<string> =>
-  fetch(url, { signal: AbortSignal.timeout(2_000) }).then(
-    (r) => r.text(),
-    () => '',
-  );
+  fetch(url, { signal: AbortSignal.timeout(2_000) })
+    .then((r) => r.text())
+    .catch(() => '');
+
+/** Socket errors of a broker that is starting or stopping, which a reconnect attempt can cure. */
+const TRANSIENT_SOCKET_ERRORS = new Set(['ECONNRESET', 'ECONNREFUSED', 'EPIPE']);
+
+const isTransientSocketError = (error: unknown): boolean =>
+  error instanceof Error &&
+  TRANSIENT_SOCKET_ERRORS.has((error as NodeJS.ErrnoException).code ?? '');
 
 /** A consumer as the MES will be (Phase 4): validates every message and applies ADR-0015's rule. */
 class Consumer {
@@ -56,17 +66,41 @@ class Consumer {
   readonly facts = new Map<string, UnsMessage[]>();
   readonly telemetry = new Set<string>();
   readonly invalid: string[] = [];
+  /** Client errors other than the socket resets of the outages. */
+  readonly errors: string[] = [];
   /** Holes in streams closed by an epoch change (a restarted gateway's own counters). */
   readonly closedGaps: string[] = [];
   duplicates = 0;
   #client: MqttClient | undefined;
 
-  async connect(): Promise<void> {
-    const client = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
-      username: 'mes',
-      password: TEST_PASSWORDS.mes,
-      protocolVersion: 5,
-      reconnectPeriod: 0,
+  /**
+   * Connects to a broker that may have just been (re)started. Its port can accept a connection
+   * and reset it before Mosquitto serves it (a port proxy without a backend yet), which
+   * `connectAsync` rejects with a bare `read ECONNRESET` (#107). Such resets are retried until
+   * the deadline; any other error (a refused login, for example) fails at once.
+   */
+  async connect(timeoutMs = 15_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    let client: MqttClient;
+    for (;;) {
+      try {
+        client = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+          username: 'mes',
+          password: TEST_PASSWORDS.mes,
+          protocolVersion: 5,
+          reconnectPeriod: 0,
+        });
+        break;
+      } catch (error) {
+        if (!isTransientSocketError(error) || Date.now() > deadline) throw error;
+        await wait(200);
+      }
+    }
+    // The broker outages reset this socket on purpose; the client is closed right after them, and
+    // a lost message still fails the delivery assertions. Socket errors are therefore expected
+    // here, never a reason to fail, while protocol errors (no `code`) still are.
+    client.on('error', (error) => {
+      if (!isTransientSocketError(error)) this.errors.push(String(error));
     });
     client.on('message', (topic, payload, packet) => {
       const parsed = parseUnsMessage(JSON.parse(payload.toString()));
@@ -230,6 +264,7 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
       30_000,
     );
 
+    expect(consumer.errors).toEqual([]);
     expect(consumer.invalid).toEqual([]);
     const facts = (machine: string): SimEvent[] =>
       simulator.events.filter(

@@ -442,12 +442,12 @@ The format is `sim-summary/2` since #117; `/1` had no `oee` section, and every o
 
 How the inputs are built:
 
-- **Time per state per hour** is cut at UTC hours as events close each machine's time. The shift bucket's `stateMs` is `byShift`, kept independently from the shift events; a test checks that the hours of a bucket sum to it, for every input and total.
+- **Time per state per hour** is cut at UTC hours as events close each machine's time. The shift bucket's `stateMs` is `byShift`, which is cut at the shift events rather than at UTC hours, so the two are built separately; a test over the golden week checks that the `bucketTotals` of a bucket's hours sum to those of the bucket.
 - **Stopped intervals** are held while open and filed when they close: one piece per hour and one per shift bucket, each with the interval's whole length (`wholeMs`), so the threshold applies to the whole interval and each piece is still credited to its own hour. While an interval is open, a summary or snapshot includes it with `open: true` and `wholeMs` running to the snapshot time (ADR-0021); such a bucket can be `provisional`. A run that ends inside a Stopped interval reports it open in the same way.
 - **Cycles** are bucketed by their time (`shiftKeyAt` of the cycle's UTC hour; buckets are half-open), not by the last shift event seen, so a cycle exactly at a boundary lands where the MES puts it. Before #117 the summary counted cycles only per machine in total, so no count changed; in the golden week no cycle completes on an hour boundary, and the time-based and event-based buckets agree for all 10,988 cycles.
 - **Work centers** are Cell M1 (CNC-01, CNC-02, WSH-01) and Line A1 (ASM-01, LKT-01, PCK-01), from `plant.yaml`.
 
-The inputs are kept incrementally while events are recorded; ratios and losses are computed only when a summary or snapshot is read. A snapshot costs about 0.2 ms after one shift and about 3 ms after a full week (measured on an M3, JSON serialization included), well within 5 Hz polling.
+The inputs are kept incrementally while events are recorded; ratios and losses are computed only when a summary or snapshot is read. A snapshot costs about 0.2 ms after one shift and about 3 ms after a full week (measured on an M3, JSON serialization included), well within 5 Hz polling; the response is about 30 KB after a shift and about 450 KB after a week.
 
 ## Process values (telemetry)
 

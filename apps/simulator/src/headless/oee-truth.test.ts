@@ -25,6 +25,7 @@ beforeAll(async () => {
 });
 
 const MIN = 60_000;
+const HOUR_MS = 60 * MIN;
 // Monday 2026-10-12 13:00 Istanbul (10:00 UTC): the last hour of shift A; B starts at 11:00 UTC.
 const S = Date.UTC(2026, 9, 12, 10);
 const B = S + 60 * MIN;
@@ -205,6 +206,53 @@ describe('ground-truth OEE, by hand (#117)', () => {
       performance: { fraction: '4/5', decimal: '0.8000' },
       oee: { fraction: '1/2', decimal: '0.5000' },
       provisional: false,
+    });
+  });
+
+  it('reports a stop still open when the run finishes, with its whole length up to the end', () => {
+    const { truth } = constructed();
+    const line = new ProductionLine({ config, random: new RandomSource(1), startTime: S });
+    const finished = truth.finish(B + 6 * MIN, line, []);
+    const b = finished.oee.machines['cnc-01']?.shifts['2026-10-12/B'];
+    expect(b?.inputs.stops.at(-1)).toEqual({ ms: 60_000, wholeMs: 60_000, open: true });
+    expect(b?.result.provisional).toBe(true);
+    expect(
+      finished.oee.machines['cnc-01']?.hours['2026-10-12T11:00:00.000Z']?.stops.at(-1),
+    ).toEqual({ ms: 60_000, wholeMs: 60_000, open: true });
+  });
+
+  it('cuts a stop that crosses a shift end into no-shift, each piece with the whole length', () => {
+    // Friday's shift C ends Saturday 06:00 Istanbul (03:00 UTC); the weekend is no-shift.
+    const end = Date.UTC(2026, 9, 17, 3);
+    const start = end - HOUR_MS;
+    const truth = new GroundTruth(config, start);
+    const line = new ProductionLine({ config, random: new RandomSource(1), startTime: start });
+    const events: PlantEvent[] = [
+      { type: 'shift', at: start, action: 'shift-start', shiftId: 'C', shiftDate: '2026-10-16' },
+      state(start, 'Off', 'Running'),
+      state(end - 2 * MIN, 'Running', 'Stopped'),
+      { type: 'shift', at: end, action: 'shift-end', shiftId: 'C', shiftDate: '2026-10-16' },
+      state(end + MIN, 'Stopped', 'Off'),
+    ];
+    for (const event of events) {
+      truth.record(event);
+    }
+    const oee = truth.finish(end + 10 * MIN, line, []).oee.machines['cnc-01'];
+    const c = oee?.shifts['2026-10-16/C'];
+    expect(c?.inputs.stops).toEqual([{ ms: 120_000, wholeMs: 180_000 }]);
+    // 180 s is past the threshold: the whole stop is long, also the part in shift C.
+    expect(c?.result.totals).toMatchObject({ longStopMs: 120_000, microStopMs: 0 });
+    const off = oee?.shifts['no-shift'];
+    expect(off?.inputs.stops).toEqual([{ ms: 60_000, wholeMs: 180_000 }]);
+    expect(off?.inputs.stateMs).toEqual(states({ Stopped: 60_000, Off: 540_000 }));
+    expect(off?.result.oee).toBeNull();
+    expect(oee?.hours['2026-10-17T02:00:00.000Z']?.stops).toEqual([
+      { ms: 120_000, wholeMs: 180_000 },
+    ]);
+    expect(oee?.hours['2026-10-17T03:00:00.000Z']).toMatchObject({
+      shift: 'no-shift',
+      scheduled: false,
+      stops: [{ ms: 60_000, wholeMs: 180_000 }],
     });
   });
 

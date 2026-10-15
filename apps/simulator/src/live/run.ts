@@ -27,6 +27,11 @@ export interface LiveGroundTruth extends GroundTruthSummary {
   readonly start: string;
   /** How far events have been processed; the summary counts up to here. */
   readonly simTime: string;
+  /**
+   * The paced simulation clock when this was read (`pacer.simNow()`). While running, `simTime`
+   * trails it by up to about 1 s × speed between events; equal while paused or idle.
+   */
+  readonly pacedTime: string;
   /** The shift bucket the run is in (`2026-10-12/A`, or `no-shift`). */
   readonly currentBucket: string;
   /**
@@ -91,6 +96,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     return {
       start: isoTime(options.start),
       simTime: isoTime(now),
+      pacedTime: isoTime(pacer.simNow()),
       currentBucket,
       buckets: Object.fromEntries(
         [...keys].map((key) => [key, { complete: key !== currentBucket }]),

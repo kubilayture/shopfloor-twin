@@ -62,7 +62,9 @@ describe('live ground truth (#100)', () => {
     const wall = (until - T0) / 60;
     while (clock.now() + 7_000 < wall) {
       clock.advance(7_000);
-      run.groundTruth();
+      const read = run.groundTruth();
+      expect(read.pacedTime).toBe(new Date(T0 + clock.now() * 60).toISOString());
+      expect(Date.parse(read.simTime)).toBeLessThanOrEqual(Date.parse(read.pacedTime));
     }
     clock.advance(wall - clock.now());
     run.pacer.pause();

@@ -148,6 +148,7 @@ describe('control API (#54)', () => {
       epoch: 1_760_000_000,
       start: '2026-10-12T03:00:00.000Z',
       simTime: '2026-10-12T03:00:00.000Z',
+      pacedTime: '2026-10-12T03:00:00.000Z',
     });
     expect(Object.keys(idle.machines).sort()).toEqual(Object.keys(idle.current).sort());
     expect(idle.current['cnc-01']?.since).toBe('2026-10-12T03:00:00.000Z');
@@ -157,6 +158,7 @@ describe('control API (#54)', () => {
     await served.inject({ method: 'POST', url: '/api/v1/pause' });
     const paused = await read();
     expect(paused.simTime).toBe('2026-10-12T11:10:00.000Z');
+    expect(paused.pacedTime).toBe(paused.simTime);
     expect(paused.currentBucket).toBe('2026-10-12/B');
     expect(paused.buckets).toEqual({
       '2026-10-12/A': { complete: true },

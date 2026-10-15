@@ -86,3 +86,31 @@ export function judgeLatency(
   }
   return { measured, violations, unjudged };
 }
+
+/**
+ * Guards against a frozen page: a page that never updates can still match a judged change when
+ * the truth returns to the state it shows (Running → 170 ms Stopped → Running). The page must
+ * really change: at least half as many transitions as judged changes in all, and at least one on
+ * every machine with a judged change. `page` holds the initial sample plus one per transition.
+ * Returns the problems found; empty when the page was live.
+ */
+export function pageActivityProblems(
+  measured: readonly Measured[],
+  page: ReadonlyMap<string, readonly Change[]>,
+): string[] {
+  const transitions = (machine: string) => Math.max(0, (page.get(machine)?.length ?? 0) - 1);
+  const problems: string[] = [];
+  const machines = [...new Set(measured.map((m) => m.machine))].sort();
+  const total = [...page.keys()].reduce((sum, machine) => sum + transitions(machine), 0);
+  if (total * 2 < measured.length) {
+    problems.push(
+      `the page changed state ${String(total)} times for ${String(measured.length)} judged changes`,
+    );
+  }
+  for (const machine of machines) {
+    if (transitions(machine) === 0) {
+      problems.push(`${machine}: the page never changed state, the truth did`);
+    }
+  }
+  return problems;
+}

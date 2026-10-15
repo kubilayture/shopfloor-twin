@@ -13,6 +13,7 @@ export const groundTruthSchema = z.object({
   epoch: z.number().int(),
   start: z.string(),
   simTime: z.string(),
+  pacedTime: z.string(),
   currentBucket: z.string(),
   buckets: z.record(z.string(), z.object({ complete: z.boolean() })),
   current: z.record(z.string(), z.object({ state: z.string(), since: z.string() })),

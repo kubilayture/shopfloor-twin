@@ -58,6 +58,12 @@ export const groundTruthSchema = z.object({
   simTime: z
     .string()
     .describe('How far events have been processed, ISO 8601 UTC; the totals count up to here'),
+  pacedTime: z
+    .string()
+    .describe(
+      'The paced simulation clock when this was read, ISO 8601 UTC; simTime trails it by up to ' +
+        'about 1 s × speed while running',
+    ),
   currentBucket: z
     .string()
     .describe('The shift bucket the run is in: `2026-10-12/A` or `no-shift`'),

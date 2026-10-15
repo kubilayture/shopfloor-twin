@@ -51,7 +51,11 @@ export class PlantServers {
         loadProgram: (product: string, quantity: number) => {
           const sources = this.#sources;
           if (!sources) {
-            return { ok: false as const, reason: 'simulation not attached' };
+            return {
+              ok: false as const,
+              code: 'not-attached' as const,
+              reason: 'simulation not attached',
+            };
           }
           return sources.line.loadProgram(machine.id, product, quantity, sources.simulation);
         },

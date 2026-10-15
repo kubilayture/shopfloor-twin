@@ -229,6 +229,7 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
         ],
       });
       expect(bad.statusCode.name).toBe('BadInvalidArgument');
+      expect(bad.inputArgumentResults?.map((r) => r.name)).toEqual(['BadInvalidArgument', 'Good']);
       const good = await session.call({
         objectId,
         methodId,

@@ -459,7 +459,7 @@ Source: `apps/simulator/src/live/`. Plan section 4: "two run modes, one engine".
 - Control calls made from _inside_ an event handler (pause, resume, speed, stop) are deferred until the current step has finished, so they can never nest a second run inside the first. `step()` from a handler is an error.
 - An optional end time makes the run half-open, [start, end), as in headless mode.
 
-**Pacing decides only _when_ a step runs, never _what_ happens.** A scripted test, and a property test with 40 random sequences of advance, pause, step, resume and speed changes (including a step before the start and an end exactly on an event time), check that the event stream is identical to the headless run with the same seed and end. Determinism and the golden scenario therefore also cover live mode.
+**Pacing decides only _when_ a step runs, never _what_ happens.** A scripted test, and a property test with 40 random sequences of advance, pause, step, resume and speed changes (including a step before the start and an end exactly on an event time), check that the event stream is identical to the headless run with the same seed and end. Determinism and the golden scenario therefore also cover live mode. External commands (such as OPC UA `LoadProgram`) change the run's future; a live run with commands is reproducible only together with its recorded `program-loaded` events. Replaying those is part of the Phase 9 scenarios.
 
 **Two clocks:**
 

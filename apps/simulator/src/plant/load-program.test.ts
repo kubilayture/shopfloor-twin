@@ -75,8 +75,9 @@ describe('LoadProgram (plan section 5, data path 3)', () => {
   it.each([
     ['asm-01', 'VB-100', 1, 'does not run programs'],
     ['cnc-01', 'VB-999', 1, 'unknown product'],
-    ['cnc-01', 'VB-100', 0, 'positive integer'],
-    ['cnc-01', 'VB-100', 1.5, 'positive integer'],
+    ['cnc-01', 'VB-100', 0, 'integer from 1'],
+    ['cnc-01', 'VB-100', 1.5, 'integer from 1'],
+    ['cnc-01', 'VB-100', 100_001, 'integer from 1'],
   ])('rejects %s / %s / %s', (machine, product, quantity, reason) => {
     const { line, simulation, events } = setup({ 'cnc-01': [{ product: 'VB-100', quantity: 5 }] });
     const result = line.loadProgram(machine, product, quantity, simulation);

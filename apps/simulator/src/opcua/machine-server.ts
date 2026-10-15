@@ -1,8 +1,8 @@
 import {
   OPCUA_EVENT_FIELD_TYPES,
-  OPCUA_METHODS,
   OPCUA_EVENT_FIELDS,
   OPCUA_EVENT_TYPES,
+  OPCUA_METHODS,
   OPCUA_VARIABLES,
   SHOPFLOOR_NAMESPACE_URI,
   type OpcuaVariable,
@@ -25,7 +25,7 @@ import {
   type VariantOptions,
 } from 'node-opcua';
 import type { SimTime } from '@shopfloor/sim-core';
-import type { PlantEvent } from '../plant/line.ts';
+import type { LoadProgramResult, PlantEvent } from '../plant/line.ts';
 import type { MachineState } from '../plant/machine-state.ts';
 import { machineryItemState, machineryOperationMode } from './machinery-state.ts';
 
@@ -51,10 +51,7 @@ export interface MachineServerOptions {
   readonly port: number;
   readonly host?: string;
   readonly pkiFolder: string;
-  readonly loadProgram?: (
-    product: string,
-    quantity: number,
-  ) => { ok: true; position: number } | { ok: false; reason: string };
+  readonly loadProgram?: (product: string, quantity: number) => LoadProgramResult;
 }
 
 export interface TelemetrySource {
@@ -369,13 +366,27 @@ export class MachineServer {
       });
       method.bindMethod((inputArguments, _context, callback) => {
         const [product, quantity] = inputArguments.map((argument) => argument.value as unknown);
-        const result =
+        const result: LoadProgramResult =
           typeof product === 'string' && typeof quantity === 'number'
             ? loadProgram(product, quantity)
-            : { ok: false as const, reason: 'expected (String, UInt32)' };
+            : { ok: false, code: 'invalid-product', reason: 'expected (String, UInt32)' };
+        if (result.ok) {
+          callback(null, {
+            statusCode: StatusCodes.Good,
+            outputArguments: [{ dataType: DataType.UInt32, value: result.position }],
+          });
+          return;
+        }
+        const good = StatusCodes.Good;
+        const bad = StatusCodes.BadInvalidArgument;
         callback(null, {
-          statusCode: result.ok ? StatusCodes.Good : StatusCodes.BadInvalidArgument,
-          outputArguments: result.ok ? [{ dataType: DataType.UInt32, value: result.position }] : [],
+          statusCode: result.code === 'not-attached' ? StatusCodes.BadInvalidState : bad,
+          inputArgumentResults:
+            result.code === 'invalid-product'
+              ? [bad, good]
+              : result.code === 'invalid-quantity'
+                ? [good, bad]
+                : [good, good],
         });
       });
     }

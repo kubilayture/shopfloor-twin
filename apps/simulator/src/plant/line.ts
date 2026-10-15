@@ -96,6 +96,16 @@ type Unavailable = 'Off' | 'PlannedStop';
 
 const CALENDAR_WINDOW = 7 * 24 * HOUR;
 
+export const MAX_PROGRAM_QUANTITY = 100_000;
+
+export type LoadProgramResult =
+  | { ok: true; position: number }
+  | {
+      ok: false;
+      code: 'not-a-cnc' | 'invalid-product' | 'invalid-quantity' | 'not-attached';
+      reason: string;
+    };
+
 const CYCLE = 'cycle';
 const MINOR_STOP = 'minor-stop';
 const FAILURE = 'failure:';
@@ -651,16 +661,20 @@ export class ProductionLine {
     product: string,
     quantity: number,
     simulation: Simulation<LineEvent>,
-  ): { ok: true; position: number } | { ok: false; reason: string } {
+  ): LoadProgramResult {
     const station = this.stations.find((s) => s.id === machineId);
     if (!station?.campaigns) {
-      return { ok: false, reason: `${machineId} does not run programs` };
+      return { ok: false, code: 'not-a-cnc', reason: `${machineId} does not run programs` };
     }
     if (!this.#config.products.products.some((p) => p.id === product)) {
-      return { ok: false, reason: `unknown product "${product}"` };
+      return { ok: false, code: 'invalid-product', reason: `unknown product "${product}"` };
     }
-    if (!Number.isInteger(quantity) || quantity <= 0) {
-      return { ok: false, reason: `quantity must be a positive integer, got ${String(quantity)}` };
+    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > MAX_PROGRAM_QUANTITY) {
+      return {
+        ok: false,
+        code: 'invalid-quantity',
+        reason: `quantity must be an integer from 1 to ${String(MAX_PROGRAM_QUANTITY)}, got ${String(quantity)}`,
+      };
     }
     this.#now = simulation.now;
     station.campaigns.unshift({ product, remaining: quantity });

@@ -74,7 +74,12 @@ Value timestamps:
 | out `Position` | UInt32 | Position of the new campaign in the CNC queue (always 1: next) |
 
 - The campaign is put at the front of the CNC's queue. If the product differs from the one loaded, the CNC changes over (`Setup`, `CHANGEOVER A→B`) at its next cycle boundary, and `ShopFloor.Program` changes when the changeover starts. After the campaign the CNC continues with its remaining schedule.
-- An unknown product or a quantity below 1 returns `BadInvalidArgument`.
+- Call it on the object `…ShopFloor` (calling it on the machine root gives `BadMethodInvalid`). Anonymous clients may call it in Phase 2 (Executable and UserExecutable are true); access control comes with security in Phase 9.
+- Errors:
+  - an unknown product, or a quantity outside 1–100,000, gives `BadInvalidArgument`, with the offending argument flagged in `inputArgumentResults`;
+  - a call before the simulation is running gives `BadInvalidState`;
+  - node-opcua itself rejects missing arguments (`BadArgumentsMissing`), extra arguments (`BadTooManyArguments`) and wrong types (`BadInvalidArgument`, with `BadTypeMismatch` on the argument).
+- In live mode the command takes effect at the simulation time of the last processed step, which can trail the paced clock by up to about 1 s × speed.
 - Every accepted call is recorded as a `program-loaded` event in the simulator's event log (not an OPC UA event).
 - MES order dispatch uses this method in Phase 7 (plan section 5, data path 3).
 

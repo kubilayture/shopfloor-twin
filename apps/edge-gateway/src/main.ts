@@ -34,6 +34,11 @@ const link = new MqttLink({
   version: VERSION,
   sequences,
   startedAt,
+  onError: (error) => {
+    // AggregateError (several addresses refused) has an empty message: log its parts.
+    const parts = error instanceof AggregateError ? error.errors.map(String) : [error.message];
+    log.error({ errors: parts }, 'MQTT connection error');
+  },
 });
 const http = buildGatewayHttp({
   ready: () => link.connected,
@@ -46,9 +51,6 @@ link.client.on('connect', () => {
 });
 link.client.on('offline', () => {
   log.warn('broker unreachable; reconnecting');
-});
-link.client.on('error', (error) => {
-  log.error(error, 'MQTT error');
 });
 
 const state = { stopping: false };

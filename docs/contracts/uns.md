@@ -15,6 +15,8 @@ Users and topic rights are in `config/mosquitto/acl`. Mosquitto denies everythin
 | `dev`         | `orbis/#`, `$SYS/#`                 | nothing (manual testing)                                                                                                       |
 | `healthcheck` | `$SYS/#`                            | nothing (the broker's Compose healthcheck)                                                                                     |
 
+**Accepted risk until Phase 9:** the plain ACL file can't tie a client id to a user. Anyone with valid credentials can connect with client id `gw-01`; the broker then disconnects the real gateway, whose will says `offline` until it reconnects. Phase 9 (security) moves to Mosquitto's dynamic-security plugin, which binds client ids to users.
+
 ## Topics
 
 Equipment data:
@@ -41,7 +43,7 @@ Component topics (helper `sysTopic`):
 | `orbis/gebze/_sys/{component}/{instance}/status`, e.g. `…/_sys/edge-gateway/gw-01/status` | `uns.sys.status/1`   | yes; the last will sets `offline` |
 | `orbis/gebze/_sys/{component}/{instance}/incidents`                                       | `uns.sys.incident/1` | no                                |
 
-The gateway publishes `online` on every (re)connect. Its last will, refreshed before every connect so it carries a new sequence number, is `offline`; on a clean shutdown it publishes `offline` itself. Status messages bypass the store-and-forward buffer, so an old `online` is never replayed after a newer state. Their sequence numbers are unique, but not ordered by time (the will's number is reserved before the `online` that follows it): use the latest delivery, not the highest number.
+The gateway publishes `online` on every (re)connect. Its last will, refreshed before every connect so it carries a new sequence number, is `offline`; on a clean shutdown it publishes `offline` itself. Status messages bypass the store-and-forward buffer, so an old `online` is never replayed after a newer state. Their sequence numbers are unique, but neither ordered by time nor gap-free: a will's number is reserved before the `online` that follows it, and most wills are never sent. Use the latest delivery, not the highest number, and **exclude `_sys/…/status` from gap checks**.
 
 Alarm topic names are the alarm code in lower case (`SPINDLE-OVERLOAD` → `spindle-overload`); the payload carries the code as is.
 

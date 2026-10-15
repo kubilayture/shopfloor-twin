@@ -2,6 +2,7 @@ import { parseUnsMessage, stateTopic, type StateCurrent, type Status } from '@sh
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import mqtt, { type MqttClient } from 'mqtt';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -9,7 +10,7 @@ import { parseEnv } from './env.ts';
 import { equipmentPaths } from './hierarchy.ts';
 import { buildGatewayHttp } from './http.ts';
 import { TopicSequences } from './identity.ts';
-import { MqttLink } from './mqtt-link.ts';
+import { MqttLink, NotConnectedError } from './mqtt-link.ts';
 import { TEST_PASSWORDS, startBroker } from './testing.ts';
 
 let broker: { url: string; container: StartedTestContainer };
@@ -75,16 +76,21 @@ describe('environment configuration (#75)', () => {
       MQTT_USERNAME: 'gw-01',
       HTTP_PORT: 4900,
     });
-    const bad = parseEnv({ MQTT_PASSWORD: '  ', MQTT_URL: 'http://x', GATEWAY_ID: 'GW 1' });
+    const bad = parseEnv({
+      MQTT_PASSWORD: ' kept as is ',
+      MQTT_URL: 'http://x',
+      GATEWAY_ID: 'GW 1',
+    });
     expect(bad.ok).toBe(false);
     if (!bad.ok) {
-      expect(bad.issues.map((i) => i.split(':')[0]).sort()).toEqual([
-        'GATEWAY_ID',
-        'MQTT_PASSWORD',
-        'MQTT_URL',
-      ]);
-      expect(bad.issues.join('\n')).toContain('(hidden)');
-      expect(parseEnv({}).ok).toBe(false);
+      expect(bad.issues.map((i) => i.split(':')[0]).sort()).toEqual(['GATEWAY_ID', 'MQTT_URL']);
+    }
+    const spaced = parseEnv({ MQTT_PASSWORD: ' kept as is ' });
+    expect(spaced.ok && spaced.env.MQTT_PASSWORD).toBe(' kept as is ');
+    const missing = parseEnv({});
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) {
+      expect(missing.issues.join('\n')).toMatch(/^MQTT_PASSWORD: .*\(got \(hidden\)\)$/);
     }
   });
 });
@@ -171,10 +177,12 @@ describe('broker session and _sys status (#75)', () => {
   it('leaves its last will "offline" when the connection dies, and says "offline" itself on a clean close', async () => {
     const dev = await client('dev');
     const statuses: string[] = [];
+    const seqs: number[] = [];
     dev.on('message', (_topic, payload) => {
       const parsed = parseUnsMessage(JSON.parse(payload.toString()));
       if (parsed.ok && parsed.message.schema === 'uns.sys.status/1') {
         statuses.push(parsed.message.value.status);
+        seqs.push(parsed.message.seq);
       }
     });
     const crashing = link('crash');
@@ -182,13 +190,62 @@ describe('broker session and _sys status (#75)', () => {
     await until(() => crashing.connected);
     await dev.subscribeAsync('orbis/gebze/_sys/edge-gateway/gw-01/status', { qos: 1 });
     await until(() => statuses.includes('online'));
+    const onlineSeq = seqs.at(-1) ?? 0;
     statuses.length = 0;
     crashing.client.stream.destroy(); // no DISCONNECT packet: the broker sends the will
     await until(() => statuses.includes('offline'));
+    expect(seqs.at(-1)).toBeGreaterThan(0);
+    expect(seqs.at(-1)).not.toBe(onlineSeq);
     await until(() => statuses.includes('online')); // and it reconnects by itself
     statuses.length = 0;
     await crashing.close();
     await until(() => statuses.includes('offline'));
+  });
+
+  it('refuses to publish while disconnected, and closes promptly even then', async () => {
+    const never = new MqttLink({
+      url: 'mqtt://127.0.0.1:1', // nothing listens there
+      username: 'gw-01',
+      password: 'x',
+      gatewayId: 'gw-01',
+      version: 'test',
+      sequences: new TopicSequences(1),
+      startedAt: 0,
+      reconnectPeriodMs: 100,
+    });
+    await never.close(); // never started: a no-op
+    const errors: Error[] = [];
+    const refused = new MqttLink({
+      url: 'mqtt://127.0.0.1:1',
+      username: 'gw-01',
+      password: 'x',
+      gatewayId: 'gw-01',
+      version: 'test',
+      sequences: new TopicSequences(1),
+      startedAt: 0,
+      reconnectPeriodMs: 100,
+      onError: (error) => errors.push(error),
+    });
+    refused.start();
+    await until(() => errors.length > 0);
+    await expect(
+      refused.publish({ topic: 't', message: {} as never, retain: false }),
+    ).rejects.toBeInstanceOf(NotConnectedError);
+    const started = Date.now();
+    await refused.close();
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('lists in the ACL exactly the areas of the plant, so `+` never has to match `_sys`', async () => {
+    const acl = await readFile(
+      resolve(import.meta.dirname, '../../../config/mosquitto/acl'),
+      'utf8',
+    );
+    const areas = new Set(
+      [...acl.matchAll(/^topic \w+ orbis\/gebze\/([a-z0-9-]+)\/\+/gm)].map((m) => m[1]),
+    );
+    expect([...areas].sort()).toEqual(config.plant.areas.map((a) => a.id).sort());
+    expect(acl).not.toMatch(/orbis\/gebze\/\+/);
   });
 
   it('serves liveness, readiness from the broker session, and metrics', async () => {

@@ -30,3 +30,4 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - Docker here runs on Colima, so the test helper takes `DOCKER_HOST` from the active `docker context`.
   - Mosquitto rejects a denied QoS 1 publish with reason 0x87, and MQTT.js rejects the promise. The store-and-forward buffer (#78) must treat that as permanent, not retry it.
   - `prom-client` is deprecated upstream (replaced by `@prometheus-io/client`): a follow-up for ADR-0012.
+- #75 review: `publish()` now refuses at once while disconnected, because MQTT.js would otherwise queue in memory and duplicate the disk buffer's replay. `close()` no longer hangs with in-flight packets; ACL areas are listed explicitly, since `+` matched `_sys`; client-id takeover is documented as an accepted risk until Phase 9.

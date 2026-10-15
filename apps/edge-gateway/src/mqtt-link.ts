@@ -13,6 +13,16 @@ export interface MqttLinkOptions {
   readonly startedAt: number;
   readonly now?: () => number;
   readonly reconnectPeriodMs?: number;
+  /** Connection errors (refused, DNS, …). MQTT.js keeps reconnecting by itself. */
+  readonly onError?: (error: Error) => void;
+}
+
+/** Thrown by `publish` while the broker is unreachable: the caller keeps the message (#78). */
+export class NotConnectedError extends Error {
+  constructor() {
+    super('not connected to the broker');
+    this.name = 'NotConnectedError';
+  }
 }
 
 /**
@@ -26,6 +36,7 @@ export class MqttLink implements Publisher {
   readonly #now: () => number;
   readonly #client: MqttClient;
   #published = 0;
+  #started = false;
 
   constructor(options: MqttLinkOptions) {
     this.#options = options;
@@ -49,6 +60,10 @@ export class MqttLink implements Publisher {
     this.#client.on('connect', () => {
       this.#publishStatus('online').catch(() => undefined);
     });
+    const onError = options.onError ?? (() => undefined);
+    this.#client.on('error', (error) => {
+      onError(error);
+    });
   }
 
   get connected(): boolean {
@@ -65,20 +80,34 @@ export class MqttLink implements Publisher {
   }
 
   start(): void {
+    this.#started = true;
     this.#client.connect();
   }
 
-  /** Resolves on PUBACK; rejects if the client is closed or the broker refuses. */
+  /**
+   * Resolves on PUBACK; rejects if the broker refuses (for example the ACL: reason 0x87), and at
+   * once with `NotConnectedError` while disconnected. MQTT.js would otherwise keep the message in
+   * memory until a reconnect: unbounded, lost on a crash, and duplicated by the disk buffer (#78).
+   */
   async publish({ topic, message, retain }: UnsPublication): Promise<void> {
+    if (!this.#client.connected) {
+      throw new NotConnectedError();
+    }
     await this.#client.publishAsync(topic, JSON.stringify(message), { qos: 1, retain });
     this.#published++;
   }
 
   /** A clean disconnect doesn't trigger the will, so "offline" is published explicitly first. */
   async close(): Promise<void> {
-    if (this.#client.connected) {
-      await this.#publishStatus('offline').catch(() => undefined);
+    if (!this.#started) {
+      return;
     }
+    if (!this.#client.connected) {
+      // Nothing can be acknowledged now; a graceful end would wait for in-flight packets forever.
+      await this.#client.endAsync(true);
+      return;
+    }
+    await this.#publishStatus('offline').catch(() => undefined);
     await this.#client.endAsync();
   }
 

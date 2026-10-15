@@ -18,7 +18,8 @@ export const envSchema = z.object({
   PLANT_CONFIG_DIR: text.default(DEFAULT_CONFIG),
   MQTT_URL: z.url({ protocol: /^mqtts?$/ }).default('mqtt://127.0.0.1:1883'),
   MQTT_USERNAME: text.default('gw-01'),
-  MQTT_PASSWORD: text,
+  // Not trimmed: spaces may be part of a password.
+  MQTT_PASSWORD: z.string().min(1),
   HTTP_HOST: text.default('127.0.0.1'),
   HTTP_PORT: port.default(4900),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),

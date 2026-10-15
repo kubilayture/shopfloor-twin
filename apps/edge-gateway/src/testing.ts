@@ -25,10 +25,13 @@ function useDockerContext(): void {
         encoding: 'utf8',
       },
     ).trim();
-    if (host.startsWith('unix://')) {
+    if (host.startsWith('unix://') && host !== 'unix:///var/run/docker.sock') {
       process.env.DOCKER_HOST = host;
-      // Inside the Docker VM the socket is at the usual place (needed by the Ryuk reaper).
-      process.env.TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE ??= '/var/run/docker.sock';
+      // A VM-based runtime (Colima, Docker Desktop) has the usual socket inside the VM, which the
+      // Ryuk reaper mounts. Rootless Docker (/run/user/…) is left to Testcontainers' own detection.
+      if (!host.startsWith('unix:///run/user/')) {
+        process.env.TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE ??= '/var/run/docker.sock';
+      }
     }
   } catch {
     // No docker CLI: let Testcontainers try its defaults.

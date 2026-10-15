@@ -40,13 +40,16 @@ as_user gw-01 "$MQTT_GATEWAY_PASSWORD" mosquitto_pub -q 1 -r -n -t "$topic"
 echo "ok: retained message survives broker restart"
 
 # delivered <publisher> <publisher password> <topic>: does a message from this user reach `mes`?
+acl_out=$(mktemp)
+trap 'rm -f "$acl_out"' EXIT
 delivered() {
-  as_user mes "$MQTT_MES_PASSWORD" mosquitto_sub -t "$3" -C 1 -W 3 >/tmp/smoke-acl.$$ 2>/dev/null &
+  as_user mes "$MQTT_MES_PASSWORD" mosquitto_sub -t "$3" -C 1 -W 6 >"$acl_out" 2>/dev/null &
   sub=$!
-  sleep 1
+  # The subscriber must be listening before the publish, or a denial would pass vacuously.
+  sleep 2
   as_user "$1" "$2" mosquitto_pub -q 1 -t "$3" -m acl 2>/dev/null || true
   wait "$sub" || true
-  [ "$(cat /tmp/smoke-acl.$$)" = acl ]
+  [ "$(cat "$acl_out")" = acl ]
 }
 base=orbis/gebze/machining/cell-m1/cnc-01
 delivered gw-01 "$MQTT_GATEWAY_PASSWORD" "$base/state/smoke" || fail "gw-01 may not publish state"
@@ -55,7 +58,9 @@ if delivered dev "$MQTT_DEV_PASSWORD" "$base/state/smoke"; then fail "dev publis
 if delivered gw-01 "$MQTT_GATEWAY_PASSWORD" "orbis/gebze/_sys/edge-gateway/gw-02/status"; then
   fail "gw-01 published another gateway's status"
 fi
-rm -f /tmp/smoke-acl.$$
+if delivered gw-01 "$MQTT_GATEWAY_PASSWORD" "orbis/gebze/_sys/mes-server/main/state/x"; then
+  fail "gw-01 wrote into another component's topics"
+fi
 echo "ok: broker ACLs (gateway may publish machine data only; dev is read-only)"
 
 status=$(curl -sf "http://127.0.0.1:${SIM_CONTROL_PORT:-4800}/api/v1/status") || fail "simulator control API not reachable"

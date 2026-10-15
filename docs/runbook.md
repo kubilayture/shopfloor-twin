@@ -127,18 +127,20 @@ Then replace every `change-me` with a random value of your own, for example from
 | SQL shell                                                                                                                                          | `docker compose exec db psql -U shopfloor -d shopfloor`                            |
 | Watch all MQTT traffic                                                                                                                             | `docker compose exec broker mosquitto_sub -u dev -P <MQTT_DEV_PASSWORD> -t '#' -v` |
 
-| Service     | Host address                                                     | Notes                                                                                                                                                                                                                                |
-| ----------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `db`        | `127.0.0.1:5442`                                                 | PostgreSQL 18 + TimescaleDB 2.30; database and user `shopfloor`; TimescaleDB telemetry off                                                                                                                                           |
-| `broker`    | `127.0.0.1:1883`                                                 | Mosquitto 2.1; anonymous access off; users `dev` (manual testing) and `healthcheck`. Per-client users and topic ACLs arrive in Phase 3                                                                                               |
-| `simulator` | `127.0.0.1:4800` (control API), `127.0.0.1:4841`–`4845` (OPC UA) | Live mode, built from `apps/simulator/Dockerfile` on every `stack:up` (cached layers make it fast). `SIM_SEED`, `SIM_SPEED`, `SIM_AUTOSTART`, `SIM_CONTROL_PORT` and `SIM_LOG_LEVEL` in `.env`; healthy when `/health/ready` answers |
+| Service     | Host address                                                     | Notes                                                                                                                                                                                                                                                               |
+| ----------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `db`        | `127.0.0.1:5442`                                                 | PostgreSQL 18 + TimescaleDB 2.30; database and user `shopfloor`; TimescaleDB telemetry off                                                                                                                                                                          |
+| `broker`    | `127.0.0.1:1883`                                                 | Mosquitto 2.1; anonymous access off; users `dev` (manual testing) and `healthcheck`. Per-client users and topic ACLs arrive in Phase 3                                                                                                                              |
+| `simulator` | `127.0.0.1:4800` (control API), `127.0.0.1:4841`–`4845` (OPC UA) | Live mode, built from `apps/simulator/Dockerfile` on every `stack:up` (cached layers make it fast). `SIM_SEED`, `SIM_SPEED`, `SIM_START`, `SIM_AUTOSTART`, `SIM_OPCUA_HOST`, `SIM_CONTROL_PORT` and `SIM_LOG_LEVEL` in `.env`; healthy when `/health/ready` answers |
 
 All services listen on `127.0.0.1` only, so nothing is reachable from the network.
 
 Simulator notes:
 
 - The OPC UA servers advertise `localhost` in their endpoint URLs (`SIM_OPCUA_HOST` changes it), so clients on the host, such as UaExpert, connect as with `pnpm sim:serve`. Containers that join in Phase 3 connect to `opc.tcp://simulator:4841` and must use that URL as given (in node-opcua, `endpointMustExist: false`).
-- Certificates persist in the `simulator-pki` volume; `pnpm stack:reset` deletes them.
+- Certificates persist in the `simulator-pki` volume; `pnpm stack:reset` deletes them. The container's host name is fixed to `simulator`, so the certificate's SAN stays valid when the container is recreated.
+- `pnpm stack:smoke` expects the simulator to be running, so it fails with `SIM_AUTOSTART=false`.
+- Health probes and metric scrapes are logged only at `warn` and above.
 - `docker compose stop simulator` sends SIGTERM; the simulator shuts down in well under a second.
 - Measured on the reference machine (M3, Docker Desktop 2 GB VM) at 60×:
   - image 388 MB, mostly `node-opcua` and its nodesets;

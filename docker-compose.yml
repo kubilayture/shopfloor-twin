@@ -52,6 +52,8 @@ services:
       context: .
       dockerfile: apps/simulator/Dockerfile
     image: shopfloor-twin/simulator:dev
+    # Stable name: it goes into the persisted certificate's SAN, and Phase 3 connects to it.
+    hostname: simulator
     pull_policy: build
     environment:
       SIM_SEED: ${SIM_SEED:-1}

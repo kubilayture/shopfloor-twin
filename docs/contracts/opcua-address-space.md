@@ -56,7 +56,8 @@ Both Machinery state machines are derived from the project `State`. Their `Curre
 | `ShopFloor.ProcessValues.CoolantTemperature`                | Double, °C     | CNCs     | Telemetry, sampled                                                                             |
 | `ShopFloor.LeakTest.LastReading`                            | Double, Pa/min | LKT-01   | Last leak reading                                                                              |
 | `ShopFloor.LeakTest.UpperLimit`                             | Double, Pa/min | LKT-01   | Pass/fail limit                                                                                |
-| `ShopFloor.Alarms.ActiveCount`                              | UInt32         | all      | Number of active alarms (ADR-0010; filled by #53)                                              |
+| `ShopFloor.Alarms.ActiveCount`                              | UInt32         | all      | Number of active alarms (ADR-0010)                                                             |
+| `ShopFloor.Alarms.<CODE>.Active`                            | Boolean        | all      | One per alarm code of the machine (see Alarms below); true while the alarm is active           |
 
 Value timestamps:
 
@@ -83,15 +84,29 @@ Value timestamps:
 - Every accepted call is recorded as a `program-loaded` event in the simulator's event log (not an OPC UA event).
 - MES order dispatch uses this method in Phase 7 (plan section 5, data path 3).
 
+## Alarms (ADR-0010)
+
+The simulator raises and clears alarms; acknowledgement, shelving and history belong to the MES (Phase 6).
+
+| Code                                                         | Machines                       | Severity | Active from … until …                                    |
+| ------------------------------------------------------------ | ------------------------------ | -------- | -------------------------------------------------------- |
+| each failure code in `failures.yaml` (`SPINDLE-OVERLOAD`, …) | the machine with that mode     | 700      | the machine goes `Down` with that code … its repair ends |
+| `CALIBRATION-DUE`                                            | LKT-01 (the leak-test station) | 300      | the calibration interval runs out … the calibration ends |
+
+- The set of `ShopFloor.Alarms.<CODE>.Active` variables per machine is fixed at server start, from the plant configuration (`alarmCodes` in `apps/simulator/src/opcua/plant-servers.ts`); all start false.
+- Every transition sets the Boolean, updates `ActiveCount` and raises one `ShopFloorAlarmEventType` event, which uses the shared per-machine `Sequence`.
+- An alarm never goes active twice without being cleared in between (checked by the simulator's invariant checker).
+- Path helper: `opcuaAlarmPath(code)` in `@shopfloor/contracts`.
+
 ## Events (ADR-0009)
 
 Events are raised on the machine object, which is a notifier of the Server object, so a subscription on `i=2253` receives the events of that server.
 
-| Event type (`nsu=<uri>;s=…`)    | Fields besides BaseEventType                                                                                             | Raised when             |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------- |
-| `ShopFloorStateChangeEventType` | Sequence, MachineId, FromState, ToState, Cause                                                                           | Every state change      |
-| `CycleCompleteEventType`        | Sequence, MachineId, Product, PartId, Serial, Result (`good`, `scrap`, `rework`), Reason, MeasurementValue (NaN if none) | Every completed cycle   |
-| `ShopFloorAlarmEventType`       | Sequence, MachineId, AlarmCode, Transition (`active`, `cleared`)                                                         | Alarm transitions (#53) |
+| Event type (`nsu=<uri>;s=…`)    | Fields besides BaseEventType                                                                                             | Raised when            |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------- |
+| `ShopFloorStateChangeEventType` | Sequence, MachineId, FromState, ToState, Cause                                                                           | Every state change     |
+| `CycleCompleteEventType`        | Sequence, MachineId, Product, PartId, Serial, Result (`good`, `scrap`, `rework`), Reason, MeasurementValue (NaN if none) | Every completed cycle  |
+| `ShopFloorAlarmEventType`       | Sequence, MachineId, AlarmCode, Transition (`active`, `cleared`); BaseEventType `Severity` set per code                  | Every alarm transition |
 
 - `Time` is the simulation time; `ReceiveTime` is wall time.
 - `Sequence` starts at 1 per machine and grows by 1 per event across all three types, so gaps mean loss (plan section 5).

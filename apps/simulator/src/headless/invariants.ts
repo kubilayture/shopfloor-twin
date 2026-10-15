@@ -1,7 +1,7 @@
 import type { PlantConfig } from '@shopfloor/plant-config';
 import type { SimTime } from '@shopfloor/sim-core';
 import type { Part } from '../plant/buffer.ts';
-import type { PlantEvent, ProductionLine } from '../plant/line.ts';
+import { CALIBRATION_ALARM_CODE, type PlantEvent, type ProductionLine } from '../plant/line.ts';
 import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
 
 export class InvariantViolation extends Error {
@@ -23,6 +23,7 @@ export class InvariantChecker {
   readonly #initialLots: ReadonlyMap<string, number>;
   readonly #consumed = new Map<string, number>();
   readonly #tallies = new Map<string, StateTally>();
+  readonly #alarms = new Map<string, Set<string>>();
   #checks = 0;
 
   constructor(line: ProductionLine, config: PlantConfig, start: SimTime) {
@@ -43,7 +44,21 @@ export class InvariantChecker {
   }
 
   record(event: PlantEvent): void {
-    if (event.type === 'material-consumed') {
+    if (event.type === 'alarm') {
+      const active = this.#alarms.get(event.machineId) ?? new Set<string>();
+      this.#alarms.set(event.machineId, active);
+      if (active.has(event.code) === (event.transition === 'active')) {
+        throw new InvariantViolation(
+          event.at,
+          `${event.machineId}: alarm ${event.code} ${event.transition} twice in a row`,
+        );
+      }
+      if (event.transition === 'active') {
+        active.add(event.code);
+      } else {
+        active.delete(event.code);
+      }
+    } else if (event.type === 'material-consumed') {
       this.#consumed.set(event.lotId, (this.#consumed.get(event.lotId) ?? 0) + 1);
     } else if (event.type === 'state') {
       const tally = this.#tallies.get(event.machineId);
@@ -70,6 +85,36 @@ export class InvariantChecker {
     this.#checkParts(now);
     this.#checkTime(now);
     this.#checkLots(now);
+    this.#checkAlarms(now);
+  }
+
+  #checkAlarms(now: SimTime): void {
+    for (const station of this.#line.stations) {
+      const logged = [...(this.#alarms.get(station.id) ?? [])].sort().join(',');
+      const actual = [...station.activeAlarms].sort().join(',');
+      if (logged !== actual) {
+        throw new InvariantViolation(
+          now,
+          `${station.id}: active alarms are [${actual}], but the event log says [${logged}]`,
+        );
+      }
+      const failure = station.failure?.code;
+      if (failure !== undefined && !station.activeAlarms.has(failure)) {
+        throw new InvariantViolation(now, `${station.id}: down with ${failure} but no alarm`);
+      }
+      for (const code of station.activeAlarms) {
+        if (code === CALIBRATION_ALARM_CODE) {
+          if (!station.leak?.calibrationDue(now)) {
+            throw new InvariantViolation(now, `${station.id}: ${code} active but nothing is due`);
+          }
+        } else if (code !== failure) {
+          throw new InvariantViolation(
+            now,
+            `${station.id}: alarm ${code} active but the machine is not down with it`,
+          );
+        }
+      }
+    }
   }
 
   #checkParts(now: SimTime): void {

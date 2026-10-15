@@ -29,7 +29,8 @@ type StationEvent =
   | { readonly type: 'setup-end'; readonly station: string }
   | { readonly type: 'stop-end'; readonly station: string }
   | { readonly type: 'repair-end'; readonly station: string }
-  | { readonly type: 'maintenance-end'; readonly station: string };
+  | { readonly type: 'maintenance-end'; readonly station: string }
+  | { readonly type: 'calibration-due'; readonly station: string };
 
 export type LineEvent =
   | StationEvent
@@ -62,6 +63,14 @@ export type PlantEvent =
       readonly partId: number;
       readonly material: string;
       readonly lotId: string;
+    }
+  | {
+      readonly type: 'alarm';
+      readonly at: SimTime;
+      readonly machineId: string;
+      readonly code: string;
+      readonly transition: 'active' | 'cleared';
+      readonly severity: number;
     }
   | {
       readonly type: 'program-loaded';
@@ -97,6 +106,9 @@ type Unavailable = 'Off' | 'PlannedStop';
 const CALENDAR_WINDOW = 7 * 24 * HOUR;
 
 export const MAX_PROGRAM_QUANTITY = 100_000;
+export const FAILURE_ALARM_SEVERITY = 700;
+export const CALIBRATION_ALARM_CODE = 'CALIBRATION-DUE';
+export const CALIBRATION_ALARM_SEVERITY = 300;
 
 export type LoadProgramResult =
   | { ok: true; position: number }
@@ -152,6 +164,7 @@ interface Station {
   readonly rework: Part[] | undefined;
   operator: Assignment | undefined;
   stopEnd: EventHandle | undefined;
+  readonly activeAlarms: Set<string>;
   loadedProduct: string | undefined;
   part: Part | undefined;
   busy: boolean;
@@ -261,6 +274,7 @@ export class ProductionLine {
         rework: item.operation === config.process.leakTest.reworkOperation ? [] : undefined,
         operator: undefined,
         stopEnd: undefined,
+        activeAlarms: new Set<string>(),
         loadedProduct: campaigns?.[0]?.product,
         part: undefined,
         busy: false,
@@ -276,6 +290,11 @@ export class ProductionLine {
 
   start(simulation: Simulation<LineEvent>): void {
     this.#now = simulation.now;
+    for (const station of this.stations) {
+      if (station.leak) {
+        this.#scheduleCalibrationDue(station, simulation);
+      }
+    }
     this.#scheduleCalendar(simulation, this.#now + 1, this.#now + CALENDAR_WINDOW);
     const current = shiftAt(this.#config.shifts, this.#now);
     if (current) {
@@ -327,8 +346,20 @@ export class ProductionLine {
       case 'repair-end':
         this.#finishRepair(station, simulation);
         break;
+      case 'calibration-due':
+        // A same-millisecond tie can start the calibration first; then nothing is due any more.
+        if (!this.#calibrating(station)) {
+          this.#alarm(station, CALIBRATION_ALARM_CODE, 'active', CALIBRATION_ALARM_SEVERITY);
+        }
+        break;
       case 'maintenance-end':
-        station.leak?.calibrate(this.#now);
+        if (station.leak) {
+          station.leak.calibrate(this.#now);
+          if (station.activeAlarms.has(CALIBRATION_ALARM_CODE)) {
+            this.#alarm(station, CALIBRATION_ALARM_CODE, 'cleared', CALIBRATION_ALARM_SEVERITY);
+          }
+          this.#scheduleCalibrationDue(station, simulation);
+        }
         station.busy = false;
         if (this.#canWork(station)) {
           this.#tryStart(station, simulation);
@@ -517,8 +548,41 @@ export class ProductionLine {
     );
     station.failure = mode;
     this.#enter(station, 'Down', mode.code);
+    this.#alarm(station, mode.code, 'active', FAILURE_ALARM_SEVERITY);
     this.#repairQueue.push(station);
     this.#dispatchTechnicians(simulation);
+  }
+
+  #alarm(station: Station, code: string, transition: 'active' | 'cleared', severity: number): void {
+    if (station.activeAlarms.has(code) === (transition === 'active')) {
+      throw new RangeError(`${station.id}: alarm ${code} is already ${transition}`);
+    }
+    if (transition === 'active') {
+      station.activeAlarms.add(code);
+    } else {
+      station.activeAlarms.delete(code);
+    }
+    this.#onEvent({
+      type: 'alarm',
+      at: this.#now,
+      machineId: station.id,
+      code,
+      transition,
+      severity,
+    });
+  }
+
+  #calibrating(station: Station): boolean {
+    // Calibration is the only maintenance a leak tester gets.
+    return station.leak !== undefined && station.machine.state === 'Maintenance';
+  }
+
+  #scheduleCalibrationDue(station: Station, simulation: Simulation<LineEvent>): void {
+    const days = this.#config.process.leakTest.calibrationIntervalDays;
+    simulation.scheduleIn(millis(days * 24 * HOUR), {
+      type: 'calibration-due',
+      station: station.id,
+    });
   }
 
   #dispatchTechnicians(simulation: Simulation<LineEvent>): void {
@@ -556,6 +620,7 @@ export class ProductionLine {
       machineId: station.id,
       failureCode: mode.code,
     });
+    this.#alarm(station, mode.code, 'cleared', FAILURE_ALARM_SEVERITY);
     station.failure = undefined;
     this.#freeTechnicians++;
     if (this.#canWork(station)) {

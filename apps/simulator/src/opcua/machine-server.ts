@@ -5,6 +5,7 @@ import {
   OPCUA_METHODS,
   OPCUA_VARIABLES,
   SHOPFLOOR_NAMESPACE_URI,
+  opcuaAlarmPath,
   type OpcuaVariable,
 } from '@shopfloor/contracts';
 import {
@@ -51,6 +52,7 @@ export interface MachineServerOptions {
   readonly port: number;
   readonly host?: string;
   readonly pkiFolder: string;
+  readonly alarmCodes?: readonly string[];
   readonly loadProgram?: (product: string, quantity: number) => LoadProgramResult;
 }
 
@@ -87,6 +89,8 @@ export class MachineServer {
   readonly #server: OPCUAServer;
   readonly #variables = new Map<OpcuaVariable, UAVariable>();
   readonly #counters = { produced: 0, good: 0, scrap: 0, rework: 0 };
+  readonly #alarms = new Map<string, UAVariable>();
+  readonly #activeAlarms = new Set<string>();
   #machine: UAObject | undefined;
   #eventTypes: Partial<Record<keyof typeof OPCUA_EVENT_TYPES, UAEventType>> = {};
   #itemState: ReturnType<typeof promoteToStateMachine> | undefined;
@@ -166,6 +170,9 @@ export class MachineServer {
       case 'operator':
         this.#set('operator', event.operatorId ?? '', event.at);
         break;
+      case 'alarm':
+        this.#onAlarm(event);
+        break;
       case 'material-consumed':
       case 'program-loaded':
       case 'repair-start':
@@ -227,7 +234,43 @@ export class MachineServer {
     );
   }
 
+  #onAlarm(event: Extract<PlantEvent, { type: 'alarm' }>): void {
+    const sequence = this.#next(event.at);
+    const active = event.transition === 'active';
+    if (active) {
+      this.#activeAlarms.add(event.code);
+    } else {
+      this.#activeAlarms.delete(event.code);
+    }
+    this.#alarms
+      .get(event.code)
+      ?.setValueFromSource(
+        { dataType: DataType.Boolean, value: active },
+        StatusCodes.Good,
+        new Date(event.at),
+      );
+    this.#set('alarmsActiveCount', this.#activeAlarms.size, event.at);
+    this.#raise(
+      'alarm',
+      event.at,
+      `${this.machineId}: ${event.code} ${event.transition}`,
+      sequence,
+      {
+        alarmCode: { dataType: DataType.String, value: event.code },
+        transition: { dataType: DataType.String, value: event.transition },
+      },
+      event.severity,
+    );
+  }
+
   #initialise(at: SimTime): void {
+    for (const alarm of this.#alarms.values()) {
+      alarm.setValueFromSource(
+        { dataType: DataType.Boolean, value: false },
+        StatusCodes.Good,
+        new Date(at),
+      );
+    }
     for (const [variable, kind] of Object.entries(VARIABLE_TYPES) as [OpcuaVariable, ValueKind][]) {
       if (!TELEMETRY.includes(variable)) {
         this.#set(variable, variable === 'state' ? 'Off' : kind === 'String' ? '' : 0, at);
@@ -247,6 +290,7 @@ export class MachineServer {
     message: string,
     sequence: number,
     fields: Record<string, VariantOptions>,
+    severity = 200,
   ): void {
     const eventType = this.#eventTypes[kind];
     if (!eventType || !this.#machine) {
@@ -255,7 +299,7 @@ export class MachineServer {
     this.#machine.raiseEvent(eventType, {
       time: { dataType: DataType.DateTime, value: new Date(at) },
       message: { dataType: DataType.LocalizedText, value: { text: message } },
-      severity: { dataType: DataType.UInt16, value: 200 },
+      severity: { dataType: DataType.UInt16, value: severity },
       sequence: { dataType: DataType.UInt32, value: sequence },
       machineId: { dataType: DataType.String, value: this.machineId },
       ...fields,
@@ -341,6 +385,20 @@ export class MachineServer {
           : {}),
       });
       this.#variables.set(key, variable);
+    }
+
+    for (const code of this.#options.alarmCodes ?? []) {
+      const segments = opcuaAlarmPath(code).split('.');
+      this.#alarms.set(
+        code,
+        ns.addVariable({
+          componentOf: folder(segments.slice(0, -1)),
+          browseName: 'Active',
+          nodeId: `s=${this.machineId}.${opcuaAlarmPath(code)}`,
+          dataType: 'Boolean',
+          minimumSamplingInterval: 0,
+        }),
+      );
     }
 
     const loadProgram = this.#options.loadProgram;

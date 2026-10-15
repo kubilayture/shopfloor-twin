@@ -1,0 +1,8 @@
+{
+  "extends": "@shopfloor/tsconfig/base.json",
+  "compilerOptions": {
+    // Functions passed to page.evaluate run in the browser.
+    "lib": ["es2024", "esnext.temporal", "dom"]
+  },
+  "include": ["src", "browser", "playwright.config.ts", "vitest.config.ts"]
+}

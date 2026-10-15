@@ -10,7 +10,10 @@ const NO_SHIFT = 'no-shift';
 
 interface MachineTruth {
   state: MachineState;
+  /** Where the time not yet counted starts (the last state change or shift boundary). */
   since: SimTime;
+  /** When the current state began. */
+  changedAt: SimTime;
   readonly total: StateMs;
   readonly byShift: Map<string, StateMs>;
   readonly cycles: { good: number; scrap: number; rework: number };
@@ -43,6 +46,7 @@ export class GroundTruth {
       this.#machines.set(id, {
         state: 'Off',
         since: start,
+        changedAt: start,
         total: zero(),
         byShift: new Map(),
         cycles: { good: 0, scrap: 0, rework: 0 },
@@ -60,6 +64,7 @@ export class GroundTruth {
       const machine = this.#machine(event.machineId);
       this.#close(machine, event.at);
       machine.state = event.to;
+      machine.changedAt = event.at;
       return;
     }
     if (event.type === 'cycle-complete') {
@@ -73,6 +78,18 @@ export class GroundTruth {
     }
   }
 
+  /** The shift bucket the run is in now (`2026-10-12/A`, or `no-shift` between shifts). */
+  get currentBucket(): string {
+    return this.#shift;
+  }
+
+  /** Each machine's current state and when it began (the last state change, or the start). */
+  current(): Record<string, { state: MachineState; since: SimTime }> {
+    return Object.fromEntries(
+      [...this.#machines].map(([id, m]) => [id, { state: m.state, since: m.changedAt }]),
+    );
+  }
+
   finish(end: SimTime, line: ProductionLine, lotIds: readonly string[]): GroundTruthSummary {
     this.#closeAll(end);
     const machines = Object.fromEntries(
@@ -81,6 +98,39 @@ export class GroundTruth {
         { stateMs: m.total, byShift: Object.fromEntries(m.byShift), cycles: m.cycles },
       ]),
     );
+    return { machines, ...this.#production(line, lotIds) };
+  }
+
+  /**
+   * The summary as `finish(now, …)` would return it, without closing anything: the live run keeps
+   * recording afterwards (#100). The open state of each machine counts up to `now`, in the
+   * current bucket.
+   */
+  snapshot(now: SimTime, line: ProductionLine, lotIds: readonly string[]): GroundTruthSummary {
+    const machines = Object.fromEntries(
+      [...this.#machines].map(([id, m]) => {
+        const open = now - m.since;
+        if (open < 0) {
+          throw new RangeError(`snapshot at ${String(now)} is before ${String(m.since)}`);
+        }
+        const stateMs = { ...m.total };
+        const byShift = new Map([...m.byShift].map(([key, ms]) => [key, { ...ms }]));
+        if (open > 0) {
+          stateMs[m.state] += open;
+          const shift = byShift.get(this.#shift) ?? zero();
+          shift[m.state] += open;
+          byShift.set(this.#shift, shift);
+        }
+        return [id, { stateMs, byShift: Object.fromEntries(byShift), cycles: { ...m.cycles } }];
+      }),
+    );
+    return { machines, ...this.#production(line, lotIds) };
+  }
+
+  #production(
+    line: ProductionLine,
+    lotIds: readonly string[],
+  ): Pick<GroundTruthSummary, 'production' | 'lots'> {
     const finished: Record<string, number> = {};
     for (const part of line.finished) {
       finished[part.product] = (finished[part.product] ?? 0) + 1;
@@ -97,7 +147,7 @@ export class GroundTruth {
         return [id, remaining];
       }),
     );
-    return { machines, production: { started: line.producedParts, finished, scrapped }, lots };
+    return { production: { started: line.producedParts, finished, scrapped }, lots };
   }
 
   #machine(id: string): MachineTruth {

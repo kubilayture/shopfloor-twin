@@ -1,6 +1,9 @@
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
+import { isoTime } from '../headless/serialize.ts';
+import { GroundTruth, type GroundTruthSummary } from '../headless/summary.ts';
 import { ProductionLine, type LineEvent, type PlantEvent } from '../plant/line.ts';
+import type { MachineState } from '../plant/machine-state.ts';
 import { ProcessValues } from '../plant/process-values.ts';
 import { LivePacer, type WallClock } from './pacer.ts';
 
@@ -15,11 +18,33 @@ export interface LiveOptions {
   readonly onAdvance?: (simNow: SimTime) => void;
 }
 
+/**
+ * The headless ground truth of a live run so far (#100): the summary `finish` would write if the
+ * run ended at `simTime`, plus where the run is. Times are ISO 8601 UTC.
+ */
+export interface LiveGroundTruth extends GroundTruthSummary {
+  /** Simulation start. */
+  readonly start: string;
+  /** How far events have been processed; the summary counts up to here. */
+  readonly simTime: string;
+  /** The shift bucket the run is in (`2026-10-12/A`, or `no-shift`). */
+  readonly currentBucket: string;
+  /**
+   * Every bucket seen. A bucket is complete when the run is no longer in it: its totals are final.
+   * `no-shift` collects every gap between shifts, so it can be entered again later.
+   */
+  readonly buckets: Record<string, { readonly complete: boolean }>;
+  /** Each machine's current state and when it began. */
+  readonly current: Record<string, { readonly state: MachineState; readonly since: string }>;
+}
+
 export interface LiveRun {
   readonly line: ProductionLine;
   readonly simulation: Simulation<LineEvent>;
   readonly pacer: LivePacer<LineEvent>;
   readonly processValues: ProcessValues;
+  /** The ground truth up to the simulation's current time; read-only, never moves the run. */
+  groundTruth(): LiveGroundTruth;
 }
 
 export function createLiveRun(options: LiveOptions): LiveRun {
@@ -28,11 +53,17 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     options.seed,
     options.start,
   );
+  const machineIds = options.config.plant.areas.flatMap((a) =>
+    a.workCenters.flatMap((w) => w.equipment.map((e) => e.id)),
+  );
+  const lotIds = options.config.stock.lots.map((lot) => lot.id);
+  const truth = new GroundTruth(machineIds, options.start);
   const line = new ProductionLine({
     config: options.config,
     random: new RandomSource(options.seed),
     startTime: options.start,
     onEvent: (event) => {
+      truth.record(event);
       processValues.record(event);
       options.onEvent?.(event);
     },
@@ -49,5 +80,29 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.onAdvance ? { onAdvance: options.onAdvance } : {}),
   });
-  return { line, simulation, pacer, processValues };
+  const groundTruth = (): LiveGroundTruth => {
+    const now = simulation.now;
+    const summary = truth.snapshot(now, line, lotIds);
+    const currentBucket = truth.currentBucket;
+    const keys = new Set([
+      ...Object.values(summary.machines).flatMap((m) => Object.keys(m.byShift)),
+      currentBucket,
+    ]);
+    return {
+      start: isoTime(options.start),
+      simTime: isoTime(now),
+      currentBucket,
+      buckets: Object.fromEntries(
+        [...keys].map((key) => [key, { complete: key !== currentBucket }]),
+      ),
+      current: Object.fromEntries(
+        Object.entries(truth.current()).map(([id, c]) => [
+          id,
+          { state: c.state, since: isoTime(c.since) },
+        ]),
+      ),
+      ...summary,
+    };
+  };
+  return { line, simulation, pacer, processValues, groundTruth };
 }

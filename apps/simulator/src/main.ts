@@ -66,6 +66,7 @@ const app = await buildControlApp({
     },
     opcuaOffline: (machineId, offline) => servers.setOffline(machineId, offline),
   },
+  groundTruth: () => ({ epoch: servers.epoch, ...run.groundTruth() }),
   logger: { level: env.LOG_LEVEL },
 });
 const log = app.log;

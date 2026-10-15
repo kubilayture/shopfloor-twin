@@ -7,6 +7,8 @@ import { z } from 'zod';
 import type { PacerState, PacerStatus } from '../live/pacer.ts';
 import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { isoTime } from '../headless/serialize.ts';
+import type { LiveGroundTruth } from '../live/run.ts';
+import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
 import type { EventHub } from './event-hub.ts';
 
 export const API_PREFIX = '/api/v1';
@@ -40,6 +42,55 @@ export const silentSchema = z.object({ silent: z.boolean() });
 
 export const offlineSchema = z.object({ offline: z.boolean() });
 
+const count = z.number().int();
+const stateMsSchema = z
+  .object(
+    Object.fromEntries(MACHINE_STATES.map((state) => [state, count])) as Record<
+      MachineState,
+      typeof count
+    >,
+  )
+  .describe('Simulation milliseconds per machine state');
+
+export const groundTruthSchema = z.object({
+  epoch: count.describe('Run epoch (Unix seconds), as the devices publish it (ADR-0015)'),
+  start: z.string().describe('Simulation start, ISO 8601 UTC'),
+  simTime: z
+    .string()
+    .describe('How far events have been processed, ISO 8601 UTC; the totals count up to here'),
+  currentBucket: z
+    .string()
+    .describe('The shift bucket the run is in: `2026-10-12/A` or `no-shift`'),
+  buckets: z
+    .record(z.string(), z.object({ complete: z.boolean() }))
+    .describe(
+      'Every bucket seen; complete once the run has left it (`no-shift` collects every gap ' +
+        'between shifts and can be entered again)',
+    ),
+  current: z
+    .record(z.string(), z.object({ state: z.enum(MACHINE_STATES), since: z.string() }))
+    .describe("Each machine's current state and when it began"),
+  machines: z
+    .record(
+      z.string(),
+      z.object({
+        stateMs: stateMsSchema,
+        byShift: z.record(z.string(), stateMsSchema),
+        cycles: z.object({ good: count, scrap: count, rework: count }),
+      }),
+    )
+    .describe('Per machine, as in the headless summary.json'),
+  production: z.object({
+    started: count,
+    finished: z.record(z.string(), count),
+    scrapped: z.record(z.string(), z.record(z.string(), count)),
+  }),
+  lots: z.record(z.string(), z.number()).describe('Remaining quantity per material lot'),
+});
+
+/** The live ground truth with the run's epoch: what `GET /api/v1/ground-truth` returns. */
+export type GroundTruthReport = LiveGroundTruth & { readonly epoch: number };
+
 export const errorSchema = z.object({ error: z.string(), message: z.string() });
 
 const healthSchema = z.object({ status: z.enum(['ok', 'unavailable']) });
@@ -70,6 +121,8 @@ export interface ControlAppOptions {
     /** Resolves false for an unknown machine. */
     readonly opcuaOffline?: (machineId: string, offline: boolean) => Promise<boolean>;
   };
+  /** The live run's ground truth (#100); the route exists only when given. */
+  readonly groundTruth?: () => GroundTruthReport;
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
   readonly version?: string;
 }
@@ -79,6 +132,7 @@ export async function buildControlApp({
   hub,
   ready,
   faults = {},
+  groundTruth,
   logger = false,
   version = '0.0.0',
 }: ControlAppOptions): Promise<FastifyInstance> {
@@ -246,6 +300,25 @@ export async function buildControlApp({
       return status();
     },
   );
+
+  if (groundTruth) {
+    app.get(
+      `${API_PREFIX}/ground-truth`,
+      {
+        schema: {
+          tags: ['simulation'],
+          summary:
+            'Time per state, per machine and shift bucket, so far (the headless summary, live)',
+          description:
+            'The ground truth a headless run would write if it ended now, kept live while the run ' +
+            'is paced. Reconciliation tests compare the MES with it (#100). Reading it never ' +
+            'moves the run.',
+          response: { 200: json(groundTruthSchema) },
+        },
+      },
+      () => groundTruth(),
+    );
+  }
 
   const modbusSilent = faults.modbusSilent;
   if (modbusSilent) {

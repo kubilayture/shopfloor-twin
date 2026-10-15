@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - packages/*
+  - e2e
 
 catalog:
   '@eslint/js': 10.0.1
@@ -45,6 +46,7 @@ catalog:
   tailwindcss: 4.3.3
   uplot: 1.6.32
   vite: 8.3.4
+  '@playwright/test': 1.64.0
 
 engineStrict: true
 

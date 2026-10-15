@@ -1,6 +1,6 @@
 # Simulator control API
 
-Version 1 (Phase 2). Source of truth in code: `apps/simulator/src/control/`. The OpenAPI description is generated into `docs/api/simulator-control.openapi.json`; a test fails when it drifts from the routes (`pnpm --filter @shopfloor/simulator openapi` rewrites it). Any change bumps the version here and needs a changelog entry.
+Version 1.1 (Phase 4; 1.0 in Phase 2, 1.1 adds `GET /api/v1/ground-truth`, #100). Source of truth in code: `apps/simulator/src/control/`. The OpenAPI description is generated into `docs/api/simulator-control.openapi.json`; a test fails when it drifts from the routes (`pnpm --filter @shopfloor/simulator openapi` rewrites it). Any change bumps the version here and needs a changelog entry.
 
 The simulation console (Phase 9) is the client. The MES never uses this API: it sees the plant only through OPC UA and MQTT (plan section 5).
 
@@ -10,19 +10,21 @@ The simulation console (Phase 9) is the client. The MES never uses this API: it 
 
 ## REST (`/api/v1`)
 
-| Method and path       | Body             | Success                          | Errors                                                      |
-| --------------------- | ---------------- | -------------------------------- | ----------------------------------------------------------- |
-| `GET /api/v1/status`  | none             | 200 `Status`                     | none                                                        |
-| `POST /api/v1/pause`  | none             | 200 `Status`                     | 409 when the run has finished                               |
-| `POST /api/v1/resume` | none             | 200 `Status`; starts an idle run | 409 when the run has finished                               |
-| `POST /api/v1/step`   | none             | 200 `{ stepped, status }`        | 409 unless paused or idle                                   |
-| `PUT /api/v1/speed`   | `{ "speed": n }` | 200 `Status`                     | 400 when `speed` is missing, not a number or outside 0.5–60 |
+| Method and path            | Body             | Success                          | Errors                                                      |
+| -------------------------- | ---------------- | -------------------------------- | ----------------------------------------------------------- |
+| `GET /api/v1/status`       | none             | 200 `Status`                     | none                                                        |
+| `GET /api/v1/ground-truth` | none             | 200 `GroundTruth`                | none                                                        |
+| `POST /api/v1/pause`       | none             | 200 `Status`                     | 409 when the run has finished                               |
+| `POST /api/v1/resume`      | none             | 200 `Status`; starts an idle run | 409 when the run has finished                               |
+| `POST /api/v1/step`        | none             | 200 `{ stepped, status }`        | 409 unless paused or idle                                   |
+| `PUT /api/v1/speed`        | `{ "speed": n }` | 200 `Status`                     | 400 when `speed` is missing, not a number or outside 0.5–60 |
 
 - `Status` is `{ state, speed, simTime, lagMs, events }`.
   - `state` is `idle`, `running`, `paused` or `finished`.
   - `simTime` is ISO 8601 UTC.
   - `lagMs` is how far event processing trails the paced clock, in wall milliseconds.
   - `events` is the run-wide sequence number of the last plant event.
+- `GroundTruth` is the headless ground truth (`docs/simulation-model.md`, "Ground-truth summary") of the live run so far, as `summary.json` would hold it if the run ended at `simTime`: `machines` (per machine `stateMs`, `byShift` keyed `2026-10-12/A` or `no-shift`, with all ten states, and `cycles`), `production` and `lots`; plus `epoch` (the run's epoch, as the devices publish it), `start`, `simTime` (how far events have been processed; the open state of each machine counts up to here), `currentBucket`, `buckets` (every bucket seen, `complete` once the run has left it; `no-shift` collects every gap between shifts and can be entered again) and `current` (each machine's state and when it began). Reading it never moves the run, and a paused run's buckets don't change. Reconciliation tests compare the MES with it (#100); a client of the plant (the MES) never uses it.
 - Pausing a run that is not running, or resuming a running one, changes nothing and returns the status.
 - `step` processes exactly one simulation event. `stepped: false` means no event is left before the end.
 - Every error, including 404 and malformed JSON, is `{ error, message }`.

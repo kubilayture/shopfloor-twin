@@ -1,4 +1,4 @@
-# Status — updated 2026-10-15
+# Status — updated 2026-10-16
 
 ## Current phase: 04 – MES foundation: historian and equipment states (planning, started 2026-10-15)
 
@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #99 merged (PR #111): `mes` and `web` in Compose.
 - #98 merged (PR #110): `apps/web`, ADR-0020.
 - #97 merged (PR #109): REST API and WebSocket push, ADR-0019.
 - #96 merged (PR #106): equipment state intervals, ADR-0018.
@@ -61,11 +62,11 @@
 
 ## In progress
 
-- #99 MES and web containers in Compose (branch `feat/99-compose-mes-web`, in review): `mes` and `web` (nginx) services, stack smoke through the web incl. the WebSocket, Dockerfile COPY guard in `pnpm verify`, memory measured (full stack about 440 MiB at 60×; 4 GiB VM recommended).
+- #100 Full-shift reconciliation (branch `feat/100-e2e-reconciliation`, in review): simulator ground truth live (`GET /api/v1/ground-truth`), `pnpm test:reconcile` over the Compose stack in the plan's start order, Playwright on the live overview, CI job `reconcile`. Locally green twice: all six machines' shift-A totals equal the ground truth to the ms, 1,221 pieces inside one hour and one shift, no incidents, latest state in the browser within 0.3 s at most (exit criteria 1 and 3, evidence in the phase log; met once the CI job is green on `main`).
 
 ## Next up
 
-- #100 End to end: full-shift reconciliation in live mode through the whole chain (own start order with `SIM_AUTOSTART=false`), Playwright check of the live overview at 60× against the Compose `web`
+- #101 Close Phase 4: report, learning notes, `docs/data-model.md` generated from the database, tag
 
 ## Blockers and open questions for the owner
 
@@ -76,7 +77,7 @@ Project board: https://github.com/users/kubilayture/projects/1
 
 ## Health: CI on main, coverage, open bugs
 
-- CI on `main`: green (`verify`, `stack smoke`).
+- CI on `main`: green (`verify`, `end to end`, `stack smoke`); `reconcile` arrives with #100.
 - Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 92 / 78 and `mes-server` 95 / 86 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
 - Tests: 654 (plus the end-to-end job: gateway, golden-week reconciliation).
 - Golden scenario `week-01`: green in CI.

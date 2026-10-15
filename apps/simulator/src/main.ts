@@ -52,18 +52,20 @@ const app = await buildControlApp({
 });
 const log = app.log;
 
-let stopping = false;
+const shutdownState = { stopping: false };
 async function shutdown(signal: string): Promise<void> {
-  if (stopping) return;
-  stopping = true;
+  if (shutdownState.stopping) return;
+  shutdownState.stopping = true;
   log.info({ signal }, 'shutting down');
   setTimeout(() => {
     log.error('shutdown timed out');
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
   run.pacer.stop();
-  await app.close();
-  await servers.stop();
+  const results = await Promise.allSettled([app.close(), servers.stop()]);
+  for (const result of results) {
+    if (result.status === 'rejected') log.error(result.reason);
+  }
   log.info('stopped');
   process.exit(signal === 'SIGINT' ? 130 : 0);
 }
@@ -80,6 +82,10 @@ try {
   await app.listen({ host: env.CONTROL_HOST, port: env.CONTROL_PORT });
   await servers.start();
 } catch (error) {
+  if (shutdownState.stopping) {
+    // A signal arrived during start-up; shutdown() owns the exit.
+    await new Promise(() => undefined);
+  }
   log.fatal(error);
   await app.close();
   process.exit(1);
@@ -87,7 +93,7 @@ try {
 for (const server of servers.servers) {
   log.info({ machineId: server.machineId, endpoint: server.endpoint }, 'OPC UA server listening');
 }
-if (env.SIM_AUTOSTART === 'true') {
+if (env.SIM_AUTOSTART === 'true' && run.pacer.state === 'idle') {
   run.pacer.start();
 }
 log.info(

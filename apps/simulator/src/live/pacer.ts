@@ -121,6 +121,7 @@ export class LivePacer<E> {
     }
     this.#advanceTo(this.simNow());
     this.#cancelTimer();
+    this.#lagMs = 0;
     this.#state = 'paused';
   }
 
@@ -185,6 +186,7 @@ export class LivePacer<E> {
       return;
     }
     this.#cancelTimer();
+    this.#lagMs = 0;
     if (this.#state !== 'finished') {
       this.#state = 'finished';
     }

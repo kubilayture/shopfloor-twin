@@ -1,5 +1,6 @@
 import swagger from '@fastify/swagger';
 import websocket from '@fastify/websocket';
+import { STATUS_CODES } from 'node:http';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyReply } from 'fastify';
 import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
 import { z } from 'zod';
@@ -70,7 +71,26 @@ export async function buildControlApp({
   logger = false,
   version = '0.0.0',
 }: ControlAppOptions): Promise<FastifyInstance> {
-  const app = Fastify({ logger });
+  const app = Fastify({
+    logger,
+    // Strict bodies: "5" or true is not a speed, and unknown fields are refused, as the OpenAPI says.
+    ajv: { customOptions: { coerceTypes: false, removeAdditional: false } },
+  });
+  app.setErrorHandler((error: { statusCode?: number; message: string }, request, reply) => {
+    const code = error.statusCode !== undefined && error.statusCode >= 400 ? error.statusCode : 500;
+    if (code >= 500) {
+      request.log.error(error);
+    }
+    return reply.code(code).send({
+      error: STATUS_CODES[code] ?? 'Error',
+      message: code >= 500 ? 'internal error' : error.message,
+    });
+  });
+  app.setNotFoundHandler((request, reply) =>
+    reply
+      .code(404)
+      .send({ error: 'Not Found', message: `no route ${request.method} ${request.url}` }),
+  );
   await app.register(swagger, {
     openapi: {
       openapi: '3.0.3',
@@ -87,7 +107,16 @@ export async function buildControlApp({
       ],
     },
   });
-  await app.register(websocket, { options: { maxPayload: 1024 } });
+  await app.register(websocket, {
+    options: { maxPayload: 1024 },
+    // A client that stopped reading would hold up shutdown for ws's 30 s close timeout.
+    preClose: (done) => {
+      for (const client of app.websocketServer.clients) {
+        client.terminate();
+      }
+      done();
+    },
+  });
 
   const metrics = createMetrics(pacer, hub);
 
@@ -103,7 +132,22 @@ export async function buildControlApp({
   };
   const conflict = (reply: FastifyReply, message: string) =>
     reply.code(409).send({ error: 'Conflict', message });
-  const responses = (ok: z.ZodType) => ({ 200: json(ok), 409: json(errorSchema) });
+  const responses = (ok: z.ZodType) => ({
+    200: json(ok),
+    409: json(errorSchema),
+    503: json(errorSchema),
+  });
+  const CONTROL_ROUTES = new Set(
+    ['pause', 'resume', 'step', 'speed'].map((r) => `${API_PREFIX}/${r}`),
+  );
+  // Until every OPC UA server listens, the run must not move: events would reach no server.
+  app.addHook('onRequest', async (request, reply) => {
+    if (CONTROL_ROUTES.has(request.routeOptions.url ?? '') && !ready()) {
+      await reply
+        .code(503)
+        .send({ error: 'Service Unavailable', message: 'the simulator is starting' });
+    }
+  });
 
   app.get(
     `${API_PREFIX}/status`,
@@ -182,7 +226,7 @@ export async function buildControlApp({
         tags: ['simulation'],
         summary: `Change the speed (${String(MIN_SPEED)}–${String(MAX_SPEED)}×)`,
         body: json(speedSchema),
-        response: { 200: json(statusSchema), 400: json(errorSchema) },
+        response: { 200: json(statusSchema), 400: json(errorSchema), 503: json(errorSchema) },
       },
     },
     (request) => {
@@ -195,7 +239,8 @@ export async function buildControlApp({
     metrics.clients.inc();
     const unsubscribe = hub.subscribe((line) => {
       if (socket.bufferedAmount > MAX_CLIENT_BUFFER_BYTES) {
-        socket.close(1013, 'client too slow');
+        // A close frame would queue behind the backlog the client isn't reading.
+        socket.terminate();
         return;
       }
       socket.send(line);

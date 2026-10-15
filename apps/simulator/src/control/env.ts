@@ -4,16 +4,21 @@ import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 
 const DEFAULT_CONFIG = resolve(import.meta.dirname, '../../../../config/plant');
 
-const port = z.coerce.number().int().min(1).max(65_535);
+const integer = z
+  .string()
+  .regex(/^\d{1,10}$/, 'expected a decimal integer')
+  .transform(Number);
+const port = integer.pipe(z.number().min(1).max(65_535));
+const text = z.string().trim().min(1);
 
 export const envSchema = z.object({
-  SIM_SEED: z.coerce
-    .number()
-    .int()
-    .min(0)
-    .max(2 ** 32 - 1)
-    .default(1),
-  SIM_SPEED: z.coerce.number().min(MIN_SPEED).max(MAX_SPEED).default(60),
+  SIM_SEED: integer.pipe(z.number().max(2 ** 32 - 1)).default(1),
+  SIM_SPEED: z
+    .string()
+    .regex(/^\d+(\.\d+)?$/, 'expected a decimal number')
+    .transform(Number)
+    .pipe(z.number().min(MIN_SPEED).max(MAX_SPEED))
+    .default(60),
   SIM_START: z
     .string()
     .default('2026-10-12T06:00:00+03:00')
@@ -25,12 +30,12 @@ export const envSchema = z.object({
         return z.NEVER;
       }
     }),
-  SIM_CONFIG_DIR: z.string().min(1).default(DEFAULT_CONFIG),
+  SIM_CONFIG_DIR: text.default(DEFAULT_CONFIG),
   SIM_AUTOSTART: z.enum(['true', 'false']).default('true'),
-  OPCUA_HOST: z.string().min(1).default('localhost'),
-  OPCUA_PORT_OFFSET: z.coerce.number().int().min(0).max(9_999).default(0),
-  OPCUA_PKI_DIR: z.string().min(1).optional(),
-  CONTROL_HOST: z.string().min(1).default('127.0.0.1'),
+  OPCUA_HOST: text.default('localhost'),
+  OPCUA_PORT_OFFSET: integer.pipe(z.number().max(9_999)).default(0),
+  OPCUA_PKI_DIR: text.optional(),
+  CONTROL_HOST: text.default('127.0.0.1'),
   CONTROL_PORT: port.default(4800),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 });

@@ -25,7 +25,9 @@ The simulation console (Phase 9) is the client. The MES never uses this API: it 
   - `events` is the run-wide sequence number of the last plant event.
 - Pausing a run that is not running, or resuming a running one, changes nothing and returns the status.
 - `step` processes exactly one simulation event. `stepped: false` means no event is left before the end.
-- Errors are `{ error, message }`.
+- Every error, including 404 and malformed JSON, is `{ error, message }`.
+- Request bodies are strict: `"5"` or `true` is not a speed, and unknown fields give 400.
+- Until every OPC UA server listens, `pause`, `resume`, `step` and `speed` return 503 `the simulator is starting`, so the run cannot move before its events have somewhere to go. `status` always answers.
 - Pacing never changes the event stream: a run produces the same events whatever the pauses, steps and speed changes (proven by the pacer's property test, #49).
 
 ## WebSocket: plant events
@@ -34,7 +36,7 @@ The simulation console (Phase 9) is the client. The MES never uses this API: it 
 
 - Events are not replayed: a client receives the events emitted after it connects. A gap in `seq` means the client missed events.
 - The stream is read-only. A client that sends a message is closed with code 1003.
-- A client whose unsent data exceeds 4 MB is closed with code 1013 instead of being buffered without bound.
+- A client whose unsent data exceeds 4 MB is disconnected (terminated, without a close frame, which a stalled client couldn't read) instead of being buffered without bound. It detects the gap through `seq` when it reconnects.
 
 ## Operations
 
@@ -62,7 +64,7 @@ The simulator validates its environment at start-up. With any invalid value it n
 
 | Variable            | Default                          | Meaning                                                        |
 | ------------------- | -------------------------------- | -------------------------------------------------------------- |
-| `SIM_SEED`          | 1                                | Random seed, 0 to 2³²−1                                        |
+| `SIM_SEED`          | 1                                | Random seed, decimal digits, 0 to 2³²−1                        |
 | `SIM_SPEED`         | 60                               | Speed, 0.5–60                                                  |
 | `SIM_START`         | `2026-10-12T06:00:00+03:00`      | Simulation start, ISO 8601 with an offset                      |
 | `SIM_CONFIG_DIR`    | `config/plant` in the repository | Plant configuration directory                                  |
@@ -79,8 +81,7 @@ The simulator validates its environment at start-up. With any invalid value it n
 On SIGTERM or SIGINT the simulator:
 
 1. stops the pacer;
-2. closes the control API, including open WebSockets;
-3. shuts down the OPC UA servers;
-4. exits with status 0 (SIGTERM) or 130 (SIGINT).
+2. closes the control API, terminating open WebSockets so that a client which stopped reading can't hold it up, and shuts down the OPC UA servers at the same time;
+3. exits with status 0 (SIGTERM) or 130 (SIGINT).
 
 If that takes longer than 10 s, it exits with status 1.

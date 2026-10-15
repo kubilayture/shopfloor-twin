@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { connect } from 'node:net';
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { MINUTE } from '@shopfloor/sim-core';
 import type { FastifyInstance } from 'fastify';
@@ -69,11 +70,12 @@ describe('control API (#54)', () => {
     clock.advance(60_000);
     expect(run.pacer.simNow()).toBe(T0 + 10 * MINUTE);
 
-    const before = run.simulation.now;
+    const next = run.simulation.nextEventTime;
     const step = await app.inject({ method: 'POST', url: '/api/v1/step' });
     expect(step.statusCode).toBe(200);
     expect(step.json<{ stepped: boolean }>().stepped).toBe(true);
-    expect(run.simulation.now).toBeGreaterThanOrEqual(before);
+    expect(run.simulation.now).toBe(next);
+    expect(next).toBeGreaterThan(T0);
 
     const speed = await app.inject({ method: 'PUT', url: '/api/v1/speed', payload: { speed: 2 } });
     expect(speed.json()).toMatchObject({ speed: 2, state: 'paused' });
@@ -92,16 +94,84 @@ describe('control API (#54)', () => {
       error: 'Conflict',
       message: 'step is only possible while paused, the run is running',
     });
-    for (const payload of [{ speed: 0.4 }, { speed: 61 }, { speed: 'fast' }, {}]) {
+    for (const payload of [
+      { speed: 0.4 },
+      { speed: 61 },
+      { speed: 'fast' },
+      { speed: '5' },
+      { speed: true },
+      { speed: 5, extra: 1 },
+      {},
+    ]) {
       const response = await app.inject({ method: 'PUT', url: '/api/v1/speed', payload });
-      expect(response.statusCode).toBe(400);
-      expect(response.json<{ message: string }>().message).toMatch(/speed/);
+      expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+      expect(Object.keys(response.json<object>()).sort()).toEqual(['error', 'message']);
     }
+    const badJson = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/speed',
+      headers: { 'content-type': 'application/json' },
+      payload: '{"speed":',
+    });
+    expect(badJson.statusCode).toBe(400);
+    expect(Object.keys(badJson.json<object>()).sort()).toEqual(['error', 'message']);
+    const missing = await app.inject({ method: 'GET', url: '/api/v1/nothing' });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: 'Not Found', message: 'no route GET /api/v1/nothing' });
     expect(run.pacer.speed).toBe(60);
     run.pacer.stop();
     for (const url of ['/api/v1/pause', '/api/v1/resume']) {
       expect((await app.inject({ method: 'POST', url })).statusCode).toBe(409);
     }
+  });
+
+  it('refuses control until every OPC UA server listens, but reports status', async () => {
+    const { app, run } = await setup(false);
+    for (const [method, url] of [
+      ['POST', '/api/v1/resume'],
+      ['POST', '/api/v1/pause'],
+      ['POST', '/api/v1/step'],
+      ['PUT', '/api/v1/speed'],
+    ] as const) {
+      const response = await app.inject({ method, url, payload: { speed: 2 } });
+      expect(response.statusCode, url).toBe(503);
+      expect(response.json()).toEqual({
+        error: 'Service Unavailable',
+        message: 'the simulator is starting',
+      });
+    }
+    expect(run.pacer.state).toBe('idle');
+    expect(run.pacer.speed).toBe(60);
+    expect((await app.inject({ url: '/api/v1/status' })).statusCode).toBe(200);
+  });
+
+  it('resumes an idle run, leaves a running one alone, and zeroes the lag when paused', async () => {
+    const { app, run, clock } = await setup();
+    await app.inject({ method: 'POST', url: '/api/v1/resume' });
+    clock.advance(5_000);
+    const again = await app.inject({ method: 'POST', url: '/api/v1/resume' });
+    expect(again.json()).toMatchObject({ state: 'running', simTime: '2026-10-12T03:05:00.000Z' });
+    const paused = await app.inject({ method: 'POST', url: '/api/v1/pause' });
+    expect(paused.json()).toMatchObject({ state: 'paused', lagMs: 0 });
+    expect(run.pacer.status().lagMs).toBe(0);
+  });
+
+  it('closes promptly even when a WebSocket client has stopped reading', async () => {
+    const { app } = await setup();
+    const address = new URL(await app.listen({ host: '127.0.0.1', port: 0 }));
+    const raw = connect(Number(address.port), address.hostname);
+    await new Promise((resolve) => raw.once('connect', resolve));
+    raw.write(
+      `GET ${EVENTS_PATH} HTTP/1.1\r\nHost: ${address.host}\r\nUpgrade: websocket\r\n` +
+        'Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
+        'Sec-WebSocket-Version: 13\r\n\r\n',
+    );
+    await new Promise((resolve) => raw.once('data', resolve));
+    raw.pause();
+    const started = Date.now();
+    await app.close();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    raw.destroy();
   });
 
   it('reports liveness, readiness and Prometheus metrics', async () => {
@@ -196,6 +266,24 @@ describe('environment configuration (#54)', () => {
         SIM_AUTOSTART: 'true',
         LOG_LEVEL: 'info',
       });
+    }
+  });
+
+  it.each([
+    ['SIM_SEED', '0x10'],
+    ['SIM_SEED', '1e3'],
+    ['SIM_SEED', ' 5 '],
+    ['SIM_SEED', '1.5'],
+    ['CONTROL_PORT', '0x1F40'],
+    ['CONTROL_PORT', '0'],
+    ['SIM_SPEED', 'Infinity'],
+    ['CONTROL_HOST', ' '],
+    ['SIM_CONFIG_DIR', '  '],
+  ])('refuses %s=%j', (key, value) => {
+    const result = parseEnv({ [key]: value });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues[0]).toMatch(new RegExp(`^${key}: `));
     }
   });
 

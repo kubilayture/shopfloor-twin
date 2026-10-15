@@ -1,6 +1,14 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { RandomSource, Xoshiro128StarStar, fmix32, fnv1a32, streamState } from './random.ts';
+import { ksTest, normalCdf } from '@shopfloor/test-kit';
+import {
+  RandomSource,
+  Xoshiro128StarStar,
+  fmix32,
+  fnv1a32,
+  hashedStandardNormal,
+  streamState,
+} from './random.ts';
 
 const take = (next: () => number, n: number): number[] => Array.from({ length: n }, next);
 
@@ -40,6 +48,38 @@ describe('hash functions used to derive streams', () => {
         expect(new Set(values.map(fmix32)).size).toBe(values.length);
       }),
     );
+  });
+});
+
+describe('hashedStandardNormal', () => {
+  it('is a pure function of seed, key and index', () => {
+    expect(hashedStandardNormal(1, 'cnc-01/spindle', 42)).toBe(
+      hashedStandardNormal(1, 'cnc-01/spindle', 42),
+    );
+    expect(hashedStandardNormal(1, 'cnc-01/spindle', 42)).not.toBe(
+      hashedStandardNormal(1, 'cnc-01/spindle', 43),
+    );
+    expect(hashedStandardNormal(1, 'cnc-01/spindle', 42)).not.toBe(
+      hashedStandardNormal(2, 'cnc-01/spindle', 42),
+    );
+    expect(hashedStandardNormal(1, 'cnc-01/spindle', 42)).not.toBe(
+      hashedStandardNormal(1, 'cnc-02/spindle', 42),
+    );
+  });
+
+  it('follows the standard normal distribution over consecutive indices (KS test)', () => {
+    const start = 1_791_774_000;
+    const values = Array.from({ length: 20_000 }, (_, i) =>
+      hashedStandardNormal(7, 'cnc-01/spindle', start + i),
+    );
+    expect(ksTest(values, normalCdf()).pValue).toBeGreaterThan(0.01);
+  });
+
+  it('is uncorrelated between neighbouring indices', () => {
+    const xs = Array.from({ length: 20_000 }, (_, i) => hashedStandardNormal(7, 'k', i));
+    let sum = 0;
+    for (let i = 1; i < xs.length; i++) sum += (xs[i] ?? 0) * (xs[i - 1] ?? 0);
+    expect(Math.abs(sum / (xs.length - 1))).toBeLessThan(0.03);
   });
 });
 

@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #49 merged (PR #61): live run mode.
 - #48 merged (PR #60): alarm spike, ADR-0010.
 - #47 merged (PR #59): OPC UA spike, ADR-0008, ADR-0009.
 - #46 merged (PR #58): Phase 2 plan, ADR-0011.
@@ -30,12 +31,12 @@
 
 ## In progress
 
-- #49 Live run mode (in review)
+- #50 Process values (in review)
 
 ## Next up
 
-- #50 Process values
-- #51 OPC UA servers (after #49 and #50)
+- #51 OPC UA servers per machine
+- #54 Control API (independent of #51)
 
 ## Blockers and open questions for the owner
 

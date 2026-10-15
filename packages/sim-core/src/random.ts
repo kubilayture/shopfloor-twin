@@ -103,3 +103,17 @@ export class RandomSource {
     return new SeededStream(key, new Xoshiro128StarStar(streamState(this.seed, key)));
   }
 }
+
+function hashedUnit(seed: number, keyHash: number, index: number, salt: number): number {
+  let h = fmix32((seed ^ keyHash) >>> 0);
+  h = fmix32((h + Math.imul(index >>> 0, 0x9e3779b9) + salt) >>> 0);
+  h = fmix32((h ^ Math.floor(index / 0x100000000)) >>> 0);
+  return (h + 0.5) / UINT32_RANGE;
+}
+
+// A pure function of (seed, key, index): telemetry sampled at arbitrary wall-clock moments must not consume a stream.
+export function hashedStandardNormal(seed: number, key: string, index: number): number {
+  const keyHash = fnv1a32(key);
+  const radius = Math.sqrt(-2 * Math.log(hashedUnit(seed, keyHash, index, 0x1b873593)));
+  return radius * Math.cos(2 * Math.PI * hashedUnit(seed, keyHash, index, 0x68e31da4));
+}

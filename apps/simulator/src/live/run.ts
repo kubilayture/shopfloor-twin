@@ -1,6 +1,7 @@
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { ProductionLine, type LineEvent, type PlantEvent } from '../plant/line.ts';
+import { ProcessValues } from '../plant/process-values.ts';
 import { LivePacer, type WallClock } from './pacer.ts';
 
 export interface LiveOptions {
@@ -18,14 +19,23 @@ export interface LiveRun {
   readonly line: ProductionLine;
   readonly simulation: Simulation<LineEvent>;
   readonly pacer: LivePacer<LineEvent>;
+  readonly processValues: ProcessValues;
 }
 
 export function createLiveRun(options: LiveOptions): LiveRun {
+  const processValues = new ProcessValues(
+    options.config.process.processValues,
+    options.seed,
+    options.start,
+  );
   const line = new ProductionLine({
     config: options.config,
     random: new RandomSource(options.seed),
     startTime: options.start,
-    ...(options.onEvent ? { onEvent: options.onEvent } : {}),
+    onEvent: (event) => {
+      processValues.record(event);
+      options.onEvent?.(event);
+    },
   });
   const simulation = new Simulation<LineEvent>(options.start);
   line.start(simulation);
@@ -39,5 +49,5 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.onAdvance ? { onAdvance: options.onAdvance } : {}),
   });
-  return { line, simulation, pacer };
+  return { line, simulation, pacer, processValues };
 }

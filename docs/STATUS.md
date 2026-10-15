@@ -1,11 +1,13 @@
 # Status — updated 2026-10-16
 
-## Current phase: 05 – OEE and downtime (next; Phase 4 closed 2026-10-16)
+## Current phase: 05 – OEE and downtime (planning; Phase 4 closed 2026-10-16)
 
-## Exit criteria progress: Phase 4 closed with 4 / 4 met; Phase 5 not planned yet
+## Exit criteria progress: Phase 5: 0 / 5 met (plan in review)
 
 ## Done since last update
 
+- Phase 5 plan with issues #113, #115–#124 and #126 under milestone "Phase 05 – OEE and downtime".
+- #101 merged (PR #114): Phase 4 closed, tagged `phase-04`.
 - **Phase 4 closed**: all 4 exit criteria met; tag `phase-04` (report: `docs/phases/phase-04-report.md`; learning notes: `docs/learning/phase-04.md`; data model: `docs/data-model.md`, generated from the database with a drift test).
 - #100 merged (PR #112): full-shift reconciliation through the whole chain, Playwright on the live overview, CI job `reconcile` (10.7 min).
 - #99 merged (PR #111): `mes` and `web` in Compose.
@@ -64,11 +66,11 @@
 
 ## In progress
 
-- #101 Phase 4 close (in review)
+- #115 Phase 5 plan (in review)
 
 ## Next up
 
-- Phase 5 plan: OEE and downtime (`oee-core` with reference cases, continuous aggregates, reason codes, downtime coding, OEE dashboard). Open follow-up to schedule: #113 (interval finality per piece).
+- #113 interval finality per piece and #116 `oee-core`, then #117–#124 in the plan's order.
 
 ## Blockers and open questions for the owner
 

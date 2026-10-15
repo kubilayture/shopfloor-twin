@@ -36,7 +36,7 @@ A generic client that knows Machinery finds every machine and its state without 
 
 ### Simulation time on the wire
 
-Every value and event carries the **simulation time** as its `SourceTimestamp` (or `Time`). The MES computes everything from these, never from wall time. That way a run at 60× gives the same OEE as a run at 1×, and the MES can be tested against the simulator's ground truth.
+Every project (`ShopFloor`) value and event carries the **simulation time** as its `SourceTimestamp` (or `Time`). The one exception is the Machinery state machines' `CurrentState`, which node-opcua stamps with wall time itself. The MES computes everything from these, never from wall time. That way a run at 60× gives the same OEE as a run at 1×, and the MES can be tested against the simulator's ground truth.
 
 ### Pacing without changing the outcome
 
@@ -131,7 +131,7 @@ Watch lossless delivery and the resync rule yourself.
 1. Start the plant: `SIM_AUTOSTART=false pnpm sim:serve` (or `pnpm stack:up`).
 2. Connect UaExpert to `opc.tcp://localhost:4841`.
    - Browse `Objects → Machines → CNC-01 → ShopFloor`.
-   - Add an event view on the Server object, with the fields `Sequence`, `MachineId` and `ToState`.
+   - Add an event view on the Server object, with the fields `Sequence`, `MachineId` and `ToState`. It also shows the Machinery TransitionEvents. Their `Sequence` and `MachineId` are empty, so ignore those rows, or filter on `ShopFloorStateChangeEventType`.
 3. `curl -s -X POST localhost:4800/api/v1/resume`, and watch the sequence numbers climb without gaps.
 4. Disconnect UaExpert for a minute, then reconnect. Compare the last `Sequence` you saw with `ShopFloor.Sequence` now. The difference is exactly the number of events the gateway would report as a gap in Phase 3.
 5. `curl -s -X PUT localhost:4800/api/v1/speed -H 'content-type: application/json' -d '{"speed": 5}'`, and see the `SourceTimestamp` advance more slowly.

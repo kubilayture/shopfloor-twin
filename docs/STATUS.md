@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #55 merged (PR #67): simulator container and Compose service.
 - #54 merged (PR #66): control API.
 - #53 merged (PR #65): alarms.
 - #52 merged (PR #64): LoadProgram on the CNCs.
@@ -37,11 +38,11 @@
 
 ## In progress
 
-- #55 simulator container (in review)
+- #56 integration tests and contract check (in review)
 
 ## Next up
 
-- #56 integration tests and contract check, #57 Phase 2 close
+- #57 Phase 2 close (report, learning notes, tag `phase-02`)
 
 ## Blockers and open questions for the owner
 

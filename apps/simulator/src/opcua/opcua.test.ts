@@ -7,7 +7,6 @@ import {
   OPCUA_VARIABLES,
   SHOPFLOOR_NAMESPACE_URI,
   opcuaAlarmPath,
-  opcuaEndpoint,
   opcuaEventTypeId,
   opcuaNodeId,
   toIndexedNodeId,
@@ -17,11 +16,9 @@ import { HOUR } from '@shopfloor/sim-core';
 import {
   AttributeIds,
   DataType,
-  OPCUAClient,
   TimestampsToReturn,
   constructEventFilter,
   resolveNodeId,
-  type ClientSession,
 } from 'node-opcua';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLiveRun, type LiveRun } from '../live/run.ts';
@@ -34,6 +31,7 @@ import {
 import { loadDefaultConfig } from '../plant/testing.ts';
 import { machineryItemState, machineryOperationMode } from './machinery-state.ts';
 import { PlantServers, alarmCodes } from './plant-servers.ts';
+import { connect, wait } from './testing.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
 const OFFSET = 200;
@@ -42,26 +40,6 @@ let servers: PlantServers;
 let run: LiveRun;
 let clock: ManualClock;
 const plantEvents: PlantEvent[] = [];
-
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function connect(
-  port: number,
-): Promise<{ session: ClientSession; close: () => Promise<void> }> {
-  const client = OPCUAClient.create({
-    endpointMustExist: false,
-    connectionStrategy: { maxRetry: 2 },
-  });
-  await client.connect(opcuaEndpoint('localhost', port));
-  const session = await client.createSession();
-  return {
-    session,
-    close: async () => {
-      await session.close();
-      await client.disconnect();
-    },
-  };
-}
 
 beforeAll(async () => {
   config = await loadDefaultConfig();
@@ -149,7 +127,7 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
       const beforeSubscription = plantEvents.filter(isCncFact).length;
       const item = await subscription.monitor(
         { nodeId: resolveNodeId('i=2253'), attributeId: AttributeIds.EventNotifier },
-        { samplingInterval: 0, queueSize: 10_000, discardOldest: false, filter },
+        { samplingInterval: 0, queueSize: 5_000, discardOldest: false, filter },
         TimestampsToReturn.Both,
       );
       item.on('changed', (values: unknown) => {

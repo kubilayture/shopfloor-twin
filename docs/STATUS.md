@@ -1,11 +1,13 @@
 # Status — updated 2026-10-15
 
-## Current phase: 02 – Device layer: OPC UA (planning, started 2026-10-14)
+## Current phase: 03 – Gateway and UNS (next; Phase 2 closed 2026-10-15)
 
-## Exit criteria progress: 0 / 5 met
+## Exit criteria progress: Phase 2 closed with 5 / 5 met; Phase 3 not planned yet
 
 ## Done since last update
 
+- **Phase 2 closed** and tagged `phase-02`: all 5 exit criteria met (report: `docs/phases/phase-02-report.md`; learning notes: `docs/learning/phase-02.md`).
+- #56 merged (PR #68): OPC UA integration and contract tests.
 - #55 merged (PR #67): simulator container and Compose service.
 - #54 merged (PR #66): control API.
 - #53 merged (PR #65): alarms.
@@ -38,11 +40,11 @@
 
 ## In progress
 
-- #56 integration tests and contract check (in review)
+- #57 Phase 2 close (in review)
 
 ## Next up
 
-- #57 Phase 2 close (report, learning notes, tag `phase-02`)
+- Phase 3 plan: edge gateway (OPC UA and Modbus WSH-01 on 5020) publishing the Unified Namespace over MQTT
 
 ## Blockers and open questions for the owner
 
@@ -53,6 +55,7 @@ Project board: https://github.com/users/kubilayture/projects/1
 ## Health: CI on main, coverage, open bugs
 
 - CI on `main`: green (`verify`, `stack smoke`).
-- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 90 (floor 90 / 85), simulator 87 / 83 (floor 80 / 70; `cli.ts` runs only as a subprocess in tests and is not measured).
+- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 80 (floor 80 / 70; entry points run only as subprocesses or smoke runs and are not measured).
+- Tests: 452.
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

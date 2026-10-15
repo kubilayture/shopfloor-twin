@@ -22,3 +22,5 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - #55 container: Node strips types only outside `node_modules`, so the image installs the workspace with pnpm (packages stay symlinked to their sources) instead of `pnpm deploy`, which would copy the `.ts` packages into `node_modules`. The image is 388 MB, mostly node-opcua; the container uses about 200 MiB at 60×.
 - Merged #67 (#55): simulator container. The review fixed the container host name, which goes into the persisted certificate's SAN.
 - #56: node-opcua bounds event queues to 100–5000 entries. Earlier tests asked for 10,000 and were silently given 5000; the tests now ask for 5000 and the contract says so. The ADR-0009 follow-ups pass: five servers with two clients each lose nothing over a shift, and overflow on a small queue shows up in `Sequence`.
+- Merged #68 (#56): integration and contract tests. The review led to a precise overflow signature, and to the finding that Machinery TransitionEvents share the event queue.
+- Phase 2 closed: 5 / 5 exit criteria met; report and learning notes written. No exit criterion needed the owner.

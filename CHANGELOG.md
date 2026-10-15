@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Phase 2 closed: report and learning notes; all 5 exit criteria met; tag `phase-02` (#57).
 - OPC UA integration and contract tests: the address-space contract is parsed and checked against the code and all five live servers; a generic client finds every machine under Machinery/Machines; telemetry follows the chosen speed; a scripted shift reaches two clients per server with no sequence gaps; a deliberately small queue shows its gaps in `Sequence`. Contract and ADR-0009 note node-opcua's event-queue bounds of 100–5000 (#56).
 - Simulator container: `apps/simulator/Dockerfile` (Node 26 Alpine, production dependencies only, non-root, healthcheck on `/health/ready`) and a Compose service `simulator` with the control API and OPC UA ports on loopback, resource limits and a certificate volume; stack smoke test checks it (#55).
 - Simulator control API (Fastify): pause, resume, step, speed and status under `/api/v1`; plant events over WebSocket in the event-log format; `/health/live`, `/health/ready`, Prometheus `/metrics` (ADR-0012); environment configuration validated at start-up; graceful SIGTERM shutdown; generated OpenAPI in `docs/api/` with a drift test; contract `docs/contracts/simulator-control-api.md`. `pnpm sim:serve` is now configured through environment variables instead of flags (#54).

@@ -5,7 +5,7 @@ export interface GatewayHttpOptions {
   /** Ready when the broker session is up. */
   readonly ready: () => boolean;
   readonly published: () => number;
-  /** Per OPC UA machine: connected, and device facts published. */
+  /** Per machine (OPC UA and Modbus): connected, and device facts published. */
   readonly machines?: () => readonly {
     readonly id: string;
     readonly connected: boolean;
@@ -40,8 +40,8 @@ export function buildGatewayHttp({
     },
   });
   new Gauge({
-    name: 'gateway_opcua_connected',
-    help: '1 while the OPC UA session to the machine is up',
+    name: 'gateway_device_connected',
+    help: '1 while the machine answers (OPC UA session up, or Modbus device answering)',
     labelNames: ['machine'],
     registers: [registry],
     collect() {

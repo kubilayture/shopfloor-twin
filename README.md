@@ -2,7 +2,9 @@
 
 A deterministic simulation of a discrete-manufacturing plant with an edge gateway, MQTT Unified Namespace and MES core, built in TypeScript.
 
-The project plan is in [docs/project-plan.md](docs/project-plan.md). ## Quick start
+The project plan is in [docs/project-plan.md](docs/project-plan.md).
+
+## Quick start
 
 Requires Node.js 26, pnpm and Docker.
 
@@ -13,6 +15,6 @@ cp .env.example .env   # then set your own passwords
 pnpm stack:up
 ```
 
-`pnpm stack:up` starts PostgreSQL + TimescaleDB and the Mosquitto MQTT broker and waits until both are healthy.
+`pnpm stack:up` builds and starts the whole system and waits until every service is healthy: PostgreSQL + TimescaleDB, the Mosquitto MQTT broker, the plant simulator at 60×, the edge gateway, the MES server and the web app. Open the plant overview at <http://localhost:8080>. Give the Docker VM 4 GB of memory (runbook, "Full stack").
 
 Current progress is in [docs/STATUS.md](docs/STATUS.md); operations in [docs/runbook.md](docs/runbook.md).

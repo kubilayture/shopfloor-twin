@@ -109,6 +109,61 @@ services:
     stop_grace_period: 15s
     restart: unless-stopped
 
+  # Start order: the MES needs only the database and the broker; the gateway does not wait for it
+  # (its UNS session is persistent and retained states replay). The reconciliation of #100 starts
+  # the simulator paused and orders things itself; see the runbook, "Full stack".
+  mes:
+    build:
+      context: .
+      dockerfile: apps/mes-server/Dockerfile
+    image: shopfloor-twin/mes-server:dev
+    pull_policy: build
+    hostname: mes
+    depends_on:
+      db:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+    environment:
+      # The password goes in PGPASSWORD, not into the URL, so it needs no URL encoding.
+      DATABASE_URL: postgres://${DB_USER:-shopfloor}@db:5432/${DB_NAME:-shopfloor}
+      PGPASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env (copy .env.example)}
+      MQTT_URL: mqtt://broker:1883
+      MQTT_PASSWORD: ${MQTT_MES_PASSWORD:?Set MQTT_MES_PASSWORD in .env}
+      # Names the browser uses for the web app and the API (the web proxy forwards its Host).
+      HTTP_ALLOWED_HOSTS: ${MES_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}
+      HTTP_ALLOWED_ORIGINS: ${MES_ALLOWED_ORIGINS:-}
+      LOG_LEVEL: ${MES_LOG_LEVEL:-info}
+    ports:
+      - '127.0.0.1:${MES_HTTP_PORT:-4700}:4700'
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    stop_grace_period: 15s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: shopfloor-twin/web:dev
+    pull_policy: build
+    hostname: web
+    depends_on:
+      mes:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:${WEB_PORT:-8080}:8080'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 64M
+    stop_grace_period: 10s
+    restart: unless-stopped
+
 volumes:
   db-data:
   broker-data:

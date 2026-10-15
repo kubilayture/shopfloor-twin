@@ -60,9 +60,15 @@ jobs:
   stack:
     name: stack smoke
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The web checks (scripts/stack-smoke-web.mjs) use Node's built-in fetch and WebSocket; no
+      # pnpm install needed.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
       - name: Create .env with random passwords
         run: |
           cp .env.example .env

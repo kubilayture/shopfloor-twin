@@ -4,7 +4,7 @@
 
 ## Connection
 
-- URL: `ws://<host>:4700/api/v1/ws` (the MES binds to `127.0.0.1` by default; the web container proxies `/api` in #99). Read-only, no authentication until Phase 9.
+- URL: `ws://<host>:4700/api/v1/ws` (the MES binds to `127.0.0.1` by default; in Compose the web container proxies it as `ws://localhost:8080/api/v1/ws`, #99). Read-only, no authentication until Phase 9.
 - Every message is one JSON text frame. A client message may be at most 4 KiB.
 - The server pings every 15 s; a client that misses a pong is disconnected (browsers answer pings on their own).
 - At most 64 clients; one more is closed with code 1013 (try again later).

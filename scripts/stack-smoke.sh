@@ -83,3 +83,13 @@ states=$(as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t 'orbis/gebze/+/+/+/st
 [ "$states" = "asm-01 cnc-01 cnc-02 lkt-01 pck-01 wsh-01 " ] || fail "UNS states incomplete: $states"
 echo "ok: UNS has the current state of all six machines"
 
+
+# MES and web (#99). `up --wait` above already waited for the MES to be ready (migrated, database
+# answering, subscribed to the UNS) and for nginx.
+ready=$(curl -sf "http://127.0.0.1:${MES_HTTP_PORT:-4700}/health/ready") || fail "MES not ready"
+echo "ok: MES ready ($ready)"
+web="http://127.0.0.1:${WEB_PORT:-8080}"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.test:${WEB_PORT:-8080}" "$web/api/v1/equipment")
+[ "$code" = 403 ] || fail "MES answered a foreign Host through the web ($code)"
+echo "ok: foreign Host refused through the web (DNS rebinding)"
+node scripts/stack-smoke-web.mjs "$web" || fail "web checks failed"

@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #98 merged (PR #110): `apps/web`, ADR-0020.
 - #97 merged (PR #109): REST API and WebSocket push, ADR-0019.
 - #96 merged (PR #106): equipment state intervals, ADR-0018.
 - #95 merged (PR #105): ingest, ADR-0017.
@@ -60,15 +61,16 @@
 
 ## In progress
 
-- #98 `apps/web` (branch `feat/98-web`, in review): plant overview with live states and machine detail with state timeline and uPlot trends; one WebSocket per tab feeding the TanStack Query cache; API response and message schemas shared through `@shopfloor/contracts/mes-api` (ADR-0020). Checked with Vitest/jsdom and a `vite preview` smoke run against a mock MES through the proxy.
+- #99 MES and web containers in Compose (branch `feat/99-compose-mes-web`, in review): `mes` and `web` (nginx) services, stack smoke through the web incl. the WebSocket, Dockerfile COPY guard in `pnpm verify`, memory measured (full stack about 440 MiB at 60×; 4 GiB VM recommended).
 
 ## Next up
 
-- #99 MES and web containers in Compose (nginx: forward `Host`, list the web's names in `HTTP_ALLOWED_HOSTS`; see `apps/web/README.md`)
+- #100 End to end: full-shift reconciliation in live mode through the whole chain (own start order with `SIM_AUTOSTART=false`), Playwright check of the live overview at 60× against the Compose `web`
 
 ## Blockers and open questions for the owner
 
 - Install the Renovate GitHub app for this repository (carried over from Phase 0).
+- Raise the Docker VM's memory to 4 GiB (now 2 GiB on Colima): the full stack uses about 440 MiB at 60×, but its limits add up to about 2 GiB and the Testcontainers suites run beside it (runbook, "Full stack", Memory).
 
 Project board: https://github.com/users/kubilayture/projects/1
 

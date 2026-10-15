@@ -67,7 +67,7 @@ A repaired OPC UA session republishes what its subscription kept, so missing num
 
 **5. Why does WSH-01's register map need a ring buffer at all? Polling every 250 ms seems fast.**
 
-At 60×, 250 ms is 15 s of plant time, and a minor stop or a short state can come and go in between. Cycles and alarm transitions would be merged or missed too. The ring holds the last 64 facts with numbers, so the poller reads exactly what happened, as long as fewer than 64 facts fall between two polls.
+At 60×, 250 ms is 15 s of plant time, and a minor stop or a short state can come and go in between. Cycles and alarm transitions would be merged or missed too. The ring holds the last 64 facts with numbers, so the poller reads exactly what happened, as long as at most 64 facts fall between two polls.
 
 **6. The outbox resolves `publish()` after the commit, not after the PUBACK. Why?**
 
@@ -83,7 +83,7 @@ Status describes _now_. Replayed from a buffer after an outage, an old `online` 
 
 **9. In the end-to-end test the plant is paused before the gateway is killed. Isn't that cheating?**
 
-It isolates what the test proves: that **buffered** messages survive a crash. With the plant running, OPC UA facts raised while no gateway exists are lost by design, since OPC UA keeps no event history (ADR-0009). That is a different property, documented as a known limit and counted as a gap when a gateway reconnects.
+It isolates what the test proves: that **buffered** messages survive a crash. With the plant running, OPC UA facts raised while no gateway exists are lost by design, since OPC UA keeps no event history (ADR-0009). That is a different property, documented as a known limit. A gateway that keeps running reports such losses as a `sequence-gap` incident when its session comes back. A restarted gateway starts fresh: with no saved OPC UA position it treats them as history, so only the consumer's dedup sees the hole.
 
 **10. What does `published ∪ lost = emitted, with no overlap` prove that "published count = emitted count" doesn't?**
 
@@ -96,8 +96,8 @@ Watch the edge survive failures.
 1. `pnpm stack:up`, then `docker compose exec broker mosquitto_sub -u dev -P <MQTT_DEV_PASSWORD> -t 'orbis/gebze/+/+/+/state/current' -v`.
 2. Look at `curl -s localhost:4900/metrics | grep gateway_`: every machine connected, buffer at 0.
 3. `docker compose stop broker` for 30 s. The `gateway_buffer_messages` metric grows (`curl localhost:4900/metrics`; the gateway's HTTP port stays up).
-4. `docker compose start broker`, restart the subscriber: the buffer drains, and the states continue without a gap.
-5. Make the washer silent: `curl -s -X POST localhost:4800/api/v1/faults/modbus -H 'content-type: application/json' -d '{"silent": true}'`. Subscribe to `orbis/gebze/_sys/edge-gateway/gw-01/incidents` and see `device-silent`. Then set it back to `false`: you get `device-recovered`, and no washer fact is lost.
+4. `docker compose start broker`: `gateway_buffer_messages` falls to 0 and `gateway_published_messages` rises. Resubscribing shows the retained current states; a subscriber started later can't see the replayed history.
+5. Make the washer silent: `curl -s -X POST localhost:4800/api/v1/faults/modbus -H 'content-type: application/json' -d '{"silent": true}'`. Subscribe to `orbis/gebze/_sys/edge-gateway/gw-01/incidents` and see `device-silent`. Then set it back to `false`: you get `device-recovered`, and no washer fact is lost, as long as the silence is short (a few seconds at 60×, so at most 64 facts happen meanwhile).
 
 ## 5. Owner's answers and notes
 

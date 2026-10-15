@@ -30,7 +30,13 @@ import { ManualClock } from '../live/testing.ts';
 import type { PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
 import { PlantServers, alarmCodes } from './plant-servers.ts';
-import { connect, documentedVariables, wait, type DocumentedVariable } from './testing.ts';
+import {
+  connect,
+  documentedEventFields,
+  documentedVariables,
+  wait,
+  type DocumentedVariable,
+} from './testing.ts';
 
 // Monday 06:00 Istanbul: the scripted shift is the first morning shift of the week.
 const T0 = Date.UTC(2026, 9, 12, 3);
@@ -164,6 +170,8 @@ describe('OPC UA contract against the live servers (#56, plan section 9)', () =>
   }, 60_000);
 
   it('declares each project event type with the documented fields', async () => {
+    const documented = await documentedEventFields();
+    expect([...documented.keys()].sort()).toEqual(Object.values(OPCUA_EVENT_TYPES).sort());
     const { session, close } = await connect(port('cnc-01'));
     try {
       for (const [kind, name] of Object.entries(OPCUA_EVENT_TYPES) as [
@@ -176,9 +184,11 @@ describe('OPC UA contract against the live servers (#56, plan section 9)', () =>
           referenceTypeId: 'HasProperty',
           resultMask: 63,
         });
-        expect(browse.references?.map((r) => r.browseName.name).sort(), name).toEqual(
+        const served = browse.references?.map((r) => r.browseName.name).sort();
+        expect(served, name).toEqual(
           [...OPCUA_EVENT_FIELDS.common, ...OPCUA_EVENT_FIELDS[kind]].sort(),
         );
+        expect(served, `${name} in the contract`).toEqual([...(documented.get(name) ?? [])].sort());
       }
     } finally {
       await close();
@@ -217,6 +227,11 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
       await play(10_000);
       const after = await read();
       expect(after - before).toBe(10 * SECOND * SPEED);
+      // A second speed, so that a pacer ignoring its setting can't pass by using the same constant.
+      run.pacer.setSpeed(SPEED / 4);
+      await play(10_000);
+      expect((await read()) - after).toBe((10 * SECOND * SPEED) / 4);
+      run.pacer.setSpeed(SPEED);
     } finally {
       await close();
     }
@@ -226,7 +241,7 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
     const fields = (nsIndex: number) =>
       constructEventFilter([
         ...OPCUA_EVENT_FIELDS.common.map((f) => `${String(nsIndex)}:${f}`),
-        'EventType',
+        'Time',
       ]);
     const clients = await Promise.all(
       OPCUA_MACHINES.flatMap((machine) =>
@@ -242,6 +257,7 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
             priority: 1,
           });
           const sequences: number[] = [];
+          const times: number[] = [];
           const item = await subscription.monitor(
             { nodeId: resolveNodeId('i=2253'), attributeId: AttributeIds.EventNotifier },
             {
@@ -253,12 +269,15 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
             TimestampsToReturn.Both,
           );
           item.on('changed', (values: unknown) => {
-            const [sequence, machineId] = (values as { value: unknown }[]).map((v) => v.value);
+            const [sequence, machineId, time] = (values as { value: unknown }[]).map(
+              (v) => v.value,
+            );
             if (machineId === machine.id) {
               sequences.push(Number(sequence));
+              times.push((time as Date).getTime());
             }
           });
-          return { machine: machine.id, client, connection, subscription, sequences };
+          return { machine: machine.id, client, connection, subscription, sequences, times };
         }),
       ),
     );
@@ -267,7 +286,8 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
     const shiftStart = run.simulation.now;
     const startIndex = plantEvents.length;
 
-    // The rest of the morning shift (to 14:00) at 60×: 8 hours in 8 wall minutes, compressed by the manual clock.
+    // The rest of the morning shift, to 14:00, at 60×. The manual clock advances 1 s of wall time
+    // every 5 ms, so the servers publish about 200 times faster than in a real 60× run: stricter.
     await play(Math.ceil((T0 + 8 * HOUR - shiftStart) / SPEED));
     const lastSeq = new Map(servers.servers.map((s) => [s.machineId, s.sequence]));
     for (let deadline = Date.now() + 30_000; Date.now() < deadline;) {
@@ -291,6 +311,10 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
       expect((lastSeq.get(machine.id) ?? 0) - (firstSeq.get(machine.id) ?? 0) + 1).toBe(
         emitted.length,
       );
+      // Content, not just numbering: event N carries the simulation time of the model's N-th event.
+      for (const c of clients.filter((client) => client.machine === machine.id)) {
+        expect(c.times, machine.id).toEqual(emitted.map((e) => e.at));
+      }
     }
     await Promise.all(
       clients.map(async (c) => {
@@ -344,11 +368,16 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
       const last = servers.servers.find((s) => s.machineId === 'cnc-01')?.sequence ?? 0;
       expect(last - first).toBeGreaterThan(150);
       await wait(4_500);
-      const gaps = sequences.slice(1).filter((s, i) => s !== (sequences[i] ?? 0) + 1);
-      expect(sequences.length).toBeGreaterThan(0);
-      expect(sequences.length).toBeLessThan(last - first + 1);
-      expect(gaps.length + (sequences[0] === first ? 0 : 1)).toBeGreaterThan(0);
-      expect(sequences.at(-1)).toBe(last);
+      // The overflow signature: with discardOldest, only the newest 100 queue entries survive, as one
+      // unbroken tail ending at the last event. The queue also holds the Machinery TransitionEvents
+      // (filtered out above), so fewer than 100 of the survivors are project events. node-opcua raises
+      // no EventQueueOverflow event for event items, so the jump in Sequence is the only sign.
+      expect(sequences.length).toBeGreaterThan(10);
+      expect(sequences.length).toBeLessThanOrEqual(100);
+      expect(sequences).toEqual(
+        Array.from({ length: sequences.length }, (_, i) => last - sequences.length + 1 + i),
+      );
+      expect(sequences[0]).toBeGreaterThan(first);
       // Resynchronisation (ADR-0009): the Sequence variable says how far the server got.
       const current = await session.read({
         nodeId: resolveNodeId(

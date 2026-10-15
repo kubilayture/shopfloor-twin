@@ -54,3 +54,29 @@ export async function documentedVariables(): Promise<DocumentedVariable[]> {
       }));
     });
 }
+
+/** The Events table of the address-space contract: event type name → its project fields. */
+export async function documentedEventFields(): Promise<Map<string, string[]>> {
+  const text = await readFile(CONTRACT, 'utf8');
+  const section = text.slice(text.indexOf('## Events'));
+  const table = section.slice(0, section.indexOf('\n\n', section.indexOf('| ---')));
+  return new Map(
+    table
+      .split('\n')
+      .slice(2)
+      .flatMap((row) => {
+        const [type = '', fields = ''] = row
+          .split('|')
+          .slice(1)
+          .map((c) => c.trim());
+        const name = /^`([^`]+)`$/.exec(type)?.[1];
+        if (!name) return [];
+        const list = (fields.split(';')[0] ?? '')
+          .replace(/\([^)]*\)/g, '')
+          .split(',')
+          .map((f) => f.trim())
+          .filter((f) => f !== '');
+        return [[name, list]];
+      }),
+  );
+}

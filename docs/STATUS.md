@@ -1,11 +1,13 @@
 # Status — updated 2026-10-15
 
-## Current phase: 03 – Edge gateway and UNS (planning, started 2026-10-15)
+## Current phase: 04 – MES foundation: historian and equipment states (next; Phase 3 closed 2026-10-15)
 
-## Exit criteria progress: 0 / 4 met
+## Exit criteria progress: Phase 3 closed with 4 / 4 met; Phase 4 not planned yet
 
 ## Done since last update
 
+- **Phase 3 closed**: all 4 exit criteria met; tag `phase-03` (report: `docs/phases/phase-03-report.md`; learning notes: `docs/learning/phase-03.md`).
+- #79 merged (PR #90): gateway container and end-to-end test.
 - #78 merged (PR #89): store-and-forward outbox.
 - #77 merged (PR #88): WSH-01 Modbus poller.
 - #76 merged (PR #87): OPC UA collector.
@@ -50,11 +52,11 @@
 
 ## In progress
 
-- #79 gateway container and end-to-end test (in review)
+- #80 Phase 3 close (in review)
 
 ## Next up
 
-- #80 Phase 3 close (report, learning notes, tag `phase-03`)
+- Phase 4 plan: MES server skeleton, migrations, idempotent ingest from the UNS, state intervals, REST and WebSocket, web overview
 
 ## Blockers and open questions for the owner
 
@@ -65,7 +67,7 @@ Project board: https://github.com/users/kubilayture/projects/1
 ## Health: CI on main, coverage, open bugs
 
 - CI on `main`: green (`verify`, `stack smoke`).
-- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 80 (floor 80 / 70; entry points run only as subprocesses or smoke runs and are not measured).
-- Tests: 452.
+- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79 and `edge-gateway` 92 / 78 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
+- Tests: 549.
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

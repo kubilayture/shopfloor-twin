@@ -60,3 +60,28 @@ export {
 export type { EquipmentPath, ParsedTopic, SysName } from './uns/topics.ts';
 export { Deduplicator, streamKey } from './uns/dedup.ts';
 export type { Gap, Identified, Verdict } from './uns/dedup.ts';
+export {
+  CYCLE_RESULTS,
+  ENTRY_SIZE,
+  ENTRY_TYPES,
+  MODBUS_MAP_VERSION,
+  MODBUS_MAX_READ,
+  MODBUS_PORT,
+  MODBUS_UNIT_ID,
+  REGISTERS,
+  RING_CAPACITY,
+  RING_END,
+  SNAPSHOT_LENGTH,
+  STATUS_BITS,
+  UNAVAILABLE_CAUSES,
+  decodeEntry,
+  encodeEntry,
+  i16,
+  modbusTables,
+  ringSlot,
+  u32,
+  u64,
+  writeU32,
+  writeU64,
+} from './modbus.ts';
+export type { ModbusTables, RingEntry } from './modbus.ts';

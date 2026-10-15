@@ -40,11 +40,11 @@ case "$status" in
   *'"state":"running"'*) echo "ok: simulator running ($status)" ;;
   *) fail "simulator not running: $status" ;;
 esac
-for port in 4841 4842 4843 4844 4845; do
+for port in 4841 4842 4843 4844 4845 5020; do
   docker compose exec -T simulator node -e "
     const s = require('node:net').connect($port, '127.0.0.1');
     s.on('connect', () => process.exit(0)).on('error', () => process.exit(1));
-  " || fail "OPC UA port $port not listening"
+  " || fail "port $port not listening"
 done
-echo "ok: OPC UA servers listening on 4841-4845"
+echo "ok: OPC UA servers listening on 4841-4845, Modbus on 5020"
 

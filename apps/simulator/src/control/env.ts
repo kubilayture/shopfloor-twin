@@ -35,6 +35,8 @@ export const envSchema = z.object({
   OPCUA_HOST: text.default('localhost'),
   OPCUA_PORT_OFFSET: integer.pipe(z.number().max(9_999)).default(0),
   OPCUA_PKI_DIR: text.optional(),
+  MODBUS_HOST: text.default('127.0.0.1'),
+  MODBUS_PORT: port.default(5020),
   CONTROL_HOST: text.default('127.0.0.1'),
   CONTROL_PORT: port.default(4800),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),

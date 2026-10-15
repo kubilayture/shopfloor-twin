@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Phase 4 plan with issues #92–#101 (#92).
 - Phase 3 closed: report and learning notes; all 4 exit criteria met; tag `phase-03` (#80).
 - Gateway container (`apps/edge-gateway/Dockerfile`) and Compose service with a persistent buffer volume; the stack smoke test checks that the UNS carries all six machines' state; end-to-end test with the simulator, a real broker and the gateway as separate processes proves every fact of every machine arrives exactly once after dedup through a broker outage and a gateway crash (#79).
 - Store-and-forward outbox in SQLite (`node:sqlite`, ADR-0014): durable batched commits, ordered sending with bounded in-flight messages, delete after PUBACK, replay after a broker outage or gateway restart, refusals dropped and logged, bounded size with a `buffer-overflow` incident, Modbus cursor persisted atomically; buffer metrics (#78).

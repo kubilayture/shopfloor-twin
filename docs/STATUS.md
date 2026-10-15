@@ -1,11 +1,12 @@
 # Status — updated 2026-10-15
 
-## Current phase: 03 – Gateway and UNS (next; Phase 2 closed 2026-10-15)
+## Current phase: 03 – Edge gateway and UNS (planning, started 2026-10-15)
 
-## Exit criteria progress: Phase 2 closed with 5 / 5 met; Phase 3 not planned yet
+## Exit criteria progress: 0 / 4 met
 
 ## Done since last update
 
+- Phase 3 plan with issues #70–#80 under milestone "Phase 03 – Edge gateway and UNS".
 - **Phase 2 closed** and tagged `phase-02`: all 5 exit criteria met (report: `docs/phases/phase-02-report.md`; learning notes: `docs/learning/phase-02.md`).
 - #56 merged (PR #68): OPC UA integration and contract tests.
 - #55 merged (PR #67): simulator container and Compose service.
@@ -40,11 +41,11 @@
 
 ## In progress
 
-- #57 Phase 2 close (in review)
+- #70 Phase 3 plan (in review)
 
 ## Next up
 
-- Phase 3 plan: edge gateway (OPC UA and Modbus WSH-01 on 5020) publishing the Unified Namespace over MQTT
+- #71 spike (Modbus library, store-and-forward storage), #72 UNS contracts, #73 washer process values
 
 ## Blockers and open questions for the owner
 

@@ -2,7 +2,12 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { OPCUACertificateManager } from 'node-opcua';
-import { OPCUA_MACHINES, parseUnsMessage, type UnsMessage } from '@shopfloor/contracts';
+import {
+  OPCUA_MACHINES,
+  parseUnsMessage,
+  type StateCurrent,
+  type UnsMessage,
+} from '@shopfloor/contracts';
 import { formatIssues, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { equipmentPaths } from '../hierarchy.ts';
@@ -178,6 +183,11 @@ describe('OPC UA collector (#76)', () => {
     expect(new Set(snapshots.map((s) => s.message.source.id))).toEqual(
       new Set(OPCUA_MACHINES.map((m) => m.id)),
     );
+    // Every snapshot names the simulator run (device epoch) it was read in (contract 1.1).
+    for (const s of snapshots) {
+      const message = s.message as Extract<StateCurrent, { kind: 'snapshot' }>;
+      expect(message.deviceEpoch).toBeGreaterThan(1_700_000_000);
+    }
     expect(
       published.every((p) => p.retain === (p.message.schema !== 'uns.events.cycle-complete/1')),
     ).toBe(true);

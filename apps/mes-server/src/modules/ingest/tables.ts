@@ -59,6 +59,7 @@ export interface StateAnchorTable {
   seq: number;
   source_time: Timestamp;
   device_epoch: number | null;
+  superseded: ColumnType<boolean, boolean | undefined, boolean>;
   state: string;
   cause: string | null;
   quality: Quality;
@@ -97,7 +98,12 @@ export interface ComponentStatusTable {
 }
 
 export type RejectReason =
-  'invalid-json' | 'invalid-payload' | 'topic-mismatch' | 'unexpected-topic' | 'stale-epoch';
+  | 'invalid-json'
+  | 'invalid-payload'
+  | 'topic-mismatch'
+  | 'unexpected-topic'
+  | 'stale-epoch'
+  | 'unstorable';
 
 export interface RejectedMessageTable {
   id: Generated<number>;
@@ -161,6 +167,7 @@ export const INGEST_COLUMNS = {
     'seq',
     'source_time',
     'device_epoch',
+    'superseded',
     'state',
     'cause',
     'quality',

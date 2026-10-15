@@ -7,7 +7,7 @@ import {
   type StateCurrent,
   type Status,
 } from '@shopfloor/contracts';
-import type { Kysely, Selectable, Transaction } from 'kysely';
+import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
 import type { Classified, StateEvent } from './classify.ts';
 import { add, contains, holes, missing, overlaps, union, type Range } from './ranges.ts';
@@ -166,34 +166,59 @@ export class IngestStore {
       .execute();
   }
 
-  /** Stores a retained delivery or a snapshot; an anchor already stored is ignored. */
+  /** True when the database answers. */
+  async ping(): Promise<boolean> {
+    return sql`SELECT 1`.execute(this.#db).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  /**
+   * Stores a retained delivery or a snapshot; an anchor already stored is ignored. Its device
+   * epoch: a state event's own epoch, a snapshot's `deviceEpoch` (contract 1.1), or, for an older
+   * snapshot without it, the epoch of the next device fact (`fact`). Any snapshot supersedes the
+   * equipment's snapshots still waiting for an epoch: only the latest one may anchor (ADR-0017).
+   */
   async anchor(
     equipment: string,
     message: StateCurrent,
     retained: boolean,
   ): Promise<StateAnchor | undefined> {
-    const row = await this.#db
-      .insertInto('ingest.state_anchor')
-      .values({
-        equipment,
-        kind: message.kind,
-        retained,
-        scope: message.scope,
-        epoch: message.epoch,
-        seq: message.seq,
-        source_time: message.sourceTime,
-        // A state event carries the device epoch; a snapshot carries the gateway's.
-        device_epoch: message.kind === 'event' ? message.epoch : null,
-        state: message.value.state,
-        cause: message.value.cause,
-        quality: message.quality,
-        received_at: message.receivedAt,
-        payload: JSON.stringify(message),
-      })
-      .onConflict((c) => c.columns(['equipment', 'scope', 'epoch', 'seq']).doNothing())
-      .returningAll()
-      .executeTakeFirst();
-    return row && toAnchor(row);
+    const deviceEpoch = message.kind === 'event' ? message.epoch : (message.deviceEpoch ?? null);
+    return this.#db.transaction().execute(async (trx) => {
+      const row = await trx
+        .insertInto('ingest.state_anchor')
+        .values({
+          equipment,
+          kind: message.kind,
+          retained,
+          scope: message.scope,
+          epoch: message.epoch,
+          seq: message.seq,
+          source_time: message.sourceTime,
+          device_epoch: deviceEpoch,
+          state: message.value.state,
+          cause: message.value.cause,
+          quality: message.quality,
+          received_at: message.receivedAt,
+          payload: JSON.stringify(message),
+        })
+        .onConflict((c) => c.columns(['equipment', 'scope', 'epoch', 'seq']).doNothing())
+        .returningAll()
+        .executeTakeFirst();
+      if (row && message.kind === 'snapshot') {
+        await trx
+          .updateTable('ingest.state_anchor')
+          .set({ superseded: true })
+          .where('equipment', '=', equipment)
+          .where('device_epoch', 'is', null)
+          .where('superseded', '=', false)
+          .where('arrival', '<', row.arrival)
+          .execute();
+      }
+      return row && toAnchor(row);
+    });
   }
 
   /**
@@ -212,7 +237,10 @@ export class IngestStore {
       let next: Cursor;
       if (!cursor || epoch > cursor.epoch) {
         if (cursor && tracksGaps(stream)) await this.#endEpoch(trx, stream, cursor, now);
-        next = { epoch, seen: [[seq, seq]], reported: [] };
+        // A known stream's new epoch numbers from 1 (ADR-0015): a sentinel 0 makes 1..seq-1 a
+        // hole, so facts lost at the start of a run are counted. A stream seen for the first time
+        // starts at its first number: what came before is history, not a gap.
+        next = { epoch, seen: cursor ? add([[0, 0]], seq) : [[seq, seq]], reported: [] };
       } else {
         next = { epoch, seen: add(cursor.seen, seq), reported: cursor.reported };
         if (contains(cursor.reported, seq)) await this.#fill(trx, stream, next, seq, now);
@@ -237,12 +265,14 @@ export class IngestStore {
         .execute();
       const notices: IngestNotice[] = [];
       if (input.kind === 'event') {
-        // The next device fact tells which device epoch the waiting snapshots belong to.
+        // The next device fact tells which device epoch a waiting snapshot (one without
+        // deviceEpoch, from an older gateway) belongs to.
         const attributed = await trx
           .updateTable('ingest.state_anchor')
           .set({ device_epoch: epoch })
           .where('equipment', '=', input.equipment)
           .where('device_epoch', 'is', null)
+          .where('superseded', '=', false)
           .returningAll()
           .execute();
         notices.push(

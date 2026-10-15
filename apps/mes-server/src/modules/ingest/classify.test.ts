@@ -2,6 +2,7 @@ import { alarmTopic, stateTopic, sysTopic, telemetryTopic } from '@shopfloor/con
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { classify } from './classify.ts';
+import { failureKind } from './ingest.ts';
 import { add, contains, holes, missing, union, type Range } from './ranges.ts';
 
 const AT = { area: 'machining', workCenter: 'cell-m1', equipment: 'cnc-01' } as const;
@@ -134,5 +135,24 @@ describe('sequence ranges', () => {
       [6, 6],
       [8, 9],
     ]);
+  });
+});
+
+describe('failure kinds (ADR-0017)', () => {
+  const pg = (code: string): Error => Object.assign(new Error(code), { code });
+
+  it('retries connection, shutdown, rollback and resource errors; records data errors', () => {
+    expect(
+      ['08006', '57P01', '40001', '53300', 'ECONNREFUSED'].map((c) => failureKind(pg(c))),
+    ).toEqual(['transient', 'transient', 'transient', 'transient', 'transient']);
+    expect(failureKind(new Error('Connection terminated unexpectedly'))).toBe('transient');
+    expect(['22003', '22P02', '23505', '54000'].map((c) => failureKind(pg(c)))).toEqual([
+      'data',
+      'data',
+      'data',
+      'data',
+    ]);
+    expect(failureKind(pg('42P01'))).toBe('unknown');
+    expect(failureKind(new TypeError('bug'))).toBe('unknown');
   });
 });

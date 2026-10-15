@@ -24,3 +24,11 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - Deviation: a snapshot carries the gateway's epoch, not the device's, so "first anchor per (equipment, epoch)" became "per (equipment, device epoch)", with a snapshot taking the epoch of the next device fact of its equipment (ADR-0017).
   - Added beyond the issue: `ingest.component_status` (the gateway's latest status) and a pool error handler, so an idle database connection closed by the server no longer ends the process.
   - Known limit: one transaction per message; draining a long outage's queue may take minutes (not measured yet).
+- #95 review (PR #105), all adopted:
+  - poison messages: a value the database can't store blocked ingest in an endless retry. Failures are now classified by SQLSTATE: transient ones are retried and, if the database stays down, the session is dropped deliberately until it answers (a blocked MQTT.js pump doesn't even read PINGRESP); data errors are recorded as `unstorable` and acknowledged. Validation refuses times outside 1970–2199 and lone surrogates; `lost` is BIGINT;
+  - snapshot anchors could take the wrong epoch (a stale retained snapshot on a persistent broker) or none (a silent machine): snapshots now carry an optional `deviceEpoch` (UNS contract 1.1), filled by the gateway; older snapshots fall back to the next fact, latest one only;
+  - the queue sizing was wrong: 100,000 messages is about one hour at the real ~25 messages/s at 60× (the plan's "5 hours" overstated it), and draining it takes about two minutes at the measured ~1,000 messages/s;
+  - hypertable chunks are 7 days (1 day of simulation time made about 60 chunks per wall day at 60×);
+  - a known stream's new epoch counts numbers below its first one as a gap;
+  - any broker user can take over client id `mes-server` (documented; the plain ACL can't prevent it);
+  - a test for a crash between commit and acknowledgement.

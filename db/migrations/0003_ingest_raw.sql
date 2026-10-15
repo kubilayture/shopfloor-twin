@@ -1,5 +1,6 @@
 -- ingest (Phase 4, #95): every UNS message the MES receives, stored idempotently (ADR-0015, plan
--- "Identity, dedup and epochs" and "Ingest"). Facts go into two hypertables on simulation time;
+-- "Identity, dedup and epochs" and "Ingest"). Facts go into two hypertables on simulation time,
+-- in 7-day chunks (at 60x a wall day is two simulated months: 1-day chunks would make 60 a day);
 -- duplicates are removed by their unique keys (INSERT ... ON CONFLICT DO NOTHING) and by the cursor.
 
 -- Device facts (scope device): state changes, cycles and alarm transitions, one stream per equipment.
@@ -25,7 +26,7 @@ CREATE TABLE ingest.equipment_event (
   -- TimescaleDB: a unique key on a hypertable must include its time column.
   UNIQUE (equipment, epoch, seq, source_time)
 );
-SELECT create_hypertable('ingest.equipment_event', by_range('source_time', INTERVAL '1 day'));
+SELECT create_hypertable('ingest.equipment_event', by_range('source_time', INTERVAL '7 days'));
 
 -- Sampled process values (scope topic: a gateway counter per topic).
 CREATE TABLE ingest.telemetry_sample (
@@ -44,7 +45,7 @@ CREATE TABLE ingest.telemetry_sample (
   payload JSONB NOT NULL,
   UNIQUE (topic, epoch, seq, source_time)
 );
-SELECT create_hypertable('ingest.telemetry_sample', by_range('source_time', INTERVAL '1 day'));
+SELECT create_hypertable('ingest.telemetry_sample', by_range('source_time', INTERVAL '7 days'));
 CREATE INDEX telemetry_sample_series ON ingest.telemetry_sample (equipment, name, source_time DESC);
 
 -- Durable dedup and gap state per stream (device:{equipment} or topic:{topic}), like Deduplicator:
@@ -59,9 +60,10 @@ CREATE TABLE ingest.source_cursor (
 );
 
 -- Retained deliveries and snapshots of state/current: not facts, but the current state, which
--- the equipment module uses when it knows no state for (equipment, device epoch) yet. A snapshot
--- carries the gateway's epoch, so its device epoch is set when the next device fact of that
--- equipment arrives. The first anchor to arrive per (equipment, device_epoch) wins.
+-- the equipment module uses when it knows no state for (equipment, device epoch) yet. A state
+-- event carries its device epoch, a snapshot its deviceEpoch (contract 1.1). An older snapshot
+-- without it gets the epoch of the next device fact of its equipment, unless a newer snapshot
+-- supersedes it first. The first anchor to arrive per (equipment, device_epoch) wins (ADR-0017).
 CREATE TABLE ingest.state_anchor (
   arrival BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   equipment TEXT NOT NULL,
@@ -72,6 +74,9 @@ CREATE TABLE ingest.state_anchor (
   seq BIGINT NOT NULL,
   source_time TIMESTAMPTZ NOT NULL,
   device_epoch BIGINT,
+  -- A snapshot without deviceEpoch that a later one (or one with deviceEpoch) replaced before it
+  -- was attributed: never an anchor.
+  superseded BOOLEAN NOT NULL DEFAULT false,
   state TEXT NOT NULL,
   cause TEXT,
   quality TEXT NOT NULL CHECK (quality IN ('good', 'uncertain', 'bad')),
@@ -96,7 +101,7 @@ CREATE TABLE ingest.data_quality_incident (
   seq_to BIGINT NOT NULL,
   equipment TEXT,
   -- mes: numbers still missing (a late fill lowers it); gateway: as reported (may be null).
-  lost INTEGER,
+  lost BIGINT,
   message TEXT NOT NULL,
   -- gateway: the incident's sourceTime.
   source_time TIMESTAMPTZ,
@@ -121,7 +126,8 @@ CREATE TABLE ingest.component_status (
   PRIMARY KEY (component, instance)
 );
 
--- Messages that failed validation or were refused (stale epoch): never dropped silently.
+-- Messages that failed validation, were refused (stale epoch) or that the database can't store
+-- (unstorable: a data or integrity error that no retry fixes): never dropped silently.
 CREATE TABLE ingest.rejected_message (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   topic TEXT NOT NULL,
@@ -129,7 +135,14 @@ CREATE TABLE ingest.rejected_message (
   payload TEXT NOT NULL,
   retained BOOLEAN NOT NULL,
   reason TEXT NOT NULL CHECK (
-    reason IN ('invalid-json', 'invalid-payload', 'topic-mismatch', 'unexpected-topic', 'stale-epoch')
+    reason IN (
+      'invalid-json',
+      'invalid-payload',
+      'topic-mismatch',
+      'unexpected-topic',
+      'stale-epoch',
+      'unstorable'
+    )
   ),
   detail TEXT NOT NULL,
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()

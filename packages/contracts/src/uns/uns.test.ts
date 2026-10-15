@@ -128,6 +128,15 @@ describe('UNS payloads (envelope, plan section 5; ADR-0015)', () => {
     expect(result).toEqual({ ok: true, message: SAMPLES[name as keyof typeof SAMPLES] });
   });
 
+  it('accepts snapshots with and without a device epoch (contract 1.1)', () => {
+    const snapshot = { ...SAMPLES['uns.state.current/1'], kind: 'snapshot', scope: 'topic' };
+    expect(parseUnsMessage(snapshot).ok).toBe(true);
+    expect(parseUnsMessage({ ...snapshot, deviceEpoch: 1_760_000_000 })).toEqual({
+      ok: true,
+      message: { ...snapshot, deviceEpoch: 1_760_000_000 },
+    });
+  });
+
   it.each([
     ['an unknown schema', { ...SAMPLES['uns.alarms/1'], schema: 'uns.alarms/2' }, /unknown schema/],
     ['a missing epoch', { ...SAMPLES['uns.alarms/1'], epoch: undefined }, /epoch/],
@@ -167,6 +176,21 @@ describe('UNS payloads (envelope, plan section 5; ADR-0015)', () => {
       'an upper-case equipment id',
       { ...SAMPLES['uns.alarms/1'], source: { id: 'CNC-01', protocol: 'opcua' } },
       /source/,
+    ],
+    [
+      'a snapshot with a negative device epoch',
+      {
+        ...SAMPLES['uns.state.current/1'],
+        kind: 'snapshot',
+        scope: 'topic',
+        deviceEpoch: -1,
+      },
+      /deviceEpoch/,
+    ],
+    [
+      'a device epoch on a state event',
+      { ...SAMPLES['uns.state.current/1'], deviceEpoch: 5 },
+      /deviceEpoch/,
     ],
     ['a non-object', 'hello', /unknown schema/],
   ])('rejects %s', (_label, input, pattern) => {

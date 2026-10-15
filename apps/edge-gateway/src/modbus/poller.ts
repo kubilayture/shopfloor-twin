@@ -363,6 +363,7 @@ export class ModbusPoller {
       scope: 'topic',
       epoch: this.#options.sequences.epoch,
       seq: this.#options.sequences.next(topic),
+      deviceEpoch: u32(snapshot, REGISTERS.epoch),
       // The register map carries no cause for the current state; the next state change does.
       value: { state, cause: null },
     };

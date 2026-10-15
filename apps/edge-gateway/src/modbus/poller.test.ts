@@ -11,6 +11,7 @@ import {
   writeU32,
   writeU64,
   type RingEntry,
+  type StateCurrent,
 } from '@shopfloor/contracts';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -190,6 +191,10 @@ describe('Modbus poller against a register map in memory (#77)', () => {
       (p) => p.message.schema === 'uns.state.current/1' && p.message.kind === 'snapshot',
     );
     expect(snapshots).toHaveLength(2); // on first contact and after the silence
+    // Snapshots name the device epoch they were read in (contract 1.1), for the MES's anchors.
+    expect(
+      snapshots.map((p) => (p.message as Extract<StateCurrent, { kind: 'snapshot' }>).deviceEpoch),
+    ).toEqual([100, 100]);
   });
 
   it('resumes from the stored cursor after a gateway restart, and starts over when the device restarted', async () => {

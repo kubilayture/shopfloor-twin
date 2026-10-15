@@ -128,11 +128,13 @@ function stateEvent(id: string, epoch: number, seq: number, state: MachineState 
   };
 }
 
-function snapshot(id: string, seq: number, state: MachineState) {
+/** A snapshot; without `deviceEpoch` it is one from a gateway older than contract 1.1. */
+function snapshot(id: string, seq: number, state: MachineState, deviceEpoch?: number) {
   return {
     ...stateEvent(id, GW_EPOCH, seq, state),
     kind: 'snapshot' as const,
     scope: 'topic' as const,
+    ...(deviceEpoch === undefined ? {} : { deviceEpoch }),
   };
 }
 
@@ -361,7 +363,8 @@ describe('ingest (#95)', () => {
       .selectAll()
       .where('stream', '=', stream)
       .executeTakeFirstOrThrow();
-    expect([cursor.epoch, cursor.seen, cursor.reported]).toEqual([EPOCH + 10, [[1, 1]], []]);
+    // The new epoch numbers from 1, so the sentinel 0 joins its first number: no gap.
+    expect([cursor.epoch, cursor.seen, cursor.reported]).toEqual([EPOCH + 10, [[0, 1]], []]);
     expect(await ingest.epochs(at.equipment)).toEqual([EPOCH, EPOCH + 10]);
   });
 
@@ -604,5 +607,184 @@ describe('ingest (#95)', () => {
     expect(cursor.seen).toEqual([[1, 20]]);
     await second.stop();
     expect(second.subscribed).toBe(false);
+  });
+
+  it('anchors a snapshot to its deviceEpoch; a stale retained snapshot of an earlier run never wins', async () => {
+    const { equipment, start } = await setup();
+    const a = equipment('cnc');
+    const b = equipment('lkt');
+    // On a persistent broker, the retained snapshot is from an earlier simulator run (EPOCH - 50).
+    await publish(stateTopic(a), snapshot(a.equipment, 1, 'Down', EPOCH - 50), true);
+    cleanup.push(() => publish(stateTopic(a), '', true));
+    const ingest = await start();
+    const notices: IngestNotice[] = [];
+    ingest.onStored((notice) => {
+      notices.push(notice);
+    });
+    await waitFor(() => ingest.count('anchor') === 1, 'the retained snapshot');
+    // The new run: the gateway's snapshot names it; no device fact is needed (B stays silent).
+    await publish(stateTopic(a), snapshot(a.equipment, 2, 'Idle', EPOCH));
+    await publish(stateTopic(b), snapshot(b.equipment, 3, 'Off', EPOCH));
+    await publish(stateTopic(a), stateEvent(a.equipment, EPOCH, 1, 'Running'));
+    await waitFor(() => ingest.count('stored') === 1, 'the first fact');
+    expect(await ingest.anchor(a.equipment, EPOCH)).toMatchObject({
+      state: 'Idle',
+      retained: false,
+    });
+    expect(await ingest.anchor(a.equipment, EPOCH - 50)).toMatchObject({ state: 'Down' });
+    expect(await ingest.anchor(b.equipment, EPOCH)).toMatchObject({
+      state: 'Off',
+      deviceEpoch: EPOCH,
+    });
+    expect(notices.map((n) => n.type)).toEqual(['anchor', 'anchor', 'anchor', 'state']);
+  });
+
+  it('without deviceEpoch, the latest waiting snapshot takes the next fact’s epoch and older ones are superseded', async () => {
+    const { db, equipment, start } = await setup();
+    const a = equipment('cnc');
+    const ingest = await start();
+    await publish(stateTopic(a), snapshot(a.equipment, 1, 'Down'));
+    await publish(stateTopic(a), snapshot(a.equipment, 2, 'Idle'));
+    await publish(stateTopic(a), stateEvent(a.equipment, EPOCH, 5, 'Running'));
+    await waitFor(() => ingest.count('stored') === 1, 'the fact');
+    expect(await ingest.anchor(a.equipment, EPOCH)).toMatchObject({ state: 'Idle' });
+    // A snapshot with deviceEpoch supersedes one still waiting without it.
+    await publish(stateTopic(a), snapshot(a.equipment, 3, 'Setup'));
+    await publish(stateTopic(a), snapshot(a.equipment, 4, 'Blocked', EPOCH + 1));
+    await publish(stateTopic(a), stateEvent(a.equipment, EPOCH + 1, 1, 'Running'));
+    await waitFor(() => ingest.count('stored') === 2, 'the next fact');
+    expect(await ingest.anchor(a.equipment, EPOCH + 1)).toMatchObject({ state: 'Blocked' });
+    const rows = await db
+      .selectFrom('ingest.state_anchor')
+      .select(['state', 'device_epoch', 'superseded'])
+      .orderBy('arrival')
+      .execute();
+    expect(rows).toEqual([
+      { state: 'Down', device_epoch: null, superseded: true },
+      { state: 'Idle', device_epoch: EPOCH, superseded: false },
+      { state: 'Setup', device_epoch: null, superseded: true },
+      { state: 'Blocked', device_epoch: EPOCH + 1, superseded: false },
+    ]);
+  });
+
+  it('counts numbers lost at the start of a new epoch as a gap, for device and topic streams', async () => {
+    const { db, equipment, clock, start } = await setup();
+    const ingest = await start();
+    const at = equipment('wsh');
+    const topic = telemetryTopic(at, 'bath-temperature');
+    const sample = (epoch: number, seq: number) => ({
+      schema: 'uns.telemetry/1' as const,
+      scope: 'topic' as const,
+      unit: '°C',
+      ...identity(at.equipment, epoch, seq),
+      value: 60,
+    });
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, 1));
+    await publish(topic, sample(GW_EPOCH, 1));
+    // Restarts: the device's new run arrives from 4, the gateway's telemetry from 3.
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH + 1, 4));
+    await publish(topic, sample(GW_EPOCH + 1, 3));
+    await waitFor(() => ingest.count('stored') === 4, 'four facts');
+    expect(await ingest.sweep()).toBe(0);
+    clock.now += GRACE_MS;
+    expect(await ingest.sweep()).toBe(2);
+    expect((await incidents(db)).map((i) => [i.stream, i.epoch, i.seq_from, i.seq_to])).toEqual([
+      [`device:${at.equipment}`, EPOCH + 1, 1, 3],
+      [`topic:${topic}`, GW_EPOCH + 1, 1, 2],
+    ]);
+  });
+
+  it('records what the database can never store and goes on; absurd times and lone surrogates are invalid', async () => {
+    const { db, equipment, start } = await setup();
+    const at = equipment('cnc');
+    let poison = true;
+    const ingest = await start({
+      beforeCommit: () => {
+        if (!poison) return Promise.resolve();
+        poison = false;
+        return Promise.reject(Object.assign(new Error('value out of range'), { code: '22003' }));
+      },
+    });
+    const incident = {
+      schema: 'uns.sys.incident/1' as const,
+      scope: 'topic' as const,
+      ...identity('gw-01', GW_EPOCH, 1),
+      source: { id: 'gw-01', protocol: 'internal' as const },
+      value: { type: 'buffer-overflow' as const, equipment: null, lost: 3e9, message: 'many' },
+    };
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, 1)); // hits the data error
+    await publish(stateTopic(at), {
+      ...stateEvent(at.equipment, EPOCH, 2),
+      sourceTime: '0000-01-01T00:00:00Z',
+    });
+    await publish(
+      stateTopic(at),
+      JSON.stringify(stateEvent(at.equipment, EPOCH, 3)).replace(
+        '"cause":null',
+        '"cause":"\\ud800"',
+      ),
+    );
+    await publish(sysTopic('edge-gateway', 'gw-01', 'incidents'), incident);
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, 4));
+    await waitFor(() => handled(ingest) === 5, 'five deliveries');
+    const rejected = await db
+      .selectFrom('ingest.rejected_message')
+      .select(['reason', 'detail'])
+      .orderBy('id')
+      .execute();
+    expect(rejected.map((r) => r.reason)).toEqual([
+      'unstorable',
+      'invalid-payload',
+      'invalid-payload',
+    ]);
+    expect(rejected[0]?.detail).toMatch(/SQLSTATE 22003/);
+    expect(rejected[1]?.detail).toMatch(/sourceTime/);
+    expect(rejected[2]?.detail).toMatch(/surrogate/);
+    expect(await seqs(db, at.equipment)).toEqual([4]);
+    expect((await incidents(db)).map((i) => i.lost)).toEqual([3e9]);
+  });
+
+  it('drops the session while the database stays unreachable, and resumes without loss', async () => {
+    const { db, equipment, start } = await setup();
+    const registry = new Registry();
+    let outage = 3;
+    const ingest = await start({
+      registry,
+      retry: { attempts: 2, baseMs: 10 },
+      beforeCommit: () =>
+        outage-- > 0
+          ? Promise.reject(Object.assign(new Error('connection lost'), { code: '08006' }))
+          : Promise.resolve(),
+    });
+    const at = equipment('cnc');
+    for (const seq of [1, 2, 3])
+      await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, seq));
+    await waitFor(async () => (await seqs(db, at.equipment)).length === 3, 'all three facts');
+    await ingest.waitSubscribed();
+    expect(await seqs(db, at.equipment)).toEqual([1, 2, 3]);
+    expect(await registry.metrics()).toMatch(/^mes_ingest_suspensions_total [12]$/m);
+  });
+
+  it('a message committed but not acknowledged before a crash comes again as a duplicate with no effect', async () => {
+    const { db, equipment, start } = await setup();
+    const at = equipment('cnc');
+    let calls = 0;
+    const first = await start({
+      // The third message is committed, then the process "crashes" before its PUBACK.
+      beforeAck: async () => {
+        if (++calls === 3) await new Promise(() => undefined);
+      },
+    });
+    for (let seq = 1; seq <= 5; seq++)
+      await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, seq));
+    await waitFor(() => calls === 3, 'the third commit');
+    await first.stop();
+    expect(await seqs(db, at.equipment)).toEqual([1, 2, 3]);
+    const second = await start();
+    await waitFor(async () => (await seqs(db, at.equipment)).length === 5, 'all five facts');
+    await waitFor(() => second.count('duplicate') === 1, 'the redelivered third fact');
+    expect(await seqs(db, at.equipment)).toEqual([1, 2, 3, 4, 5]);
+    // The copy of 3 changed nothing: only 4 and 5 were stored by the second session.
+    expect(second.count('stored')).toBe(2);
   });
 });

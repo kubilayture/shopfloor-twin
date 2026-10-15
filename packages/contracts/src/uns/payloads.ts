@@ -74,6 +74,12 @@ export const stateCurrentSchema = z
     envelope('uns.state.current', stateValue, {
       kind: z.literal('snapshot').describe('Read from the variables after a (re)connect'),
       ...TOPIC,
+      // Added in contract version 1.1 (#95), optional so that older snapshots stay valid.
+      deviceEpoch: identity.epoch
+        .optional()
+        .describe(
+          'The device epoch (ADR-0015) the state was read in; epoch is the gateway counter epoch',
+        ),
     }),
   ])
   .meta({

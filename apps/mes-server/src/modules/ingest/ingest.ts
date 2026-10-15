@@ -46,14 +46,61 @@ export interface IngestOptions {
   readonly now?: () => number;
   readonly registry?: Registry;
   readonly log?: IngestLog;
+  /**
+   * Retries of a delivery after a transient database error (connection, shutdown, deadlock,
+   * resources) before the session is dropped until the database answers again (ADR-0017).
+   */
+  readonly retry?: { readonly attempts?: number; readonly baseMs?: number };
   /** Test seam: runs inside each fact's transaction, just before the commit. */
   readonly beforeCommit?: (topic: string) => Promise<void>;
+  /** Test seam: runs after a delivery is stored, just before its acknowledgement. */
+  readonly beforeAck?: (topic: string) => Promise<void>;
+}
+
+/** How a failed attempt to store a delivery is handled. */
+export type FailureKind = 'transient' | 'data' | 'unknown';
+
+/** SQLSTATE classes that a retry can fix: connection (08), shutdown (57), rollback (40), resources (53, 58). */
+const TRANSIENT_CLASSES = new Set(['08', '57', '40', '53', '58']);
+/** Data exception (22), integrity violation (23), program limit (54): the same message fails again. */
+const DATA_CLASSES = new Set(['22', '23', '54']);
+
+export function failureKind(error: unknown): FailureKind {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+  if (typeof code === 'string') {
+    if (/^[0-9A-Z]{5}$/.test(code)) {
+      const sqlClass = code.slice(0, 2);
+      if (TRANSIENT_CLASSES.has(sqlClass)) return 'transient';
+      if (DATA_CLASSES.has(sqlClass)) return 'data';
+      return 'unknown';
+    }
+    if (code.startsWith('E')) return 'transient'; // ECONNREFUSED, ECONNRESET, ETIMEDOUT, …
+  }
+  if (
+    error instanceof Error &&
+    /connection terminated|connection timeout|timeout exceeded when trying to connect|connection error/i.test(
+      error.message,
+    )
+  ) {
+    return 'transient';
+  }
+  return 'unknown';
+}
+
+class Suspended extends Error {
+  constructor() {
+    super('session dropped until the database answers');
+    this.name = 'Suspended';
+  }
 }
 
 export type IngestOutcome = 'stored' | 'duplicate' | 'rejected' | 'anchor' | 'status' | 'retained';
 
 const RETRY_MAX_MS = 10_000;
 const STOP_WAIT_MS = 2_000;
+/** An error of unknown kind is retried this often before the message counts as unstorable. */
+const UNKNOWN_ATTEMPTS = 3;
 
 const silent: IngestLog = { info: () => undefined, warn: () => undefined, error: () => undefined };
 
@@ -72,12 +119,14 @@ export class Ingest {
   readonly #messages: Counter<'outcome'> | undefined;
   readonly #incidents: Counter<'origin'> | undefined;
   readonly #errors: Counter | undefined;
+  readonly #suspensions: Counter | undefined;
   #client: MqttClient | undefined;
   #subscribed = false;
   #stopping = false;
   #queue: Promise<unknown> = Promise.resolve();
   #sweepTimer: NodeJS.Timeout | undefined;
   #wake: (() => void) | undefined;
+  #suspended = false;
 
   constructor(options: IngestOptions) {
     this.#options = options;
@@ -100,7 +149,12 @@ export class Ingest {
       });
       this.#errors = new Counter({
         name: 'mes_ingest_store_errors_total',
-        help: 'Failed attempts to store a delivery (it is retried, never acknowledged unstored)',
+        help: 'Failed attempts to store a delivery (retried, or recorded as unstorable)',
+        registers,
+      });
+      this.#suspensions = new Counter({
+        name: 'mes_ingest_suspensions_total',
+        help: 'Times the UNS session was dropped because the database stayed unreachable',
         registers,
       });
       // eslint-disable-next-line @typescript-eslint/no-this-alias -- read by the collect callback
@@ -141,6 +195,19 @@ export class Ingest {
   async start(): Promise<void> {
     await this.#store.load();
     const options = this.#options;
+    this.#connect();
+    if (options.sweepIntervalMs !== 0) {
+      this.#sweepTimer = setInterval(() => {
+        this.sweep().catch((error: unknown) => {
+          this.#log.error({ err: error }, 'gap sweep failed');
+        });
+      }, options.sweepIntervalMs ?? 1_000);
+      this.#sweepTimer.unref();
+    }
+  }
+
+  #connect(): void {
+    const options = this.#options;
     const clientOptions: IClientOptions = {
       clientId: options.clientId ?? 'mes-server',
       username: options.username,
@@ -166,12 +233,12 @@ export class Ingest {
     // MQTT.js sends the PUBACK only once this callback runs, and handles the next packet only
     // after that: so storing here gives ack-after-commit and arrival order.
     client.handleMessage = (packet, callback) => {
-      this.#enqueue(() => this.#handle(packet)).then(
+      this.#enqueue(() => this.#handle(client, packet)).then(
         () => {
           callback();
         },
         () => {
-          // Stopping: leave it unacknowledged; the broker delivers it again to the next session.
+          // Stopping or suspended: unacknowledged, so the broker delivers it again.
         },
       );
     };
@@ -181,20 +248,40 @@ export class Ingest {
       });
     });
     client.on('close', () => {
-      this.#subscribed = false;
+      if (this.#client === client) this.#subscribed = false;
     });
     client.on('error', (error) => {
       this.#log.warn({ err: error.message }, 'MQTT error');
     });
     client.connect();
-    if (options.sweepIntervalMs !== 0) {
-      this.#sweepTimer = setInterval(() => {
-        this.sweep().catch((error: unknown) => {
-          this.#log.error({ err: error }, 'gap sweep failed');
-        });
-      }, options.sweepIntervalMs ?? 1_000);
-      this.#sweepTimer.unref();
-    }
+  }
+
+  /**
+   * The database stayed unreachable: while a delivery waits, MQTT.js processes no other packet,
+   * not even PINGRESP, so the session would time out and reconnect over and over. Drop it
+   * deliberately (nothing unstored acknowledged), wait until the database answers, reconnect.
+   */
+  #suspend(client: MqttClient): void {
+    if (this.#suspended || this.#client !== client) return;
+    this.#suspended = true;
+    this.#subscribed = false;
+    this.#suspensions?.inc();
+    this.#log.error({}, 'database unreachable: UNS session dropped until it answers');
+    const resume = async (): Promise<void> => {
+      await client.endAsync(true);
+      for (let attempt = 0; !this.#isStopping(); attempt++) {
+        const ok = await this.#store.ping();
+        if (ok) break;
+        await this.#sleep(Math.min(250 * 2 ** attempt, RETRY_MAX_MS));
+      }
+      this.#suspended = false;
+      if (this.#isStopping()) return;
+      this.#log.info({}, 'database answers again: reconnecting to the UNS');
+      this.#connect();
+    };
+    resume().catch((error: unknown) => {
+      this.#log.error({ err: error }, 'resuming the UNS session failed');
+    });
   }
 
   /** Resolves once subscribed (for tests and start-up ordering). */
@@ -282,6 +369,7 @@ export class Ingest {
       .selectAll()
       .where('equipment', '=', equipment)
       .where('device_epoch', '=', deviceEpoch)
+      .where('superseded', '=', false)
       .orderBy('arrival')
       .limit(1)
       .executeTakeFirst();
@@ -307,30 +395,73 @@ export class Ingest {
     this.#log.info({ topics: INGEST_TOPICS.length }, 'subscribed to the UNS');
   }
 
-  /** Stores one delivery, retrying until it is stored (or the module stops). */
-  async #handle(packet: IPublishPacket): Promise<void> {
+  /**
+   * Stores one delivery. A transient database error is retried a few times, then the session is
+   * suspended (no acknowledgement). A data or integrity error, which no retry fixes, is recorded
+   * in `rejected_message` as `unstorable` and acknowledged, so one message can't block the rest.
+   */
+  async #handle(client: MqttClient, packet: IPublishPacket): Promise<void> {
+    const attempts = this.#options.retry?.attempts ?? 4;
+    const baseMs = this.#options.retry?.baseMs ?? 250;
     for (let attempt = 0; ; attempt++) {
-      if (this.#isStopping()) throw new Error('stopping');
+      // A delivery of a session that was dropped arrives again in the next one.
+      if (this.#isStopping() || this.#client !== client || this.#suspended) throw new Suspended();
       try {
         const notices = await this.#process(packet);
         for (const notice of notices) await this.#notify(notice);
+        await this.#options.beforeAck?.(packet.topic);
         return;
       } catch (error) {
         if (this.#isStopping()) throw error;
         this.#errors?.inc();
+        const kind = failureKind(error);
         this.#log.error(
-          { err: error, topic: packet.topic, attempt },
+          { err: error, topic: packet.topic, attempt, kind },
           'storing a UNS message failed',
         );
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, Math.min(250 * 2 ** attempt, RETRY_MAX_MS));
-          this.#wake = () => {
-            clearTimeout(timer);
-            resolve();
-          };
-        });
+        if (kind === 'data' || (kind === 'unknown' && attempt + 1 >= UNKNOWN_ATTEMPTS)) {
+          if (await this.#unstorable(packet, error)) return;
+        }
+        if (kind === 'transient' && attempt + 1 >= attempts) {
+          this.#suspend(client);
+          throw new Suspended();
+        }
+        await this.#sleep(Math.min(baseMs * 2 ** attempt, RETRY_MAX_MS));
       }
     }
+  }
+
+  /** Records a delivery the database can't store; false if even that failed. */
+  async #unstorable(packet: IPublishPacket, error: unknown): Promise<boolean> {
+    const text =
+      typeof packet.payload === 'string' ? packet.payload : packet.payload.toString('utf8');
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'none';
+    const detail = `${error instanceof Error ? error.message : String(error)} (SQLSTATE ${code})`;
+    for (const payload of [text, '(payload not storable either)']) {
+      try {
+        await this.#store.reject(packet.topic, payload, packet.retain, 'unstorable', detail);
+        this.#counted('rejected');
+        this.#log.warn(
+          { topic: packet.topic, detail },
+          'UNS message unstorable, recorded and acknowledged',
+        );
+        return true;
+      } catch (recordError) {
+        if (failureKind(recordError) === 'transient') return false;
+      }
+    }
+    return false;
+  }
+
+  #sleep(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      this.#wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
   }
 
   async #process(packet: IPublishPacket): Promise<readonly IngestNotice[]> {
@@ -338,15 +469,14 @@ export class Ingest {
     const retained = packet.retain;
     const text =
       typeof packet.payload === 'string' ? packet.payload : packet.payload.toString('utf8');
-    // PostgreSQL text and jsonb can't hold NUL characters: such a message could never be stored.
-    const item =
-      text.includes('\u0000') || text.includes('\\u0000')
-        ? ({
-            kind: 'rejected',
-            reason: 'invalid-payload',
-            detail: 'contains NUL characters',
-          } as const)
-        : classify(topic, text, retained);
+    // A NUL in the raw text can't even be stored as the rejected payload.
+    const item = text.includes('\u0000')
+      ? ({
+          kind: 'rejected',
+          reason: 'invalid-payload',
+          detail: 'contains NUL characters',
+        } as const)
+      : classify(topic, text, retained);
     switch (item.kind) {
       case 'rejected':
         await this.#store.reject(

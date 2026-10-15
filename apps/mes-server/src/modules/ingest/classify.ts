@@ -110,6 +110,41 @@ function topicInfo(topic: string): TopicInfo | string {
   return 'not a UNS equipment or _sys topic';
 }
 
+/** Timestamps outside these years are certainly wrong, and PostgreSQL can't store some of them. */
+export const TIME_RANGE = { from: Date.UTC(1970, 0, 1), to: Date.UTC(2200, 0, 1) } as const;
+
+/** Strings the database can't store: NUL characters (text, jsonb) and lone surrogates (jsonb). */
+function badString(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    if (value.includes('\u0000')) return 'a string contains a NUL character';
+    if (!value.isWellFormed()) return 'a string contains a lone surrogate (not well-formed UTF-16)';
+    return undefined;
+  }
+  if (typeof value === 'object' && value !== null) {
+    for (const [key, item] of Object.entries(value)) {
+      const problem = badString(key) ?? badString(item);
+      if (problem) return problem;
+    }
+  }
+  return undefined;
+}
+
+/** A valid message the database could still not store, or that has an absurd timestamp. */
+function storableProblem(message: UnsMessage): string | undefined {
+  const times: [string, string][] = [
+    ['sourceTime', message.sourceTime],
+    ['receivedAt', message.receivedAt],
+  ];
+  if (message.schema === 'uns.sys.status/1') times.push(['startedAt', message.value.startedAt]);
+  for (const [field, time] of times) {
+    const ms = Date.parse(time);
+    if (!(ms >= TIME_RANGE.from && ms < TIME_RANGE.to)) {
+      return `${field} ${time} is outside the years 1970 to 2199`;
+    }
+  }
+  return badString(message);
+}
+
 const rejected = (reason: RejectReason, detail: string): Classified => ({
   kind: 'rejected',
   reason,
@@ -133,6 +168,8 @@ export function classify(topic: string, text: string, retained: boolean): Classi
   const parsed = parseUnsMessage(json);
   if (!parsed.ok) return rejected('invalid-payload', parsed.error);
   const message: UnsMessage = parsed.message;
+  const unstorable = storableProblem(message);
+  if (unstorable) return rejected('invalid-payload', unstorable);
   if (message.schema !== info.expected) {
     return rejected('topic-mismatch', `schema ${message.schema} on a topic for ${info.expected}`);
   }

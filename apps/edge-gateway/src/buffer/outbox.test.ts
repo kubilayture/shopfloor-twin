@@ -3,12 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Telemetry } from '@shopfloor/contracts';
 import mqtt from 'mqtt';
-import { GenericContainer, Wait } from 'testcontainers';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TopicSequences } from '../identity.ts';
 import { MqttLink, NotConnectedError } from '../mqtt-link.ts';
 import type { UnsPublication } from '../publisher.ts';
-import { TEST_PASSWORDS } from '../testing.ts';
+import { TEST_PASSWORDS, startBroker } from '../testing.ts';
 import { Outbox, type Transport } from './outbox.ts';
 
 const dirs: string[] = [];
@@ -185,24 +184,8 @@ describe('store-and-forward outbox (#78, ADR-0014)', () => {
 describe('store-and-forward with the real broker (#78)', () => {
   it('delivers everything stored during a broker outage after the broker comes back', async () => {
     const PORT = 18_831;
-    const brokerAt = async () =>
-      new GenericContainer('eclipse-mosquitto:2.1.2-alpine')
-        .withCopyDirectoriesToContainer([
-          {
-            source: join(import.meta.dirname, '../../../../config/mosquitto'),
-            target: '/mosquitto/config',
-          },
-        ])
-        .withEntrypoint(['/bin/sh', '/mosquitto/config/entrypoint.sh'])
-        .withEnvironment({
-          MQTT_USERS: Object.entries(TEST_PASSWORDS)
-            .map(([user, password]) => `${user}:${password}`)
-            .join(' '),
-          MQTT_HEALTHCHECK_PASSWORD: TEST_PASSWORDS.healthcheck,
-        })
-        .withExposedPorts({ container: 1883, host: PORT })
-        .withWaitStrategy(Wait.forLogMessage(/running/))
-        .start();
+    // A fixed host port, so the gateway finds the restarted broker where it left it.
+    const brokerAt = async () => (await startBroker({ hostPort: PORT })).container;
     const url = `mqtt://127.0.0.1:${String(PORT)}`;
     let broker = await brokerAt();
     const link = new MqttLink({

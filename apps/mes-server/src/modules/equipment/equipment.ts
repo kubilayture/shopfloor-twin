@@ -34,6 +34,11 @@ export interface EquipmentLog {
 
 export interface EquipmentOptions {
   readonly db: Kysely<Database>;
+  /**
+   * The pool for the API's reads (`intervals`, `shiftTotals`); default `db`. A separate pool keeps
+   * dashboard reads from waiting in front of the writes on ingest's acknowledgement path.
+   */
+  readonly readDb?: Kysely<Database>;
   readonly source: StateSource;
   readonly shiftPattern: ShiftPattern;
   /**
@@ -160,6 +165,7 @@ const withAnchor = (anchor: StateAnchor | undefined, facts: readonly Point[]): P
  */
 export class Equipment {
   readonly #db: Kysely<Database>;
+  readonly #readDb: Kysely<Database>;
   readonly #source: StateSource;
   readonly #pattern: ShiftPattern;
   readonly #step: number;
@@ -175,6 +181,7 @@ export class Equipment {
 
   constructor(options: EquipmentOptions) {
     this.#db = options.db;
+    this.#readDb = options.readDb ?? options.db;
     this.#source = options.source;
     this.#pattern = options.shiftPattern;
     this.#step = options.provisionalStepMs ?? 60_000;
@@ -233,14 +240,21 @@ export class Equipment {
     return watermark === undefined ? undefined : new Date(watermark);
   }
 
-  /** Stored pieces of one equipment overlapping [from, to), by time (and epoch). */
+  /** Every device epoch's watermark, the newest epoch first (the plant clock, #97). */
+  watermarks(): { readonly epoch: number; readonly watermark: Date }[] {
+    return [...this.#watermarks]
+      .sort(([a], [b]) => b - a)
+      .map(([epoch, watermark]) => ({ epoch, watermark: new Date(watermark) }));
+  }
+
+  /** Stored pieces of one equipment overlapping [from, to), by time (and epoch), up to `limit`. */
   async intervals(
     equipment: string,
     from: Date,
     to: Date,
-    options: { readonly epoch?: number } = {},
+    options: { readonly epoch?: number; readonly limit?: number } = {},
   ): Promise<StoredInterval[]> {
-    let query = this.#db
+    let query = this.#readDb
       .selectFrom('equipment.equipment_state_interval')
       .selectAll()
       .where('equipment', '=', equipment)
@@ -249,6 +263,7 @@ export class Equipment {
       .where('start_time', '<', to)
       .where('end_time', '>', from);
     if (options.epoch !== undefined) query = query.where('epoch', '=', options.epoch);
+    if (options.limit !== undefined) query = query.limit(options.limit);
     const rows = await query.orderBy('start_time').orderBy('epoch').execute();
     return rows.map((row) => ({
       equipment: row.equipment,
@@ -271,7 +286,7 @@ export class Equipment {
     options: { readonly equipment?: string; readonly epoch?: number } = {},
   ): Promise<ShiftTotal[]> {
     const ms = sql<string>`sum(extract(epoch from end_time - start_time) * 1000)::bigint`;
-    let query = this.#db
+    let query = this.#readDb
       .selectFrom('equipment.equipment_state_interval')
       .select([
         'equipment',

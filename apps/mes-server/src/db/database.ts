@@ -25,8 +25,29 @@ export type Database = PublicTables & MasterDataTables & IngestTables & Equipmen
 const types = new pg.TypeOverrides();
 types.setTypeParser(pg.types.builtins.INT8, (value: string) => Number(value));
 
-export function createDatabase(url: string, maxConnections = 10): Kysely<Database> {
-  const pool = new pg.Pool({ connectionString: url, max: maxConnections, types });
+export interface PoolLimits {
+  /** Server-side limit per statement (PostgreSQL `statement_timeout`, SQLSTATE 57014). */
+  readonly statementTimeoutMs?: number;
+  /** How long a query waits for a free connection of the pool. */
+  readonly connectionTimeoutMs?: number;
+}
+
+export function createDatabase(
+  url: string,
+  maxConnections = 10,
+  limits: PoolLimits = {},
+): Kysely<Database> {
+  const pool = new pg.Pool({
+    connectionString: url,
+    max: maxConnections,
+    types,
+    ...(limits.statementTimeoutMs === undefined
+      ? {}
+      : { statement_timeout: limits.statementTimeoutMs }),
+    ...(limits.connectionTimeoutMs === undefined
+      ? {}
+      : { connectionTimeoutMillis: limits.connectionTimeoutMs }),
+  });
   // An idle connection that the server closes (a database restart) is dropped from the pool; the
   // next query reconnects or fails where it is handled. Unhandled, the event would end the process.
   pool.on('error', () => undefined);

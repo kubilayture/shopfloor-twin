@@ -6,7 +6,9 @@
  * For the API (#97):
  * - `Equipment.currentStates()` / `currentState(id)`: the latest state per equipment, in its
  *   newest device epoch, with the time it began.
- * - `Equipment.intervals(equipment, from, to, { epoch? })`: stored pieces overlapping a range.
+ * - `Equipment.intervals(equipment, from, to, { epoch?, limit? })`: stored pieces overlapping a
+ *   range.
+ * - `Equipment.watermarks()`: each device epoch's watermark, newest first (the plant clock).
  * - `Equipment.shiftTotals(shiftKey, { equipment?, epoch? })`: time per state in a shift bucket.
  * - `Equipment.onChange(listener)`: after stored intervals or a current state changed (push).
  */

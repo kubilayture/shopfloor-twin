@@ -11,6 +11,12 @@ import {
   type StateAnchor,
   type StateFact,
 } from './store.ts';
+import {
+  telemetryMetrics,
+  telemetrySeries,
+  type TelemetryMetric,
+  type TelemetrySeries,
+} from './telemetry.ts';
 
 /** QoS 1 subscriptions of the MES: every machine topic it ingests, and the gateways' `_sys`. */
 export const INGEST_TOPICS = [
@@ -30,6 +36,8 @@ export interface IngestLog {
 
 export interface IngestOptions {
   readonly db: Kysely<Database>;
+  /** The pool for the API's telemetry reads; default `db` (see `EquipmentOptions.readDb`). */
+  readonly readDb?: Kysely<Database>;
   readonly url: string;
   readonly username: string;
   readonly password: string;
@@ -356,6 +364,29 @@ export class Ingest {
       const notices = await this.#process(topic, payload, retained);
       for (const notice of notices) await this.#notify(notice);
     });
+  }
+
+  /** One equipment's telemetry metrics, each with its unit and latest sample (API, #97). */
+  async telemetryMetrics(equipment: string): Promise<TelemetryMetric[]> {
+    return telemetryMetrics(this.#options.readDb ?? this.#options.db, equipment);
+  }
+
+  /** Telemetry of [from, to) decimated into buckets of `bucketMs` per metric (API, #97). */
+  async telemetrySeries(
+    equipment: string,
+    metrics: readonly string[],
+    from: Date,
+    to: Date,
+    bucketMs: number,
+  ): Promise<TelemetrySeries[]> {
+    return telemetrySeries(
+      this.#options.readDb ?? this.#options.db,
+      equipment,
+      metrics,
+      from,
+      to,
+      bucketMs,
+    );
   }
 
   /** State changes of one equipment in one device epoch, by `seq` (optionally a window). */

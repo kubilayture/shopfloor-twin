@@ -170,7 +170,7 @@ describe('MES server basics (#93)', () => {
   it('reports ready only once the database answers and is migrated', async () => {
     let migrated = false;
     const db = await freshDatabase('m_ready');
-    const { app } = buildMesHttp({
+    const { app } = await buildMesHttp({
       ready: async () =>
         migrated &&
         (await sql`SELECT 1`.execute(db).then(

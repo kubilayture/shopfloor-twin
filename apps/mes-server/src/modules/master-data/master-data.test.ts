@@ -73,8 +73,14 @@ describe('master-data (#94)', () => {
       id: 'wsh-01',
       operation: 'OP20',
       interface: 'modbus',
+      site: { id: 'gebze', name: 'Gebze' },
       area: { id: 'machining', name: 'Machining' },
       workCenter: { id: 'cell-m1', name: 'Cell M1' },
+    });
+    expect(await new MasterData(db).site()).toEqual({
+      id: 'gebze',
+      name: 'Gebze',
+      enterprise: { id: 'orbis', name: 'Orbis Components' },
     });
   });
 

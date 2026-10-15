@@ -15,9 +15,15 @@
  * - `Ingest.stateFactCount`, `Ingest.latestStateTime`: for windows of reordered facts.
  * - `Ingest.factSummary()`: per (equipment, epoch), fact counts and the latest time (catch-up).
  * - `Ingest.deliver(topic, payload, retained)`: the store path without a broker (tests, replays).
+ *
+ * For the API (#97):
+ * - `Ingest.telemetryMetrics(equipment)`: metrics with unit and latest sample.
+ * - `Ingest.telemetrySeries(equipment, metrics, from, to, bucketMs)`: decimated series.
+ * - `sample` notices of telemetry carry `telemetry` (metric, value, unit) for push.
  */
 export { INGEST_TOPICS, Ingest } from './ingest.ts';
 export type { FactSummary, IngestLog, IngestOptions, IngestOutcome } from './ingest.ts';
 export type { IngestNotice, StateAnchor, StateFact, StoredSample } from './store.ts';
+export type { TelemetryBucket, TelemetryMetric, TelemetrySeries } from './telemetry.ts';
 export { INGEST_COLUMNS } from './tables.ts';
 export type { IngestTables, RejectReason } from './tables.ts';

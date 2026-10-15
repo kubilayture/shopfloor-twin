@@ -61,6 +61,8 @@ export interface StoredSample {
    * `deviceEpoch` (contract 1.1), or null for telemetry without it.
    */
   readonly deviceEpoch: number | null;
+  /** A telemetry sample's metric, value and unit (for push, #97); absent for other facts. */
+  readonly telemetry?: { readonly metric: string; readonly value: number; readonly unit: string };
 }
 
 /** What a committed message adds, for listeners (sent after commit). */
@@ -551,6 +553,15 @@ function factNotices(input: FactInput): IngestNotice[] {
         sourceTime,
         deviceEpoch:
           input.kind === 'telemetry' ? (input.message.deviceEpoch ?? null) : message.epoch,
+        ...(input.kind === 'telemetry'
+          ? {
+              telemetry: {
+                metric: input.name,
+                value: input.message.value,
+                unit: input.message.unit,
+              },
+            }
+          : {}),
       },
     },
   ];

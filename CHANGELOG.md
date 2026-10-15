@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- Simulator ground-truth OEE with `oee-core` (#117): `GroundTruth` keeps, per machine, the OEE inputs of every shift bucket and every UTC hour (time per state; Stopped intervals held until they close, then filed as pieces with their whole length; cycles per product and result, bucketed by their time with `shiftKeyAt`), and returns `bucketOee` per machine and shift bucket and `workCenterOee` for Cell M1 and Line A1, with fractions as `num/den` and four-decimal strings, losses, `unplanned`, `anomaly` and `provisional`. An open stop's whole length runs to the snapshot time (ADR-0021). Summary format `sim-summary/2` (new `oee` section; all other fields unchanged). Simulator control API 1.2: `GET /api/v1/ground-truth` includes the `oee` section; OpenAPI `info.version` `1.2.0`. Golden `week-01/summary.json` regenerated for the new section only (39,404 lines added; the schema line is the only changed line); `events.sha256` unchanged (`e7c69736…009b740b`), so the simulation itself is unchanged. A snapshot costs about 0.2 ms after a shift and about 3 ms after a week (response about 450 KB after a week).
+
 ### Fixed
 
 - A CNC's first changeover with no product loaded gives cause `CHANGEOVER none→<product>` instead of `CHANGEOVER undefined→<product>`; the format is documented in `docs/simulation-model.md` and the OPC UA address-space contract. Golden week `week-01` not regenerated: a validated schedule always loads a CNC's first campaign at start, so the week never takes this path; its events (35,764 lines, `events.sha256` `e7c69736…009b740b`) and `summary.json` are byte-identical, and that hash is the baseline #117 must keep (#126).

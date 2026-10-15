@@ -58,11 +58,8 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     options.seed,
     options.start,
   );
-  const machineIds = options.config.plant.areas.flatMap((a) =>
-    a.workCenters.flatMap((w) => w.equipment.map((e) => e.id)),
-  );
   const lotIds = options.config.stock.lots.map((lot) => lot.id);
-  const truth = new GroundTruth(machineIds, options.start);
+  const truth = new GroundTruth(options.config, options.start);
   const line = new ProductionLine({
     config: options.config,
     random: new RandomSource(options.seed),

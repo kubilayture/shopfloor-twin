@@ -54,11 +54,7 @@ export function runHeadless(
   };
   writeLine(stableStringify(header));
 
-  const equipment = config.plant.areas.flatMap((a) => a.workCenters.flatMap((w) => w.equipment));
-  const truth = new GroundTruth(
-    equipment.map((e) => e.id),
-    start,
-  );
+  const truth = new GroundTruth(config, start);
 
   let sequence = 0;
   let checker: InvariantChecker | undefined;

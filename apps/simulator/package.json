@@ -17,6 +17,7 @@
     "@fastify/swagger": "catalog:",
     "@fastify/websocket": "catalog:",
     "@shopfloor/contracts": "workspace:*",
+    "@shopfloor/oee-core": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/shift-calendar": "workspace:*",
     "@shopfloor/sim-core": "workspace:*",

@@ -18,11 +18,8 @@ beforeAll(async () => {
 
 describe('live ground truth (#100)', () => {
   it('a snapshot equals what finish would return at that time, and changes nothing', () => {
-    const machineIds = config.plant.areas.flatMap((a) =>
-      a.workCenters.flatMap((w) => w.equipment.map((e) => e.id)),
-    );
     const lots = config.stock.lots.map((lot) => lot.id);
-    const truth = new GroundTruth(machineIds, T0);
+    const truth = new GroundTruth(config, T0);
     const line = new ProductionLine({
       config,
       random: new RandomSource(7),
@@ -34,13 +31,21 @@ describe('live ground truth (#100)', () => {
     const simulation = new Simulation<LineEvent>(T0);
     line.start(simulation);
     const end = T0 + 30 * HOUR + 12_345;
+    const reads: string[] = [];
     simulation.runUntil(end - 1, (event, sim) => {
       line.handle(event, sim);
+      // Reading in the middle of the run, OEE included, must not change what is recorded later.
+      if (reads.length < 200 && sim.now % 7 === 0) {
+        reads.push(JSON.stringify(truth.snapshot(sim.now, line, lots).oee.workCenters));
+      }
     });
+    expect(reads.length).toBeGreaterThan(10);
     const first = truth.snapshot(end, line, lots);
     expect(truth.snapshot(end, line, lots)).toEqual(first);
     expect(truth.currentBucket).toBe('2026-10-13/A');
     expect(truth.finish(end, line, lots)).toEqual(first);
+    const unread = runHeadless({ config, seed: 7, start: T0, end }, () => undefined).summary;
+    expect(first).toEqual(unread);
   });
 
   it('equals the headless ground truth of the same span in every completed bucket', () => {
@@ -95,9 +100,21 @@ describe('live ground truth (#100)', () => {
     for (const [id, machine] of Object.entries(live.machines)) {
       for (const key of complete) {
         expect(machine.byShift[key], `${id} ${key}`).toEqual(headless.machines[id]?.byShift[key]);
+        // The OEE inputs and results of a completed bucket are final: the same on both sides (#117).
+        expect(live.oee.machines[id]?.shifts[key], `${id} ${key} OEE`).toEqual(
+          headless.oee.machines[id]?.shifts[key],
+        );
       }
       const total = Object.values(machine.stateMs).reduce((sum, ms) => sum + ms, 0);
       expect(total).toBe(until - T0);
+    }
+    for (const key of complete) {
+      expect(live.oee.workCenters, key).toBeDefined();
+      for (const [wc, center] of Object.entries(live.oee.workCenters)) {
+        expect(center.shifts[key], `${wc} ${key}`).toEqual(
+          headless.oee.workCenters[wc]?.shifts[key],
+        );
+      }
     }
     expect(live.simTime).toBe(new Date(until).toISOString());
     expect(Object.keys(live.current).sort()).toEqual(Object.keys(live.machines).sort());

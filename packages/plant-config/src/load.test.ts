@@ -220,6 +220,14 @@ describe('cross-file checks', () => {
       'componentsOperation: unknown operation "OP77"',
     ],
     [
+      'a sensor resolution that is not a power of ten',
+      (c) => {
+        c.process.processValues.coolant.resolution = 0.25;
+      },
+      'processValues.coolant.resolution'.replace('processValues.', '') +
+        ': resolution must be a power of ten',
+    ],
+    [
       'process values for unknown equipment',
       (c) => {
         c.process.processValues.machines = ['cnc-77'];

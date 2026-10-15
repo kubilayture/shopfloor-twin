@@ -431,7 +431,9 @@ Both are rounded to `resolution` (0.1).
 - the spindle-load noise comes from `hashedStandardNormal(seed, "<machine>/spindle-load", second)` in `sim-core`, a hash of seed, key and simulated second turned into a normal value;
 - the coolant temperature is a closed-form function of the time since the last state change.
 
-Reading a value never changes the simulation, and the same time always gives the same value.
+Reading a value never changes the simulation. Once all events up to time t are processed, a read at t always gives the same value. The model keeps only the current state, not a history, so a read before the last state change returns no value.
+
+In live mode `pacer.simNow()` can lie slightly ahead of the last processed step, past an event that hasn't been handled yet. Readers that must agree with the event log, such as the OPC UA layer (#51), therefore read at `simulation.now`, the last processed step.
 
 Process values are telemetry, not facts. They aren't in the event log or the golden snapshot; plan section 5 allows them to be sampled and decimated.
 

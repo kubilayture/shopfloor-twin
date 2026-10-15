@@ -111,7 +111,7 @@ export const failuresSchema = z.strictObject({
 const processValues = z.strictObject({
   machines: z.array(id).min(1),
   spindleLoad: z.strictObject({
-    meanPercent: positive,
+    meanPercent: positive.max(100),
     sigmaPercent: positive,
     resolution: positive,
   }),

@@ -130,6 +130,17 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
       report('process', `leakTest.${key}`, `unknown operation "${op}"`);
     }
   }
+  const { spindleLoad, coolant } = config.process.processValues;
+  for (const [path, resolution] of [
+    ['spindleLoad.resolution', spindleLoad.resolution],
+    ['coolant.resolution', coolant.resolution],
+    ['leakTest.resolution', config.process.leakTest.resolution],
+  ] as const) {
+    const exponent = Math.log10(resolution);
+    if (Math.abs(exponent - Math.round(exponent)) > 1e-9) {
+      report('process', path, `resolution must be a power of ten, got ${String(resolution)}`);
+    }
+  }
   config.process.processValues.machines
     .filter((machine) => !equipmentIds.has(machine))
     .forEach((machine) => {

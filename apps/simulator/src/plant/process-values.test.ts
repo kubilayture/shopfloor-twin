@@ -56,7 +56,10 @@ describe('process values (phase 2 plan)', () => {
     const { ambientCelsius, runningCelsius, tauMinutes } = config.process.processValues.coolant;
     values.record(state('cnc-01', T0, 'Off', 'Running'));
     const atTau = values.read('cnc-01', T0 + tauMinutes * MINUTE)?.coolantCelsius ?? 0;
-    expect(atTau).toBeCloseTo(runningCelsius - (runningCelsius - ambientCelsius) * Math.exp(-1), 1);
+    const expected = runningCelsius - (runningCelsius - ambientCelsius) * Math.exp(-1);
+    expect(Math.abs(atTau - expected)).toBeLessThanOrEqual(
+      config.process.processValues.coolant.resolution / 2 + 1e-9,
+    );
     expect(values.read('cnc-01', T0 + 10 * HOUR)?.coolantCelsius).toBe(runningCelsius);
     values.record(state('cnc-01', T0 + 10 * HOUR, 'Running', 'Idle'));
     expect(values.read('cnc-01', T0 + 10 * HOUR)?.coolantCelsius).toBe(runningCelsius);
@@ -73,7 +76,7 @@ describe('process values (phase 2 plan)', () => {
       expect(String(reading?.coolantCelsius)).toMatch(/^\d+(\.\d)?$/);
     }
     expect(values.read('asm-01', T0)).toBeUndefined();
-    expect(() => values.read('cnc-01', T0 - 1)).toThrow(RangeError);
+    expect(values.read('cnc-01', T0 - 1)).toBeUndefined();
   });
 
   it('yields identical readings in a paced live run and in a headless run fed the same events', () => {

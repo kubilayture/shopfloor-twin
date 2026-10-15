@@ -61,7 +61,7 @@ export class ProcessValues {
       return undefined;
     }
     if (now < track.anchorAt) {
-      throw new RangeError(`${machineId}: cannot read process values before the last state change`);
+      return undefined;
     }
     const { spindleLoad, coolant } = this.#config;
     const second = Math.floor(now / SECOND);

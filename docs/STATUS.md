@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #71 merged (PR #82): `modbus-serial` (ADR-0013), store-and-forward in SQLite (ADR-0014).
 - #70 merged (PR #81): Phase 3 plan, revised after review (event ring buffer for WSH-01, epochs in sequence spaces, fault controls).
 - Phase 3 plan with issues #70–#80 under milestone "Phase 03 – Edge gateway and UNS".
 - **Phase 2 closed** and tagged `phase-02`: all 5 exit criteria met (report: `docs/phases/phase-02-report.md`; learning notes: `docs/learning/phase-02.md`).
@@ -42,11 +43,11 @@
 
 ## In progress
 
-- #71 spike: Modbus library and store-and-forward storage (in review)
+- #72 UNS contracts (in review)
 
 ## Next up
 
-- #72 UNS contracts, #73 washer process values
+- #73 washer process values and run epoch, #74 Modbus server
 
 ## Blockers and open questions for the owner
 

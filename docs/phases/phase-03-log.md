@@ -18,3 +18,5 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - store-and-forward details: status messages bypass the buffer, a named volume, and a gateway-restart test.
 - Merged #81 (#70): Phase 3 plan.
 - Spike #71: `modbus-serial` passes every check (ADR-0013). Its server needs the callback form for asynchronous or silent answers, because a returned Promise becomes exception 4. `node:sqlite` lost nothing under SIGKILL (ADR-0014). The review caught an unfair measurement: on macOS SQLite needs `fullfsync=ON` to flush like `fsyncSync` does. A durable commit then costs about 3 ms, so #78 commits in batches per flush tick (about 14,800 messages per second). Plan section 12's Modbus open decision is closed.
+- Merged #82 (#71): the spike review caught an unfair storage comparison (macOS needs `fullfsync` for a real flush). The decisions stand, with batched commits.
+- #72: `zod` and `fast-check` join `contracts`. Zod 4's `z.toJSONSchema` generates the JSON Schema, as for the OpenAPI file. The dedup rule accepts out-of-order delivery, because MQTT orders messages only per topic and device facts span three topics.

@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- UNS contracts: topic helpers (including `_sys` status and incidents), envelope with `scope`, `epoch` and `seq`, Zod schemas for state, telemetry, cycle, alarm, status and incident payloads, generated JSON Schema in `docs/contracts/uns/` with a drift test, reference `Deduplicator`; `docs/contracts/uns.md`; ADR-0015 (#72).
 - Spike #71: `modbus-serial` confirmed for Modbus TCP (ADR-0013); store-and-forward buffer in SQLite through `node:sqlite` (ADR-0014) (#71).
 - Phase 3 plan with issues #70–#80 (#70).
 - Phase 2 closed: report and learning notes; all 5 exit criteria met; tag `phase-02` (#57).

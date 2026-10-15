@@ -17,3 +17,46 @@ export {
   toIndexedNodeId,
 } from './opcua.ts';
 export type { OpcuaMachineId, OpcuaVariable } from './opcua.ts';
+export {
+  INCIDENT_TYPES,
+  MACHINE_STATES,
+  UNS_SCHEMAS,
+  UNS_TELEMETRY,
+  alarmSchema,
+  cycleCompleteSchema,
+  incidentSchema,
+  measurementSchema,
+  parseUnsMessage,
+  qualitySchema,
+  sourceSchema,
+  stateCurrentSchema,
+  statusSchema,
+  telemetrySchema,
+} from './uns/payloads.ts';
+export type {
+  Alarm,
+  CycleComplete,
+  Incident,
+  MachineState,
+  StateCurrent,
+  Status,
+  Telemetry,
+  UnsMessage,
+  UnsSchemaName,
+} from './uns/payloads.ts';
+export {
+  RETAINED_CLASSES,
+  SYS_SEGMENT,
+  alarmTopic,
+  cycleTopic,
+  isRetained,
+  isSysRetained,
+  parseEquipmentTopic,
+  stateTopic,
+  sysTopic,
+  telemetryTopic,
+  unsName,
+} from './uns/topics.ts';
+export type { EquipmentPath, ParsedTopic, SysName } from './uns/topics.ts';
+export { Deduplicator, streamKey } from './uns/dedup.ts';
+export type { Gap, Identified, Verdict } from './uns/dedup.ts';

@@ -2,7 +2,7 @@
 
 Period: 2026-10-15 to 2026-10-16. Closed 2026-10-16; the `phase-04` tag is set right after this report merges. Milestone: [Phase 04 – MES foundation](https://github.com/kubilayture/shopfloor-twin/milestone/5).
 
-Under the owner's standing instruction of 2026-10-15, Claude closed the phase without the owner's review. No Phase 4 exit criterion needs the owner. The owner can watch the result live: `pnpm stack:up`, then open the plant overview at <http://localhost:8080> (runbook, "Full stack"). Running the stack on the owner's machine with the recommended 4 GiB VM is deferred to the owner (see Known issues).
+Under the owner's standing instruction of 2026-10-15, Claude closed the phase without the owner's review. No Phase 4 exit criterion needs the owner. The owner can watch the result live: `pnpm stack:up`, then open the plant overview at <http://localhost:8080> (runbook, "Full stack"). Running the stack on the owner's machine with the recommended 4 GiB VM is deferred to the owner (see Known issues). The owner's sign-off of the phase (v1 success criterion 6) is likewise deferred to the owner.
 
 ## Outcome against exit criteria
 

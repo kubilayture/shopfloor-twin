@@ -4,6 +4,7 @@ import { buildControlApp } from './control/app.ts';
 import { parseEnv } from './control/env.ts';
 import { EventHub } from './control/event-hub.ts';
 import { createLiveRun } from './live/run.ts';
+import { WasherModbusServer } from './modbus/washer-server.ts';
 import { PlantServers } from './opcua/plant-servers.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -32,6 +33,12 @@ const servers = new PlantServers({
   portOffset: env.OPCUA_PORT_OFFSET,
   ...(env.OPCUA_PKI_DIR ? { pkiFolder: resolve(env.OPCUA_PKI_DIR) } : {}),
 });
+const washer = new WasherModbusServer({
+  config: loaded.config,
+  epoch: servers.epoch,
+  host: env.MODBUS_HOST,
+  port: env.MODBUS_PORT,
+});
 const run = createLiveRun({
   config: loaded.config,
   seed: env.SIM_SEED,
@@ -39,15 +46,22 @@ const run = createLiveRun({
   speed: env.SIM_SPEED,
   onEvent: (event) => {
     servers.record(event);
+    washer.record(event);
     hub.record(event);
   },
 });
 servers.attach(run);
+washer.attach(run);
 
 const app = await buildControlApp({
   pacer: run.pacer,
   hub,
-  ready: () => servers.servers.every((server) => server.started),
+  ready: () => servers.servers.every((server) => server.started) && washer.started,
+  faults: {
+    modbusSilent: (silent) => {
+      washer.silent = silent;
+    },
+  },
   logger: { level: env.LOG_LEVEL },
 });
 const log = app.log;
@@ -62,7 +76,7 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
   run.pacer.stop();
-  const results = await Promise.allSettled([app.close(), servers.stop()]);
+  const results = await Promise.allSettled([app.close(), servers.stop(), washer.stop()]);
   for (const result of results) {
     if (result.status === 'rejected') log.error(result.reason);
   }
@@ -80,7 +94,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 
 try {
   await app.listen({ host: env.CONTROL_HOST, port: env.CONTROL_PORT });
-  await servers.start();
+  await Promise.all([servers.start(), washer.start()]);
 } catch (error) {
   if (shutdownState.stopping) {
     // A signal arrived during start-up; shutdown() owns the exit.
@@ -93,6 +107,7 @@ try {
 for (const server of servers.servers) {
   log.info({ machineId: server.machineId, endpoint: server.endpoint }, 'OPC UA server listening');
 }
+log.info({ machineId: washer.machineId, port: washer.port }, 'Modbus TCP server listening');
 if (env.SIM_AUTOSTART === 'true' && run.pacer.state === 'idle') {
   run.pacer.start();
 }

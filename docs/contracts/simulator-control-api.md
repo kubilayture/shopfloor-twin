@@ -30,6 +30,14 @@ The simulation console (Phase 9) is the client. The MES never uses this API: it 
 - Until every OPC UA server listens, `pause`, `resume`, `step` and `speed` return 503 `the simulator is starting`, so the run cannot move before its events have somewhere to go. `status` always answers.
 - Pacing never changes the event stream: a run produces the same events whatever the pauses, steps and speed changes (proven by the pacer's property test, #49).
 
+## Faults (`/api/v1/faults`)
+
+Infrastructure faults for resilience tests (plan section 4), brought forward from Phase 9 for the Phase 3 gateway tests.
+
+| Method and path              | Body                        | Success          | Effect                                                                                                                                                                                                  |
+| ---------------------------- | --------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/v1/faults/modbus` | `{ "silent": true\|false }` | 200 `{ silent }` | WSH-01 accepts connections but stops answering, or answers again. Its registers keep updating meanwhile, so a poller that recovers finds the ring entries it missed, unless more than 64 facts happened |
+
 ## WebSocket: plant events
 
 `GET /api/v1/events` upgrades to a WebSocket. Every plant event is sent as one text message in exactly the format of a headless event-log line (`schema: sim-event/1`, run-wide `seq`, ISO `at`, sorted keys; see `docs/simulation-model.md`, Event log).
@@ -62,19 +70,21 @@ Metrics besides the standard `process_*` and `nodejs_*` ones:
 
 The simulator validates its environment at start-up. With any invalid value it names each offending variable and exits with status 2. Empty variables count as unset.
 
-| Variable            | Default                          | Meaning                                                        |
-| ------------------- | -------------------------------- | -------------------------------------------------------------- |
-| `SIM_SEED`          | 1                                | Random seed, decimal digits, 0 to 2³²−1                        |
-| `SIM_SPEED`         | 60                               | Speed, 0.5–60                                                  |
-| `SIM_START`         | `2026-10-12T06:00:00+03:00`      | Simulation start, ISO 8601 with an offset                      |
-| `SIM_CONFIG_DIR`    | `config/plant` in the repository | Plant configuration directory                                  |
-| `SIM_AUTOSTART`     | `true`                           | `false` starts idle; the run begins with `POST /api/v1/resume` |
-| `OPCUA_HOST`        | `localhost`                      | Host name the OPC UA servers advertise and bind                |
-| `OPCUA_PORT_OFFSET` | 0                                | Added to the OPC UA ports 4841–4845                            |
-| `OPCUA_PKI_DIR`     | `./.pki`                         | Certificate store, one folder per machine                      |
-| `CONTROL_HOST`      | `127.0.0.1`                      | Bind address of the control API                                |
-| `CONTROL_PORT`      | 4800                             | Port of the control API                                        |
-| `LOG_LEVEL`         | `info`                           | pino level: `fatal` … `trace`, or `silent`                     |
+| Variable            | Default                          | Meaning                                                                      |
+| ------------------- | -------------------------------- | ---------------------------------------------------------------------------- |
+| `SIM_SEED`          | 1                                | Random seed, decimal digits, 0 to 2³²−1                                      |
+| `SIM_SPEED`         | 60                               | Speed, 0.5–60                                                                |
+| `SIM_START`         | `2026-10-12T06:00:00+03:00`      | Simulation start, ISO 8601 with an offset                                    |
+| `SIM_CONFIG_DIR`    | `config/plant` in the repository | Plant configuration directory                                                |
+| `SIM_AUTOSTART`     | `true`                           | `false` starts idle; the run begins with `POST /api/v1/resume`               |
+| `OPCUA_HOST`        | `localhost`                      | Host name the OPC UA servers advertise and bind                              |
+| `OPCUA_PORT_OFFSET` | 0                                | Added to the OPC UA ports 4841–4845                                          |
+| `OPCUA_PKI_DIR`     | `./.pki`                         | Certificate store, one folder per machine                                    |
+| `MODBUS_HOST`       | `127.0.0.1`                      | Bind address of the WSH-01 Modbus TCP server                                 |
+| `MODBUS_PORT`       | 5020                             | Port of the WSH-01 Modbus TCP server (docs/contracts/modbus-register-map.md) |
+| `CONTROL_HOST`      | `127.0.0.1`                      | Bind address of the control API                                              |
+| `CONTROL_PORT`      | 4800                             | Port of the control API                                                      |
+| `LOG_LEVEL`         | `info`                           | pino level: `fatal` … `trace`, or `silent`                                   |
 
 ## Shutdown
 

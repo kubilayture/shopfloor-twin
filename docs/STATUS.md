@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #73 merged (PR #84): washer process values, run epoch.
 - #72 merged (PR #83): UNS contracts, ADR-0015.
 - #71 merged (PR #82): `modbus-serial` (ADR-0013), store-and-forward in SQLite (ADR-0014).
 - #70 merged (PR #81): Phase 3 plan, revised after review (event ring buffer for WSH-01, epochs in sequence spaces, fault controls).
@@ -44,11 +45,11 @@
 
 ## In progress
 
-- #73 washer process values and run epoch (in review)
+- #74 Modbus server for WSH-01 (in review)
 
 ## Next up
 
-- #74 Modbus server for WSH-01, #75 gateway skeleton and broker security
+- #75 gateway skeleton and broker security, #76 OPC UA collector
 
 ## Blockers and open questions for the owner
 

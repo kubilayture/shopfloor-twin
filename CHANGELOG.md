@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- WSH-01 on Modbus TCP (port 5020): register map with a snapshot block and a 64-entry ring buffer of state, cycle and alarm facts with device sequence and epoch; `@shopfloor/contracts` encoding helpers; `docs/contracts/modbus-register-map.md` with a contract test against the live server; `POST /api/v1/faults/modbus` to make the device silent; Compose publishes 5020 (#74).
 - WSH-01 process values: bath temperature (heater off when the line is Off or on `HEATER-FAULT`) and conveyor speed, in `processValues.washer`; run epoch `ShopFloor.Epoch` on every OPC UA server (ADR-0015). Golden `week-01`: only `configSha256` changed (new configuration section); the events are identical (#73).
 - UNS contracts: topic helpers (including `_sys` status and incidents), envelope with `scope`, `epoch` and `seq`, Zod schemas for state, telemetry, cycle, alarm, status and incident payloads, generated JSON Schema in `docs/contracts/uns/` with a drift test, reference `Deduplicator`; `docs/contracts/uns.md`; ADR-0015 (#72).
 - Spike #71: `modbus-serial` confirmed for Modbus TCP (ADR-0013); store-and-forward buffer in SQLite through `node:sqlite` (ADR-0014) (#71).

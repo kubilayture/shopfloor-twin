@@ -52,7 +52,7 @@ Options: `--seed` (default 1), `--speed` (0.5–60, default 60), `--start` (ISO 
 
 ## Serve the plant: OPC UA and the control API
 
-Runs the plant live, exposes the five OPC UA machines (contract: `docs/contracts/opcua-address-space.md`) and the control API (contract: `docs/contracts/simulator-control-api.md`):
+Runs the plant live and exposes the five OPC UA machines (contract: `docs/contracts/opcua-address-space.md`), the WSH-01 washer on Modbus TCP port 5020 (contract: `docs/contracts/modbus-register-map.md`) and the control API (contract: `docs/contracts/simulator-control-api.md`):
 
 ```bash
 pnpm sim:serve
@@ -72,7 +72,8 @@ curl -s -X POST localhost:4800/api/v1/resume
 
 The other commands are `POST /api/v1/pause`, `POST /api/v1/step`, `PUT /api/v1/speed` with a JSON body `{"speed": 10}`, and `GET /api/v1/status`. Plant events stream over a WebSocket at `ws://localhost:4800/api/v1/events`; health is at `/health/live` and `/health/ready`, and metrics at `/metrics`.
 
-- Connect any OPC UA client, for example UaExpert, with security mode None.
+- Connect any OPC UA client, for example UaExpert, with security mode None. Read the washer with any Modbus TCP client, unit id 1, holding registers (function 3).
+- `curl -s -X POST localhost:4800/api/v1/faults/modbus -H 'content-type: application/json' -d '{"silent": true}'` makes the washer stop answering, to exercise a poller.
 - Each server creates its own certificate on first start in `./.pki/<machine>` (git-ignored).
 - Logs are JSON lines (pino). `LOG_LEVEL=warn` keeps only warnings and errors.
 - Ctrl+C or SIGTERM stops the run, closes the API and shuts the servers down. An invalid environment exits with status 2.
@@ -127,11 +128,11 @@ Then replace every `change-me` with a random value of your own, for example from
 | SQL shell                                                                                                                                          | `docker compose exec db psql -U shopfloor -d shopfloor`                            |
 | Watch all MQTT traffic                                                                                                                             | `docker compose exec broker mosquitto_sub -u dev -P <MQTT_DEV_PASSWORD> -t '#' -v` |
 
-| Service     | Host address                                                     | Notes                                                                                                                                                                                                                                                               |
-| ----------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `db`        | `127.0.0.1:5442`                                                 | PostgreSQL 18 + TimescaleDB 2.30; database and user `shopfloor`; TimescaleDB telemetry off                                                                                                                                                                          |
-| `broker`    | `127.0.0.1:1883`                                                 | Mosquitto 2.1; anonymous access off; users `dev` (manual testing) and `healthcheck`. Per-client users and topic ACLs arrive in Phase 3                                                                                                                              |
-| `simulator` | `127.0.0.1:4800` (control API), `127.0.0.1:4841`–`4845` (OPC UA) | Live mode, built from `apps/simulator/Dockerfile` on every `stack:up` (cached layers make it fast). `SIM_SEED`, `SIM_SPEED`, `SIM_START`, `SIM_AUTOSTART`, `SIM_OPCUA_HOST`, `SIM_CONTROL_PORT` and `SIM_LOG_LEVEL` in `.env`; healthy when `/health/ready` answers |
+| Service     | Host address                                                                                        | Notes                                                                                                                                                                                                                                                               |
+| ----------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `db`        | `127.0.0.1:5442`                                                                                    | PostgreSQL 18 + TimescaleDB 2.30; database and user `shopfloor`; TimescaleDB telemetry off                                                                                                                                                                          |
+| `broker`    | `127.0.0.1:1883`                                                                                    | Mosquitto 2.1; anonymous access off; users `dev` (manual testing) and `healthcheck`. Per-client users and topic ACLs arrive in Phase 3                                                                                                                              |
+| `simulator` | `127.0.0.1:4800` (control API), `127.0.0.1:4841`–`4845` (OPC UA), `127.0.0.1:5020` (Modbus, WSH-01) | Live mode, built from `apps/simulator/Dockerfile` on every `stack:up` (cached layers make it fast). `SIM_SEED`, `SIM_SPEED`, `SIM_START`, `SIM_AUTOSTART`, `SIM_OPCUA_HOST`, `SIM_CONTROL_PORT` and `SIM_LOG_LEVEL` in `.env`; healthy when `/health/ready` answers |
 
 All services listen on `127.0.0.1` only, so nothing is reachable from the network.
 

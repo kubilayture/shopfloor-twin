@@ -16,6 +16,8 @@ export async function generateOpenApi(): Promise<string> {
     pacer: new LivePacer({ simulation: new Simulation<unknown>(0), handle: () => undefined }),
     hub: new EventHub(),
     ready: () => false,
+    // Every optional route, so the description is complete.
+    faults: { modbusSilent: () => undefined },
   });
   await app.ready();
   const document = app.swagger();

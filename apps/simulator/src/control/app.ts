@@ -36,6 +36,8 @@ export const stepSchema = z.object({
 
 export const speedSchema = z.object({ speed: z.number().min(MIN_SPEED).max(MAX_SPEED) });
 
+export const silentSchema = z.object({ silent: z.boolean() });
+
 export const errorSchema = z.object({ error: z.string(), message: z.string() });
 
 const healthSchema = z.object({ status: z.enum(['ok', 'unavailable']) });
@@ -60,6 +62,10 @@ export interface ControlAppOptions {
   readonly hub: EventHub;
   /** True once every OPC UA server is listening. */
   readonly ready: () => boolean;
+  /** Infrastructure faults for resilience tests (plan section 4); routes exist only for those given. */
+  readonly faults?: {
+    readonly modbusSilent?: (silent: boolean) => void;
+  };
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
   readonly version?: string;
 }
@@ -68,6 +74,7 @@ export async function buildControlApp({
   pacer,
   hub,
   ready,
+  faults = {},
   logger = false,
   version = '0.0.0',
 }: ControlAppOptions): Promise<FastifyInstance> {
@@ -104,6 +111,7 @@ export async function buildControlApp({
       tags: [
         { name: 'simulation', description: 'Pacing of the live run' },
         { name: 'operations', description: 'Health and metrics' },
+        { name: 'faults', description: 'Infrastructure faults for resilience tests' },
       ],
     },
   });
@@ -234,6 +242,26 @@ export async function buildControlApp({
       return status();
     },
   );
+
+  const modbusSilent = faults.modbusSilent;
+  if (modbusSilent) {
+    app.post(
+      `${API_PREFIX}/faults/modbus`,
+      {
+        schema: {
+          tags: ['faults'],
+          summary: 'Make the WSH-01 Modbus device stop answering, or answer again',
+          body: json(silentSchema),
+          response: { 200: json(silentSchema), 400: json(errorSchema) },
+        },
+      },
+      (request) => {
+        const { silent } = request.body as { silent: boolean };
+        modbusSilent(silent);
+        return { silent };
+      },
+    );
+  }
 
   app.get(EVENTS_PATH, { websocket: true, schema: { hide: true } }, (socket) => {
     metrics.clients.inc();

@@ -65,6 +65,7 @@ services:
     ports:
       - '127.0.0.1:${SIM_CONTROL_PORT:-4800}:4800'
       - '127.0.0.1:4841-4845:4841-4845'
+      - '127.0.0.1:5020:5020'
     volumes:
       - simulator-pki:/var/lib/simulator/pki
     deploy:

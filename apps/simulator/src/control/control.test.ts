@@ -174,6 +174,46 @@ describe('control API (#54)', () => {
     raw.destroy();
   });
 
+  it('switches the Modbus device silent and back through the fault route, which exists only when wired', async () => {
+    const { app: plain } = await setup();
+    expect(
+      (
+        await plain.inject({
+          method: 'POST',
+          url: '/api/v1/faults/modbus',
+          payload: { silent: true },
+        })
+      ).statusCode,
+    ).toBe(404);
+    await plain.close();
+    const calls: boolean[] = [];
+    const run = createLiveRun({ config, seed: 1, start: T0, clock: new ManualClock() });
+    app = await buildControlApp({
+      pacer: run.pacer,
+      hub: new EventHub(),
+      ready: () => true,
+      faults: { modbusSilent: (silent) => calls.push(silent) },
+    });
+    for (const silent of [true, false]) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/faults/modbus',
+        payload: { silent },
+      });
+      expect(response.json()).toEqual({ silent });
+    }
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/v1/faults/modbus',
+          payload: { silent: 'yes' },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(calls).toEqual([true, false]);
+  });
+
   it('reports liveness, readiness and Prometheus metrics', async () => {
     const { app, clock } = await setup();
     expect((await app.inject({ url: '/health/live' })).json()).toEqual({ status: 'ok' });
@@ -239,6 +279,7 @@ describe('control API (#54)', () => {
     expect(await readFile(OPENAPI_FILE, 'utf8')).toBe(generated);
     const document = JSON.parse(generated) as { paths: Record<string, unknown> };
     expect(Object.keys(document.paths).sort()).toEqual([
+      '/api/v1/faults/modbus',
       '/api/v1/pause',
       '/api/v1/resume',
       '/api/v1/speed',

@@ -40,6 +40,16 @@ Output:
 
 A week takes about 0.2 s and about 6 MB of events. The files are written under temporary names and renamed at the end, so a failed run never leaves a mix of old and new files. Invalid options exit with status 2, other failures with status 1. The event and summary formats are described in `docs/simulation-model.md`.
 
+## Run the simulator live
+
+Runs the plant paced to wall time × speed and prints every machine state change:
+
+```bash
+pnpm sim:live --speed 60
+```
+
+Options: `--seed` (default 1), `--speed` (0.5–60, default 60), `--start` (ISO 8601 with an offset), `--config`. Ctrl+C stops it. At 60×, one shift (8 h) takes 8 minutes. Pause, resume, step and speed control arrive with the control API (#54); the OPC UA servers (#51) run on top of the same live run.
+
 ## Golden scenarios
 
 A golden scenario is a fixed seed and configuration whose expected output is committed (plan section 9). Each one lives in `apps/simulator/golden/<name>/`:

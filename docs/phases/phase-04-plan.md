@@ -22,32 +22,59 @@ Out of scope here:
 
 ## Decisions made in this plan
 
+### Structure
+
 - **One PostgreSQL schema per module** (`master_data`, `ingest`, `equipment`). A module reads and writes only its own schema; other modules call its TypeScript interface (plan section 7). The lint rules of plan section 8 already forbid cross-module imports other than through a module's `index.ts`.
 - **Migrations:**
-  - plain SQL files `apps/mes-server/migrations/NNNN_<module>_<what>.sql`, applied in order, each in a transaction, by a small runner;
+  - plain SQL files in **`db/migrations/`** (plan section 8), named `NNNN_<module>_<what>.sql`, applied in order, each in a transaction, by a small runner in `mes-server`;
   - the runner records name and checksum in `public.schema_migrations`, and refuses to start if an applied file has changed;
   - they run at start-up, before the server reports ready.
 
-  TimescaleDB DDL is plain SQL anyway. Kysely provides typed queries on hand-written table types, which a test compares with `information_schema`. Details: ADR-0016 (#93).
+  Kysely provides typed queries on hand-written table types; a test compares them with `information_schema`, so the types can't drift from the schema. Details: ADR-0016 (#93).
 
-- **One shift calendar for both sides.** The simulator's calendar (`apps/simulator/src/plant/calendar.ts`) moves into a pure package `@shopfloor/shift-calendar` (Temporal, no I/O), used by both simulator and MES. Shift boundaries in the MES then equal the simulator's by construction, which is what makes the reconciliation exact.
-- **Ingest:**
-  - **Persistent MQTT session** (`clean: false`, client id `mes-server`, QoS 1): the broker queues messages while the MES is down. Mosquitto's `max_queued_messages` is raised to 100,000 (about 5 hours of the plant at 60×).
-  - **Validation:** every message is checked with `parseUnsMessage`; an invalid one is stored in `ingest.rejected_message` with the reason, never dropped silently.
-  - **Durable dedup:** device facts go to the hypertable `ingest.equipment_event`, with a unique key on (equipment, epoch, seq); telemetry goes to the hypertable `ingest.telemetry_sample`, with a unique key on (topic, epoch, seq). `INSERT … ON CONFLICT DO NOTHING` makes every delivery idempotent, including across MES restarts. This is ADR-0015's rule, kept in the database.
-  - **Gaps:** holes in a device's sequence are recorded in `ingest.data_quality_incident`, after a grace period for late arrivals, as are the gateway's own incidents from `_sys/…/incidents`.
-  - **Retained and snapshot messages** update the current state only (`equipment.current_state`); they are not facts and never create intervals.
-- **Equipment intervals:**
-  - **Fact-driven:** an interval runs from one state change to the next of the same equipment, ordered by (epoch, seq), using the device's `sourceTime` (simulation time; never wall time).
-  - **Split at boundaries:** every stored interval lies inside one clock hour and one shift instance, or the gap between shifts. The open (current) interval is closed provisionally at each boundary that the equipment's latest data has passed.
-  - **Reorder-safe:** a fact arriving out of order recomputes the intervals of that equipment from the fact's time onward. Recomputing is idempotent, so a duplicate or a replay changes nothing.
+- **Pure packages:**
+  - `@shopfloor/shift-calendar`: the simulator's calendar, extracted, with its own input types, so it stays dependency-free. Simulator and MES both use it, so the MES cuts shifts exactly as the simulator does. The headless golden snapshot must stay byte-identical through the extraction.
+  - `@shopfloor/oee-core` starts with the pure state-accounting functions: building intervals from facts and splitting them at boundaries (plan section 8 puts these there). Phase 5 adds OEE.
+  - Because simulator and MES share the calendar, the reconciliation can't catch a calendar bug. The calendar keeps its own tests: DST-free Istanbul, handovers, the Friday night shift.
+
+### Time
+
+- **Simulation time only:** intervals, boundaries and ordering use the devices' `sourceTime`; wall time never enters the MES's accounting.
+- **"Hour" means UTC hour.** Istanbul is UTC+3 all year (no DST), so UTC hours and local hours share boundaries. A future tzdata change is covered by testing through Temporal.
+- **Shift buckets** are keyed by (shift date, shift id), as in the ground truth. Each gap between shifts is one `no-shift` bucket. (Shift instances as records belong to the `shifts` module in Phase 6.)
+- **Plant watermark:** the latest `sourceTime` seen from _any_ device in the current epoch. A machine that sends nothing (Off over the weekend) still has its open interval closed provisionally at every hour and shift boundary the watermark has passed. A device's own telemetry isn't enough, because a constant value keeps its old timestamp.
+
+### Identity, dedup and epochs (ADR-0015 in the database)
+
+- **Hypertable keys must include the time column** (a TimescaleDB rule): `ingest.equipment_event` is unique on (equipment, epoch, seq, source_time), and `ingest.telemetry_sample` on (topic, epoch, seq, source_time). A duplicate carries the same `sourceTime`, so `INSERT … ON CONFLICT DO NOTHING` deduplicates.
+- **Cursor table** `ingest.source_cursor` (the master plan's `ingest_source_cursor`): per stream, the current epoch and the ranges of numbers seen, stored as ranges like `Deduplicator`. Gap tracking therefore survives MES restarts, and a message from an **older epoch** is refused as stale.
+- **Gaps:** holes in a device stream are recorded in `ingest.data_quality_incident` after a grace period, together with the gateway's own `_sys/…/incidents`.
+- **Epoch change** (a simulator or device restart): simulation time may jump backwards under the new epoch, as with Compose's fixed `SIM_START`. Intervals are therefore **scoped per epoch**, and a new epoch closes the old epoch's open interval at its last watermark. The ground-truth comparison is per epoch, and a test covers the restart.
+
+### Ingest
+
+- **Persistent MQTT session:** client id `mes-server`, QoS 1, `clean: false` **and** a session expiry interval (MQTT 5: without it the session ends on disconnect), so the broker queues messages while the MES is down. Mosquitto's `max_queued_messages` is raised to 100,000 (about 5 hours of the plant at 60×). Known limit: queued messages survive a broker crash only up to its last autosave.
+- **Validation:** every message is checked with `parseUnsMessage`; an invalid one is stored in `ingest.rejected_message` with the reason, never dropped silently.
+- **Retained messages** (retain flag set on delivery) and **snapshots** are not facts. They never enter dedup or gap checks. They anchor the current state at their `sourceTime` when the MES doesn't know one yet (first start, or a new epoch), and that anchor opens an interval. From then on, facts drive intervals.
+
+### Equipment intervals
+
+- An interval runs from one state fact (or the anchor) to the next fact of the same equipment within the epoch, ordered by `seq`, using `sourceTime`. It is stored in **`equipment.equipment_state_interval`** (data-model name). Every stored interval lies inside one UTC hour and one shift bucket.
+- **Reorder-safe:** a fact arriving out of order changes only the interval between its neighbours. That window is recomputed and re-split, idempotently, so duplicates and replays change nothing.
+
+### API, push and web
+
 - **API and push** (`realtime` module): REST under `/api/v1` (equipment with current state, state intervals, telemetry series), generated OpenAPI in `docs/api/mes.openapi.json` with a drift test, and a WebSocket that pushes state changes and telemetry to subscribed screens.
 - **Web:**
   - React 19, Vite 8, TanStack Router and Query, Tailwind 4, uPlot for trends (plan section 6);
   - served by its own container (nginx, static files) that proxies `/api` to `mes-server`;
   - no login yet;
   - shadcn/ui components are added only where a screen needs them.
-- **Ground truth in live mode:** the simulator's control API gains the run's ground-truth summary (the headless `GroundTruth`, kept live), so the end-to-end test compares the MES with exactly what the simulator knows.
+- **Telemetry rates:** OPC UA telemetry is sampled every second (gateway default); WSH-01's telemetry comes with every Modbus poll (250 ms). The MES stores what arrives; plan section 5 allows decimation.
+
+### Reconciliation
+
+The simulator's control API exposes the run's ground-truth summary (the headless `GroundTruth`, kept live). The end-to-end test starts things in order: database and broker, then the MES ready, then the gateway connected, and only then the simulator (`SIM_AUTOSTART=false`, resumed over its control API, starting at 06:00, the start of shift A). The MES knows every machine's state from the first instant of the shift.
 
 ## Issues, in dependency order
 
@@ -66,10 +93,10 @@ Out of scope here:
 
 ## Exit criteria (plan section 11)
 
-1. **Reconciliation:** for one simulated shift run at 60× through simulator → gateway → broker → MES, the recorded state intervals equal the simulator's ground truth: time per state, per machine, for that shift, to the millisecond. Every stored interval lies inside one hour and one shift.
-2. **Duplicates and reordering:** tests deliver duplicates, out-of-order facts, retained messages and an MES restart mid-stream, and the stored events and intervals are unchanged by them.
-3. **Live overview at 60×:** a Playwright test sees each machine's state in the browser follow the UNS within 2 s.
-4. Integration tests green in CI; `docs/data-model.md` generated from the database.
+1. **Reconciliation:** for one simulated shift run at 60× through simulator → gateway → broker → MES, started in the order above, the recorded state intervals equal the simulator's ground truth: time per state, per machine, for that shift, to the millisecond (all times are integer milliseconds end to end). Every stored interval lies inside one UTC hour and one shift bucket.
+2. **Duplicates and reordering:** tests deliver duplicates, out-of-order facts, retained messages, stale epochs and an MES restart mid-stream, and the stored events and intervals are unchanged by them. A simulator restart (new epoch) is handled per epoch.
+3. **Live overview at 60×:** a Playwright test sees the browser show each machine's latest UNS state within 2 s. At 60×, intermediate states may be skipped: a 10 s stop lasts about 170 ms of wall time.
+4. **Integration tests green in CI:** TimescaleDB runs through Testcontainers on the GitHub runner. The full-shift reconciliation is its own job, with a budget of about 15 minutes (8 minutes of shift plus start-up). `docs/data-model.md` is generated from the database.
 
 ## Risks for this phase
 

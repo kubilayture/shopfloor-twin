@@ -7,3 +7,9 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Phase 4 planned: issues #92–#101, milestone 5.
   - The simulator's shift calendar becomes a shared package, so that the MES cuts shifts exactly as the simulator does.
   - Ingest keeps ADR-0015's dedup in the database (unique keys) and uses a persistent MQTT session.
+- The plan review (PR #102) found three blockers, all adopted:
+  - hypertable unique keys must include the time column;
+  - the MES needs a starting state (retained messages and snapshots anchor it);
+  - a simulator restart moves simulation time backwards, so intervals are scoped per epoch.
+
+  Also adopted: a plant watermark for provisional closing, UTC hours, a session expiry for the persistent session, a cursor table, `db/migrations` as in plan section 8, the interval functions in `oee-core`, and window-only recomputation.

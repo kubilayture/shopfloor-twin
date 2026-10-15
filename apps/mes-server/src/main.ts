@@ -28,7 +28,7 @@ const state = { migrated: false, stopping: false };
 let ingest: Ingest | undefined;
 let equipment: Equipment | undefined;
 
-const { app, registry } = buildMesHttp({
+const { app, registry, realtime } = await buildMesHttp({
   // Ready once migrated, the database answers and the UNS subscription is granted.
   ready: async () => {
     if (!state.migrated || state.stopping || ingest?.subscribed !== true) return false;
@@ -97,6 +97,8 @@ try {
     log: log.child({ module: 'equipment' }),
   });
   await equipment.start();
+  // The API and push follow the modules from here; until then they answer 503.
+  await realtime.attach({ masterData, equipment, ingest });
   await ingest.start();
 } catch (error) {
   if (state.stopping) await new Promise(() => undefined); // shutdown() owns the exit

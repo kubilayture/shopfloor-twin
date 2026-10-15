@@ -12,8 +12,15 @@ export interface EquipmentInfo {
   readonly operation: string;
   readonly interface: 'opcua' | 'modbus';
   readonly position: number;
+  readonly site: { readonly id: string; readonly name: string };
   readonly area: { readonly id: string; readonly name: string };
   readonly workCenter: { readonly id: string; readonly name: string };
+}
+
+export interface SiteInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly enterprise: { readonly id: string; readonly name: string };
 }
 
 /** master-data's interface for the other modules (plan section 7). */
@@ -135,6 +142,7 @@ export class MasterData {
       .selectFrom('master_data.equipment as e')
       .innerJoin('master_data.work_center as w', 'w.id', 'e.work_center_id')
       .innerJoin('master_data.area as a', 'a.id', 'w.area_id')
+      .innerJoin('master_data.site as s', 's.id', 'a.site_id')
       .select([
         'e.id',
         'e.name',
@@ -145,6 +153,8 @@ export class MasterData {
         'w.name as work_center_name',
         'a.id as area_id',
         'a.name as area_name',
+        's.id as site_id',
+        's.name as site_name',
       ])
       .orderBy('e.position')
       .execute();
@@ -154,9 +164,26 @@ export class MasterData {
       operation: r.operation,
       interface: r.interface,
       position: r.position,
+      site: { id: r.site_id, name: r.site_name },
       area: { id: r.area_id, name: r.area_name },
       workCenter: { id: r.work_center_id, name: r.work_center_name },
     }));
+  }
+
+  /** The plant's site (Phase 4: one), or undefined before the seed. */
+  async site(): Promise<SiteInfo | undefined> {
+    const row = await this.#db
+      .selectFrom('master_data.site')
+      .selectAll()
+      .orderBy('id')
+      .executeTakeFirst();
+    return (
+      row && {
+        id: row.id,
+        name: row.name,
+        enterprise: { id: row.enterprise_id, name: row.enterprise_name },
+      }
+    );
   }
 
   async shiftPattern(): Promise<ShiftPattern> {

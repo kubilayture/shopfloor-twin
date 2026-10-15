@@ -233,12 +233,19 @@ export class Equipment {
     return watermark === undefined ? undefined : new Date(watermark);
   }
 
-  /** Stored pieces of one equipment overlapping [from, to), by time (and epoch). */
+  /** Every device epoch's watermark, the newest epoch first (the plant clock, #97). */
+  watermarks(): { readonly epoch: number; readonly watermark: Date }[] {
+    return [...this.#watermarks]
+      .sort(([a], [b]) => b - a)
+      .map(([epoch, watermark]) => ({ epoch, watermark: new Date(watermark) }));
+  }
+
+  /** Stored pieces of one equipment overlapping [from, to), by time (and epoch), up to `limit`. */
   async intervals(
     equipment: string,
     from: Date,
     to: Date,
-    options: { readonly epoch?: number } = {},
+    options: { readonly epoch?: number; readonly limit?: number } = {},
   ): Promise<StoredInterval[]> {
     let query = this.#db
       .selectFrom('equipment.equipment_state_interval')
@@ -249,6 +256,7 @@ export class Equipment {
       .where('start_time', '<', to)
       .where('end_time', '>', from);
     if (options.epoch !== undefined) query = query.where('epoch', '=', options.epoch);
+    if (options.limit !== undefined) query = query.limit(options.limit);
     const rows = await query.orderBy('start_time').orderBy('epoch').execute();
     return rows.map((row) => ({
       equipment: row.equipment,

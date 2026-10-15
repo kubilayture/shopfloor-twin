@@ -1,0 +1,507 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MES WebSocket messages (/api/v1/ws, docs/api/realtime.md)",
+  "$defs": {
+    "ClientMessage": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "subscribe"
+            },
+            "topic": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "states"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^telemetry:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+                  "description": "telemetry:<equipment>"
+                }
+              ]
+            },
+            "metric": {
+              "description": "Telemetry topics only: one metric instead of all",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            }
+          },
+          "required": [
+            "type",
+            "topic"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "unsubscribe"
+            },
+            "topic": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "states"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^telemetry:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+                  "description": "telemetry:<equipment>"
+                }
+              ]
+            },
+            "metric": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "description": "A telemetry metric, the last segment of its UNS topic"
+            }
+          },
+          "required": [
+            "type",
+            "topic"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "A message from the client"
+    },
+    "ServerMessage": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "subscribed"
+            },
+            "topic": {
+              "type": "string"
+            },
+            "metric": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "topic",
+            "metric"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "unsubscribed"
+            },
+            "topic": {
+              "type": "string"
+            },
+            "metric": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "topic",
+            "metric"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "snapshot"
+            },
+            "topic": {
+              "type": "string",
+              "const": "states"
+            },
+            "clock": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "epoch": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "watermark": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "Latest source time seen in that epoch (simulation time)"
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "watermark"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "states": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "equipment": {
+                    "type": "string"
+                  },
+                  "current": {
+                    "type": "object",
+                    "properties": {
+                      "epoch": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991,
+                        "description": "Device epoch (run) the state belongs to"
+                      },
+                      "state": {
+                        "type": "string"
+                      },
+                      "cause": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "since": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                        "description": "When this state began (simulation time)"
+                      },
+                      "seq": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "The fact's sequence number; null when only the anchor is known"
+                      },
+                      "provisionalUntil": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "How far the open interval is stored (provisional, moves with the watermark)"
+                      },
+                      "ageMs": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Time in this state up to the epoch's watermark (simulation ms)"
+                      }
+                    },
+                    "required": [
+                      "epoch",
+                      "state",
+                      "cause",
+                      "since",
+                      "seq",
+                      "provisionalUntil",
+                      "ageMs"
+                    ],
+                    "additionalProperties": false,
+                    "description": "The equipment's latest state, in its newest device epoch"
+                  }
+                },
+                "required": [
+                  "equipment",
+                  "current"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "type",
+            "topic",
+            "clock",
+            "states"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "snapshot"
+            },
+            "topic": {
+              "type": "string",
+              "pattern": "^telemetry:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "description": "telemetry:<equipment>"
+            },
+            "samples": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "equipment": {
+                    "type": "string"
+                  },
+                  "metric": {
+                    "type": "string"
+                  },
+                  "unit": {
+                    "type": "string"
+                  },
+                  "t": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  "value": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "equipment",
+                  "metric",
+                  "unit",
+                  "t",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              "description": "The latest stored sample per metric"
+            }
+          },
+          "required": [
+            "type",
+            "topic",
+            "samples"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "state"
+            },
+            "equipment": {
+              "type": "string"
+            },
+            "current": {
+              "type": "object",
+              "properties": {
+                "epoch": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "description": "Device epoch (run) the state belongs to"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "cause": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "since": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "description": "When this state began (simulation time)"
+                },
+                "seq": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The fact's sequence number; null when only the anchor is known"
+                },
+                "provisionalUntil": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "How far the open interval is stored (provisional, moves with the watermark)"
+                },
+                "ageMs": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Time in this state up to the epoch's watermark (simulation ms)"
+                }
+              },
+              "required": [
+                "epoch",
+                "state",
+                "cause",
+                "since",
+                "seq",
+                "provisionalUntil",
+                "ageMs"
+              ],
+              "additionalProperties": false,
+              "description": "The equipment's latest state, in its newest device epoch"
+            }
+          },
+          "required": [
+            "type",
+            "equipment",
+            "current"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "telemetry"
+            },
+            "equipment": {
+              "type": "string"
+            },
+            "metric": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string"
+            },
+            "t": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+            },
+            "value": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "equipment",
+            "metric",
+            "unit",
+            "t",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "clock"
+            },
+            "epoch": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "watermark": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+              "description": "Latest source time seen in that epoch (simulation time)"
+            }
+          },
+          "required": [
+            "type",
+            "epoch",
+            "watermark"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "error"
+            },
+            "code": {
+              "type": "string",
+              "enum": [
+                "invalid-message",
+                "unknown-equipment",
+                "too-many-subscriptions",
+                "busy",
+                "unavailable"
+              ]
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "detail"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "A message from the server"
+    }
+  }
+}

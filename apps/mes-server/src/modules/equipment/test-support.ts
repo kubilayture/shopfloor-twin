@@ -152,6 +152,7 @@ export class UnsFeed {
     deviceEpoch?: number,
     name = 'bath-temperature',
     unit = '°C',
+    value = 60,
   ): Delivery {
     const topic = telemetryTopic(this.path(equipment), name);
     return this.#deliver(topic, {
@@ -160,7 +161,7 @@ export class UnsFeed {
       ...this.#common(equipment, GW_EPOCH, this.#topicSeq(topic), at),
       ...(deviceEpoch === undefined ? {} : { deviceEpoch }),
       unit,
-      value: 60,
+      value,
     });
   }
 }

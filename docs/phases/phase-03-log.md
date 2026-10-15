@@ -17,4 +17,4 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - a static ACL file with `$SYS` access for the healthcheck;
   - store-and-forward details: status messages bypass the buffer, a named volume, and a gateway-restart test.
 - Merged #81 (#70): Phase 3 plan.
-- Spike #71: `modbus-serial` passes every check (ADR-0013). Its server needs the callback form for asynchronous or silent answers, because a returned Promise becomes exception 4. `node:sqlite` gives 18,000 durable writes per second and lost nothing under SIGKILL (ADR-0014). Plan section 12's Modbus open decision is closed.
+- Spike #71: `modbus-serial` passes every check (ADR-0013). Its server needs the callback form for asynchronous or silent answers, because a returned Promise becomes exception 4. `node:sqlite` lost nothing under SIGKILL (ADR-0014). The review caught an unfair measurement: on macOS SQLite needs `fullfsync=ON` to flush like `fsyncSync` does. A durable commit then costs about 3 ms, so #78 commits in batches per flush tick (about 14,800 messages per second). Plan section 12's Modbus open decision is closed.

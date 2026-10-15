@@ -41,11 +41,21 @@ The alternative, `jsmodbus` 5.0.0 (September 2026), was not tried. Its first rel
 
 ## Store-and-forward storage
 
-| #   | Check                                              | `node:sqlite` (WAL)                                                                       | Append-only file                                                  |
-| --- | -------------------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| 1   | Write one message per transaction, about 400 bytes | 44,600/s with `synchronous=NORMAL`; 18,300/s with `FULL`                                  | 335/s with `fsync` per message                                    |
-| 2   | Replay in order, delete each after acknowledgement | 57,000/s (`NORMAL`), 21,900/s (`FULL`); strictly in insertion order by `AUTOINCREMENT` id | needs segment files and compaction to delete acknowledged entries |
-| 4   | Writer killed with SIGKILL after about 1 s         | every committed row present: 36,806 reported, 36,806 found, ids contiguous                | not tested                                                        |
-| 5   | Experimental warning on Node 26                    | none                                                                                      | n/a                                                               |
+| #   | Check                                                                                                        | `node:sqlite` (WAL)                                                                                                                                                                       | Append-only file                                                  |
+| --- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 1   | Write one message per transaction, about 400 bytes, **without** a full flush to disk (macOS: no `fullfsync`) | 44,600/s with `synchronous=NORMAL`; 18,300/s with `FULL`                                                                                                                                  | n/a                                                               |
+| 1b  | The same **with** a full flush (`PRAGMA fullfsync=ON` on macOS, as `fsyncSync` does)                         | 332/s with `FULL`: 3.0 ms per commit, blocking the event loop; **14,800 messages/s in batches of 50 per transaction**                                                                     | 335/s with `fsync` per message                                    |
+| 2   | Replay in order, delete each after acknowledgement                                                           | 57,000/s (`NORMAL`), 21,900/s (`FULL`); strictly in insertion order by `AUTOINCREMENT` id                                                                                                 | needs segment files and compaction to delete acknowledged entries |
+| 4   | Writer killed with SIGKILL after about 1 s (`NORMAL`)                                                        | every committed row present: 36,806 reported, 36,806 found, ids contiguous. This proves **process-crash** safety only: the OS cache survives a killed process; a power loss is not tested | not tested                                                        |
+| 5   | Experimental warning on Node 26                                                                              | none                                                                                                                                                                                      | n/a                                                               |
 
-The plant emits about 5 events per second at 60×, plus telemetry. Even `synchronous=FULL`, which also survives a power loss rather than only a process crash, is three orders of magnitude above that.
+**Correction after review:** the first version compared SQLite _without_ a full flush against a file _with_ one. On macOS, `fsync` doesn't reach the platter unless `F_FULLFSYNC` is used. Node's `fsyncSync` uses it, and SQLite only does with `fullfsync=ON`. Measured fairly, one message per durable commit costs about 3 ms on either side; Linux, in Docker, does a real `fsync` too. What makes SQLite fast enough is **batching**: one transaction per flush tick.
+
+The plant emits about 5 events per second at 60×, plus telemetry. Batched durable commits are more than three orders of magnitude above that.
+
+Also found by the review, and relevant for #78:
+
+- the WAL file grows without limit while any read transaction stays open (247 MB after 20,000 inserts and deletes), until a checkpoint after the reader ends;
+- the default `busy_timeout` is 0, so a second connection fails at once with "database is locked";
+- without `auto_vacuum`, freed pages are kept;
+- a database on a Docker volume is not tested yet (#79).

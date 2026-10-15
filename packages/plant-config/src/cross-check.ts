@@ -130,10 +130,12 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
       report('process', `leakTest.${key}`, `unknown operation "${op}"`);
     }
   }
-  const { spindleLoad, coolant } = config.process.processValues;
+  const { spindleLoad, coolant, washer } = config.process.processValues;
   for (const [path, resolution] of [
     ['spindleLoad.resolution', spindleLoad.resolution],
     ['coolant.resolution', coolant.resolution],
+    ['washer.bath.resolution', washer.bath.resolution],
+    ['washer.conveyor.resolution', washer.conveyor.resolution],
     ['leakTest.resolution', config.process.leakTest.resolution],
   ] as const) {
     const exponent = Math.log10(resolution);
@@ -146,6 +148,19 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
     .forEach((machine) => {
       report('process', 'processValues.machines', `unknown equipment "${machine}"`);
     });
+  if (!equipmentIds.has(washer.machine)) {
+    report('process', 'processValues.washer.machine', `unknown equipment "${washer.machine}"`);
+  } else if (
+    !config.failures.equipment[washer.machine]?.failureModes.some(
+      (mode) => mode.code === washer.heaterFaultCode,
+    )
+  ) {
+    report(
+      'process',
+      'processValues.washer.heaterFaultCode',
+      `"${washer.heaterFaultCode}" is not a failure mode of ${washer.machine}`,
+    );
+  }
   const curve = config.process.tool.defectProbability;
   const wears = curve.map((point) => point.wear);
   if (

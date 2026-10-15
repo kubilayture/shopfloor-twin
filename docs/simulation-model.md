@@ -427,14 +427,16 @@ A run covers the half-open interval [start, end): no event at or after `end` is 
 
 ## Process values (telemetry)
 
-Source: `apps/simulator/src/plant/process-values.ts`. Parameters: `processValues` in `config/plant/process.yaml` (all assumptions). Machines: CNC-01 and CNC-02.
+Source: `apps/simulator/src/plant/process-values.ts`. Parameters: `processValues` in `config/plant/process.yaml` (all assumptions). Machines: CNC-01 and CNC-02, plus the washer WSH-01 (`processValues.washer`).
 
-| Value                    | Model                                                                                                                                                                                | Default                |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------- |
-| Spindle load (%)         | 0 unless `Running`. While running: mean + sigma × N(0, 1), with a new value each simulated second; clamped to 0–100                                                                  | 65 ± 5 %               |
-| Coolant temperature (°C) | First-order lag towards a target: running → `runningCelsius`, otherwise → `ambientCelsius`. Closed form T(t) = target + (T₀ − target) · e^(−Δt/τ), re-anchored at every state change | 22 → 30 °C, τ = 20 min |
+| Value                         | Model                                                                                                                                                                                                                                                                                    | Default                                           |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Spindle load (%)              | 0 unless `Running`. While running: mean + sigma × N(0, 1), with a new value each simulated second; clamped to 0–100                                                                                                                                                                      | 65 ± 5 %                                          |
+| Coolant temperature (°C)      | First-order lag towards a target: running → `runningCelsius`, otherwise → `ambientCelsius`. Closed form T(t) = target + (T₀ − target) · e^(−Δt/τ), re-anchored at every state change                                                                                                     | 22 → 30 °C, τ = 20 min                            |
+| Washer bath temperature (°C)  | Heater on unless the washer is `Off` or `Down` with `HEATER-FAULT`. First-order lag towards `setpointCelsius` with τ = `heatTauMinutes` while heating, towards `ambientCelsius` with τ = `coolTauMinutes` while not; plus `sigmaCelsius` × N(0, 1) per second. It starts at the setpoint | 60 °C, heat τ = 15 min, cool τ = 45 min, ± 0.2 °C |
+| Washer conveyor speed (m/min) | 0 unless `Running`; then the configured speed + sigma × N(0, 1) per second                                                                                                                                                                                                               | 2.00 ± 0.02 m/min                                 |
 
-Both are rounded to `resolution` (0.1).
+All are rounded to their `resolution` (0.1, or 0.01 for the conveyor). The heater fault is the existing failure mode `HEATER-FAULT` of WSH-01 (`failures.yaml`), so it also raises its alarm (#53). With the heater off, the bath falls about 18 °C during a typical 30-minute heater repair (24 °C after 45 minutes), which a quality engineer could correlate with wash results later. Assumption: there is no preheating. After the weekend the heater comes on with the line, so on Monday morning the first parts, for about three heat τ (45 minutes), are washed below the setpoint.
 
 **Why pure functions of time:** in live mode the OPC UA layer samples telemetry whenever a client asks, so how often depends on wall time. If each sample drew from a random stream, the number of draws, and with it everything later in the run, would depend on the sampling rate. Instead:
 
@@ -453,7 +455,9 @@ Process values are telemetry, not facts. They aren't in the event log or the gol
 - the same value comes back for the same time, in any read order and however often;
 - the coolant reaches the e^(−1) point after τ and settles at the target;
 - values are at sensor resolution;
-- readings in a paced live run equal those from a headless run fed the same events.
+- readings in a paced live run equal those from a headless run fed the same events;
+- the washer bath holds its setpoint with the configured noise, through breaks; it cools with its own τ when the line is Off or the heater fails, and reheats after; other breakdowns leave the heater on;
+- the washer conveyor runs at its speed only while `Running`.
 
 ## Live mode
 

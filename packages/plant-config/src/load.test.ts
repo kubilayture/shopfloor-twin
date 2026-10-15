@@ -235,6 +235,20 @@ describe('cross-file checks', () => {
       'processValues.machines: unknown equipment "cnc-77"',
     ],
     [
+      'a washer that is not equipment',
+      (c) => {
+        c.process.processValues.washer.machine = 'wsh-77';
+      },
+      'processValues.washer.machine: unknown equipment "wsh-77"',
+    ],
+    [
+      'a heater fault that is not a failure mode of the washer',
+      (c) => {
+        c.process.processValues.washer.heaterFaultCode = 'NO-SUCH-FAULT';
+      },
+      'processValues.washer.heaterFaultCode: "NO-SUCH-FAULT" is not a failure mode of wsh-01',
+    ],
+    [
       'a leak test on an unknown operation',
       (c) => {
         c.process.leakTest.operation = 'OP99';

@@ -99,6 +99,7 @@ if (env.SIM_AUTOSTART === 'true' && run.pacer.state === 'idle') {
 log.info(
   {
     seed: env.SIM_SEED,
+    epoch: servers.epoch,
     speed: env.SIM_SPEED,
     start: new Date(env.SIM_START).toISOString(),
     running: env.SIM_AUTOSTART === 'true',

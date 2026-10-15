@@ -66,6 +66,7 @@ const VARIABLE_TYPES: Record<OpcuaVariable, ValueKind> = {
   state: 'String',
   stateCause: 'String',
   sequence: 'UInt32',
+  epoch: 'UInt32',
   produced: 'UInt32',
   good: 'UInt32',
   scrap: 'UInt32',
@@ -495,6 +496,7 @@ export class MachineServer {
       case 'state':
       case 'stateCause':
       case 'sequence':
+      case 'epoch':
       case 'produced':
       case 'good':
       case 'scrap':

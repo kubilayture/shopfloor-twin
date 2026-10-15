@@ -17,6 +17,8 @@ export interface PlantServersOptions {
   readonly host?: string;
   readonly portOffset?: number;
   readonly pkiFolder?: string;
+  /** Start of this run, Unix seconds: the epoch of every device sequence (ADR-0015). */
+  readonly epoch?: number;
 }
 
 export interface LiveSources {
@@ -40,6 +42,7 @@ export class PlantServers {
   readonly servers: readonly MachineServer[];
   readonly #config: PlantConfig;
   readonly #start: SimTime;
+  readonly epoch: number;
   readonly #pending: PlantEvent[] = [];
   #sources: LiveSources | undefined;
 
@@ -49,7 +52,9 @@ export class PlantServers {
     host,
     portOffset = 0,
     pkiFolder = join(process.cwd(), '.pki'),
+    epoch = Math.floor(Date.now() / 1000),
   }: PlantServersOptions) {
+    this.epoch = epoch;
     this.#config = config;
     this.#start = start;
     const equipment = config.plant.areas.flatMap((a) => a.workCenters.flatMap((w) => w.equipment));
@@ -112,6 +117,9 @@ export class PlantServers {
     }
     const leak = this.servers.find((s) => s.machineId === 'lkt-01');
     leak?.setInitial('leakUpperLimit', this.#config.process.leakTest.upperLimit, this.#start);
+    for (const server of this.servers) {
+      server.setInitial('epoch', this.epoch, this.#start);
+    }
     for (const server of this.servers) {
       const first = this.#config.schedule.machines[server.machineId]?.[0];
       if (first) {

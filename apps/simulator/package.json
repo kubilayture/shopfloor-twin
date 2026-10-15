@@ -20,6 +20,7 @@
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/sim-core": "workspace:*",
     "fastify": "catalog:",
+    "modbus-serial": "catalog:",
     "node-opcua": "catalog:",
     "prom-client": "catalog:",
     "zod": "catalog:"

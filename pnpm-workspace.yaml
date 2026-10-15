@@ -14,6 +14,7 @@ catalog:
   globals: 17.13.0
   node-opcua: 2.187.3
   lefthook: 2.2.1
+  modbus-serial: 8.0.25
   '@types/node': 26.6.5
   '@types/ws': 8.18.2
   '@vitest/coverage-v8': 4.1.11
@@ -29,3 +30,7 @@ engineStrict: true
 
 allowBuilds:
   lefthook: false
+
+# modbus-serial's optional serialport needs a native build; only Modbus TCP is used.
+ignoredOptionalDependencies:
+  - serialport

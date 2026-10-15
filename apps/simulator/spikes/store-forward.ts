@@ -55,6 +55,29 @@ for (const synchronous of ['NORMAL', 'FULL'] as const) {
   db.close();
 }
 
+// 1b. The fair comparison on macOS: SQLite only does a full flush (like fsyncSync) with fullfsync=ON.
+// Single-message transactions, then one transaction per batch of 50 (one flush tick).
+{
+  const db = open(join(dir, 't-fullfsync.db'), 'FULL');
+  db.exec('PRAGMA fullfsync = ON; PRAGMA checkpoint_fullfsync = ON');
+  const insert = db.prepare('INSERT INTO outbox (topic, payload, retain) VALUES (?, ?, ?)');
+  const n = 500;
+  let t = performance.now();
+  for (let i = 0; i < n; i++) insert.run('t', payload, 0);
+  const single = n / ((performance.now() - t) / 1000);
+  t = performance.now();
+  for (let batch = 0; batch < 100; batch++) {
+    db.exec('BEGIN');
+    for (let i = 0; i < 50; i++) insert.run('t', payload, 0);
+    db.exec('COMMIT');
+  }
+  const batched = 5_000 / ((performance.now() - t) / 1000);
+  console.log(
+    `1b. sqlite FULL + fullfsync: ${String(Math.round(single))} single-message commits/s (${(1000 / single).toFixed(1)} ms each, blocking); ${String(Math.round(batched))} messages/s in batches of 50`,
+  );
+  db.close();
+}
+
 // 3. Append-only file with fsync per message, for comparison.
 {
   const file = join(dir, 'outbox.log');

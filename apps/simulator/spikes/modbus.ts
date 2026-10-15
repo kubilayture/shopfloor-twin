@@ -1,6 +1,10 @@
 // Spike #71: modbus-serial as Modbus TCP server (simulator) and client (gateway).
 // Run: node apps/simulator/spikes/modbus.ts
-import ModbusRTU from 'modbus-serial';
+import Modbus, { ServerTCP } from 'modbus-serial';
+
+// The package's .d.ts uses `export default` in a CommonJS package: TypeScript sees the default import
+// as the module namespace, so the class is `.default` (which also works at runtime).
+const ModbusRTU = Modbus.default;
 
 const PORT = 5520;
 const registers = new Uint16Array(256);
@@ -27,9 +31,9 @@ const vector = {
   getCoil: (addr: number): boolean => addr === 0,
 };
 
-function startServer(): Promise<InstanceType<typeof ModbusRTU.ServerTCP>> {
+function startServer(): Promise<InstanceType<typeof ServerTCP>> {
   return new Promise((resolve) => {
-    const server = new ModbusRTU.ServerTCP(vector, { host: '127.0.0.1', port: PORT, unitID: 1 });
+    const server = new ServerTCP(vector, { host: '127.0.0.1', port: PORT, unitID: 1 });
     server.on('initialized', () => {
       resolve(server);
     });
@@ -39,7 +43,7 @@ function startServer(): Promise<InstanceType<typeof ModbusRTU.ServerTCP>> {
   });
 }
 
-const closeServer = (server: InstanceType<typeof ModbusRTU.ServerTCP>) =>
+const closeServer = (server: InstanceType<typeof ServerTCP>) =>
   new Promise<void>((resolve) => {
     server.close(() => {
       resolve();

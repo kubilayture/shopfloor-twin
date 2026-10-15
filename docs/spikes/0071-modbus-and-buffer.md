@@ -22,7 +22,19 @@ What must be known:
   - **Callback:** add a fourth parameter, `cb`. It is the form for a "silent" device, which simply never calls back, and for asynchronous answers.
 - Throwing, or calling back with `{ modbusErrorCode: n }`, produces exception `n`.
 - After the server closes, the client does not reconnect by itself. The poller must create a new client (or call `connectTCP` again) with backoff.
-- The optional dependency `serialport` needs a native build. The workspace ignores it (`ignoredOptionalDependencies`), because only TCP is used; the types still compile.
+- The optional dependency `serialport` needs a native build. The workspace ignores it (`ignoredOptionalDependencies`), because only TCP is used. `index.js` loads the serial modules inside try/catch, so only `getPorts()` would fail at runtime. The repo's `skipLibCheck` hides the missing `serialport` types.
+- **Imports:** the `.d.ts` declares `export default` in a CommonJS package. Under our module settings, TypeScript therefore needs `import Modbus, { ServerTCP } from 'modbus-serial'` and `const ModbusRTU = Modbus.default`, which also works at runtime. The spike scripts type-check with this form.
+- **Found by the review, outside the scripts:**
+  - FC04 reads work;
+  - ten concurrent requests on one client are matched by transaction id;
+  - a late answer after a timeout doesn't corrupt the next read;
+  - connecting to no server fails at once with ECONNREFUSED.
+
+  Things to handle in #74 and #77:
+  - the server answers up to 126 registers, so the poller must keep requests to the standard maximum of 125 itself;
+  - a wrong unit id is dropped silently, which looks like a timeout;
+  - a listen failure surfaces as `serverError`, which needs a handler.
+
 - The library is ISC-licensed, depends only on `debug`, and was last released in March 2026. That is mature rather than fast-moving, which suits a single legacy device.
 
 The alternative, `jsmodbus` 5.0.0 (September 2026), was not tried. Its first release in three years is a major version, and `modbus-serial` showed no gap that would justify a second spike.

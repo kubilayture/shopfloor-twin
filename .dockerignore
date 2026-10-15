@@ -1,0 +1,12 @@
+# Build context is the repository root; send only what images need.
+**/node_modules
+**/.turbo
+**/coverage
+**/dist
+**/.pki
+**/runs
+.git
+.github
+.env
+docs
+*.md

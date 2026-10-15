@@ -106,7 +106,7 @@ Each run also checks the conservation and time-accounting invariants after every
 
 A pull request is merged only when both jobs are green on its latest commit (ADR-0011). If CI fails but `pnpm verify` passes locally, check the Node.js and pnpm versions first: CI uses exactly `.nvmrc` and `packageManager`. A lockfile change that was not committed fails `--frozen-lockfile`.
 
-## Infrastructure stack (database and broker)
+## Infrastructure stack (database, broker, simulator)
 
 First time only: create your local secrets file. It is git-ignored; never commit it.
 
@@ -116,28 +116,39 @@ cp .env.example .env
 
 Then replace every `change-me` with a random value of your own, for example from `openssl rand -base64 18`. Passwords must not contain spaces. Change `DB_PORT` or `MQTT_PORT` if another program already uses 5442 or 1883.
 
-| Task                                                                                                     | Command                                                                            |
-| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Start and wait until healthy                                                                             | `pnpm stack:up`                                                                    |
-| Check it works (TimescaleDB present, anonymous MQTT refused, retained messages survive a broker restart) | `pnpm stack:smoke`                                                                 |
-| Stop, keep data                                                                                          | `pnpm stack:down`                                                                  |
-| Stop and delete all data                                                                                 | `pnpm stack:reset`                                                                 |
-| Status                                                                                                   | `docker compose ps`                                                                |
-| Logs                                                                                                     | `docker compose logs -f db` or `broker`                                            |
-| SQL shell                                                                                                | `docker compose exec db psql -U shopfloor -d shopfloor`                            |
-| Watch all MQTT traffic                                                                                   | `docker compose exec broker mosquitto_sub -u dev -P <MQTT_DEV_PASSWORD> -t '#' -v` |
+| Task                                                                                                                                               | Command                                                                            |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Start and wait until healthy                                                                                                                       | `pnpm stack:up`                                                                    |
+| Check it works (TimescaleDB present, anonymous MQTT refused, retained messages survive a broker restart, simulator running with five OPC UA ports) | `pnpm stack:smoke`                                                                 |
+| Stop, keep data                                                                                                                                    | `pnpm stack:down`                                                                  |
+| Stop and delete all data                                                                                                                           | `pnpm stack:reset`                                                                 |
+| Status                                                                                                                                             | `docker compose ps`                                                                |
+| Logs                                                                                                                                               | `docker compose logs -f db`, `broker` or `simulator`                               |
+| SQL shell                                                                                                                                          | `docker compose exec db psql -U shopfloor -d shopfloor`                            |
+| Watch all MQTT traffic                                                                                                                             | `docker compose exec broker mosquitto_sub -u dev -P <MQTT_DEV_PASSWORD> -t '#' -v` |
 
-| Service  | Host address     | Notes                                                                                                                                  |
-| -------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `db`     | `127.0.0.1:5442` | PostgreSQL 18 + TimescaleDB 2.30; database and user `shopfloor`; TimescaleDB telemetry off                                             |
-| `broker` | `127.0.0.1:1883` | Mosquitto 2.1; anonymous access off; users `dev` (manual testing) and `healthcheck`. Per-client users and topic ACLs arrive in Phase 3 |
+| Service     | Host address                                                     | Notes                                                                                                                                                                                                                                |
+| ----------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `db`        | `127.0.0.1:5442`                                                 | PostgreSQL 18 + TimescaleDB 2.30; database and user `shopfloor`; TimescaleDB telemetry off                                                                                                                                           |
+| `broker`    | `127.0.0.1:1883`                                                 | Mosquitto 2.1; anonymous access off; users `dev` (manual testing) and `healthcheck`. Per-client users and topic ACLs arrive in Phase 3                                                                                               |
+| `simulator` | `127.0.0.1:4800` (control API), `127.0.0.1:4841`–`4845` (OPC UA) | Live mode, built from `apps/simulator/Dockerfile` on every `stack:up` (cached layers make it fast). `SIM_SEED`, `SIM_SPEED`, `SIM_AUTOSTART`, `SIM_CONTROL_PORT` and `SIM_LOG_LEVEL` in `.env`; healthy when `/health/ready` answers |
 
-Both services listen on `127.0.0.1` only, so nothing is reachable from the network.
+All services listen on `127.0.0.1` only, so nothing is reachable from the network.
+
+Simulator notes:
+
+- The OPC UA servers advertise `localhost` in their endpoint URLs (`SIM_OPCUA_HOST` changes it), so clients on the host, such as UaExpert, connect as with `pnpm sim:serve`. Containers that join in Phase 3 connect to `opc.tcp://simulator:4841` and must use that URL as given (in node-opcua, `endpointMustExist: false`).
+- Certificates persist in the `simulator-pki` volume; `pnpm stack:reset` deletes them.
+- `docker compose stop simulator` sends SIGTERM; the simulator shuts down in well under a second.
+- Measured on the reference machine (M3, Docker Desktop 2 GB VM) at 60×:
+  - image 388 MB, mostly `node-opcua` and its nodesets;
+  - healthy about 6 s after start;
+  - about 170–225 MiB memory and about 1% CPU, under a limit of 512 MB and one CPU.
 
 ### Troubleshooting
 
-- **A port is already in use:** set `DB_PORT` or `MQTT_PORT` in `.env` and run `pnpm stack:up` again.
+- **A port is already in use:** set `DB_PORT`, `MQTT_PORT` or `SIM_CONTROL_PORT` in `.env` (the OPC UA ports 4841–4845 are fixed by the contract) and run `pnpm stack:up` again.
 - **`Set DB_PASSWORD in .env`:** `.env` is missing or incomplete; see the first step above.
 - **Broker users changed:** the password file is rebuilt from `.env` on every broker start; restart with `docker compose restart broker`.
 - **Debugging MQTT connections:** set `connection_messages true` in `config/mosquitto/mosquitto.conf` (off by default because the healthcheck connects every 5 seconds) and restart the broker.
-- **Memory:** Docker Desktop on this machine has a 2 GB VM; the database is tuned for 512 MB (`DB_TUNE_MEMORY`). Raise Docker Desktop's memory before Phase 4, when the MES and simulator containers join.
+- **Memory:** Docker Desktop on this machine has a 2 GB VM; the database is tuned for 512 MB (`DB_TUNE_MEMORY`). The simulator adds up to 512 MB. Raise Docker Desktop's memory before Phase 4, when the MES container joins.

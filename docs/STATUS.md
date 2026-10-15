@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #54 merged (PR #66): control API.
 - #53 merged (PR #65): alarms.
 - #52 merged (PR #64): LoadProgram on the CNCs.
 - #51 merged (PR #63): OPC UA server per machine.
@@ -36,11 +37,11 @@
 
 ## In progress
 
-- #54 control API (in review)
+- #55 simulator container (in review)
 
 ## Next up
 
-- #55 container, #56 integration tests and contract check, #57 Phase 2 close
+- #56 integration tests and contract check, #57 Phase 2 close
 
 ## Blockers and open questions for the owner
 

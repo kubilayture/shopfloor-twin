@@ -161,8 +161,8 @@ The MES `ingest` module (`apps/mes-server/src/modules/ingest/`, ADR-0017) is the
 
 **Acknowledgement:** a message is acknowledged only after its transaction committed, one at a time in arrival order. A crash before the commit means the broker delivers the message again; a crash between commit and acknowledgement means a copy, which dedup removes. When a transaction fails (ADR-0017):
 
-- **transient** (connection, shutdown, deadlock, resources: SQLSTATE classes 08, 57, 40, 53, 58, socket errors): retried a few times with backoff. If the database stays unreachable, the MES drops the session without acknowledging, waits until the database answers and reconnects; the broker queues meanwhile. (While a message waits, MQTT.js handles no other packet, not even the keepalive answer, so holding the session would only make it time out and reconnect again and again.)
-- **data or integrity** (classes 22, 23, 54), or an unknown error three times: the message is recorded in `rejected_message` as `unstorable` with the error and acknowledged, so one message can't block the stream.
+- **data or integrity** (SQLSTATE classes 22, 23, 54) only: the message is recorded in `rejected_message` as `unstorable` with the error and acknowledged, so one message can't block the stream.
+- **anything else**, including unknown and non-SQL errors (connection, lock timeout, a deploy's missing table, an internal error): retried a few times with backoff. If it persists, the MES drops the session without acknowledging, waits until the database answers, reloads its cursors and reconnects; the broker queues meanwhile. (While a message waits, MQTT.js handles no other packet, not even the keepalive answer, so holding the session would only make it time out and reconnect again and again.)
 
 **What happens to each delivery** (tables in the `ingest` schema, `db/migrations/0003_ingest_raw.sql`):
 

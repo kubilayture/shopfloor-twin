@@ -141,18 +141,31 @@ describe('sequence ranges', () => {
 describe('failure kinds (ADR-0017)', () => {
   const pg = (code: string): Error => Object.assign(new Error(code), { code });
 
-  it('retries connection, shutdown, rollback and resource errors; records data errors', () => {
-    expect(
-      ['08006', '57P01', '40001', '53300', 'ECONNREFUSED'].map((c) => failureKind(pg(c))),
-    ).toEqual(['transient', 'transient', 'transient', 'transient', 'transient']);
-    expect(failureKind(new Error('Connection terminated unexpectedly'))).toBe('transient');
+  it('records only data, integrity and limit errors as unstorable; everything else is retried', () => {
     expect(['22003', '22P02', '23505', '54000'].map((c) => failureKind(pg(c)))).toEqual([
       'data',
       'data',
       'data',
       'data',
     ]);
-    expect(failureKind(pg('42P01'))).toBe('unknown');
-    expect(failureKind(new TypeError('bug'))).toBe('unknown');
+    // Connection, shutdown, lock timeout, permissions, a deploy's missing table or column,
+    // read-only transaction, internal errors, socket and plain errors: never unstorable.
+    const retried = [
+      '08006',
+      '57P01',
+      '40001',
+      '53300',
+      '55P03',
+      '55000',
+      '42501',
+      '42P01',
+      '42703',
+      '25006',
+      'XX000',
+      'ECONNREFUSED',
+    ];
+    expect(retried.map((c) => failureKind(pg(c)))).toEqual(retried.map(() => 'transient'));
+    expect(failureKind(new TypeError('bug'))).toBe('transient');
+    expect(failureKind('a string')).toBe('transient');
   });
 });

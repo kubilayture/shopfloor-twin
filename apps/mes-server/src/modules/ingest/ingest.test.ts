@@ -11,6 +11,7 @@ import {
 import { TEST_PASSWORDS, startBroker } from '@shopfloor/test-kit/broker';
 import { sql, type Kysely } from 'kysely';
 import mqtt, { type MqttClient } from 'mqtt';
+import pg from 'pg';
 import { Registry } from 'prom-client';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -56,6 +57,7 @@ afterEach(async () => {
 /** Per test: its own database, broker session and equipment, so tests never see each other. */
 async function setup(): Promise<{
   db: Kysely<Database>;
+  url: string;
   clientId: string;
   equipment: (name: string) => { area: string; workCenter: string; equipment: string };
   clock: { now: number };
@@ -65,10 +67,8 @@ async function setup(): Promise<{
   const admin = createDatabase(databaseUrl, 1);
   await sql.raw(`CREATE DATABASE ingest_${String(testNumber)}`).execute(admin);
   await admin.destroy();
-  const db = createDatabase(
-    databaseUrl.replace(/\/shopfloor$/, `/ingest_${String(testNumber)}`),
-    3,
-  );
+  const url = databaseUrl.replace(/\/shopfloor$/, `/ingest_${String(testNumber)}`);
+  const db = createDatabase(url, 3);
   cleanup.push(() => db.destroy());
   await migrate(db, MIGRATIONS);
   const clientId = `mes-test-${String(testNumber)}`;
@@ -93,6 +93,7 @@ async function setup(): Promise<{
   };
   return {
     db,
+    url,
     clientId,
     equipment: (name) => ({
       area: 'machining',
@@ -750,7 +751,7 @@ describe('ingest (#95)', () => {
     let outage = 3;
     const ingest = await start({
       registry,
-      retry: { attempts: 2, baseMs: 10 },
+      retry: { attempts: 2, baseMs: 10, resumeMs: 50 },
       beforeCommit: () =>
         outage-- > 0
           ? Promise.reject(Object.assign(new Error('connection lost'), { code: '08006' }))
@@ -786,5 +787,35 @@ describe('ingest (#95)', () => {
     expect(await seqs(db, at.equipment)).toEqual([1, 2, 3, 4, 5]);
     // The copy of 3 changed nothing: only 4 and 5 were stored by the second session.
     expect(second.count('stored')).toBe(2);
+  });
+
+  it('waits out a held lock (lock_timeout, 55P03): facts are never acknowledged unstored, and arrive once it is released', async () => {
+    const { db, url, equipment, start } = await setup();
+    // The MES's own connections give up on a lock after 200 ms.
+    const timed = createDatabase(`${url}?options=${encodeURIComponent('-c lock_timeout=200')}`, 3);
+    cleanup.push(() => timed.destroy());
+    const holder = new pg.Client({ connectionString: url });
+    await holder.connect();
+    cleanup.push(() => holder.end());
+    const registry = new Registry();
+    const ingest = await start({
+      db: timed,
+      registry,
+      retry: { attempts: 2, baseMs: 10, resumeMs: 100 },
+    });
+    const at = equipment('cnc');
+    await holder.query('BEGIN');
+    await holder.query('LOCK TABLE ingest.equipment_event IN ACCESS EXCLUSIVE MODE');
+    for (const seq of [1, 2, 3])
+      await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, seq));
+    await waitFor(
+      async () => /^mes_ingest_suspensions_total [1-9]/m.test(await registry.metrics()),
+      'a suspension',
+    );
+    expect(ingest.count('stored')).toBe(0);
+    await holder.query('COMMIT');
+    await waitFor(async () => (await seqs(db, at.equipment)).length === 3, 'all three facts');
+    expect(await seqs(db, at.equipment)).toEqual([1, 2, 3]);
+    expect(await db.selectFrom('ingest.rejected_message').selectAll().execute()).toEqual([]);
   });
 });

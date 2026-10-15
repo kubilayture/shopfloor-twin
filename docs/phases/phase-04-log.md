@@ -32,3 +32,4 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - a known stream's new epoch counts numbers below its first one as a gap;
   - any broker user can take over client id `mes-server` (documented; the plain ACL can't prevent it);
   - a test for a crash between commit and acknowledgement.
+- #95 re-review: "an unknown error three times is unstorable" lost good facts behind a held lock (`55P03`), and the same would happen during a deploy (`42P01`). Now only SQLSTATE classes 22, 23 and 54 are unstorable; every other error is retried and then suspends the session, never acknowledged. The cursors are reloaded before reconnecting, so a commit that was applied although it reported failure is a duplicate on redelivery. A test holds an `ACCESS EXCLUSIVE` lock against a 200 ms `lock_timeout`.

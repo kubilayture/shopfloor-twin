@@ -73,6 +73,6 @@ Project board: https://github.com/users/kubilayture/projects/1
 
 - CI on `main`: green (`verify`, `stack smoke`).
 - Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79 and `edge-gateway` 92 / 78 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
-- Tests: 607.
+- Tests: 608.
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

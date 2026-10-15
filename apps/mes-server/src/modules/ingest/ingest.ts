@@ -47,45 +47,39 @@ export interface IngestOptions {
   readonly registry?: Registry;
   readonly log?: IngestLog;
   /**
-   * Retries of a delivery after a transient database error (connection, shutdown, deadlock,
-   * resources) before the session is dropped until the database answers again (ADR-0017).
+   * Retries of a delivery after any error other than a data error, before the session is dropped
+   * until the database answers again (ADR-0017).
    */
-  readonly retry?: { readonly attempts?: number; readonly baseMs?: number };
+  readonly retry?: {
+    readonly attempts?: number;
+    readonly baseMs?: number;
+    /** First wait before reconnecting after a suspension; doubles while suspensions repeat. */
+    readonly resumeMs?: number;
+  };
   /** Test seam: runs inside each fact's transaction, just before the commit. */
   readonly beforeCommit?: (topic: string) => Promise<void>;
   /** Test seam: runs after a delivery is stored, just before its acknowledgement. */
   readonly beforeAck?: (topic: string) => Promise<void>;
 }
 
-/** How a failed attempt to store a delivery is handled. */
-export type FailureKind = 'transient' | 'data' | 'unknown';
+/**
+ * How a failed attempt to store a delivery is handled. Only a data exception (22), an integrity
+ * violation (23) or a program limit (54) means this message can never be stored. Anything else
+ * (a lost connection, a lock timeout, a missing table during a deploy, a bug) may pass later, so
+ * it is retried and never acknowledged: dropping a good fact is worse than waiting (ADR-0017).
+ */
+export type FailureKind = 'transient' | 'data';
 
-/** SQLSTATE classes that a retry can fix: connection (08), shutdown (57), rollback (40), resources (53, 58). */
-const TRANSIENT_CLASSES = new Set(['08', '57', '40', '53', '58']);
-/** Data exception (22), integrity violation (23), program limit (54): the same message fails again. */
 const DATA_CLASSES = new Set(['22', '23', '54']);
 
 export function failureKind(error: unknown): FailureKind {
   const code =
     typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
-  if (typeof code === 'string') {
-    if (/^[0-9A-Z]{5}$/.test(code)) {
-      const sqlClass = code.slice(0, 2);
-      if (TRANSIENT_CLASSES.has(sqlClass)) return 'transient';
-      if (DATA_CLASSES.has(sqlClass)) return 'data';
-      return 'unknown';
-    }
-    if (code.startsWith('E')) return 'transient'; // ECONNREFUSED, ECONNRESET, ETIMEDOUT, …
-  }
-  if (
-    error instanceof Error &&
-    /connection terminated|connection timeout|timeout exceeded when trying to connect|connection error/i.test(
-      error.message,
-    )
-  ) {
-    return 'transient';
-  }
-  return 'unknown';
+  return typeof code === 'string' &&
+    /^[0-9A-Z]{5}$/.test(code) &&
+    DATA_CLASSES.has(code.slice(0, 2))
+    ? 'data'
+    : 'transient';
 }
 
 class Suspended extends Error {
@@ -99,8 +93,7 @@ export type IngestOutcome = 'stored' | 'duplicate' | 'rejected' | 'anchor' | 'st
 
 const RETRY_MAX_MS = 10_000;
 const STOP_WAIT_MS = 2_000;
-/** An error of unknown kind is retried this often before the message counts as unstorable. */
-const UNKNOWN_ATTEMPTS = 3;
+const RESUME_MAX_MS = 60_000;
 
 const silent: IngestLog = { info: () => undefined, warn: () => undefined, error: () => undefined };
 
@@ -127,6 +120,8 @@ export class Ingest {
   #sweepTimer: NodeJS.Timeout | undefined;
   #wake: (() => void) | undefined;
   #suspended = false;
+  /** Suspensions since the last stored delivery: the wait before reconnecting grows with them. */
+  #failedResumes = 0;
 
   constructor(options: IngestOptions) {
     this.#options = options;
@@ -266,11 +261,23 @@ export class Ingest {
     this.#suspended = true;
     this.#subscribed = false;
     this.#suspensions?.inc();
-    this.#log.error({}, 'database unreachable: UNS session dropped until it answers');
+    this.#log.error({}, 'storing keeps failing: UNS session dropped until the database answers');
+    const resumeMs = this.#options.retry?.resumeMs ?? 1_000;
+    const wait = Math.min(resumeMs * 2 ** this.#failedResumes, RESUME_MAX_MS);
+    this.#failedResumes++;
     const resume = async (): Promise<void> => {
       await client.endAsync(true);
+      // The cause may not be the connection (a lock, a deploy), so wait even if it answers.
+      await this.#sleep(wait);
       for (let attempt = 0; !this.#isStopping(); attempt++) {
-        const ok = await this.#store.ping();
+        // A commit that failed on the way back may have been applied: the cursors are reloaded
+        // from the table (in the queue, never beside a sweep), so its redelivery is a duplicate.
+        const ok =
+          (await this.#store.ping()) &&
+          (await this.#enqueue(() => this.#store.load()).then(
+            () => true,
+            () => false,
+          ));
         if (ok) break;
         await this.#sleep(Math.min(250 * 2 ** attempt, RETRY_MAX_MS));
       }
@@ -396,7 +403,7 @@ export class Ingest {
   }
 
   /**
-   * Stores one delivery. A transient database error is retried a few times, then the session is
+   * Stores one delivery. Any error but a data error is retried a few times, then the session is
    * suspended (no acknowledgement). A data or integrity error, which no retry fixes, is recorded
    * in `rejected_message` as `unstorable` and acknowledged, so one message can't block the rest.
    */
@@ -410,6 +417,7 @@ export class Ingest {
         const notices = await this.#process(packet);
         for (const notice of notices) await this.#notify(notice);
         await this.#options.beforeAck?.(packet.topic);
+        this.#failedResumes = 0;
         return;
       } catch (error) {
         if (this.#isStopping()) throw error;
@@ -419,10 +427,8 @@ export class Ingest {
           { err: error, topic: packet.topic, attempt, kind },
           'storing a UNS message failed',
         );
-        if (kind === 'data' || (kind === 'unknown' && attempt + 1 >= UNKNOWN_ATTEMPTS)) {
-          if (await this.#unstorable(packet, error)) return;
-        }
-        if (kind === 'transient' && attempt + 1 >= attempts) {
+        if (kind === 'data' && (await this.#unstorable(packet, error))) return;
+        if (attempt + 1 >= attempts) {
           this.#suspend(client);
           throw new Suspended();
         }
@@ -448,7 +454,7 @@ export class Ingest {
         );
         return true;
       } catch (recordError) {
-        if (failureKind(recordError) === 'transient') return false;
+        if (failureKind(recordError) !== 'data') return false;
       }
     }
     return false;

@@ -18,6 +18,9 @@ export async function generateOpenApi(): Promise<string> {
     ready: () => false,
     // Every optional route, so the description is complete.
     faults: { modbusSilent: () => undefined, opcuaOffline: () => Promise.resolve(true) },
+    groundTruth: () => {
+      throw new Error('not served');
+    },
   });
   await app.ready();
   const document = app.swagger();

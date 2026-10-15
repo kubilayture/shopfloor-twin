@@ -53,7 +53,8 @@ services:
     build:
       context: .
       dockerfile: apps/simulator/Dockerfile
-    image: shopfloor-twin/simulator:dev
+    # IMAGE_TAG (default dev) keeps other builds apart: the reconciliation run uses `reconcile`.
+    image: shopfloor-twin/simulator:${IMAGE_TAG:-dev}
     # Stable name: it goes into the persisted certificate's SAN, and Phase 3 connects to it.
     hostname: simulator
     pull_policy: build
@@ -82,7 +83,7 @@ services:
     build:
       context: .
       dockerfile: apps/edge-gateway/Dockerfile
-    image: shopfloor-twin/edge-gateway:dev
+    image: shopfloor-twin/edge-gateway:${IMAGE_TAG:-dev}
     pull_policy: build
     hostname: gateway
     depends_on:
@@ -116,7 +117,7 @@ services:
     build:
       context: .
       dockerfile: apps/mes-server/Dockerfile
-    image: shopfloor-twin/mes-server:dev
+    image: shopfloor-twin/mes-server:${IMAGE_TAG:-dev}
     pull_policy: build
     hostname: mes
     depends_on:
@@ -148,7 +149,7 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    image: shopfloor-twin/web:dev
+    image: shopfloor-twin/web:${IMAGE_TAG:-dev}
     pull_policy: build
     hostname: web
     depends_on:

@@ -24,7 +24,9 @@
     "test:golden": "pnpm --filter @shopfloor/simulator test:golden",
     "sim:live": "pnpm --filter @shopfloor/simulator live",
     "sim:serve": "pnpm --filter @shopfloor/simulator serve",
-    "test:e2e": "turbo run test:e2e --concurrency=1"
+    "test:e2e": "turbo run test:e2e --concurrency=1",
+    "test:reconcile": "pnpm --filter @shopfloor/e2e test:reconcile",
+    "playwright:install": "pnpm --filter @shopfloor/e2e playwright:install"
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",

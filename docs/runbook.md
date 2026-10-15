@@ -161,12 +161,14 @@ Each run also checks the conservation and time-accounting invariants after every
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`:
 
-| Job           | What it runs                                                                                                                          |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `verify`      | `pnpm install --frozen-lockfile`, then `pnpm verify` (format check, lint, typecheck, tests), then `pnpm test:golden`                  |
-| `stack smoke` | Creates a throw-away `.env` with random passwords, runs `scripts/stack-smoke.sh`, prints container logs on failure, removes the stack |
+| Job           | What it runs                                                                                                                                                                                                                |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verify`      | `pnpm install --frozen-lockfile`, then `pnpm verify` (format check, lint, typecheck, tests), then `pnpm test:golden`                                                                                                        |
+| `end to end`  | `pnpm test:e2e`: the whole-system Vitest suites (`*.e2e.test.ts`), one at a time                                                                                                                                            |
+| `reconcile`   | `pnpm test:reconcile`: one simulated shift through the whole Compose stack, reconciled with the simulator's ground truth, and Playwright on the live overview (see "Reconciliation run"); uploads `e2e/results/` on failure |
+| `stack smoke` | Creates a throw-away `.env` with random passwords, runs `scripts/stack-smoke.sh`, prints container logs on failure, removes the stack                                                                                       |
 
-A pull request is merged only when both jobs are green on its latest commit (ADR-0011). If CI fails but `pnpm verify` passes locally, check the Node.js and pnpm versions first: CI uses exactly `.nvmrc` and `packageManager`. A lockfile change that was not committed fails `--frozen-lockfile`.
+The jobs run in parallel. A pull request is merged only when every job is green on its latest commit (ADR-0011). If CI fails but `pnpm verify` passes locally, check the Node.js and pnpm versions first: CI uses exactly `.nvmrc` and `packageManager`. A lockfile change that was not committed fails `--frozen-lockfile`.
 
 ## Full stack (Compose)
 
@@ -202,7 +204,7 @@ Then replace every `change-me` with a random value of your own, for example from
 
 All services listen on `127.0.0.1` only, so nothing is reachable from the network. Inside the Compose network the MES and nginx listen on all interfaces (`0.0.0.0`), which only the other containers reach.
 
-Start order: `db` and `broker` first; `simulator`, then `gateway` (needs broker and simulator); `mes` (needs db and broker); `web` (needs a healthy MES). The gateway does not wait for the MES: the edge must work without it, the MES's broker session is persistent, and the current state of every machine is retained in the UNS, so the overview is complete whenever the MES joins. Only cycles and telemetry published before the MES's very first session (a fresh broker volume) are not stored. The reconciliation of #100 needs the stricter order of the Phase 4 plan (database and broker, MES ready, gateway connected, then the simulator resumed at 06:00): it starts the simulator with `SIM_AUTOSTART=false` and drives the order itself, so the default stack stays as it is. A consequence: every fresh `docker compose up` records one `sequence-gap` incident per machine (the first numbers of each `device:*` stream, about 30 s after start), because the autostarted simulator publishes before the gateway subscribes. That is expected with `SIM_AUTOSTART=true`.
+Start order: `db` and `broker` first; `simulator`, then `gateway` (needs broker and simulator); `mes` (needs db and broker); `web` (needs a healthy MES). The gateway does not wait for the MES: the edge must work without it, the MES's broker session is persistent, and the current state of every machine is retained in the UNS, so the overview is complete whenever the MES joins. Only cycles and telemetry published before the MES's very first session (a fresh broker volume) are not stored. The reconciliation needs the stricter order of the Phase 4 plan (database and broker, MES ready, gateway connected, then the simulator resumed at 06:00): `pnpm test:reconcile` starts the simulator with `SIM_AUTOSTART=false` and drives the order itself, in a project of its own (see "Reconciliation run"), so the default stack stays as it is. A consequence: every fresh `docker compose up` records one `sequence-gap` incident per machine (the first numbers of each `device:*` stream, about 30 s after start), because the autostarted simulator publishes before the gateway subscribes. That is expected with `SIM_AUTOSTART=true`.
 
 MES and web notes:
 
@@ -246,3 +248,37 @@ Simulator notes:
   | **Total** | 437 MiB | 1.5 GiB + db's tuning (2 GiB) |         |
 
   The database grows towards its 512 MB tuning as data and queries grow, and `pnpm test` and `pnpm test:e2e` start their own TimescaleDB and Mosquitto containers through Testcontainers beside the stack. The stack fits a 2 GiB VM today, but with little room: give the Docker VM **4 GiB** (Colima: `colima stop && colima start --memory 4 --cpu 2`; Docker Desktop: Settings → Resources). Containers that hit their limit are killed (`docker compose ps` shows the restart, `docker inspect <container> --format '{{.State.OOMKilled}}'`).
+
+## Reconciliation run
+
+One simulated shift through the whole chain, simulator → gateway → broker → MES → web, checked against the simulator's own ground truth (#100; Phase 4 exit criteria 1 and 3). It runs as its own CI job (`reconcile`) and locally:
+
+```bash
+pnpm playwright:install   # once: Chromium's headless shell for Playwright
+pnpm test:reconcile       # about 10 minutes: image builds, start-up, 8 minutes of shift
+```
+
+It needs Docker (Colima or Docker Desktop; with Colima, export `DOCKER_HOST` from `docker context inspect --format '{{.Endpoints.docker.Host}}'`) and Node.js 26. It does not use `.env`: it writes its own env file with random passwords to a temporary directory and runs Compose as project `shopfloor-reconcile` with `e2e/compose.reconcile.yml` on top of `docker-compose.yml` (ephemeral host ports on `127.0.0.1`, no published database or broker ports, no restarts, fresh volumes). A dev stack on the default ports can keep running beside it; its images are built from the working tree under their own tag (`IMAGE_TAG=reconcile`, so `shopfloor-twin/*:reconcile`; the dev stack's `:dev` images stay as they are). At the end the project is removed with its volumes, also after a failure; Ctrl+C or SIGTERM removes it and the env file before exiting, and after 25 minutes (`RECONCILE_DEADLINE_MS`) the run fails by itself with its report and logs.
+
+What it does, in the Phase 4 plan's order:
+
+1. Builds the images, then starts `db`, `broker` and `mes` and waits until the MES is ready (migrated, subscribed).
+2. Starts the simulator idle (`SIM_AUTOSTART=false`, seed and start of the golden week: Monday 2026-10-12 06:00 Istanbul, the start of shift A) and the gateway, and waits until the gateway is ready with all six machines connected and the MES has every machine's start-up state (Off at 06:00, from the gateway's snapshots) for the simulator's epoch. Compose's `depends_on` starts the gateway only once the simulator answers; since the simulator is idle, nothing happens before the MES listens.
+3. Starts `web`, resumes the simulator at 60× over its control API (`POST /api/v1/resume`) and runs Playwright (`e2e/browser/overview.spec.ts`) beside the shift: Chromium opens the overview, waits for `connection-status` to be `open`, then for 90 s (`OVERVIEW_SAMPLE_MS`) compares each machine's `state-<id>` badge (`data-state`, recorded by the page every 20 ms) with the simulator's current state (`GET /api/v1/ground-truth`, polled every 200 ms). When the truth changes at time t, the page must show that state, or a state the truth took later, by t + 2 s. A change's time is when the paced simulation clock reached the state's start (`pacedTime` of the same answer, at the request's midpoint). The page must also really change: at least half as many transitions as judged changes, and one on every machine whose truth changed, so a frozen page can't pass by showing a state the truth returned to.
+4. Polls `GET /api/v1/status` every second (lag, progress) until the simulation is 5 minutes past shift end (14:05), then pauses it.
+5. Waits until the MES has drained: every machine's current state and start equal the simulator's, the gateway's buffer is empty, the plant watermark is past shift end, and the shift totals stop changing.
+6. Compares, and fails on any difference:
+   - time per state, per machine, for shift A (`GET /api/v1/shifts/2026-10-12/A/totals`) equals the simulator's ground truth for that bucket to the millisecond, and the ground truth covers all 8 hours of each machine;
+   - the live ground truth equals the golden week's shift A (`apps/simulator/golden/week-01/summary.json`): pacing never changes the run;
+   - every stored piece (`equipment.equipment_state_interval`, read with `psql` in the `db` container) lies inside one UTC hour and one shift bucket of the shared calendar;
+   - no data-quality incident of lost data (`sequence-gap`, `ring-overrun`, `buffer-overflow`) and no rejected UNS message. With this start order there is no start-up gap; one would mean the order is wrong.
+
+Results go to `e2e/results/` (git-ignored): `report.json` (phase times, wall time and effective speed of the shift, the simulator's lag, the drain, per-machine totals, pieces, incidents, the browser's delays), `overview-latency.json`, and on failure `compose.log` (every service's log; the last 60 lines of each are also printed) and Playwright's trace and screenshot in `playwright/` (open a trace with `pnpm --filter @shopfloor/e2e exec playwright show-trace <file>`). A difference is printed as a table of machine, state, truth, MES and delta.
+
+Options: `RECONCILE_SKIP_BUILD=1` uses the images already built, `RECONCILE_BROWSER=0` skips Playwright, `RECONCILE_PROJECT` names the Compose project, `OVERVIEW_SAMPLE_MS` sets how long the browser samples (keep it below about 470 s, or sampling outlasts the shift), `RECONCILE_DEADLINE_MS` the overall limit.
+
+Notes:
+
+- Shift A's totals may include provisional time: the interval each machine is in at 14:00 is still open (until its next state change), so its shift-A piece is flagged provisional, but that piece ends at the shift boundary and can't change once the MES has that machine's facts up to the boundary, which the drain check verifies (each machine's current state and start equal the simulator's). The watermark alone wouldn't show it: it is plant-wide, so a busy machine moves it past a silent one's late facts. The report lists the provisional part per machine.
+- If the run fails with lag, read `lagMs` in `report.json` (the simulator's `GET /api/v1/status`): at 60× the simulator processes events within a few milliseconds of their time on a laptop. A large lag means the machine (or the CI runner) is short of CPU; the run fails if the shift takes more than twice its nominal wall time, rather than slowing down silently.
+- The run uses about 450 MiB in the Docker VM, like the full stack; Chromium runs on the host.

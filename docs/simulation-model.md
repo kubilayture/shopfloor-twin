@@ -483,6 +483,8 @@ OPC UA values use the timestamp of the event that changed them (ADR-0009).
 
 **Timeliness** (test with the real clock at 60×, after a warm-up of two simulated hours): events are never processed before their time, and 95% of them are processed less than 100 ms of wall time after it. `status().lagMs` is a rough indicator: how late the earliest overdue event was at the last wake-up.
 
+**Live ground truth** (#100): a live run keeps the headless `GroundTruth` too, fed by the same events. `run.groundTruth()` returns the summary as `finish` would write it if the run ended at `simulation.now` (the open state of each machine counted up to there, nothing closed), with the current shift bucket, which buckets are complete and each machine's current state. It only reads, so it can't change the run; a test checks that a run read every few seconds emits the same events as one never read, and that every completed bucket equals the headless summary of the same seed. The control API serves it as `GET /api/v1/ground-truth`.
+
 The wall clock is injected (`WallClock`), so tests use a manual clock and are exact. Only `systemClock` reads `performance.now()`, and it lives outside `src/plant`, which the determinism lint rule still guards.
 
 ## Invariants and golden scenarios

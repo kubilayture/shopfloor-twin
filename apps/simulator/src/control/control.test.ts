@@ -9,7 +9,7 @@ import { ManualClock } from '../live/testing.ts';
 import type { PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
 import { EVENT_SCHEMA } from '../headless/serialize.ts';
-import { EVENTS_PATH, buildControlApp } from './app.ts';
+import { EVENTS_PATH, buildControlApp, type GroundTruthReport } from './app.ts';
 import { parseEnv } from './env.ts';
 import { EventHub } from './event-hub.ts';
 import { OPENAPI_FILE, generateOpenApi } from './openapi.ts';
@@ -27,7 +27,7 @@ afterEach(async () => {
   app = undefined;
 });
 
-async function setup(ready = true) {
+async function setup(ready = true, withGroundTruth = false) {
   const clock = new ManualClock();
   const hub = new EventHub();
   const events: PlantEvent[] = [];
@@ -42,7 +42,14 @@ async function setup(ready = true) {
       hub.record(event);
     },
   });
-  app = await buildControlApp({ pacer: run.pacer, hub, ready: () => ready });
+  app = await buildControlApp({
+    pacer: run.pacer,
+    hub,
+    ready: () => ready,
+    ...(withGroundTruth
+      ? { groundTruth: () => ({ epoch: 1_760_000_000, ...run.groundTruth() }) }
+      : {}),
+  });
   return { app, run, clock, hub, events };
 }
 
@@ -123,6 +130,48 @@ describe('control API (#54)', () => {
     for (const url of ['/api/v1/pause', '/api/v1/resume']) {
       expect((await app.inject({ method: 'POST', url })).statusCode).toBe(409);
     }
+  });
+
+  it('serves the live ground truth, which follows the run without moving it (#100)', async () => {
+    expect(
+      (await (await setup()).app.inject({ method: 'GET', url: '/api/v1/ground-truth' })).statusCode,
+    ).toBe(404);
+    await app?.close();
+    const { app: served, run, clock } = await setup(true, true);
+    const read = async () => {
+      const response = await served.inject({ method: 'GET', url: '/api/v1/ground-truth' });
+      expect(response.statusCode).toBe(200);
+      return response.json<GroundTruthReport>();
+    };
+    const idle = await read();
+    expect(idle).toMatchObject({
+      epoch: 1_760_000_000,
+      start: '2026-10-12T03:00:00.000Z',
+      simTime: '2026-10-12T03:00:00.000Z',
+      pacedTime: '2026-10-12T03:00:00.000Z',
+    });
+    expect(Object.keys(idle.machines).sort()).toEqual(Object.keys(idle.current).sort());
+    expect(idle.current['cnc-01']?.since).toBe('2026-10-12T03:00:00.000Z');
+
+    await served.inject({ method: 'POST', url: '/api/v1/resume' });
+    clock.advance(8 * 60_000 + 10_000);
+    await served.inject({ method: 'POST', url: '/api/v1/pause' });
+    const paused = await read();
+    expect(paused.simTime).toBe('2026-10-12T11:10:00.000Z');
+    expect(paused.pacedTime).toBe(paused.simTime);
+    expect(paused.currentBucket).toBe('2026-10-12/B');
+    expect(paused.buckets).toEqual({
+      '2026-10-12/A': { complete: true },
+      '2026-10-12/B': { complete: false },
+    });
+    // Time per state adds up to the time run, per machine, and the response carries every state.
+    const ran = Date.parse(paused.simTime) - Date.parse(paused.start);
+    for (const machine of Object.values(paused.machines)) {
+      expect(Object.values(machine.stateMs).reduce((sum, ms) => sum + ms, 0)).toBe(ran);
+      expect(Object.keys(machine.byShift['2026-10-12/A'] ?? {})).toHaveLength(10);
+    }
+    expect(await read()).toEqual(paused);
+    expect(run.pacer.state).toBe('paused');
   });
 
   it('refuses control until every OPC UA server listens, but reports status', async () => {
@@ -281,6 +330,7 @@ describe('control API (#54)', () => {
     expect(Object.keys(document.paths).sort()).toEqual([
       '/api/v1/faults/modbus',
       '/api/v1/faults/opcua/{machine}',
+      '/api/v1/ground-truth',
       '/api/v1/pause',
       '/api/v1/resume',
       '/api/v1/speed',

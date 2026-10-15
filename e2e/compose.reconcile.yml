@@ -1,0 +1,34 @@
+# Override for the full-shift reconciliation (#100), used only by e2e/src/reconcile.ts together
+# with docker-compose.yml, under its own project name and a generated env file, so it never touches
+# the dev stack or its volumes.
+#
+# - Host ports are ephemeral (127.0.0.1, chosen by Docker; the test asks `docker compose port`), so
+#   the run never collides with a dev stack on the default ports. The database and the broker are
+#   not published at all: the test reads the database with `docker compose exec`.
+# - Nothing restarts: a crashed service must fail the run, not reappear as a new simulator epoch.
+# - The simulator starts idle (SIM_AUTOSTART=false in the env file); the test resumes it once the
+#   MES is ready and the gateway connected (Phase 4 plan, "Reconciliation").
+
+services:
+  db:
+    ports: !reset []
+    restart: 'no'
+  broker:
+    ports: !reset []
+    restart: 'no'
+  simulator:
+    ports: !override
+      - '127.0.0.1::4800'
+    restart: 'no'
+  gateway:
+    ports: !override
+      - '127.0.0.1::4900'
+    restart: 'no'
+  mes:
+    ports: !override
+      - '127.0.0.1::4700'
+    restart: 'no'
+  web:
+    ports: !override
+      - '127.0.0.1::8080'
+    restart: 'no'

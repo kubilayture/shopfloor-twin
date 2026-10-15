@@ -420,10 +420,34 @@ These are the simulator's internal facts, the "truth". They are not the UNS payl
 - `machines.<id>.cycles`: completed cycles by result.
 - `production`: parts started (blanks consumed), finished per product, and scrapped per product and reason.
 - `lots`: remaining quantity of every lot.
+- `oee`: the ground-truth OEE (#117), below.
 
 `GroundTruth` builds the state times and cycle counts only from the events; `production` and `lots` are read from the model at the end of the run. A test runs the same seed through the plant directly and checks that every machine's own time accounting equals the summary exactly.
 
-A run covers the half-open interval [start, end): no event at or after `end` is written. The shift running at `start` (and its break, if the run starts inside one) is announced by `shift` events at `start`, so the log is self-contained. From Phase 5 on, the summary also gets KPIs computed with `oee-core` (plan rev. 2).
+A run covers the half-open interval [start, end): no event at or after `end` is written. The shift running at `start` (and its break, if the run starts inside one) is announced by `shift` events at `start`, so the log is self-contained.
+
+The format is `sim-summary/2` since #117; `/1` had no `oee` section, and every other field is unchanged.
+
+#### Ground-truth OEE (`oee`)
+
+`GroundTruth` computes OEE with `oee-core` and `config/plant/oee.yaml`, the same code and configuration as the MES (ADR-0021, plan section 7):
+
+- `oee.config`: the micro-stop threshold and the scheduled-time rule used.
+- `oee.machines.<id>`:
+  - `operation` and `idealCycleMs` (the ideal cycle time of each product at that operation, integer ms);
+  - `shifts.<bucket>.inputs`: the `oee-core` inputs of the shift bucket: `scheduled` (false for `no-shift`), `stateMs` (equal to `byShift`), `stops` and `cycles`;
+  - `shifts.<bucket>.result`: `bucketOee` of those inputs: `availability`, `performance`, `quality` and `oee`, each `{ fraction: "num/den", decimal: "0.9778" }` (exact reduced fraction, rounded half-up to four decimals) or `null`; `anomaly`, `provisional`, `totals` (PBT, APT, excluded, long-stop and micro-stop ms, ideal ms, good, scrap, rework, produced), `unplanned` (cycles of the no-shift bucket, outside P and Q) and `losses` (`null` when PBT = 0);
+  - `hours.<ISO hour>`: the same inputs per UTC hour, with `shift`, the bucket the hour lies in (shifts start and end on whole hours). Inputs only: `bucketOee` of them gives the hour's result, which keeps the week's file at about 40,000 lines.
+- `oee.workCenters.<id>`: `equipment` and, per shift bucket, `workCenterOee` of the member machines' inputs (ΣAPT/ΣPBT, Σideal/ΣAPT, Σgood/Σproduced).
+
+How the inputs are built:
+
+- **Time per state per hour** is cut at UTC hours as events close each machine's time. The shift bucket's `stateMs` is `byShift`, kept independently from the shift events; a test checks that the hours of a bucket sum to it, for every input and total.
+- **Stopped intervals** are held while open and filed when they close: one piece per hour and one per shift bucket, each with the interval's whole length (`wholeMs`), so the threshold applies to the whole interval and each piece is still credited to its own hour. While an interval is open, a summary or snapshot includes it with `open: true` and `wholeMs` running to the snapshot time (ADR-0021); such a bucket can be `provisional`. A run that ends inside a Stopped interval reports it open in the same way.
+- **Cycles** are bucketed by their time (`shiftKeyAt` of the cycle's UTC hour; buckets are half-open), not by the last shift event seen, so a cycle exactly at a boundary lands where the MES puts it. Before #117 the summary counted cycles only per machine in total, so no count changed; in the golden week no cycle completes on an hour boundary, and the time-based and event-based buckets agree for all 10,988 cycles.
+- **Work centers** are Cell M1 (CNC-01, CNC-02, WSH-01) and Line A1 (ASM-01, LKT-01, PCK-01), from `plant.yaml`.
+
+The inputs are kept incrementally while events are recorded; ratios and losses are computed only when a summary or snapshot is read. A snapshot costs about 0.2 ms after one shift and about 3 ms after a full week (measured on an M3, JSON serialization included), well within 5 Hz polling.
 
 ## Process values (telemetry)
 
@@ -483,7 +507,7 @@ OPC UA values use the timestamp of the event that changed them (ADR-0009).
 
 **Timeliness** (test with the real clock at 60×, after a warm-up of two simulated hours): events are never processed before their time, and 95% of them are processed less than 100 ms of wall time after it. `status().lagMs` is a rough indicator: how late the earliest overdue event was at the last wake-up.
 
-**Live ground truth** (#100): a live run keeps the headless `GroundTruth` too, fed by the same events. `run.groundTruth()` returns the summary as `finish` would write it if the run ended at `simulation.now` (the open state of each machine counted up to there, nothing closed), with the current shift bucket, which buckets are complete and each machine's current state. It only reads, so it can't change the run; a test checks that a run read every few seconds emits the same events as one never read, and that every completed bucket equals the headless summary of the same seed. The control API serves it as `GET /api/v1/ground-truth`.
+**Live ground truth** (#100): a live run keeps the headless `GroundTruth` too, fed by the same events. `run.groundTruth()` returns the summary as `finish` would write it if the run ended at `simulation.now` (the open state of each machine counted up to there, nothing closed), with the current shift bucket, which buckets are complete and each machine's current state, and the OEE section at that time. It only reads, so it can't change the run; tests check that a run read every few seconds emits the same events as one never read, that every completed bucket, OEE included, equals the headless summary of the same seed, and that a ground truth read hundreds of times during a run ends equal to one never read. The control API serves it as `GET /api/v1/ground-truth`.
 
 The wall clock is injected (`WallClock`), so tests use a manual clock and are exact. Only `systemClock` reads `performance.now()`, and it lives outside `src/plant`, which the determinism lint rule still guards.
 

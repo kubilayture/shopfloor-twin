@@ -171,6 +171,10 @@ describe('control API (#54)', () => {
       expect(Object.keys(machine.byShift['2026-10-12/A'] ?? {})).toHaveLength(10);
     }
     expect(await read()).toEqual(paused);
+    // The OEE section survives the response schema whole (#117).
+    expect(paused.oee).toEqual(JSON.parse(JSON.stringify(run.groundTruth().oee)));
+    expect(paused.oee.machines['cnc-01']?.shifts['2026-10-12/A']?.result.oee).not.toBeNull();
+    expect(Object.keys(paused.oee.machines['cnc-01']?.hours ?? {})).toHaveLength(9);
     expect(run.pacer.state).toBe('paused');
   });
 

@@ -36,7 +36,7 @@ pnpm sim:headless --seed 42 --days 7 --out runs/week-42
 Output:
 
 - `events.jsonl`: one JSON object per line. The first line is the run header (`sim-run/1`: seed, start, end, SHA-256 of the configuration); every other line is an event (`sim-event/1`).
-- `summary.json`: the ground truth (`sim-summary/1`): time in every state per machine, in total and per shift instance; cycles per result; parts started, finished and scrapped by reason; remaining quantity per lot.
+- `summary.json`: the ground truth (`sim-summary/2`): time in every state per machine, in total and per shift instance; cycles per result; parts started, finished and scrapped by reason; remaining quantity per lot; and the OEE section (inputs per machine, shift bucket and UTC hour; A, P, Q and OEE per machine, work center and shift bucket).
 
 A week takes about 0.2 s and about 6 MB of events. The files are written under temporary names and renamed at the end, so a failed run never leaves a mix of old and new files. Invalid options exit with status 2, other failures with status 1. The event and summary formats are described in `docs/simulation-model.md`.
 

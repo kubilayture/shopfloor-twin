@@ -191,7 +191,7 @@ describe('headless CLI', () => {
       const summary = JSON.parse(await readFile(join(out, 'summary.json'), 'utf8')) as {
         schema: string;
       };
-      expect(summary.schema).toBe('sim-summary/1');
+      expect(summary.schema).toBe('sim-summary/2');
       const events = (await readFile(join(out, 'events.jsonl'), 'utf8')).trim().split('\n');
       expect(events.length).toBeGreaterThan(1_000);
     } finally {

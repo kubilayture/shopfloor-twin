@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #117 done (branch `feat/117-ground-truth-oee`): the simulator's ground truth computes OEE with `oee-core`: per machine the inputs per shift bucket and UTC hour, `bucketOee` per shift bucket and `workCenterOee` for Cell M1 and Line A1; summary `sim-summary/2`, control API 1.2. Golden `summary.json` regenerated (OEE section added, every earlier field byte-identical); `events.sha256` unchanged.
 - #126 done: first changeover with nothing loaded reads `CHANGEOVER none→…`; golden week byte-identical (the path is unreachable with a validated schedule), `events.sha256` unchanged as the baseline for #117.
 - #115 merged (PR #125): Phase 5 plan.
 - Phase 5 plan with issues #113, #115–#124 and #126 under milestone "Phase 05 – OEE and downtime".
@@ -70,11 +71,11 @@
 
 - None
 - #115 Phase 5 plan (in review)
-- #116 `oee-core` (branch `feat/116-oee-core`, in review): OEE, losses, exact fractions and four-decimal rounding; `config/plant/oee.yaml` (threshold 120 s); 19 reference cases in `docs/oee-reference-cases.md`; ADR-0021. Config hash and golden week unchanged.
+- #117 simulator ground-truth OEE (branch `feat/117-ground-truth-oee`, in review).
 
 ## Next up
 
-- #113 interval finality per piece, then #117–#124 in the plan's order.
+- #113 interval finality per piece, then #118–#124 in the plan's order.
 
 ## Blockers and open questions for the owner
 

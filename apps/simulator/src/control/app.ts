@@ -11,6 +11,8 @@ import type { LiveGroundTruth } from '../live/run.ts';
 import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
 import type { EventHub } from './event-hub.ts';
 
+/** The contract version (docs/contracts/simulator-control-api.md); 1.2 adds the OEE ground truth. */
+export const CONTROL_API_VERSION = '1.2.0';
 export const API_PREFIX = '/api/v1';
 export const EVENTS_PATH = `${API_PREFIX}/events`;
 /** A WebSocket client that falls this far behind is disconnected rather than buffered without bound. */
@@ -52,6 +54,88 @@ const stateMsSchema = z
   )
   .describe('Simulation milliseconds per machine state');
 
+const ratioSchema = z
+  .object({
+    fraction: z.string().describe('Exact reduced fraction `num/den`'),
+    decimal: z.string().describe('Rounded half-up to four decimals'),
+  })
+  .nullable();
+
+const oeeResultSchema = z
+  .object({
+    availability: ratioSchema.describe('APT / PBT; null when PBT = 0'),
+    performance: ratioSchema.describe('Ideal time / APT, not clamped; null when PBT or APT is 0'),
+    quality: ratioSchema.describe('good / produced; null when PBT = 0 or nothing was produced'),
+    oee: ratioSchema.describe('(ideal × good) / (PBT × produced); null when PBT = 0 or anomaly'),
+    anomaly: z.boolean().describe('Cycles were counted although APT = 0'),
+    provisional: z.boolean().describe('An open Stopped interval counts as a micro-stop for now'),
+    totals: z.object({
+      plannedBusyMs: count,
+      actualProductionMs: count,
+      excludedMs: count,
+      longStopMs: count,
+      microStopMs: count,
+      idealMs: count,
+      good: count,
+      scrap: count,
+      rework: count,
+      produced: count,
+    }),
+    unplanned: z
+      .object({ good: count, produced: count, idealMs: count })
+      .describe('Cycles of the unscheduled no-shift bucket, kept out of P and Q'),
+    losses: z
+      .object({
+        availability: z.object({
+          own: z.object({ stopped: count, down: count, setup: count, idle: count, total: count }),
+          external: z.object({ starved: count, blocked: count, total: count }),
+        }),
+        performance: z.object({ microStops: count, speed: count, total: count }),
+        quality: z.object({ fraction: z.string(), decimal: z.string() }),
+      })
+      .nullable()
+      .describe('In ms; null when PBT = 0'),
+  })
+  .describe('`bucketOee` / `workCenterOee` of `oee-core` (ADR-0021)');
+
+const bucketInputsShape = {
+  scheduled: z.boolean(),
+  stateMs: stateMsSchema,
+  stops: z
+    .array(z.object({ ms: count, wholeMs: count, open: z.boolean().optional() }))
+    .describe('Stopped pieces with the whole interval length; an open one runs to simTime'),
+  cycles: z.array(
+    z.object({ product: z.string(), result: z.enum(['good', 'scrap', 'rework']), count }),
+  ),
+};
+
+export const oeeSchema = z
+  .object({
+    config: z.object({ microStopThresholdMs: count, scheduledTime: z.literal('shift-calendar') }),
+    machines: z.record(
+      z.string(),
+      z.object({
+        operation: z.string(),
+        idealCycleMs: z.record(z.string(), count),
+        shifts: z.record(
+          z.string(),
+          z.object({ inputs: z.object(bucketInputsShape), result: oeeResultSchema }),
+        ),
+        hours: z
+          .record(z.string(), z.object({ shift: z.string(), ...bucketInputsShape }))
+          .describe('Keyed by the UTC hour start, ISO 8601; inputs only'),
+      }),
+    ),
+    workCenters: z.record(
+      z.string(),
+      z.object({
+        equipment: z.array(z.string()),
+        shifts: z.record(z.string(), oeeResultSchema),
+      }),
+    ),
+  })
+  .describe('OEE inputs per machine, shift bucket and UTC hour; results per shift bucket (#117)');
+
 export const groundTruthSchema = z.object({
   epoch: count.describe('Run epoch (Unix seconds), as the devices publish it (ADR-0015)'),
   start: z.string().describe('Simulation start, ISO 8601 UTC'),
@@ -92,6 +176,7 @@ export const groundTruthSchema = z.object({
     scrapped: z.record(z.string(), z.record(z.string(), count)),
   }),
   lots: z.record(z.string(), z.number()).describe('Remaining quantity per material lot'),
+  oee: oeeSchema,
 });
 
 /** The live ground truth with the run's epoch: what `GET /api/v1/ground-truth` returns. */
@@ -140,7 +225,7 @@ export async function buildControlApp({
   faults = {},
   groundTruth,
   logger = false,
-  version = '0.0.0',
+  version = CONTROL_API_VERSION,
 }: ControlAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger,
@@ -314,7 +399,7 @@ export async function buildControlApp({
         schema: {
           tags: ['simulation'],
           summary:
-            'Time per state, per machine and shift bucket, so far (the headless summary, live)',
+            'Time per state and OEE, per machine and shift bucket, so far (the headless summary, live)',
           description:
             'The ground truth a headless run would write if it ended now, kept live while the run ' +
             'is paced. Reconciliation tests compare the MES with it (#100). Reading it never ' +

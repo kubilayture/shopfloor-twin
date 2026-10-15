@@ -12,6 +12,7 @@ FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/simulator/package.json apps/simulator/
 COPY packages/contracts/package.json packages/contracts/
+COPY packages/oee-core/package.json packages/oee-core/
 COPY packages/plant-config/package.json packages/plant-config/
 COPY packages/shift-calendar/package.json packages/shift-calendar/
 COPY packages/sim-core/package.json packages/sim-core/
@@ -27,6 +28,7 @@ WORKDIR /app
 COPY --from=deps /app ./
 COPY config/plant config/plant
 COPY packages/contracts/src packages/contracts/src
+COPY packages/oee-core/src packages/oee-core/src
 COPY packages/plant-config/src packages/plant-config/src
 COPY packages/shift-calendar/src packages/shift-calendar/src
 COPY packages/sim-core/src packages/sim-core/src

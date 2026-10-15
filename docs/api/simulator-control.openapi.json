@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ShopFloor Twin simulator control API",
-    "version": "0.0.0",
+    "version": "1.2.0",
     "description": "Controls the pacing of the live simulation and streams its plant events. Plant events: WebSocket at /api/v1/events (see docs/contracts/simulator-control-api.md)."
   },
   "components": {
@@ -515,7 +515,7 @@
     },
     "/api/v1/ground-truth": {
       "get": {
-        "summary": "Time per state, per machine and shift bucket, so far (the headless summary, live)",
+        "summary": "Time per state and OEE, per machine and shift bucket, so far (the headless summary, live)",
         "tags": [
           "simulation"
         ],
@@ -821,6 +821,1050 @@
                         "type": "number"
                       },
                       "description": "Remaining quantity per material lot"
+                    },
+                    "oee": {
+                      "type": "object",
+                      "properties": {
+                        "config": {
+                          "type": "object",
+                          "properties": {
+                            "microStopThresholdMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "scheduledTime": {
+                              "type": "string",
+                              "enum": [
+                                "shift-calendar"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "microStopThresholdMs",
+                            "scheduledTime"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "machines": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "operation": {
+                                "type": "string"
+                              },
+                              "idealCycleMs": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "shifts": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "object",
+                                  "properties": {
+                                    "inputs": {
+                                      "type": "object",
+                                      "properties": {
+                                        "scheduled": {
+                                          "type": "boolean"
+                                        },
+                                        "stateMs": {
+                                          "type": "object",
+                                          "properties": {
+                                            "Off": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "Idle": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "Running": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "Stopped": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "Starved": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "Blocked": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "Setup": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "Down": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "PlannedStop": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "Maintenance": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            }
+                                          },
+                                          "required": [
+                                            "Off",
+                                            "Idle",
+                                            "Running",
+                                            "Stopped",
+                                            "Starved",
+                                            "Blocked",
+                                            "Setup",
+                                            "Down",
+                                            "PlannedStop",
+                                            "Maintenance"
+                                          ],
+                                          "additionalProperties": false,
+                                          "description": "Simulation milliseconds per machine state"
+                                        },
+                                        "stops": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "ms": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "wholeMs": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "open": {
+                                                "type": "boolean"
+                                              }
+                                            },
+                                            "required": [
+                                              "ms",
+                                              "wholeMs"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          "description": "Stopped pieces with the whole interval length; an open one runs to simTime"
+                                        },
+                                        "cycles": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "product": {
+                                                "type": "string"
+                                              },
+                                              "result": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "good",
+                                                  "scrap",
+                                                  "rework"
+                                                ]
+                                              },
+                                              "count": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991
+                                              }
+                                            },
+                                            "required": [
+                                              "product",
+                                              "result",
+                                              "count"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        }
+                                      },
+                                      "required": [
+                                        "scheduled",
+                                        "stateMs",
+                                        "stops",
+                                        "cycles"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "result": {
+                                      "type": "object",
+                                      "properties": {
+                                        "availability": {
+                                          "nullable": true,
+                                          "description": "APT / PBT; null when PBT = 0",
+                                          "type": "object",
+                                          "properties": {
+                                            "fraction": {
+                                              "type": "string",
+                                              "description": "Exact reduced fraction `num/den`"
+                                            },
+                                            "decimal": {
+                                              "type": "string",
+                                              "description": "Rounded half-up to four decimals"
+                                            }
+                                          },
+                                          "required": [
+                                            "fraction",
+                                            "decimal"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "performance": {
+                                          "nullable": true,
+                                          "description": "Ideal time / APT, not clamped; null when PBT or APT is 0",
+                                          "type": "object",
+                                          "properties": {
+                                            "fraction": {
+                                              "type": "string",
+                                              "description": "Exact reduced fraction `num/den`"
+                                            },
+                                            "decimal": {
+                                              "type": "string",
+                                              "description": "Rounded half-up to four decimals"
+                                            }
+                                          },
+                                          "required": [
+                                            "fraction",
+                                            "decimal"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "quality": {
+                                          "nullable": true,
+                                          "description": "good / produced; null when PBT = 0 or nothing was produced",
+                                          "type": "object",
+                                          "properties": {
+                                            "fraction": {
+                                              "type": "string",
+                                              "description": "Exact reduced fraction `num/den`"
+                                            },
+                                            "decimal": {
+                                              "type": "string",
+                                              "description": "Rounded half-up to four decimals"
+                                            }
+                                          },
+                                          "required": [
+                                            "fraction",
+                                            "decimal"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "oee": {
+                                          "nullable": true,
+                                          "description": "(ideal × good) / (PBT × produced); null when PBT = 0 or anomaly",
+                                          "type": "object",
+                                          "properties": {
+                                            "fraction": {
+                                              "type": "string",
+                                              "description": "Exact reduced fraction `num/den`"
+                                            },
+                                            "decimal": {
+                                              "type": "string",
+                                              "description": "Rounded half-up to four decimals"
+                                            }
+                                          },
+                                          "required": [
+                                            "fraction",
+                                            "decimal"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "anomaly": {
+                                          "type": "boolean",
+                                          "description": "Cycles were counted although APT = 0"
+                                        },
+                                        "provisional": {
+                                          "type": "boolean",
+                                          "description": "An open Stopped interval counts as a micro-stop for now"
+                                        },
+                                        "totals": {
+                                          "type": "object",
+                                          "properties": {
+                                            "plannedBusyMs": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "actualProductionMs": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "excludedMs": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "longStopMs": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "microStopMs": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "idealMs": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "good": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "scrap": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "rework": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "produced": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            }
+                                          },
+                                          "required": [
+                                            "plannedBusyMs",
+                                            "actualProductionMs",
+                                            "excludedMs",
+                                            "longStopMs",
+                                            "microStopMs",
+                                            "idealMs",
+                                            "good",
+                                            "scrap",
+                                            "rework",
+                                            "produced"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "unplanned": {
+                                          "type": "object",
+                                          "properties": {
+                                            "good": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "produced": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "idealMs": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            }
+                                          },
+                                          "required": [
+                                            "good",
+                                            "produced",
+                                            "idealMs"
+                                          ],
+                                          "additionalProperties": false,
+                                          "description": "Cycles of the unscheduled no-shift bucket, kept out of P and Q"
+                                        },
+                                        "losses": {
+                                          "nullable": true,
+                                          "description": "In ms; null when PBT = 0",
+                                          "type": "object",
+                                          "properties": {
+                                            "availability": {
+                                              "type": "object",
+                                              "properties": {
+                                                "own": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "stopped": {
+                                                      "type": "integer",
+                                                      "minimum": -9007199254740991,
+                                                      "maximum": 9007199254740991
+                                                    },
+                                                    "down": {
+                                                      "type": "integer",
+                                                      "minimum": -9007199254740991,
+                                                      "maximum": 9007199254740991
+                                                    },
+                                                    "setup": {
+                                                      "type": "integer",
+                                                      "minimum": -9007199254740991,
+                                                      "maximum": 9007199254740991
+                                                    },
+                                                    "idle": {
+                                                      "type": "integer",
+                                                      "minimum": -9007199254740991,
+                                                      "maximum": 9007199254740991
+                                                    },
+                                                    "total": {
+                                                      "type": "integer",
+                                                      "minimum": -9007199254740991,
+                                                      "maximum": 9007199254740991
+                                                    }
+                                                  },
+                                                  "required": [
+                                                    "stopped",
+                                                    "down",
+                                                    "setup",
+                                                    "idle",
+                                                    "total"
+                                                  ],
+                                                  "additionalProperties": false
+                                                },
+                                                "external": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "starved": {
+                                                      "type": "integer",
+                                                      "minimum": -9007199254740991,
+                                                      "maximum": 9007199254740991
+                                                    },
+                                                    "blocked": {
+                                                      "type": "integer",
+                                                      "minimum": -9007199254740991,
+                                                      "maximum": 9007199254740991
+                                                    },
+                                                    "total": {
+                                                      "type": "integer",
+                                                      "minimum": -9007199254740991,
+                                                      "maximum": 9007199254740991
+                                                    }
+                                                  },
+                                                  "required": [
+                                                    "starved",
+                                                    "blocked",
+                                                    "total"
+                                                  ],
+                                                  "additionalProperties": false
+                                                }
+                                              },
+                                              "required": [
+                                                "own",
+                                                "external"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            "performance": {
+                                              "type": "object",
+                                              "properties": {
+                                                "microStops": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "speed": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "total": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "microStops",
+                                                "speed",
+                                                "total"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            "quality": {
+                                              "type": "object",
+                                              "properties": {
+                                                "fraction": {
+                                                  "type": "string"
+                                                },
+                                                "decimal": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "fraction",
+                                                "decimal"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          },
+                                          "required": [
+                                            "availability",
+                                            "performance",
+                                            "quality"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      },
+                                      "required": [
+                                        "availability",
+                                        "performance",
+                                        "quality",
+                                        "oee",
+                                        "anomaly",
+                                        "provisional",
+                                        "totals",
+                                        "unplanned",
+                                        "losses"
+                                      ],
+                                      "additionalProperties": false,
+                                      "description": "`bucketOee` / `workCenterOee` of `oee-core` (ADR-0021)"
+                                    }
+                                  },
+                                  "required": [
+                                    "inputs",
+                                    "result"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "hours": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "object",
+                                  "properties": {
+                                    "shift": {
+                                      "type": "string"
+                                    },
+                                    "scheduled": {
+                                      "type": "boolean"
+                                    },
+                                    "stateMs": {
+                                      "type": "object",
+                                      "properties": {
+                                        "Off": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "Idle": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "Running": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "Stopped": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "Starved": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "Blocked": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "Setup": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "Down": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "PlannedStop": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "Maintenance": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "required": [
+                                        "Off",
+                                        "Idle",
+                                        "Running",
+                                        "Stopped",
+                                        "Starved",
+                                        "Blocked",
+                                        "Setup",
+                                        "Down",
+                                        "PlannedStop",
+                                        "Maintenance"
+                                      ],
+                                      "additionalProperties": false,
+                                      "description": "Simulation milliseconds per machine state"
+                                    },
+                                    "stops": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "ms": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "wholeMs": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "open": {
+                                            "type": "boolean"
+                                          }
+                                        },
+                                        "required": [
+                                          "ms",
+                                          "wholeMs"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      "description": "Stopped pieces with the whole interval length; an open one runs to simTime"
+                                    },
+                                    "cycles": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "product": {
+                                            "type": "string"
+                                          },
+                                          "result": {
+                                            "type": "string",
+                                            "enum": [
+                                              "good",
+                                              "scrap",
+                                              "rework"
+                                            ]
+                                          },
+                                          "count": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "required": [
+                                          "product",
+                                          "result",
+                                          "count"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "shift",
+                                    "scheduled",
+                                    "stateMs",
+                                    "stops",
+                                    "cycles"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "description": "Keyed by the UTC hour start, ISO 8601; inputs only"
+                              }
+                            },
+                            "required": [
+                              "operation",
+                              "idealCycleMs",
+                              "shifts",
+                              "hours"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "workCenters": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "equipment": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "shifts": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "object",
+                                  "properties": {
+                                    "availability": {
+                                      "nullable": true,
+                                      "description": "APT / PBT; null when PBT = 0",
+                                      "type": "object",
+                                      "properties": {
+                                        "fraction": {
+                                          "type": "string",
+                                          "description": "Exact reduced fraction `num/den`"
+                                        },
+                                        "decimal": {
+                                          "type": "string",
+                                          "description": "Rounded half-up to four decimals"
+                                        }
+                                      },
+                                      "required": [
+                                        "fraction",
+                                        "decimal"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "performance": {
+                                      "nullable": true,
+                                      "description": "Ideal time / APT, not clamped; null when PBT or APT is 0",
+                                      "type": "object",
+                                      "properties": {
+                                        "fraction": {
+                                          "type": "string",
+                                          "description": "Exact reduced fraction `num/den`"
+                                        },
+                                        "decimal": {
+                                          "type": "string",
+                                          "description": "Rounded half-up to four decimals"
+                                        }
+                                      },
+                                      "required": [
+                                        "fraction",
+                                        "decimal"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "quality": {
+                                      "nullable": true,
+                                      "description": "good / produced; null when PBT = 0 or nothing was produced",
+                                      "type": "object",
+                                      "properties": {
+                                        "fraction": {
+                                          "type": "string",
+                                          "description": "Exact reduced fraction `num/den`"
+                                        },
+                                        "decimal": {
+                                          "type": "string",
+                                          "description": "Rounded half-up to four decimals"
+                                        }
+                                      },
+                                      "required": [
+                                        "fraction",
+                                        "decimal"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "oee": {
+                                      "nullable": true,
+                                      "description": "(ideal × good) / (PBT × produced); null when PBT = 0 or anomaly",
+                                      "type": "object",
+                                      "properties": {
+                                        "fraction": {
+                                          "type": "string",
+                                          "description": "Exact reduced fraction `num/den`"
+                                        },
+                                        "decimal": {
+                                          "type": "string",
+                                          "description": "Rounded half-up to four decimals"
+                                        }
+                                      },
+                                      "required": [
+                                        "fraction",
+                                        "decimal"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "anomaly": {
+                                      "type": "boolean",
+                                      "description": "Cycles were counted although APT = 0"
+                                    },
+                                    "provisional": {
+                                      "type": "boolean",
+                                      "description": "An open Stopped interval counts as a micro-stop for now"
+                                    },
+                                    "totals": {
+                                      "type": "object",
+                                      "properties": {
+                                        "plannedBusyMs": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "actualProductionMs": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "excludedMs": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "longStopMs": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "microStopMs": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "idealMs": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "good": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "scrap": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "rework": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "produced": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "required": [
+                                        "plannedBusyMs",
+                                        "actualProductionMs",
+                                        "excludedMs",
+                                        "longStopMs",
+                                        "microStopMs",
+                                        "idealMs",
+                                        "good",
+                                        "scrap",
+                                        "rework",
+                                        "produced"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "unplanned": {
+                                      "type": "object",
+                                      "properties": {
+                                        "good": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "produced": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "idealMs": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "required": [
+                                        "good",
+                                        "produced",
+                                        "idealMs"
+                                      ],
+                                      "additionalProperties": false,
+                                      "description": "Cycles of the unscheduled no-shift bucket, kept out of P and Q"
+                                    },
+                                    "losses": {
+                                      "nullable": true,
+                                      "description": "In ms; null when PBT = 0",
+                                      "type": "object",
+                                      "properties": {
+                                        "availability": {
+                                          "type": "object",
+                                          "properties": {
+                                            "own": {
+                                              "type": "object",
+                                              "properties": {
+                                                "stopped": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "down": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "setup": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "idle": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "total": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "stopped",
+                                                "down",
+                                                "setup",
+                                                "idle",
+                                                "total"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            "external": {
+                                              "type": "object",
+                                              "properties": {
+                                                "starved": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "blocked": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "total": {
+                                                  "type": "integer",
+                                                  "minimum": -9007199254740991,
+                                                  "maximum": 9007199254740991
+                                                }
+                                              },
+                                              "required": [
+                                                "starved",
+                                                "blocked",
+                                                "total"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          },
+                                          "required": [
+                                            "own",
+                                            "external"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "performance": {
+                                          "type": "object",
+                                          "properties": {
+                                            "microStops": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "speed": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "total": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            }
+                                          },
+                                          "required": [
+                                            "microStops",
+                                            "speed",
+                                            "total"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "quality": {
+                                          "type": "object",
+                                          "properties": {
+                                            "fraction": {
+                                              "type": "string"
+                                            },
+                                            "decimal": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "fraction",
+                                            "decimal"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      },
+                                      "required": [
+                                        "availability",
+                                        "performance",
+                                        "quality"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": [
+                                    "availability",
+                                    "performance",
+                                    "quality",
+                                    "oee",
+                                    "anomaly",
+                                    "provisional",
+                                    "totals",
+                                    "unplanned",
+                                    "losses"
+                                  ],
+                                  "additionalProperties": false,
+                                  "description": "`bucketOee` / `workCenterOee` of `oee-core` (ADR-0021)"
+                                }
+                              }
+                            },
+                            "required": [
+                              "equipment",
+                              "shifts"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "config",
+                        "machines",
+                        "workCenters"
+                      ],
+                      "additionalProperties": false,
+                      "description": "OEE inputs per machine, shift bucket and UTC hour; results per shift bucket (#117)"
                     }
                   },
                   "required": [
@@ -833,7 +1877,8 @@
                     "current",
                     "machines",
                     "production",
-                    "lots"
+                    "lots",
+                    "oee"
                   ],
                   "additionalProperties": false
                 }

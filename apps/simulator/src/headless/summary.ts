@@ -1,14 +1,12 @@
+import type { PlantConfig } from '@shopfloor/plant-config';
+import { NO_SHIFT } from '@shopfloor/shift-calendar';
 import type { SimTime } from '@shopfloor/sim-core';
 import type { PlantEvent, ProductionLine } from '../plant/line.ts';
-import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
-
-type StateMs = Record<MachineState, number>;
-
-const zero = (): StateMs => Object.fromEntries(MACHINE_STATES.map((s) => [s, 0])) as StateMs;
-
-const NO_SHIFT = 'no-shift';
+import type { MachineState } from '../plant/machine-state.ts';
+import { OeeTruth, zeroStates as zero, type OeeSummary, type StateMs } from './oee-truth.ts';
 
 interface MachineTruth {
+  readonly id: string;
   state: MachineState;
   /** Where the time not yet counted starts (the last state change or shift boundary). */
   since: SimTime;
@@ -34,16 +32,24 @@ export interface GroundTruthSummary {
     scrapped: Record<string, Record<string, number>>;
   };
   readonly lots: Record<string, number>;
+  /** OEE inputs and results per machine, shift bucket and hour, and per work center (#117). */
+  readonly oee: OeeSummary;
 }
 
 export class GroundTruth {
   readonly #machines = new Map<string, MachineTruth>();
   readonly #scrapped = new Map<string, Map<string, number>>();
-  #shift = NO_SHIFT;
+  readonly #oee: OeeTruth;
+  #shift: string = NO_SHIFT;
 
-  constructor(machineIds: readonly string[], start: SimTime) {
+  constructor(config: PlantConfig, start: SimTime) {
+    this.#oee = new OeeTruth(config);
+    const machineIds = config.plant.areas.flatMap((a) =>
+      a.workCenters.flatMap((w) => w.equipment.map((e) => e.id)),
+    );
     for (const id of machineIds) {
       this.#machines.set(id, {
+        id,
         state: 'Off',
         since: start,
         changedAt: start,
@@ -63,12 +69,14 @@ export class GroundTruth {
     if (event.type === 'state') {
       const machine = this.#machine(event.machineId);
       this.#close(machine, event.at);
+      this.#oee.stateChange(machine.id, machine.state, event.to, event.at);
       machine.state = event.to;
       machine.changedAt = event.at;
       return;
     }
     if (event.type === 'cycle-complete') {
       this.#machine(event.machineId).cycles[event.result]++;
+      this.#oee.cycle(event.machineId, event.product, event.result, event.at);
       if (event.result === 'scrap') {
         const byReason = this.#scrapped.get(event.product) ?? new Map<string, number>();
         const reason = event.reason ?? 'UNKNOWN';
@@ -90,41 +98,45 @@ export class GroundTruth {
     );
   }
 
+  /** The summary at the end of the run: `snapshot(end, …)` after closing every machine's time. */
   finish(end: SimTime, line: ProductionLine, lotIds: readonly string[]): GroundTruthSummary {
     this.#closeAll(end);
-    const machines = Object.fromEntries(
-      [...this.#machines].map(([id, m]) => [
-        id,
-        { stateMs: m.total, byShift: Object.fromEntries(m.byShift), cycles: m.cycles },
-      ]),
-    );
-    return { machines, ...this.#production(line, lotIds) };
+    return this.snapshot(end, line, lotIds);
   }
 
   /**
    * The summary as `finish(now, …)` would return it, without closing anything: the live run keeps
    * recording afterwards (#100). The open state of each machine counts up to `now`, in the
-   * current bucket.
+   * current bucket, and an open Stopped interval's whole length runs to `now` (ADR-0021).
    */
   snapshot(now: SimTime, line: ProductionLine, lotIds: readonly string[]): GroundTruthSummary {
+    const open = new Map<string, { state: MachineState; since: SimTime }>();
+    const shifts = new Map<string, Record<string, StateMs>>();
     const machines = Object.fromEntries(
       [...this.#machines].map(([id, m]) => {
-        const open = now - m.since;
-        if (open < 0) {
+        const time = now - m.since;
+        if (time < 0) {
           throw new RangeError(`snapshot at ${String(now)} is before ${String(m.since)}`);
         }
+        open.set(id, { state: m.state, since: m.since });
         const stateMs = { ...m.total };
         const byShift = new Map([...m.byShift].map(([key, ms]) => [key, { ...ms }]));
-        if (open > 0) {
-          stateMs[m.state] += open;
+        if (time > 0) {
+          stateMs[m.state] += time;
           const shift = byShift.get(this.#shift) ?? zero();
-          shift[m.state] += open;
+          shift[m.state] += time;
           byShift.set(this.#shift, shift);
         }
-        return [id, { stateMs, byShift: Object.fromEntries(byShift), cycles: { ...m.cycles } }];
+        const perShift = Object.fromEntries(byShift);
+        shifts.set(id, perShift);
+        return [id, { stateMs, byShift: perShift, cycles: { ...m.cycles } }];
       }),
     );
-    return { machines, ...this.#production(line, lotIds) };
+    return {
+      machines,
+      ...this.#production(line, lotIds),
+      oee: this.#oee.summary(now, open, shifts),
+    };
   }
 
   #production(
@@ -173,6 +185,7 @@ export class GroundTruth {
     if (duration === 0) {
       return;
     }
+    this.#oee.addTime(machine.id, machine.state, at - duration, at);
     machine.total[machine.state] += duration;
     const shift = machine.byShift.get(this.#shift) ?? zero();
     shift[machine.state] += duration;

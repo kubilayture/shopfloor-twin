@@ -110,6 +110,8 @@ export const MAX_PROGRAM_QUANTITY = 100_000;
 export { FAILURE_ALARM_SEVERITY } from '@shopfloor/contracts';
 export const CALIBRATION_ALARM_CODE = 'CALIBRATION-DUE';
 export const CALIBRATION_ALARM_SEVERITY = 300;
+/** Stands for "no product loaded" in a changeover cause (`CHANGEOVER none→VB-100`). */
+export const NO_PRODUCT = 'none';
 
 export type LoadProgramResult =
   | { ok: true; position: number }
@@ -678,7 +680,7 @@ export class ProductionLine {
       return undefined;
     }
     if (station.loadedProduct !== campaign.product) {
-      const cause = `CHANGEOVER ${String(station.loadedProduct)}→${campaign.product}`;
+      const cause = `CHANGEOVER ${station.loadedProduct ?? NO_PRODUCT}→${campaign.product}`;
       station.loadedProduct = campaign.product;
       station.busy = true;
       this.#enter(station, 'Setup', cause);

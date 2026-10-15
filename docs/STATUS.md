@@ -2,10 +2,12 @@
 
 ## Current phase: 05 – OEE and downtime (planning; Phase 4 closed 2026-10-16)
 
-## Exit criteria progress: Phase 5: 0 / 5 met (plan in review)
+## Exit criteria progress: Phase 5: 0 / 5 met
 
 ## Done since last update
 
+- #126 done: first changeover with nothing loaded reads `CHANGEOVER none→…`; golden week byte-identical (the path is unreachable with a validated schedule), `events.sha256` unchanged as the baseline for #117.
+- #115 merged (PR #125): Phase 5 plan.
 - Phase 5 plan with issues #113, #115–#124 and #126 under milestone "Phase 05 – OEE and downtime".
 - #101 merged (PR #114): Phase 4 closed, tagged `phase-04`.
 - **Phase 4 closed**: all 4 exit criteria met; tag `phase-04` (report: `docs/phases/phase-04-report.md`; learning notes: `docs/learning/phase-04.md`; data model: `docs/data-model.md`, generated from the database with a drift test).
@@ -66,7 +68,7 @@
 
 ## In progress
 
-- #115 Phase 5 plan (in review)
+- None
 
 ## Next up
 
@@ -85,6 +87,6 @@ Project board: https://github.com/users/kubilayture/projects/1
 
 - CI on `main`: green (`verify`, `end to end`, `stack smoke`, `reconcile`).
 - Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 92 / 79, `mes-server` 95 / 85 and web 98 / 89 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
-- Tests: 737 (plus the `end to end` job: gateway, golden-week reconciliation; and the `reconcile` job).
+- Tests: 738 (plus the `end to end` job: gateway, golden-week reconciliation; and the `reconcile` job).
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

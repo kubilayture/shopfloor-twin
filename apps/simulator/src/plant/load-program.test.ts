@@ -72,6 +72,22 @@ describe('LoadProgram (plan section 5, data path 3)', () => {
     expect(made).toBe(3);
   });
 
+  it('names the first changeover of a CNC with nothing loaded "none", never "undefined"', () => {
+    // A validated schedule always has a first campaign, so only a CNC built
+    // with an empty campaign list starts with no product loaded.
+    const { line, simulation, events, runTo } = setup({
+      'cnc-01': [],
+      'cnc-02': [{ product: 'VB-100', quantity: 1_000 }],
+    });
+    runTo(T0 + HOUR);
+    line.loadProgram('cnc-01', 'VB-100', 2, simulation);
+    runTo(T0 + 2 * HOUR);
+    const setups = events.flatMap((e) =>
+      e.type === 'state' && e.machineId === 'cnc-01' && e.to === 'Setup' ? [e.cause] : [],
+    );
+    expect(setups).toEqual(['CHANGEOVER none→VB-100']);
+  });
+
   it.each([
     ['asm-01', 'VB-100', 1, 'does not run programs'],
     ['cnc-01', 'VB-999', 1, 'unknown product'],

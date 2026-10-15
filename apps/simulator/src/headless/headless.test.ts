@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -122,6 +123,21 @@ describe('runHeadless (plan section 4, headless mode)', () => {
     expect(configHash(config)).toMatch(/^[0-9a-f]{64}$/);
     expect(configHash(changed)).not.toBe(configHash(config));
     expect(configHash(structuredClone(config))).toBe(configHash(config));
+  });
+
+  it('hashes only the simulation sections: the OEE configuration does not change it (ADR-0021)', async () => {
+    const changed = structuredClone(config);
+    changed.oee.microStopThresholdMs = 1;
+    expect(configHash(changed)).toBe(configHash(config));
+    const simulationOnly = Object.fromEntries(Object.entries(config).filter(([k]) => k !== 'oee'));
+    expect(createHash('sha256').update(stableStringify(simulationOnly)).digest('hex')).toBe(
+      configHash(config),
+    );
+    // The golden week runs on config/plant: its header hash is the one from before oee.yaml.
+    const golden = JSON.parse(
+      await readFile(resolve(import.meta.dirname, '../../golden/week-01/summary.json'), 'utf8'),
+    ) as { run: { configSha256: string } };
+    expect(configHash(config)).toBe(golden.run.configSha256);
   });
 
   it('covers [start, end): nothing at or after the end, and the running shift opens at the start', () => {

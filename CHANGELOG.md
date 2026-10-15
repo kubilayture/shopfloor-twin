@@ -10,6 +10,8 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Changed
 
+- The simulator's run header hashes only the simulation sections of the plant configuration (`SIMULATION_FILES`, `simulationSections` in `plant-config`), so OEE configuration never changes `configSha256` or `events.sha256`; golden `week-01` unchanged. `plant-config` cross-checks that shifts start and end on whole hours in a time zone with whole-hour UTC offsets, and that ideal cycle times are whole milliseconds (#116).
+
 - `pnpm verify` also runs `pnpm check:dockerfiles` (`scripts/check-dockerfiles.ts`): every app's Dockerfile must copy the `package.json` of each workspace package its `pnpm install --filter` selects and the `src` of each one it needs at run time, and nothing else from `apps/` or `packages/`; a root `tsconfig.json` type-checks and lints `scripts/*.ts`; the CI `stack smoke` job sets up Node.js for the web checks and gets 20 minutes (#99).
 - The MES API's response and WebSocket message schemas moved from `mes-server`'s `realtime` module to `@shopfloor/contracts` (`@shopfloor/contracts/mes-api`), so `web` parses with the same schemas the OpenAPI document is generated from (documents unchanged); the shared ESLint config gives `apps/web` browser globals and the React hooks rules (#98).
 - Plan rev. 6 and ADR-0011: Claude merges after an independent review agent and a green CI; ADR-0004's merge rule superseded; PR template checklist updated (#46).
@@ -20,6 +22,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- `oee-core` OEE (#116, ADR-0021): availability, performance, quality and OEE per machine bucket (`bucketOee`) and per work center from summed inputs (`workCenterOee`), with own and external availability loss, micro-stops, speed loss (may be negative) and quality loss; reduced BigInt fractions and half-up four-decimal rounding in integers (`fraction`, `toDecimal`); `null` where a ratio is undefined and an `anomaly` flag for counts without APT; open stops counted as provisional micro-stops. An ESLint rule forbids floating point in `oee-core`. `config/plant/oee.yaml` (micro-stop threshold 120 000 ms over the whole Stopped interval, `scheduledTime: shift-calendar`), loaded and validated by `plant-config`; `idealCycleMs` gives exact ideal times. `docs/oee-reference-cases.md`: 17 hand-calculated cases that the tests parse and check as fractions and four-decimal values; property tests for bounds, A·P·Q, loss accounting, hours summing to the shift and monotone rounding.
 - Phase 5 plan with issues #113, #115–#124 and #126 (#115).
 - Phase 4 closed: report and learning notes; all 4 exit criteria met; tag `phase-04` (#101).
 - `docs/data-model.md`, generated from a migrated TimescaleDB (`pnpm --filter @shopfloor/mes-server data-model`, from `pg_catalog` and `timescaledb_information`): per schema every table with its columns (type, nullability, default), keys, foreign keys, checks, indexes and hypertable chunk intervals, a Mermaid diagram of the foreign keys and a short description per table; a test in `db.test.ts` fails when the committed file is out of date or a table has no description (#101).

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { PlantConfig } from '@shopfloor/plant-config';
+import { simulationSections, type PlantConfig } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { ProductionLine, type LineEvent } from '../plant/line.ts';
 import { RUN_SCHEMA, EVENT_SCHEMA, SUMMARY_SCHEMA, isoTime, stableStringify } from './serialize.ts';
@@ -29,8 +29,14 @@ export interface HeadlessResult {
   readonly summary: GroundTruthSummary;
 }
 
+/**
+ * Hashes only the simulation sections (ADR-0021): OEE configuration is loaded beside them but is
+ * not a simulation input, so changing it never changes the run header or `events.sha256`.
+ */
 export const configHash = (config: PlantConfig): string =>
-  createHash('sha256').update(stableStringify(config)).digest('hex');
+  createHash('sha256')
+    .update(stableStringify(simulationSections(config)))
+    .digest('hex');
 
 export function runHeadless(
   { config, seed, start, end, checkInvariants = false }: HeadlessOptions,

@@ -563,7 +563,8 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 - [x] Alarm representation in OPC UA: state variables plus project alarm events; lifecycle in the MES (ADR-0010)
 - [x] Lossless state and event delivery from OPC UA: events with sequence numbers, exception-based values (ADR-0009)
 - [x] Modbus library confirmation: `modbus-serial` (ADR-0013)
-- [ ] Micro-stop threshold and auto-classification rules for downtime (Phase 5)
+- [x] Micro-stop threshold: 120 s over the whole Stopped interval, in `config/plant/oee.yaml` (ADR-0021)
+- [ ] Auto-classification rules for downtime (Phase 5, #119; added to ADR-0021)
 - [ ] Load-testing tool and performance targets (Phase 9)
 - [ ] Whether to add Sparkplug B after v1.0 (Phase 10 report)
 

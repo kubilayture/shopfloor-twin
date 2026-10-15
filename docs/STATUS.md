@@ -69,10 +69,12 @@
 ## In progress
 
 - None
+- #115 Phase 5 plan (in review)
+- #116 `oee-core` (branch `feat/116-oee-core`, in review): OEE, losses, exact fractions and four-decimal rounding; `config/plant/oee.yaml` (threshold 120 s); 17 reference cases in `docs/oee-reference-cases.md`; ADR-0021. Config hash and golden week unchanged.
 
 ## Next up
 
-- #113 interval finality per piece and #116 `oee-core`, then #117–#124 in the plan's order.
+- #113 interval finality per piece, then #117–#124 in the plan's order.
 
 ## Blockers and open questions for the owner
 
@@ -86,7 +88,7 @@ Project board: https://github.com/users/kubilayture/projects/1
 ## Health: CI on main, coverage, open bugs
 
 - CI on `main`: green (`verify`, `end to end`, `stack smoke`, `reconcile`).
-- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 92 / 79, `mes-server` 95 / 85 and web 98 / 89 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
 - Tests: 738 (plus the `end to end` job: gateway, golden-week reconciliation; and the `reconcile` job).
+- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `oee-core` 100 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 92 / 79, `mes-server` 95 / 85 and web 98 / 89 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

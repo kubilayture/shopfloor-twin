@@ -1,0 +1,10 @@
+# OEE configuration (ADR-0021, plan section 7). Not a simulation input: the simulator's run header
+# does not hash this file, so changing it never changes a golden event log.
+
+# A Stopped interval shorter than this, measured over its whole length, is a micro-stop
+# (performance loss); at or above it, the whole interval is availability loss. Down is never a
+# micro-stop.
+microStopThresholdMs: 120000
+
+# Phases 1–6: every shift in the shift calendar is scheduled; the no-shift bucket never is.
+scheduledTime: shift-calendar

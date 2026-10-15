@@ -1,0 +1,34 @@
+{
+  "name": "@shopfloor/mes-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc",
+    "lint": "eslint .",
+    "test": "vitest run --coverage",
+    "start": "node src/main.ts",
+    "migrate": "node src/db/cli.ts"
+  },
+  "dependencies": {
+    "@shopfloor/contracts": "workspace:*",
+    "@shopfloor/plant-config": "workspace:*",
+    "fastify": "catalog:",
+    "kysely": "catalog:",
+    "pg": "catalog:",
+    "prom-client": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@shopfloor/eslint-config": "workspace:*",
+    "@shopfloor/test-kit": "workspace:*",
+    "@shopfloor/tsconfig": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "eslint": "catalog:",
+    "testcontainers": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

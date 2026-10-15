@@ -19,3 +19,4 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0013](0013-modbus-serial-for-modbus-tcp.md)                | `modbus-serial` for Modbus TCP, server and client                        | accepted           |
 | [0014](0014-store-and-forward-in-sqlite.md)                 | Store-and-forward buffer in SQLite through `node:sqlite`                 | accepted           |
 | [0015](0015-uns-identity-epochs-and-dedup.md)               | UNS message identity: sequence scopes, epochs and dedup                  | accepted           |
+| [0016](0016-sql-migrations-and-module-schemas.md)           | Plain SQL migrations, one PostgreSQL schema per MES module               | accepted           |

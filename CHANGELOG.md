@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- `mes-server` skeleton: validated environment, health with database readiness, metrics, graceful shutdown; Kysely on `pg`; plain SQL migration runner over `db/migrations` with checksums, advisory lock and per-migration transactions (ADR-0016); module schemas `master_data`, `ingest`, `equipment`; Testcontainers TimescaleDB harness; Docker-context helper moved to `@shopfloor/test-kit/docker` (#93).
 - Phase 4 plan with issues #92–#101 (#92).
 - Phase 3 closed: report and learning notes; all 4 exit criteria met; tag `phase-03` (#80).
 - Gateway container (`apps/edge-gateway/Dockerfile`) and Compose service with a persistent buffer volume; the stack smoke test checks that the UNS carries all six machines' state; end-to-end test with the simulator, a real broker and the gateway as separate processes proves every fact of every machine arrives exactly once after dedup through a broker outage and a gateway crash (#79).

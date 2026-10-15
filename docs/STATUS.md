@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #92 merged (PR #102): Phase 4 plan, revised after review.
 - Phase 4 plan with issues #92–#101 under milestone "Phase 04 – MES foundation".
 - #80 merged (PR #91): Phase 3 closed, tagged `phase-03`.
 - **Phase 3 closed**: all 4 exit criteria met; tag `phase-03` (report: `docs/phases/phase-03-report.md`; learning notes: `docs/learning/phase-03.md`).
@@ -54,11 +55,11 @@
 
 ## In progress
 
-- #92 Phase 4 plan (in review)
+- #93 `mes-server` skeleton and migrations (in review)
 
 ## Next up
 
-- #93 `mes-server` skeleton and migrations, #94 shift calendar and master data
+- #94 shift calendar, `oee-core` intervals and master data, #95 ingest
 
 ## Blockers and open questions for the owner
 

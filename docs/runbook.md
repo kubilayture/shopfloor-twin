@@ -96,6 +96,20 @@ MQTT_PASSWORD=<MQTT_GATEWAY_PASSWORD from .env> pnpm --filter @shopfloor/edge-ga
 
 The gateway's tests start a real Mosquitto with Testcontainers, so Docker must be running. They also start the simulator as a child process on ports clear of the stack: OPC UA 7941–7945, Modbus 8120, control 7900. Without `DOCKER_HOST` the tests use the active `docker context`, which covers Colima and similar setups.
 
+## Run the MES server
+
+`mes-server` (Phase 4) runs on the stack's TimescaleDB (`pnpm stack:up` first) and migrates the database at start-up (ADR-0016):
+
+```bash
+DATABASE_URL=postgres://shopfloor:<DB_PASSWORD>@127.0.0.1:5442/shopfloor pnpm --filter @shopfloor/mes-server start
+```
+
+- Environment: `DATABASE_URL` (required, never echoed), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4700`), `MIGRATIONS_DIR` (`db/migrations`), `PLANT_CONFIG_DIR`, `LOG_LEVEL`.
+- `GET /health/live`, `/health/ready` (database answers and migrations are applied) and `/metrics`.
+- Migrations only: `DATABASE_URL=… pnpm --filter @shopfloor/mes-server migrate`.
+- A new migration is a new file `db/migrations/NNNN_<module>_<what>.sql`. An applied file is never edited: the server refuses to start if one changed.
+- The MES tests start their own TimescaleDB with Testcontainers.
+
 ## Golden scenarios
 
 A golden scenario is a fixed seed and configuration whose expected output is committed (plan section 9). Each one lives in `apps/simulator/golden/<name>/`:

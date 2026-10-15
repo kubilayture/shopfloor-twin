@@ -1,0 +1,64 @@
+import { sql } from 'kysely';
+import { createDatabase } from './db/database.ts';
+import { migrate } from './db/migrate.ts';
+import { parseEnv } from './env.ts';
+import { buildMesHttp } from './http.ts';
+
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+const parsed = parseEnv(process.env);
+if (!parsed.ok) {
+  console.error(`invalid environment:\n  ${parsed.issues.join('\n  ')}`);
+  process.exit(2);
+}
+const env = parsed.env;
+const db = createDatabase(env.DATABASE_URL);
+const state = { migrated: false, stopping: false };
+
+const { app } = buildMesHttp({
+  ready: async () => {
+    if (!state.migrated || state.stopping) return false;
+    return sql`SELECT 1`.execute(db).then(
+      () => true,
+      () => false,
+    );
+  },
+  logger: { level: env.LOG_LEVEL },
+});
+const log = app.log;
+
+async function shutdown(signal: string): Promise<void> {
+  if (state.stopping) return;
+  state.stopping = true;
+  log.info({ signal }, 'shutting down');
+  setTimeout(() => {
+    log.error('shutdown timed out');
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS).unref();
+  const results = await Promise.allSettled([app.close(), db.destroy()]);
+  for (const result of results) {
+    if (result.status === 'rejected') log.error(result.reason);
+  }
+  process.exit(signal === 'SIGINT' ? 130 : 0);
+}
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    shutdown(signal).catch((error: unknown) => {
+      log.error(error);
+      process.exit(1);
+    });
+  });
+}
+
+await app.listen({ host: env.HTTP_HOST, port: env.HTTP_PORT });
+try {
+  const result = await migrate(db, env.MIGRATIONS_DIR);
+  state.migrated = true;
+  log.info({ applied: result.applied, alreadyApplied: result.skipped }, 'database migrated');
+} catch (error) {
+  log.fatal({ err: error }, 'migrations failed');
+  await app.close();
+  await db.destroy();
+  process.exit(1);
+}
+log.info('mes-server ready');

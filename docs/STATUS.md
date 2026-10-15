@@ -72,6 +72,7 @@
 
 ## Blockers and open questions for the owner
 
+- Sign off Phase 4 (v1 success criterion 6); Claude closed it under the standing instruction without the owner's review.
 - Install the Renovate GitHub app for this repository (carried over from Phase 0).
 - Optional: run `pnpm stack:up` and look at the plant overview at <http://localhost:8080> (no exit criterion depends on it).
 - Raise the Docker VM's memory to 4 GiB (now 2 GiB on Colima): the full stack uses about 440 MiB at 60×, but its limits add up to about 2 GiB and the Testcontainers suites run beside it (runbook, "Full stack", Memory).

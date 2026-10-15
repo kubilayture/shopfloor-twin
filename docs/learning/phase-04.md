@@ -41,7 +41,7 @@ Facts can arrive out of order (a replay, a late message after a reconnect). Inte
 
 ### Splitting at hour and shift boundaries
 
-OEE is reported per hour and per shift. Each interval is cut into **pieces**, each inside one UTC hour and one shift bucket (`<shiftDate>/<shiftId>` or `no-shift`). Summing pieces by `hour` or `shift_key` then needs no clipping. Istanbul has no DST (UTC+3), so UTC hours and local hours share boundaries. The MES uses the simulator's own shift calendar package, so both cut at exactly the same instants.
+OEE is reported per hour and per shift. Each interval is cut into **pieces**, each inside one UTC hour and one shift bucket (`<shiftDate>/<shiftId>` or `no-shift`). Summing pieces by `hour` or `shift_key` then needs no clipping. Istanbul is UTC+3, a whole-hour offset, so UTC hours and local hours share boundaries; having no DST also rules out 23- and 25-hour days. The MES uses the simulator's own shift calendar package, so both cut at exactly the same instants.
 
 ### OpenAPI drift tests
 
@@ -118,7 +118,7 @@ Only the window between seq 42's neighbours: the interval that seq 41 opened, wh
 
 **8. Why store the intervals already cut at hours and shifts instead of cutting at query time?**
 
-Phase 5 aggregates per hour and per shift continuously. With stored pieces, an aggregate is a plain `GROUP BY hour` or `GROUP BY shift_key`, which TimescaleDB can maintain incrementally. Cutting at query time would repeat the calendar logic in SQL for every query and risk differing from the simulator's calendar.
+Phase 5 aggregates per hour and per shift continuously. With stored pieces, a continuous aggregate groups by `time_bucket('1 hour', start_time)` (equal to `hour`, since no piece crosses an hour) plus `shift_key` as an extra column, and TimescaleDB maintains it incrementally. Cutting at query time would repeat the calendar logic in SQL for every query and risk differing from the simulator's calendar.
 
 **9. Why does the MES need state anchors at all? Doesn't the next state fact say what the machine is doing?**
 

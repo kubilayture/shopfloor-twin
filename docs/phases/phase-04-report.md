@@ -53,7 +53,7 @@ Every pull request had an independent review (ADR-0011). The findings below chan
 - **Migrations (#103):** the column list typed from `Database`, so drift fails `tsc`; transaction control in files refused and a `no-transaction` marker added (PostgreSQL runs a multi-statement query as one implicit transaction); LF-normalised checksums.
 - **Shift calendar (#104):** the simulator image lacked the new package (found by CI's stack smoke, then guarded for good in #99); overlapping shifts disagreed with the ground truth and are now rejected by the plant config.
 - **Ingest (#105), blocking:** a value the database can't store blocked ingest in an endless retry. The re-review then found that the first fix, "an unknown error three times is unstorable", would acknowledge good facts behind a held lock (`55P03`) or during a deploy (`42P01`). Only SQLSTATE classes 22, 23 and 54 are unstorable now; everything else is retried and then suspends the session. Snapshots gained `deviceEpoch` (UNS contract 1.1), and the broker queue sizing was corrected (see Deviations).
-- **Equipment (#106), blocking:** a restarted simulator's telemetry arrived before the new snapshot and was credited to the old epoch, turning an old interval into 46 hours of final Running. Telemetry gained `deviceEpoch` too, and a closed epoch's end never moves again. Recomputation of clamped tracks left the acknowledgement path.
+- **Equipment (#106), blocking:** a restarted simulator's telemetry arrived before the new snapshot and was credited to the old epoch, turning an old interval into 46 hours of final Running. Telemetry gained `deviceEpoch` too, and a closed epoch's end never moves again. A clamped track is recomputed once, then window by window, instead of in full on every fact in the acknowledgement path.
 - **API (#109):** the subscription limit could be bypassed metric by metric; the API got its own pool with a statement timeout, so dashboard reads can't starve ingest; Host and Origin allowlists against DNS rebinding and cross-site sockets.
 - **Web (#110), two blocking:** trend lines broke at every sample at 60× (gap threshold now three times the median spacing); the dev proxy let a rebound host name open the WebSocket. Also a quadratic copy of live samples that timed out web tests beside the Testcontainers suites in CI.
 - **Containers (#111):** nginx stopped with SIGQUIT and waited for open WebSockets until Docker killed it (now SIGTERM); duplicate `Cache-Control`; the smoke's foreign-Origin check now requires the upgrade itself to fail.
@@ -93,7 +93,8 @@ Every pull request had an independent review (ADR-0011). The findings below chan
 - **Owner items, deferred to the owner:**
   - install the Renovate GitHub app (since Phase 0);
   - raise the Docker VM (Colima) to 4 GiB: the full stack uses about 440 MiB at 60×, but its limits add up to about 2 GiB and the Testcontainers suites run beside it;
-  - run `pnpm stack:up` on their machine and look at the overview (optional; no exit criterion depends on it).
+  - run `pnpm stack:up` on their machine and look at the overview (optional; no exit criterion depends on it);
+  - sign off the phase (v1 success criterion 6).
 
 ## Lessons
 
@@ -103,7 +104,7 @@ Every pull request had an independent review (ADR-0011). The findings below chan
   - a dev proxy that let DNS rebinding through (#110);
   - a Playwright check a frozen page could pass (#112).
 
-  Asking reviewers to _run_ a restart, a lock or a rebound host name found them; reading the code didn't.
+  Asking reviewers to _run_ a restart, a lock or a rebound host name found most of them; reading the code alone mostly didn't.
 
 - **Classify errors by what a retry can change.** SQLSTATE classes say it: data and integrity errors (22, 23, 54) never heal, everything else might. "Three failures means poison" is a guess that loses data.
 - **Prove with the strongest equality available.** Shift totals equal to the millisecond against an independent ground truth, every piece inside its hour and shift, no incidents. A tolerance would have hidden the provisional-time question that became #113.

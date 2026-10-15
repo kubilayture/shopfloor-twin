@@ -41,7 +41,9 @@ function useDockerContext(): void {
 }
 
 /** The project's Mosquitto (same image, configuration, users and ACL as Compose) in a throw-away container. */
-export async function startBroker(): Promise<{ url: string; container: StartedTestContainer }> {
+export async function startBroker(
+  options: { readonly hostPort?: number } = {},
+): Promise<{ url: string; container: StartedTestContainer }> {
   useDockerContext();
   const container = await new GenericContainer('eclipse-mosquitto:2.1.2-alpine')
     .withCopyDirectoriesToContainer([{ source: MOSQUITTO_CONFIG, target: '/mosquitto/config' }])
@@ -52,7 +54,7 @@ export async function startBroker(): Promise<{ url: string; container: StartedTe
         .join(' '),
       MQTT_HEALTHCHECK_PASSWORD: TEST_PASSWORDS.healthcheck,
     })
-    .withExposedPorts(1883)
+    .withExposedPorts(options.hostPort ? { container: 1883, host: options.hostPort } : 1883)
     .withWaitStrategy(Wait.forLogMessage(/running/))
     .start();
   return {

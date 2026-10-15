@@ -66,6 +66,11 @@ export class MqttLink implements Publisher {
     });
   }
 
+  /** Called on every (re)connect, after the status `online` is on its way. */
+  onConnect(listener: () => void): void {
+    this.#client.on('connect', listener);
+  }
+
   get connected(): boolean {
     return this.#client.connected;
   }

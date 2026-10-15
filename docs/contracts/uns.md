@@ -115,9 +115,23 @@ The poller reads the register map (docs/contracts/modbus-register-map.md) every 
 | `state` on first contact, after a silence and after an epoch change | `state/current`, `kind: snapshot` (cause null: the map carries no cause for the current state)                                     |
 
 - Each poll walks the ring from the last entry handled to the counter, in requests of at most 12 entries, split at the ring end. An entry whose own number isn't the expected one was overwritten: a `ring-overrun` incident. So is a counter that moved by more than 64 since the last poll. One incident per poll carries the total; an entry that can't be decoded is a `sequence-gap` incident instead.
-- On first contact the facts already in the ring are history. The poller keeps a cursor (epoch and last sequence) and continues from it while the epoch is unchanged. In Phase 3 the cursor lives in memory; the store-and-forward buffer (#78) persists it across gateway restarts.
+- On first contact the facts already in the ring are history. The poller keeps a cursor (epoch and last sequence) and continues from it while the epoch is unchanged. The cursor is saved with the outbox (#78), so it survives gateway restarts.
 - After three failed polls (timeout, refused connection) the device counts as silent: a `device-silent` incident, and the next successful poll gives `device-recovered` and a snapshot. The ring keeps what happened meanwhile, so a short silence loses nothing.
 - Known limit, as for OPC UA: after a device restart (new epoch), the old run's facts after the last poll are lost and not counted.
+
+### Store-and-forward (edge gateway, #78)
+
+Every UNS message passes through the gateway's outbox (ADR-0014), except the gateway's own `_sys/…/status`:
+
+1. Each message is committed to a SQLite file (`BUFFER_PATH`), in one durable transaction per tick (20 ms or 100 messages).
+2. While the broker is reachable, stored messages are sent in insertion order, at most 100 at a time unacknowledged, and deleted after their PUBACK.
+3. During a broker outage they stay on disk; after the outage, or after a gateway restart, the rest is sent in the same order.
+
+- A crash between PUBACK and delete sends one message twice, which the consumer's dedup removes.
+- A message the broker refuses for good (reason codes 0x87, 0x90, 0x95 and 0x99, for example the ACL) is dropped and logged, so it can't block the rest. Other failures pause sending for a second and retry.
+- The gateway's responsibility ends at the PUBACK. A broker killed outright loses what it had acknowledged but not yet passed on to subscribers; that is the broker's durability (Mosquitto persistence), not the gateway's.
+- The outbox holds at most `BUFFER_MAX_MESSAGES` (200,000, about 11 hours of the whole plant at 60×). Beyond that the oldest messages not yet handed to the broker are dropped, with a `buffer-overflow` incident.
+- The Modbus cursor is saved in the same transaction as the messages it produced, so a gateway restart neither repeats nor skips washer facts.
 
 ## Identity, duplicates and gaps (ADR-0015)
 

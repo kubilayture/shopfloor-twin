@@ -44,3 +44,11 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Merged #87 (#76): OPC UA collector.
 - #77: the poller is tested against an in-memory register map, built with the contract's own encoders: wrap, overrun, silence, cursor resume and epoch change. It is also tested against the real simulator, where every washer fact arrives in order through a 3 s silence. The metric `gateway_opcua_connected` became `gateway_device_connected`, because it now covers Modbus too.
 - #77 review: the poller had no error handler, so publish failures went unnoticed; a refused start-up snapshot was never retried; stopping mid-connect leaked a socket; overwrites made one incident per entry. All fixed, with tests. `FAILURE_ALARM_SEVERITY` (700) moved to `contracts`, shared by the simulator and the gateway.
+- Merged #88 (#77): Modbus poller.
+- #78: the outbox relies on MQTT.js to re-send messages that were in flight when a connection dropped. It rewinds only for messages refused while disconnected, so a reconnect doesn't duplicate everything in flight. The real-broker test stops Mosquitto with 250 messages stored and receives all 300 in order after it comes back.
+- #78 review:
+  - Any send error other than a refusal rewound and re-sent at once, even while connected: an event-loop spin, plus reordering and duplicates.
+  - The overflow trim deleted messages already in flight, which drove the depth gauge negative.
+  - A failed commit could save a cursor ahead of lost washer facts.
+  - All fixed: back-off with skip of acknowledged and in-flight rows, a trim limited to unsent rows, cursor revert. Refusals are an allow-list of permanent codes, and `close()` waits for in-flight acknowledgements.
+  - The outage test now has messages in flight when the broker stops.

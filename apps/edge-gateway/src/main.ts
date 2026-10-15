@@ -5,6 +5,7 @@ import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { parseEnv } from './env.ts';
 import { buildGatewayHttp } from './http.ts';
 import { TopicSequences, unixSeconds } from './identity.ts';
+import { Outbox } from './buffer/outbox.ts';
 import { equipmentPaths } from './hierarchy.ts';
 import { UnsIncidentReporter } from './incidents.ts';
 import { MqttLink } from './mqtt-link.ts';
@@ -46,9 +47,26 @@ const link = new MqttLink({
     log.error({ errors: parts }, 'MQTT connection error');
   },
 });
+// Every UNS message goes through the outbox (store-and-forward, ADR-0014); only the gateway's own
+// status goes straight to the broker.
+const outbox = new Outbox({
+  path: resolve(env.BUFFER_PATH),
+  transport: link,
+  maxMessages: env.BUFFER_MAX_MESSAGES,
+  onDrop: (count, reason, detail) => {
+    if (reason === 'overflow') {
+      incidents.report({ type: 'buffer-overflow', equipment: null, lost: count, message: detail });
+    } else {
+      log.error({ count, detail }, 'message refused by the broker and dropped');
+    }
+  },
+  onError: (error) => {
+    log.error({ err: error }, 'store-and-forward error');
+  },
+});
 const incidents = new UnsIncidentReporter({
   gatewayId: env.GATEWAY_ID,
-  publisher: link,
+  publisher: outbox,
   sequences,
   onReport: (incident) => {
     log.warn({ incident }, 'data-quality incident');
@@ -67,7 +85,7 @@ const collectors = OPCUA_MACHINES.map((machine) => {
     path,
     host: env.OPCUA_HOST,
     portOffset: env.OPCUA_PORT_OFFSET,
-    publisher: link,
+    publisher: outbox,
     sequences,
     incidents,
     telemetrySamplingMs: env.TELEMETRY_SAMPLING_MS,
@@ -102,14 +120,16 @@ const poller = new ModbusPoller({
   onError: (error) => {
     log.error({ err: error, machine: washer.machine }, 'Modbus poller error');
   },
-  publisher: link,
+  publisher: outbox,
   sequences,
   incidents,
+  cursors: outbox,
   pollMs: env.MODBUS_POLL_MS,
 });
 const http = buildGatewayHttp({
   ready: () => link.connected,
-  published: () => link.published,
+  published: () => outbox.delivered,
+  buffer: () => ({ depth: outbox.depth, dropped: outbox.dropped }),
   machines: () => [
     ...collectors.map((c) => ({ id: c.machineId, connected: c.connected, facts: c.facts })),
     { id: poller.machineId, connected: poller.connected, facts: poller.facts },
@@ -134,6 +154,8 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
   const stopped = await Promise.allSettled([...collectors.map((c) => c.stop()), poller.stop()]);
+  // Unsent messages stay in the outbox for the next start.
+  await outbox.close();
   const results = [...stopped, ...(await Promise.allSettled([http.close(), link.close()]))];
   for (const result of results) {
     if (result.status === 'rejected') log.error(result.reason);

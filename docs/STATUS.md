@@ -6,7 +6,7 @@
 
 ## Done since last update
 
-- Phase 5 plan with issues #113 and #115–#124 under milestone "Phase 05 – OEE and downtime".
+- Phase 5 plan with issues #113, #115–#124 and #126 under milestone "Phase 05 – OEE and downtime".
 - #101 merged (PR #114): Phase 4 closed, tagged `phase-04`.
 - **Phase 4 closed**: all 4 exit criteria met; tag `phase-04` (report: `docs/phases/phase-04-report.md`; learning notes: `docs/learning/phase-04.md`; data model: `docs/data-model.md`, generated from the database with a drift test).
 - #100 merged (PR #112): full-shift reconciliation through the whole chain, Playwright on the live overview, CI job `reconcile` (10.7 min).

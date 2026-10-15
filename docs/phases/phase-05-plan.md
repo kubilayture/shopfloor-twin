@@ -51,6 +51,7 @@ Out of scope here:
   - performance: micro-stops, plus speed loss (APT − micro-stops − ideal time; it can be negative);
   - quality: from counts.
 - **Micro-stop threshold:** 120 s, set in `config/plant/oee.yaml`. The file is new; `plant-config` loads and validates it, and both the simulator and the MES read it. This closes the open decision in plan section 12.
+- **Config hash:** the run header's `configSha256` (`apps/simulator/src/headless/run.ts`) hashes only the simulation sections of the plant configuration, exactly the ones it hashes today. `oee.yaml` and `reasons.yaml` are loaded beside them, not into the hashed part. So the header, and with it `events.sha256`, stays identical when they are added; a test asserts that the hash ignores them.
   - The threshold applies to the whole Stopped interval, not to a piece. Each piece is still credited to its own hour.
   - An open Stopped interval counts as a micro-stop provisionally, until it reaches the threshold or closes.
   - Down is never a micro-stop.
@@ -58,19 +59,20 @@ Out of scope here:
   - Produced means good + scrap + rework cycles on that machine.
   - A cycle belongs to the bucket that contains its `sourceTime` (buckets are half-open).
   - Performance is **not clamped**. At hour granularity a cycle is credited when it completes, so P > 1 is possible and correct. Plan section 9's property therefore becomes: A and Q lie in [0, 1], and P ≥ 0.
-- **Quality:** good / produced, as first-pass yield. A leak-test `rework` at LKT-01 is produced but not good. ASM-01's reassembly of a reworked part is a good cycle of ASM-01.
+- **Quality:** good / produced, as first-pass yield. A leak-test `rework` at LKT-01 is produced but not good. ASM-01's reassembly of a reworked part is a good cycle of ASM-01, and a reworked part that passes its second leak test is a good LKT-01 cycle: retests count as produced, and the reference cases say so.
 - **Exact arithmetic:**
   - All inputs are integers (ms and counts).
   - Results are reduced BigInt fractions `{ num, den }`.
-  - OEE = A × P × Q = (ideal ms × good) / (PBT × produced); APT cancels.
+  - Ideal time means Σ over products of (ideal ms × produced count). OEE = A × P × Q = (ideal ms × good) / (PBT × produced) wherever all three are defined; APT cancels.
   - Display values are rounded half-up to four decimals with integer arithmetic only.
   - No floating point is used anywhere, so "matches exactly" holds for both the fraction and its four-decimal string.
 - **Edge cases:**
   - PBT = 0 (no-shift, or a whole break): A, P, Q and OEE are `null` ("not applicable"), never 0.
   - APT = 0: P is `null`.
   - Produced = 0: Q is `null`.
-  - PBT > 0 and nothing produced: OEE is 0.
-  - Counts > 0 with APT = 0: P is `null` and an `anomaly` flag is set.
+  - PBT > 0 and nothing produced: Q is `null` and OEE is 0, because nothing good was made in planned time.
+  - Counts > 0 with APT = 0: P and OEE are `null` and an `anomaly` flag is set. The closed form would give a number here, but A·P·Q is undefined, so the closed form isn't used.
+  - The property OEE = A·P·Q is tested only where A, P and Q are all defined.
 - **Partial and provisional buckets:** a bucket in progress is computed up to the equipment's "final through" time (below) and returned with `final: false` and `provisionalMs`. A bucket is final when:
   - every member piece is final;
   - no Stopped interval in it is still being classified;
@@ -86,7 +88,7 @@ Out of scope here:
   - P > 1;
   - a work-center aggregate.
 
-  Property tests with fast-check check that buckets sum to the shift, that A and Q lie in [0, 1], and that OEE = A·P·Q. Coverage floor: 95 / 90.
+  Property tests with fast-check check that buckets sum to the shift, that A and Q lie in [0, 1], and that OEE = A·P·Q where all three are defined. Coverage floor: 95 / 90.
 
 ### Interval finality first (#113)
 
@@ -94,7 +96,8 @@ Out of scope here:
   - A gap already reported as an incident counts as resolved; the bucket then carries `incidents > 0`.
   - A closed epoch is final everywhere.
 - **Finality per piece:** a piece is stored final when it ends at or before that time, or when its interval is closed. `shiftTotals` then reports `provisionalMs = 0` for completed buckets, and the reconciliation drops Phase 4's "totals stable" workaround.
-- **Silent machines:** a machine that sends no facts (Off over the weekend) keeps its last bucket provisional until its next fact. Only `no-shift` buckets are affected, and their OEE is null anyway.
+- **Silent machines:** a machine that sends no facts keeps its open interval provisional until its next fact. That affects `no-shift` buckets (Off over the weekend, OEE null anyway) and also a machine that is Down, in Setup or in Maintenance across a shift end: Setup, Down and Maintenance carry on through shift ends and breaks, and ASM-01, LKT-01 and PCK-01 send no telemetry. Its last shift bucket becomes final at the repair or setup end. The live reconciliation therefore runs on until every machine has sent a fact after the shift end, with a bounded wait, and reports how long it waited.
+- **Revisions:** a gap reported as an incident lets finality move on, but ADR-0017 still stores a late fill. A bucket that changes after it was final gets its `revision` raised, and the API reports `revision` and `incidents` with it, so a consumer can tell a revised bucket from an unchanged one. The same applies to late facts of a closed epoch.
 - This issue comes before any OEE code. ADR-0018 is updated.
 
 ### Storage and aggregation (ADR-0022)
@@ -108,16 +111,23 @@ Out of scope here:
 - **Micro-stops** are not stored in the aggregate, because the threshold is OEE configuration. `Equipment.stopIntervals(range)` returns Stopped pieces with their interval's whole length (a few rows per hour), and `oee-core` classifies them. Changing the threshold rewrites no stored row.
 - **Real-time, refreshed explicitly:**
   - Both aggregates use `materialized_only = false`, so the open hour is read from the raw pieces.
-  - The OEE module calls `refresh_continuous_aggregate` for an hour when equipment reports it final, and again when a late fact or cycle changes an hour already refreshed. Equipment emits `piecesChanged`; ingest gets a new `cycle` notice.
+  - A continuous aggregate has one watermark for all its rows. Refreshing a later hour moves it past every earlier hour, and an earlier hour that was never refreshed then disappears from the view, as does any later change below the watermark. This was checked on TimescaleDB 2.30.2 in the plan review. So:
+    - every change below the aggregate's watermark marks its hour dirty: a late fact, a late cycle, or a new epoch whose simulation time lies earlier;
+    - the OEE module refreshes from the earliest dirty hour up to the latest final hour in one call, so the refreshed range stays contiguous;
+    - a bucket is `final` only after a refresh has covered it.
+
+    Equipment emits `piecesChanged` with the affected hours; ingest gets a new `cycle` notice. Tests cover a late fact below the watermark, a never-refreshed earlier hour, and a new epoch at an earlier time.
+
+  - The open hour and the live dashboard read raw pieces above the watermark, so exit criterion 5 doesn't wait for a refresh.
   - Refreshes are debounced to 1 s of wall time. They run off ingest's acknowledgement path, on their own connection and outside a transaction, as TimescaleDB requires.
   - At start-up the MES does a one-time catch-up refresh.
   - **No refresh policies:** `add_continuous_aggregate_policy` windows are relative to wall-clock `now()`. Simulation time runs ahead of wall time (at 60×, a wall day is two simulated months) and moves back under a new epoch, so a policy would never materialise the right range.
-- **Migrations:** the continuous aggregates are created `WITH NO DATA`, with `-- migrate:no-transaction` if TimescaleDB refuses them inside a transaction. Kysely types and `DECLARED_COLUMNS` include them.
+- **Migrations:** the continuous aggregates are created `WITH NO DATA` inside the runner's transaction; the plan review confirmed TimescaleDB 2.30.2 allows that, and that it accepts grouping by `payload->'value'->>'product'`. Kysely types and `DECLARED_COLUMNS` include them.
 - **Data model:** the generator (`apps/mes-server/src/db/data-model.ts`) learns views and continuous aggregates (definition, bucket, `materialized_only`), and its drift test covers them.
 
 ### Downtime reason coding (ADR-0021 for the rules, ADR-0023 for writes)
 
-- **Reason tree:** `config/plant/reasons.yaml`, seeded into `master_data.reason_code`. Each code has an id, a parent, a name and a loss category: availability-own, availability-external, performance or planned. The groups are:
+- **Reason tree:** `config/plant/reasons.yaml`, seeded into `master_data.reason_code`. Each code has an id, a parent and a name. The groups are:
   - BREAKDOWN (one child per failure code);
   - MINOR-STOP (one per stop cause);
   - SETUP (CHANGEOVER, TOOL-CHANGE);
@@ -126,22 +136,25 @@ Out of scope here:
   - STARVED and BLOCKED;
   - PLANNED (BREAK, CALIBRATION, SHIFT-END);
   - UNCODED.
-- **Auto-rules** live in the same file, as an ordered list of (state, cause exact or prefix) → reason. The first match wins, and no match gives UNCODED. Examples:
+- **Auto-rules** live in the same file, as an ordered list of (state, cause) → reason. The cause pattern is exact, prefix, `null` (no cause) or any. The first match wins, and no match gives UNCODED. Examples:
   - `Down` + `SPINDLE-OVERLOAD` → BREAKDOWN/SPINDLE-OVERLOAD;
   - `Setup` + prefix `CHANGEOVER ` → SETUP/CHANGEOVER;
-  - `Starved` + prefix `MATERIAL:` → MATERIAL.
-
-  A cross-check refuses rules that name unknown reasons, and every cause the simulator can produce (`failures.yaml`, the Modbus cause table) must be covered.
+  - `Starved` + prefix `MATERIAL:` → MATERIAL;
+  - `Starved` + `null` → STARVED, and `Blocked` + any → BLOCKED. An empty buffer and a blocked output carry no cause in the simulator, and the Modbus poller sends `cause: null`;
+  - `Idle` + `SCHEDULE-COMPLETE` → ORGANISATION/NO-SCHEDULE.
+- **Cause vocabulary:** today the causes come from three places, `failures.yaml`, strings hard-coded in `line.ts` (`TOOL-CHANGE`, `CALIBRATION`, `SCHEDULE-COMPLETE`, `NO-OPERATOR`, `BREAK`, `SHIFT-END`, `MATERIAL:<id>`, `CHANGEOVER <from>→<to>`) and the Modbus cause table. #119 moves the fixed ones into one vocabulary in `contracts`, used by the simulator and the cross-check. The cross-check refuses rules that name unknown reasons. A test runs the golden week and asserts that every distinct (state, cause) pair matches a rule other than UNCODED. The first changeover's cause reads `CHANGEOVER undefined→…` today; #126 fixes that before #117.
+- **Loss category** is not a property of a reason. A Stopped interval is a performance loss (micro-stop) below the threshold and an availability loss above it, whatever its reason. The category comes from the record's state and classification; reasons only name the cause.
 
 - **Downtime records** (`equipment.downtime_record`, derived and rebuilt together with the intervals):
-  - one record per availability-loss interval in a shift bucket, keyed (equipment, epoch, interval_start);
+  - one record per availability-loss interval in a shift bucket, keyed (equipment, epoch, record start), where the record start is the later of the interval's start and its shift bucket's start. Setup, Down and Maintenance carry on across a shift end, so one interval can make two records, one per bucket; keying by the interval's start would make them collide;
   - each record holds its end (null while open), state, cause, auto reason and a `provisional` flag;
   - a Stopped interval becomes a record once it reaches the threshold;
   - micro-stops are not records; they appear in the loss view by cause.
 - **Operator coding** (`equipment.downtime_coding`): time ranges [from, to) inside a record, each with a reason, comment, `coded_by` and version.
   - A split is simply two codings; time without a coding keeps the auto reason.
-  - Codings are stored by time, not by interval identity, so they survive when a late fact re-cuts an interval.
-  - A coding that no longer lies inside a loss interval is flagged `orphaned` and audited.
+  - Codings are stored by time, not by interval identity, so they survive when a late fact re-cuts an interval and the derived records are rebuilt.
+  - The concurrency `version` belongs to the coding set of an (equipment, epoch), not to a derived record, so a rebuild never resets it.
+  - When a re-cut moves a loss interval, a coding is clipped to the loss time it still covers. The clipped-off part, or a whole coding that no longer lies in any loss interval, is flagged `orphaned` and audited.
 - **Audit:** `equipment.downtime_audit` is append-only, recording action, before, after, actor, wall time and request id. It moves to `identity`'s audit log when that module arrives in Phase 7.
 - **Reason codes never change A, P or Q.** Whether availability loss is own or external follows the state (plan section 7), so coding can't break the reconciliation; it changes the Pareto and the reason view. Plan section 9's example e2e ("operator codes a downtime, supervisor sees OEE change") is therefore read as "sees the loss attribution change".
 - **Writes before identity (ADR-0023):** every non-GET request under `/api/v1` needs:
@@ -152,11 +165,11 @@ Out of scope here:
 
   On top of that:
   - no CORS headers;
-  - a 16 KiB body limit and a per-client rate limit;
+  - a 16 KiB body limit and a global write rate limit: behind nginx every request comes from nginx, and `X-Forwarded-For` can be forged, so a per-client limit means nothing;
   - optimistic concurrency: a `version` field, with 409 on conflict;
   - `coded_by` is free text, recorded as unauthenticated.
 
-  Compose keeps MES and web on 127.0.0.1, and nginx passes only GET, POST, PUT and DELETE under `/api/`. `MES_WRITES=off` turns every write into a 405.
+  Compose keeps MES and web on 127.0.0.1, and nginx passes only GET, POST, PUT and DELETE under `/api/`. `MES_WRITES=off` turns every write into a 405. The Vite dev and preview proxy rewrites `Origin` on HTTP requests too, by the same loopback-only rule it applies to WebSocket upgrades, or every write from `pnpm dev` would be refused. The same-origin check compares host and port, not scheme; that is acceptable on loopback, and ADR-0023 says so. WebSockets carry no writes.
 
 ### Ground truth and reconciliation
 
@@ -166,7 +179,7 @@ Out of scope here:
   - cycles per (product, result), and ideal ms;
   - the A, P, Q and OEE fractions.
 
-  Cycles are bucketed by time with `shiftKeyAt`, not by the current shift event, so a cycle exactly at a boundary lands where the MES puts it. Stopped intervals are held until they close, then classified. The summary format becomes `sim-summary/2` and the control API 1.2 (`/ground-truth`). `golden/week-01/summary.json` is regenerated in that PR with a written reason. `events.sha256` must not change, which proves the simulation itself didn't.
+  Cycles are bucketed by time with `shiftKeyAt`, not by the current shift event, so a cycle exactly at a boundary lands where the MES puts it. Stopped intervals are held until they close, then classified. The summary format becomes `sim-summary/2` and the control API 1.2 (`/ground-truth`). `golden/week-01/summary.json` is regenerated in that PR with a written reason. `events.sha256` must not change, which proves the simulation itself didn't; that holds because the config hash leaves `oee.yaml` out (see the OEE definitions) and #126's cause fix lands first.
 
   Known limit: ground truth and MES share `oee-core` and the calendar, so the reconciliation can't catch a definition bug. The reference cases cover that.
 
@@ -204,8 +217,9 @@ Out of scope here:
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
 | [#115](https://github.com/kubilayture/shopfloor-twin/issues/115) | Phase 5 plan (this document)                                                                                                                                                                                                     | –                |
 | [#113](https://github.com/kubilayture/shopfloor-twin/issues/113) | Interval finality per piece and per-equipment "final through"; `provisionalMs = 0` for completed buckets; ADR-0018 and the shift reconciliation updated                                                                          | #115             |
+| [#126](https://github.com/kubilayture/shopfloor-twin/issues/126) | Fix the first changeover's cause (`CHANGEOVER undefined→…`); golden week regenerated with a written reason                                                                                                                       | #115             |
 | [#116](https://github.com/kubilayture/shopfloor-twin/issues/116) | `oee-core`: OEE, losses, exact fractions and four-decimal rounding; `config/plant/oee.yaml` in `plant-config` (threshold, scheduled-time rule, whole-hour shifts, whole-ms ideal times); `docs/oee-reference-cases.md`; ADR-0021 | #115             |
-| [#117](https://github.com/kubilayture/shopfloor-twin/issues/117) | Simulator ground truth with `oee-core`: OEE inputs per machine and shift, cycles by time; `sim-summary/2`, control API 1.2; golden summary regenerated (events hash unchanged)                                                   | #116             |
+| [#117](https://github.com/kubilayture/shopfloor-twin/issues/117) | Simulator ground truth with `oee-core`: OEE inputs per machine and shift, cycles by time; `sim-summary/2`, control API 1.2; golden summary regenerated (events hash unchanged)                                                   | #116, #126       |
 | [#118](https://github.com/kubilayture/shopfloor-twin/issues/118) | Aggregates `equipment.state_hourly` and `ingest.cycle_hourly`; ingest `cycle` notice, `piecesChanged`, explicit refresh off the acknowledgement path; data-model generator for views and aggregates; ADR-0022                    | #113, #116       |
 | [#119](https://github.com/kubilayture/shopfloor-twin/issues/119) | Reason codes and downtime records: `reasons.yaml` seeded into `master_data.reason_code`, auto-rules with a coverage cross-check, `equipment.downtime_record`                                                                     | #113, #116       |
 | [#120](https://github.com/kubilayture/shopfloor-twin/issues/120) | `oee` module and read API: OEE per bucket, work centers, shifts list and current shift, downtime list and Pareto, WebSocket `oee` and `downtime`; golden-week OEE reconciliation                                                 | #117, #118, #119 |
@@ -228,17 +242,20 @@ Out of scope here:
 
 ## Risks for this phase
 
-| Risk                                                                                                              | Response                                                                                                                                      |
-| ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Phase size L, with the first writes and two new screens                                                           | #113 and `oee-core` first; strict dependency order; ECharts only for the Pareto and the waterfall                                             |
-| Aggregates read stale after a late change (real-time aggregation adds raw data only above the materialised range) | Explicit refresh on `piecesChanged` and on cycle notices; `final` only after the refresh; tests with late and reordered facts after a refresh |
-| Wall-clock refresh policies don't fit simulation time                                                             | No policies; refreshes driven by simulation-time finality; ADR-0022                                                                           |
-| Ground truth and MES share `oee-core`, so the reconciliation can't catch a definition bug                         | Reference cases from a hand-written table, plus property tests                                                                                |
-| The golden summary changes carelessly                                                                             | One PR regenerates it with a written reason; `events.sha256` must stay identical                                                              |
-| Unauthenticated writes (CSRF, DNS rebinding) before identity (Phase 7)                                            | Host allowlist, Origin required, JSON only, no CORS, loopback ports, `MES_WRITES=off`; audited as unauthenticated                             |
-| ECharts under the strict CSP                                                                                      | Checked in a browser in #122; uPlot or SVG as the fallback                                                                                    |
-| With a product mix, the waterfall disagrees with OEE                                                              | Quality step = ideal × (1 − Q), so the bars sum exactly                                                                                       |
-| BigInt and `numeric` values from PostgreSQL sums                                                                  | Parsed to BigInt at the module boundary; a test with week-sized sums                                                                          |
+| Risk                                                                                                                      | Response                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Phase size L, with the first writes and two new screens                                                                   | #113 and `oee-core` first; strict dependency order; ECharts only for the Pareto and the waterfall                                             |
+| Aggregates read stale after a late change (real-time aggregation adds raw data only above the materialised range)         | Explicit refresh on `piecesChanged` and on cycle notices; `final` only after the refresh; tests with late and reordered facts after a refresh |
+| Wall-clock refresh policies don't fit simulation time                                                                     | No policies; refreshes driven by simulation-time finality; ADR-0022                                                                           |
+| Ground truth and MES share `oee-core`, so the reconciliation can't catch a definition bug                                 | Reference cases from a hand-written table, plus property tests                                                                                |
+| Continuous-aggregate watermark holes: refreshing a later hour hides an earlier unrefreshed one and later changes below it | Contiguous refresh from the earliest dirty hour; new epochs at earlier times count as dirty; tests for each case (ADR-0022)                   |
+| The config hash changes when OEE or reason config is added, so `events.sha256` changes                                    | The hash covers only the simulation sections; a test asserts it ignores `oee.yaml` and `reasons.yaml`                                         |
+| A Down or Setup across a shift end makes two records with one key, and delays finality                                    | Records keyed by their start within the bucket; the live reconciliation waits, bounded, for each machine's next fact                          |
+| The golden summary changes carelessly                                                                                     | One PR regenerates it with a written reason; `events.sha256` must stay identical                                                              |
+| Unauthenticated writes (CSRF, DNS rebinding) before identity (Phase 7)                                                    | Host allowlist, Origin required, JSON only, no CORS, loopback ports, `MES_WRITES=off`; audited as unauthenticated                             |
+| ECharts under the strict CSP                                                                                              | Checked in a browser in #122; uPlot or SVG as the fallback                                                                                    |
+| With a product mix, the waterfall disagrees with OEE                                                                      | Quality step = ideal × (1 − Q), so the bars sum exactly                                                                                       |
+| BigInt and `numeric` values from PostgreSQL sums                                                                          | Parsed to BigInt at the module boundary; a test with week-sized sums                                                                          |
 
 ## Deviations from the master plan
 

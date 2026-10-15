@@ -2,6 +2,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   OPCUA_EVENT_FIELDS,
+  OPCUA_METHODS,
   OPCUA_VARIABLES,
   SHOPFLOOR_NAMESPACE_URI,
   opcuaEndpoint,
@@ -12,6 +13,7 @@ import type { PlantConfig } from '@shopfloor/plant-config';
 import { HOUR } from '@shopfloor/sim-core';
 import {
   AttributeIds,
+  DataType,
   OPCUAClient,
   TimestampsToReturn,
   constructEventFilter,
@@ -203,6 +205,61 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
       const reading = run.processValues.read('cnc-01', run.simulation.now);
       expect(load.value.value).toBe(reading?.spindleLoadPercent);
       expect(run.simulation.now - T0).toBeGreaterThan(HOUR);
+    } finally {
+      await close();
+    }
+  }, 60_000);
+
+  it('switches the CNC program through the LoadProgram method', async () => {
+    const { session, close } = await connect(4841 + OFFSET);
+    try {
+      const namespaces = await session.readNamespaceArray();
+      const objectId = resolveNodeId(
+        toIndexedNodeId(`nsu=${SHOPFLOOR_NAMESPACE_URI};s=cnc-01.ShopFloor`, namespaces),
+      );
+      const methodId = resolveNodeId(
+        toIndexedNodeId(opcuaNodeId('cnc-01', OPCUA_METHODS.loadProgram), namespaces),
+      );
+      const bad = await session.call({
+        objectId,
+        methodId,
+        inputArguments: [
+          { dataType: DataType.String, value: 'VB-999' },
+          { dataType: DataType.UInt32, value: 2 },
+        ],
+      });
+      expect(bad.statusCode.name).toBe('BadInvalidArgument');
+      expect(bad.inputArgumentResults?.map((r) => r.name)).toEqual(['BadInvalidArgument', 'Good']);
+      const good = await session.call({
+        objectId,
+        methodId,
+        inputArguments: [
+          { dataType: DataType.String, value: 'VB-200' },
+          { dataType: DataType.UInt32, value: 50 },
+        ],
+      });
+      expect(good.statusCode.isGood()).toBe(true);
+      expect(good.outputArguments?.[0]?.value).toBe(1);
+      expect(plantEvents.at(-1)).toMatchObject({
+        type: 'program-loaded',
+        machineId: 'cnc-01',
+        product: 'VB-200',
+        quantity: 50,
+      });
+      run.pacer.resume();
+      for (let i = 0; i < 60; i++) {
+        clock.advance(1_000);
+        await wait(5);
+      }
+      run.pacer.pause();
+      await wait(200);
+      const program = await session.read({
+        nodeId: resolveNodeId(
+          toIndexedNodeId(opcuaNodeId('cnc-01', OPCUA_VARIABLES.program), namespaces),
+        ),
+        attributeId: AttributeIds.Value,
+      });
+      expect(program.value.value).toBe('VB-200');
     } finally {
       await close();
     }

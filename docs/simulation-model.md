@@ -392,14 +392,15 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 - **No raw floats leave the model:** durations are rounded to whole milliseconds before scheduling (ADR-0006), and measurements are rounded to instrument resolution. The last bits of `Math.log`, `Math.cos` and `**` can differ between CPU architectures; the first golden run in CI (Linux x86) differed from a local run (macOS ARM) in exactly the unrounded leak readings.
 - **Byte stability:** keys are sorted at every level (string order, except that integer-like keys come first in numeric order, as JSON objects always do), and undefined fields are dropped. Values that are not plain JSON (`Map`, `Set`, `Temporal` objects, functions) are rejected instead of being written as `{}`. One function, `stableStringify`, writes every line, so the bytes depend only on the data, never on how an object was built.
 
-| `type`                       | Fields besides `at`, `seq`, `schema`                                                                        | Emitted when                             |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| `state`                      | `machineId`, `from`, `to`, `cause?`                                                                         | A machine changes state                  |
-| `cycle-complete`             | `machineId`, `product`, `partId`, `serial`, `result` (`good`, `scrap`, `rework`), `reason?`, `measurement?` | A station finishes a cycle               |
-| `material-consumed`          | `machineId`, `partId`, `material`, `lotId`                                                                  | A unit of a lot is consumed              |
-| `repair-start`, `repair-end` | `machineId`, `failureCode`                                                                                  | A technician starts or finishes a repair |
-| `shift`                      | `action` (`shift-start`, `break-start`, `break-end`, `shift-end`), `shiftId`, `shiftDate`                   | A calendar boundary is reached           |
-| `operator`                   | `machineId`, `operatorId` (or null), `absent`                                                               | A station is staffed at shift start      |
+| `type`                       | Fields besides `at`, `seq`, `schema`                                                                        | Emitted when                                                      |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `state`                      | `machineId`, `from`, `to`, `cause?`                                                                         | A machine changes state                                           |
+| `cycle-complete`             | `machineId`, `product`, `partId`, `serial`, `result` (`good`, `scrap`, `rework`), `reason?`, `measurement?` | A station finishes a cycle                                        |
+| `material-consumed`          | `machineId`, `partId`, `material`, `lotId`                                                                  | A unit of a lot is consumed                                       |
+| `repair-start`, `repair-end` | `machineId`, `failureCode`                                                                                  | A technician starts or finishes a repair                          |
+| `program-loaded`             | `machineId`, `product`, `quantity`                                                                          | A program was loaded on a CNC from outside (OPC UA `LoadProgram`) |
+| `shift`                      | `action` (`shift-start`, `break-start`, `break-end`, `shift-end`), `shiftId`, `shiftDate`                   | A calendar boundary is reached                                    |
+| `operator`                   | `machineId`, `operatorId` (or null), `absent`                                                               | A station is staffed at shift start                               |
 
 These are the simulator's internal facts, the "truth". They are not the UNS payloads of plan section 5; the MES sees the plant only through OPC UA and MQTT from Phase 2 on.
 
@@ -458,7 +459,7 @@ Source: `apps/simulator/src/live/`. Plan section 4: "two run modes, one engine".
 - Control calls made from _inside_ an event handler (pause, resume, speed, stop) are deferred until the current step has finished, so they can never nest a second run inside the first. `step()` from a handler is an error.
 - An optional end time makes the run half-open, [start, end), as in headless mode.
 
-**Pacing decides only _when_ a step runs, never _what_ happens.** A scripted test, and a property test with 40 random sequences of advance, pause, step, resume and speed changes (including a step before the start and an end exactly on an event time), check that the event stream is identical to the headless run with the same seed and end. Determinism and the golden scenario therefore also cover live mode.
+**Pacing decides only _when_ a step runs, never _what_ happens.** A scripted test, and a property test with 40 random sequences of advance, pause, step, resume and speed changes (including a step before the start and an end exactly on an event time), check that the event stream is identical to the headless run with the same seed and end. Determinism and the golden scenario therefore also cover live mode. External commands (such as OPC UA `LoadProgram`) change the run's future; a live run with commands is reproducible only together with its recorded `program-loaded` events. Replaying those is part of the Phase 9 scenarios.
 
 **Two clocks:**
 

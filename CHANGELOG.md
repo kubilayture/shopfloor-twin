@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- `LoadProgram(Product, Quantity)` on the CNCs: campaign at the front of the queue, changeover at the next cycle boundary; `program-loaded` event (#52).
 - One OPC UA server per machine (ports 4841–4845): companion model, project namespace, state and cycle events with sequence numbers, simulation-time timestamps, telemetry; contract in `@shopfloor/contracts` and `docs/contracts/opcua-address-space.md`; `pnpm sim:serve` (#51).
 - Process values for the CNCs (spindle load, coolant temperature) as pure functions of simulation time; `hashedStandardNormal` in `sim-core`; `processValues` in `process.yaml` (#50).
 - Live run mode: `LivePacer` paces simulation time to wall time × speed (0.5–60×) with pause, resume, step and speed changes, and produces exactly the headless event stream; `pnpm sim:live`; `Simulation.nextEventTime` (#49).

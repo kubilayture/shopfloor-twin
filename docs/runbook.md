@@ -104,10 +104,11 @@ The gateway's tests start a real Mosquitto with Testcontainers, so Docker must b
 DATABASE_URL=postgres://shopfloor:<DB_PASSWORD>@127.0.0.1:5442/shopfloor pnpm --filter @shopfloor/mes-server start
 ```
 
-- Environment: `DATABASE_URL` (required, never echoed), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4700`), `MIGRATIONS_DIR` (`db/migrations`), `PLANT_CONFIG_DIR`, `LOG_LEVEL`.
+- Environment: `DATABASE_URL` (required, never echoed), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4700`), `MIGRATIONS_DIR` (`db/migrations`), `LOG_LEVEL`.
 - `GET /health/live`, `/health/ready` (database answers and migrations are applied) and `/metrics`.
 - Migrations only: `DATABASE_URL=… pnpm --filter @shopfloor/mes-server migrate`.
-- A new migration is a new file `db/migrations/NNNN_<module>_<what>.sql`. An applied file is never edited: the server refuses to start if one changed.
+- A new migration is a new file `db/migrations/NNNN_<module>_<what>.sql`. An applied file is never edited: the server refuses to start if one changed. A statement that can't run in a transaction (`CREATE INDEX CONCURRENTLY`) goes into a file marked `-- migrate:no-transaction`, written so that it can be rerun.
+- End-to-end tests (`*.e2e.test.ts`) run apart from the others: `pnpm test:e2e`, one at a time; in CI they have their own job.
 - The MES tests start their own TimescaleDB with Testcontainers.
 
 ## Golden scenarios

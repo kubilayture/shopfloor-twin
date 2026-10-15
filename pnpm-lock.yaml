@@ -326,12 +326,6 @@ importers:
 
   apps/mes-server:
     dependencies:
-      '@shopfloor/contracts':
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      '@shopfloor/plant-config':
-        specifier: workspace:*
-        version: link:../../packages/plant-config
       fastify:
         specifier: 'catalog:'
         version: 5.12.5

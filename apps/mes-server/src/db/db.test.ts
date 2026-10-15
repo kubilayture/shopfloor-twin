@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sql, type Kysely } from 'kysely';
@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parseEnv } from '../env.ts';
 import { buildMesHttp } from '../http.ts';
 import { startDatabase } from '../testing.ts';
-import { DECLARED_COLUMNS, actualColumns } from './columns.ts';
+import { DECLARED_COLUMNS, actualColumns, actualTables } from './columns.ts';
 import { createDatabase, type Database } from './database.ts';
 import { migrate, readMigrations } from './migrate.ts';
 
@@ -106,6 +106,41 @@ describe('migrations (ADR-0016)', () => {
     }
   });
 
+  it('runs a file marked no-transaction outside a transaction, and refuses transaction control in files', async () => {
+    const db = await freshDatabase('m_notx');
+    const dir = await copyOfMigrations();
+    try {
+      await writeFile(
+        join(dir, '9000_public_index.sql'),
+        '-- migrate:no-transaction\nCREATE TABLE IF NOT EXISTS public.t (x int);\nCREATE INDEX CONCURRENTLY IF NOT EXISTS t_x ON public.t (x);\n',
+      );
+      const result = await migrate(db, dir);
+      expect(result.applied).toContain('9000_public_index.sql');
+      await writeFile(
+        join(dir, '9001_public_sneaky.sql'),
+        'COMMIT;\nCREATE TABLE public.u (x int);\n',
+      );
+      await expect(migrate(db, dir)).rejects.toThrow(/transaction control belongs to the runner/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('takes the checksum over LF text, so a CRLF checkout is not an edited file', async () => {
+    const db = await freshDatabase('m_crlf');
+    const dir = await copyOfMigrations();
+    try {
+      await migrate(db, dir);
+      for (const name of await readdir(dir)) {
+        const text = await readFile(join(dir, name), 'utf8');
+        await writeFile(join(dir, name), `\uFEFF${text.replace(/\n/g, '\r\n')}`);
+      }
+      expect((await migrate(db, dir)).applied).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('rolls a failing migration back completely, so it can be fixed and rerun', async () => {
     const db = await freshDatabase('m_rollback');
     const dir = await copyOfMigrations();
@@ -126,6 +161,8 @@ describe('migrations (ADR-0016)', () => {
     const db = await freshDatabase('m_columns');
     await migrate(db, MIGRATIONS);
     expect(await actualColumns(db, Object.keys(DECLARED_COLUMNS))).toEqual(DECLARED_COLUMNS);
+    // And no table in a module schema is left undeclared.
+    expect(await actualTables(db)).toEqual(Object.keys(DECLARED_COLUMNS).sort());
   });
 });
 

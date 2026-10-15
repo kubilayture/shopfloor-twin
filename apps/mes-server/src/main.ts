@@ -35,9 +35,11 @@ async function shutdown(signal: string): Promise<void> {
     log.error('shutdown timed out');
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
-  const results = await Promise.allSettled([app.close(), db.destroy()]);
-  for (const result of results) {
-    if (result.status === 'rejected') log.error(result.reason);
+  // Requests first, then the pool they use.
+  for (const close of [() => app.close(), () => db.destroy()]) {
+    await close().catch((error: unknown) => {
+      log.error(error);
+    });
   }
   process.exit(signal === 'SIGINT' ? 130 : 0);
 }
@@ -56,6 +58,7 @@ try {
   state.migrated = true;
   log.info({ applied: result.applied, alreadyApplied: result.skipped }, 'database migrated');
 } catch (error) {
+  if (state.stopping) await new Promise(() => undefined); // shutdown() owns the exit
   log.fatal({ err: error }, 'migrations failed');
   await app.close();
   await db.destroy();

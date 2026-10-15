@@ -11,8 +11,6 @@
     "migrate": "node src/db/cli.ts"
   },
   "dependencies": {
-    "@shopfloor/contracts": "workspace:*",
-    "@shopfloor/plant-config": "workspace:*",
     "fastify": "catalog:",
     "kysely": "catalog:",
     "pg": "catalog:",

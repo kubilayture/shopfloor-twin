@@ -2,6 +2,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // End-to-end tests run in their own CI job (`test:e2e`), not with the unit and integration tests.
+    exclude: ['**/node_modules/**', '**/*.e2e.test.ts'],
     testTimeout: 60_000,
     coverage: {
       provider: 'v8',

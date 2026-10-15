@@ -14,7 +14,15 @@ export interface Migration {
   readonly name: string;
   readonly sql: string;
   readonly checksum: string;
+  /** False for files marked `-- migrate:no-transaction` (CREATE INDEX CONCURRENTLY and the like). */
+  readonly transactional: boolean;
 }
+
+/** Marks a migration that can't run in a transaction; it must then be safe to rerun. */
+export const NO_TRANSACTION = '-- migrate:no-transaction';
+
+/** How long a starting instance waits for another one's migrations. */
+const LOCK_WAIT = '120s';
 
 export async function readMigrations(dir: string): Promise<Migration[]> {
   const names = (await readdir(dir)).filter((name) => name.endsWith('.sql')).sort();
@@ -26,10 +34,40 @@ export async function readMigrations(dir: string): Promise<Migration[]> {
     const number = match[1] ?? '';
     if (seen.has(number)) throw new Error(`two migrations numbered ${number}`);
     seen.add(number);
-    const text = await readFile(join(dir, name), 'utf8');
-    migrations.push({ name, sql: text, checksum: createHash('sha256').update(text).digest('hex') });
+    // Line endings and a BOM don't count: a Windows checkout must not look like an edited file.
+    const text = (await readFile(join(dir, name), 'utf8'))
+      .replace(/^\uFEFF/, '')
+      .replace(/\r\n/g, '\n');
+    if (/^\s*(BEGIN|COMMIT|ROLLBACK|START TRANSACTION)\b/im.test(text)) {
+      throw new Error(
+        `${name}: transaction control belongs to the runner (see -- migrate:no-transaction)`,
+      );
+    }
+    migrations.push({
+      name,
+      sql: text,
+      checksum: createHash('sha256').update(text).digest('hex'),
+      transactional: !text.includes(NO_TRANSACTION),
+    });
   }
   return migrations;
+}
+
+/**
+ * Statements of a no-transaction file: split after every line that ends with `;`. Such files
+ * hold simple DDL; dollar-quoted function bodies belong in transactional files.
+ */
+export function statementsOf(text: string): string[] {
+  return text
+    .split(/;[ \t]*(?:--[^\n]*)?$/m)
+    .map((part) =>
+      part
+        .split('\n')
+        .filter((line) => !/^\s*--/.test(line))
+        .join('\n')
+        .trim(),
+    )
+    .filter((part) => part !== '');
 }
 
 export interface MigrationResult {
@@ -45,7 +83,9 @@ export interface MigrationResult {
 export async function migrate(db: Kysely<Database>, dir: string): Promise<MigrationResult> {
   const migrations = await readMigrations(dir);
   return db.connection().execute(async (connection) => {
+    await sql.raw(`SET lock_timeout = '${LOCK_WAIT}'`).execute(connection);
     await sql`SELECT pg_advisory_lock(${LOCK_ID})`.execute(connection);
+    await sql`RESET lock_timeout`.execute(connection);
     try {
       await sql`
         CREATE TABLE IF NOT EXISTS public.schema_migrations (
@@ -72,18 +112,30 @@ export async function migrate(db: Kysely<Database>, dir: string): Promise<Migrat
       const applied: string[] = [];
       for (const migration of migrations) {
         if (appliedNames.has(migration.name)) continue;
-        await connection.transaction().execute(async (trx) => {
-          await sql.raw(migration.sql).execute(trx);
-          await trx
+        if (migration.transactional) {
+          await connection.transaction().execute(async (trx) => {
+            await sql.raw(migration.sql).execute(trx);
+            await trx
+              .insertInto('public.schema_migrations')
+              .values({ name: migration.name, checksum: migration.checksum })
+              .execute();
+          });
+        } else {
+          // Several statements in one query would still form one implicit transaction.
+          for (const statement of statementsOf(migration.sql)) {
+            await sql.raw(statement).execute(connection);
+          }
+          await connection
             .insertInto('public.schema_migrations')
             .values({ name: migration.name, checksum: migration.checksum })
             .execute();
-        });
+        }
         applied.push(migration.name);
       }
       return { applied, skipped: appliedNames.size };
     } finally {
-      await sql`SELECT pg_advisory_unlock(${LOCK_ID})`.execute(connection);
+      // A dead connection releases the lock by itself; its error must not mask the original one.
+      await sql`SELECT pg_advisory_unlock(${LOCK_ID})`.execute(connection).catch(() => undefined);
     }
   });
 }

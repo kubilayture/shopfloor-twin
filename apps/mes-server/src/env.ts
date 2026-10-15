@@ -13,7 +13,6 @@ const text = z.string().trim().min(1);
 export const envSchema = z.object({
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   MIGRATIONS_DIR: text.default(resolve(REPO, 'db/migrations')),
-  PLANT_CONFIG_DIR: text.default(resolve(REPO, 'config/plant')),
   HTTP_HOST: text.default('127.0.0.1'),
   HTTP_PORT: port.default(4700),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),

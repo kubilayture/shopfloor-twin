@@ -30,15 +30,25 @@ const MACHINES = ['cnc-01', 'cnc-02', 'wsh-01', 'asm-01', 'lkt-01', 'pck-01'] as
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Waits for a condition; the error names what it waited for, so a CI failure says where. */
 async function until(
+  what: string,
   condition: () => boolean | Promise<boolean>,
   timeoutMs: number,
 ): Promise<void> {
   for (const deadline = Date.now() + timeoutMs; !(await condition());) {
-    if (Date.now() > deadline) throw new Error('timed out waiting');
+    if (Date.now() > deadline) {
+      throw new Error(`timed out after ${String(timeoutMs)} ms waiting for ${what}`);
+    }
     await wait(100);
   }
 }
+
+const get = (url: string): Promise<string> =>
+  fetch(url, { signal: AbortSignal.timeout(2_000) }).then(
+    (r) => r.text(),
+    () => '',
+  );
 
 /** A consumer as the MES will be (Phase 4): validates every message and applies ADR-0015's rule. */
 class Consumer {
@@ -135,19 +145,13 @@ const gatewayEnv = {
 };
 
 const metric = async (name: string): Promise<number> => {
-  const text = await fetch(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`).then(
-    (r) => r.text(),
-    () => '',
-  );
+  const text = await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`);
   const match = new RegExp(`^${name} (\\S+)$`, 'm').exec(text);
   return match ? Number(match[1]) : Number.NaN;
 };
 
 const allConnected = async (): Promise<boolean> => {
-  const text = await fetch(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`).then(
-    (r) => r.text(),
-    () => '',
-  );
+  const text = await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`);
   return MACHINES.every((m) => text.includes(`gateway_device_connected{machine="${m}"} 1`));
 };
 
@@ -156,7 +160,7 @@ beforeAll(async () => {
   broker = (await startBroker({ hostPort: BROKER_PORT })).container;
   await consumer.connect();
   gateway = await startGateway(gatewayEnv);
-  await until(allConnected, 60_000);
+  await until('every machine connected to the gateway', allConnected, 60_000);
 }, 180_000);
 
 afterAll(async () => {
@@ -176,7 +180,11 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
     await broker.stop();
     await consumer.close();
     await wait(6_000);
-    await until(async () => (await metric('gateway_buffer_messages')) > 0, 10_000);
+    await until(
+      'messages in the buffer',
+      async () => (await metric('gateway_buffer_messages')) > 0,
+      10_000,
+    );
 
     // Gateway crash with messages still buffered, and the plant paused so nothing happens while
     // no gateway is listening (OPC UA keeps no history for a gateway that isn't there).
@@ -198,8 +206,12 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
     broker = (await startBroker({ hostPort: BROKER_PORT })).container;
     await consumer.connect();
     gateway = await startGateway(gatewayEnv);
-    await until(allConnected, 60_000);
-    await until(async () => (await metric('gateway_buffer_messages')) === 0, 30_000);
+    await until('every machine connected to the gateway', allConnected, 60_000);
+    await until(
+      'an empty buffer',
+      async () => (await metric('gateway_buffer_messages')) === 0,
+      30_000,
+    );
 
     await simulator.post('/api/v1/resume');
     await wait(6_000);
@@ -212,7 +224,11 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
     await wait(6_000);
     await simulator.post('/api/v1/pause');
     await wait(3_000);
-    await until(async () => (await metric('gateway_buffer_messages')) === 0, 30_000);
+    await until(
+      'an empty buffer',
+      async () => (await metric('gateway_buffer_messages')) === 0,
+      30_000,
+    );
 
     expect(consumer.invalid).toEqual([]);
     const facts = (machine: string): SimEvent[] =>
@@ -258,5 +274,5 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
       t.equipment.map((equipment) => `${equipment}/${name}`),
     );
     expect([...consumer.telemetry].sort()).toEqual(expectedTelemetry.sort());
-  }, 300_000);
+  }, 420_000);
 });

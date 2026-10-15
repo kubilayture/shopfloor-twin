@@ -76,3 +76,10 @@ for port in 4841 4842 4843 4844 4845 5020; do
 done
 echo "ok: OPC UA servers listening on 4841-4845, Modbus on 5020"
 
+ready=$(curl -sf "http://127.0.0.1:${GATEWAY_HTTP_PORT:-4900}/health/ready") || fail "gateway not ready"
+echo "ok: gateway ready ($ready)"
+# Every machine's retained state reaches the UNS through the gateway (snapshot on connect).
+states=$(as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t 'orbis/gebze/+/+/+/state/current' -v -C 6 -W 30 | cut -d/ -f5 | sort -u | tr '\n' ' ')
+[ "$states" = "asm-01 cnc-01 cnc-02 lkt-01 pck-01 wsh-01 " ] || fail "UNS states incomplete: $states"
+echo "ok: UNS has the current state of all six machines"
+

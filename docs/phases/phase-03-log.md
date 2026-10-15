@@ -25,3 +25,9 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - #73: the washer's process values follow the CNC pattern: pure functions of simulation time, so the event log is unchanged; only the configuration hash in the golden header moved. The run epoch is wall time and lives outside the model, in `PlantServers`, so determinism is untouched.
 - Merged #84 (#73): washer process values. The review confirmed byte for byte that only the golden header's configuration hash changed.
 - #74: `modbus-serial` gives no answer at all for a function without a handler, where a real device answers exception 1. The server now refuses functions 1, 2, 4, 5, 6 and 16 explicitly. Ring entries are never rewritten until they wrap, so the poller can read the counter and the entries in separate requests. Each entry's own sequence reveals a wrap.
+- Merged #85 (#74): Modbus server. The review found that reads must split at the ring end, and that values outside the tables were encoded silently; encoding now throws.
+- #75: the gateway's integration tests run the project's real Mosquitto through Testcontainers, so the ACL file is tested, not only the code.
+  - Docker here runs on Colima, so the test helper takes `DOCKER_HOST` from the active `docker context`.
+  - Mosquitto rejects a denied QoS 1 publish with reason 0x87, and MQTT.js rejects the promise. The store-and-forward buffer (#78) must treat that as permanent, not retry it.
+  - `prom-client` is deprecated upstream (replaced by `@prometheus-io/client`): a follow-up for ADR-0012.
+- #75 review: `publish()` now refuses at once while disconnected, because MQTT.js would otherwise queue in memory and duplicate the disk buffer's replay. `close()` no longer hangs with in-flight packets; ACL areas are listed explicitly, since `+` matched `_sys`; client-id takeover is documented as an accepted risk until Phase 9.

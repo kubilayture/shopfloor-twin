@@ -1,0 +1,37 @@
+# Topic rights per user (Phase 3 plan; docs/contracts/uns.md). Mosquitto denies everything not listed.
+# Topic tree: orbis/gebze/{area}/{workcenter}/{equipment}/{class}/{name}; components under orbis/gebze/_sys.
+
+# Broker healthcheck: reads the broker's own statistics only.
+user healthcheck
+topic read $SYS/#
+
+# Manual testing: read-only.
+user dev
+topic read orbis/#
+topic read $SYS/#
+
+# Areas are listed one by one (keep them in step with config/plant/plant.yaml; a gateway test checks
+# this): a `+` in the area position would also match `_sys` and let a client write into another
+# component's topics.
+
+# Edge gateway: publishes machine data and its own component topics. Its cmd and cmd-res rights
+# arrive with commands in Phase 7.
+user gw-01
+topic write orbis/gebze/machining/+/+/state/#
+topic write orbis/gebze/machining/+/+/telemetry/#
+topic write orbis/gebze/machining/+/+/events/#
+topic write orbis/gebze/machining/+/+/alarms/#
+topic write orbis/gebze/assembly/+/+/state/#
+topic write orbis/gebze/assembly/+/+/telemetry/#
+topic write orbis/gebze/assembly/+/+/events/#
+topic write orbis/gebze/assembly/+/+/alarms/#
+topic readwrite orbis/gebze/_sys/edge-gateway/gw-01/#
+
+# MES: reads everything; publishes MES context, commands and its own component topics.
+user mes
+topic read orbis/#
+topic write orbis/gebze/machining/+/+/mes/#
+topic write orbis/gebze/machining/+/+/cmd/#
+topic write orbis/gebze/assembly/+/+/mes/#
+topic write orbis/gebze/assembly/+/+/cmd/#
+topic readwrite orbis/gebze/_sys/mes-server/#

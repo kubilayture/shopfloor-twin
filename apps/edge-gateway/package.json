@@ -1,0 +1,30 @@
+{
+  "name": "@shopfloor/edge-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc",
+    "lint": "eslint .",
+    "test": "vitest run --coverage",
+    "start": "node src/main.ts"
+  },
+  "dependencies": {
+    "@shopfloor/contracts": "workspace:*",
+    "@shopfloor/plant-config": "workspace:*",
+    "fastify": "catalog:",
+    "mqtt": "catalog:",
+    "prom-client": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@shopfloor/eslint-config": "workspace:*",
+    "@shopfloor/tsconfig": "workspace:*",
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "eslint": "catalog:",
+    "testcontainers": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

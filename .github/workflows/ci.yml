@@ -49,7 +49,7 @@ jobs:
       - name: Create .env with random passwords
         run: |
           cp .env.example .env
-          for key in DB_PASSWORD MQTT_HEALTHCHECK_PASSWORD MQTT_DEV_PASSWORD; do
+          for key in DB_PASSWORD MQTT_HEALTHCHECK_PASSWORD MQTT_DEV_PASSWORD MQTT_GATEWAY_PASSWORD MQTT_MES_PASSWORD; do
             sed -i "s/^$key=.*/$key=$(openssl rand -hex 16)/" .env
           done
       - run: sh scripts/stack-smoke.sh

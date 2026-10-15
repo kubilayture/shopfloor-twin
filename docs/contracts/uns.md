@@ -4,7 +4,18 @@ Version 1 (Phase 3). Source of truth in code: `packages/contracts/src/uns/` (Zod
 
 ## Broker
 
-Mosquitto on `127.0.0.1:1883`, MQTT 5. Every publish and subscription uses **QoS 1**: at-least-once delivery, so consumers deduplicate (below). Users and topic rights are in the broker's ACL file (#75).
+Mosquitto on `127.0.0.1:1883`, MQTT 5. Every publish and subscription uses **QoS 1**: at-least-once delivery, so consumers deduplicate (below).
+
+Users and topic rights are in `config/mosquitto/acl`. Mosquitto denies everything not listed, and answers a denied QoS 1 publish with PUBACK reason 0x87 (not authorized). Passwords come from `.env`.
+
+| User          | Reads                               | Publishes                                                                                                                      |
+| ------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `gw-01`       | its own `_sys/edge-gateway/gw-01/#` | `state`, `telemetry`, `events`, `alarms` of any equipment; its own `_sys` topics. `cmd` and `cmd-res` rights arrive in Phase 7 |
+| `mes`         | `orbis/#`                           | `mes` and `cmd` of any equipment; `_sys/mes-server/#`                                                                          |
+| `dev`         | `orbis/#`, `$SYS/#`                 | nothing (manual testing)                                                                                                       |
+| `healthcheck` | `$SYS/#`                            | nothing (the broker's Compose healthcheck)                                                                                     |
+
+**Accepted risk until Phase 9:** the plain ACL file can't tie a client id to a user. Anyone with valid credentials can connect with client id `gw-01`; the broker then disconnects the real gateway, whose will says `offline` until it reconnects. Phase 9 (security) moves to Mosquitto's dynamic-security plugin, which binds client ids to users.
 
 ## Topics
 
@@ -31,6 +42,8 @@ Component topics (helper `sysTopic`):
 | ----------------------------------------------------------------------------------------- | -------------------- | --------------------------------- |
 | `orbis/gebze/_sys/{component}/{instance}/status`, e.g. `…/_sys/edge-gateway/gw-01/status` | `uns.sys.status/1`   | yes; the last will sets `offline` |
 | `orbis/gebze/_sys/{component}/{instance}/incidents`                                       | `uns.sys.incident/1` | no                                |
+
+The gateway publishes `online` on every (re)connect. Its last will, refreshed before every connect so it carries a new sequence number, is `offline`; on a clean shutdown it publishes `offline` itself. Status messages bypass the store-and-forward buffer, so an old `online` is never replayed after a newer state. Their sequence numbers are unique, but neither ordered by time nor gap-free: a will's number is reserved before the `online` that follows it, and most wills are never sent. Use the latest delivery, not the highest number, and **exclude `_sys/…/status` from gap checks**.
 
 Alarm topic names are the alarm code in lower case (`SPINDLE-OVERLOAD` → `spindle-overload`); the payload carries the code as is.
 

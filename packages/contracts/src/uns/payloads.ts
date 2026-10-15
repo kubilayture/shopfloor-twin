@@ -90,6 +90,12 @@ export const stateCurrentSchema = z
 export const telemetrySchema = envelope('uns.telemetry', z.number(), {
   unit: z.string().min(1),
   ...TOPIC,
+  // Added in contract version 1.1 (#96), optional so that older samples stay valid.
+  deviceEpoch: identity.epoch
+    .optional()
+    .describe(
+      'The device epoch (ADR-0015) the value was read in, when known; epoch is the gateway counter epoch',
+    ),
 }).meta({
   title: 'uns.telemetry/1',
   description: 'A sampled process value (retained, last value)',

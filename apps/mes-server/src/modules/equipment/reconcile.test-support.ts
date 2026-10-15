@@ -175,7 +175,7 @@ function unsMessages(run: Run): { facts: Delivery[]; anchors: Delivery[]; end: D
       );
     }
   }
-  return { facts, anchors, end: feed.telemetry('wsh-01', run.end) };
+  return { facts, anchors, end: feed.telemetry('wsh-01', run.end, EPOCH) };
 }
 
 /** A fresh database with master data, ingest (no broker) and the equipment module. */
@@ -256,6 +256,14 @@ async function expectInsideBuckets(db: Kysely<Database>, run: Run): Promise<numb
   return rows.length;
 }
 
+/**
+ * Per-test limits: the golden week takes about 70 s in order and 125 s shuffled locally. Both
+ * limits together (10 min) leave the end-to-end job (20 min, with the gateway's test and the
+ * install) room to report a failure rather than be cancelled.
+ */
+const IN_ORDER_MS = 240_000;
+const SHUFFLED_MS = 360_000;
+
 export interface Scenario {
   readonly seed: number;
   /** ISO 8601 with offset, e.g. Monday 06:00 Istanbul. */
@@ -281,35 +289,43 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
     let run: Run;
     let reference: Kysely<Database>;
 
-    it('in order: time per state, per machine and shift, equals the ground truth to the ms', async () => {
-      const span = await scenario();
-      run = await headless(span.seed, span.start, span.days);
-      if (span.golden) {
-        // The very run the golden snapshot pins.
-        expect(run.summaryText).toBe(await readFile(join(span.golden, 'summary.json'), 'utf8'));
-      }
-      const { facts, anchors, end } = unsMessages(run);
-      const { db, equipment, send } = await mes();
-      reference = db;
-      await send([...anchors, ...facts, end]);
-      expect(equipment.watermark(EPOCH)).toEqual(new Date(run.end));
-      expect(await totals(equipment, db)).toEqual(expected(run.truth));
-      expect(await expectInsideBuckets(db, run)).toBeGreaterThan(facts.length / 2);
-      await equipment.stop();
-    }, 900_000);
+    it(
+      'in order: time per state, per machine and shift, equals the ground truth to the ms',
+      async () => {
+        const span = await scenario();
+        run = await headless(span.seed, span.start, span.days);
+        if (span.golden) {
+          // The very run the golden snapshot pins.
+          expect(run.summaryText).toBe(await readFile(join(span.golden, 'summary.json'), 'utf8'));
+        }
+        const { facts, anchors, end } = unsMessages(run);
+        const { db, equipment, send } = await mes();
+        reference = db;
+        await send([...anchors, ...facts, end]);
+        expect(equipment.watermark(EPOCH)).toEqual(new Date(run.end));
+        expect(await totals(equipment, db)).toEqual(expected(run.truth));
+        expect(await expectInsideBuckets(db, run)).toBeGreaterThan(facts.length / 2);
+        await equipment.stop();
+      },
+      IN_ORDER_MS,
+    );
 
-    it('shuffled delivery with duplicates stores identical intervals', async () => {
-      const { facts, anchors, end } = unsMessages(run);
-      const next = random(2026);
-      const copies = facts.filter(() => next() < 0.1);
-      const mixed = shuffle([...anchors, ...facts, ...copies], next);
-      const { db, equipment, send } = await mes();
-      // Telemetry flows all along; the last sample, after every fact, ends the observation.
-      await send([...mixed, end, ...mixed.slice(0, 500)]);
-      await equipment.flush();
-      expect(await storedPieces(db)).toEqual(await storedPieces(reference));
-      expect(await totals(equipment, db)).toEqual(expected(run.truth));
-      await equipment.stop();
-    }, 900_000);
+    it(
+      'shuffled delivery with duplicates stores identical intervals',
+      async () => {
+        const { facts, anchors, end } = unsMessages(run);
+        const next = random(2026);
+        const copies = facts.filter(() => next() < 0.1);
+        const mixed = shuffle([...anchors, ...facts, ...copies], next);
+        const { db, equipment, send } = await mes();
+        // Telemetry flows all along; the last sample, after every fact, ends the observation.
+        await send([...mixed, end, ...mixed.slice(0, 500)]);
+        await equipment.flush();
+        expect(await storedPieces(db)).toEqual(await storedPieces(reference));
+        expect(await totals(equipment, db)).toEqual(expected(run.truth));
+        await equipment.stop();
+      },
+      SHUFFLED_MS,
+    );
   });
 }

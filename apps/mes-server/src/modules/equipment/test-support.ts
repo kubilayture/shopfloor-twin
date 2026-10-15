@@ -142,13 +142,23 @@ export class UnsFeed {
     });
   }
 
-  /** WSH-01's telemetry carries the simulator's clock (register `simTime`): a watermark. */
-  telemetry(equipment: string, at: number, name = 'bath-temperature', unit = '°C'): Delivery {
+  /**
+   * A telemetry sample; with `deviceEpoch` (contract 1.1) it is a watermark of that run (WSH-01's
+   * telemetry carries the simulator's clock, register `simTime`).
+   */
+  telemetry(
+    equipment: string,
+    at: number,
+    deviceEpoch?: number,
+    name = 'bath-temperature',
+    unit = '°C',
+  ): Delivery {
     const topic = telemetryTopic(this.path(equipment), name);
     return this.#deliver(topic, {
       schema: 'uns.telemetry/1',
       scope: 'topic',
       ...this.#common(equipment, GW_EPOCH, this.#topicSeq(topic), at),
+      ...(deviceEpoch === undefined ? {} : { deviceEpoch }),
       unit,
       value: 60,
     });

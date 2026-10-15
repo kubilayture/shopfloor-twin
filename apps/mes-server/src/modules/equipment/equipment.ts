@@ -20,6 +20,8 @@ export interface StateSource {
     window?: { readonly fromSeq?: number; readonly toSeq?: number },
   ): Promise<StateFact[]>;
   stateFactWindow(equipment: string, epoch: number, seq: number): Promise<StateFact[]>;
+  stateFactCount(equipment: string, epoch: number): Promise<number>;
+  latestStateTime(equipment: string, epoch: number, beforeSeq: number): Promise<Date | null>;
   anchor(equipment: string, deviceEpoch: number): Promise<StateAnchor | undefined>;
   anchors(): Promise<StateAnchor[]>;
   factSummary(): Promise<FactSummary[]>;
@@ -104,6 +106,8 @@ interface Track {
   lastSeq: number | null;
   /** A newer epoch of the equipment exists: the last interval is final, at the watermark. */
   closed: boolean;
+  /** Where a newer epoch closed it: the epoch's watermark then, never moved afterwards. */
+  closedAt: Millis | undefined;
   clamped: boolean;
   /** Start of the last stored piece of the open interval, if one is stored. */
   tailStart: Millis | undefined;
@@ -198,7 +202,7 @@ export class Equipment {
     await this.#enqueue(async () => {
       for (const track of this.#allTracks()) {
         const watermark = this.#watermarks.get(track.epoch);
-        if (track.last && watermark !== undefined && watermark !== track.stored) {
+        if (!track.closed && track.last && watermark !== undefined && watermark !== track.stored) {
           await this.#rewriteTail(track, false);
         }
       }
@@ -357,6 +361,7 @@ export class Equipment {
       facts: 0,
       lastSeq: null,
       closed: epoch < newest,
+      closedAt: epoch < newest ? this.#watermarks.get(epoch) : undefined,
       clamped: false,
       tailStart: undefined,
       stored: undefined,
@@ -372,6 +377,7 @@ export class Equipment {
   /** A newer epoch started: the old one's open interval becomes final at its watermark. */
   async #close(track: Track): Promise<void> {
     track.closed = true;
+    track.closedAt = this.#watermarks.get(track.epoch);
     if (track.last) {
       await this.#rewriteTail(track, true);
     } else {
@@ -381,57 +387,81 @@ export class Equipment {
 
   async #onState(track: Track, fact: StateFact): Promise<void> {
     this.#raise(track.epoch, fact.sourceTime.getTime());
-    if (track.clamped) {
+    // A track whose last handling failed is recomputed, never patched from a stale state.
+    const window = this.#dirty.has(track) ? undefined : await this.#window(track, fact);
+    if (!window) {
       await this.#rebuild(track);
     } else {
-      const window = await this.#window(track, fact);
-      const index = window.findIndex((point) => point.seq === fact.seq);
-      const first = window[0];
-      const last = window.at(-1);
-      if (index < 0 || !first || !last || !monotonic(window)) {
-        await this.#rebuild(track);
+      const { points: span, index, facts } = window;
+      const first = span[0];
+      const last = span.at(-1);
+      if (!first || !last) throw new RangeError('empty window');
+      const pred = index > 0 ? first : undefined;
+      const succ = index < span.length - 1 ? last : undefined;
+      // Without a predecessor, the window reaches back to the anchor (if it opens the first
+      // interval) and replaces everything before the successor.
+      const points = pred ? span : withAnchor(track.anchor, span);
+      const lastSeq = Math.max(track.lastSeq ?? fact.seq, fact.seq);
+      if (succ) {
+        const pieces = cutPieces(points.slice(0, -1), succ.at, this.#pattern, false);
+        await this.#replace(track, pred?.at, succ.at, pieces, { facts, lastSeq });
       } else {
-        const pred = index > 0 ? first : undefined;
-        const succ = index < window.length - 1 ? last : undefined;
-        // Without a predecessor, the window reaches back to the anchor (if it opens the first
-        // interval) and replaces everything before the successor.
-        const points = pred ? window : withAnchor(track.anchor, window);
-        const facts = track.facts + 1;
-        const lastSeq = Math.max(track.lastSeq ?? fact.seq, fact.seq);
-        if (succ) {
-          const pieces = cutPieces(points.slice(0, -1), succ.at, this.#pattern, false);
-          await this.#replace(track, pred?.at, succ.at, pieces, { facts, lastSeq });
-        } else {
-          const end = Math.max(this.#watermarks.get(track.epoch) ?? last.at, last.at);
-          const pieces = cutPieces(points, end, this.#pattern, !track.closed);
-          await this.#replace(track, pred?.at, undefined, pieces, { facts, lastSeq });
-          this.#tail(track, last, pieces, end);
-        }
-        this.#emit(track, pred?.at, succ?.at);
+        const end = this.#end(track, last.at);
+        const pieces = cutPieces(points, end, this.#pattern, !track.closed);
+        await this.#replace(track, pred?.at, undefined, pieces, { facts, lastSeq });
+        this.#tail(track, last, pieces, end);
       }
+      this.#emit(track, pred?.at, succ?.at);
     }
     await this.#advance(track.epoch);
   }
 
   /**
-   * The fact with its neighbours by `seq`. In order (the usual case) the predecessor is the last
-   * point already known and there is no successor, so the tables needn't be asked.
+   * The fact with its neighbours by `seq`, times clamped as a full recompute would clamp them,
+   * and the number of state facts the result reflects; undefined when only a full recompute can
+   * tell (the first clamp of a reordered fact, or a late fact that would move later ones).
+   * In order (the usual case) the predecessor is the last point already known and there is no
+   * successor, so the tables needn't be asked.
    */
-  async #window(track: Track, fact: StateFact): Promise<Point[]> {
+  async #window(
+    track: Track,
+    fact: StateFact,
+  ): Promise<{ points: Point[]; index: number; facts: number } | undefined> {
     const { last, lastSeq } = track;
     const point = factPoint(fact);
-    if (
-      last &&
-      lastSeq !== null &&
-      last.seq === lastSeq &&
-      fact.seq > lastSeq &&
-      point.at >= last.at
-    ) {
-      return [last, point];
+    if (last && lastSeq !== null && last.seq === lastSeq && fact.seq > lastSeq) {
+      if (point.at < last.at) track.clamped = true; // moved up to its predecessor's time
+      return {
+        points: [last, { ...point, at: Math.max(point.at, last.at) }],
+        index: 1,
+        facts: track.facts + 1,
+      };
     }
-    return (await this.#source.stateFactWindow(track.equipment, track.epoch, fact.seq)).map(
-      factPoint,
+    const [raw, facts] = await Promise.all([
+      this.#source.stateFactWindow(track.equipment, track.epoch, fact.seq),
+      this.#source.stateFactCount(track.equipment, track.epoch),
+    ]);
+    const points = raw.map(factPoint);
+    const index = points.findIndex((p) => p.seq === fact.seq);
+    const self = points[index];
+    if (!self) return undefined;
+    if (!track.clamped) return monotonic(points) ? { points, index, facts } : undefined;
+    // Clamped: a point's time is the latest raw time up to it by seq.
+    const before =
+      index > 0 ? await this.#source.latestStateTime(track.equipment, track.epoch, fact.seq) : null;
+    const floor = before?.getTime() ?? -Infinity;
+    const at = Math.max(floor, self.at);
+    const succ = points[index + 1];
+    // The successor's time was max(floor, its own); a later time here would move it and more.
+    if (succ && at > Math.max(floor, succ.at)) return undefined;
+    const clamped = points.map((p, i) =>
+      i < index
+        ? { ...p, at: floor }
+        : i === index
+          ? { ...p, at }
+          : { ...p, at: Math.max(floor, p.at) },
     );
+    return { points: clamped, index, facts };
   }
 
   async #onAnchor(track: Track, anchor: StateAnchor): Promise<void> {
@@ -443,15 +473,17 @@ export class Equipment {
   }
 
   async #onSample(sample: StoredSample): Promise<void> {
-    let epoch: number | undefined;
-    if (sample.scope === 'device') {
-      epoch = (await this.#track(sample.equipment, sample.epoch)).epoch;
-    } else {
-      // Telemetry carries the gateway's epoch: it counts for the equipment's newest device epoch.
+    // Telemetry carries the gateway's epoch; only its `deviceEpoch` (contract 1.1) says which
+    // run it belongs to. Without one it never moves a watermark.
+    const epoch = sample.deviceEpoch;
+    if (epoch === null) return;
+    if (sample.scope === 'topic') {
+      // Telemetry never moves an epoch its equipment has left (or a run older than that).
       const byEpoch = this.#tracks.get(sample.equipment);
-      epoch = byEpoch && byEpoch.size > 0 ? Math.max(...byEpoch.keys()) : undefined;
+      const newest = byEpoch && byEpoch.size > 0 ? Math.max(...byEpoch.keys()) : -Infinity;
+      if (epoch < newest || byEpoch?.get(epoch)?.closed === true) return;
     }
-    if (epoch === undefined) return;
+    await this.#track(sample.equipment, epoch);
     this.#raise(epoch, sample.sourceTime.getTime());
     await this.#advance(epoch);
   }
@@ -460,12 +492,21 @@ export class Equipment {
     if (at > (this.#watermarks.get(epoch) ?? -Infinity)) this.#watermarks.set(epoch, at);
   }
 
+  /**
+   * Where the last interval ends: the epoch's watermark while it is open, the watermark at closing
+   * once a newer epoch closed it; never before the last point.
+   */
+  #end(track: Track, lastAt: Millis): Millis {
+    const end = track.closed ? track.closedAt : this.#watermarks.get(track.epoch);
+    return Math.max(end ?? lastAt, lastAt);
+  }
+
   /** Stores the open intervals of an epoch again once its watermark passed a boundary or a step. */
   async #advance(epoch: number): Promise<void> {
     const watermark = this.#watermarks.get(epoch);
     if (watermark === undefined) return;
     for (const track of this.#allTracks()) {
-      if (track.epoch !== epoch || !track.last || this.#dirty.has(track)) continue;
+      if (track.epoch !== epoch || track.closed || !track.last || this.#dirty.has(track)) continue;
       const stored = track.stored ?? -Infinity;
       if (watermark <= stored) continue;
       if (watermark >= track.nextCut || watermark - stored >= this.#step) {
@@ -481,7 +522,7 @@ export class Equipment {
   async #rewriteTail(track: Track, all: boolean): Promise<void> {
     const last = track.last;
     if (!last) return;
-    const end = Math.max(this.#watermarks.get(track.epoch) ?? last.at, last.at);
+    const end = this.#end(track, last.at);
     const from = all ? last.at : (track.tailStart ?? last.at);
     const pieces = cutPieces([last], end, this.#pattern, !track.closed).filter(
       (piece) => piece.from >= from,
@@ -501,7 +542,7 @@ export class Equipment {
     track.anchor = anchor;
     const { points, clamped } = clamp(withAnchor(anchor, facts.map(factPoint)));
     const last = points.at(-1);
-    const end = Math.max(this.#watermarks.get(track.epoch) ?? -Infinity, last?.at ?? -Infinity);
+    const end = last ? this.#end(track, last.at) : -Infinity;
     const pieces = last ? cutPieces(points, end, this.#pattern, !track.closed) : [];
     track.clamped = clamped;
     await this.#replace(track, undefined, undefined, pieces, {
@@ -661,6 +702,7 @@ export class Equipment {
       last_seq: track.lastSeq,
       anchor_arrival: track.anchor?.arrival ?? null,
       closed: track.closed,
+      closed_at: track.closedAt === undefined ? null : new Date(track.closedAt),
       clamped: track.clamped,
       updated_at: new Date(),
     };
@@ -742,6 +784,10 @@ export class Equipment {
         facts: summary?.stateFacts ?? 0,
         lastSeq: summary?.lastStateSeq ?? null,
         closed,
+        // Closed earlier: where it was closed then; closed only now: at the watermark now.
+        closedAt: closed
+          ? (source?.closed_at?.getTime() ?? this.#watermarks.get(epoch))
+          : undefined,
         clamped: source?.clamped ?? false,
         tailStart: undefined,
         stored: undefined,
@@ -754,32 +800,41 @@ export class Equipment {
       }
       byEpoch.set(epoch, track);
       const unchanged =
-        source !== undefined &&
-        !source.clamped &&
-        source.state_facts === track.facts &&
+        source?.state_facts === track.facts &&
         source.last_seq === track.lastSeq &&
         source.anchor_arrival === (anchor?.arrival ?? null);
       // The open interval as stored must be the last piece, opened by the last fact (or anchor).
       // Nothing to store: no state fact and no anchor (an equipment seen only through cycles).
       if (unchanged && track.lastSeq === null && !anchor) continue;
       const opened = lastPiece?.start_seq === track.lastSeq ? lastPiece : undefined;
-      if (!unchanged || !opened) {
+      if (unchanged && opened) {
+        track.last = {
+          at: opened.interval_start.getTime(),
+          state: opened.state,
+          cause: opened.cause,
+          seq: opened.start_seq,
+        };
+        track.tailStart = opened.start_time.getTime();
+        track.stored = opened.end_time.getTime();
+      } else if (unchanged && !track.clamped && track.lastSeq !== null) {
+        // The last fact's interval has no piece yet (zero length so far): read just that fact.
+        const [fact] = await this.#source.stateFacts(equipment, epoch, {
+          fromSeq: track.lastSeq,
+          toSeq: track.lastSeq,
+        });
+        if (!fact) throw new Error(`fact ${String(track.lastSeq)} of ${equipment} vanished`);
+        track.last = factPoint(fact);
+        track.stored = track.last.at;
+      } else {
         await this.#rebuild(track);
         rebuilt++;
         continue;
       }
-      track.last = {
-        at: opened.interval_start.getTime(),
-        state: opened.state,
-        cause: opened.cause,
-        seq: opened.start_seq,
-      };
-      track.tailStart = opened.start_time.getTime();
-      track.stored = opened.end_time.getTime();
       track.nextCut = this.#nextCut(track.stored);
-      const watermark = this.#watermarks.get(epoch) ?? track.stored;
       if (source.closed !== closed) await this.#rewriteTail(track, true);
-      else if (watermark !== track.stored) await this.#rewriteTail(track, false);
+      else if (!closed && this.#watermarks.get(epoch) !== track.stored) {
+        await this.#rewriteTail(track, false);
+      }
     }
     this.#log.info({ tracks: pairs.size, rebuilt }, 'equipment intervals caught up');
   }

@@ -70,6 +70,12 @@
       "type": "string",
       "const": "topic"
     },
+    "deviceEpoch": {
+      "description": "The device epoch (ADR-0015) the value was read in, when known; epoch is the gateway counter epoch",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
     "value": {
       "type": "number"
     }

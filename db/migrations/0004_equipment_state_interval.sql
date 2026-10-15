@@ -55,6 +55,9 @@ CREATE TABLE equipment.interval_source (
   -- ingest.state_anchor.arrival of the (equipment, epoch) anchor known then, if any.
   anchor_arrival BIGINT,
   closed BOOLEAN NOT NULL,
+  -- The epoch's plant watermark when a newer epoch closed it: the last interval ends there, and
+  -- nothing arriving later for the old run moves it.
+  closed_at TIMESTAMPTZ,
   -- Some fact was earlier than the one before it (by seq) and was moved up to that time: such an
   -- (equipment, epoch) is always recomputed in full.
   clamped BOOLEAN NOT NULL,

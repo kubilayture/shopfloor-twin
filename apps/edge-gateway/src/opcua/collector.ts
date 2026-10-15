@@ -515,11 +515,16 @@ export class OpcuaCollector {
       return; // before the run starts the server reports Uncertain without a value
     }
     const topic = telemetryTopic(this.#options.path, name);
+    // The server's epoch, read by the resync of this connection. After a connection loss it is
+    // unknown until that resync ran (a restarted simulator's samples may come first), so the
+    // sample goes out without one: the MES then never credits it to an epoch.
+    const deviceEpoch = this.#pending === undefined ? this.#epoch : undefined;
     const message: Telemetry = {
       schema: 'uns.telemetry/1',
       scope: 'topic',
       epoch: this.#options.sequences.epoch,
       seq: this.#options.sequences.next(topic),
+      ...(deviceEpoch === undefined ? {} : { deviceEpoch }),
       sourceTime: (dataValue.sourceTimestamp ?? new Date(this.#now())).toISOString(),
       receivedAt: new Date(this.#now()).toISOString(),
       quality: quality(dataValue.statusCode),

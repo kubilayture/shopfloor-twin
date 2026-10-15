@@ -458,6 +458,31 @@ export class Ingest {
     return rows.map(toAnchor);
   }
 
+  /** How many state changes (equipment, epoch) has. */
+  async stateFactCount(equipment: string, epoch: number): Promise<number> {
+    const row = await this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select((eb) => eb.fn.countAll<string>().as('n'))
+      .where('equipment', '=', equipment)
+      .where('epoch', '=', epoch)
+      .where('event_type', '=', 'state')
+      .executeTakeFirstOrThrow();
+    return Number(row.n);
+  }
+
+  /** The latest `sourceTime` of the state changes of (equipment, epoch) before `seq`, if any. */
+  async latestStateTime(equipment: string, epoch: number, beforeSeq: number): Promise<Date | null> {
+    const row = await this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select((eb) => eb.fn.max<Date | null>('source_time').as('t'))
+      .where('equipment', '=', equipment)
+      .where('epoch', '=', epoch)
+      .where('event_type', '=', 'state')
+      .where('seq', '<', beforeSeq)
+      .executeTakeFirstOrThrow();
+    return row.t;
+  }
+
   /** Device epochs with stored facts for one equipment, oldest first by arrival. */
   async epochs(equipment: string): Promise<number[]> {
     const rows = await this.#options.db

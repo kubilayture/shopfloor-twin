@@ -12,6 +12,7 @@
  * - `Ingest.anchor(equipment, deviceEpoch)`: the starting state when no fact precedes, the first
  *   anchor to arrive for that epoch; `anchors()` lists them all.
  * - `Ingest.stateFactWindow(equipment, epoch, seq)`: a fact with its neighbours by `seq`.
+ * - `Ingest.stateFactCount`, `Ingest.latestStateTime`: for windows of reordered facts.
  * - `Ingest.factSummary()`: per (equipment, epoch), fact counts and the latest time (catch-up).
  * - `Ingest.deliver(topic, payload, retained)`: the store path without a broker (tests, replays).
  */

@@ -27,6 +27,7 @@ export interface IntervalSourceTable {
   last_seq: number | null;
   anchor_arrival: number | null;
   closed: boolean;
+  closed_at: ColumnType<Date | null, Date | string | null, Date | string | null>;
   clamped: boolean;
   updated_at: DefaultTimestamp;
 }
@@ -58,6 +59,7 @@ export const EQUIPMENT_COLUMNS = {
     'last_seq',
     'anchor_arrival',
     'closed',
+    'closed_at',
     'clamped',
     'updated_at',
   ],

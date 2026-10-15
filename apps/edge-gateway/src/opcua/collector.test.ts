@@ -6,6 +6,7 @@ import {
   OPCUA_MACHINES,
   parseUnsMessage,
   type StateCurrent,
+  type Telemetry,
   type UnsMessage,
 } from '@shopfloor/contracts';
 import { formatIssues, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
@@ -188,6 +189,16 @@ describe('OPC UA collector (#76)', () => {
       const message = s.message as Extract<StateCurrent, { kind: 'snapshot' }>;
       expect(message.deviceEpoch).toBeGreaterThan(1_700_000_000);
     }
+    // Telemetry read once the run is known carries its device epoch (contract 1.1); a sample
+    // delivered before the resync read the epoch carries none, never a guessed one.
+    const epochs = new Set(
+      snapshots.map((s) => (s.message as Extract<StateCurrent, { kind: 'snapshot' }>).deviceEpoch),
+    );
+    const telemetry = published
+      .filter((p) => p.message.schema === 'uns.telemetry/1')
+      .map((p) => (p.message as Telemetry).deviceEpoch);
+    expect(telemetry.some((e) => e !== undefined)).toBe(true);
+    expect(telemetry.every((e) => e === undefined || epochs.has(e))).toBe(true);
     expect(
       published.every((p) => p.retain === (p.message.schema !== 'uns.events.cycle-complete/1')),
     ).toBe(true);

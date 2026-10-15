@@ -51,6 +51,9 @@ const LOSS_INCIDENTS = new Set(['sequence-gap', 'ring-overrun', 'buffer-overflow
 /** How long (simulated) the run may go on past the margin until every machine sent a fact. */
 const SILENT_WAIT_MS = Number(process.env.RECONCILE_SILENT_WAIT_MS ?? 2 * 3_600_000);
 
+/** Wall time without the simulation clock moving after which the run fails at once. */
+const STALL_MS = 30_000;
+
 /** Overall limit of a run, below the CI job's timeout (30 minutes). */
 const DEADLINE_MS = Number(process.env.RECONCILE_DEADLINE_MS ?? 25 * 60_000);
 
@@ -300,6 +303,8 @@ async function main(): Promise<boolean> {
                GROUP BY equipment) AS t`,
           );
         let waitFrom: { wall: number; sim: number } | undefined;
+        // The simulation must keep moving while the run waits for silent machines.
+        let lastMove = { wall: Date.now(), sim: start };
         let afterEnd: Record<string, number> = {};
         for (;;) {
           const status = await sim.status();
@@ -307,15 +312,26 @@ async function main(): Promise<boolean> {
           const simNow = Date.parse(status.simTime);
           if (status.state !== 'running')
             throw new Error(`simulator ${status.state} during the shift`);
+          if (simNow > lastMove.sim) lastMove = { wall: Date.now(), sim: simNow };
+          if (Date.now() - lastMove.wall > STALL_MS) {
+            throw new Error(
+              `simulation time stalled at ${status.simTime} for ${String(STALL_MS)} ms of wall time`,
+            );
+          }
           if (simNow >= stopAt) {
             // #113: each machine's last shift bucket is final only after its next fact.
             waitFrom ??= { wall: Date.now(), sim: simNow };
             afterEnd = await factsAfterEnd();
             const silent = machines.filter((id) => afterEnd[id] === undefined);
             if (silent.length === 0) break;
-            if (simNow >= stopAt + SILENT_WAIT_MS) {
+            // Its own wall budget too: twice its nominal wall time, plus a minute.
+            const waitedMs = Date.now() - waitFrom.wall;
+            if (
+              simNow >= stopAt + SILENT_WAIT_MS ||
+              waitedMs > (2 * SILENT_WAIT_MS) / SPEED + 60_000
+            ) {
               throw new Error(
-                `no fact after the shift end within ${String(SILENT_WAIT_MS)} ms of simulated time: ${silent.join(', ')}`,
+                `no fact after the shift end within ${String(SILENT_WAIT_MS)} ms of simulated time (or its wall budget): ${silent.join(', ')}`,
               );
             }
           } else {

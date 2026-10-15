@@ -131,6 +131,7 @@ export class Ingest {
   readonly #incidents: Counter<'origin'> | undefined;
   readonly #errors: Counter | undefined;
   readonly #suspensions: Counter | undefined;
+  readonly #history: Counter | undefined;
   #client: MqttClient | undefined;
   #subscribed = false;
   #stopping = false;
@@ -164,6 +165,11 @@ export class Ingest {
       this.#errors = new Counter({
         name: 'mes_ingest_store_errors_total',
         help: 'Failed attempts to store a delivery (retried, or recorded as unstorable)',
+        registers,
+      });
+      this.#history = new Counter({
+        name: 'mes_ingest_history_written_off_total',
+        help: 'Streams first seen above seq 1 whose lower numbers were written off as history after the gap grace period (not an incident)',
         registers,
       });
       this.#suspensions = new Counter({
@@ -327,6 +333,13 @@ export class Ingest {
   async sweep(): Promise<number> {
     const recorded = await this.#enqueue(async () => {
       const result = await this.#store.sweep(this.#now(), this.#options.gapGraceMs ?? 30_000);
+      for (const history of result.history) {
+        this.#history?.inc();
+        this.#log.warn(
+          history,
+          'numbers below a stream’s first one written off as history (no incident)',
+        );
+      }
       for (const notice of result.notices) await this.#notify(notice);
       return result.recorded;
     });

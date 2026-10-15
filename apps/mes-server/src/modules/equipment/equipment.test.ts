@@ -1,5 +1,6 @@
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import type { Kysely } from 'kysely';
+import { Registry } from 'prom-client';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Database } from '../../db/database.ts';
@@ -639,9 +640,16 @@ describe('interval finality (#113)', () => {
 
   it('settles a stream first seen above 1 once its history is written off, without an incident', async () => {
     const clock = { now: Date.parse('2026-10-15T10:00:00Z') };
+    const registry = new Registry();
+    const warnings: object[] = [];
+    const log = {
+      info: () => undefined,
+      warn: (o: object) => warnings.push(o),
+      error: () => undefined,
+    };
     const { db, ingest, start, send } = await setup(
       {},
-      { gapGraceMs: 30_000, sweepIntervalMs: 0, now: () => clock.now },
+      { gapGraceMs: 30_000, sweepIntervalMs: 0, now: () => clock.now, registry, log },
     );
     await start();
     // The MES joins a running stream at 5: 1 to 4 may still be in flight (a reordered replay).
@@ -654,12 +662,91 @@ describe('interval finality (#113)', () => {
     expect(await ingest.sweep()).toBe(0); // seen open from now on
     clock.now += 30_000;
     expect(await ingest.sweep()).toBe(0); // history, not a gap: no incident
+    // …but visible: a warning and a metric per stream written off.
+    expect(warnings).toContainEqual(
+      expect.objectContaining({ stream: 'device:cnc-a', from: 1, to: 4 }),
+    );
+    expect(await registry.metrics()).toMatch(/^mes_ingest_history_written_off_total 1$/m);
     expect(await db.selectFrom('ingest.data_quality_incident').selectAll().execute()).toEqual([]);
     expect(await pieces(db, 'cnc-a')).toEqual([
       ['E1', '10:10', '11:00', 'Running', SHIFT_A, 'final', 5],
       ['E1', '11:00', '11:20', 'Running', SHIFT_B, 'provisional', 5],
     ]);
     expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
+  });
+
+  it('recomputes before finality when a jump passes a state fact it never heard of', async () => {
+    const { db, send } = await setup();
+    const masterData = new MasterData(db);
+    await send(feed.state('cnc-a', E1, 1, at('10:00'), 'Running'));
+    // A second ingest process: like a resumed session, it loads its cursors from the table.
+    const resumed = new Ingest({
+      db,
+      url: 'mqtt://127.0.0.1:1',
+      username: 'mes',
+      password: 'unused',
+    });
+    const equipment = new Equipment({
+      db,
+      source: resumed,
+      shiftPattern: await masterData.shiftPattern(),
+      provisionalStepMs: 0,
+    });
+    await equipment.start();
+    cleanup.push(() => equipment.stop());
+    // Seq 2's commit was applied but reported failed; the session was suspended, the cursors
+    // reloaded, and its redelivery is a duplicate: no notice ever tells of it (ADR-0017).
+    const missed = feed.state('cnc-a', E1, 2, at('10:20'), 'Down', 'X');
+    await db
+      .insertInto('ingest.equipment_event')
+      .values({
+        equipment: 'cnc-a',
+        epoch: E1,
+        seq: 2,
+        source_time: new Date(at('10:20')),
+        event_type: 'state',
+        topic: missed.topic,
+        state: 'Down',
+        cause: 'X',
+        quality: 'good',
+        source_protocol: 'opcua',
+        received_at: new Date(),
+        payload: missed.payload,
+      })
+      .execute();
+    await db
+      .updateTable('ingest.source_cursor')
+      .set({ seen: JSON.stringify([[1, 2]]) })
+      .where('stream', '=', 'device:cnc-a')
+      .execute();
+    await resumed.deliver(missed.topic, missed.payload); // the duplicate redelivery
+    expect(resumed.count('duplicate')).toBe(1);
+    // The next fact moves the settled part past seq 2: the module notices the missing fact.
+    const next = feed.cycle('cnc-a', E1, 3, at('10:40'));
+    await resumed.deliver(next.topic, next.payload);
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:00', '10:20', 'Running', SHIFT_A, 'final', 1],
+      ['E1', '10:20', '10:40', 'Down', SHIFT_A, 'final', 2],
+    ]);
+    expect(equipment.currentState('cnc-a')).toMatchObject({ state: 'Down', seq: 2 });
+  });
+
+  it('gives a closed epoch’s final hours the gaps that its end turned into incidents', async () => {
+    const { db, start, send } = await setup();
+    await start();
+    // Seq 2 is missing, not reported yet; the new run's telemetry closes the epoch first.
+    await send(
+      feed.state('cnc-a', E1, 1, at('10:10'), 'Running'),
+      feed.state('cnc-a', E1, 3, at('10:30'), 'Idle'),
+      feed.cycle('cnc-b', E1, 1, at('10:50')),
+      feed.telemetry('cnc-a', at('08:00'), E2),
+    );
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
+    // The new run's first fact ends the old epoch in ingest: its gap becomes an incident.
+    await send(feed.state('cnc-a', E2, 1, at('08:05'), 'Idle'));
+    const incidents = await db.selectFrom('ingest.data_quality_incident').selectAll().execute();
+    expect(incidents).toMatchObject([{ seq_from: 2, seq_to: 2, resolution: 'epoch-ended' }]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 1]]);
   });
 
   it('makes a closed epoch final everywhere; its late facts raise the revision', async () => {

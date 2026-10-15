@@ -411,8 +411,16 @@ export class Equipment {
           break;
         case 'gaps':
           track = this.#tracks.get(notice.equipment)?.get(notice.epoch);
-          if (!track || track.closed) return;
-          await this.#learn(track, notice.settledSeq);
+          if (!track) return;
+          if (track.closed) {
+            // The epoch ended with gaps (`epoch-ended` incidents): its final hours carry them.
+            await this.#setIncidents(
+              track,
+              (await this.#source.settled(track.equipment, track.epoch)).incidents,
+            );
+            return;
+          }
+          if (await this.#learn(track, notice.settledSeq)) await this.#verifyFacts(track, 0);
           await this.#settle(track);
           break;
       }
@@ -479,13 +487,19 @@ export class Equipment {
     } else {
       await this.#db.transaction().execute((trx) => this.#saveSource(trx, track));
     }
-    track.incidents = spans((await this.#source.settled(track.equipment, track.epoch)).incidents);
+    await this.#setIncidents(
+      track,
+      (await this.#source.settled(track.equipment, track.epoch)).incidents,
+    );
     await this.#settle(track);
   }
 
   async #onState(track: Track, fact: StateFact, settledSeq: number | null): Promise<void> {
     this.#raise(track.epoch, fact.sourceTime.getTime());
-    await this.#learn(track, settledSeq, { seq: fact.seq, at: fact.sourceTime.getTime() });
+    if (await this.#learn(track, settledSeq, { seq: fact.seq, at: fact.sourceTime.getTime() })) {
+      // This fact is one the track is about to count: the rest must be known already.
+      await this.#verifyFacts(track, 1, false);
+    }
     // A track whose last handling failed is recomputed, never patched from a stale state.
     const window = this.#dirty.has(track) ? undefined : await this.#window(track, fact);
     if (!window) {
@@ -614,7 +628,9 @@ export class Equipment {
       if (sample.kind === 'cycle' && this.#isFinalHour(track, hourOf(at))) {
         await this.#revise(track, [hourOf(at)]);
       }
-      await this.#learn(track, settledSeq, { seq: sample.seq, at });
+      if (await this.#learn(track, settledSeq, { seq: sample.seq, at })) {
+        await this.#verifyFacts(track, 0);
+      }
     }
     await this.#advance(epoch);
     if (sample.scope === 'device') await this.#settle(track);
@@ -633,29 +649,86 @@ export class Equipment {
   /**
    * Learns how far the device stream is settled (#113). In order, the fact itself moves it by one;
    * otherwise (a gap filled or reported, or the first fact known) ingest is asked, which also
-   * tells the epoch's incidents.
+   * tells the epoch's incidents. Returns true for such a jump: the caller then checks that no
+   * state fact below it went unheard (`#verifyFacts`) before anything is stored as final.
    */
   async #learn(
     track: Track,
     settledSeq: number | null | undefined,
     fact?: { readonly seq: number; readonly at: Millis },
-  ): Promise<void> {
-    if (settledSeq === undefined || settledSeq === null || track.closed) return;
+  ): Promise<boolean> {
+    if (settledSeq === undefined || settledSeq === null || track.closed) return false;
     const known = track.settledSeq;
-    if (known !== null && settledSeq <= known) return;
+    if (known !== null && settledSeq <= known) return false;
     if (fact && known !== null && fact.seq === settledSeq && known === fact.seq - 1) {
       track.settledSeq = settledSeq;
       track.finalThrough = Math.max(track.finalThrough, fact.at);
-      return;
+      return false;
     }
-    this.#apply(
+    await this.#apply(
       track,
       await this.#source.settled(track.equipment, track.epoch, known ?? undefined),
     );
+    return true;
   }
 
-  #apply(track: Track, state: SettledState): void {
-    track.incidents = spans(state.incidents);
+  /**
+   * A jump in the settled part may pass a state fact the module never heard of: a commit applied
+   * although it reported failure, whose redelivery the reloaded cursor then saw as a duplicate
+   * (ADR-0017), so no notice came. If ingest counts more state facts than the track (plus the
+   * `pending` ones in hand), the track is recomputed from the tables before anything is final:
+   * at once, or (`now` false) by the caller's next step, through the dirty mark.
+   */
+  async #verifyFacts(track: Track, pending: number, now = true): Promise<void> {
+    if (track.closed || this.#dirty.has(track)) return;
+    const counted = await this.#source.stateFactCount(track.equipment, track.epoch);
+    if (counted === track.facts + pending) return;
+    this.#log.info(
+      { equipment: track.equipment, epoch: track.epoch, counted, known: track.facts + pending },
+      'state facts missed by notices: recomputing before finality',
+    );
+    this.#dirty.add(track);
+    if (now) await this.#rebuild(track);
+  }
+
+  /**
+   * Remembers the epoch's gap incidents and, when they changed, updates the final hours they
+   * overlap (an incident may be recorded after its hours became final: a closed epoch's gaps).
+   */
+  async #setIncidents(track: Track, incidents: readonly GapIncident[]): Promise<void> {
+    const before = track.incidents.map((s) => s.id).join(',');
+    track.incidents = spans(incidents);
+    if (track.incidents.map((s) => s.id).join(',') === before) return;
+    if (!track.closed && track.finalEnd === -Infinity) return;
+    const rows = await this.#db
+      .selectFrom('equipment.bucket_finality')
+      .select(['hour', 'incident_ids'])
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch)
+      .execute();
+    for (const row of rows) {
+      const ids = this.#incidentsIn(track, row.hour.getTime());
+      if (ids.join(',') === [...row.incident_ids].sort((a, b) => a - b).join(',')) continue;
+      await this.#db
+        .updateTable('equipment.bucket_finality')
+        .set({ incident_ids: ids })
+        .where('equipment', '=', track.equipment)
+        .where('epoch', '=', track.epoch)
+        .where('hour', '=', row.hour)
+        .execute();
+    }
+  }
+
+  /** Ids of the track's incidents whose span overlaps the hour, ascending. */
+  #incidentsIn(track: Track, hour: Millis): number[] {
+    return track.incidents
+      .filter((s) => s.from < hour + HOUR && s.to >= hour)
+      .map((s) => s.id)
+      .sort((a, b) => a - b);
+  }
+
+  async #apply(track: Track, state: SettledState): Promise<void> {
+    await this.#setIncidents(track, state.incidents);
     if (state.settledSeq === null) return;
     track.settledSeq = Math.max(track.settledSeq ?? state.settledSeq, state.settledSeq);
     if (state.settledTime) {
@@ -744,9 +817,7 @@ export class Equipment {
             equipment: track.equipment,
             epoch: track.epoch,
             hour,
-            incident_ids: track.incidents
-              .filter((s) => s.from < hour.getTime() + HOUR && s.to >= hour.getTime())
-              .map((s) => s.id),
+            incident_ids: this.#incidentsIn(track, hour.getTime()),
           })),
         )
         .onConflict((c) => c.columns(['equipment', 'epoch', 'hour']).doNothing())
@@ -1171,7 +1242,7 @@ export class Equipment {
         ...UNSETTLED,
         finalEnd: recorded ? Infinity : lastFinal === undefined ? -Infinity : lastFinal + HOUR,
       };
-      if (!recorded) this.#apply(track, await this.#source.settled(equipment, epoch));
+      if (!recorded) await this.#apply(track, await this.#source.settled(equipment, epoch));
       let byEpoch = this.#tracks.get(equipment);
       if (!byEpoch) {
         byEpoch = new Map();

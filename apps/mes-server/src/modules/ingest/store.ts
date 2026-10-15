@@ -318,6 +318,16 @@ export class IngestStore {
         )
         .execute();
       const notices: IngestNotice[] = [];
+      if (cursor && epoch > cursor.epoch && stream.startsWith('device:')) {
+        // The old epoch's open gaps became incidents (`epoch-ended`): a closed epoch's final
+        // hours carry them too (#113).
+        notices.push({
+          type: 'gaps',
+          equipment: stream.slice('device:'.length),
+          epoch: cursor.epoch,
+          settledSeq: null,
+        });
+      }
       if (input.kind === 'event') {
         // The next device fact tells which device epoch a waiting snapshot (one without
         // deviceEpoch, from an older gateway) belongs to.
@@ -364,8 +374,14 @@ export class IngestStore {
   async sweep(
     now: number,
     graceMs: number,
-  ): Promise<{ recorded: number; notices: IngestNotice[] }> {
+  ): Promise<{
+    recorded: number;
+    notices: IngestNotice[];
+    /** Numbers below a stream's first one, written off as history (no incident). */
+    history: { stream: string; epoch: number; from: number; to: number }[];
+  }> {
     let recorded = 0;
+    const written: { stream: string; epoch: number; from: number; to: number }[] = [];
     const notices: IngestNotice[] = [];
     for (const [stream, cursor] of this.#cursors) {
       if (!tracksGaps(stream)) continue;
@@ -411,6 +427,9 @@ export class IngestStore {
       });
       this.#cursors.set(stream, { ...cursor, reported });
       recorded += gaps.length;
+      if (history && due.some((hole) => hole.range === history)) {
+        written.push({ stream, epoch: cursor.epoch, from: history[0], to: history[1] });
+      }
       if (stream.startsWith('device:')) {
         notices.push({
           type: 'gaps',
@@ -420,7 +439,7 @@ export class IngestStore {
         });
       }
     }
-    return { recorded, notices };
+    return { recorded, notices, history: written };
   }
 
   /**

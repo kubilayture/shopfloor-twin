@@ -128,8 +128,9 @@ Every UNS message passes through the gateway's outbox (ADR-0014), except the gat
 3. During a broker outage they stay on disk; after the outage, or after a gateway restart, the rest is sent in the same order.
 
 - A crash between PUBACK and delete sends one message twice, which the consumer's dedup removes.
-- A message the broker refuses for good (reason code 0x80 or higher, for example the ACL) is dropped and logged, so it can't block the rest.
-- The outbox holds at most `BUFFER_MAX_MESSAGES` (200,000, about 11 hours of the whole plant at 60×). Beyond that the oldest are dropped, with a `buffer-overflow` incident.
+- A message the broker refuses for good (reason codes 0x87, 0x90, 0x95 and 0x99, for example the ACL) is dropped and logged, so it can't block the rest. Other failures pause sending for a second and retry.
+- The gateway's responsibility ends at the PUBACK. A broker killed outright loses what it had acknowledged but not yet passed on to subscribers; that is the broker's durability (Mosquitto persistence), not the gateway's.
+- The outbox holds at most `BUFFER_MAX_MESSAGES` (200,000, about 11 hours of the whole plant at 60×). Beyond that the oldest messages not yet handed to the broker are dropped, with a `buffer-overflow` incident.
 - The Modbus cursor is saved in the same transaction as the messages it produced, so a gateway restart neither repeats nor skips washer facts.
 
 ## Identity, duplicates and gaps (ADR-0015)

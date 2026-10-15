@@ -13,8 +13,8 @@ import { Outbox, type Transport } from './outbox.ts';
 const dirs: string[] = [];
 const outboxes: Outbox[] = [];
 
-afterEach(() => {
-  for (const outbox of outboxes.splice(0)) outbox.close();
+afterEach(async () => {
+  for (const outbox of outboxes.splice(0)) await outbox.close();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -82,7 +82,11 @@ class FakeTransport implements Transport {
   }
 }
 
-function open(path: string, transport: Transport, options: { maxMessages?: number } = {}) {
+function open(
+  path: string,
+  transport: Transport,
+  options: { maxMessages?: number; retryMs?: number } = {},
+) {
   const drops: [number, string][] = [];
   const outbox = new Outbox({
     path,
@@ -113,7 +117,7 @@ describe('store-and-forward outbox (#78, ADR-0014)', () => {
     const down = new FakeTransport();
     const first = open(path, down);
     for (let i = 1; i <= 40; i++) void first.outbox.publish(message(i));
-    first.outbox.close(); // commits what waited
+    await first.outbox.close(); // commits what waited
     outboxes.splice(outboxes.indexOf(first.outbox), 1);
     const transport = new FakeTransport();
     const second = open(path, transport);
@@ -139,7 +143,8 @@ describe('store-and-forward outbox (#78, ADR-0014)', () => {
     await until(() => outbox.depth === 31);
     transport.up();
     await until(() => outbox.depth === 0);
-    expect([...new Set(transport.sent)]).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
+    // Exactly once each, in order: nothing re-sent, nothing overtaken.
+    expect(transport.sent).toEqual(Array.from({ length: 60 }, (_, i) => i + 1));
   });
 
   it('drops a message the broker refuses for good, reports it, and does not block the rest', async () => {
@@ -164,6 +169,42 @@ describe('store-and-forward outbox (#78, ADR-0014)', () => {
     await until(() => outbox.depth === 0);
     expect(transport.sent[0]).toBe(31);
     expect(transport.sent).toHaveLength(100);
+  });
+
+  it('pauses after a transient error while connected instead of spinning, and loses nothing', async () => {
+    const transport = new FakeTransport();
+    const { outbox } = open(file(), transport, { retryMs: 50 });
+    transport.up();
+    let failures = 0;
+    let calls = 0;
+    const original = transport.publish.bind(transport);
+    transport.publish = (publication) => {
+      calls++;
+      if (publication.message.seq === 3 && failures < 2) {
+        failures++;
+        return Promise.reject(new Error('Connection closed')); // no reason code: not a refusal
+      }
+      return original(publication);
+    };
+    await Promise.all([1, 2, 3, 4, 5, 6].map((seq) => outbox.publish(message(seq))));
+    await until(() => outbox.depth === 0);
+    expect(calls).toBeLessThan(15);
+    expect([...transport.sent].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(new Set(transport.sent).size).toBe(transport.sent.length); // none twice
+  });
+
+  it('never trims messages that are already with the broker', async () => {
+    const transport = new FakeTransport();
+    const pending: (() => void)[] = [];
+    transport.publish = () => new Promise<void>((resolve) => pending.push(resolve));
+    const { outbox, drops } = open(file(), transport, { maxMessages: 1_000 });
+    transport.up();
+    await Promise.all(Array.from({ length: 1_030 }, (_, i) => outbox.publish(message(i + 1))));
+    expect(pending).toHaveLength(100); // in flight
+    expect(drops.reduce((sum, [n]) => sum + n, 0)).toBe(30);
+    for (const resolve of pending.splice(0)) resolve();
+    await until(() => outbox.delivered === 100);
+    expect(outbox.depth).toBeGreaterThanOrEqual(0);
   });
 
   it('persists the Modbus cursor with the messages of the same commit', async () => {
@@ -198,7 +239,23 @@ describe('store-and-forward with the real broker (#78)', () => {
       startedAt: 0,
       reconnectPeriodMs: 300,
     });
-    const { outbox } = open(file(), link);
+    // Records which messages the first broker acknowledged: those are its responsibility.
+    const ackedByFirstBroker = new Set<number>();
+    let firstBroker = true;
+    const transport: Transport = {
+      get connected() {
+        return link.connected;
+      },
+      onConnect: (listener) => {
+        link.onConnect(listener);
+      },
+      publish: async (publication) => {
+        const onFirst = firstBroker;
+        await link.publish(publication);
+        if (onFirst && firstBroker) ackedByFirstBroker.add(publication.message.seq);
+      },
+    };
+    const { outbox } = open(file(), transport);
     link.start();
     await until(() => link.connected);
     const received: number[] = [];
@@ -218,12 +275,17 @@ describe('store-and-forward with the real broker (#78)', () => {
     let mes = await subscribe();
     for (let i = 1; i <= 50; i++) await outbox.publish(message(i));
     await until(() => received.length >= 50);
-    await mes.endAsync(true);
 
+    // Messages 51–100 are on their way when the broker dies: in flight across the outage.
+    for (let i = 51; i <= 100; i++) void outbox.publish(message(i));
+    // A graceful stop: a broker killed outright also loses what it had acknowledged but not yet
+    // passed on, which is the broker's durability, not the gateway's.
     await broker.stop(); // outage
+    firstBroker = false;
+    await mes.endAsync(true);
     await until(() => !link.connected);
-    for (let i = 51; i <= 300; i++) void outbox.publish(message(i));
-    await until(() => outbox.depth === 250);
+    for (let i = 101; i <= 300; i++) void outbox.publish(message(i));
+    await until(() => outbox.depth >= 200);
 
     broker = await brokerAt();
     mes = await subscribe();
@@ -233,7 +295,15 @@ describe('store-and-forward with the real broker (#78)', () => {
     await link.close();
     await broker.stop();
 
-    const unique = [...new Set(received)];
-    expect(unique).toEqual(Array.from({ length: 300 }, (_, i) => i + 1));
+    // The gateway's contract: every message reached a subscriber, or the broker acknowledged it
+    // before its outage (what a stopped broker had not passed on yet is the broker's durability).
+    const got = new Set(received);
+    const unaccounted = Array.from({ length: 300 }, (_, i) => i + 1).filter(
+      (seq) => !got.has(seq) && !ackedByFirstBroker.has(seq),
+    );
+    expect(unaccounted).toEqual([]);
+    // Everything published during the outage was delivered after it, in order.
+    const afterOutage = received.filter((seq) => seq > 100);
+    expect([...new Set(afterOutage)]).toEqual(Array.from({ length: 200 }, (_, i) => 101 + i));
   }, 180_000);
 });

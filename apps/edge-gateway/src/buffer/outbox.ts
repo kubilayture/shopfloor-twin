@@ -22,6 +22,8 @@ export interface OutboxOptions {
   readonly batchSize?: number;
   /** Messages handed to the broker and not yet acknowledged. */
   readonly inflight?: number;
+  /** Pause after a transient send error while connected. */
+  readonly retryMs?: number;
   readonly checkpointMs?: number;
   /** Messages removed without delivery: on overflow, or refused by the broker for good. */
   readonly onDrop?: (count: number, reason: 'overflow' | 'refused', detail: string) => void;
@@ -41,13 +43,19 @@ interface Row {
   readonly retain: number;
 }
 
-/** A refusal by the broker (MQTT 5 reason code 0x80 and above, e.g. 0x87 not authorized). */
+/**
+ * MQTT 5 PUBACK reason codes that will never succeed for this message: not authorized, topic name
+ * invalid, packet too large, payload format invalid. Others (server busy 0x89, rate 0x96, quota
+ * 0x97, unspecified 0x80) are retried.
+ */
+const PERMANENT_REFUSALS = new Set([0x87, 0x90, 0x95, 0x99]);
+
 const isRefusal = (error: unknown): boolean =>
   typeof error === 'object' &&
   error !== null &&
   'code' in error &&
   typeof error.code === 'number' &&
-  error.code >= 0x80;
+  PERMANENT_REFUSALS.has(error.code);
 
 /**
  * Store-and-forward (plan section 5, ADR-0014): every UNS message is committed to a SQLite outbox
@@ -74,7 +82,11 @@ export class Outbox implements Publisher, CursorStore {
   #checkpointTimer: ReturnType<typeof setInterval> | undefined;
   /** Highest id handed to the transport; rows above it are still to be sent. */
   #sentUpTo = 0;
-  #inflight = 0;
+  readonly #inFlight = new Set<number>();
+  #pausedUntilRetry = false;
+  #retryTimer: ReturnType<typeof setTimeout> | undefined;
+  #stopping = false;
+  readonly #committedCursors = new Map<string, { epoch: number; seq: number }>();
   #depth: number;
   #dropped = 0;
   #delivered = 0;
@@ -109,14 +121,16 @@ export class Outbox implements Publisher, CursorStore {
     );
     this.#delete = db.prepare('DELETE FROM outbox WHERE id = ?');
     this.#trim = db.prepare(
-      'DELETE FROM outbox WHERE id IN (SELECT id FROM outbox ORDER BY id LIMIT ?)',
+      'DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE id > ? ORDER BY id LIMIT ?)',
     );
     this.#saveCursor = db.prepare(
       'INSERT INTO cursors (machine, epoch, seq) VALUES (?, ?, ?) ' +
         'ON CONFLICT (machine) DO UPDATE SET epoch = excluded.epoch, seq = excluded.seq',
     );
     for (const row of db.prepare('SELECT machine, epoch, seq FROM cursors').all()) {
-      this.#cursors.set(String(row.machine), { epoch: Number(row.epoch), seq: Number(row.seq) });
+      const cursor = { epoch: Number(row.epoch), seq: Number(row.seq) };
+      this.#cursors.set(String(row.machine), cursor);
+      this.#committedCursors.set(String(row.machine), { ...cursor });
     }
     this.#depth = Number(db.prepare('SELECT count(*) AS n FROM outbox').get()?.n ?? 0);
     this.#checkpointTimer = setInterval(() => {
@@ -173,11 +187,19 @@ export class Outbox implements Publisher, CursorStore {
     this.#dirtyCursors.add(machineId);
   }
 
-  /** Commits what waits, stops sending, closes the file. Unsent messages stay for the next start. */
-  close(): void {
-    if (this.#closed) return;
+  /**
+   * Stops sending, commits what waits, waits briefly for the acknowledgement of what is in flight,
+   * and closes the file. Unsent messages stay for the next start.
+   */
+  async close(graceMs = 2_000): Promise<void> {
+    if (this.#closed || this.#stopping) return;
+    this.#stopping = true;
+    clearTimeout(this.#retryTimer);
     this.#flush();
-    this.#deleteAcked();
+    for (const deadline = Date.now() + graceMs; this.#inFlight.size > 0 && Date.now() < deadline;) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    this.#flush();
     this.#closed = true;
     clearTimeout(this.#flushTimer);
     clearInterval(this.#checkpointTimer);
@@ -211,8 +233,20 @@ export class Outbox implements Publisher, CursorStore {
         this.#db.exec('ROLLBACK');
       });
       for (const w of waiting) w.reject(error);
+      // The messages are lost; a cursor saved later must not claim they were handled.
+      for (const machine of this.#dirtyCursors) {
+        const committed = this.#committedCursors.get(machine);
+        if (committed) this.#cursors.set(machine, { ...committed });
+        else this.#cursors.delete(machine);
+      }
+      this.#dirtyCursors.clear();
       this.#options.onError?.(error);
+      this.#scheduleFlush(); // acknowledged deletes are still pending
       return;
+    }
+    for (const machine of this.#dirtyCursors) {
+      const cursor = this.#cursors.get(machine);
+      if (cursor) this.#committedCursors.set(machine, { ...cursor });
     }
     this.#depth += waiting.length - this.#acked.size;
     this.#acked.clear();
@@ -226,69 +260,83 @@ export class Outbox implements Publisher, CursorStore {
     const max = this.#options.maxMessages ?? 200_000;
     const excess = this.#depth - max;
     if (excess <= 0) return;
-    this.#trim.run(excess);
-    this.#depth -= excess;
-    this.#dropped += excess;
+    // Only rows not yet handed to the broker: those in flight will be delivered anyway.
+    const removed = Number(this.#trim.run(this.#sentUpTo, excess).changes);
+    if (removed === 0) return;
+    this.#depth -= removed;
+    this.#dropped += removed;
     this.#options.onDrop?.(
-      excess,
+      removed,
       'overflow',
-      `outbox full (${String(max)} messages): oldest dropped`,
+      `outbox full (${String(max)} messages): oldest unsent dropped`,
     );
-  }
-
-  #deleteAcked(): void {
-    if (this.#acked.size === 0 || this.#closed) return;
-    this.#run(() => {
-      this.#db.exec('BEGIN');
-      for (const id of this.#acked) this.#delete.run(id);
-      this.#db.exec('COMMIT');
-    });
-    this.#depth -= this.#acked.size;
-    this.#acked.clear();
   }
 
   /** Sends stored messages in id order, keeping at most `inflight` unacknowledged. */
   #drain(): void {
     const transport = this.#options.transport;
     const limit = this.#options.inflight ?? 100;
-    if (this.#closed || !transport.connected || this.#inflight >= limit) return;
-    const rows = this.#next.all(this.#sentUpTo, limit - this.#inflight) as unknown as Row[];
-    for (const row of rows) {
-      this.#sentUpTo = row.id;
-      this.#inflight++;
-      transport
-        .publish({
-          topic: row.topic,
-          message: JSON.parse(row.payload) as UnsPublication['message'],
-          retain: row.retain === 1,
-        })
-        .then(
-          () => {
-            if (!this.#acked.has(row.id)) this.#delivered++;
-            this.#acked.add(row.id);
-          },
-          (error: unknown) => {
-            if (isRefusal(error)) {
-              this.#acked.add(row.id); // never deliverable: retrying would block everything behind it
-              this.#dropped++;
-              this.#options.onDrop?.(1, 'refused', `${row.topic}: ${String(error)}`);
-            } else {
-              // Not connected: send again from here once the broker is back (onConnect resets too).
-              this.#sentUpTo = Math.min(this.#sentUpTo, row.id - 1);
-            }
-          },
-        )
-        .finally(() => {
-          this.#inflight--;
-          if (this.#acked.size >= (this.#options.batchSize ?? 100)) {
-            this.#flush();
-          } else {
-            this.#flushTimer ??= setTimeout(() => {
-              this.#flush();
-            }, this.#options.flushMs ?? 20);
-            this.#drain();
+    if (this.#stopping || this.#pausedUntilRetry || !transport.connected) return;
+    while (this.#inFlight.size < limit) {
+      const rows = this.#next.all(this.#sentUpTo, limit - this.#inFlight.size) as unknown as Row[];
+      if (rows.length === 0) return;
+      for (const row of rows) {
+        this.#sentUpTo = row.id;
+        // After a rewind, rows already acknowledged or still with the broker are not sent again.
+        if (this.#acked.has(row.id) || this.#inFlight.has(row.id)) continue;
+        this.#send(transport, row);
+      }
+    }
+  }
+
+  #send(transport: Transport, row: Row): void {
+    this.#inFlight.add(row.id);
+    transport
+      .publish({
+        topic: row.topic,
+        message: JSON.parse(row.payload) as UnsPublication['message'],
+        retain: row.retain === 1,
+      })
+      .then(
+        () => {
+          if (!this.#acked.has(row.id)) this.#delivered++;
+          this.#acked.add(row.id);
+        },
+        (error: unknown) => {
+          if (isRefusal(error)) {
+            this.#acked.add(row.id); // never deliverable: retrying would block everything behind it
+            this.#dropped++;
+            this.#options.onDrop?.(1, 'refused', `${row.topic}: ${String(error)}`);
+            return;
           }
-        });
+          // Not sent: continue from here, after a pause. While disconnected, the reconnect resumes
+          // sending; while connected (a transient error) a back-off timer does, so a persistent
+          // error can't spin.
+          this.#sentUpTo = Math.min(this.#sentUpTo, row.id - 1);
+          if (transport.connected && !this.#pausedUntilRetry) {
+            this.#pausedUntilRetry = true;
+            this.#retryTimer = setTimeout(() => {
+              this.#pausedUntilRetry = false;
+              this.#drain();
+            }, this.#options.retryMs ?? 1_000);
+          }
+        },
+      )
+      .finally(() => {
+        this.#inFlight.delete(row.id);
+        this.#scheduleFlush();
+        this.#drain();
+      });
+  }
+
+  #scheduleFlush(): void {
+    if (this.#closed) return;
+    if (this.#acked.size >= (this.#options.batchSize ?? 100)) {
+      this.#flush();
+    } else {
+      this.#flushTimer ??= setTimeout(() => {
+        this.#flush();
+      }, this.#options.flushMs ?? 20);
     }
   }
 

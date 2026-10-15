@@ -155,7 +155,7 @@ async function shutdown(signal: string): Promise<void> {
   }, SHUTDOWN_TIMEOUT_MS).unref();
   const stopped = await Promise.allSettled([...collectors.map((c) => c.stop()), poller.stop()]);
   // Unsent messages stay in the outbox for the next start.
-  outbox.close();
+  await outbox.close();
   const results = [...stopped, ...(await Promise.allSettled([http.close(), link.close()]))];
   for (const result of results) {
     if (result.status === 'rejected') log.error(result.reason);

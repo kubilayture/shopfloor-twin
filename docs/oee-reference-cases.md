@@ -9,9 +9,10 @@ Hand-calculated OEE cases for `oee-core` (plan sections 7 and 9, ADR-0021). The 
 - **APT** (actual production time) = Running + micro-stops.
 - **Ideal time** = Σ over products of (ideal cycle ms at the machine's operation × produced count). Produced = good + scrap + rework.
 - **Own availability loss** = Stopped at or above the threshold + Down + Setup + Idle. **External** = Starved + Blocked. So PBT = APT + own + external.
-- **Speed loss** = APT − micro-stops − ideal time. It is negative when the cycles credited to the bucket hold more ideal time than its APT.
+- **Speed loss** = APT − micro-stops − ideal time (scheduled cycles only). It is negative when the cycles credited to the bucket hold more ideal time than its APT.
 - **A** = APT / PBT, **P** = ideal time / APT (not clamped), **Q** = good / produced, **OEE** = (ideal time × good) / (PBT × produced).
-- **Edge cases:** PBT = 0: A, P, Q and OEE are all null (written `–`). APT = 0: P is null; with counts, OEE is null too and the case is flagged `anomaly`. Produced = 0: Q is null and OEE is 0.
+- **Edge cases:** PBT = 0: A, P, Q, OEE and every loss are null (written `–`). APT = 0: P is null; with counts, OEE is null too and the case is flagged `anomaly`. Produced = 0: Q is null and OEE is 0.
+- **Unplanned cycles:** cycles in an unscheduled bucket are reported as unplanned good, produced and ideal time, and are not part of the ideal time, good and produced counts that feed P and Q. So a sum over shift and no-shift buckets keeps the shifts' P, Q and OEE.
 - **Rounding:** half-up to four decimals, in integers: a tie such as 0.03125 becomes 0.0313.
 - **Flags:** `anomaly` (counts with APT = 0) and `provisional` (an open Stopped interval below the threshold counted as a micro-stop for now).
 
@@ -42,28 +43,32 @@ Input notation: states and times in ms, with spaces between thousands; a stop is
 | 16   | wsh-01    | OP20      | yes       | Running 3 600 000                                      | –                                  | VB-100 good 58                                  | VB-100 60 000                  |
 | 16   | asm-01    | OP30      | yes       | Running 3 000 000; Blocked 600 000                     | –                                  | VB-200 good 14                                  | VB-200 210 000                 |
 | 17   | pck-01    | OP50      | yes       | Running 112 500; Down 3 487 500                        | –                                  | VB-100 good 3                                   | VB-100 30 000                  |
+| 18   | cnc-01    | OP10      | no        | Running 3 000 000; Off 600 000                         | –                                  | VB-100 good 10; VB-100 scrap 1                  | VB-100 240 000                 |
+| 19   | cnc-01    | OP10      | yes       | Running 3 500 000; Stopped 100 000                     | 100 000 / 130 000 open             | VB-100 good 14                                  | VB-100 240 000                 |
 
 ## Expected totals
 
-| Case | PBT       | APT       | Own availability loss | External availability loss | Micro-stops | Speed loss | Ideal time | Good | Produced |
-| ---- | --------- | --------- | --------------------- | -------------------------- | ----------- | ---------- | ---------- | ---- | -------- |
-| 1    | 3 600 000 | 3 600 000 | 0                     | 0                          | 0           | 0          | 3 600 000  | 15   | 15       |
-| 2    | 3 600 000 | 2 100 000 | 1 500 000             | 0                          | 0           | 150 000    | 1 950 000  | 6    | 7        |
-| 3    | 3 600 000 | 3 480 000 | 120 000               | 0                          | 0           | 180 000    | 3 300 000  | 10   | 10       |
-| 4    | 3 600 000 | 3 600 000 | 0                     | 0                          | 119 999     | 180 001    | 3 300 000  | 10   | 10       |
-| 5    | 3 600 000 | 3 600 000 | 0                     | 0                          | 40 000      | 200 000    | 3 360 000  | 14   | 14       |
-| 6    | 3 600 000 | 3 550 000 | 50 000                | 0                          | 0           | 190 000    | 3 360 000  | 14   | 14       |
-| 7    | 3 600 000 | 3 600 000 | 0                     | 0                          | 30 000      | 210 000    | 3 360 000  | 14   | 14       |
-| 8    | 3 000 000 | 1 800 000 | 1 200 000             | 0                          | 0           | 150 000    | 1 650 000  | 11   | 11       |
-| 9    | 3 600 000 | 3 240 000 | 0                     | 360 000                    | 0           | 0          | 3 240 000  | 32   | 36       |
-| 10   | 0         | 0         | 0                     | 0                          | 0           | 0          | 0          | 0    | 0        |
-| 11   | 0         | 0         | 0                     | 0                          | 0           | 0          | 0          | 0    | 0        |
-| 12   | 3 600 000 | 600 000   | 0                     | 3 000 000                  | 0           | -30 000    | 630 000    | 21   | 21       |
-| 13   | 3 600 000 | 0         | 3 600 000             | 0                          | 0           | -240 000   | 240 000    | 1    | 1        |
-| 14   | 3 600 000 | 600 000   | 3 000 000             | 0                          | 0           | 600 000    | 0          | 0    | 0        |
-| 15   | 7 200 000 | 6 360 000 | 840 000               | 0                          | 60 000      | 120 000    | 6 180 000  | 21   | 22       |
-| 16   | 7 200 000 | 6 600 000 | 0                     | 600 000                    | 0           | 180 000    | 6 420 000  | 72   | 72       |
-| 17   | 3 600 000 | 112 500   | 3 487 500             | 0                          | 0           | 22 500     | 90 000     | 3    | 3        |
+| Case | PBT       | APT       | Own availability loss | External availability loss | Micro-stops | Speed loss | Ideal time | Good | Produced | Unplanned good | Unplanned produced | Unplanned ideal time |
+| ---- | --------- | --------- | --------------------- | -------------------------- | ----------- | ---------- | ---------- | ---- | -------- | -------------- | ------------------ | -------------------- |
+| 1    | 3 600 000 | 3 600 000 | 0                     | 0                          | 0           | 0          | 3 600 000  | 15   | 15       | 0              | 0                  | 0                    |
+| 2    | 3 600 000 | 2 100 000 | 1 500 000             | 0                          | 0           | 150 000    | 1 950 000  | 6    | 7        | 0              | 0                  | 0                    |
+| 3    | 3 600 000 | 3 480 000 | 120 000               | 0                          | 0           | 180 000    | 3 300 000  | 10   | 10       | 0              | 0                  | 0                    |
+| 4    | 3 600 000 | 3 600 000 | 0                     | 0                          | 119 999     | 180 001    | 3 300 000  | 10   | 10       | 0              | 0                  | 0                    |
+| 5    | 3 600 000 | 3 600 000 | 0                     | 0                          | 40 000      | 200 000    | 3 360 000  | 14   | 14       | 0              | 0                  | 0                    |
+| 6    | 3 600 000 | 3 550 000 | 50 000                | 0                          | 0           | 190 000    | 3 360 000  | 14   | 14       | 0              | 0                  | 0                    |
+| 7    | 3 600 000 | 3 600 000 | 0                     | 0                          | 30 000      | 210 000    | 3 360 000  | 14   | 14       | 0              | 0                  | 0                    |
+| 8    | 3 000 000 | 1 800 000 | 1 200 000             | 0                          | 0           | 150 000    | 1 650 000  | 11   | 11       | 0              | 0                  | 0                    |
+| 9    | 3 600 000 | 3 240 000 | 0                     | 360 000                    | 0           | 0          | 3 240 000  | 32   | 36       | 0              | 0                  | 0                    |
+| 10   | 0         | 0         | –                     | –                          | –           | –          | 0          | 0    | 0        | 0              | 0                  | 0                    |
+| 11   | 0         | 0         | –                     | –                          | –           | –          | 0          | 0    | 0        | 0              | 0                  | 0                    |
+| 12   | 3 600 000 | 600 000   | 0                     | 3 000 000                  | 0           | -30 000    | 630 000    | 21   | 21       | 0              | 0                  | 0                    |
+| 13   | 3 600 000 | 0         | 3 600 000             | 0                          | 0           | -240 000   | 240 000    | 1    | 1        | 0              | 0                  | 0                    |
+| 14   | 3 600 000 | 600 000   | 3 000 000             | 0                          | 0           | 600 000    | 0          | 0    | 0        | 0              | 0                  | 0                    |
+| 15   | 7 200 000 | 6 360 000 | 840 000               | 0                          | 60 000      | 120 000    | 6 180 000  | 21   | 22       | 0              | 0                  | 0                    |
+| 16   | 7 200 000 | 6 600 000 | 0                     | 600 000                    | 0           | 180 000    | 6 420 000  | 72   | 72       | 0              | 0                  | 0                    |
+| 17   | 3 600 000 | 112 500   | 3 487 500             | 0                          | 0           | 22 500     | 90 000     | 3    | 3        | 0              | 0                  | 0                    |
+| 18   | 0         | 0         | –                     | –                          | –           | –          | 0          | 0    | 0        | 10             | 11                 | 2 640 000            |
+| 19   | 3 600 000 | 3 500 000 | 100 000               | 0                          | 0           | 140 000    | 3 360 000  | 14   | 14       | 0              | 0                  | 0                    |
 
 ## Expected results
 
@@ -86,6 +91,8 @@ Input notation: states and times in ms, with spaces between thousands; a stop is
 | 15   | 53/60 | 103/106 | 21/22 | 721/880 | 0.8833   | 0.9717   | 0.9545   | 0.8193     | –           |
 | 16   | 11/12 | 107/110 | 1/1   | 107/120 | 0.9167   | 0.9727   | 1.0000   | 0.8917     | –           |
 | 17   | 1/32  | 4/5     | 1/1   | 1/40    | 0.0313   | 0.8000   | 1.0000   | 0.0250     | –           |
+| 18   | –     | –       | –     | –       | –        | –        | –        | –          | –           |
+| 19   | 35/36 | 24/25   | 1/1   | 14/15   | 0.9722   | 0.9600   | 1.0000   | 0.9333     | –           |
 
 ## Step-by-step arithmetic
 
@@ -181,13 +188,13 @@ LKT-01 tests 36 parts: 3 fail and go to rework, 1 is scrap, 32 pass. Two of the 
 
 A weekend hour: no shift is scheduled, so under `scheduledTime: shift-calendar` PBT is 0 whatever the state.
 
-- PBT = 0, so A, P, Q and OEE are all null ("not applicable"), never 0. Every total is 0.
+- PBT = 0, so A, P, Q, OEE and every loss are null ("not applicable"), never 0. Every count is 0.
 
 ### Case 11 – zero PBT inside a shift
 
 An hour of shift A in which LKT-01 is half in PlannedStop and half in its planned calibration (Maintenance). Both are excluded from PBT.
 
-- PBT = 3 600 000 − 1 800 000 − 1 800 000 = 0, so A, P, Q and OEE are null.
+- PBT = 3 600 000 − 1 800 000 − 1 800 000 = 0, so A, P, Q, OEE and every loss are null.
 
 ### Case 12 – performance above 1
 
@@ -250,3 +257,21 @@ PCK-01 runs 112.5 s in a hour otherwise lost to a breakdown. A is exactly 0.0312
 - A = 112 500 / 3 600 000 = 1125/36 000 = 1/32 = 0.03125 → 0.0313.
 - P = 90 000 / 112 500 = 4/5 = 0.8000. Q = 1/1.
 - OEE = 90 000 / 3 600 000 = 1/40 = 0.0250.
+
+### Case 18 – cycles in an unscheduled bucket
+
+A Saturday hour with no shift, in which CNC-01 nevertheless runs 50 minutes and finishes 11 VB-100 (one scrap). PBT is 0, so nothing is planned and nothing is lost: the cycles are reported as unplanned and stay out of P and Q, so a day's sum over shift and no-shift buckets keeps the shifts' OEE.
+
+- PBT = 0 (unscheduled), APT = 0. A, P, Q, OEE and all losses are null.
+- Ideal time, good and produced (planned) = 0.
+- Unplanned good = 10, unplanned produced = 10 + 1 = 11, unplanned ideal time = 11 × 240 000 = 2 640 000.
+
+### Case 19 – an open stop at or above the threshold that runs into the next hour
+
+A Stopped interval started 100 000 ms before the end of this hour and is still open, 130 000 ms long so far (30 000 ms of it in the next hour). It has reached the threshold, so it is availability loss in both hours, and the classification is final: an open interval can only grow. The result is not provisional.
+
+- PBT = 3 600 000. APT = Running = 3 500 000. Own loss = 100 000. Micro-stops = 0.
+- Ideal time = 14 × 240 000 = 3 360 000. Speed loss = 3 500 000 − 3 360 000 = 140 000.
+- A = 3 500 000 / 3 600 000 = 35/36 = 0.97222… → 0.9722.
+- P = 3 360 000 / 3 500 000 = 336/350 = 24/25 = 0.9600.
+- Q = 1/1. OEE = 3 360 000 / 3 600 000 = 14/15 → 0.9333. Check: 35/36 × 24/25 = 840/900 = 14/15.

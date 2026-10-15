@@ -132,18 +132,23 @@ describe('OEE reference cases (docs/oee-reference-cases.md)', () => {
     const totals = totalsRows.get(id) ?? {};
     const expected = resultRows.get(id) ?? {};
     const { losses } = result;
+    const loss = (value: (l: NonNullable<typeof losses>) => bigint): string =>
+      losses === null ? NULL : grouped(value(losses));
 
     it('matches the expected totals', () => {
       expect({
         PBT: grouped(result.totals.plannedBusyMs),
         APT: grouped(result.totals.actualProductionMs),
-        'Own availability loss': grouped(losses.availability.own.total),
-        'External availability loss': grouped(losses.availability.external.total),
-        'Micro-stops': grouped(losses.performance.microStops),
-        'Speed loss': grouped(losses.performance.speed),
+        'Own availability loss': loss((l) => l.availability.own.total),
+        'External availability loss': loss((l) => l.availability.external.total),
+        'Micro-stops': loss((l) => l.performance.microStops),
+        'Speed loss': loss((l) => l.performance.speed),
         'Ideal time': grouped(result.totals.idealMs),
         Good: grouped(result.totals.good),
         Produced: grouped(result.totals.produced),
+        'Unplanned good': grouped(result.totals.unplanned.good),
+        'Unplanned produced': grouped(result.totals.unplanned.produced),
+        'Unplanned ideal time': grouped(result.totals.unplanned.idealMs),
       }).toEqual(Object.fromEntries(Object.entries(totals).filter(([key]) => key !== 'Case')));
     });
 

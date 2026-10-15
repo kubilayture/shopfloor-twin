@@ -86,8 +86,8 @@ describe('bucket inputs', () => {
 
   it('never counts Down as a micro-stop, however short', () => {
     const result = bucketOee(input({ stateMs: { Running: 3_599_000, Down: 1_000 } }), CONFIG);
-    expect(result.losses.availability.own.down).toBe(1_000n);
-    expect(result.losses.performance.microStops).toBe(0n);
+    expect(result.losses?.availability.own.down).toBe(1_000n);
+    expect(result.losses?.performance.microStops).toBe(0n);
   });
 
   it('reports every own and external loss and the quality loss in ideal time', () => {
@@ -114,7 +114,7 @@ describe('bucket inputs', () => {
       }),
       CONFIG,
     );
-    expect(result.losses.availability).toEqual({
+    expect(result.losses?.availability).toEqual({
       own: {
         stopped: 500_000n,
         down: 400_000n,
@@ -125,17 +125,20 @@ describe('bucket inputs', () => {
       external: { starved: 100_000n, blocked: 50_000n, total: 150_000n },
     });
     expect(result.totals.excludedMs).toBe(950_000n);
-    expect(result.losses.quality).toEqual(fraction(240_000n)); // one scrap part of 240 s
+    expect(result.losses?.quality).toEqual(fraction(240_000n)); // one scrap part of 240 s
   });
 });
 
 describe('unscheduled buckets', () => {
-  it('have no planned busy time and no availability loss, whatever the state', () => {
+  it('have no planned busy time and no losses; their cycles are reported as unplanned', () => {
     const result = bucketOee(
       input({
         scheduled: false,
         stateMs: { Running: 3_000_000, Idle: 600_000 },
-        cycles: [{ product: 'VB-100', result: 'good', count: 2 }],
+        cycles: [
+          { product: 'VB-100', result: 'good', count: 2 },
+          { product: 'VB-200', result: 'rework', count: 1 },
+        ],
       }),
       CONFIG,
     );
@@ -148,9 +151,46 @@ describe('unscheduled buckets', () => {
       null,
     ]);
     expect(result.anomaly).toBe(false);
-    expect(result.losses.availability.own.total).toBe(0n);
-    // Speed loss keeps its identity APT − micro − ideal: cycles outside planned time.
-    expect(result.losses.performance.speed).toBe(-480_000n);
+    expect(result.losses).toBeNull();
+    expect([result.totals.idealMs, result.totals.good, result.totals.produced]).toEqual([
+      0n,
+      0n,
+      0n,
+    ]);
+    expect(result.totals.unplanned).toEqual({ good: 2n, produced: 3n, idealMs: 810_000n });
+  });
+
+  it('keep a day sum over shift and no-shift buckets equal to the shift alone, but for unplanned cycles', () => {
+    const shift = bucketTotals(
+      input({
+        stateMs: { Running: 3_600_000 },
+        cycles: [{ product: 'VB-100', result: 'good', count: 14 }],
+      }),
+      CONFIG,
+    );
+    const offShift = bucketTotals(
+      input({
+        scheduled: false,
+        stateMs: { Running: 3_600_000 },
+        cycles: [{ product: 'VB-100', result: 'good', count: 15 }],
+      }),
+      CONFIG,
+    );
+    const day = oeeFromTotals(sumTotals([shift, offShift]));
+    const alone = oeeFromTotals(shift);
+    expect([day.availability, day.performance, day.quality, day.oee]).toEqual([
+      alone.availability,
+      alone.performance,
+      alone.quality,
+      alone.oee,
+    ]);
+    expect(day.losses).toEqual(alone.losses);
+    expect(day.totals.unplanned).toEqual({ good: 15n, produced: 15n, idealMs: 3_600_000n });
+  });
+
+  it('a scheduled bucket with no planned busy time has no losses either', () => {
+    const result = bucketOee(input({ stateMs: { PlannedStop: 3_600_000 } }), CONFIG);
+    expect(result.losses).toBeNull();
   });
 });
 
@@ -223,6 +263,10 @@ describe('properties', () => {
     fc.assert(
       fc.property(inputArb, (bucket) => {
         const { totals, losses, oee } = bucketOee(bucket, CONFIG);
+        if (losses === null) {
+          expect(totals.plannedBusyMs).toBe(0n);
+          return;
+        }
         const elapsed = OEE_STATES.reduce((sum, s) => sum + totals.stateMs[s], 0n);
         expect(totals.plannedBusyMs + totals.excludedMs).toBe(elapsed);
         expect(

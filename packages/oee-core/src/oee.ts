@@ -82,13 +82,22 @@ export interface OeeTotals {
   readonly longStopMs: bigint;
   /** Stopped intervals below the threshold, inside planned busy time (part of APT). */
   readonly microStopMs: bigint;
-  /** Σ ideal cycle ms × produced count. */
+  /** Σ ideal cycle ms × produced count, of scheduled buckets only. */
   readonly idealMs: bigint;
   readonly good: bigint;
   readonly scrap: bigint;
   readonly rework: bigint;
-  /** good + scrap + rework. */
+  /** good + scrap + rework, of scheduled buckets only. */
   readonly produced: bigint;
+  /**
+   * Cycles of unscheduled (`no-shift`) buckets: reported, but kept out of P and Q, so a sum over
+   * shift and no-shift buckets stays meaningful.
+   */
+  readonly unplanned: {
+    readonly good: bigint;
+    readonly produced: bigint;
+    readonly idealMs: bigint;
+  };
   /** An open Stopped interval is counted as a micro-stop for now. */
   readonly provisional: boolean;
 }
@@ -131,7 +140,8 @@ export interface OeeResult {
   readonly anomaly: boolean;
   readonly provisional: boolean;
   readonly totals: OeeTotals;
-  readonly losses: OeeLosses;
+  /** null when PBT = 0: nothing was planned, so nothing was lost. */
+  readonly losses: OeeLosses | null;
 }
 
 function integer(value: number, what: string): bigint {
@@ -193,14 +203,15 @@ export function bucketTotals(input: BucketInput, config: OeeConfig): OeeTotals {
     idealMs += integer(ideal, `ideal cycle time of ${cycle.product}`) * count;
   }
 
+  const produced = counts.good + counts.scrap + counts.rework;
+  const planned = input.scheduled;
   const plannedStateMs = emptyStates();
-  if (input.scheduled) {
+  if (planned) {
     for (const state of OEE_STATES) {
       plannedStateMs[state] = EXCLUDED_STATES.includes(state) ? 0n : stateMs[state];
     }
   }
   const plannedBusyMs = OEE_STATES.reduce((sum, state) => sum + plannedStateMs[state], 0n);
-  const planned = input.scheduled;
   return {
     stateMs,
     plannedStateMs,
@@ -209,9 +220,14 @@ export function bucketTotals(input: BucketInput, config: OeeConfig): OeeTotals {
     actualProductionMs: planned ? stateMs.Running + microStops : 0n,
     longStopMs: planned ? stateMs.Stopped - microStops : 0n,
     microStopMs: planned ? microStops : 0n,
-    idealMs,
-    ...counts,
-    produced: counts.good + counts.scrap + counts.rework,
+    idealMs: planned ? idealMs : 0n,
+    good: planned ? counts.good : 0n,
+    scrap: planned ? counts.scrap : 0n,
+    rework: planned ? counts.rework : 0n,
+    produced: planned ? produced : 0n,
+    unplanned: planned
+      ? { good: 0n, produced: 0n, idealMs: 0n }
+      : { good: counts.good, produced, idealMs },
     provisional: planned && provisional,
   };
 }
@@ -227,7 +243,7 @@ export function sumTotals(all: readonly OeeTotals[]): OeeTotals {
     }
   }
   const sum = (
-    key: Exclude<keyof OeeTotals, 'stateMs' | 'plannedStateMs' | 'provisional'>,
+    key: Exclude<keyof OeeTotals, 'stateMs' | 'plannedStateMs' | 'unplanned' | 'provisional'>,
   ): bigint => all.reduce((total, totals) => total + totals[key], 0n);
   return {
     stateMs,
@@ -242,6 +258,11 @@ export function sumTotals(all: readonly OeeTotals[]): OeeTotals {
     scrap: sum('scrap'),
     rework: sum('rework'),
     produced: sum('produced'),
+    unplanned: {
+      good: all.reduce((total, totals) => total + totals.unplanned.good, 0n),
+      produced: all.reduce((total, totals) => total + totals.unplanned.produced, 0n),
+      idealMs: all.reduce((total, totals) => total + totals.unplanned.idealMs, 0n),
+    },
     provisional: all.some((totals) => totals.provisional),
   };
 }
@@ -249,7 +270,7 @@ export function sumTotals(all: readonly OeeTotals[]): OeeTotals {
 /**
  * Losses in ms, inside planned busy time: PBT = APT + own + external availability loss, and
  * APT = micro-stops + speed loss + ideal time. Speed loss is negative where cycles credited to the
- * bucket have more ideal time than its APT (and is −ideal for cycles outside planned time).
+ * bucket have more ideal time than its APT. Only called when PBT > 0.
  */
 function losses(totals: OeeTotals): OeeLosses {
   const planned = totals.plannedStateMs;
@@ -298,7 +319,7 @@ export function oeeFromTotals(totals: OeeTotals): OeeResult {
     anomaly,
     provisional: totals.provisional,
     totals,
-    losses: losses(totals),
+    losses: pbt > 0n ? losses(totals) : null,
   };
 }
 

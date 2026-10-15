@@ -70,7 +70,7 @@
 
 - None
 - #115 Phase 5 plan (in review)
-- #116 `oee-core` (branch `feat/116-oee-core`, in review): OEE, losses, exact fractions and four-decimal rounding; `config/plant/oee.yaml` (threshold 120 s); 17 reference cases in `docs/oee-reference-cases.md`; ADR-0021. Config hash and golden week unchanged.
+- #116 `oee-core` (branch `feat/116-oee-core`, in review): OEE, losses, exact fractions and four-decimal rounding; `config/plant/oee.yaml` (threshold 120 s); 19 reference cases in `docs/oee-reference-cases.md`; ADR-0021. Config hash and golden week unchanged.
 
 ## Next up
 

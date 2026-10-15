@@ -37,7 +37,7 @@ Configuration: (a) the threshold in `products.yaml` or `process.yaml`; (b) a new
 - **Ideal time:** Σ over products of (ideal ms at the machine's operation × produced count); produced = good + scrap + rework.
 - **A** = APT / PBT; **P** = ideal time / APT, not clamped (cycles are credited to the bucket containing their `sourceTime`, so P > 1 is possible and correct at hour granularity); **Q** = good / produced (first-pass yield: a leak-test rework is produced but not good, a retest is a produced cycle like any other).
 - **OEE** = (ideal × good) / (PBT × produced): A × P × Q with APT cancelled, one exact fraction.
-- **Edge cases: (b).** PBT = 0: A, P, Q and OEE are `null`. APT = 0: P is `null`; if cycles were counted, OEE is `null` too and `anomaly` is set (the closed form would give a number, but A·P·Q is undefined). Produced = 0 with PBT > 0: Q is `null` and OEE is 0, because nothing good was made in planned time. The property OEE = A·P·Q is tested where all three are defined.
+- **Edge cases: (b).** PBT = 0: A, P, Q, OEE and every loss are `null`: nothing was planned, so nothing was lost. APT = 0: P is `null`; if cycles were counted, OEE is `null` too and `anomaly` is set (the closed form would give a number, but A·P·Q is undefined). Produced = 0 with PBT > 0: Q is `null` and OEE is 0, because nothing good was made in planned time. The property OEE = A·P·Q is tested where all three are defined.
 
 **Micro-stop threshold: 120 000 ms, scope (b).** A Stopped interval is a micro-stop when its whole length is below the threshold; each of its pieces is still credited to its own hour. An open interval below the threshold counts as a micro-stop provisionally (`provisional`), until it reaches the threshold (then final: it can only grow) or closes. Down is never a micro-stop, however short. Two minutes is the plan's default; the simulator's minor stops are exponential and not truncated, so some exceed it, as in a real plant. (a) would turn a 3-minute stop that crosses an hour into two "micro-stops".
 
@@ -52,11 +52,18 @@ Configuration: (a) the threshold in `products.yaml` or `process.yaml`; (b) a new
 | Starved, Blocked                    | –         | availability, external (not the machine's fault) |
 | PlannedStop, Maintenance, Off       | excluded  | none                                             |
 
-Speed loss = APT − micro-stops − ideal time; it may be negative (P > 1). Quality loss = ideal time × (1 − Q), in ideal ms. So PBT = APT + own + external, APT = micro-stops + speed loss + ideal time, and ideal time − quality loss = OEE × PBT: a waterfall adds up exactly, also with a product mix.
+**Unplanned cycles.** Cycles in an unscheduled bucket (`no-shift`) don't count towards the ideal time, good and produced totals that feed P and Q; they are reported apart as `unplanned` good, produced and ideal ms. So a sum over shift and no-shift buckets (a day, a week) keeps the shifts' P, Q, OEE and losses, and still shows that parts were made off shift. Cycles in a scheduled bucket whose PBT happens to be 0 (an hour of planned stop and calibration) stay planned, because they belong to the shift and its sum.
+
+Speed loss = APT − micro-stops − ideal time; it may be negative (P > 1). Quality loss = ideal time × (1 − Q), in ideal ms. So, in every bucket with PBT > 0, PBT = APT + own + external, APT = micro-stops + speed loss + ideal time, and ideal time − quality loss = OEE × PBT: a waterfall adds up exactly, also with a product mix.
 
 **Work centers: (b).** ΣAPT/ΣPBT, Σideal/ΣAPT, Σgood/Σproduced: exact, time-weighted, each machine's ideal time from its own operation. It is not a line-throughput OEE; the dashboard marks the bottleneck (ASM-01) beside it. (c) waits for orders (Phase 7).
 
 **Configuration: (b).** `config/plant/oee.yaml` holds `microStopThresholdMs` and `scheduledTime`; `plant-config` validates it (positive integer; `shift-calendar` is the only rule until Phase 7) and cross-checks that shifts start and end on whole hours in a zone whose UTC offsets are whole hours (cycles carry no shift key, so each UTC hour must lie in one shift bucket). `plant-config` now separates `SIMULATION_FILES` from the full `PLANT_FILES`; the simulator's run header hashes `simulationSections(config)` only, so `configSha256` and `events.sha256` of the golden week are unchanged, and a test asserts that the hash ignores `oee`.
+
+**Conventions for the two callers** (#117 simulator ground truth, #120 MES):
+
+- **`StopPiece.wholeMs` of an open stop** is the interval's length up to the caller's cut-off: on the MES side the equipment's "final through" time, on the simulator side the ground-truth snapshot time. The two cut-offs differ, so a provisional bucket (an open stop below the threshold, or a bucket not yet final) may differ between the two sides; only final buckets are reconciled.
+- **One consistent read on the MES side.** `bucketTotals` refuses inputs whose stop pieces don't sum to the Stopped time. The MES must therefore read `stateMs` and the stop pieces from one snapshot (one `REPEATABLE READ` transaction), or derive Stopped ms from the pieces it read; otherwise a concurrent interval update between two reads can make the check throw.
 
 **Reference cases.** `docs/oee-reference-cases.md` holds hand-calculated cases (inputs, step-by-step arithmetic, exact fractions and four-decimal values); `oee-core`'s tests parse that file, so the documentation and the tests can't disagree.
 

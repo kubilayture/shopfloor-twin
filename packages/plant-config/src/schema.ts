@@ -108,6 +108,21 @@ export const failuresSchema = z.strictObject({
   ),
 });
 
+const processValues = z.strictObject({
+  machines: z.array(id).min(1),
+  spindleLoad: z.strictObject({
+    meanPercent: positive,
+    sigmaPercent: positive,
+    resolution: positive,
+  }),
+  coolant: z.strictObject({
+    ambientCelsius: z.number(),
+    runningCelsius: z.number(),
+    tauMinutes: positive,
+    resolution: positive,
+  }),
+});
+
 export const processSchema = z.strictObject({
   cycleTimeCv: z.record(operation, z.number().nonnegative()),
   tool: z.strictObject({
@@ -127,6 +142,7 @@ export const processSchema = z.strictObject({
     calibrationIntervalDays: positive,
     calibrationMinutes: positive,
   }),
+  processValues,
 });
 
 export const stockSchema = z.strictObject({

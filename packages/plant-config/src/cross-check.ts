@@ -130,6 +130,11 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
       report('process', `leakTest.${key}`, `unknown operation "${op}"`);
     }
   }
+  config.process.processValues.machines
+    .filter((machine) => !equipmentIds.has(machine))
+    .forEach((machine) => {
+      report('process', 'processValues.machines', `unknown equipment "${machine}"`);
+    });
   const curve = config.process.tool.defectProbability;
   const wears = curve.map((point) => point.wear);
   if (

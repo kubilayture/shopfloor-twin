@@ -220,6 +220,13 @@ describe('cross-file checks', () => {
       'componentsOperation: unknown operation "OP77"',
     ],
     [
+      'process values for unknown equipment',
+      (c) => {
+        c.process.processValues.machines = ['cnc-77'];
+      },
+      'processValues.machines: unknown equipment "cnc-77"',
+    ],
+    [
       'a leak test on an unknown operation',
       (c) => {
         c.process.leakTest.operation = 'OP99';

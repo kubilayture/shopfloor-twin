@@ -415,6 +415,34 @@ These are the simulator's internal facts, the "truth". They are not the UNS payl
 
 A run covers the half-open interval [start, end): no event at or after `end` is written. The shift running at `start` (and its break, if the run starts inside one) is announced by `shift` events at `start`, so the log is self-contained. From Phase 5 on, the summary also gets KPIs computed with `oee-core` (plan rev. 2).
 
+## Process values (telemetry)
+
+Source: `apps/simulator/src/plant/process-values.ts`. Parameters: `processValues` in `config/plant/process.yaml` (all assumptions). Machines: CNC-01 and CNC-02.
+
+| Value                    | Model                                                                                                                                                                                | Default                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------- |
+| Spindle load (%)         | 0 unless `Running`. While running: mean + sigma × N(0, 1), with a new value each simulated second; clamped to 0–100                                                                  | 65 ± 5 %               |
+| Coolant temperature (°C) | First-order lag towards a target: running → `runningCelsius`, otherwise → `ambientCelsius`. Closed form T(t) = target + (T₀ − target) · e^(−Δt/τ), re-anchored at every state change | 22 → 30 °C, τ = 20 min |
+
+Both are rounded to `resolution` (0.1).
+
+**Why pure functions of time:** in live mode the OPC UA layer samples telemetry whenever a client asks, so how often depends on wall time. If each sample drew from a random stream, the number of draws, and with it everything later in the run, would depend on the sampling rate. Instead:
+
+- the spindle-load noise comes from `hashedStandardNormal(seed, "<machine>/spindle-load", second)` in `sim-core`, a hash of seed, key and simulated second turned into a normal value;
+- the coolant temperature is a closed-form function of the time since the last state change.
+
+Reading a value never changes the simulation, and the same time always gives the same value.
+
+Process values are telemetry, not facts. They aren't in the event log or the golden snapshot; plan section 5 allows them to be sampled and decimated.
+
+**Validation** (`process-values.test.ts`):
+
+- the spindle load is 0 when not running, and normal around the configured mean when running (KS test);
+- the same value comes back for the same time, in any read order and however often;
+- the coolant reaches the e^(−1) point after τ and settles at the target;
+- values are at sensor resolution;
+- readings in a paced live run equal those from a headless run fed the same events.
+
 ## Live mode
 
 Source: `apps/simulator/src/live/`. Plan section 4: "two run modes, one engine".

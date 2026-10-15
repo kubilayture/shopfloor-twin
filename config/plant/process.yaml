@@ -21,3 +21,9 @@ leakTest:
   driftPerDay: 0.04
   calibrationIntervalDays: 7
   calibrationMinutes: 20
+
+# Telemetry for the OPC UA layer (phase 2 plan). Pure functions of simulation time; every number is an assumption.
+processValues:
+  machines: [cnc-01, cnc-02]
+  spindleLoad: { meanPercent: 65, sigmaPercent: 5, resolution: 0.1 } # 0 % unless Running
+  coolant: { ambientCelsius: 22, runningCelsius: 30, tauMinutes: 20, resolution: 0.1 }

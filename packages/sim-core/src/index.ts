@@ -13,7 +13,14 @@ export {
 } from './distributions.ts';
 export { EventQueue } from './event-queue.ts';
 export type { EventHandle, QueuedEvent } from './event-queue.ts';
-export { RandomSource, Xoshiro128StarStar, fmix32, fnv1a32, streamState } from './random.ts';
+export {
+  RandomSource,
+  Xoshiro128StarStar,
+  fmix32,
+  fnv1a32,
+  hashedStandardNormal,
+  streamState,
+} from './random.ts';
 export type { RandomStream } from './random.ts';
 export { HOUR, MINUTE, SECOND, assertSimTime } from './sim-time.ts';
 export type { Duration, SimTime } from './sim-time.ts';

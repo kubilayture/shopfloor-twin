@@ -47,6 +47,35 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  simulator:
+    build:
+      context: .
+      dockerfile: apps/simulator/Dockerfile
+    image: shopfloor-twin/simulator:dev
+    # Stable name: it goes into the persisted certificate's SAN, and Phase 3 connects to it.
+    hostname: simulator
+    pull_policy: build
+    environment:
+      SIM_SEED: ${SIM_SEED:-1}
+      SIM_SPEED: ${SIM_SPEED:-60}
+      SIM_START: ${SIM_START:-2026-10-12T06:00:00+03:00}
+      SIM_AUTOSTART: ${SIM_AUTOSTART:-true}
+      OPCUA_HOST: ${SIM_OPCUA_HOST:-localhost}
+      LOG_LEVEL: ${SIM_LOG_LEVEL:-info}
+    ports:
+      - '127.0.0.1:${SIM_CONTROL_PORT:-4800}:4800'
+      - '127.0.0.1:4841-4845:4841-4845'
+    volumes:
+      - simulator-pki:/var/lib/simulator/pki
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    stop_grace_period: 15s
+    restart: unless-stopped
+
 volumes:
   db-data:
   broker-data:
+  simulator-pki:

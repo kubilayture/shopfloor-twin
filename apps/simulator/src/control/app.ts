@@ -257,6 +257,8 @@ export async function buildControlApp({
   app.get(
     '/health/live',
     {
+      // Probed every few seconds; only problems are worth a log line.
+      logLevel: 'warn',
       schema: {
         tags: ['operations'],
         summary: 'The process is up',
@@ -269,6 +271,8 @@ export async function buildControlApp({
   app.get(
     '/health/ready',
     {
+      // Probed every few seconds; only problems are worth a log line.
+      logLevel: 'warn',
       schema: {
         tags: ['operations'],
         summary: 'Every OPC UA server is listening and the run has not finished',
@@ -283,7 +287,10 @@ export async function buildControlApp({
 
   app.get(
     '/metrics',
-    { schema: { tags: ['operations'], summary: 'Prometheus metrics (text format)' } },
+    {
+      logLevel: 'warn',
+      schema: { tags: ['operations'], summary: 'Prometheus metrics (text format)' },
+    },
     async (_request, reply) => {
       reply.header('content-type', metrics.registry.contentType);
       return metrics.registry.metrics();

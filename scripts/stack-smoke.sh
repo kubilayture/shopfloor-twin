@@ -34,3 +34,17 @@ received=$(mqtt mosquitto_sub -t "$topic" -C 1 -W 5)
 mqtt mosquitto_pub -r -n -t "$topic"
 [ "$received" = persisted ] || fail "retained message lost across broker restart"
 echo "ok: retained message survives broker restart"
+
+status=$(curl -sf "http://127.0.0.1:${SIM_CONTROL_PORT:-4800}/api/v1/status") || fail "simulator control API not reachable"
+case "$status" in
+  *'"state":"running"'*) echo "ok: simulator running ($status)" ;;
+  *) fail "simulator not running: $status" ;;
+esac
+for port in 4841 4842 4843 4844 4845; do
+  docker compose exec -T simulator node -e "
+    const s = require('node:net').connect($port, '127.0.0.1');
+    s.on('connect', () => process.exit(0)).on('error', () => process.exit(1));
+  " || fail "OPC UA port $port not listening"
+done
+echo "ok: OPC UA servers listening on 4841-4845"
+

@@ -28,10 +28,11 @@ Every third-party dependency and why it exists. A dependency is not added withou
 
 ## Container images
 
-| Image                               | Service  | Why                                                                                                                                                |
-| ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `timescale/timescaledb:2.30.2-pg18` | `db`     | PostgreSQL 18 with TimescaleDB for MES data and time series (plan section 6). The plain image, not `timescaledb-ha`, which is several times larger |
-| `eclipse-mosquitto:2.1.2-alpine`    | `broker` | MQTT broker for the Unified Namespace (plan section 6). Mosquitto 2.1 is published only as Alpine images                                           |
+| Image                               | Service            | Why                                                                                                                                                |
+| ----------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timescale/timescaledb:2.30.2-pg18` | `db`               | PostgreSQL 18 with TimescaleDB for MES data and time series (plan section 6). The plain image, not `timescaledb-ha`, which is several times larger |
+| `node:26.11.1-alpine3.23`           | `simulator` (base) | Node.js runtime matching `.nvmrc`; Alpine keeps the image small. pnpm is installed in the build stage only                                         |
+| `eclipse-mosquitto:2.1.2-alpine`    | `broker`           | MQTT broker for the Unified Namespace (plan section 6). Mosquitto 2.1 is published only as Alpine images                                           |
 
 ## CI actions
 

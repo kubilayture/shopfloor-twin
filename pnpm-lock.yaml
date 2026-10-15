@@ -298,6 +298,12 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:packages/eslint-config
+      '@shopfloor/tsconfig':
+        specifier: workspace:*
+        version: link:packages/tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.5
       eslint:
         specifier: 'catalog:'
         version: 10.12.0(jiti@2.7.0)(supports-color@7.2.0)

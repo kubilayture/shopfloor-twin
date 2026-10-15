@@ -10,7 +10,7 @@ Start the MES first (runbook, "Run the MES server"); it listens on `127.0.0.1:47
 pnpm --filter @shopfloor/web dev        # http://127.0.0.1:5173
 ```
 
-The dev server proxies `/api` (REST and the WebSocket at `/api/v1/ws`) to the MES, so the page and the API share one origin, as they will behind nginx (#99):
+The dev server proxies `/api` (REST and the WebSocket at `/api/v1/ws`) to the MES, so the page and the API share one origin, as they are behind nginx in the `web` container (#99):
 
 - `MES_URL` (default `http://127.0.0.1:4700`) points the proxy elsewhere.
 - **Host:** the MES answers only `Host` names in `HTTP_ALLOWED_HOSTS` (default `localhost,127.0.0.1,[::1]`). The proxy sends the target's host (`changeOrigin`), so this works with the defaults. Open the app as `localhost` or `127.0.0.1`; other names are refused.
@@ -25,7 +25,19 @@ pnpm --filter @shopfloor/web build      # static files in apps/web/dist
 pnpm --filter @shopfloor/web preview    # serves dist on http://127.0.0.1:4173 with the same proxy
 ```
 
-`dist/` is plain static files (an `index.html` and hashed assets; uPlot is a separate chunk loaded with the first chart). A server must send every unknown path to `index.html` (client-side routes such as `/equipment/cnc-01`) and proxy `/api` to the MES, including the WebSocket upgrade. For nginx (#99): forward the original `Host` (`proxy_set_header Host $host`) and add the names the web app is reached by to the MES's `HTTP_ALLOWED_HOSTS`; then the page's `Origin` matches that `Host` and the WebSocket check passes without `HTTP_ALLOWED_ORIGINS`. Alternatively send the MES's own host and list the web origin in `HTTP_ALLOWED_ORIGINS`.
+`dist/` is plain static files (an `index.html` and hashed assets; uPlot is a separate chunk loaded with the first chart). A server must send every unknown path to `index.html` (client-side routes such as `/equipment/cnc-01`) and proxy `/api` to the MES, including the WebSocket upgrade.
+
+## Container
+
+`apps/web/Dockerfile` builds `dist/` with Vite and serves it with nginx (unprivileged, port 8080); Compose publishes it on `127.0.0.1:8080` (`WEB_PORT`) as service `web` (#99, runbook "Full stack"). The nginx configuration is in `nginx/`:
+
+- unknown paths get `index.html` (client-side routes); hashed `/assets/` are cached for a year (`immutable`), `index.html` is always revalidated (`no-cache`); gzip for text;
+- `/api/` goes to `mes:4700` with the WebSocket upgrade headers, unbuffered, and a 60 s read timeout (the MES pings every 15 s). Docker's DNS is asked again every 10 s, so a recreated MES is found and nginx starts without it;
+- it forwards the browser's `Host` **with the port** (`proxy_set_header Host $http_host`): the MES checks the name against `HTTP_ALLOWED_HOSTS` (default `localhost,127.0.0.1,[::1]`, which covers `http://localhost:8080` and `http://127.0.0.1:8080`), and the page's `Origin` (`http://localhost:8080`) then names the MES's own host, so the WebSocket's Origin check passes without `HTTP_ALLOWED_ORIGINS`. `$host` would drop the port and every WebSocket would be refused;
+- security headers on every answer: a Content Security Policy without `unsafe-inline` (Vite's output has no inline scripts or styles; React and uPlot set styles through the DOM, which CSP allows), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`;
+- `GET /healthz` for the container healthcheck.
+
+To open the app under another name (for example a LAN host name, which also needs a port published beyond loopback), add that name to `MES_ALLOWED_HOSTS` in `.env`.
 
 ## How it works
 

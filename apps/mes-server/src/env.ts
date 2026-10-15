@@ -24,8 +24,8 @@ export const envSchema = z.object({
   // The API's own read pool, so dashboard reads never hold up ingest's writes.
   API_DB_POOL_SIZE: integer.pipe(z.number().min(1).max(50)).default(4),
   API_STATEMENT_TIMEOUT_MS: integer.pipe(z.number().min(100)).default(5_000),
-  // The UNS (#95): a persistent session as user `mes`; the password is MQTT_MES_PASSWORD of .env
-  // (the Compose service that passes it arrives with #99).
+  // The UNS (#95): a persistent session as user `mes`; the password is MQTT_MES_PASSWORD of .env,
+  // which the Compose service `mes` passes (#99).
   MQTT_URL: z.url({ protocol: /^mqtts?$/ }).default('mqtt://127.0.0.1:1883'),
   MQTT_USERNAME: text.default('mes'),
   MQTT_PASSWORD: z.string().min(1),

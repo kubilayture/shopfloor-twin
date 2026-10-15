@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { OPCUA_MACHINES, modbusTables } from '@shopfloor/contracts';
+import { FAILURE_ALARM_SEVERITY, OPCUA_MACHINES, modbusTables } from '@shopfloor/contracts';
 import { OPCUACertificateManager } from 'node-opcua';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { parseEnv } from './env.ts';
@@ -91,8 +91,17 @@ const poller = new ModbusPoller({
   }),
   scaling: { bath: washer.bath.resolution, conveyor: washer.conveyor.resolution },
   // The washer's alarms are its failure codes, raised with the failure severity, as on OPC UA.
-  alarmSeverity: 700,
-  connect: () => connectModbus(env.MODBUS_HOST, env.MODBUS_PORT, Math.max(200, env.MODBUS_POLL_MS)),
+  alarmSeverity: FAILURE_ALARM_SEVERITY,
+  // Answers take milliseconds; a timeout above 2 s only delays noticing a silent device.
+  connect: () =>
+    connectModbus(
+      env.MODBUS_HOST,
+      env.MODBUS_PORT,
+      Math.min(2_000, Math.max(200, env.MODBUS_POLL_MS)),
+    ),
+  onError: (error) => {
+    log.error({ err: error, machine: washer.machine }, 'Modbus poller error');
+  },
   publisher: link,
   sequences,
   incidents,

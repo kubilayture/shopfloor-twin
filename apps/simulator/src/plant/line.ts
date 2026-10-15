@@ -1,3 +1,4 @@
+import { FAILURE_ALARM_SEVERITY } from '@shopfloor/contracts';
 import type { PlantConfig } from '@shopfloor/plant-config';
 import {
   HOUR,
@@ -106,7 +107,7 @@ type Unavailable = 'Off' | 'PlannedStop';
 const CALENDAR_WINDOW = 7 * 24 * HOUR;
 
 export const MAX_PROGRAM_QUANTITY = 100_000;
-export const FAILURE_ALARM_SEVERITY = 700;
+export { FAILURE_ALARM_SEVERITY } from '@shopfloor/contracts';
 export const CALIBRATION_ALARM_CODE = 'CALIBRATION-DUE';
 export const CALIBRATION_ALARM_SEVERITY = 300;
 

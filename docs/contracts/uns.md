@@ -114,9 +114,10 @@ The poller reads the register map (docs/contracts/modbus-register-map.md) every 
 | `bathTemperature`, `conveyorSpeed`                                  | `telemetry/bath-temperature`, `telemetry/conveyor-speed`, scaled by the configured resolutions; `sourceTime` is register `simTime` |
 | `state` on first contact, after a silence and after an epoch change | `state/current`, `kind: snapshot` (cause null: the map carries no cause for the current state)                                     |
 
-- Each poll walks the ring from the last entry handled to the counter, in requests of at most 12 entries, split at the ring end. An entry whose own number isn't the expected one was overwritten: a `ring-overrun` incident. So is a counter that moved by more than 64 since the last poll.
+- Each poll walks the ring from the last entry handled to the counter, in requests of at most 12 entries, split at the ring end. An entry whose own number isn't the expected one was overwritten: a `ring-overrun` incident. So is a counter that moved by more than 64 since the last poll. One incident per poll carries the total; an entry that can't be decoded is a `sequence-gap` incident instead.
 - On first contact the facts already in the ring are history. The poller keeps a cursor (epoch and last sequence) and continues from it while the epoch is unchanged. In Phase 3 the cursor lives in memory; the store-and-forward buffer (#78) persists it across gateway restarts.
 - After three failed polls (timeout, refused connection) the device counts as silent: a `device-silent` incident, and the next successful poll gives `device-recovered` and a snapshot. The ring keeps what happened meanwhile, so a short silence loses nothing.
+- Known limit, as for OPC UA: after a device restart (new epoch), the old run's facts after the last poll are lost and not counted.
 
 ## Identity, duplicates and gaps (ADR-0015)
 

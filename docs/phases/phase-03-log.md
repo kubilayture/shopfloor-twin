@@ -43,3 +43,4 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - A new test forces a session loss and then a republish, and proves that published ∪ lost = emitted, with no overlap.
 - Merged #87 (#76): OPC UA collector.
 - #77: the poller is tested against an in-memory register map, built with the contract's own encoders: wrap, overrun, silence, cursor resume and epoch change. It is also tested against the real simulator, where every washer fact arrives in order through a 3 s silence. The metric `gateway_opcua_connected` became `gateway_device_connected`, because it now covers Modbus too.
+- #77 review: the poller had no error handler, so publish failures went unnoticed; a refused start-up snapshot was never retried; stopping mid-connect leaked a socket; overwrites made one incident per entry. All fixed, with tests. `FAILURE_ALARM_SEVERITY` (700) moved to `contracts`, shared by the simulator and the gateway.

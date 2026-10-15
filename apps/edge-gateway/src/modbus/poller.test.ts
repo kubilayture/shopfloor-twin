@@ -55,8 +55,15 @@ class FakeWasher implements RegisterReader {
     writeU64(this.registers, REGISTERS.simTime, entry.at);
   }
 
+  /** Called after each read: lets a test change the device between two requests. */
+  afterRead: (address: number) => void = () => undefined;
+  closed = 0;
+
   read(address: number, length: number): Promise<number[]> {
     this.reads.push([address, length]);
+    queueMicrotask(() => {
+      this.afterRead(address);
+    });
     if (this.silent) return Promise.reject(new Error('Timed out after 500 ms'));
     if (length > MODBUS_MAX_READ || address + length > RING_END) {
       return Promise.reject(Object.assign(new Error('Illegal data address'), { modbusCode: 2 }));
@@ -65,11 +72,17 @@ class FakeWasher implements RegisterReader {
   }
 
   close(): Promise<void> {
+    this.closed++;
     return Promise.resolve();
   }
 }
 
-function setup(washer: FakeWasher, cursors = new MemoryCursorStore()) {
+function setup(
+  washer: FakeWasher,
+  cursors = new MemoryCursorStore(),
+  publish: (p: UnsPublication) => Promise<void> = () => Promise.resolve(),
+  connect: () => Promise<RegisterReader> = () => Promise.resolve(washer),
+) {
   const published: UnsPublication[] = [];
   const incidents: IncidentInput[] = [];
   const poller = new ModbusPoller({
@@ -78,11 +91,11 @@ function setup(washer: FakeWasher, cursors = new MemoryCursorStore()) {
     tables,
     scaling: { bath: 0.1, conveyor: 0.01 },
     alarmSeverity: 700,
-    connect: () => Promise.resolve(washer),
+    connect,
     publisher: {
       publish: (p) => {
         published.push(p);
-        return Promise.resolve();
+        return publish(p);
       },
     },
     sequences: new TopicSequences(1_800_000_000),
@@ -201,6 +214,68 @@ describe('Modbus poller against a register map in memory (#77)', () => {
     expect(second.published.filter((p) => p.message.scope === 'device').at(-1)?.message.epoch).toBe(
       200,
     );
+  });
+
+  it('counts facts overwritten during one walk in a single incident', async () => {
+    const washer = new FakeWasher(100);
+    const { poller, facts, incidents } = setup(washer);
+    await poller.poll();
+    for (let i = 0; i < 10; i++) washer.fact(state(i));
+    // Right after the snapshot read, 64 more facts overwrite the whole ring.
+    washer.afterRead = (address) => {
+      if (address === 0) {
+        washer.afterRead = () => undefined;
+        for (let i = 0; i < 64; i++) washer.fact(state(100 + i));
+      }
+    };
+    await poller.poll();
+    expect(incidents).toEqual([expect.objectContaining({ type: 'ring-overrun', lost: 10 })]);
+    expect(facts()).toEqual([]);
+    await poller.poll();
+    expect(facts()).toEqual(Array.from({ length: 64 }, (_, i) => 11 + i));
+    expect(incidents).toHaveLength(1);
+  });
+
+  it('retries the snapshot until the broker accepts it', async () => {
+    const washer = new FakeWasher(100);
+    let accept = false;
+    const { poller, published } = setup(washer, new MemoryCursorStore(), (p) =>
+      accept || p.message.schema !== 'uns.state.current/1'
+        ? Promise.resolve()
+        : Promise.reject(new Error('not connected to the broker')),
+    );
+    await poller.poll();
+    await new Promise((r) => setTimeout(r, 0));
+    accept = true;
+    await poller.poll();
+    await poller.poll();
+    const snapshots = published.filter(
+      (p) => p.message.schema === 'uns.state.current/1' && p.message.kind === 'snapshot',
+    );
+    expect(snapshots).toHaveLength(2); // the refused one and the accepted retry; then no more
+  });
+
+  it('stops cleanly while a connection attempt is still pending', async () => {
+    const washer = new FakeWasher(100);
+    let release: (reader: RegisterReader) => void = () => undefined;
+    const { poller } = setup(
+      washer,
+      new MemoryCursorStore(),
+      undefined,
+      () =>
+        new Promise<RegisterReader>((resolve) => {
+          release = resolve;
+        }),
+    );
+    poller.start();
+    await new Promise((r) => setTimeout(r, 10));
+    const stopping = poller.stop();
+    release(washer);
+    await stopping;
+    await new Promise((r) => setTimeout(r, 10));
+    expect(washer.reads).toEqual([]);
+    expect(washer.closed).toBe(1);
+    expect(poller.connected).toBe(false);
   });
 
   it('scales telemetry with the register resolutions and stamps it with the device time', async () => {

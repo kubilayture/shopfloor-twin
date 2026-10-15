@@ -31,6 +31,9 @@ import type { Publisher, UnsPublication } from '../publisher.ts';
 
 const ModbusRTU = Modbus.default;
 
+/** Decimal places of a resolution such as 0.1 or 0.25. */
+const decimalsOf = (resolution: number): number => String(resolution).split('.')[1]?.length ?? 0;
+
 /** Reads holding registers (function 3); rejects on timeout, exception or a closed connection. */
 export interface RegisterReader {
   read(address: number, length: number): Promise<number[]>;
@@ -115,6 +118,8 @@ export class ModbusPoller {
   #snapshotDue = true;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #running = false;
+  /** poll() works without start() (tests); after stop() it does nothing more. */
+  #started = false;
   #facts = 0;
   #polls = 0;
 
@@ -139,20 +144,33 @@ export class ModbusPoller {
 
   start(): void {
     this.#running = true;
+    this.#started = true;
     this.#schedule(0);
   }
 
   async stop(): Promise<void> {
     this.#running = false;
+    this.#started = true;
     clearTimeout(this.#timer);
-    await this.#reader?.close().catch(() => undefined);
+    await this.#closeReader();
+  }
+
+  async #closeReader(): Promise<void> {
+    const reader = this.#reader;
     this.#reader = undefined;
+    await reader?.close().catch(() => undefined);
   }
 
   /** One poll; exposed for tests. Resolves after everything it read was handed to the publisher. */
   async poll(): Promise<void> {
+    if (this.#started && !this.#running) return;
+    if (!this.#started) this.#running = true;
     try {
       this.#reader ??= await this.#options.connect();
+      if (!this.#running) {
+        await this.#closeReader(); // stopped while connecting
+        return;
+      }
       const snapshot = await this.#reader.read(0, SNAPSHOT_LENGTH);
       await this.#handle(this.#reader, snapshot);
       this.#polls++;
@@ -209,13 +227,21 @@ export class ModbusPoller {
       this.#snapshotDue = true;
     }
     if (this.#snapshotDue) {
-      this.#snapshot(snapshot, simTime);
       this.#snapshotDue = false;
+      // Until a snapshot is accepted (the broker may not be connected yet), try again next poll.
+      this.#snapshot(snapshot, simTime).catch(() => {
+        this.#snapshotDue = true;
+      });
     }
     this.#telemetry(snapshot, simTime);
     if (counter < this.#handled) {
-      // The cursor is ahead of the device: a stored cursor of another run with the same epoch second.
-      this.#handled = counter;
+      // The cursor is ahead of the device: another run started within the same epoch second.
+      this.#report(
+        'epoch-change',
+        null,
+        `${this.machineId}: counter ${String(counter)} is behind the cursor ${String(this.#handled)}: a new run`,
+      );
+      this.#handled = 0;
     }
     if (counter - this.#handled > RING_CAPACITY) {
       const lost = counter - this.#handled - RING_CAPACITY;
@@ -226,6 +252,8 @@ export class ModbusPoller {
       );
       this.#handled = counter - RING_CAPACITY;
     }
+    let overwritten = 0;
+    const undecodable: number[] = [];
     for (let seq = this.#handled + 1; seq <= counter;) {
       const untilRingEnd = RING_CAPACITY - ((seq - 1) % RING_CAPACITY);
       const count = Math.min(
@@ -240,13 +268,10 @@ export class ModbusPoller {
           words.slice(i * ENTRY_SIZE, (i + 1) * ENTRY_SIZE),
           this.#options.tables,
         );
-        if (entry?.seq !== expected) {
-          // Overwritten between reading the counter and reading the entry: the ring wrapped meanwhile.
-          this.#report(
-            'ring-overrun',
-            1,
-            `${this.machineId}: fact ${String(expected)} was overwritten before it was read`,
-          );
+        if (entry === undefined) {
+          undecodable.push(expected);
+        } else if (entry.seq !== expected) {
+          overwritten++; // the ring wrapped between reading the counter and reading the entry
         } else {
           this.#publishFact(epoch, entry);
         }
@@ -254,6 +279,20 @@ export class ModbusPoller {
         this.#cursors.set(this.machineId, { epoch, seq: expected });
       }
       seq += count;
+    }
+    if (overwritten > 0) {
+      this.#report(
+        'ring-overrun',
+        overwritten,
+        `${this.machineId}: ${String(overwritten)} facts were overwritten while the ring was being read`,
+      );
+    }
+    if (undecodable.length > 0) {
+      this.#report(
+        'sequence-gap',
+        undecodable.length,
+        `${this.machineId}: ring entries ${undecodable.join(', ')} could not be decoded (register map or tables out of step?)`,
+      );
     }
   }
 
@@ -313,9 +352,9 @@ export class ModbusPoller {
     }
   }
 
-  #snapshot(snapshot: number[], simTime: number): void {
+  #snapshot(snapshot: number[], simTime: number): Promise<void> {
     const state = MACHINE_STATES[snapshot[REGISTERS.state] ?? -1];
-    if (!state) return;
+    if (!state) return Promise.resolve();
     const topic = stateTopic(this.#options.path);
     const message: StateCurrent = {
       ...this.#common(simTime),
@@ -327,7 +366,7 @@ export class ModbusPoller {
       // The register map carries no cause for the current state; the next state change does.
       value: { state, cause: null },
     };
-    this.#send({ topic, message, retain: true });
+    return this.#options.publisher.publish({ topic, message, retain: true });
   }
 
   #telemetry(snapshot: number[], simTime: number): void {
@@ -347,14 +386,14 @@ export class ModbusPoller {
         epoch: this.#options.sequences.epoch,
         seq: this.#options.sequences.next(topic),
         unit: UNS_TELEMETRY[name].unit,
-        value: Number(raw.toFixed(Math.max(0, Math.round(-Math.log10(decimals))))),
+        value: Number(raw.toFixed(decimalsOf(decimals))),
       };
       this.#send({ topic, message, retain: true });
     }
   }
 
   #report(
-    type: 'device-silent' | 'device-recovered' | 'epoch-change' | 'ring-overrun',
+    type: 'device-silent' | 'device-recovered' | 'epoch-change' | 'ring-overrun' | 'sequence-gap',
     lost: number | null,
     message: string,
   ): void {

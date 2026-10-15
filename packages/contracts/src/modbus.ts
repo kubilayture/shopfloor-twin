@@ -4,6 +4,9 @@
  */
 import { MACHINE_STATES, type MachineState } from './uns/payloads.ts';
 
+/** Severity of a machine's failure-code alarms (OPC UA and Modbus alike, 1–1000). */
+export const FAILURE_ALARM_SEVERITY = 700;
+
 export const MODBUS_PORT = 5020;
 export const MODBUS_UNIT_ID = 1;
 export const MODBUS_MAP_VERSION = 1;

@@ -23,6 +23,21 @@ const baselines = new Map<string, number>();
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function until(condition: () => boolean, timeoutMs: number): Promise<void> {
+  for (const deadline = Date.now() + timeoutMs; !condition();) {
+    if (Date.now() > deadline) throw new Error('timed out waiting');
+    await wait(100);
+  }
+}
+
+const snapshotsOf = (machineId: string): number =>
+  published.filter(
+    (p) =>
+      p.message.source.id === machineId &&
+      p.message.schema === 'uns.state.current/1' &&
+      p.message.kind === 'snapshot',
+  ).length;
+
 const publisher: Publisher = {
   publish: (publication) => {
     published.push(publication);
@@ -70,12 +85,14 @@ beforeAll(async () => {
         incidents: { report: (incident) => incidents.push(incident) },
         telemetrySamplingMs: 500,
         resyncGraceMs: 1_500,
+        sessionTimeoutMs: 5_000,
         certificateManager,
       }),
     );
   }
-  // One after another: the clients share a certificate, which the first one may still be creating.
-  for (const collector of collectors) await collector.start();
+  // The clients share a certificate: create it one at a time, then connect them all at once.
+  for (const collector of collectors) await collector.prepare();
+  await Promise.all(collectors.map((collector) => collector.start()));
   // The simulator is idle until resumed. Its start-up facts were emitted before the event stream
   // connected and are history to the collectors; device sequence k + baseline is stream fact k.
   for (const collector of collectors) baselines.set(collector.machineId, collector.baseline);
@@ -166,38 +183,41 @@ describe('OPC UA collector (#76)', () => {
     ).toBe(true);
   });
 
-  it('survives a server going offline: reconnects, resyncs, and accounts for every fact', async () => {
-    const before = deviceMessages('cnc-01').length;
-    const snapshotsBefore = published.filter(
-      (p) =>
-        p.message.source.id === 'cnc-01' &&
-        p.message.schema === 'uns.state.current/1' &&
-        p.message.kind === 'snapshot',
-    ).length;
+  it('accounts for every fact exactly once across a long and a short outage', async () => {
+    const collector = collectors.find((c) => c.machineId === 'cnc-01');
+    if (!collector) throw new Error('no cnc-01 collector');
+    const snapshotsBefore = snapshotsOf('cnc-01');
     await simulator.post('/api/v1/resume');
+    // Longer than the 5 s session timeout: the session is gone, a new one must be created.
     await simulator.post('/api/v1/faults/opcua/cnc-01', { offline: true });
-    await wait(4_000);
+    await wait(9_000);
     await simulator.post('/api/v1/faults/opcua/cnc-01', { offline: false });
-    await wait(8_000);
+    await until(() => collector.connected, 20_000);
+    await wait(3_000);
+    // A short one: the session survives and the server republishes what it kept.
+    await simulator.post('/api/v1/faults/opcua/cnc-01', { offline: true });
+    await wait(1_500);
+    await simulator.post('/api/v1/faults/opcua/cnc-01', { offline: false });
+    await until(() => collector.connected, 20_000);
+    await wait(3_000);
     await simulator.post('/api/v1/pause');
     await wait(3_000);
+
     const kinds = incidents.filter((i) => i.equipment === 'cnc-01').map((i) => i.type);
-    expect(kinds).toContain('disconnected');
-    expect(kinds).toContain('reconnected');
-    const snapshots = published.filter(
-      (p) =>
-        p.message.source.id === 'cnc-01' &&
-        p.message.schema === 'uns.state.current/1' &&
-        p.message.kind === 'snapshot',
-    ).length;
-    expect(snapshots).toBeGreaterThan(snapshotsBefore);
-    const expected = deviceFacts('cnc-01').length;
-    const delivered = new Set(deviceMessages('cnc-01').map((m) => m.seq)).size;
-    const lost = incidents
+    expect(kinds.filter((k) => k === 'disconnected')).toHaveLength(2);
+    expect(snapshotsOf('cnc-01')).toBeGreaterThanOrEqual(snapshotsBefore + 2);
+    const baseline = baselines.get('cnc-01') ?? 0;
+    const emitted = deviceFacts('cnc-01').map((_, i) => baseline + i + 1);
+    const published = deviceMessages('cnc-01').map((m) => m.seq);
+    const lost = collector.lost.flatMap((r) =>
+      Array.from({ length: r.to - r.from + 1 }, (_, i) => r.from + i),
+    );
+    expect(new Set(published).size).toBe(published.length); // nothing published twice
+    expect(lost.filter((seq) => published.includes(seq))).toEqual([]); // nothing both
+    expect([...published, ...lost].sort((a, b) => a - b)).toEqual(emitted); // and nothing missing
+    const reportedLost = incidents
       .filter((i) => i.equipment === 'cnc-01' && i.type === 'sequence-gap')
       .reduce((sum, i) => sum + (i.lost ?? 0), 0);
-    expect(delivered).toBeGreaterThan(before);
-    // Every fact is either delivered (the repaired subscription republished it) or reported lost.
-    expect(delivered + lost).toBe(expected);
-  }, 120_000);
+    expect(reportedLost).toBe(lost.length);
+  }, 180_000);
 });

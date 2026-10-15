@@ -160,7 +160,16 @@ export class MachineServer {
    * existing ones are dropped. The address space keeps following the plant meanwhile, so a client
    * that reconnects sees how far `Sequence` moved.
    */
+  #offlineChange: Promise<void> = Promise.resolve();
+
   async setOffline(offline: boolean): Promise<void> {
+    // One change at a time: going back online must wait until going offline has finished.
+    const change = this.#offlineChange.then(() => this.#applyOffline(offline));
+    this.#offlineChange = change.catch(() => undefined);
+    await change;
+  }
+
+  async #applyOffline(offline: boolean): Promise<void> {
     if (offline === this.#offline || !this.#started) {
       return;
     }

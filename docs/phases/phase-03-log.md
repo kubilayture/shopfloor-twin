@@ -36,3 +36,8 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - **node-opcua's `killClientSockets` does nothing in 2.187**: it looks for a socket property that moved. The offline fault interrupts each secure channel with `abruptlyInterrupt()` instead, and a simulator test proves clients see the loss and the recovery.
   - **Test ports:** an offset that put CNC-02 on 5442 made the gateway talk OPC UA to the stack's TimescaleDB and hang. The gateway tests now use ports clear of the stack.
   - **Certificates:** collectors share one client certificate in the gateway's own folder (`OPCUA_PKI_DIR`), and start one after another. The default store in the user's home folder can be left locked by a killed process.
+- #76 review:
+  - Blocking: a lost range was reported again at the next reconnect, and a late copy could be both published and counted lost.
+  - Blocking: one unreachable machine stopped every later collector from starting.
+  - The collector now buffers events until their epoch is known, acknowledges every range it reports, coalesces reconnects, and starts the collectors concurrently once the shared certificate exists.
+  - A new test forces a session loss and then a republish, and proves that published ∪ lost = emitted, with no overlap.

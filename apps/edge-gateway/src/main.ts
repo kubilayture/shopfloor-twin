@@ -118,16 +118,32 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 
 await http.listen({ host: env.HTTP_HOST, port: env.HTTP_PORT });
 link.start();
-// One after another (they share the client certificate), in the background: a machine that is
-// down must not hold up the others or the gateway's readiness. Each collector retries by itself.
+// The collectors share one client certificate: create it one collector at a time, then start
+// them all at once in the background. A machine that is down keeps retrying by itself and holds
+// up neither the others nor the gateway's readiness.
+async function startWithRetry(collector: OpcuaCollector): Promise<void> {
+  for (;;) {
+    try {
+      await collector.start();
+      return;
+    } catch (error) {
+      if (state.stopping) return;
+      log.error(
+        { err: error, machine: collector.machineId },
+        'OPC UA collector failed to start; retrying',
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+  }
+}
 void (async () => {
   await certificateManager.initialize();
-  for (const collector of collectors) {
-    await collector.start().catch((error: unknown) => {
-      log.error({ err: error, machine: collector.machineId }, 'OPC UA collector failed to start');
-    });
-  }
-})();
+  for (const collector of collectors) await collector.prepare();
+  await Promise.allSettled(collectors.map((collector) => startWithRetry(collector)));
+})().catch((error: unknown) => {
+  log.fatal({ err: error }, 'cannot prepare the OPC UA client certificate');
+  process.exit(1);
+});
 log.info(
   { gatewayId: env.GATEWAY_ID, epoch: sequences.epoch, version: VERSION },
   'gateway started',

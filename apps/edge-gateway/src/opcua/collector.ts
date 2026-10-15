@@ -23,7 +23,6 @@ import {
 import {
   AttributeIds,
   OPCUAClient,
-  StatusCodes,
   TimestampsToReturn,
   constructEventFilter,
   resolveNodeId,
@@ -57,6 +56,8 @@ export interface OpcuaCollectorOptions {
   readonly telemetrySamplingMs?: number;
   /** After a reconnect, how long events from the repaired subscription may still trickle in. */
   readonly resyncGraceMs?: number;
+  /** Requested OPC UA session timeout; a longer outage needs a new session (tests shorten it). */
+  readonly sessionTimeoutMs?: number;
   readonly onError?: (error: unknown) => void;
   /**
    * The gateway's own client certificate store, shared by all its collectors. Without it node-opcua
@@ -85,11 +86,20 @@ const TELEMETRY = {
 const quality = (statusCode: DataValue['statusCode']): Telemetry['quality'] =>
   statusCode.isGood() ? 'good' : statusCode.isGoodish() ? 'uncertain' : 'bad';
 
+export interface LostRange {
+  readonly epoch: number;
+  readonly from: number;
+  readonly to: number;
+}
+
 /**
  * One OPC UA machine → UNS (ADR-0009, ADR-0015). Device facts (state changes, cycles, alarm
- * transitions) come as events with the machine's `Sequence`; after every (re)connect the collector
- * reads `Epoch`, `Sequence` and the current state, publishes a snapshot, and reports any facts that
- * never arrived as a sequence-gap incident.
+ * transitions) come as events with the machine's `Sequence`. Events wait until the epoch they
+ * belong to is known: at start-up, and again after every connection loss. After every (re)connect
+ * the collector reads `Epoch`, `Sequence` and the current state, publishes a snapshot, and, after
+ * a grace period for the repaired subscription, reports facts that never arrived as one
+ * sequence-gap incident. A reported number counts as handled: it is never reported twice, and a
+ * copy arriving later is dropped, so every fact is either published once or counted lost once.
  */
 export class OpcuaCollector {
   readonly machineId: string;
@@ -103,12 +113,19 @@ export class OpcuaCollector {
   #namespaces: string[] = [];
   #epoch: number | undefined;
   #dedup = new Deduplicator();
-  /** Highest device sequence handled in the current epoch. */
+  /** Highest device sequence seen or written off in the current epoch. */
   #highest = 0;
   #upperLimit = Number.NaN;
-  #resync: Promise<void> | undefined;
+  /** Events waiting for their epoch; undefined while the epoch is known. */
+  #pending: Variant[][] | undefined = [];
+  #resyncRunning = false;
+  #resyncAgain = false;
+  #graceTimer: ReturnType<typeof setTimeout> | undefined;
+  #ready = false;
   #facts = 0;
   #closed = false;
+  #baselineSequence = 0;
+  readonly #lost: LostRange[] = [];
 
   constructor(options: OpcuaCollectorOptions) {
     this.#options = options;
@@ -121,13 +138,15 @@ export class OpcuaCollector {
       applicationName: 'shopfloor-twin-edge-gateway',
       endpointMustExist: false,
       keepSessionAlive: true,
-      requestedSessionTimeout: 60_000,
+      requestedSessionTimeout: options.sessionTimeoutMs ?? 60_000,
       connectionStrategy: { maxRetry: 1_000_000, initialDelay: 250, maxDelay: 2_000 },
       ...(options.certificateManager
         ? { clientCertificateManager: options.certificateManager }
         : {}),
     });
     this.#client.on('connection_lost', () => {
+      this.#ready = false;
+      this.#pending ??= [];
       this.#options.incidents.report({
         type: 'disconnected',
         equipment: this.machineId,
@@ -145,9 +164,7 @@ export class OpcuaCollector {
     });
   }
 
-  #baselineSequence = 0;
-
-  /** The machine's `Sequence` when this collector subscribed: facts up to it are history. */
+  /** The machine's `Sequence` the collector joined at: facts up to it are history. */
   get baseline(): number {
     return this.#baselineSequence;
   }
@@ -157,16 +174,28 @@ export class OpcuaCollector {
     return this.#facts;
   }
 
-  get connected(): boolean {
-    return this.#session !== undefined && !this.#closed && !this.#client.isReconnecting;
+  /** Device sequence ranges reported lost (sequence-gap incidents). */
+  get lost(): readonly LostRange[] {
+    return this.#lost;
   }
 
+  /** True once the epoch is known and the subscription delivers; false while reconnecting. */
+  get connected(): boolean {
+    return this.#ready && !this.#closed;
+  }
+
+  /** Creates the client certificate if it doesn't exist yet. Call it for one collector at a time. */
+  async prepare(): Promise<void> {
+    await this.#client.createDefaultCertificate();
+  }
+
+  /** Resolves once connected and subscribed; keeps retrying while the server is unreachable. */
   async start(): Promise<void> {
     await this.#client.connect(this.endpoint);
     const session = await this.#client.createSession();
     this.#session = session;
     session.on('session_restored', () => {
-      this.#scheduleResync(true);
+      this.#requestResync();
     });
     this.#namespaces = await session.readNamespaceArray();
     for (const [kind, name] of Object.entries(OPCUA_EVENT_TYPES) as [
@@ -175,40 +204,20 @@ export class OpcuaCollector {
     ][]) {
       this.#eventTypes.set(this.#nodeId(opcuaEventTypeId(name)).toString(), kind);
     }
-    await this.#baseline(session);
+    // Subscribe first, then read the baseline: what the subscription delivers before the read is
+    // kept in #pending, so no fact can fall between the two.
     await this.#subscribe(session);
-    await this.#resyncNow(false);
-  }
-
-  /**
-   * Epoch and Sequence before subscribing: later events are new, earlier ones are history. The
-   * baseline number counts as seen, so a fact raised before the subscription became active shows up
-   * as a hole after it, not as silence.
-   */
-  async #baseline(session: ClientSession): Promise<void> {
-    const [epoch, sequence] = await Promise.all(
-      [OPCUA_VARIABLES.epoch, OPCUA_VARIABLES.sequence].map((path) =>
-        session.read({
-          nodeId: this.#nodeId(opcuaNodeId(this.machineId, path)),
-          attributeId: AttributeIds.Value,
-        }),
-      ),
-    );
-    this.#epoch = Number(epoch?.value.value);
-    this.#highest = Number(sequence?.value.value);
-    this.#baselineSequence = this.#highest;
-    if (this.#highest > 0) {
-      this.#dedup.accept('device', {
-        scope: 'device',
-        epoch: this.#epoch,
-        seq: this.#highest,
-        source: { id: this.machineId },
-      });
+    this.#resyncRunning = true;
+    try {
+      await this.#resync(false);
+    } finally {
+      this.#resyncRunning = false;
     }
   }
 
   async stop(): Promise<void> {
     this.#closed = true;
+    clearTimeout(this.#graceTimer);
     await this.#subscription?.terminate().catch(() => undefined);
     await this.#session?.close().catch(() => undefined);
     await this.#client.disconnect();
@@ -261,19 +270,29 @@ export class OpcuaCollector {
     }
   }
 
-  #scheduleResync(afterReconnect: boolean): void {
-    if (this.#closed || this.#resync) return;
-    this.#resync = this.#resyncNow(afterReconnect)
+  /** Coalesces reconnects: one that happens during a resync runs another resync afterwards. */
+  #requestResync(): void {
+    if (this.#closed) return;
+    if (this.#resyncRunning) {
+      this.#resyncAgain = true;
+      return;
+    }
+    this.#resyncRunning = true;
+    void this.#resync(true)
       .catch((error: unknown) => {
         this.#options.onError?.(error);
       })
       .finally(() => {
-        this.#resync = undefined;
+        this.#resyncRunning = false;
+        if (this.#resyncAgain) {
+          this.#resyncAgain = false;
+          this.#requestResync();
+        }
       });
   }
 
   /** ADR-0009's resync rule, with ADR-0015's epoch. */
-  async #resyncNow(afterReconnect: boolean): Promise<void> {
+  async #resync(afterReconnect: boolean): Promise<void> {
     const session = this.#session;
     if (!session) return;
     const read = async (path: string) =>
@@ -288,71 +307,123 @@ export class OpcuaCollector {
       read(OPCUA_VARIABLES.stateCause),
     ]);
     if (this.machineId === 'lkt-01') {
-      const limit = await read(OPCUA_VARIABLES.leakUpperLimit);
-      this.#upperLimit = Number(limit.value.value);
+      this.#upperLimit = Number((await read(OPCUA_VARIABLES.leakUpperLimit)).value.value);
     }
     const serverEpoch = Number(epoch.value.value);
     const serverSequence = Number(sequence.value.value);
-    if (this.#epoch !== undefined && serverEpoch !== this.#epoch) {
+    const pending = this.#pending ?? [];
+    let epochChanged = false;
+    if (this.#epoch === undefined) {
+      // First contact: history ends where the subscription's first event begins.
+      const first = Math.min(
+        ...pending.map((values) => this.#sequenceOf(values)).filter((s) => s > 0),
+      );
+      this.#baselineSequence = Number.isFinite(first)
+        ? Math.min(first - 1, serverSequence)
+        : serverSequence;
+      this.#startEpoch(serverEpoch, this.#baselineSequence);
+    } else if (serverEpoch !== this.#epoch) {
+      epochChanged = true;
       this.#options.incidents.report({
         type: 'epoch-change',
         equipment: this.machineId,
         lost: null,
         message: `${this.machineId}: simulator restarted (epoch ${String(this.#epoch)} → ${String(serverEpoch)})`,
       });
+      this.#writeOff(this.#dedup.gaps().map((g) => [g.from, g.to] as const)); // the old run's holes
+      this.#startEpoch(serverEpoch, 0); // the new run numbers its facts from 1
     }
-    if (serverEpoch !== this.#epoch) {
-      this.#epoch = serverEpoch;
-      this.#dedup = new Deduplicator();
-      // Facts before the first read are history this gateway joined after, not losses.
-      this.#highest = afterReconnect ? 0 : serverSequence;
+    this.#pending = undefined;
+    for (const values of pending) {
+      this.#handleEvent(values);
     }
     const at = state.sourceTimestamp?.getTime() ?? this.#now();
+    const topic = stateTopic(this.#options.path);
     const snapshot: StateCurrent = {
       schema: 'uns.state.current/1',
       kind: 'snapshot',
       scope: 'topic',
       epoch: this.#options.sequences.epoch,
-      seq: this.#options.sequences.next(stateTopic(this.#options.path)),
+      seq: this.#options.sequences.next(topic),
       sourceTime: new Date(at).toISOString(),
       receivedAt: new Date(this.#now()).toISOString(),
       quality: quality(state.statusCode),
       source: { id: this.machineId, protocol: 'opcua' },
       value: {
         state: String(state.value.value) as MachineState,
-        cause: String(cause.value.value) || null,
+        cause: (typeof cause.value.value === 'string' && cause.value.value) || null,
       },
     };
-    this.#send({ topic: stateTopic(this.#options.path), message: snapshot, retain: true });
-    if (afterReconnect) {
-      await new Promise((resolve) => setTimeout(resolve, this.#options.resyncGraceMs ?? 2_000));
-      this.#reportGaps(serverSequence);
+    this.#send({ topic, message: snapshot, retain: true });
+    this.#ready = true;
+    if (afterReconnect || epochChanged) {
+      await new Promise<void>((resolve) => {
+        this.#graceTimer = setTimeout(resolve, this.#options.resyncGraceMs ?? 2_000);
+      });
+      if (this.#closed) return;
+      const missing = this.#dedup.gaps().map((g) => [g.from, g.to] as const);
+      if (serverSequence > this.#highest) {
+        missing.push([this.#highest + 1, serverSequence]);
+      }
+      this.#writeOff(missing);
     }
   }
 
-  #reportGaps(serverSequence: number): void {
-    const missing: [number, number][] = this.#dedup.gaps().map((g) => [g.from, g.to]);
-    if (serverSequence > this.#highest) {
-      missing.push([this.#highest + 1, serverSequence]);
+  /** A new epoch: a sentinel 0 plus the history 1..historyUpTo count as handled. */
+  #startEpoch(epoch: number, historyUpTo: number): void {
+    this.#epoch = epoch;
+    this.#dedup = new Deduplicator();
+    this.#dedup.accept('device', {
+      scope: 'device',
+      epoch,
+      seq: 0,
+      source: { id: this.machineId },
+    });
+    if (historyUpTo > 0) {
+      this.#dedup.acknowledge({ stream: this.#stream, epoch, from: 1, to: historyUpTo });
     }
-    for (const gap of this.#dedup.gaps()) {
-      this.#dedup.acknowledge(gap);
+    this.#highest = historyUpTo;
+  }
+
+  get #stream(): string {
+    return `device:${this.machineId}`;
+  }
+
+  /** Reports ranges as lost, once, and marks them handled so a late copy is dropped. */
+  #writeOff(ranges: readonly (readonly [number, number])[]): void {
+    const epoch = this.#epoch;
+    if (epoch === undefined || ranges.length === 0) return;
+    for (const [from, to] of ranges) {
+      this.#dedup.acknowledge({ stream: this.#stream, epoch, from, to });
+      this.#highest = Math.max(this.#highest, to);
+      this.#lost.push({ epoch, from, to });
     }
-    const lost = missing.reduce((sum, [from, to]) => sum + (to - from + 1), 0);
-    if (lost > 0) {
-      this.#highest = Math.max(this.#highest, serverSequence);
-      this.#options.incidents.report({
-        type: 'sequence-gap',
-        equipment: this.machineId,
-        lost,
-        message: `${this.machineId}: ${String(lost)} OPC UA events never arrived (${missing
-          .map(([from, to]) => (from === to ? String(from) : `${String(from)}–${String(to)}`))
-          .join(', ')})`,
-      });
-    }
+    const lost = ranges.reduce((sum, [from, to]) => sum + (to - from + 1), 0);
+    this.#options.incidents.report({
+      type: 'sequence-gap',
+      equipment: this.machineId,
+      lost,
+      message: `${this.machineId}: ${String(lost)} OPC UA events never arrived (${ranges
+        .map(([from, to]) => (from === to ? String(from) : `${String(from)}–${String(to)}`))
+        .join(', ')})`,
+    });
+  }
+
+  #sequenceOf(values: Variant[]): number {
+    const index = [...FIELDS, ...STANDARD_FIELDS].indexOf('Sequence');
+    const value: unknown = values[index]?.value;
+    return typeof value === 'number' ? value : 0;
   }
 
   #onEvent(values: Variant[]): void {
+    if (this.#pending) {
+      this.#pending.push(values);
+      return;
+    }
+    this.#handleEvent(values);
+  }
+
+  #handleEvent(values: Variant[]): void {
     const field = (name: Field): unknown => {
       const index = [...FIELDS, ...STANDARD_FIELDS].indexOf(name);
       return values[index]?.value as unknown;
@@ -361,23 +432,19 @@ export class OpcuaCollector {
       const value = field(name);
       return typeof value === 'string' ? value : '';
     };
-    if (field('MachineId') !== this.machineId || this.#epoch === undefined) {
+    const epoch = this.#epoch;
+    if (field('MachineId') !== this.machineId || epoch === undefined) {
       return; // Machinery TransitionEvents and other standard events carry no MachineId
     }
     const kind = this.#eventTypes.get(String(field('EventType')));
     const seq = Number(field('Sequence'));
     if (!kind || !(seq > 0)) return;
-    const identity = {
-      scope: 'device' as const,
-      epoch: this.#epoch,
-      seq,
-      source: { id: this.machineId },
-    };
+    const identity = { scope: 'device' as const, epoch, seq, source: { id: this.machineId } };
     if (this.#dedup.accept('device', identity).status === 'duplicate') return;
     this.#highest = Math.max(this.#highest, seq);
     const common = {
       scope: 'device' as const,
-      epoch: this.#epoch,
+      epoch,
       seq,
       sourceTime: (field('Time') as Date).toISOString(),
       receivedAt: new Date(this.#now()).toISOString(),
@@ -442,11 +509,7 @@ export class OpcuaCollector {
 
   #onTelemetry(name: keyof typeof TELEMETRY, dataValue: DataValue): void {
     const value: unknown = dataValue.value.value;
-    if (
-      typeof value !== 'number' ||
-      !Number.isFinite(value) ||
-      dataValue.statusCode !== StatusCodes.Good
-    ) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || dataValue.statusCode.isBad()) {
       return; // before the run starts the server reports Uncertain without a value
     }
     const topic = telemetryTopic(this.#options.path, name);

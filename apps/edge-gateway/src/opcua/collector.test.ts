@@ -1,0 +1,203 @@
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { OPCUACertificateManager } from 'node-opcua';
+import { OPCUA_MACHINES, parseUnsMessage, type UnsMessage } from '@shopfloor/contracts';
+import { formatIssues, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { equipmentPaths } from '../hierarchy.ts';
+import { TopicSequences } from '../identity.ts';
+import type { IncidentInput } from '../incidents.ts';
+import type { Publisher, UnsPublication } from '../publisher.ts';
+import { startSimulator, type RunningSimulator, type SimEvent } from '../testing.ts';
+import { OpcuaCollector } from './collector.ts';
+
+// Clear of the Compose stack (TimescaleDB on 5442, broker on 1883, simulator on 4800–5020).
+const PORTS = { opcuaOffset: 3100, modbusPort: 8120, controlPort: 7900 };
+let simulator: RunningSimulator;
+let config: PlantConfig;
+const published: UnsPublication[] = [];
+const incidents: IncidentInput[] = [];
+const collectors: OpcuaCollector[] = [];
+const baselines = new Map<string, number>();
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const publisher: Publisher = {
+  publish: (publication) => {
+    published.push(publication);
+    return Promise.resolve();
+  },
+};
+
+/** The device facts of one machine in the simulator's own order: fact k has device sequence k. */
+function deviceFacts(machineId: string): SimEvent[] {
+  return simulator.events.filter(
+    (e) =>
+      e.machineId === machineId &&
+      (e.type === 'state' || e.type === 'cycle-complete' || e.type === 'alarm'),
+  );
+}
+
+const deviceMessages = (machineId: string): UnsMessage[] =>
+  published.map((p) => p.message).filter((m) => m.source.id === machineId && m.scope === 'device');
+
+beforeAll(async () => {
+  const loaded = await loadPlantConfig(resolve(import.meta.dirname, '../../../../config/plant'));
+  if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
+  config = loaded.config;
+  simulator = await startSimulator(PORTS);
+  const paths = equipmentPaths(config);
+  const sequences = new TopicSequences(1_800_000_000);
+  const pki = join(tmpdir(), 'shopfloor-twin-gw-client-pki');
+  rmSync(pki, { recursive: true, force: true });
+  const certificateManager = new OPCUACertificateManager({
+    rootFolder: pki,
+    automaticallyAcceptUnknownCertificate: true,
+  });
+  await certificateManager.initialize();
+  for (const machine of OPCUA_MACHINES) {
+    const path = paths.get(machine.id);
+    if (!path) throw new Error(`no path for ${machine.id}`);
+    collectors.push(
+      new OpcuaCollector({
+        machine,
+        path,
+        host: 'localhost',
+        portOffset: PORTS.opcuaOffset,
+        publisher,
+        sequences,
+        incidents: { report: (incident) => incidents.push(incident) },
+        telemetrySamplingMs: 500,
+        resyncGraceMs: 1_500,
+        certificateManager,
+      }),
+    );
+  }
+  // One after another: the clients share a certificate, which the first one may still be creating.
+  for (const collector of collectors) await collector.start();
+  // The simulator is idle until resumed. Its start-up facts were emitted before the event stream
+  // connected and are history to the collectors; device sequence k + baseline is stream fact k.
+  for (const collector of collectors) baselines.set(collector.machineId, collector.baseline);
+  expect(simulator.events).toEqual([]);
+}, 120_000);
+
+afterAll(async () => {
+  await Promise.all(collectors.map((c) => c.stop()));
+  await simulator.stop();
+});
+
+describe('OPC UA collector (#76)', () => {
+  it('publishes every state change, cycle and alarm of all five machines as valid UNS messages, at 60×', async () => {
+    await simulator.post('/api/v1/resume');
+    await wait(20_000); // 20 simulated minutes
+    await simulator.post('/api/v1/pause');
+    await wait(1_500);
+
+    for (const publication of published) {
+      const parsed = parseUnsMessage(JSON.parse(JSON.stringify(publication.message)));
+      expect(parsed.ok, parsed.ok ? '' : parsed.error).toBe(true);
+    }
+    let total = 0;
+    for (const machine of OPCUA_MACHINES) {
+      const baseline = baselines.get(machine.id) ?? 0;
+      const expected = deviceFacts(machine.id).map((event, i) => ({
+        seq: baseline + i + 1,
+        event,
+      }));
+      const messages = deviceMessages(machine.id);
+      expect(
+        messages.map((m) => m.seq),
+        machine.id,
+      ).toEqual(expected.map((e) => e.seq));
+      for (const [i, { event }] of expected.entries()) {
+        const message = messages[i];
+        expect(message?.sourceTime, `${machine.id} #${String(i)}`).toBe(event.at);
+        if (event.type === 'state' && message?.schema === 'uns.state.current/1') {
+          expect(message.value).toEqual({ state: event.to, cause: event.cause ?? null });
+        } else if (
+          event.type === 'cycle-complete' &&
+          message?.schema === 'uns.events.cycle-complete/1'
+        ) {
+          expect(message.value).toMatchObject({
+            product: event.product,
+            partId: event.partId,
+            serial: event.serial,
+            result: event.result,
+            reason: event.reason ?? null,
+          });
+          const measurement = event.measurement as
+            { value: number; upperLimit: number } | undefined;
+          expect(message.value.measurement?.value).toBe(measurement?.value);
+          expect(message.value.measurement?.upperLimit).toBe(measurement?.upperLimit);
+        } else if (event.type === 'alarm' && message?.schema === 'uns.alarms/1') {
+          expect(message.value).toEqual({
+            code: event.code,
+            transition: event.transition,
+            severity: event.severity,
+          });
+        } else {
+          throw new Error(
+            `${machine.id} #${String(i)}: ${event.type} published as ${String(message?.schema)}`,
+          );
+        }
+      }
+      total += expected.length;
+    }
+    expect(total).toBeGreaterThan(30);
+    expect(incidents.filter((i) => i.type === 'sequence-gap')).toEqual([]);
+  }, 120_000);
+
+  it('samples telemetry and publishes a snapshot of every machine on connect', () => {
+    const topics = new Set(published.map((p) => p.topic));
+    for (const id of ['cnc-01', 'cnc-02']) {
+      const path = `orbis/gebze/machining/cell-m1/${id}`;
+      expect(topics.has(`${path}/telemetry/spindle-load`), id).toBe(true);
+      expect(topics.has(`${path}/telemetry/coolant-temperature`), id).toBe(true);
+    }
+    const snapshots = published.filter(
+      (p) => p.message.schema === 'uns.state.current/1' && p.message.kind === 'snapshot',
+    );
+    expect(new Set(snapshots.map((s) => s.message.source.id))).toEqual(
+      new Set(OPCUA_MACHINES.map((m) => m.id)),
+    );
+    expect(
+      published.every((p) => p.retain === (p.message.schema !== 'uns.events.cycle-complete/1')),
+    ).toBe(true);
+  });
+
+  it('survives a server going offline: reconnects, resyncs, and accounts for every fact', async () => {
+    const before = deviceMessages('cnc-01').length;
+    const snapshotsBefore = published.filter(
+      (p) =>
+        p.message.source.id === 'cnc-01' &&
+        p.message.schema === 'uns.state.current/1' &&
+        p.message.kind === 'snapshot',
+    ).length;
+    await simulator.post('/api/v1/resume');
+    await simulator.post('/api/v1/faults/opcua/cnc-01', { offline: true });
+    await wait(4_000);
+    await simulator.post('/api/v1/faults/opcua/cnc-01', { offline: false });
+    await wait(8_000);
+    await simulator.post('/api/v1/pause');
+    await wait(3_000);
+    const kinds = incidents.filter((i) => i.equipment === 'cnc-01').map((i) => i.type);
+    expect(kinds).toContain('disconnected');
+    expect(kinds).toContain('reconnected');
+    const snapshots = published.filter(
+      (p) =>
+        p.message.source.id === 'cnc-01' &&
+        p.message.schema === 'uns.state.current/1' &&
+        p.message.kind === 'snapshot',
+    ).length;
+    expect(snapshots).toBeGreaterThan(snapshotsBefore);
+    const expected = deviceFacts('cnc-01').length;
+    const delivered = new Set(deviceMessages('cnc-01').map((m) => m.seq)).size;
+    const lost = incidents
+      .filter((i) => i.equipment === 'cnc-01' && i.type === 'sequence-gap')
+      .reduce((sum, i) => sum + (i.lost ?? 0), 0);
+    expect(delivered).toBeGreaterThan(before);
+    // Every fact is either delivered (the repaired subscription republished it) or reported lost.
+    expect(delivered + lost).toBe(expected);
+  }, 120_000);
+});

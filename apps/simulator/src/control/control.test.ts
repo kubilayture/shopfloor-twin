@@ -280,6 +280,7 @@ describe('control API (#54)', () => {
     const document = JSON.parse(generated) as { paths: Record<string, unknown> };
     expect(Object.keys(document.paths).sort()).toEqual([
       '/api/v1/faults/modbus',
+      '/api/v1/faults/opcua/{machine}',
       '/api/v1/pause',
       '/api/v1/resume',
       '/api/v1/speed',

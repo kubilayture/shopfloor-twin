@@ -88,6 +88,20 @@ Every payload is one JSON object with these fields, and no others except those l
 
 Validate any payload with `parseUnsMessage(json)`.
 
+## Sources
+
+### OPC UA machines (edge gateway, #76)
+
+| OPC UA (docs/contracts/opcua-address-space.md)                                             | UNS                                                                                                                                                                                                                       |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ShopFloorStateChangeEventType`                                                            | `state/current`, `kind: event`, `seq` = the event's `Sequence`, `epoch` = `ShopFloor.Epoch`; value `{ state: ToState, cause: Cause or null }`                                                                             |
+| `CycleCompleteEventType`                                                                   | `events/cycle-complete`; an empty `Reason` becomes null; `MeasurementValue` (LKT-01) becomes `measurement` with characteristic `leak-rate`, unit `Pa/min` and the `LeakTest.UpperLimit` read at connect; NaN becomes null |
+| `ShopFloorAlarmEventType`                                                                  | `alarms/{code}` with `{ code, transition, severity }`                                                                                                                                                                     |
+| `ProcessValues.SpindleLoad`, `.CoolantTemperature` (CNCs), `LeakTest.LastReading` (LKT-01) | `telemetry/spindle-load`, `coolant-temperature`, `leak-rate`, sampled every `TELEMETRY_SAMPLING_MS` (wall, default 1 s); `sourceTime` is the value's SourceTimestamp (simulation time)                                    |
+| `State`, `StateCause` read after every (re)connect                                         | `state/current`, `kind: snapshot`                                                                                                                                                                                         |
+
+The gateway reads `Epoch` and `Sequence` before subscribing; facts up to that number are history. After a reconnect it waits a grace period (2 s) for the repaired subscription to republish what it kept, then reports every number that never arrived as one `sequence-gap` incident with `lost`. A changed `Epoch` (the simulator restarted) gives an `epoch-change` incident. Connection loss and recovery give `disconnected` and `reconnected` incidents.
+
 ## Identity, duplicates and gaps (ADR-0015)
 
 - **Device facts** (state changes, cycles, alarm transitions) have `scope: device`. Their `seq` is the device's own sequence: OPC UA `Sequence`, or the WSH-01 event-buffer sequence. It is shared across that device's `state`, `events` and `alarms` topics, so one stream per equipment orders all its facts.

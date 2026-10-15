@@ -143,6 +143,14 @@ export class PlantServers {
     this.#route(event);
   }
 
+  /** Takes one machine's server offline or back online; false for an unknown machine. */
+  async setOffline(machineId: string, offline: boolean): Promise<boolean> {
+    const server = this.servers.find((s) => s.machineId === machineId);
+    if (!server) return false;
+    await server.setOffline(offline);
+    return true;
+  }
+
   async stop(): Promise<void> {
     await Promise.all(this.servers.map((server) => server.stop()));
   }

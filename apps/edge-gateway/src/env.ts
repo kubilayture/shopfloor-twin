@@ -20,6 +20,10 @@ export const envSchema = z.object({
   MQTT_USERNAME: text.default('gw-01'),
   // Not trimmed: spaces may be part of a password.
   MQTT_PASSWORD: z.string().min(1),
+  OPCUA_HOST: text.default('localhost'),
+  OPCUA_PORT_OFFSET: integer.pipe(z.number().max(9_999)).default(0),
+  OPCUA_PKI_DIR: text.default('.pki-gateway'),
+  TELEMETRY_SAMPLING_MS: integer.pipe(z.number().min(100).max(60_000)).default(1_000),
   HTTP_HOST: text.default('127.0.0.1'),
   HTTP_PORT: port.default(4900),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),

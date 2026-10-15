@@ -13,3 +13,4 @@ apps/*/vitest.config.js
 runs/
 apps/*/runs/
 .pki/
+.pki-gateway/

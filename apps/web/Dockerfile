@@ -30,5 +30,6 @@ COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 8080
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=12 \
   CMD ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
-# nginx finishes open requests on SIGQUIT (graceful), SIGTERM drops them.
-STOPSIGNAL SIGQUIT
+# SIGTERM is nginx's fast shutdown. A graceful SIGQUIT would wait for open WebSockets (a browser
+# tab keeps one open) until Docker kills the container; the app reconnects either way.
+STOPSIGNAL SIGTERM

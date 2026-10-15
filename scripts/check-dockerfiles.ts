@@ -12,6 +12,11 @@
  *   its `src` copied;
  * - nothing else from `apps/` or `packages/` is copied, so the lists don't keep stale entries.
  *
+ * Known limits (the check is a guard, not a Dockerfile parser): a broad `COPY packages packages`
+ * passes; only `package.json` and `src` are checked (not, for example, `packages/tsconfig/base.json`
+ * a build stage needs); stages are not told apart; JSON-form `COPY [...]` lines are not read, so
+ * they show as missing (the safe direction).
+ *
  * Usage: node scripts/check-dockerfiles.ts [repository root]
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';

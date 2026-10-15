@@ -25,7 +25,9 @@ pnpm --filter @shopfloor/web build      # static files in apps/web/dist
 pnpm --filter @shopfloor/web preview    # serves dist on http://127.0.0.1:4173 with the same proxy
 ```
 
-`dist/` is plain static files (an `index.html` and hashed assets; uPlot is a separate chunk loaded with the first chart). A server must send every unknown path to `index.html` (client-side routes such as `/equipment/cnc-01`) and proxy `/api` to the MES, including the WebSocket upgrade. ## Container
+`dist/` is plain static files (an `index.html` and hashed assets; uPlot is a separate chunk loaded with the first chart). A server must send every unknown path to `index.html` (client-side routes such as `/equipment/cnc-01`) and proxy `/api` to the MES, including the WebSocket upgrade.
+
+## Container
 
 `apps/web/Dockerfile` builds `dist/` with Vite and serves it with nginx (unprivileged, port 8080); Compose publishes it on `127.0.0.1:8080` (`WEB_PORT`) as service `web` (#99, runbook "Full stack"). The nginx configuration is in `nginx/`:
 

@@ -91,9 +91,10 @@ if (states.join() !== MACHINES.join()) fail(`WebSocket snapshot incomplete: ${st
 console.log('ok: WebSocket through the web (/api/v1/ws) sends a snapshot of all six machines');
 
 // Another site's page must not open it.
+// The upgrade itself must fail: a socket that opens but stays silent would not prove the check.
 const foreign = await snapshot('http://evil.test').then(
-  () => true,
-  () => false,
+  () => 'accepted',
+  (error) => error.message,
 );
-if (foreign) fail('WebSocket accepted from a foreign Origin');
+if (foreign !== 'connection refused or failed') fail(`WebSocket from a foreign Origin: ${foreign}`);
 console.log('ok: WebSocket from a foreign Origin refused');

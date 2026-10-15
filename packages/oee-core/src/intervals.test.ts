@@ -62,6 +62,7 @@ describe('splitting at boundaries', () => {
   it('ignores cuts at the edges, outside the interval or repeated', () => {
     expect(splitAt(interval, [interval.from, interval.to, T0 - HOUR, T0, T0])).toHaveLength(2);
     expect(hourCuts(T0, T0 + HOUR)).toEqual([]); // both ends are hours: nothing strictly inside
+    expect(hourCuts(-HOUR - 1, 1)).toEqual([-HOUR, 0]); // before 1970 too, in integers only
   });
 
   it('property: pieces are contiguous, sum to the original, and never contain a cut', () => {

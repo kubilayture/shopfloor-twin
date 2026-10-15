@@ -61,7 +61,9 @@ export function splitAt<S extends string>(
 export function hourCuts(from: Millis, to: Millis): Millis[] {
   const cuts: Millis[] = [];
   // The first hour boundary after `from` (never `from` itself, even when it is on the hour).
-  for (let cut = Math.floor(from / HOUR) * HOUR + HOUR; cut < to; cut += HOUR) {
+  // A floored remainder, in integers only (ADR-0021: no floating point in oee-core).
+  const intoHour = ((from % HOUR) + HOUR) % HOUR;
+  for (let cut = from - intoHour + HOUR; cut < to; cut += HOUR) {
     cuts.push(cut);
   }
   return cuts;

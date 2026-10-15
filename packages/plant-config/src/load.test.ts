@@ -3,8 +3,15 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parse } from 'yaml';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { isWholeMilliseconds } from './cross-check.ts';
 import { formatIssues, loadPlantConfig, validatePlantConfig } from './load.ts';
-import { PLANT_FILES, type PlantConfig } from './schema.ts';
+import {
+  PLANT_FILES,
+  SIMULATION_FILES,
+  idealCycleMs,
+  simulationSections,
+  type PlantConfig,
+} from './schema.ts';
 
 const DEFAULT_DIR = resolve(import.meta.dirname, '../../../config/plant');
 
@@ -292,8 +299,106 @@ describe('cross-file checks', () => {
       },
       'unknown product "VB-999"',
     ],
+    [
+      'a shift that starts off the hour',
+      (c) => {
+        const shift = c.shifts.shifts[0];
+        if (shift) shift.start = '06:30';
+      },
+      'shifts:A.start: shifts must start and end on whole hours',
+    ],
+    [
+      'a shift that ends off the hour',
+      (c) => {
+        const shift = c.shifts.shifts[2];
+        if (shift) shift.end = '05:45';
+      },
+      'shifts:C.end: shifts must start and end on whole hours',
+    ],
+    [
+      'a time zone with a half-hour offset',
+      (c) => {
+        c.shifts.timeZone = 'Asia/Kolkata';
+      },
+      'shifts:timeZone: "Asia/Kolkata" has a UTC offset that is not whole hours',
+    ],
+    [
+      'an ideal cycle time that is not whole milliseconds',
+      (c) => {
+        const product = c.products.products[0];
+        if (product) product.idealCycleSeconds.OP20 = 60.0005;
+      },
+      'products:VB-100.idealCycleSeconds.OP20: ideal cycle time must be whole milliseconds',
+    ],
   ])('reports %s', (_case, change, expected) => {
     expect(messagesFor(modified(change)).join('\n')).toContain(expected);
+  });
+});
+
+describe('OEE configuration (ADR-0021)', () => {
+  it('loads the threshold and the scheduled-time rule', async () => {
+    const result = await loadPlantConfig(DEFAULT_DIR);
+    expect(result.ok && result.config.oee).toEqual({
+      microStopThresholdMs: 120_000,
+      scheduledTime: 'shift-calendar',
+    });
+  });
+
+  it.each<[string, (c: PlantConfig) => void, string]>([
+    [
+      'a fractional threshold',
+      (c) => {
+        c.oee.microStopThresholdMs = 1.5;
+      },
+      'oee:microStopThresholdMs',
+    ],
+    [
+      'a zero threshold',
+      (c) => {
+        c.oee.microStopThresholdMs = 0;
+      },
+      'oee:microStopThresholdMs',
+    ],
+    [
+      'an unknown scheduled-time rule',
+      (c) => {
+        Object.assign(c.oee, { scheduledTime: 'orders' });
+      },
+      'oee:scheduledTime',
+    ],
+  ])('reports %s', (_case, change, expected) => {
+    expect(messagesFor(modified(change)).join('\n')).toContain(expected);
+  });
+
+  it('accepts ideal times with up to three decimals and converts them to exact milliseconds', async () => {
+    const result = await loadPlantConfig(DEFAULT_DIR);
+    if (!result.ok) {
+      throw new Error(formatIssues(result.issues));
+    }
+    expect(idealCycleMs(result.config)['VB-200']).toEqual({
+      OP10: 330_000,
+      OP20: 60_000,
+      OP30: 210_000,
+      OP40: 90_000,
+      OP50: 30_000,
+    });
+    expect(isWholeMilliseconds(1.005)).toBe(true);
+    expect(isWholeMilliseconds(0.001)).toBe(true);
+    expect(isWholeMilliseconds(1e-7)).toBe(false);
+    const product = result.config.products.products[0];
+    if (product) product.idealCycleSeconds.OP10 = 1.005;
+    expect(idealCycleMs(result.config)['VB-100']?.OP10).toBe(1005);
+  });
+
+  it('keeps the simulation sections apart from the OEE section', async () => {
+    const result = await loadPlantConfig(DEFAULT_DIR);
+    if (!result.ok) {
+      throw new Error(formatIssues(result.issues));
+    }
+    const sections = simulationSections(result.config);
+    expect(Object.keys(sections).sort()).toEqual(Object.keys(SIMULATION_FILES).sort());
+    expect(sections).not.toHaveProperty('oee');
+    expect(Object.keys(PLANT_FILES)).toEqual([...Object.keys(SIMULATION_FILES), 'oee']);
   });
 });
 

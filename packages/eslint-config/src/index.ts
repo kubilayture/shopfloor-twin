@@ -6,9 +6,11 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 import { dependencyRules } from './dependency-rules.ts';
 import { determinismRules } from './determinism-rules.ts';
+import { exactnessRules } from './exactness-rules.ts';
 
 export { APPS, MES_MODULES, PURE_PACKAGES, dependencyRules } from './dependency-rules.ts';
 export { DETERMINISTIC_SOURCES, determinismRules } from './determinism-rules.ts';
+export { EXACT_SOURCES, exactnessRules } from './exactness-rules.ts';
 
 /** The browser app: browser globals and the rules of hooks instead of Node.js globals. */
 export const WEB_SOURCES = ['apps/web/**/*.ts', 'apps/web/**/*.tsx'];
@@ -46,6 +48,7 @@ export function createConfig({ rootDir }: ConfigOptions): Linter.Config[] {
     },
     ...dependencyRules(),
     ...determinismRules(),
+    ...exactnessRules(),
     prettier,
   ];
 }

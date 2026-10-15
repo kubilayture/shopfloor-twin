@@ -18,6 +18,29 @@ const offsetInShift = (start: string, time: string): number =>
 
 const shiftLength = (start: string, end: string): number => offsetInShift(start, end) || DAY;
 
+/** True when a value in seconds has at most three decimals, as written in the YAML. */
+export const isWholeMilliseconds = (seconds: number): boolean =>
+  /^\d+(\.\d{1,3})?$/.test(String(seconds));
+
+const HOUR_NS = 3_600_000_000_000;
+
+/** Checks every offset of the zone from 1970 to 2100 (an unknown zone is reported elsewhere). */
+function hasWholeHourOffsets(timeZone: string): boolean {
+  let zoned: Temporal.ZonedDateTime | null;
+  try {
+    zoned = Temporal.Instant.fromEpochMilliseconds(0).toZonedDateTimeISO(timeZone);
+  } catch {
+    return true;
+  }
+  while (zoned !== null && zoned.year <= 2100) {
+    if (zoned.offsetNanoseconds % HOUR_NS !== 0) {
+      return false;
+    }
+    zoned = zoned.getTimeZoneTransition('next');
+  }
+  return true;
+}
+
 export function crossCheck(config: PlantConfig): ConfigIssue[] {
   const issues: ConfigIssue[] = [];
   const report = (file: string, path: string, message: string): void => {
@@ -76,6 +99,32 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
         report('products', `${product.id}.idealCycleSeconds`, `missing ideal cycle time for ${op}`);
       }
     }
+    // oee-core works in integer milliseconds (ADR-0021).
+    for (const [op, seconds] of Object.entries(product.idealCycleSeconds)) {
+      if (!isWholeMilliseconds(seconds)) {
+        report(
+          'products',
+          `${product.id}.idealCycleSeconds.${op}`,
+          `ideal cycle time must be whole milliseconds, got ${String(seconds)} s`,
+        );
+      }
+    }
+  }
+
+  // Cycles carry no shift key, so every UTC hour must lie in one shift bucket (ADR-0021).
+  for (const shift of config.shifts.shifts) {
+    for (const key of ['start', 'end'] as const) {
+      if (!shift[key].endsWith(':00')) {
+        report('shifts', `${shift.id}.${key}`, `shifts must start and end on whole hours`);
+      }
+    }
+  }
+  if (!hasWholeHourOffsets(config.shifts.timeZone)) {
+    report(
+      'shifts',
+      'timeZone',
+      `"${config.shifts.timeZone}" has a UTC offset that is not whole hours, so local whole hours are not UTC hours`,
+    );
   }
 
   const shiftIds = new Set(config.shifts.shifts.map((shift) => shift.id));

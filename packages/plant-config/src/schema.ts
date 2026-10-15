@@ -175,7 +175,18 @@ export const scheduleSchema = z.strictObject({
   ),
 });
 
-export const PLANT_FILES = {
+/**
+ * OEE configuration (ADR-0021): the micro-stop threshold and the scheduled-time rule. It is not a
+ * simulation input, so the simulator's run header does not hash it (see `SIMULATION_FILES`).
+ */
+export const oeeSchema = z.strictObject({
+  microStopThresholdMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  /** Phases 1–6: every shift in the calendar is scheduled. Phase 7 adds an order-based rule. */
+  scheduledTime: z.enum(['shift-calendar']),
+});
+
+/** The files the simulation reads. The run header's `configSha256` hashes exactly these. */
+export const SIMULATION_FILES = {
   plant: plantSchema,
   products: productsSchema,
   shifts: shiftsSchema,
@@ -186,6 +197,37 @@ export const PLANT_FILES = {
   schedule: scheduleSchema,
 } as const;
 
+/** Every file of `config/plant`: the simulation files plus the files only the analysis reads. */
+export const PLANT_FILES = {
+  ...SIMULATION_FILES,
+  oee: oeeSchema,
+} as const;
+
 export type PlantFiles = typeof PLANT_FILES;
 
 export type PlantConfig = { [K in keyof PlantFiles]: z.infer<PlantFiles[K]> };
+
+export type SimulationSection = keyof typeof SIMULATION_FILES;
+
+export type SimulationConfig = Pick<PlantConfig, SimulationSection>;
+
+/**
+ * Ideal cycle times in integer milliseconds per product and operation, as `oee-core` takes them.
+ * Exact: the cross-check refuses values with more than three decimals of a second.
+ */
+export function idealCycleMs(config: PlantConfig): Record<string, Record<string, number>> {
+  return Object.fromEntries(
+    config.products.products.map((product) => [
+      product.id,
+      Object.fromEntries(
+        Object.entries(product.idealCycleSeconds).map(([op, s]) => [op, Math.round(s * 1000)]),
+      ),
+    ]),
+  );
+}
+
+/** Only the simulation sections of a configuration: what the simulator's config hash covers. */
+export function simulationSections(config: PlantConfig): SimulationConfig {
+  const sections = Object.keys(SIMULATION_FILES) as SimulationSection[];
+  return Object.fromEntries(sections.map((key) => [key, config[key]])) as SimulationConfig;
+}

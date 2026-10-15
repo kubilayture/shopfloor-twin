@@ -9,14 +9,19 @@
   "scripts": {
     "typecheck": "tsc",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "json-schema": "node src/uns/json-schema.ts"
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",
     "@shopfloor/tsconfig": "workspace:*",
     "@types/node": "catalog:",
     "eslint": "catalog:",
+    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "dependencies": {
+    "zod": "catalog:"
   }
 }

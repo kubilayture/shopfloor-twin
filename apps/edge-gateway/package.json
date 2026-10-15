@@ -13,6 +13,7 @@
     "@shopfloor/contracts": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "fastify": "catalog:",
+    "modbus-serial": "catalog:",
     "mqtt": "catalog:",
     "node-opcua": "catalog:",
     "prom-client": "catalog:",

@@ -102,6 +102,22 @@ Validate any payload with `parseUnsMessage(json)`.
 
 The gateway subscribes first, then reads `Epoch` and `Sequence`; events wait until their epoch is known, at start-up and after every connection loss. History is everything before the first event the subscription delivered. After a reconnect it waits a grace period (2 s) for the repaired subscription to republish what it kept, then reports every number that never arrived as one `sequence-gap` incident with `lost`. A reported number counts as handled: it is never reported twice, and a copy arriving later is dropped, so every fact is either published once or counted lost once. Known limit: after a simulator restart (new epoch) the old run's last facts that never arrived can't be counted, because the old run's final number is unknown; its open holes are reported. A changed `Epoch` (the simulator restarted) gives an `epoch-change` incident. Connection loss and recovery give `disconnected` and `reconnected` incidents.
 
+### WSH-01 on Modbus (edge gateway, #77)
+
+The poller reads the register map (docs/contracts/modbus-register-map.md) every `MODBUS_POLL_MS` (wall, default 250 ms).
+
+| Registers                                                           | UNS                                                                                                                                |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Ring entry, type state                                              | `state/current`, `kind: event`, `seq` = the entry's sequence, `epoch` = register `epoch`                                           |
+| Ring entry, type cycle                                              | `events/cycle-complete`; `serial` is empty (a legacy washer reads none), `reason` and `measurement` are null                       |
+| Ring entry, type alarm                                              | `alarms/{code}`, severity 700 (the washer's alarms are its failure codes)                                                          |
+| `bathTemperature`, `conveyorSpeed`                                  | `telemetry/bath-temperature`, `telemetry/conveyor-speed`, scaled by the configured resolutions; `sourceTime` is register `simTime` |
+| `state` on first contact, after a silence and after an epoch change | `state/current`, `kind: snapshot` (cause null: the map carries no cause for the current state)                                     |
+
+- Each poll walks the ring from the last entry handled to the counter, in requests of at most 12 entries, split at the ring end. An entry whose own number isn't the expected one was overwritten: a `ring-overrun` incident. So is a counter that moved by more than 64 since the last poll.
+- On first contact the facts already in the ring are history. The poller keeps a cursor (epoch and last sequence) and continues from it while the epoch is unchanged. In Phase 3 the cursor lives in memory; the store-and-forward buffer (#78) persists it across gateway restarts.
+- After three failed polls (timeout, refused connection) the device counts as silent: a `device-silent` incident, and the next successful poll gives `device-recovered` and a snapshot. The ring keeps what happened meanwhile, so a short silence loses nothing.
+
 ## Identity, duplicates and gaps (ADR-0015)
 
 - **Device facts** (state changes, cycles, alarm transitions) have `scope: device`. Their `seq` is the device's own sequence: OPC UA `Sequence`, or the WSH-01 event-buffer sequence. It is shared across that device's `state`, `events` and `alarms` topics, so one stream per equipment orders all its facts.

@@ -41,3 +41,5 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - Blocking: one unreachable machine stopped every later collector from starting.
   - The collector now buffers events until their epoch is known, acknowledges every range it reports, coalesces reconnects, and starts the collectors concurrently once the shared certificate exists.
   - A new test forces a session loss and then a republish, and proves that published ∪ lost = emitted, with no overlap.
+- Merged #87 (#76): OPC UA collector.
+- #77: the poller is tested against an in-memory register map, built with the contract's own encoders: wrap, overrun, silence, cursor resume and epoch change. It is also tested against the real simulator, where every washer fact arrives in order through a 3 s silence. The metric `gateway_opcua_connected` became `gateway_device_connected`, because it now covers Modbus too.

@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #76 merged (PR #87): OPC UA collector.
 - #75 merged (PR #86): gateway skeleton, broker users and ACL.
 - #74 merged (PR #85): WSH-01 Modbus TCP server.
 - #73 merged (PR #84): washer process values, run epoch.
@@ -47,11 +48,11 @@
 
 ## In progress
 
-- #76 OPC UA collector (in review)
+- #77 Modbus poller (in review)
 
 ## Next up
 
-- #77 Modbus poller, #78 store-and-forward, #79 container and integration tests
+- #78 store-and-forward, #79 container and integration tests, #80 Phase 3 close
 
 ## Blockers and open questions for the owner
 

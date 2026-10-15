@@ -54,8 +54,8 @@ describe('incidents and per-machine metrics (#76)', () => {
       ],
     });
     const metrics = (await http.inject({ url: '/metrics' })).body;
-    expect(metrics).toMatch(/^gateway_opcua_connected\{machine="cnc-01"\} 1$/m);
-    expect(metrics).toMatch(/^gateway_opcua_connected\{machine="asm-01"\} 0$/m);
+    expect(metrics).toMatch(/^gateway_device_connected\{machine="cnc-01"\} 1$/m);
+    expect(metrics).toMatch(/^gateway_device_connected\{machine="asm-01"\} 0$/m);
     expect(metrics).toMatch(/^gateway_device_facts\{machine="cnc-01"\} 12$/m);
     expect(metrics).toMatch(/^gateway_mqtt_connected 0$/m);
     await http.close();

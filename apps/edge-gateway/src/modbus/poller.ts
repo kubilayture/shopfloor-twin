@@ -1,0 +1,369 @@
+import {
+  ENTRY_SIZE,
+  MODBUS_MAX_READ,
+  MODBUS_UNIT_ID,
+  REGISTERS,
+  RING_CAPACITY,
+  SNAPSHOT_LENGTH,
+  UNS_TELEMETRY,
+  alarmTopic,
+  cycleTopic,
+  decodeEntry,
+  i16,
+  MACHINE_STATES,
+  ringSlot,
+  stateTopic,
+  telemetryTopic,
+  u32,
+  u64,
+  type Alarm,
+  type CycleComplete,
+  type EquipmentPath,
+  type ModbusTables,
+  type RingEntry,
+  type StateCurrent,
+  type Telemetry,
+} from '@shopfloor/contracts';
+import Modbus from 'modbus-serial';
+import type { TopicSequences } from '../identity.ts';
+import type { IncidentReporter } from '../incidents.ts';
+import type { Publisher, UnsPublication } from '../publisher.ts';
+
+const ModbusRTU = Modbus.default;
+
+/** Reads holding registers (function 3); rejects on timeout, exception or a closed connection. */
+export interface RegisterReader {
+  read(address: number, length: number): Promise<number[]>;
+  close(): Promise<void>;
+}
+
+/** Where the poller remembers the last ring entry it handled, so a restart neither repeats nor skips. */
+export interface CursorStore {
+  get(machineId: string): { readonly epoch: number; readonly seq: number } | undefined;
+  set(machineId: string, cursor: { readonly epoch: number; readonly seq: number }): void;
+}
+
+export class MemoryCursorStore implements CursorStore {
+  readonly #cursors = new Map<string, { epoch: number; seq: number }>();
+
+  get(machineId: string): { epoch: number; seq: number } | undefined {
+    return this.#cursors.get(machineId);
+  }
+
+  set(machineId: string, cursor: { epoch: number; seq: number }): void {
+    this.#cursors.set(machineId, { ...cursor });
+  }
+}
+
+/** A modbus-serial TCP client per connection; a failed connection is replaced, not reused. */
+export async function connectModbus(
+  host: string,
+  port: number,
+  timeoutMs: number,
+): Promise<RegisterReader> {
+  const client = new ModbusRTU();
+  await client.connectTCP(host, { port, timeout: timeoutMs });
+  client.setID(MODBUS_UNIT_ID);
+  client.setTimeout(timeoutMs);
+  return {
+    read: async (address, length) => (await client.readHoldingRegisters(address, length)).data,
+    close: () =>
+      new Promise<void>((resolve) => {
+        client.close(() => {
+          resolve();
+        });
+      }),
+  };
+}
+
+export interface ModbusPollerOptions {
+  readonly machineId: string;
+  readonly path: EquipmentPath;
+  readonly tables: ModbusTables;
+  /** Register units: the bath and conveyor resolutions of the register map. */
+  readonly scaling: { readonly bath: number; readonly conveyor: number };
+  /** Alarm severity (the washer's alarms are failure codes: 700, as on OPC UA). */
+  readonly alarmSeverity: number;
+  readonly connect: () => Promise<RegisterReader>;
+  readonly publisher: Publisher;
+  readonly sequences: TopicSequences;
+  readonly incidents: IncidentReporter;
+  readonly cursors?: CursorStore;
+  readonly now?: () => number;
+  /** Wall ms between polls. */
+  readonly pollMs?: number;
+  /** Failed polls in a row before the device counts as silent. */
+  readonly silentAfter?: number;
+  readonly onError?: (error: unknown) => void;
+}
+
+/**
+ * WSH-01 → UNS over Modbus TCP (docs/contracts/modbus-register-map.md). Every poll reads the
+ * snapshot block, publishes telemetry, and walks the event ring from the last handled entry to the
+ * counter, so a polled device loses nothing unless more than 64 facts happen between two polls.
+ */
+export class ModbusPoller {
+  readonly machineId: string;
+  readonly #options: ModbusPollerOptions;
+  readonly #now: () => number;
+  readonly #cursors: CursorStore;
+  #reader: RegisterReader | undefined;
+  #epoch: number | undefined;
+  #handled = 0;
+  #failures = 0;
+  #silent = false;
+  #snapshotDue = true;
+  #timer: ReturnType<typeof setTimeout> | undefined;
+  #running = false;
+  #facts = 0;
+  #polls = 0;
+
+  constructor(options: ModbusPollerOptions) {
+    this.#options = options;
+    this.machineId = options.machineId;
+    this.#now = options.now ?? Date.now;
+    this.#cursors = options.cursors ?? new MemoryCursorStore();
+  }
+
+  get facts(): number {
+    return this.#facts;
+  }
+
+  get connected(): boolean {
+    return this.#reader !== undefined && !this.#silent;
+  }
+
+  get polls(): number {
+    return this.#polls;
+  }
+
+  start(): void {
+    this.#running = true;
+    this.#schedule(0);
+  }
+
+  async stop(): Promise<void> {
+    this.#running = false;
+    clearTimeout(this.#timer);
+    await this.#reader?.close().catch(() => undefined);
+    this.#reader = undefined;
+  }
+
+  /** One poll; exposed for tests. Resolves after everything it read was handed to the publisher. */
+  async poll(): Promise<void> {
+    try {
+      this.#reader ??= await this.#options.connect();
+      const snapshot = await this.#reader.read(0, SNAPSHOT_LENGTH);
+      await this.#handle(this.#reader, snapshot);
+      this.#polls++;
+      if (this.#silent) {
+        this.#silent = false;
+        this.#report('device-recovered', null, `${this.machineId}: Modbus device answers again`);
+      }
+      this.#failures = 0;
+    } catch (error) {
+      this.#failures++;
+      await this.#reader?.close().catch(() => undefined);
+      this.#reader = undefined;
+      if (!this.#silent && this.#failures >= (this.#options.silentAfter ?? 3)) {
+        this.#silent = true;
+        this.#snapshotDue = true;
+        this.#report(
+          'device-silent',
+          null,
+          `${this.machineId}: no Modbus answer for ${String(this.#failures)} polls (${String(error)})`,
+        );
+      }
+      this.#options.onError?.(error);
+    }
+  }
+
+  #schedule(delay: number): void {
+    if (!this.#running) return;
+    this.#timer = setTimeout(() => {
+      void this.poll().finally(() => {
+        this.#schedule(this.#options.pollMs ?? 250);
+      });
+    }, delay);
+  }
+
+  async #handle(reader: RegisterReader, snapshot: number[]): Promise<void> {
+    const epoch = u32(snapshot, REGISTERS.epoch);
+    const counter = u32(snapshot, REGISTERS.eventCounter);
+    const simTime = u64(snapshot, REGISTERS.simTime);
+    if (epoch !== this.#epoch) {
+      const stored = this.#cursors.get(this.machineId);
+      if (this.#epoch !== undefined) {
+        this.#report(
+          'epoch-change',
+          null,
+          `${this.machineId}: device restarted (epoch ${String(this.#epoch)} → ${String(epoch)})`,
+        );
+        this.#handled = 0; // a new run numbers its facts from 1 again
+      } else if (stored?.epoch === epoch) {
+        this.#handled = stored.seq; // a gateway restart resumes where it stopped
+      } else {
+        this.#handled = counter; // facts before the gateway first saw this run are history
+      }
+      this.#epoch = epoch;
+      this.#snapshotDue = true;
+    }
+    if (this.#snapshotDue) {
+      this.#snapshot(snapshot, simTime);
+      this.#snapshotDue = false;
+    }
+    this.#telemetry(snapshot, simTime);
+    if (counter < this.#handled) {
+      // The cursor is ahead of the device: a stored cursor of another run with the same epoch second.
+      this.#handled = counter;
+    }
+    if (counter - this.#handled > RING_CAPACITY) {
+      const lost = counter - this.#handled - RING_CAPACITY;
+      this.#report(
+        'ring-overrun',
+        lost,
+        `${this.machineId}: ${String(lost)} facts overwritten in the ring before they were read`,
+      );
+      this.#handled = counter - RING_CAPACITY;
+    }
+    for (let seq = this.#handled + 1; seq <= counter;) {
+      const untilRingEnd = RING_CAPACITY - ((seq - 1) % RING_CAPACITY);
+      const count = Math.min(
+        Math.floor(MODBUS_MAX_READ / ENTRY_SIZE),
+        counter - seq + 1,
+        untilRingEnd,
+      );
+      const words = await reader.read(ringSlot(seq), count * ENTRY_SIZE);
+      for (let i = 0; i < count; i++) {
+        const expected = seq + i;
+        const entry = decodeEntry(
+          words.slice(i * ENTRY_SIZE, (i + 1) * ENTRY_SIZE),
+          this.#options.tables,
+        );
+        if (entry?.seq !== expected) {
+          // Overwritten between reading the counter and reading the entry: the ring wrapped meanwhile.
+          this.#report(
+            'ring-overrun',
+            1,
+            `${this.machineId}: fact ${String(expected)} was overwritten before it was read`,
+          );
+        } else {
+          this.#publishFact(epoch, entry);
+        }
+        this.#handled = expected;
+        this.#cursors.set(this.machineId, { epoch, seq: expected });
+      }
+      seq += count;
+    }
+  }
+
+  #common(at: number) {
+    return {
+      receivedAt: new Date(this.#now()).toISOString(),
+      sourceTime: new Date(at).toISOString(),
+      quality: 'good' as const,
+      source: { id: this.machineId, protocol: 'modbus' as const },
+    };
+  }
+
+  #publishFact(epoch: number, entry: RingEntry): void {
+    const common = { ...this.#common(entry.at), scope: 'device' as const, epoch, seq: entry.seq };
+    this.#facts++;
+    switch (entry.type) {
+      case 'state': {
+        const message: StateCurrent = {
+          ...common,
+          schema: 'uns.state.current/1',
+          kind: 'event',
+          value: { state: entry.state, cause: entry.cause },
+        };
+        this.#send({ topic: stateTopic(this.#options.path), message, retain: true });
+        break;
+      }
+      case 'cycle': {
+        // A legacy washer reads no serial numbers (register map), and makes no measurement.
+        const message: CycleComplete = {
+          ...common,
+          schema: 'uns.events.cycle-complete/1',
+          value: {
+            product: entry.product,
+            partId: entry.partId,
+            serial: '',
+            result: entry.result,
+            reason: null,
+            measurement: null,
+          },
+        };
+        this.#send({ topic: cycleTopic(this.#options.path), message, retain: false });
+        break;
+      }
+      case 'alarm': {
+        const message: Alarm = {
+          ...common,
+          schema: 'uns.alarms/1',
+          value: {
+            code: entry.code,
+            transition: entry.transition,
+            severity: this.#options.alarmSeverity,
+          },
+        };
+        this.#send({ topic: alarmTopic(this.#options.path, entry.code), message, retain: true });
+        break;
+      }
+    }
+  }
+
+  #snapshot(snapshot: number[], simTime: number): void {
+    const state = MACHINE_STATES[snapshot[REGISTERS.state] ?? -1];
+    if (!state) return;
+    const topic = stateTopic(this.#options.path);
+    const message: StateCurrent = {
+      ...this.#common(simTime),
+      schema: 'uns.state.current/1',
+      kind: 'snapshot',
+      scope: 'topic',
+      epoch: this.#options.sequences.epoch,
+      seq: this.#options.sequences.next(topic),
+      // The register map carries no cause for the current state; the next state change does.
+      value: { state, cause: null },
+    };
+    this.#send({ topic, message, retain: true });
+  }
+
+  #telemetry(snapshot: number[], simTime: number): void {
+    const values = {
+      'bath-temperature':
+        i16(snapshot[REGISTERS.bathTemperature] ?? 0) * this.#options.scaling.bath,
+      'conveyor-speed': (snapshot[REGISTERS.conveyorSpeed] ?? 0) * this.#options.scaling.conveyor,
+    } as const;
+    for (const [name, raw] of Object.entries(values) as [keyof typeof values, number][]) {
+      const topic = telemetryTopic(this.#options.path, name);
+      const decimals =
+        name === 'bath-temperature' ? this.#options.scaling.bath : this.#options.scaling.conveyor;
+      const message: Telemetry = {
+        ...this.#common(simTime),
+        schema: 'uns.telemetry/1',
+        scope: 'topic',
+        epoch: this.#options.sequences.epoch,
+        seq: this.#options.sequences.next(topic),
+        unit: UNS_TELEMETRY[name].unit,
+        value: Number(raw.toFixed(Math.max(0, Math.round(-Math.log10(decimals))))),
+      };
+      this.#send({ topic, message, retain: true });
+    }
+  }
+
+  #report(
+    type: 'device-silent' | 'device-recovered' | 'epoch-change' | 'ring-overrun',
+    lost: number | null,
+    message: string,
+  ): void {
+    this.#options.incidents.report({ type, equipment: this.machineId, lost, message });
+  }
+
+  #send(publication: UnsPublication): void {
+    this.#options.publisher.publish(publication).catch((error: unknown) => {
+      this.#options.onError?.(error);
+    });
+  }
+}

@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { OPCUA_MACHINES } from '@shopfloor/contracts';
+import { OPCUA_MACHINES, modbusTables } from '@shopfloor/contracts';
 import { OPCUACertificateManager } from 'node-opcua';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { parseEnv } from './env.ts';
@@ -8,6 +8,7 @@ import { TopicSequences, unixSeconds } from './identity.ts';
 import { equipmentPaths } from './hierarchy.ts';
 import { UnsIncidentReporter } from './incidents.ts';
 import { MqttLink } from './mqtt-link.ts';
+import { ModbusPoller, connectModbus } from './modbus/poller.ts';
 import { OpcuaCollector } from './opcua/collector.ts';
 
 const VERSION = '0.1.0';
@@ -76,11 +77,34 @@ const collectors = OPCUA_MACHINES.map((machine) => {
     },
   });
 });
+const washer = loaded.config.process.processValues.washer;
+const washerPath = paths.get(washer.machine);
+if (!washerPath) throw new Error(`${washer.machine} is not in the plant configuration`);
+const washerFailures = loaded.config.failures.equipment[washer.machine];
+const poller = new ModbusPoller({
+  machineId: washer.machine,
+  path: washerPath,
+  tables: modbusTables({
+    products: loaded.config.products.products.map((p) => p.id),
+    failureCodes: washerFailures?.failureModes.map((m) => m.code) ?? [],
+    minorStopCauses: washerFailures?.minorStops.causes ?? [],
+  }),
+  scaling: { bath: washer.bath.resolution, conveyor: washer.conveyor.resolution },
+  // The washer's alarms are its failure codes, raised with the failure severity, as on OPC UA.
+  alarmSeverity: 700,
+  connect: () => connectModbus(env.MODBUS_HOST, env.MODBUS_PORT, Math.max(200, env.MODBUS_POLL_MS)),
+  publisher: link,
+  sequences,
+  incidents,
+  pollMs: env.MODBUS_POLL_MS,
+});
 const http = buildGatewayHttp({
   ready: () => link.connected,
   published: () => link.published,
-  machines: () =>
-    collectors.map((c) => ({ id: c.machineId, connected: c.connected, facts: c.facts })),
+  machines: () => [
+    ...collectors.map((c) => ({ id: c.machineId, connected: c.connected, facts: c.facts })),
+    { id: poller.machineId, connected: poller.connected, facts: poller.facts },
+  ],
   logger: { level: env.LOG_LEVEL },
 });
 const log = http.log;
@@ -100,7 +124,7 @@ async function shutdown(signal: string): Promise<void> {
     log.error('shutdown timed out');
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
-  const stopped = await Promise.allSettled(collectors.map((c) => c.stop()));
+  const stopped = await Promise.allSettled([...collectors.map((c) => c.stop()), poller.stop()]);
   const results = [...stopped, ...(await Promise.allSettled([http.close(), link.close()]))];
   for (const result of results) {
     if (result.status === 'rejected') log.error(result.reason);
@@ -118,6 +142,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 
 await http.listen({ host: env.HTTP_HOST, port: env.HTTP_PORT });
 link.start();
+poller.start();
 // The collectors share one client certificate: create it one collector at a time, then start
 // them all at once in the background. A machine that is down keeps retrying by itself and holds
 // up neither the others nor the gateway's readiness.

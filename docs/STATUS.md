@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #95 merged (PR #105): ingest, ADR-0017.
 - #94 merged (PR #104): shared shift calendar, `oee-core` intervals, master data.
 - #93 merged (PR #103): `mes-server` skeleton, migrations (ADR-0016); end-to-end tests have their own CI job.
 - #92 merged (PR #102): Phase 4 plan, revised after review.
@@ -57,11 +58,11 @@
 
 ## In progress
 
-- #95 ingest: persistent UNS session, validation, hypertables, durable dedup, gaps and incidents, anchors (in review)
+- #96 equipment intervals (branch `feat/96-equipment-intervals`, in review): intervals per equipment and device epoch, cut at UTC hours and shift buckets, provisional up to the plant watermark, window-only recomputation, catch-up from ingest's tables (ADR-0018). The headless ground truth reconciles to the millisecond per machine and shift bucket: a Friday with its night shift in `pnpm test`, the whole golden week in order and shuffled with duplicates in `pnpm test:e2e`.
 
 ## Next up
 
-- #96 equipment intervals, #97 API
+- #97 REST API and WebSocket push (uses the equipment module's `currentStates`, `intervals`, `shiftTotals`, `onChange`)
 
 ## Blockers and open questions for the owner
 
@@ -72,7 +73,7 @@ Project board: https://github.com/users/kubilayture/projects/1
 ## Health: CI on main, coverage, open bugs
 
 - CI on `main`: green (`verify`, `stack smoke`).
-- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79 and `edge-gateway` 92 / 78 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
-- Tests: 608.
+- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 92 / 78 and `mes-server` 95 / 88 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
+- Tests: 623 (plus the end-to-end job: gateway, golden-week reconciliation).
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

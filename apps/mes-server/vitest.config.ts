@@ -10,8 +10,15 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      // The entry points run as processes in the end-to-end tests (#100); testing.ts is test support.
-      exclude: ['src/**/*.test.ts', 'src/main.ts', 'src/testing.ts', 'src/db/cli.ts'],
+      // The entry points run as processes in the end-to-end tests (#100); testing.ts and
+      // *test-support.ts are test support.
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/*test-support.ts',
+        'src/main.ts',
+        'src/testing.ts',
+        'src/db/cli.ts',
+      ],
       thresholds: { lines: 80, branches: 70 },
     },
   },

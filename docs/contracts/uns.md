@@ -189,3 +189,14 @@ Topic/payload checks: the schema must be the one of the topic class, an alarm's 
 - `_sys` streams are deduplicated, never checked for gaps.
 
 **Anchors:** retained deliveries and snapshots never enter dedup or gap checks. A retained state event anchors its own device epoch, a snapshot its `deviceEpoch`. A snapshot without it (from a gateway older than 1.1) waits for the device epoch of the next device fact of its equipment; any newer snapshot of that equipment supersedes it first, so only the latest waiting one can be attributed. The first anchor to arrive per (equipment, device epoch) is the starting state, used by the equipment module when it knows no state for that epoch yet.
+
+## Consumer: MES equipment intervals (#96)
+
+The MES `equipment` module (`apps/mes-server/src/modules/equipment/`, ADR-0018) turns the stored state facts into `equipment.equipment_state_interval` (`db/migrations/0004_equipment_state_interval.sql`). What it takes from the UNS:
+
+- **Facts:** `state/current` events (`scope: device`) of one equipment and one device `epoch`, ordered by `seq`; each state lasts from its `sourceTime` to the next fact's. Facts in the same millisecond are ordered by `seq`; a zero-length interval is dropped. Cycles and alarms are not states, but their `sourceTime` moves the watermark.
+- **Anchor:** the first anchor of (equipment, device epoch) opens the first interval when it is earlier than the first fact.
+- **Epochs:** intervals never cross an epoch; a newer device epoch of an equipment (fact or anchor) closes its old epoch's open interval at the old epoch's watermark. All simulated devices share the simulator's epoch.
+- **Plant watermark** of a device epoch: the latest `sourceTime` of any device fact in it, and of telemetry whose equipment's newest device epoch it is (WSH-01's telemetry carries the simulation clock). The open interval of every equipment in that epoch is stored up to it, cut at hours and shifts, flagged `provisional`.
+- **Buckets:** every stored piece lies inside one UTC hour (`hour`) and one shift bucket (`shift_key`, `<shiftDate>/<shiftId>` or `no-shift`, from `@shopfloor/shift-calendar`, as in the simulator's ground truth).
+- **Reordering and duplicates:** a late fact recomputes only the pieces between its neighbours by `seq`; duplicates never reach the module (ingest dedup), and a replay changes nothing.

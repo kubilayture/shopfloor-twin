@@ -1,6 +1,13 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { NO_SHIFT, shiftAt, shiftCuts, shiftKeyAt, type ShiftPattern } from './index.ts';
+import {
+  NO_SHIFT,
+  shiftAt,
+  shiftCuts,
+  shiftKeyAt,
+  shiftSegments,
+  type ShiftPattern,
+} from './index.ts';
 
 const pattern: ShiftPattern = {
   timeZone: 'Europe/Istanbul',
@@ -79,5 +86,57 @@ describe('shift buckets, as the ground truth keys them', () => {
     const weekendOnly: ShiftPattern = { ...pattern, workdays: ['SUNDAY', 'SATURDAY'] };
     expect(shiftKeyAt(weekendOnly, local('2026-10-12T08:00'))).toBe(NO_SHIFT);
     expect(shiftKeyAt(weekendOnly, local('2026-10-17T08:00'))).toBe('2026-10-17/A');
+  });
+
+  it('segments a range into buckets: Friday night shift, weekend and Monday', () => {
+    const from = local('2026-10-16T21:00');
+    const to = local('2026-10-19T07:00');
+    expect(shiftSegments(pattern, from, to)).toEqual([
+      { from, to: local('2026-10-16T22:00'), key: '2026-10-16/B' },
+      { from: local('2026-10-16T22:00'), to: local('2026-10-17T06:00'), key: '2026-10-16/C' },
+      { from: local('2026-10-17T06:00'), to: local('2026-10-19T06:00'), key: NO_SHIFT },
+      { from: local('2026-10-19T06:00'), to, key: '2026-10-19/A' },
+    ]);
+    expect(shiftSegments(pattern, from, from)).toEqual([]);
+    // Starting exactly on a boundary: the bucket that begins there, no empty segment before it.
+    expect(shiftSegments(pattern, local('2026-10-12T14:00'), local('2026-10-12T15:00'))).toEqual([
+      { from: local('2026-10-12T14:00'), to: local('2026-10-12T15:00'), key: '2026-10-12/B' },
+    ]);
+  });
+
+  it('property: segments are contiguous, keyed as shiftKeyAt, and change key at every edge', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: WEEK }),
+        fc.integer({ min: 1, max: 3 * 24 * 3_600_000 }),
+        fc.array(fc.double({ min: 0, max: 1, noNaN: true, maxExcluded: true }), {
+          minLength: 1,
+          maxLength: 10,
+        }),
+        (offset, length, probes) => {
+          const from = MONDAY + offset;
+          const to = from + length;
+          const segments = shiftSegments(pattern, from, to);
+          expect(segments[0]?.from).toBe(from);
+          expect(segments.at(-1)?.to).toBe(to);
+          for (const [i, segment] of segments.entries()) {
+            expect(segment.to).toBeGreaterThan(segment.from);
+            expect(shiftKeyAt(pattern, segment.from)).toBe(segment.key);
+            expect(shiftKeyAt(pattern, segment.to - 1)).toBe(segment.key);
+            const previous = segments[i - 1];
+            if (previous) {
+              expect(segment.from).toBe(previous.to);
+              expect(segment.key).not.toBe(previous.key);
+            }
+          }
+          for (const probe of probes) {
+            const time = from + Math.floor(probe * length);
+            const segment = segments.find((s) => s.from <= time && time < s.to);
+            expect(segment?.key).toBe(shiftKeyAt(pattern, time));
+          }
+        },
+      ),
+      { numRuns: 200 },
+    );
   });
 });

@@ -66,7 +66,8 @@ export type IngestNotice =
 
 export type FactOutcome =
   | { readonly status: 'stored'; readonly notices: readonly IngestNotice[] }
-  | { readonly status: 'duplicate' }
+  /** `notices`: a row the table had but the cursor didn't, so nobody was told of it yet. */
+  | { readonly status: 'duplicate'; readonly notices?: readonly IngestNotice[] }
   | { readonly status: 'stale' };
 
 type FactInput = Extract<Classified, { kind: 'event' | 'telemetry' | 'incident' }>;
@@ -283,7 +284,9 @@ export class IngestStore {
       return { inserted, next, notices };
     });
     this.#cursors.set(stream, result.next);
-    if (!result.inserted) return { status: 'duplicate' };
+    // Already in the table, unknown to the cursor: a commit that failed on the way back but was
+    // applied (ADR-0017). Its notices were never sent, so they go out now.
+    if (!result.inserted) return { status: 'duplicate', notices: factNotices(input) };
     return { status: 'stored', notices: [...result.notices, ...factNotices(input)] };
   }
 

@@ -143,3 +143,34 @@ export function shiftCuts(shifts: ShiftPattern, from: Millis, to: Millis): Milli
     ),
   ];
 }
+
+/** A stretch of time in one shift bucket: [from, to), keyed like `shiftKeyAt`. */
+export interface ShiftSegment {
+  readonly from: Millis;
+  readonly to: Millis;
+  readonly key: string;
+}
+
+/**
+ * The shift buckets covering [from, to), in order: contiguous, never empty, and adjacent ones have
+ * different keys. One calendar walk for the whole range, so cutting many pieces costs one call
+ * rather than one `shiftKeyAt` (a few tens of microseconds) per piece.
+ */
+export function shiftSegments(shifts: ShiftPattern, from: Millis, to: Millis): ShiftSegment[] {
+  if (to <= from) return [];
+  const segments: ShiftSegment[] = [];
+  let start = from;
+  let key = shiftKeyAt(shifts, from);
+  // Boundaries at `from` itself are already part of `shiftKeyAt(from)`.
+  for (const boundary of shiftBoundaries(shifts, from + 1, to)) {
+    if (boundary.action !== 'shift-start' && boundary.action !== 'shift-end') continue;
+    const next =
+      boundary.action === 'shift-start' ? `${boundary.shiftDate}/${boundary.shiftId}` : NO_SHIFT;
+    if (next === key) continue;
+    if (boundary.at > start) segments.push({ from: start, to: boundary.at, key });
+    start = boundary.at;
+    key = next;
+  }
+  segments.push({ from: start, to, key });
+  return segments;
+}

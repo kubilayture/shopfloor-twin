@@ -107,7 +107,15 @@ export type RingEntry =
       readonly transition: 'active' | 'cleared';
     };
 
-/** Encodes one ring entry into ENTRY_SIZE words. */
+function indexIn(table: readonly string[], value: string, what: string): number {
+  const index = table.indexOf(value);
+  if (index < 0) {
+    throw new RangeError(`${what} "${value}" is not in the register map's table`);
+  }
+  return index;
+}
+
+/** Encodes one ring entry into ENTRY_SIZE words; throws for a value outside the tables. */
 export function encodeEntry(entry: RingEntry, tables: ModbusTables): number[] {
   const words = new Array<number>(ENTRY_SIZE).fill(0);
   writeU32(words, 0, entry.seq);
@@ -116,18 +124,19 @@ export function encodeEntry(entry: RingEntry, tables: ModbusTables): number[] {
     case 'state':
       words[6] = ENTRY_TYPES.state;
       words[7] = MACHINE_STATES.indexOf(entry.state);
-      writeU32(words, 8, Math.max(0, tables.causes.indexOf(entry.cause ?? '')));
+      writeU32(words, 8, indexIn(tables.causes, entry.cause ?? '', 'cause'));
       break;
     case 'cycle':
       words[6] = ENTRY_TYPES.cycle;
       words[7] =
-        tables.products.indexOf(entry.product) + (CYCLE_RESULTS.indexOf(entry.result) << 8);
+        indexIn(tables.products, entry.product, 'product') +
+        (CYCLE_RESULTS.indexOf(entry.result) << 8);
       writeU32(words, 8, entry.partId);
       break;
     case 'alarm':
       words[6] = ENTRY_TYPES.alarm;
       words[7] = entry.transition === 'active' ? 1 : 0;
-      writeU32(words, 8, tables.alarms.indexOf(entry.code));
+      writeU32(words, 8, indexIn(tables.alarms, entry.code, 'alarm code'));
       break;
   }
   return words;

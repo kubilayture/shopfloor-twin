@@ -69,6 +69,21 @@ describe('WSH-01 register map encoding', () => {
     expect(decodeEntry(words, tables)).toEqual(entry);
   });
 
+  it('refuses to encode a value that is not in the tables, rather than writing a wrong index', () => {
+    expect(() =>
+      encodeEntry({ type: 'state', seq: 1, at: 1, state: 'Stopped', cause: 'X' }, tables),
+    ).toThrow(/cause "X"/);
+    expect(() =>
+      encodeEntry(
+        { type: 'cycle', seq: 1, at: 1, product: 'VB-9', result: 'good', partId: 1 },
+        tables,
+      ),
+    ).toThrow(/product/);
+    expect(() =>
+      encodeEntry({ type: 'alarm', seq: 1, at: 1, code: 'X', transition: 'active' }, tables),
+    ).toThrow(/alarm code/);
+  });
+
   it('decodes an empty slot or an unknown type as nothing', () => {
     expect(decodeEntry(new Array<number>(ENTRY_SIZE).fill(0), tables)).toBeUndefined();
     const words = encodeEntry(

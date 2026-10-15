@@ -6,14 +6,14 @@ WSH-01, the conveyor washer, is a legacy device (plan section 3): it exposes raw
 
 ## Connection
 
-| Setting  | Value                                                                                                                                               |
-| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protocol | Modbus TCP                                                                                                                                          |
-| Port     | 5020 (`MODBUS_PORT`); bound to `MODBUS_HOST`, default `127.0.0.1`                                                                                   |
-| Unit id  | 1. Requests for any other unit id get no answer, which looks like a timeout                                                                         |
-| Function | 3, read holding registers; at most 125 registers per request. Every other function answers exception 1 (illegal function); writes are not supported |
-| Errors   | exception 2 (illegal data address) for a read outside 0–739 or longer than 125 registers                                                            |
-| Encoding | 16-bit words, big-endian; 32- and 64-bit values put the high word first                                                                             |
+| Setting  | Value                                                                                                                                                                               |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protocol | Modbus TCP                                                                                                                                                                          |
+| Port     | 5020 (`MODBUS_PORT`); bound to `MODBUS_HOST`, default `127.0.0.1`                                                                                                                   |
+| Unit id  | 1. Requests for any other unit id get no answer, which looks like a timeout                                                                                                         |
+| Function | 3, read holding registers; at most 125 registers per request. Every other function answers exception 1 (illegal function); writes are not supported                                 |
+| Errors   | exception 2 (illegal data address) for a read outside 0–739, or of 126–127 registers; a read of 128 or more registers gets exception 4 from the library before the map is consulted |
+| Encoding | 16-bit words, big-endian; 32- and 64-bit values put the high word first                                                                                                             |
 
 ## Registers
 
@@ -49,11 +49,11 @@ Every state change, completed cycle and alarm transition of WSH-01 becomes one e
 **Reading without loss:**
 
 1. Read `eventCounter` (with the snapshot block, registers 0–16).
-2. Read the entries from the last sequence handled up to the counter, in requests of at most 12 entries (120 registers).
+2. Read the entries from the last sequence handled up to the counter, in requests of at most 12 entries (120 registers). Split a request where the ring ends (address 740): entries 64 and 65 are not next to each other in the address space, and a read across the end answers exception 2.
 3. Check every entry's own sequence number. If an entry carries a higher number than expected, the ring wrapped: more than 64 facts happened since the last poll. That is an overrun, and the facts in between are lost.
 4. After a gateway restart, continue from the last sequence handled, kept on disk, if the epoch is unchanged; otherwise start from the current counter.
 
-Entries never change after they are written, so reading the counter and the entries in separate requests is safe.
+An entry is only rewritten when the ring wraps 64 facts later, and then it carries the new sequence number. Checking every entry's own number therefore makes it safe to read the counter and the entries in separate requests.
 
 ## Tables
 

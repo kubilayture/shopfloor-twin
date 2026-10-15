@@ -38,6 +38,9 @@ const washer = new WasherModbusServer({
   epoch: servers.epoch,
   host: env.MODBUS_HOST,
   port: env.MODBUS_PORT,
+  onError: (error) => {
+    log.error(error, 'Modbus server error');
+  },
 });
 const run = createLiveRun({
   config: loaded.config,

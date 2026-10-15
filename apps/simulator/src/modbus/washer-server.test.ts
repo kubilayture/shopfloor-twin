@@ -38,15 +38,25 @@ const events: PlantEvent[] = [];
 const read = async (address: number, length: number): Promise<number[]> =>
   (await client.readHoldingRegisters(address, length)).data;
 
-/** Reads entries first..last in requests of at most 12 entries (120 registers). */
+/** Reads entries first..last in requests of at most 12 entries, split where the ring ends. */
 async function readEntries(first: number, last: number): Promise<(RingEntry | undefined)[]> {
   const entries: (RingEntry | undefined)[] = [];
-  for (let seq = first; seq <= last; seq++) {
-    const words = await read(ringSlot(seq), ENTRY_SIZE);
-    entries.push(decodeEntry(words, washer.tables));
+  let requests = 0;
+  for (let seq = first; seq <= last;) {
+    const untilRingEnd = RING_CAPACITY - ((seq - 1) % RING_CAPACITY);
+    const count = Math.min(12, last - seq + 1, untilRingEnd);
+    const words = await read(ringSlot(seq), count * ENTRY_SIZE);
+    requests++;
+    for (let i = 0; i < count; i++) {
+      entries.push(decodeEntry(words.slice(i * ENTRY_SIZE, (i + 1) * ENTRY_SIZE), washer.tables));
+    }
+    seq += count;
   }
+  readRequests += requests;
   return entries;
 }
+
+let readRequests = 0;
 
 const washerFacts = (): PlantEvent[] =>
   events.filter(
@@ -175,6 +185,8 @@ describe('WSH-01 Modbus server (#74)', () => {
       .map((event, i) => asEntry(event, before + i + 1));
     expect(expected.length).toBeGreaterThan(100);
     expect(collected).toEqual(expected);
+    expect(collected.some((e) => e.type === 'state' && e.cause === 'BREAK')).toBe(true);
+    expect(collected.some((e) => e.type === 'cycle')).toBe(true);
   });
 
   it('overwrites the oldest entries after 64 facts, which a poller detects by the entry sequence', async () => {
@@ -204,8 +216,58 @@ describe('WSH-01 Modbus server (#74)', () => {
     expect(await read(0, 1)).toEqual([1]);
   });
 
+  it('reads across the ring end in two requests: one read across it would be refused', async () => {
+    const counter = u32(await read(0, SNAPSHOT_LENGTH), REGISTERS.eventCounter);
+    const lastSlotSeq = counter - ((counter - 1) % RING_CAPACITY) - 1; // ends at slot 63
+    const before = readRequests;
+    const entries = await readEntries(lastSlotSeq - 5, lastSlotSeq + 5);
+    expect(entries.map((e) => e?.seq)).toEqual(
+      Array.from({ length: 11 }, (_, i) => lastSlotSeq - 5 + i),
+    );
+    expect(readRequests - before).toBe(2);
+    await expect(read(ringSlot(lastSlotSeq - 1), 3 * ENTRY_SIZE)).rejects.toMatchObject({
+      modbusCode: 2,
+    });
+  });
+
+  it('carries alarm transitions through the ring', async () => {
+    const at = run.simulation.now;
+    for (const transition of ['active', 'cleared'] as const) {
+      washer.record({
+        type: 'alarm',
+        at,
+        machineId: 'wsh-01',
+        code: 'HEATER-FAULT',
+        transition,
+        severity: 700,
+      });
+    }
+    const counter = u32(await read(0, SNAPSHOT_LENGTH), REGISTERS.eventCounter);
+    expect(await readEntries(counter - 1, counter)).toEqual([
+      { type: 'alarm', seq: counter - 1, at, code: 'HEATER-FAULT', transition: 'active' },
+      { type: 'alarm', seq: counter, at, code: 'HEATER-FAULT', transition: 'cleared' },
+    ]);
+  });
+
+  it('documents the default lookup tables', async () => {
+    const doc = await readFile(
+      resolve(import.meta.dirname, '../../../../docs/contracts/modbus-register-map.md'),
+      'utf8',
+    );
+    const row = (name: string) =>
+      [
+        ...(new RegExp(`\\| ${name} +\\|([^\\n]*)\\|`).exec(doc)?.[1] ?? '').matchAll(
+          /`([A-Z0-9-]+)`/g,
+        ),
+      ].map((m) => m[1]);
+    expect(row('Causes')).toEqual(washer.tables.causes.slice(1));
+    expect(row('Products')).toEqual(washer.tables.products);
+    expect(row('Alarms')).toEqual(washer.tables.alarms);
+  });
+
   it('starts the epoch and counter fresh with each run', () => {
-    expect(washer.sequence).toBe(washerFacts().length);
+    // The model's facts, plus the two alarm entries recorded directly above.
+    expect(washer.sequence).toBe(washerFacts().length + 2);
     expect(run.simulation.now - T0).toBeGreaterThan(7 * HOUR);
   });
 });

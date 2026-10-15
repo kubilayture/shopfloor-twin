@@ -28,6 +28,8 @@ export interface WasherServerOptions {
   readonly epoch: number;
   readonly host?: string;
   readonly port?: number;
+  /** Errors after a successful start (for example running out of file descriptors). */
+  readonly onError?: (error: unknown) => void;
 }
 
 export interface WasherSources {
@@ -65,6 +67,7 @@ export class WasherModbusServer {
   readonly port: number;
   readonly tables: ModbusTables;
   readonly #host: string;
+  readonly #onError: (error: unknown) => void;
   readonly #registers = new Array<number>(RING_END).fill(0);
   readonly #resolution: { bath: number; conveyor: number };
   readonly #heaterFault: string;
@@ -75,7 +78,14 @@ export class WasherModbusServer {
   #heaterFaultActive = false;
   #silent = false;
 
-  constructor({ config, epoch, host = '127.0.0.1', port = MODBUS_PORT }: WasherServerOptions) {
+  constructor({
+    config,
+    epoch,
+    host = '127.0.0.1',
+    port = MODBUS_PORT,
+    onError = () => undefined,
+  }: WasherServerOptions) {
+    this.#onError = onError;
     const washer = config.process.processValues.washer;
     this.machineId = washer.machine;
     this.port = port;
@@ -220,11 +230,17 @@ export class WasherModbusServer {
         port: this.port,
         unitID: MODBUS_UNIT_ID,
       });
+      let started = false;
       tcp.on('initialized', () => {
+        started = true;
         resolve(tcp);
       });
       tcp.on('serverError', (error: unknown) => {
-        reject(error instanceof Error ? error : new Error(String(error)));
+        if (started) {
+          this.#onError(error);
+        } else {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
       });
     });
     this.#server = server;
@@ -279,8 +295,9 @@ export class WasherModbusServer {
     if (reading) {
       this.#registers[REGISTERS.bathTemperature] =
         Math.round(reading.bathCelsius / this.#resolution.bath) & 0xffff;
-      this.#registers[REGISTERS.conveyorSpeed] = Math.round(
-        reading.conveyorMetresPerMinute / this.#resolution.conveyor,
+      this.#registers[REGISTERS.conveyorSpeed] = Math.min(
+        0xffff,
+        Math.max(0, Math.round(reading.conveyorMetresPerMinute / this.#resolution.conveyor)),
       );
     }
     this.#registers[REGISTERS.status] =

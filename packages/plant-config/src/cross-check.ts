@@ -89,6 +89,17 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
       report('shifts', `${shift.id}.break`, 'break does not fit inside the shift');
     }
   }
+  // Shifts repeat daily; two that overlap would make the bucket of an instant ambiguous.
+  config.shifts.shifts.forEach((shift, i) => {
+    for (const other of config.shifts.shifts.slice(i + 1)) {
+      if (
+        offsetInShift(shift.start, other.start) < shiftLength(shift.start, shift.end) ||
+        offsetInShift(other.start, shift.start) < shiftLength(other.start, other.end)
+      ) {
+        report('shifts', `${other.id}.start`, `overlaps shift "${shift.id}"`);
+      }
+    }
+  });
   try {
     Temporal.Instant.fromEpochMilliseconds(0).toZonedDateTimeISO(config.shifts.timeZone);
   } catch {

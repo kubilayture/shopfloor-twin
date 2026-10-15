@@ -27,3 +27,17 @@ processValues:
   machines: [cnc-01, cnc-02]
   spindleLoad: { meanPercent: 65, sigmaPercent: 5, resolution: 0.1 } # 0 % unless Running
   coolant: { ambientCelsius: 22, runningCelsius: 30, tauMinutes: 20, resolution: 0.1 }
+  washer:
+    machine: wsh-01
+    # assumption: heated alkaline wash bath; the heater is off when the line is Off or the heater has failed
+    bath:
+      {
+        setpointCelsius: 60,
+        ambientCelsius: 22,
+        heatTauMinutes: 15,
+        coolTauMinutes: 45,
+        sigmaCelsius: 0.2,
+        resolution: 0.1,
+      }
+    conveyor: { metresPerMinute: 2.0, sigma: 0.02, resolution: 0.01 } # 0 unless Running
+    heaterFaultCode: HEATER-FAULT

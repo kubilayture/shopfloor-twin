@@ -185,6 +185,9 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
       expect(produced.value.value).toBe(cycles);
       const program = await read(OPCUA_VARIABLES.program);
       expect(program.value.value).toBe('VB-100');
+      const epoch = await read(OPCUA_VARIABLES.epoch);
+      expect(epoch.value.value).toBe(servers.epoch);
+      expect(Math.abs(servers.epoch - Date.now() / 1000)).toBeLessThan(600);
       const load = await read(OPCUA_VARIABLES.spindleLoad);
       expect(load.statusCode.isGood()).toBe(true);
       expect(load.sourceTimestamp?.getTime()).toBe(run.simulation.now);

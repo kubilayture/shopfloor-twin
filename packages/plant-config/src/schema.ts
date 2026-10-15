@@ -121,6 +121,23 @@ const processValues = z.strictObject({
     tauMinutes: positive,
     resolution: positive,
   }),
+  washer: z.strictObject({
+    machine: id,
+    bath: z.strictObject({
+      setpointCelsius: z.number(),
+      ambientCelsius: z.number(),
+      heatTauMinutes: positive,
+      coolTauMinutes: positive,
+      sigmaCelsius: z.number().nonnegative(),
+      resolution: positive,
+    }),
+    conveyor: z.strictObject({
+      metresPerMinute: positive,
+      sigma: z.number().nonnegative(),
+      resolution: positive,
+    }),
+    heaterFaultCode: code,
+  }),
 });
 
 export const processSchema = z.strictObject({

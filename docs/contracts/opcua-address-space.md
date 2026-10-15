@@ -43,21 +43,22 @@ Both Machinery state machines are derived from the project `State`. Their `Curre
 
 ## Project variables (`s=<machine>.ShopFloor…`)
 
-| Path                                                        | Type           | Machines | Meaning                                                                                        |
-| ----------------------------------------------------------- | -------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| `ShopFloor.State`                                           | String         | all      | One of the ten states (plan section 4)                                                         |
-| `ShopFloor.StateCause`                                      | String         | all      | Cause of the current state (failure code, `CHANGEOVER A→B`, `MATERIAL:SK-1`, …), empty if none |
-| `ShopFloor.Sequence`                                        | UInt32         | all      | Last per-machine sequence number used by an event                                              |
-| `ShopFloor.Counters.Produced`, `.Good`, `.Scrap`, `.Rework` | UInt32         | all      | Completed cycles since server start, total and per result                                      |
-| `ShopFloor.LastSerial`                                      | String         | all      | Serial of the last completed cycle                                                             |
-| `ShopFloor.Program`                                         | String         | CNCs     | Product the CNC is set up for                                                                  |
-| `ShopFloor.Operator`                                        | String         | ASM-01   | Operator id at the station, empty if none                                                      |
-| `ShopFloor.ProcessValues.SpindleLoad`                       | Double, %      | CNCs     | Telemetry, sampled (minimum sampling interval 100 ms)                                          |
-| `ShopFloor.ProcessValues.CoolantTemperature`                | Double, °C     | CNCs     | Telemetry, sampled                                                                             |
-| `ShopFloor.LeakTest.LastReading`                            | Double, Pa/min | LKT-01   | Last leak reading                                                                              |
-| `ShopFloor.LeakTest.UpperLimit`                             | Double, Pa/min | LKT-01   | Pass/fail limit                                                                                |
-| `ShopFloor.Alarms.ActiveCount`                              | UInt32         | all      | Number of active alarms (ADR-0010)                                                             |
-| `ShopFloor.Alarms.<CODE>.Active`                            | Boolean        | all      | One per alarm code of the machine (see Alarms below); true while the alarm is active           |
+| Path                                                        | Type           | Machines | Meaning                                                                                                                       |
+| ----------------------------------------------------------- | -------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `ShopFloor.State`                                           | String         | all      | One of the ten states (plan section 4)                                                                                        |
+| `ShopFloor.StateCause`                                      | String         | all      | Cause of the current state (failure code, `CHANGEOVER A→B`, `MATERIAL:SK-1`, …), empty if none                                |
+| `ShopFloor.Sequence`                                        | UInt32         | all      | Last per-machine sequence number used by an event                                                                             |
+| `ShopFloor.Epoch`                                           | UInt32         | all      | Start of this simulator run, Unix seconds (wall time): the epoch of `Sequence`, which restarts at 1 with every run (ADR-0015) |
+| `ShopFloor.Counters.Produced`, `.Good`, `.Scrap`, `.Rework` | UInt32         | all      | Completed cycles since server start, total and per result                                                                     |
+| `ShopFloor.LastSerial`                                      | String         | all      | Serial of the last completed cycle                                                                                            |
+| `ShopFloor.Program`                                         | String         | CNCs     | Product the CNC is set up for                                                                                                 |
+| `ShopFloor.Operator`                                        | String         | ASM-01   | Operator id at the station, empty if none                                                                                     |
+| `ShopFloor.ProcessValues.SpindleLoad`                       | Double, %      | CNCs     | Telemetry, sampled (minimum sampling interval 100 ms)                                                                         |
+| `ShopFloor.ProcessValues.CoolantTemperature`                | Double, °C     | CNCs     | Telemetry, sampled                                                                                                            |
+| `ShopFloor.LeakTest.LastReading`                            | Double, Pa/min | LKT-01   | Last leak reading                                                                                                             |
+| `ShopFloor.LeakTest.UpperLimit`                             | Double, Pa/min | LKT-01   | Pass/fail limit                                                                                                               |
+| `ShopFloor.Alarms.ActiveCount`                              | UInt32         | all      | Number of active alarms (ADR-0010)                                                                                            |
+| `ShopFloor.Alarms.<CODE>.Active`                            | Boolean        | all      | One per alarm code of the machine (see Alarms below); true while the alarm is active                                          |
 
 Value timestamps:
 

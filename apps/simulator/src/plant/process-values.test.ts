@@ -66,6 +66,71 @@ describe('process values (phase 2 plan)', () => {
     expect(values.read('cnc-01', T0 + 20 * HOUR)?.coolantCelsius).toBe(ambientCelsius);
   });
 
+  it('keeps the washer bath at its setpoint while the heater is on, through breaks', () => {
+    const values = new ProcessValues(config.process.processValues, 2, T0);
+    const { setpointCelsius, sigmaCelsius } = config.process.processValues.washer.bath;
+    values.record(state('wsh-01', T0, 'Off', 'Running'));
+    values.record(state('wsh-01', T0 + HOUR, 'Running', 'PlannedStop'));
+    const samples = Array.from(
+      { length: 2_000 },
+      (_, i) => values.readWasher(T0 + HOUR + i * 7 * SECOND)?.bathCelsius ?? 0,
+    );
+    const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
+    const sd = Math.sqrt(samples.reduce((a, b) => a + (b - mean) ** 2, 0) / samples.length);
+    expect(Math.abs(mean - setpointCelsius)).toBeLessThan(0.02);
+    expect(Math.abs(sd - sigmaCelsius)).toBeLessThan(0.02);
+    expect(values.readWasher(T0 + 2 * HOUR)?.heaterOn).toBe(true);
+  });
+
+  it('lets the bath cool with its own time constant when the line is Off or the heater fails, and reheat after', () => {
+    const quiet = structuredClone(config.process.processValues);
+    quiet.washer.bath.sigmaCelsius = 0;
+    const { setpointCelsius, ambientCelsius, coolTauMinutes, heatTauMinutes, resolution } =
+      quiet.washer.bath;
+    const close = (actual: number | undefined, expected: number) => {
+      expect(Math.abs((actual ?? Number.NaN) - expected)).toBeLessThanOrEqual(
+        resolution / 2 + 1e-9,
+      );
+    };
+    const values = new ProcessValues(quiet, 1, T0);
+    values.record(state('wsh-01', T0, 'Off', 'Running'));
+    values.record({
+      ...state('wsh-01', T0 + HOUR, 'Running', 'Down'),
+      cause: 'HEATER-FAULT',
+    } as PlantEvent);
+    const tCool = T0 + HOUR + coolTauMinutes * MINUTE;
+    const cooled = ambientCelsius + (setpointCelsius - ambientCelsius) * Math.exp(-1);
+    close(values.readWasher(tCool)?.bathCelsius, cooled);
+    expect(values.readWasher(tCool)?.heaterOn).toBe(false);
+    values.record(state('wsh-01', tCool, 'Down', 'Running'));
+    const reheated = setpointCelsius - (setpointCelsius - cooled) * Math.exp(-1);
+    close(values.readWasher(tCool + heatTauMinutes * MINUTE)?.bathCelsius, reheated);
+    // Any other breakdown leaves the heater on.
+    values.record({
+      ...state('wsh-01', tCool + 10 * HOUR, 'Running', 'Down'),
+      cause: 'OTHER',
+    } as PlantEvent);
+    expect(values.readWasher(tCool + 11 * HOUR)?.bathCelsius).toBe(setpointCelsius);
+    values.record(state('wsh-01', tCool + 11 * HOUR, 'Down', 'Off'));
+    close(values.readWasher(tCool + 11 * HOUR + coolTauMinutes * MINUTE)?.bathCelsius, cooled);
+  });
+
+  it('runs the washer conveyor only while Running, at the configured speed', () => {
+    const values = new ProcessValues(config.process.processValues, 4, T0);
+    const { metresPerMinute, sigma } = config.process.processValues.washer.conveyor;
+    expect(values.readWasher(T0)?.conveyorMetresPerMinute).toBe(0);
+    values.record(state('wsh-01', T0, 'Off', 'Running'));
+    const speeds = Array.from(
+      { length: 500 },
+      (_, i) => values.readWasher(T0 + i * SECOND)?.conveyorMetresPerMinute ?? 0,
+    );
+    expect(Math.min(...speeds)).toBeGreaterThan(metresPerMinute - 6 * sigma);
+    expect(Math.max(...speeds)).toBeLessThan(metresPerMinute + 6 * sigma);
+    values.record(state('wsh-01', T0 + HOUR, 'Running', 'Blocked'));
+    expect(values.readWasher(T0 + HOUR)?.conveyorMetresPerMinute).toBe(0);
+    expect(values.readWasher(T0 - 1)).toBeUndefined();
+  });
+
   it('reports values at sensor resolution and ignores machines without process values', () => {
     const values = new ProcessValues(config.process.processValues, 1, T0);
     values.record(state('cnc-01', T0, 'Off', 'Running'));

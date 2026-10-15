@@ -16,6 +16,7 @@ export const OPCUA_VARIABLES = {
   state: 'ShopFloor.State',
   stateCause: 'ShopFloor.StateCause',
   sequence: 'ShopFloor.Sequence',
+  epoch: 'ShopFloor.Epoch',
   produced: 'ShopFloor.Counters.Produced',
   good: 'ShopFloor.Counters.Good',
   scrap: 'ShopFloor.Counters.Scrap',

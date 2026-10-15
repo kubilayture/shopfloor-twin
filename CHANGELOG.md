@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Gateway container (`apps/edge-gateway/Dockerfile`) and Compose service with a persistent buffer volume; the stack smoke test checks that the UNS carries all six machines' state; end-to-end test with the simulator, a real broker and the gateway as separate processes proves every fact of every machine arrives exactly once after dedup through a broker outage and a gateway crash (#79).
 - Store-and-forward outbox in SQLite (`node:sqlite`, ADR-0014): durable batched commits, ordered sending with bounded in-flight messages, delete after PUBACK, replay after a broker outage or gateway restart, refusals dropped and logged, bounded size with a `buffer-overflow` incident, Modbus cursor persisted atomically; buffer metrics (#78).
 - Gateway Modbus poller for WSH-01: snapshot telemetry, lossless walk of the event ring (split at the ring end), overrun detection, silent and recovered incidents, cursor that resumes within an epoch, snapshots; metric `gateway_device_connected` covers OPC UA and Modbus (#77).
 - Gateway OPC UA collector: event subscription per machine (state, cycles, alarms with device sequence and epoch), sampled telemetry, resync snapshot and gap, epoch and connection incidents after every (re)connect, metrics per machine; simulator fault route `POST /api/v1/faults/opcua/{machine}`; integration test against the real simulator compares every fact with its event stream (#76).

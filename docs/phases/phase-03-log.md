@@ -52,3 +52,5 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - A failed commit could save a cursor ahead of lost washer facts.
   - All fixed: back-off with skip of acknowledged and in-flight rows, a trim limited to unsent rows, cursor revert. Refusals are an allow-list of permanent codes, and `close()` waits for in-flight acknowledgements.
   - The outage test now has messages in flight when the broker stops.
+- Merged #89 (#78): store-and-forward.
+- #79: the end-to-end test runs every piece as its own process or container: simulator, Mosquitto (fixed port, so it can be replaced), and the gateway (crashed with SIGKILL and restarted). A consumer validates every message and applies the contract's `Deduplicator`. Every state change, cycle and alarm of all six machines arrives exactly once after dedup, with consecutive device numbers, and every telemetry topic is seen. Stable at about 36 s per run.

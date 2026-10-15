@@ -155,3 +155,45 @@ export async function startSimulator(ports: {
     },
   };
 }
+
+const GATEWAY_MAIN = resolve(import.meta.dirname, 'main.ts');
+
+export interface RunningGateway {
+  readonly http: string;
+  /** SIGTERM and wait (graceful), or SIGKILL (a crash). */
+  stop(signal?: 'SIGTERM' | 'SIGKILL'): Promise<void>;
+}
+
+/** The gateway as its own process, as in production. */
+export async function startGateway(env: Readonly<Record<string, string>>): Promise<RunningGateway> {
+  const port = env.HTTP_PORT ?? '4900';
+  const child = spawn(process.execPath, [GATEWAY_MAIN], {
+    env: { ...process.env, LOG_LEVEL: 'warn', ...env },
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
+  const exited = new Promise<void>((resolveExit) => {
+    child.once('exit', () => {
+      resolveExit();
+    });
+  });
+  const http = `http://127.0.0.1:${port}`;
+  for (let deadline = Date.now() + 30_000; ;) {
+    const live = await fetch(`${http}/health/live`).then(
+      (r) => r.ok,
+      () => false,
+    );
+    if (live) break;
+    if (Date.now() > deadline || child.exitCode !== null) {
+      child.kill('SIGKILL');
+      throw new Error('gateway did not start');
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return {
+    http,
+    stop: async (signal = 'SIGTERM') => {
+      if (child.exitCode === null) child.kill(signal);
+      await exited;
+    },
+  };
+}

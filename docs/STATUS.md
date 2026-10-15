@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #78 merged (PR #89): store-and-forward outbox.
 - #77 merged (PR #88): WSH-01 Modbus poller.
 - #76 merged (PR #87): OPC UA collector.
 - #75 merged (PR #86): gateway skeleton, broker users and ACL.
@@ -49,11 +50,11 @@
 
 ## In progress
 
-- #78 store-and-forward (in review)
+- #79 gateway container and end-to-end test (in review)
 
 ## Next up
 
-- #79 gateway container and integration tests, #80 Phase 3 close
+- #80 Phase 3 close (report, learning notes, tag `phase-03`)
 
 ## Blockers and open questions for the owner
 

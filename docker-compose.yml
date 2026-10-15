@@ -78,7 +78,39 @@ services:
     stop_grace_period: 15s
     restart: unless-stopped
 
+  gateway:
+    build:
+      context: .
+      dockerfile: apps/edge-gateway/Dockerfile
+    image: shopfloor-twin/edge-gateway:dev
+    pull_policy: build
+    hostname: gateway
+    depends_on:
+      broker:
+        condition: service_healthy
+      simulator:
+        condition: service_healthy
+    environment:
+      MQTT_URL: mqtt://broker:1883
+      MQTT_PASSWORD: ${MQTT_GATEWAY_PASSWORD:?Set MQTT_GATEWAY_PASSWORD in .env}
+      OPCUA_HOST: simulator
+      MODBUS_HOST: simulator
+      LOG_LEVEL: ${GATEWAY_LOG_LEVEL:-info}
+    ports:
+      - '127.0.0.1:${GATEWAY_HTTP_PORT:-4900}:4900'
+    volumes:
+      # Store-and-forward buffer and client certificate survive container recreation.
+      - gateway-data:/var/lib/gateway
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 384M
+    stop_grace_period: 15s
+    restart: unless-stopped
+
 volumes:
   db-data:
   broker-data:
   simulator-pki:
+  gateway-data:

@@ -1,6 +1,6 @@
 # MES WebSocket push
 
-`mes-server` pushes equipment states and telemetry to subscribed screens (#97, ADR-0019). OpenAPI can't describe a WebSocket, so this page does; the JSON Schema of every message is generated from the zod schemas into [`mes-realtime.schema.json`](mes-realtime.schema.json) (`pnpm --filter @shopfloor/mes-server openapi`), and a test fails when it drifts. The REST API is in [`mes.openapi.json`](mes.openapi.json).
+`mes-server` pushes equipment states and telemetry to subscribed screens (#97, ADR-0019). OpenAPI can't describe a WebSocket, so this page does; the JSON Schema of every message is generated from the zod schemas (`packages/contracts/src/mes-api.ts`, shared with `web`, ADR-0020) into [`mes-realtime.schema.json`](mes-realtime.schema.json) (`pnpm --filter @shopfloor/mes-server openapi`), and a test fails when it drifts. The REST API is in [`mes.openapi.json`](mes.openapi.json).
 
 ## Connection
 

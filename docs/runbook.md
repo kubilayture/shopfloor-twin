@@ -126,6 +126,20 @@ DATABASE_URL=postgres://shopfloor:<DB_PASSWORD>@127.0.0.1:5442/shopfloor \
 - End-to-end tests (`*.e2e.test.ts`) run apart from the others: `pnpm test:e2e`, one at a time; in CI they have their own job. In `mes-server` this is the golden-week reconciliation (a few minutes: the headless simulator's week replayed through ingest into TimescaleDB, in order and shuffled); `pnpm test` reconciles a Friday with its night shift.
 - The MES tests start their own TimescaleDB and Mosquitto with Testcontainers (the broker harness is shared with the gateway in `@shopfloor/test-kit/broker`).
 
+## Run the web app
+
+`apps/web` (#98) is the MES's browser app: a plant overview and a machine detail. With the MES running (above):
+
+```bash
+pnpm --filter @shopfloor/web dev        # http://127.0.0.1:5173, proxies /api to 127.0.0.1:4700
+pnpm --filter @shopfloor/web build      # static files in apps/web/dist
+```
+
+- `MES_URL` changes the proxy target. The proxy sends the MES's host (so `HTTP_ALLOWED_HOSTS` keeps its default) and presents the dev server's own pages as the MES's origin for the WebSocket, so `HTTP_ALLOWED_ORIGINS` is not needed; pages from other origins are still refused.
+- The header shows the plant clock (simulation time, Istanbul) and the connection: `Live`, `Connecting…` or `Reconnecting…`. Machine states marked **Stale** are from before a lost connection or from an earlier simulator run.
+- A blank overview with `Could not load the equipment` and `Forbidden: host not allowed` means the request reached the MES under a name not in `HTTP_ALLOWED_HOSTS`; a connection stuck at `Reconnecting…` with 403 upgrades in the MES log means the page's origin is not accepted (`HTTP_ALLOWED_ORIGINS`).
+- More (screens, test ids, nginx notes for #99): `apps/web/README.md`.
+
 ## Golden scenarios
 
 A golden scenario is a fixed seed and configuration whose expected output is committed (plan section 9). Each one lives in `apps/simulator/golden/<name>/`:

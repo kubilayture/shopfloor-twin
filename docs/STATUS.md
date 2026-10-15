@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #97 merged (PR #109): REST API and WebSocket push, ADR-0019.
 - #96 merged (PR #106): equipment state intervals, ADR-0018.
 - #95 merged (PR #105): ingest, ADR-0017.
 - #94 merged (PR #104): shared shift calendar, `oee-core` intervals, master data.
@@ -59,11 +60,11 @@
 
 ## In progress
 
-- #97 REST API and WebSocket push (branch `feat/97-api-websocket`, in review): `realtime` module with read-only REST under `/api/v1`, generated OpenAPI 3.1 with a drift test, WebSocket push of states and telemetry with per-client coalescing off ingest's acknowledgement path (ADR-0019). The 60× rate is pushed in about 30 ms at most locally (budget 2 s).
+- #98 `apps/web` (branch `feat/98-web`, in review): plant overview with live states and machine detail with state timeline and uPlot trends; one WebSocket per tab feeding the TanStack Query cache; API response and message schemas shared through `@shopfloor/contracts/mes-api` (ADR-0020). Checked with Vitest/jsdom and a `vite preview` smoke run against a mock MES through the proxy.
 
 ## Next up
 
-- #98 `apps/web`: plant overview and machine detail (uses `/api/v1` and `/api/v1/ws`)
+- #99 MES and web containers in Compose (nginx: forward `Host`, list the web's names in `HTTP_ALLOWED_HOSTS`; see `apps/web/README.md`)
 
 ## Blockers and open questions for the owner
 

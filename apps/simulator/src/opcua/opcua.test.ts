@@ -317,9 +317,16 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
         },
         TimestampsToReturn.Both,
       );
+      const alarmType = resolveNodeId(
+        toIndexedNodeId(opcuaEventTypeId(OPCUA_EVENT_TYPES.alarm), namespaces),
+      ).toString();
       item.on('changed', (values: unknown) => {
-        received.push((values as { value: unknown }[]).map((v) => v.value));
+        const row = (values as { value: unknown }[]).map((v) => v.value);
+        if (String(row.at(-1)) === alarmType) {
+          received.push(row);
+        }
       });
+      expect(run.pacer.state).toBe('paused');
       await wait(300);
       const before = servers.servers.find((s) => s.machineId === 'lkt-01')?.sequence ?? 0;
       const at = run.simulation.now;
@@ -340,9 +347,6 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
       for (let deadline = Date.now() + 10_000; Date.now() < deadline && received.length < 2;) {
         await wait(50);
       }
-      const eventType = resolveNodeId(
-        toIndexedNodeId(opcuaEventTypeId(OPCUA_EVENT_TYPES.alarm), namespaces),
-      ).toString();
       expect(
         received.map(([sequence, machine, code, transition, severity, type]) => [
           Number(sequence),
@@ -359,7 +363,7 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
           CALIBRATION_ALARM_CODE,
           'active',
           CALIBRATION_ALARM_SEVERITY,
-          eventType,
+          alarmType,
         ],
         [
           before + 2,
@@ -367,7 +371,7 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
           CALIBRATION_ALARM_CODE,
           'cleared',
           CALIBRATION_ALARM_SEVERITY,
-          eventType,
+          alarmType,
         ],
       ]);
       await subscription.terminate();

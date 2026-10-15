@@ -347,12 +347,17 @@ export class ProductionLine {
         this.#finishRepair(station, simulation);
         break;
       case 'calibration-due':
-        this.#alarm(station, CALIBRATION_ALARM_CODE, 'active', CALIBRATION_ALARM_SEVERITY);
+        // A same-millisecond tie can start the calibration first; then nothing is due any more.
+        if (!this.#calibrating(station)) {
+          this.#alarm(station, CALIBRATION_ALARM_CODE, 'active', CALIBRATION_ALARM_SEVERITY);
+        }
         break;
       case 'maintenance-end':
         if (station.leak) {
           station.leak.calibrate(this.#now);
-          this.#alarm(station, CALIBRATION_ALARM_CODE, 'cleared', CALIBRATION_ALARM_SEVERITY);
+          if (station.activeAlarms.has(CALIBRATION_ALARM_CODE)) {
+            this.#alarm(station, CALIBRATION_ALARM_CODE, 'cleared', CALIBRATION_ALARM_SEVERITY);
+          }
           this.#scheduleCalibrationDue(station, simulation);
         }
         station.busy = false;
@@ -549,9 +554,8 @@ export class ProductionLine {
   }
 
   #alarm(station: Station, code: string, transition: 'active' | 'cleared', severity: number): void {
-    const active = station.activeAlarms.has(code);
-    if ((transition === 'active') === active) {
-      return;
+    if (station.activeAlarms.has(code) === (transition === 'active')) {
+      throw new RangeError(`${station.id}: alarm ${code} is already ${transition}`);
     }
     if (transition === 'active') {
       station.activeAlarms.add(code);
@@ -566,6 +570,11 @@ export class ProductionLine {
       transition,
       severity,
     });
+  }
+
+  #calibrating(station: Station): boolean {
+    // Calibration is the only maintenance a leak tester gets.
+    return station.leak !== undefined && station.machine.state === 'Maintenance';
   }
 
   #scheduleCalibrationDue(station: Station, simulation: Simulation<LineEvent>): void {

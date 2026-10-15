@@ -1,7 +1,7 @@
 import type { PlantConfig } from '@shopfloor/plant-config';
 import type { SimTime } from '@shopfloor/sim-core';
 import type { Part } from '../plant/buffer.ts';
-import type { PlantEvent, ProductionLine } from '../plant/line.ts';
+import { CALIBRATION_ALARM_CODE, type PlantEvent, type ProductionLine } from '../plant/line.ts';
 import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
 
 export class InvariantViolation extends Error {
@@ -101,6 +101,18 @@ export class InvariantChecker {
       const failure = station.failure?.code;
       if (failure !== undefined && !station.activeAlarms.has(failure)) {
         throw new InvariantViolation(now, `${station.id}: down with ${failure} but no alarm`);
+      }
+      for (const code of station.activeAlarms) {
+        if (code === CALIBRATION_ALARM_CODE) {
+          if (!station.leak?.calibrationDue(now)) {
+            throw new InvariantViolation(now, `${station.id}: ${code} active but nothing is due`);
+          }
+        } else if (code !== failure) {
+          throw new InvariantViolation(
+            now,
+            `${station.id}: alarm ${code} active but the machine is not down with it`,
+          );
+        }
       }
     }
   }

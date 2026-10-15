@@ -32,7 +32,7 @@ export function alarmCodes(config: PlantConfig, machineId: string): string[] {
     .flatMap((a) => a.workCenters.flatMap((w) => w.equipment))
     .find((e) => e.id === machineId);
   return equipment?.operation === config.process.leakTest.operation
-    ? [...failures, CALIBRATION_ALARM_CODE]
+    ? [...new Set([...failures, CALIBRATION_ALARM_CODE])]
     : failures;
 }
 

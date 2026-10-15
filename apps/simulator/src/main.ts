@@ -64,6 +64,7 @@ const app = await buildControlApp({
     modbusSilent: (silent) => {
       washer.silent = silent;
     },
+    opcuaOffline: (machineId, offline) => servers.setOffline(machineId, offline),
   },
   logger: { level: env.LOG_LEVEL },
 });

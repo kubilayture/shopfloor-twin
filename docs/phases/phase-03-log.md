@@ -31,3 +31,13 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - Mosquitto rejects a denied QoS 1 publish with reason 0x87, and MQTT.js rejects the promise. The store-and-forward buffer (#78) must treat that as permanent, not retry it.
   - `prom-client` is deprecated upstream (replaced by `@prometheus-io/client`): a follow-up for ADR-0012.
 - #75 review: `publish()` now refuses at once while disconnected, because MQTT.js would otherwise queue in memory and duplicate the disk buffer's replay. `close()` no longer hangs with in-flight packets; ACL areas are listed explicitly, since `+` matched `_sys`; client-id takeover is documented as an accepted risk until Phase 9.
+- Merged #86 (#75): gateway skeleton.
+- #76, three surprises:
+  - **node-opcua's `killClientSockets` does nothing in 2.187**: it looks for a socket property that moved. The offline fault interrupts each secure channel with `abruptlyInterrupt()` instead, and a simulator test proves clients see the loss and the recovery.
+  - **Test ports:** an offset that put CNC-02 on 5442 made the gateway talk OPC UA to the stack's TimescaleDB and hang. The gateway tests now use ports clear of the stack.
+  - **Certificates:** collectors share one client certificate in the gateway's own folder (`OPCUA_PKI_DIR`), and start one after another. The default store in the user's home folder can be left locked by a killed process.
+- #76 review:
+  - Blocking: a lost range was reported again at the next reconnect, and a late copy could be both published and counted lost.
+  - Blocking: one unreachable machine stopped every later collector from starting.
+  - The collector now buffers events until their epoch is known, acknowledges every range it reports, coalesces reconnects, and starts the collectors concurrently once the shared certificate exists.
+  - A new test forces a session loss and then a republish, and proves that published ∪ lost = emitted, with no overlap.

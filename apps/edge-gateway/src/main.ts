@@ -1,9 +1,14 @@
 import { resolve } from 'node:path';
+import { OPCUA_MACHINES } from '@shopfloor/contracts';
+import { OPCUACertificateManager } from 'node-opcua';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { parseEnv } from './env.ts';
 import { buildGatewayHttp } from './http.ts';
 import { TopicSequences, unixSeconds } from './identity.ts';
+import { equipmentPaths } from './hierarchy.ts';
+import { UnsIncidentReporter } from './incidents.ts';
 import { MqttLink } from './mqtt-link.ts';
+import { OpcuaCollector } from './opcua/collector.ts';
 
 const VERSION = '0.1.0';
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -40,9 +45,42 @@ const link = new MqttLink({
     log.error({ errors: parts }, 'MQTT connection error');
   },
 });
+const incidents = new UnsIncidentReporter({
+  gatewayId: env.GATEWAY_ID,
+  publisher: link,
+  sequences,
+  onReport: (incident) => {
+    log.warn({ incident }, 'data-quality incident');
+  },
+});
+const certificateManager = new OPCUACertificateManager({
+  rootFolder: resolve(env.OPCUA_PKI_DIR),
+  automaticallyAcceptUnknownCertificate: true,
+});
+const paths = equipmentPaths(loaded.config);
+const collectors = OPCUA_MACHINES.map((machine) => {
+  const path = paths.get(machine.id);
+  if (!path) throw new Error(`${machine.id} is not in the plant configuration`);
+  return new OpcuaCollector({
+    machine,
+    path,
+    host: env.OPCUA_HOST,
+    portOffset: env.OPCUA_PORT_OFFSET,
+    publisher: link,
+    sequences,
+    incidents,
+    telemetrySamplingMs: env.TELEMETRY_SAMPLING_MS,
+    certificateManager,
+    onError: (error) => {
+      log.error({ err: error, machine: machine.id }, 'OPC UA collector error');
+    },
+  });
+});
 const http = buildGatewayHttp({
   ready: () => link.connected,
   published: () => link.published,
+  machines: () =>
+    collectors.map((c) => ({ id: c.machineId, connected: c.connected, facts: c.facts })),
   logger: { level: env.LOG_LEVEL },
 });
 const log = http.log;
@@ -62,7 +100,8 @@ async function shutdown(signal: string): Promise<void> {
     log.error('shutdown timed out');
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
-  const results = await Promise.allSettled([http.close(), link.close()]);
+  const stopped = await Promise.allSettled(collectors.map((c) => c.stop()));
+  const results = [...stopped, ...(await Promise.allSettled([http.close(), link.close()]))];
   for (const result of results) {
     if (result.status === 'rejected') log.error(result.reason);
   }
@@ -79,6 +118,32 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 
 await http.listen({ host: env.HTTP_HOST, port: env.HTTP_PORT });
 link.start();
+// The collectors share one client certificate: create it one collector at a time, then start
+// them all at once in the background. A machine that is down keeps retrying by itself and holds
+// up neither the others nor the gateway's readiness.
+async function startWithRetry(collector: OpcuaCollector): Promise<void> {
+  for (;;) {
+    try {
+      await collector.start();
+      return;
+    } catch (error) {
+      if (state.stopping) return;
+      log.error(
+        { err: error, machine: collector.machineId },
+        'OPC UA collector failed to start; retrying',
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+  }
+}
+void (async () => {
+  await certificateManager.initialize();
+  for (const collector of collectors) await collector.prepare();
+  await Promise.allSettled(collectors.map((collector) => startWithRetry(collector)));
+})().catch((error: unknown) => {
+  log.fatal({ err: error }, 'cannot prepare the OPC UA client certificate');
+  process.exit(1);
+});
 log.info(
   { gatewayId: env.GATEWAY_ID, epoch: sequences.epoch, version: VERSION },
   'gateway started',

@@ -81,17 +81,19 @@ The other commands are `POST /api/v1/pause`, `POST /api/v1/step`, `PUT /api/v1/s
 
 ## Run the edge gateway
 
-The gateway publishes to the broker of the stack (`pnpm stack:up` first). In Phase 3 it grows its OPC UA and Modbus collectors (#76, #77); for now it connects, announces its `_sys` status and serves health and metrics.
+The gateway publishes to the broker of the stack (`pnpm stack:up` first). It subscribes to the five OPC UA machines (the simulator of the stack, or `pnpm sim:serve`) and publishes their state, cycles, alarms and telemetry to the UNS; the WSH-01 poller follows in #77.
 
 ```bash
 MQTT_PASSWORD=<MQTT_GATEWAY_PASSWORD from .env> pnpm --filter @shopfloor/edge-gateway start
 ```
 
-- Environment: `GATEWAY_ID` (default `gw-01`), `MQTT_URL` (`mqtt://127.0.0.1:1883`), `MQTT_USERNAME` (`gw-01`), `MQTT_PASSWORD` (required), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4900`), `PLANT_CONFIG_DIR`, `LOG_LEVEL`. An invalid environment exits with status 2, and secrets are never echoed.
-- `GET /health/live`, `/health/ready` (ready while the broker session is up) and `/metrics`.
+- Environment: `GATEWAY_ID` (default `gw-01`), `MQTT_URL` (`mqtt://127.0.0.1:1883`), `MQTT_USERNAME` (`gw-01`), `MQTT_PASSWORD` (required), `OPCUA_HOST` (`localhost`), `OPCUA_PORT_OFFSET` (0), `OPCUA_PKI_DIR` (`.pki-gateway`, its own client certificate), `TELEMETRY_SAMPLING_MS` (1000), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4900`), `PLANT_CONFIG_DIR`, `LOG_LEVEL`. An invalid environment exits with status 2, and secrets are never echoed.
+- `GET /health/live`, `/health/ready` (ready while the broker session is up) and `/metrics` (`gateway_opcua_connected{machine}`, `gateway_device_facts{machine}`, `gateway_published_messages`).
+- Data-quality incidents (sequence gaps, disconnects) go to `orbis/gebze/_sys/edge-gateway/gw-01/incidents` and to the log at `warn`.
+- Try a disconnect: `curl -s -X POST localhost:4800/api/v1/faults/opcua/cnc-01 -H 'content-type: application/json' -d '{"offline": true}'`, then `{"offline": false}`.
 - Watch the status: `docker compose exec broker mosquitto_sub -u dev -P <MQTT_DEV_PASSWORD> -t 'orbis/gebze/_sys/#' -v`.
 
-The gateway's tests start a real Mosquitto with Testcontainers, so Docker must be running. Without `DOCKER_HOST` the tests use the active `docker context`, which covers Colima and similar setups.
+The gateway's tests start a real Mosquitto with Testcontainers, so Docker must be running. They also start the simulator as a child process on ports clear of the stack: OPC UA 7941–7945, Modbus 8120, control 7900. Without `DOCKER_HOST` the tests use the active `docker context`, which covers Colima and similar setups.
 
 ## Golden scenarios
 

@@ -149,6 +149,47 @@ export class MachineServer {
     this.#started = true;
   }
 
+  #offline = false;
+
+  get offline(): boolean {
+    return this.#offline;
+  }
+
+  /**
+   * Takes the server off the network (control API fault, plan section 4): no new connections, and
+   * existing ones are dropped. The address space keeps following the plant meanwhile, so a client
+   * that reconnects sees how far `Sequence` moved.
+   */
+  #offlineChange: Promise<void> = Promise.resolve();
+
+  async setOffline(offline: boolean): Promise<void> {
+    // One change at a time: going back online must wait until going offline has finished.
+    const change = this.#offlineChange.then(() => this.#applyOffline(offline));
+    this.#offlineChange = change.catch(() => undefined);
+    await change;
+  }
+
+  async #applyOffline(offline: boolean): Promise<void> {
+    if (offline === this.#offline || !this.#started) {
+      return;
+    }
+    this.#offline = offline;
+    if (offline) {
+      // Stop listening first (it completes once the open connections have ended), then end them.
+      const suspended = this.#server.suspendEndPoints();
+      // `killClientSockets` looks for a socket property node-opcua no longer has; interrupting
+      // each secure channel ends its transport.
+      for (const endpoint of this.#server.endpoints) {
+        for (const channel of endpoint.getChannels()) {
+          channel.abruptlyInterrupt();
+        }
+      }
+      await suspended;
+    } else {
+      await this.#server.resumeEndPoints();
+    }
+  }
+
   async stop(): Promise<void> {
     await this.#server.shutdown(0);
   }

@@ -38,6 +38,8 @@ export const speedSchema = z.object({ speed: z.number().min(MIN_SPEED).max(MAX_S
 
 export const silentSchema = z.object({ silent: z.boolean() });
 
+export const offlineSchema = z.object({ offline: z.boolean() });
+
 export const errorSchema = z.object({ error: z.string(), message: z.string() });
 
 const healthSchema = z.object({ status: z.enum(['ok', 'unavailable']) });
@@ -65,6 +67,8 @@ export interface ControlAppOptions {
   /** Infrastructure faults for resilience tests (plan section 4); routes exist only for those given. */
   readonly faults?: {
     readonly modbusSilent?: (silent: boolean) => void;
+    /** Resolves false for an unknown machine. */
+    readonly opcuaOffline?: (machineId: string, offline: boolean) => Promise<boolean>;
   };
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
   readonly version?: string;
@@ -259,6 +263,33 @@ export async function buildControlApp({
         const { silent } = request.body as { silent: boolean };
         modbusSilent(silent);
         return { silent };
+      },
+    );
+  }
+
+  const opcuaOffline = faults.opcuaOffline;
+  if (opcuaOffline) {
+    app.post(
+      `${API_PREFIX}/faults/opcua/:machine`,
+      {
+        schema: {
+          tags: ['faults'],
+          summary:
+            "Take one machine's OPC UA server offline (drop and refuse connections), or back",
+          params: json(z.object({ machine: z.string() })),
+          body: json(offlineSchema),
+          response: { 200: json(offlineSchema), 400: json(errorSchema), 404: json(errorSchema) },
+        },
+      },
+      async (request, reply) => {
+        const { machine } = request.params as { machine: string };
+        const { offline } = request.body as { offline: boolean };
+        if (!(await opcuaOffline(machine, offline))) {
+          return reply
+            .code(404)
+            .send({ error: 'Not Found', message: `no OPC UA machine ${machine}` });
+        }
+        return { offline };
       },
     );
   }

@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #75 merged (PR #86): gateway skeleton, broker users and ACL.
 - #74 merged (PR #85): WSH-01 Modbus TCP server.
 - #73 merged (PR #84): washer process values, run epoch.
 - #72 merged (PR #83): UNS contracts, ADR-0015.
@@ -46,11 +47,11 @@
 
 ## In progress
 
-- #75 gateway skeleton and broker security (in review)
+- #76 OPC UA collector (in review)
 
 ## Next up
 
-- #76 OPC UA collector, #77 Modbus poller, #78 store-and-forward
+- #77 Modbus poller, #78 store-and-forward, #79 container and integration tests
 
 ## Blockers and open questions for the owner
 

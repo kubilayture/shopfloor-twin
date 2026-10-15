@@ -34,9 +34,10 @@ The simulation console (Phase 9) is the client. The MES never uses this API: it 
 
 Infrastructure faults for resilience tests (plan section 4), brought forward from Phase 9 for the Phase 3 gateway tests.
 
-| Method and path              | Body                        | Success          | Effect                                                                                                                                                                                                  |
-| ---------------------------- | --------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/v1/faults/modbus` | `{ "silent": true\|false }` | 200 `{ silent }` | WSH-01 accepts connections but stops answering, or answers again. Its registers keep updating meanwhile, so a poller that recovers finds the ring entries it missed, unless more than 64 facts happened |
+| Method and path                       | Body                         | Success                                       | Effect                                                                                                                                                                                                       |
+| ------------------------------------- | ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /api/v1/faults/modbus`          | `{ "silent": true\|false }`  | 200 `{ silent }`                              | WSH-01 accepts connections but stops answering, or answers again. Its registers keep updating meanwhile, so a poller that recovers finds the ring entries it missed, unless more than 64 facts happened      |
+| `POST /api/v1/faults/opcua/{machine}` | `{ "offline": true\|false }` | 200 `{ offline }`; 404 for an unknown machine | The machine's OPC UA server drops its connections and refuses new ones, or accepts them again. Its address space keeps following the plant meanwhile, so a reconnecting client sees how far `Sequence` moved |
 
 ## WebSocket: plant events
 

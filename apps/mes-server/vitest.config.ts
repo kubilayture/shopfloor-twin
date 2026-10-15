@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     // End-to-end tests run in their own CI job (`test:e2e`), not with the unit and integration tests.
     exclude: ['**/node_modules/**', '**/*.e2e.test.ts'],
+    // These files start processes and containers; in parallel they starve a 2-core CI runner.
+    fileParallelism: false,
     testTimeout: 60_000,
     coverage: {
       provider: 'v8',

@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #94 merged (PR #104): shared shift calendar, `oee-core` intervals, master data.
 - #93 merged (PR #103): `mes-server` skeleton, migrations (ADR-0016); end-to-end tests have their own CI job.
 - #92 merged (PR #102): Phase 4 plan, revised after review.
 - Phase 4 plan with issues #92–#101 under milestone "Phase 04 – MES foundation".
@@ -56,11 +57,11 @@
 
 ## In progress
 
-- #94 shift calendar, `oee-core` intervals, master data (in review)
+- #95 ingest: persistent UNS session, validation, hypertables, durable dedup, gaps and incidents, anchors (in review)
 
 ## Next up
 
-- #95 ingest, #96 equipment intervals
+- #96 equipment intervals, #97 API
 
 ## Blockers and open questions for the owner
 
@@ -72,6 +73,6 @@ Project board: https://github.com/users/kubilayture/projects/1
 
 - CI on `main`: green (`verify`, `stack smoke`).
 - Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79 and `edge-gateway` 92 / 78 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
-- Tests: 549.
+- Tests: 597.
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

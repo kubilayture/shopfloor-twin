@@ -5,6 +5,7 @@ import { createDatabase } from './db/database.ts';
 import { migrate } from './db/migrate.ts';
 import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
+import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -23,9 +24,12 @@ if (!plant.ok) {
 const db = createDatabase(env.DATABASE_URL);
 const state = { migrated: false, stopping: false };
 
-const { app } = buildMesHttp({
+let ingest: Ingest | undefined;
+
+const { app, registry } = buildMesHttp({
+  // Ready once migrated, the database answers and the UNS subscription is granted.
   ready: async () => {
-    if (!state.migrated || state.stopping) return false;
+    if (!state.migrated || state.stopping || ingest?.subscribed !== true) return false;
     return sql`SELECT 1`.execute(db).then(
       () => true,
       () => false,
@@ -43,8 +47,8 @@ async function shutdown(signal: string): Promise<void> {
     log.error('shutdown timed out');
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
-  // Requests first, then the pool they use.
-  for (const close of [() => app.close(), () => db.destroy()]) {
+  // Requests and the UNS session first (nothing unstored is acknowledged), then the pool they use.
+  for (const close of [() => app.close(), async () => ingest?.stop(), () => db.destroy()]) {
     await close().catch((error: unknown) => {
       log.error(error);
     });
@@ -66,11 +70,23 @@ try {
   await new MasterData(db).seed(plant.config);
   state.migrated = true;
   log.info({ applied: result.applied, alreadyApplied: result.skipped }, 'database migrated');
+  ingest = new Ingest({
+    db,
+    url: env.MQTT_URL,
+    username: env.MQTT_USERNAME,
+    password: env.MQTT_PASSWORD,
+    clientId: env.MQTT_CLIENT_ID,
+    sessionExpirySeconds: env.MQTT_SESSION_EXPIRY_S,
+    gapGraceMs: env.INGEST_GAP_GRACE_MS,
+    registry,
+    log: log.child({ module: 'ingest' }),
+  });
+  await ingest.start();
 } catch (error) {
   if (state.stopping) await new Promise(() => undefined); // shutdown() owns the exit
-  log.fatal({ err: error }, 'migrations failed');
+  log.fatal({ err: error }, 'start-up failed');
   await app.close();
   await db.destroy();
   process.exit(1);
 }
-log.info('mes-server ready');
+log.info('mes-server started; ready once subscribed to the UNS');

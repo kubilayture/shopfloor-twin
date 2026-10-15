@@ -187,14 +187,32 @@ describe('MES server basics (#93)', () => {
     await app.close();
   });
 
-  it('validates the environment and never echoes the database URL', () => {
-    const ok = parseEnv({ DATABASE_URL: 'postgres://u:p@localhost:5442/shopfloor' });
-    expect(ok.ok && ok.env.HTTP_PORT).toBe(4700);
-    const bad = parseEnv({ DATABASE_URL: 'mysql://u:secret@x/y', HTTP_PORT: 'eighty' });
+  it('validates the environment and never echoes secrets or URLs that may carry them', () => {
+    const ok = parseEnv({
+      DATABASE_URL: 'postgres://u:p@localhost:5442/shopfloor',
+      MQTT_PASSWORD: 'pw',
+    });
+    expect(ok.ok && [ok.env.HTTP_PORT, ok.env.MQTT_USERNAME, ok.env.MQTT_CLIENT_ID]).toEqual([
+      4700,
+      'mes',
+      'mes-server',
+    ]);
+    const bad = parseEnv({
+      DATABASE_URL: 'mysql://u:secret@x/y',
+      HTTP_PORT: 'eighty',
+      MQTT_URL: 'http://u:secret2@broker',
+      MQTT_SESSION_EXPIRY_S: '5',
+    });
     expect(bad.ok).toBe(false);
     if (!bad.ok) {
-      expect(bad.issues.map((i) => i.split(':')[0]).sort()).toEqual(['DATABASE_URL', 'HTTP_PORT']);
-      expect(bad.issues.join('\n')).not.toContain('secret');
+      expect(bad.issues.map((i) => i.split(':')[0]).sort()).toEqual([
+        'DATABASE_URL',
+        'HTTP_PORT',
+        'MQTT_PASSWORD',
+        'MQTT_SESSION_EXPIRY_S',
+        'MQTT_URL',
+      ]);
+      expect(bad.issues.join('\n')).not.toMatch(/secret/);
     }
   });
 });

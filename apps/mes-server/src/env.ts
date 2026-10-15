@@ -16,6 +16,15 @@ export const envSchema = z.object({
   PLANT_CONFIG_DIR: text.default(resolve(REPO, 'config/plant')),
   HTTP_HOST: text.default('127.0.0.1'),
   HTTP_PORT: port.default(4700),
+  // The UNS (#95): a persistent session as user `mes`. Compose passes MQTT_MES_PASSWORD as MQTT_PASSWORD.
+  MQTT_URL: z.url({ protocol: /^mqtts?$/ }).default('mqtt://127.0.0.1:1883'),
+  MQTT_USERNAME: text.default('mes'),
+  MQTT_PASSWORD: z.string().min(1),
+  MQTT_CLIENT_ID: text.default('mes-server'),
+  // How long the broker keeps the session (and queues messages) while the MES is away: 7 days.
+  MQTT_SESSION_EXPIRY_S: integer.pipe(z.number().min(60)).default(604_800),
+  // How long a sequence hole may stay open (wall time) before it is recorded as an incident.
+  INGEST_GAP_GRACE_MS: integer.pipe(z.number().min(0)).default(30_000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 });
 
@@ -24,6 +33,9 @@ export type MesEnv = z.output<typeof envSchema>;
 export type EnvResult =
   | { readonly ok: true; readonly env: MesEnv }
   | { readonly ok: false; readonly issues: readonly string[] };
+
+/** Secrets, or URLs that may carry them, are never echoed. */
+const HIDDEN = new Set(['DATABASE_URL', 'MQTT_URL', 'MQTT_PASSWORD']);
 
 /** Validates the environment; secrets (the database URL carries a password) are never echoed. */
 export function parseEnv(source: Readonly<Record<string, string | undefined>>): EnvResult {
@@ -42,7 +54,7 @@ export function parseEnv(source: Readonly<Record<string, string | undefined>>): 
     issues: result.error.issues.map((issue) => {
       const key = String(issue.path[0]);
       const shown =
-        key === 'DATABASE_URL' || key.includes('PASSWORD')
+        HIDDEN.has(key) || key.includes('PASSWORD')
           ? '(hidden)'
           : JSON.stringify(known[key] ?? null);
       return `${issue.path.join('.')}: ${issue.message} (got ${shown})`;

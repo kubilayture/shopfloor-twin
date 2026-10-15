@@ -98,18 +98,22 @@ The gateway's tests start a real Mosquitto with Testcontainers, so Docker must b
 
 ## Run the MES server
 
-`mes-server` (Phase 4) runs on the stack's TimescaleDB (`pnpm stack:up` first) and migrates the database at start-up (ADR-0016):
+`mes-server` (Phase 4) runs on the stack's TimescaleDB and broker (`pnpm stack:up` first), migrates the database at start-up (ADR-0016) and then subscribes to the UNS (#95):
 
 ```bash
-DATABASE_URL=postgres://shopfloor:<DB_PASSWORD>@127.0.0.1:5442/shopfloor pnpm --filter @shopfloor/mes-server start
+DATABASE_URL=postgres://shopfloor:<DB_PASSWORD>@127.0.0.1:5442/shopfloor \
+  MQTT_PASSWORD=<MQTT_MES_PASSWORD from .env> pnpm --filter @shopfloor/mes-server start
 ```
 
-- Environment: `DATABASE_URL` (required, never echoed), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4700`), `MIGRATIONS_DIR` (`db/migrations`), `LOG_LEVEL`.
-- `GET /health/live`, `/health/ready` (database answers and migrations are applied) and `/metrics`.
+- Environment: `DATABASE_URL` (required, never echoed), `MQTT_URL` (`mqtt://127.0.0.1:1883`, never echoed), `MQTT_USERNAME` (`mes`), `MQTT_PASSWORD` (required; Compose's `MQTT_MES_PASSWORD`), `MQTT_CLIENT_ID` (`mes-server`), `MQTT_SESSION_EXPIRY_S` (604800, 7 days), `INGEST_GAP_GRACE_MS` (30000), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4700`), `MIGRATIONS_DIR` (`db/migrations`), `LOG_LEVEL`.
+- `GET /health/live`, `/health/ready` (database answers, migrations are applied, and the UNS subscription is granted) and `/metrics` (`mes_ingest_messages_total{outcome}` with outcomes `stored`, `duplicate`, `rejected`, `anchor`, `status`, `retained`; `mes_ingest_incidents_total{origin}`; `mes_ingest_store_errors_total`; `mes_ingest_subscribed`).
+- The MES keeps a persistent broker session (client id `mes-server`): while it is stopped, the broker queues up to 100,000 messages for it, delivered on the next start. Only one MES may use the client id; a second one takes the session over. To drop the session (and its queue), start once with another `MQTT_CLIENT_ID` or reset the broker volume (`pnpm stack:reset`).
+- What arrived: `SELECT reason, count(*) FROM ingest.rejected_message GROUP BY 1;` lists rejected messages; `SELECT * FROM ingest.data_quality_incident WHERE closed_at IS NULL;` lists open gaps and gateway incidents (contract: `docs/contracts/uns.md`, "Consumer: MES ingest").
+- A storage failure is logged and retried until it succeeds; nothing unstored is acknowledged, so the broker keeps the message.
 - Migrations only: `DATABASE_URL=… pnpm --filter @shopfloor/mes-server migrate`.
 - A new migration is a new file `db/migrations/NNNN_<module>_<what>.sql`. An applied file is never edited: the server refuses to start if one changed. A statement that can't run in a transaction (`CREATE INDEX CONCURRENTLY`) goes into a file marked `-- migrate:no-transaction`, written so that it can be rerun.
 - End-to-end tests (`*.e2e.test.ts`) run apart from the others: `pnpm test:e2e`, one at a time; in CI they have their own job.
-- The MES tests start their own TimescaleDB with Testcontainers.
+- The MES tests start their own TimescaleDB and Mosquitto with Testcontainers (the broker harness is shared with the gateway in `@shopfloor/test-kit/broker`).
 
 ## Golden scenarios
 

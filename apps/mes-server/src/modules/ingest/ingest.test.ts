@@ -1,0 +1,608 @@
+import { resolve } from 'node:path';
+import {
+  alarmTopic,
+  cycleTopic,
+  stateTopic,
+  sysTopic,
+  telemetryTopic,
+  type MachineState,
+  type UnsMessage,
+} from '@shopfloor/contracts';
+import { TEST_PASSWORDS, startBroker } from '@shopfloor/test-kit/broker';
+import { sql, type Kysely } from 'kysely';
+import mqtt, { type MqttClient } from 'mqtt';
+import { Registry } from 'prom-client';
+import type { StartedTestContainer } from 'testcontainers';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { createDatabase, type Database } from '../../db/database.ts';
+import { migrate } from '../../db/migrate.ts';
+import { startDatabase } from '../../testing.ts';
+import { Ingest, type IngestNotice, type IngestOptions } from './index.ts';
+
+const MIGRATIONS = resolve(import.meta.dirname, '../../../../../db/migrations');
+const GRACE_MS = 5_000;
+const GW_EPOCH = 1_760_100_000;
+const EPOCH = 1_760_000_000;
+
+let databaseUrl: string;
+let brokerUrl: string;
+const containers: StartedTestContainer[] = [];
+const cleanup: (() => Promise<unknown>)[] = [];
+let publisher: MqttClient;
+let testNumber = 0;
+
+beforeAll(async () => {
+  const [database, broker] = await Promise.all([startDatabase(), startBroker()]);
+  containers.push(database.container, broker.container);
+  databaseUrl = database.url;
+  brokerUrl = broker.url;
+  publisher = await mqtt.connectAsync(brokerUrl, {
+    clientId: 'gw-01',
+    username: 'gw-01',
+    password: TEST_PASSWORDS['gw-01'],
+    protocolVersion: 5,
+  });
+}, 180_000);
+
+afterAll(async () => {
+  await publisher.endAsync();
+  await Promise.all(containers.map((c) => c.stop()));
+});
+
+afterEach(async () => {
+  for (const step of cleanup.splice(0).reverse()) await step();
+});
+
+/** Per test: its own database, broker session and equipment, so tests never see each other. */
+async function setup(): Promise<{
+  db: Kysely<Database>;
+  clientId: string;
+  equipment: (name: string) => { area: string; workCenter: string; equipment: string };
+  clock: { now: number };
+  start: (options?: Partial<IngestOptions>) => Promise<Ingest>;
+}> {
+  testNumber++;
+  const admin = createDatabase(databaseUrl, 1);
+  await sql.raw(`CREATE DATABASE ingest_${String(testNumber)}`).execute(admin);
+  await admin.destroy();
+  const db = createDatabase(
+    databaseUrl.replace(/\/shopfloor$/, `/ingest_${String(testNumber)}`),
+    3,
+  );
+  cleanup.push(() => db.destroy());
+  await migrate(db, MIGRATIONS);
+  const clientId = `mes-test-${String(testNumber)}`;
+  const clock = { now: Date.parse('2026-10-15T10:00:00Z') };
+  const start = async (options: Partial<IngestOptions> = {}): Promise<Ingest> => {
+    const ingest = new Ingest({
+      db,
+      url: brokerUrl,
+      username: 'mes',
+      password: TEST_PASSWORDS.mes,
+      clientId,
+      gapGraceMs: GRACE_MS,
+      sweepIntervalMs: 0,
+      reconnectPeriodMs: 200,
+      now: () => clock.now,
+      ...options,
+    });
+    cleanup.push(() => ingest.stop());
+    await ingest.start();
+    await ingest.waitSubscribed();
+    return ingest;
+  };
+  return {
+    db,
+    clientId,
+    equipment: (name) => ({
+      area: 'machining',
+      workCenter: 'cell-t',
+      equipment: `t${String(testNumber)}-${name}`,
+    }),
+    clock,
+    start,
+  };
+}
+
+const sourceTime = (seq: number): string =>
+  new Date(Date.UTC(2026, 9, 12, 3) + seq * 1000).toISOString();
+
+function identity(id: string, epoch: number, seq: number) {
+  return {
+    epoch,
+    seq,
+    sourceTime: sourceTime(seq),
+    receivedAt: '2026-10-15T10:00:00.000Z',
+    quality: 'good' as const,
+    source: { id, protocol: 'opcua' as const },
+  };
+}
+
+function stateEvent(id: string, epoch: number, seq: number, state: MachineState = 'Running') {
+  return {
+    schema: 'uns.state.current/1' as const,
+    kind: 'event' as const,
+    scope: 'device' as const,
+    ...identity(id, epoch, seq),
+    value: { state, cause: state === 'Down' ? 'SPINDLE-FAULT' : null },
+  };
+}
+
+function snapshot(id: string, seq: number, state: MachineState) {
+  return {
+    ...stateEvent(id, GW_EPOCH, seq, state),
+    kind: 'snapshot' as const,
+    scope: 'topic' as const,
+  };
+}
+
+async function publish(topic: string, message: UnsMessage | string, retain = false): Promise<void> {
+  const payload = typeof message === 'string' ? message : JSON.stringify(message);
+  await publisher.publishAsync(topic, payload, { qos: 1, retain });
+}
+
+async function waitFor(condition: () => Promise<boolean> | boolean, what: string): Promise<void> {
+  for (const deadline = Date.now() + 20_000; !(await condition());) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+const handled = (ingest: Ingest): number =>
+  (['stored', 'duplicate', 'rejected', 'anchor', 'status', 'retained'] as const).reduce(
+    (sum, outcome) => sum + ingest.count(outcome),
+    0,
+  );
+
+async function seqs(db: Kysely<Database>, equipment: string): Promise<number[]> {
+  const rows = await db
+    .selectFrom('ingest.equipment_event')
+    .select('seq')
+    .where('equipment', '=', equipment)
+    .orderBy('seq')
+    .execute();
+  return rows.map((r) => r.seq);
+}
+
+async function incidents(db: Kysely<Database>) {
+  return db
+    .selectFrom('ingest.data_quality_incident')
+    .select(['origin', 'type', 'stream', 'epoch', 'seq_from', 'seq_to', 'lost', 'resolution'])
+    .orderBy('id')
+    .execute();
+}
+
+describe('ingest (#95)', () => {
+  it('stores every fact once with its typed columns; duplicates are dropped', async () => {
+    const { db, equipment, start } = await setup();
+    const registry = new Registry();
+    const ingest = await start({ registry });
+    const notices: IngestNotice[] = [];
+    ingest.onStored((notice) => {
+      notices.push(notice);
+    });
+    const at = equipment('cnc');
+    const id = at.equipment;
+    const down = stateEvent(id, EPOCH, 2, 'Down');
+    const cycle = {
+      schema: 'uns.events.cycle-complete/1' as const,
+      scope: 'device' as const,
+      ...identity(id, EPOCH, 3),
+      value: {
+        product: 'VB-100',
+        partId: 1,
+        serial: 'S1',
+        result: 'good' as const,
+        reason: null,
+        measurement: null,
+      },
+    };
+    const alarm = {
+      schema: 'uns.alarms/1' as const,
+      scope: 'device' as const,
+      ...identity(id, EPOCH, 4),
+      value: { code: 'SPINDLE-FAULT', transition: 'active' as const, severity: 800 },
+    };
+    const sample = {
+      schema: 'uns.telemetry/1' as const,
+      scope: 'topic' as const,
+      unit: '%',
+      ...identity(id, GW_EPOCH, 1),
+      value: 41.5,
+    };
+    await publish(stateTopic(at), stateEvent(id, EPOCH, 1));
+    await publish(stateTopic(at), down);
+    await publish(stateTopic(at), down); // a QoS 1 duplicate
+    await publish(cycleTopic(at), cycle);
+    await publish(alarmTopic(at, 'SPINDLE-FAULT'), alarm);
+    await publish(telemetryTopic(at, 'spindle-load'), sample);
+    await publish(telemetryTopic(at, 'spindle-load'), sample);
+    await waitFor(() => handled(ingest) === 7, 'seven deliveries');
+
+    expect(ingest.count('stored')).toBe(5);
+    expect(ingest.count('duplicate')).toBe(2);
+    const events = await db
+      .selectFrom('ingest.equipment_event')
+      .selectAll()
+      .where('equipment', '=', id)
+      .orderBy('seq')
+      .execute();
+    expect(
+      events.map((e) => [e.seq, e.event_type, e.state, e.cause, e.quality, e.source_protocol]),
+    ).toEqual([
+      [1, 'state', 'Running', null, 'good', 'opcua'],
+      [2, 'state', 'Down', 'SPINDLE-FAULT', 'good', 'opcua'],
+      [3, 'cycle', null, null, 'good', 'opcua'],
+      [4, 'alarm', null, null, 'good', 'opcua'],
+    ]);
+    expect(events[1]?.payload).toEqual(down);
+    expect(events[1]?.source_time).toEqual(new Date(down.sourceTime));
+    expect(events[1]?.received_at).toEqual(new Date(down.receivedAt));
+    const samples = await db.selectFrom('ingest.telemetry_sample').selectAll().execute();
+    expect(samples.map((s) => [s.equipment, s.name, s.value, s.unit, s.seq])).toEqual([
+      [id, 'spindle-load', 41.5, '%', 1],
+    ]);
+    expect(notices.map((n) => n.type)).toEqual(['state', 'state', 'sample', 'sample', 'sample']);
+    expect(await ingest.stateFacts(id, EPOCH)).toMatchObject([
+      { seq: 1, state: 'Running' },
+      { seq: 2, state: 'Down', cause: 'SPINDLE-FAULT' },
+    ]);
+    expect(await ingest.epochs(id)).toEqual([EPOCH]);
+    const metrics = await registry.metrics();
+    expect(metrics).toMatch(/^mes_ingest_messages_total\{outcome="stored"\} 5$/m);
+    expect(metrics).toMatch(/^mes_ingest_messages_total\{outcome="duplicate"\} 2$/m);
+    expect(metrics).toMatch(/^mes_ingest_subscribed 1$/m);
+  });
+
+  it('accepts out-of-order facts, also below the first number seen, without reporting gaps', async () => {
+    const { db, equipment, clock, start } = await setup();
+    const ingest = await start();
+    const at = equipment('lkt');
+    for (const seq of [5, 3, 4, 1, 2, 6]) {
+      await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, seq));
+    }
+    await waitFor(() => ingest.count('stored') === 6, 'six facts');
+    expect(await ingest.sweep()).toBe(0);
+    clock.now += GRACE_MS;
+    expect(await ingest.sweep()).toBe(0);
+    expect(await seqs(db, at.equipment)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(
+      (await ingest.stateFacts(at.equipment, EPOCH, { fromSeq: 2, toSeq: 4 })).map((f) => f.seq),
+    ).toEqual([2, 3, 4]);
+    expect(await incidents(db)).toEqual([]);
+  });
+
+  it('records a gap as an incident after the grace period; late facts fill and close it, also after a restart', async () => {
+    const { db, equipment, clock, start } = await setup();
+    let ingest = await start();
+    const at = equipment('cnc');
+    const stream = `device:${at.equipment}`;
+    for (const seq of [1, 2, 6])
+      await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, seq));
+    await waitFor(() => ingest.count('stored') === 3, 'three facts');
+    expect(await ingest.sweep()).toBe(0);
+    clock.now += GRACE_MS - 1;
+    expect(await ingest.sweep()).toBe(0);
+    clock.now += 1;
+    expect(await ingest.sweep()).toBe(1);
+    expect(await ingest.sweep()).toBe(0); // recorded once
+    expect(await incidents(db)).toEqual([
+      {
+        origin: 'mes',
+        type: 'sequence-gap',
+        stream,
+        epoch: EPOCH,
+        seq_from: 3,
+        seq_to: 5,
+        lost: 3,
+        resolution: null,
+      },
+    ]);
+
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, 4));
+    await waitFor(() => ingest.count('stored') === 4, 'the first late fact');
+    expect((await incidents(db))[0]?.lost).toBe(2);
+
+    // The gap state is durable: a new process carries on from the cursor table.
+    await ingest.stop();
+    ingest = await start();
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, 3));
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, 5));
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, 6)); // already stored
+    await waitFor(() => handled(ingest) === 3, 'the late facts');
+    expect(ingest.count('duplicate')).toBe(1);
+    const [closed] = await db.selectFrom('ingest.data_quality_incident').selectAll().execute();
+    expect(closed).toMatchObject({ lost: 0, resolution: 'filled' });
+    expect(closed?.closed_at).toEqual(new Date(clock.now));
+    expect(await seqs(db, at.equipment)).toEqual([1, 2, 3, 4, 5, 6]);
+    clock.now += GRACE_MS;
+    expect(await ingest.sweep()).toBe(0);
+  });
+
+  it('refuses an older epoch as stale; a newer epoch starts over and closes the old gaps', async () => {
+    const { db, equipment, start } = await setup();
+    const ingest = await start();
+    const at = equipment('wsh');
+    const stream = `device:${at.equipment}`;
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, 1));
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, 3));
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH - 10, 9));
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH + 10, 1));
+    await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, 2)); // the old epoch is over
+    await waitFor(() => handled(ingest) === 5, 'five deliveries');
+
+    expect(ingest.count('stored')).toBe(3);
+    const rejected = await db
+      .selectFrom('ingest.rejected_message')
+      .selectAll()
+      .orderBy('id')
+      .execute();
+    expect(
+      rejected.map((r) => [r.reason, (JSON.parse(r.payload) as { epoch: number }).epoch, r.topic]),
+    ).toEqual([
+      ['stale-epoch', EPOCH - 10, stateTopic(at)],
+      ['stale-epoch', EPOCH, stateTopic(at)],
+    ]);
+    expect(rejected[0]?.detail).toMatch(/older than the stream's current epoch/);
+    expect(await incidents(db)).toEqual([
+      {
+        origin: 'mes',
+        type: 'sequence-gap',
+        stream,
+        epoch: EPOCH,
+        seq_from: 2,
+        seq_to: 2,
+        lost: 1,
+        resolution: 'epoch-ended',
+      },
+    ]);
+    const cursor = await db
+      .selectFrom('ingest.source_cursor')
+      .selectAll()
+      .where('stream', '=', stream)
+      .executeTakeFirstOrThrow();
+    expect([cursor.epoch, cursor.seen, cursor.reported]).toEqual([EPOCH + 10, [[1, 1]], []]);
+    expect(await ingest.epochs(at.equipment)).toEqual([EPOCH, EPOCH + 10]);
+  });
+
+  it('stores retained deliveries and snapshots as anchors, never as facts', async () => {
+    const { db, equipment, clock, start } = await setup();
+    const a = equipment('cnc');
+    const b = equipment('wsh');
+    // Retained before the MES subscribes: state of A (a fact it never saw), a snapshot of B, and
+    // A's last telemetry and alarm.
+    await publish(stateTopic(a), stateEvent(a.equipment, EPOCH, 7, 'Setup'), true);
+    await publish(stateTopic(b), snapshot(b.equipment, 3, 'Idle'), true);
+    await publish(
+      telemetryTopic(a, 'spindle-load'),
+      {
+        schema: 'uns.telemetry/1',
+        scope: 'topic',
+        unit: '%',
+        ...identity(a.equipment, GW_EPOCH, 9),
+        value: 3,
+      },
+      true,
+    );
+    await publish(
+      alarmTopic(a, 'X'),
+      {
+        schema: 'uns.alarms/1',
+        scope: 'device',
+        ...identity(a.equipment, EPOCH, 5),
+        value: { code: 'X', transition: 'cleared', severity: 10 },
+      },
+      true,
+    );
+    cleanup.push(async () => {
+      for (const topic of [
+        stateTopic(a),
+        stateTopic(b),
+        telemetryTopic(a, 'spindle-load'),
+        alarmTopic(a, 'X'),
+      ]) {
+        await publish(topic, '', true); // clears the retained message
+      }
+    });
+    let ingest = await start();
+    const notices: IngestNotice[] = [];
+    ingest.onStored((notice) => {
+      notices.push(notice);
+    });
+    await waitFor(() => handled(ingest) === 4, 'the retained messages');
+    expect(ingest.count('anchor')).toBe(2);
+    expect(ingest.count('retained')).toBe(2);
+    expect(await db.selectFrom('ingest.equipment_event').selectAll().execute()).toEqual([]);
+    expect(await db.selectFrom('ingest.telemetry_sample').selectAll().execute()).toEqual([]);
+    expect(await db.selectFrom('ingest.source_cursor').selectAll().execute()).toEqual([]);
+    expect(await ingest.anchor(a.equipment, EPOCH)).toMatchObject({
+      state: 'Setup',
+      kind: 'event',
+      retained: true,
+      deviceEpoch: EPOCH,
+    });
+
+    // Live facts: A's stream starts at 9, so the retained 7 makes no gap; B's first fact tells the
+    // snapshot's device epoch.
+    await publish(stateTopic(a), stateEvent(a.equipment, EPOCH, 9));
+    await publish(stateTopic(b), stateEvent(b.equipment, EPOCH + 5, 1, 'Running'));
+    await waitFor(() => ingest.count('stored') === 2, 'two live facts');
+    expect(await ingest.anchor(b.equipment, EPOCH + 5)).toMatchObject({
+      state: 'Idle',
+      kind: 'snapshot',
+      retained: true,
+      deviceEpoch: EPOCH + 5,
+    });
+    expect(notices.map((n) => n.type)).toEqual(['anchor', 'state', 'anchor', 'state']);
+    clock.now += GRACE_MS;
+    expect(await ingest.sweep()).toBe(0);
+
+    // A live snapshot after a reconnect anchors too, but the first anchor of an epoch wins.
+    await publish(stateTopic(b), snapshot(b.equipment, 4, 'Down'));
+    await publish(stateTopic(b), stateEvent(b.equipment, EPOCH + 5, 2, 'Down'));
+    await waitFor(() => ingest.count('stored') === 3, 'the next fact');
+    expect(await ingest.anchor(b.equipment, EPOCH + 5)).toMatchObject({ state: 'Idle' });
+
+    // A restart gets the retained messages again: no new anchors, no facts.
+    await ingest.stop();
+    ingest = await start();
+    await waitFor(() => handled(ingest) === 4, 'the retained messages again');
+    expect(ingest.count('anchor')).toBe(2);
+    const anchors = await db
+      .selectFrom('ingest.state_anchor')
+      .select(['equipment', 'kind', 'device_epoch'])
+      .orderBy('arrival')
+      .execute();
+    expect(anchors).toEqual([
+      { equipment: a.equipment, kind: 'event', device_epoch: EPOCH },
+      { equipment: b.equipment, kind: 'snapshot', device_epoch: EPOCH + 5 },
+      { equipment: b.equipment, kind: 'snapshot', device_epoch: EPOCH + 5 },
+    ]);
+    expect(await seqs(db, a.equipment)).toEqual([9]);
+  });
+
+  it('stores invalid messages in rejected_message with the reason, never dropping them', async () => {
+    const { db, equipment, start } = await setup();
+    const ingest = await start();
+    const at = equipment('cnc');
+    const valid = stateEvent(at.equipment, EPOCH, 1);
+    const cases: [string, string, string][] = [
+      [stateTopic(at), '{oops', 'invalid-json'],
+      [stateTopic(at), JSON.stringify({ ...valid, quality: 'great' }), 'invalid-payload'],
+      [
+        stateTopic(at),
+        JSON.stringify({ ...valid, schema: 'uns.state.current/9' }),
+        'invalid-payload',
+      ],
+      [
+        stateTopic(at),
+        JSON.stringify({ ...valid, value: { state: 'Running', cause: 'a\u0000b' } }),
+        'invalid-payload',
+      ],
+      [telemetryTopic(at, 'spindle-load'), JSON.stringify(valid), 'topic-mismatch'],
+      [
+        stateTopic(at),
+        JSON.stringify({ ...valid, source: { id: 'someone-else', protocol: 'opcua' } }),
+        'topic-mismatch',
+      ],
+      [
+        `orbis/gebze/machining/cell-t/${at.equipment}/events/unknown`,
+        JSON.stringify(valid),
+        'unexpected-topic',
+      ],
+    ];
+    for (const [topic, payload] of cases) await publish(topic, payload);
+    await waitFor(() => ingest.count('rejected') === cases.length, 'every rejection');
+    const rows = await db.selectFrom('ingest.rejected_message').selectAll().orderBy('id').execute();
+    expect(rows.map((r) => [r.topic, r.reason])).toEqual(
+      cases.map(([topic, , reason]) => [topic, reason]),
+    );
+    expect(rows[0]?.payload).toBe('{oops');
+    expect(rows.every((r) => r.detail.length > 0 && !r.retained)).toBe(true);
+    expect(await db.selectFrom('ingest.equipment_event').selectAll().execute()).toEqual([]);
+  });
+
+  it("stores the gateway's incidents once and its latest status", async () => {
+    const { db, start } = await setup();
+    const ingest = await start();
+    const gateway = (seq: number) => identity('gw-01', GW_EPOCH, seq);
+    const incident = {
+      schema: 'uns.sys.incident/1' as const,
+      scope: 'topic' as const,
+      ...gateway(1),
+      source: { id: 'gw-01', protocol: 'internal' as const },
+      value: { type: 'sequence-gap' as const, equipment: 'cnc-01', lost: 2, message: 'two lost' },
+    };
+    const status = (seq: number, value: 'online' | 'offline') => ({
+      schema: 'uns.sys.status/1' as const,
+      scope: 'topic' as const,
+      ...gateway(seq),
+      source: { id: 'gw-01', protocol: 'internal' as const },
+      value: { status: value, startedAt: '2026-10-15T09:00:00.000Z', version: '0.0.0' },
+    });
+    const incidents = sysTopic('edge-gateway', 'gw-01', 'incidents');
+    await publish(incidents, incident);
+    await publish(incidents, incident);
+    await publish(sysTopic('edge-gateway', 'gw-01', 'status'), status(2, 'online'));
+    await publish(sysTopic('edge-gateway', 'gw-01', 'status'), status(1, 'offline'));
+    await waitFor(() => handled(ingest) === 4, 'four deliveries');
+    expect(
+      await db
+        .selectFrom('ingest.data_quality_incident')
+        .select(['origin', 'type', 'equipment', 'lost', 'message'])
+        .execute(),
+    ).toEqual([
+      {
+        origin: 'gateway',
+        type: 'sequence-gap',
+        equipment: 'cnc-01',
+        lost: 2,
+        message: 'two lost',
+      },
+    ]);
+    // The latest delivery wins, not the highest number (docs/contracts/uns.md).
+    expect(
+      await db
+        .selectFrom('ingest.component_status')
+        .select(['component', 'instance', 'status'])
+        .execute(),
+    ).toEqual([{ component: 'edge-gateway', instance: 'gw-01', status: 'offline' }]);
+  });
+
+  it('retries a message whose transaction failed, in order, instead of acknowledging it', async () => {
+    const { db, equipment, start } = await setup();
+    const registry = new Registry();
+    let failures = 2;
+    const ingest = await start({
+      registry,
+      beforeCommit: () =>
+        failures-- > 0 ? Promise.reject(new Error('database hiccup')) : Promise.resolve(),
+    });
+    const at = equipment('cnc');
+    for (const seq of [1, 2]) await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, seq));
+    await waitFor(() => ingest.count('stored') === 2, 'both facts');
+    expect(await seqs(db, at.equipment)).toEqual([1, 2]);
+    expect(await registry.metrics()).toMatch(/^mes_ingest_store_errors_total 2$/m);
+  });
+
+  it('acknowledges only after commit: an MES crash mid-stream loses and doubles nothing', async () => {
+    const { db, equipment, clock, start } = await setup();
+    const at = equipment('cnc');
+    let calls = 0;
+    let fail: (error: Error) => void = () => undefined;
+    const hung = new Promise<never>((_, reject) => {
+      fail = reject;
+    });
+    const first = await start({
+      // The sixth transaction never commits: the process "crashes" inside it.
+      beforeCommit: async () => {
+        if (++calls === 6) await hung;
+      },
+    });
+    for (let seq = 1; seq <= 10; seq++)
+      await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, seq));
+    await waitFor(() => calls === 6, 'the sixth transaction');
+    await first.stop(); // the session ends with 6–10 delivered but unacknowledged
+    fail(new Error('crashed'));
+    expect(await seqs(db, at.equipment)).toEqual([1, 2, 3, 4, 5]);
+
+    // While the MES is down the broker queues for its persistent session.
+    for (let seq = 11; seq <= 20; seq++)
+      await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, seq));
+    const second = await start();
+    await waitFor(async () => (await seqs(db, at.equipment)).length === 20, 'all twenty facts');
+    expect(await seqs(db, at.equipment)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+    expect(second.count('stored')).toBe(15);
+    clock.now += GRACE_MS;
+    expect(await second.sweep()).toBe(0);
+    expect(await incidents(db)).toEqual([]);
+    const cursor = await db
+      .selectFrom('ingest.source_cursor')
+      .select('seen')
+      .where('stream', '=', `device:${at.equipment}`)
+      .executeTakeFirstOrThrow();
+    expect(cursor.seen).toEqual([[1, 20]]);
+    await second.stop();
+    expect(second.subscribed).toBe(false);
+  });
+});

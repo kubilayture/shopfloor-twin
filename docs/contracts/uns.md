@@ -147,3 +147,40 @@ Every UNS message passes through the gateway's outbox (ADR-0014), except the gat
   - **gaps** are holes _between_ numbers seen (`gaps()`). Numbers before the first one seen are history the consumer joined after, not gaps. A gap recorded as an incident is written off with `acknowledge(gap)`. Memory grows with the number of open gaps, not with the number of messages;
   - messages the broker delivers as **retained** on subscribe are passed with `{ retained: true }`. They restore current state, and are dropped if already seen, but they neither start the stream nor create gaps: retained topics hold the latest facts of different kinds, so their numbers are far apart.
 - The gateway reports the gaps _it_ sees (from a device) as `uns.sys.incident/1` messages. The MES counts both kinds.
+
+## Consumer: MES ingest (#95)
+
+The MES `ingest` module (`apps/mes-server/src/modules/ingest/`, ADR-0017) is the UNS's durable consumer.
+
+**Session:** user `mes`, client id `mes-server`, MQTT 5, `clean: false` with a session expiry interval (`MQTT_SESSION_EXPIRY_S`, default 7 days) and receive maximum 100. The broker keeps the session and queues QoS 1 messages while the MES is down, up to `max_queued_messages` 100,000 (about 5 hours of the plant at 60×; beyond that, messages are lost and show up as sequence gaps). Known limit: the queue survives a broker crash only up to its last autosave.
+
+**Subscriptions** (QoS 1, renewed and checked on every connect; readiness requires all granted; the ACL's `topic read orbis/#` for `mes` covers them):
+
+- `orbis/gebze/+/+/+/state/+`, `…/telemetry/+`, `…/events/+`, `…/alarms/+`;
+- `orbis/gebze/_sys/edge-gateway/+/status` and `…/incidents`.
+
+**Acknowledgement:** a message is acknowledged only after its transaction committed. Messages are stored one at a time in arrival order; a failed transaction is retried, never acknowledged. A crash before the commit means the broker delivers the message again, and dedup removes the copy.
+
+**What happens to each delivery** (tables in the `ingest` schema, `db/migrations/0003_ingest_raw.sql`):
+
+| Delivery                                                                       | Result                                                                                                                  |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Invalid JSON, a schema `parseUnsMessage` rejects, a topic/payload mismatch     | `rejected_message` with reason `invalid-json`, `invalid-payload`, `topic-mismatch` or `unexpected-topic` and the detail |
+| State event, cycle, alarm (`scope: device`)                                    | `equipment_event` (hypertable; unique on equipment, epoch, seq, sourceTime)                                             |
+| Telemetry                                                                      | `telemetry_sample` (hypertable; unique on topic, epoch, seq, sourceTime)                                                |
+| Gateway incident                                                               | `data_quality_incident`, origin `gateway`                                                                               |
+| Gateway status                                                                 | `component_status`: the latest delivery wins                                                                            |
+| Snapshot (`kind: snapshot`), or `state/current` delivered with the retain flag | `state_anchor`: not a fact                                                                                              |
+| Other retained deliveries (telemetry, alarms, cycles)                          | not stored: current values, not facts (counted in metrics)                                                              |
+| A number already seen in the stream's current epoch                            | dropped as a duplicate (counted)                                                                                        |
+| An epoch older than the stream's current one                                   | `rejected_message`, reason `stale-epoch`                                                                                |
+
+Topic/payload checks: the schema must be the one of the topic class, an alarm's `code` must match its topic name, and `source.id` must be the topic's equipment (or the `_sys` instance).
+
+**Dedup and gaps** follow the consumer rule above, made durable: `source_cursor` holds each stream's current epoch, the ranges seen and the gaps already reported, so a restart neither forgets duplicates nor invents gaps.
+
+- A hole that stays open for `INGEST_GAP_GRACE_MS` (wall time, default 30 s) becomes a `sequence-gap` incident (origin `mes`, with the missing range and `lost`). A late message still fills it: `lost` goes down, and the incident is closed as `filled` once nothing is missing.
+- A newer epoch closes the old epoch's open gaps as `epoch-ended`, and records any hole not yet reported.
+- `_sys` streams are deduplicated, never checked for gaps.
+
+**Anchors:** retained deliveries and snapshots never enter dedup or gap checks. A retained state event anchors its own device epoch. A snapshot carries the gateway's epoch, so it gets the device epoch of the next device fact of its equipment. The first anchor to arrive per (equipment, device epoch) is the starting state, used by the equipment module when it knows no state for that epoch yet.

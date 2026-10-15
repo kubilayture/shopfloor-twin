@@ -1,4 +1,5 @@
 import { sql, type Kysely } from 'kysely';
+import { INGEST_COLUMNS } from '../modules/ingest/index.ts';
 import { MASTER_DATA_COLUMNS } from '../modules/master-data/index.ts';
 import type { Database } from './database.ts';
 
@@ -45,4 +46,5 @@ export async function actualColumns(
 export const DECLARED_COLUMNS: ColumnSpec = {
   'public.schema_migrations': ['name', 'checksum', 'applied_at'],
   ...MASTER_DATA_COLUMNS,
+  ...INGEST_COLUMNS,
 };

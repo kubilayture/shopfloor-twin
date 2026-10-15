@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Store-and-forward outbox in SQLite (`node:sqlite`, ADR-0014): durable batched commits, ordered sending with bounded in-flight messages, delete after PUBACK, replay after a broker outage or gateway restart, refusals dropped and logged, bounded size with a `buffer-overflow` incident, Modbus cursor persisted atomically; buffer metrics (#78).
 - Gateway Modbus poller for WSH-01: snapshot telemetry, lossless walk of the event ring (split at the ring end), overrun detection, silent and recovered incidents, cursor that resumes within an epoch, snapshots; metric `gateway_device_connected` covers OPC UA and Modbus (#77).
 - Gateway OPC UA collector: event subscription per machine (state, cycles, alarms with device sequence and epoch), sampled telemetry, resync snapshot and gap, epoch and connection incidents after every (re)connect, metrics per machine; simulator fault route `POST /api/v1/faults/opcua/{machine}`; integration test against the real simulator compares every fact with its event stream (#76).
 - `edge-gateway` skeleton: validated environment, MQTT 5 session with QoS 1, `_sys` status with last will, health and metrics, graceful shutdown, `Publisher` interface; broker users `gw-01` and `mes` and a static ACL file (`dev` becomes read-only); smoke test checks allowed and denied publishes; Testcontainers-based broker tests (#75).

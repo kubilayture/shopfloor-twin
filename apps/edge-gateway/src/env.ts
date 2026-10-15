@@ -27,6 +27,8 @@ export const envSchema = z.object({
   MODBUS_PORT: port.default(5020),
   MODBUS_POLL_MS: integer.pipe(z.number().min(50).max(60_000)).default(250),
   TELEMETRY_SAMPLING_MS: integer.pipe(z.number().min(100).max(60_000)).default(1_000),
+  BUFFER_PATH: text.default('.buffer/gateway.db'),
+  BUFFER_MAX_MESSAGES: integer.pipe(z.number().min(1_000)).default(200_000),
   HTTP_HOST: text.default('127.0.0.1'),
   HTTP_PORT: port.default(4900),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),

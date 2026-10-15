@@ -1,5 +1,6 @@
 import {
   OPCUA_EVENT_FIELD_TYPES,
+  OPCUA_METHODS,
   OPCUA_EVENT_FIELDS,
   OPCUA_EVENT_TYPES,
   OPCUA_VARIABLES,
@@ -50,6 +51,10 @@ export interface MachineServerOptions {
   readonly port: number;
   readonly host?: string;
   readonly pkiFolder: string;
+  readonly loadProgram?: (
+    product: string,
+    quantity: number,
+  ) => { ok: true; position: number } | { ok: false; reason: string };
 }
 
 export interface TelemetrySource {
@@ -165,6 +170,7 @@ export class MachineServer {
         this.#set('operator', event.operatorId ?? '', event.at);
         break;
       case 'material-consumed':
+      case 'program-loaded':
       case 'repair-start':
       case 'repair-end':
         break;
@@ -338,6 +344,40 @@ export class MachineServer {
           : {}),
       });
       this.#variables.set(key, variable);
+    }
+
+    const loadProgram = this.#options.loadProgram;
+    if (loadProgram && this.#options.kind === 'machine-tool') {
+      const method = ns.addMethod(shopFloor, {
+        browseName: 'LoadProgram',
+        nodeId: `s=${this.machineId}.${OPCUA_METHODS.loadProgram}`,
+        inputArguments: [
+          {
+            name: 'Product',
+            dataType: DataType.String,
+            description: { text: 'Product id, e.g. VB-200' },
+          },
+          { name: 'Quantity', dataType: DataType.UInt32, description: { text: 'Parts to make' } },
+        ],
+        outputArguments: [
+          {
+            name: 'Position',
+            dataType: DataType.UInt32,
+            description: { text: 'Position in the CNC queue (1 = next)' },
+          },
+        ],
+      });
+      method.bindMethod((inputArguments, _context, callback) => {
+        const [product, quantity] = inputArguments.map((argument) => argument.value as unknown);
+        const result =
+          typeof product === 'string' && typeof quantity === 'number'
+            ? loadProgram(product, quantity)
+            : { ok: false as const, reason: 'expected (String, UInt32)' };
+        callback(null, {
+          statusCode: result.ok ? StatusCodes.Good : StatusCodes.BadInvalidArgument,
+          outputArguments: result.ok ? [{ dataType: DataType.UInt32, value: result.position }] : [],
+        });
+      });
     }
 
     for (const [kind, browseName] of Object.entries(OPCUA_EVENT_TYPES) as [

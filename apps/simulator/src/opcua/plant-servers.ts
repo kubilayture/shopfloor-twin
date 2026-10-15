@@ -48,6 +48,13 @@ export class PlantServers {
         kind: machine.kind,
         port: machine.port + portOffset,
         pkiFolder: join(pkiFolder, machine.id),
+        loadProgram: (product: string, quantity: number) => {
+          const sources = this.#sources;
+          if (!sources) {
+            return { ok: false as const, reason: 'simulation not attached' };
+          }
+          return sources.line.loadProgram(machine.id, product, quantity, sources.simulation);
+        },
         ...(host ? { host } : {}),
       });
     });

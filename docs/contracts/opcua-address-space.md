@@ -63,6 +63,21 @@ Value timestamps:
 - non-telemetry variables are served exception-based (`MinimumSamplingInterval = 0`), with **SourceTimestamp = simulation time** of the event that changed them, or the run's start time before the first event. `State` starts as `Off`;
 - telemetry has SourceTimestamp = the simulation time of the read; it is `UncertainNoCommunicationLastUsableValue` before the simulation has started.
 
+## Methods
+
+`ShopFloor.LoadProgram` on CNC-01 and CNC-02 (`nsu=<uri>;s=<machine>.ShopFloor.LoadProgram`, object `…ShopFloor`).
+
+| Argument       | Type   | Meaning                                                        |
+| -------------- | ------ | -------------------------------------------------------------- |
+| in `Product`   | String | Product id, for example `VB-200`                               |
+| in `Quantity`  | UInt32 | Parts to make, at least 1                                      |
+| out `Position` | UInt32 | Position of the new campaign in the CNC queue (always 1: next) |
+
+- The campaign is put at the front of the CNC's queue. If the product differs from the one loaded, the CNC changes over (`Setup`, `CHANGEOVER A→B`) at its next cycle boundary, and `ShopFloor.Program` changes when the changeover starts. After the campaign the CNC continues with its remaining schedule.
+- An unknown product or a quantity below 1 returns `BadInvalidArgument`.
+- Every accepted call is recorded as a `program-loaded` event in the simulator's event log (not an OPC UA event).
+- MES order dispatch uses this method in Phase 7 (plan section 5, data path 3).
+
 ## Events (ADR-0009)
 
 Events are raised on the machine object, which is a notifier of the Server object, so a subscription on `i=2253` receives the events of that server.
@@ -79,4 +94,3 @@ Events are raised on the machine object, which is a notifier of the Server objec
 - Clients that need every event subscribe with sampling 0, a queue of at least 1000 and `discardOldest = false`.
 - A subscription on `i=2253` also receives the standard Machinery `TransitionEventType` events (see above). Select the project event types with an OfType where-clause, or ignore events without `MachineId`.
 - Events raised before a client subscribes are not delivered later (no event history). A new client starts from the current `ShopFloor.Sequence` and the current values.
-- `ShopFloor.LoadProgram` (CNCs) arrives with #52.

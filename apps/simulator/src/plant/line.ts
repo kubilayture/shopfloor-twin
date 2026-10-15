@@ -64,6 +64,13 @@ export type PlantEvent =
       readonly lotId: string;
     }
   | {
+      readonly type: 'program-loaded';
+      readonly at: SimTime;
+      readonly machineId: string;
+      readonly product: string;
+      readonly quantity: number;
+    }
+  | {
       readonly type: 'shift';
       readonly at: SimTime;
       readonly action: CalendarBoundary['action'];
@@ -637,6 +644,31 @@ export class ProductionLine {
         lotId,
       });
     }
+  }
+
+  loadProgram(
+    machineId: string,
+    product: string,
+    quantity: number,
+    simulation: Simulation<LineEvent>,
+  ): { ok: true; position: number } | { ok: false; reason: string } {
+    const station = this.stations.find((s) => s.id === machineId);
+    if (!station?.campaigns) {
+      return { ok: false, reason: `${machineId} does not run programs` };
+    }
+    if (!this.#config.products.products.some((p) => p.id === product)) {
+      return { ok: false, reason: `unknown product "${product}"` };
+    }
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      return { ok: false, reason: `quantity must be a positive integer, got ${String(quantity)}` };
+    }
+    this.#now = simulation.now;
+    station.campaigns.unshift({ product, remaining: quantity });
+    this.#onEvent({ type: 'program-loaded', at: this.#now, machineId, product, quantity });
+    if (station.machine.state === 'Idle' || station.machine.state === 'Starved') {
+      this.#tryStart(station, simulation);
+    }
+    return { ok: true, position: 1 };
   }
 
   blockLot(lotId: string, blocked: boolean, simulation: Simulation<LineEvent>): void {

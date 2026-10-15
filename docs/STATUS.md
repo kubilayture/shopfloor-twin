@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #51 merged (PR #63): OPC UA server per machine.
 - #50 merged (PR #62): process values.
 - Owner's standing instruction (2026-10-15): continue through all phases without stopping or asking. Owner-only exit criteria are recorded as deferred to the owner, never as met.
 - #49 merged (PR #61): live run mode.
@@ -33,11 +34,11 @@
 
 ## In progress
 
-- #51 OPC UA servers per machine (in review)
+- #52 LoadProgram (in review)
 
 ## Next up
 
-- #52 LoadProgram, #53 alarms, #54 control API, #55 container, #56 integration tests and contract check
+- #53 alarms, #54 control API, #55 container, #56 integration tests and contract check
 
 ## Blockers and open questions for the owner
 

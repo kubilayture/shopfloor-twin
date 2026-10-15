@@ -1,0 +1,63 @@
+import { resolve } from 'node:path';
+import { z } from 'zod';
+import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
+
+const DEFAULT_CONFIG = resolve(import.meta.dirname, '../../../../config/plant');
+
+const port = z.coerce.number().int().min(1).max(65_535);
+
+export const envSchema = z.object({
+  SIM_SEED: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(2 ** 32 - 1)
+    .default(1),
+  SIM_SPEED: z.coerce.number().min(MIN_SPEED).max(MAX_SPEED).default(60),
+  SIM_START: z
+    .string()
+    .default('2026-10-12T06:00:00+03:00')
+    .transform((value, context) => {
+      try {
+        return Temporal.Instant.from(value).epochMilliseconds;
+      } catch {
+        context.addIssue({ code: 'custom', message: 'expected ISO 8601 with an offset' });
+        return z.NEVER;
+      }
+    }),
+  SIM_CONFIG_DIR: z.string().min(1).default(DEFAULT_CONFIG),
+  SIM_AUTOSTART: z.enum(['true', 'false']).default('true'),
+  OPCUA_HOST: z.string().min(1).default('localhost'),
+  OPCUA_PORT_OFFSET: z.coerce.number().int().min(0).max(9_999).default(0),
+  OPCUA_PKI_DIR: z.string().min(1).optional(),
+  CONTROL_HOST: z.string().min(1).default('127.0.0.1'),
+  CONTROL_PORT: port.default(4800),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+});
+
+export type SimulatorEnv = z.output<typeof envSchema>;
+
+export type EnvResult =
+  | { readonly ok: true; readonly env: SimulatorEnv }
+  | { readonly ok: false; readonly issues: readonly string[] };
+
+/** Validates the environment; unknown variables are ignored, invalid ones are reported by name. */
+export function parseEnv(source: Readonly<Record<string, string | undefined>>): EnvResult {
+  const known = Object.fromEntries(
+    Object.keys(envSchema.shape).flatMap((key) => {
+      const value = source[key];
+      return value === undefined || value === '' ? [] : [[key, value]];
+    }),
+  );
+  const result = envSchema.safeParse(known);
+  if (result.success) {
+    return { ok: true, env: result.data };
+  }
+  return {
+    ok: false,
+    issues: result.error.issues.map(
+      (issue) =>
+        `${issue.path.join('.')}: ${issue.message} (got ${JSON.stringify(known[String(issue.path[0])] ?? null)})`,
+    ),
+  };
+}

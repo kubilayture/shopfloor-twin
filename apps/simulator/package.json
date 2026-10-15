@@ -10,19 +10,26 @@
     "headless": "node src/headless/cli.ts",
     "test:golden": "node src/headless/golden.ts",
     "live": "node src/live/cli.ts",
-    "serve": "node src/opcua/serve.ts"
+    "serve": "node src/main.ts",
+    "openapi": "node src/control/openapi.ts"
   },
   "dependencies": {
+    "@fastify/swagger": "catalog:",
+    "@fastify/websocket": "catalog:",
     "@shopfloor/contracts": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/sim-core": "workspace:*",
-    "node-opcua": "catalog:"
+    "fastify": "catalog:",
+    "node-opcua": "catalog:",
+    "prom-client": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",
     "@shopfloor/test-kit": "workspace:*",
     "@shopfloor/tsconfig": "workspace:*",
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "eslint": "catalog:",
     "fast-check": "catalog:",

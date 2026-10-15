@@ -1,0 +1,222 @@
+import { readFile } from 'node:fs/promises';
+import type { PlantConfig } from '@shopfloor/plant-config';
+import { MINUTE } from '@shopfloor/sim-core';
+import type { FastifyInstance } from 'fastify';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { createLiveRun, type LiveRun } from '../live/run.ts';
+import { ManualClock } from '../live/testing.ts';
+import type { PlantEvent } from '../plant/line.ts';
+import { loadDefaultConfig } from '../plant/testing.ts';
+import { EVENT_SCHEMA } from '../headless/serialize.ts';
+import { EVENTS_PATH, buildControlApp } from './app.ts';
+import { parseEnv } from './env.ts';
+import { EventHub } from './event-hub.ts';
+import { OPENAPI_FILE, generateOpenApi } from './openapi.ts';
+
+const T0 = Date.UTC(2026, 9, 12, 3);
+let config: PlantConfig;
+let app: FastifyInstance | undefined;
+
+beforeAll(async () => {
+  config = await loadDefaultConfig();
+});
+
+afterEach(async () => {
+  await app?.close();
+  app = undefined;
+});
+
+async function setup(ready = true) {
+  const clock = new ManualClock();
+  const hub = new EventHub();
+  const events: PlantEvent[] = [];
+  const run: LiveRun = createLiveRun({
+    config,
+    seed: 3,
+    start: T0,
+    speed: 60,
+    clock,
+    onEvent: (event) => {
+      events.push(event);
+      hub.record(event);
+    },
+  });
+  app = await buildControlApp({ pacer: run.pacer, hub, ready: () => ready });
+  return { app, run, clock, hub, events };
+}
+
+describe('control API (#54)', () => {
+  it('starts, pauses, steps, changes speed and resumes the run', async () => {
+    const { app, run, clock, events } = await setup();
+    const status = await app.inject({ method: 'GET', url: '/api/v1/status' });
+    expect(status.json()).toEqual({
+      state: 'idle',
+      speed: 60,
+      simTime: '2026-10-12T03:00:00.000Z',
+      lagMs: 0,
+      events: events.length,
+    });
+
+    expect((await app.inject({ method: 'POST', url: '/api/v1/resume' })).json()).toMatchObject({
+      state: 'running',
+    });
+    clock.advance(10_000);
+    expect(run.pacer.simNow()).toBe(T0 + 10 * MINUTE);
+
+    const paused = await app.inject({ method: 'POST', url: '/api/v1/pause' });
+    expect(paused.json()).toMatchObject({ state: 'paused', simTime: '2026-10-12T03:10:00.000Z' });
+    expect(paused.json<{ events: number }>().events).toBeGreaterThan(0);
+    clock.advance(60_000);
+    expect(run.pacer.simNow()).toBe(T0 + 10 * MINUTE);
+
+    const before = run.simulation.now;
+    const step = await app.inject({ method: 'POST', url: '/api/v1/step' });
+    expect(step.statusCode).toBe(200);
+    expect(step.json<{ stepped: boolean }>().stepped).toBe(true);
+    expect(run.simulation.now).toBeGreaterThanOrEqual(before);
+
+    const speed = await app.inject({ method: 'PUT', url: '/api/v1/speed', payload: { speed: 2 } });
+    expect(speed.json()).toMatchObject({ speed: 2, state: 'paused' });
+    await app.inject({ method: 'POST', url: '/api/v1/resume' });
+    const resumedAt = run.pacer.simNow();
+    clock.advance(1_000);
+    expect(run.pacer.simNow()).toBe(resumedAt + 2_000);
+  });
+
+  it('refuses a step while running, a bad speed, and control after the end, with clear errors', async () => {
+    const { app, run } = await setup();
+    await app.inject({ method: 'POST', url: '/api/v1/resume' });
+    const step = await app.inject({ method: 'POST', url: '/api/v1/step' });
+    expect(step.statusCode).toBe(409);
+    expect(step.json()).toEqual({
+      error: 'Conflict',
+      message: 'step is only possible while paused, the run is running',
+    });
+    for (const payload of [{ speed: 0.4 }, { speed: 61 }, { speed: 'fast' }, {}]) {
+      const response = await app.inject({ method: 'PUT', url: '/api/v1/speed', payload });
+      expect(response.statusCode).toBe(400);
+      expect(response.json<{ message: string }>().message).toMatch(/speed/);
+    }
+    expect(run.pacer.speed).toBe(60);
+    run.pacer.stop();
+    for (const url of ['/api/v1/pause', '/api/v1/resume']) {
+      expect((await app.inject({ method: 'POST', url })).statusCode).toBe(409);
+    }
+  });
+
+  it('reports liveness, readiness and Prometheus metrics', async () => {
+    const { app, clock } = await setup();
+    expect((await app.inject({ url: '/health/live' })).json()).toEqual({ status: 'ok' });
+    expect((await app.inject({ url: '/health/ready' })).statusCode).toBe(200);
+    await app.inject({ method: 'POST', url: '/api/v1/resume' });
+    clock.advance(30_000);
+    const metrics = await app.inject({ url: '/metrics' });
+    expect(metrics.headers['content-type']).toMatch(/^text\/plain/);
+    expect(metrics.body).toMatch(/^sim_speed_ratio 60$/m);
+    expect(metrics.body).toMatch(/^sim_pacer_state\{state="running"\} 1$/m);
+    expect(metrics.body).toMatch(/^sim_events_total\{type="state"\} [1-9]\d*$/m);
+    expect(metrics.body).toMatch(/^sim_time_seconds \d+/m);
+    expect(metrics.body).toMatch(/^process_cpu_user_seconds_total /m);
+
+    const notReady = await setup(false);
+    const response = await notReady.app.inject({ url: '/health/ready' });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ status: 'unavailable' });
+    await notReady.app.close();
+  });
+
+  it('streams every plant event over WebSocket in the headless event-log format', async () => {
+    const { app, clock, events } = await setup();
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+    const socket = new WebSocket(`${address.replace('http', 'ws')}${EVENTS_PATH}`);
+    const lines: string[] = [];
+    socket.addEventListener('message', (message: MessageEvent) => {
+      lines.push(String(message.data));
+    });
+    await new Promise((resolve, reject) => {
+      socket.addEventListener('open', resolve);
+      socket.addEventListener('error', reject);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Events emitted before the client connected (the run's start-up events) are not replayed.
+    const missed = events.length;
+    expect(missed).toBeGreaterThan(0);
+    await app.inject({ method: 'POST', url: '/api/v1/resume' });
+    clock.advance(60_000);
+    await app.inject({ method: 'POST', url: '/api/v1/pause' });
+    for (let i = 0; i < 100 && lines.length < events.length - missed; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(events.length - missed).toBeGreaterThan(10);
+    const live = events.slice(missed);
+    const parsed = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(parsed.map((p) => p.seq)).toEqual(live.map((_, i) => missed + i + 1));
+    expect(parsed.every((p) => p.schema === EVENT_SCHEMA)).toBe(true);
+    expect(parsed.map((p) => [p.type, p.at])).toEqual(
+      live.map((e) => [e.type, new Date(e.at).toISOString()]),
+    );
+    const metrics = await app.inject({ url: '/metrics' });
+    expect(metrics.body).toMatch(/^sim_websocket_clients 1$/m);
+    const closed = new Promise<CloseEvent>((resolve) => {
+      socket.addEventListener('close', resolve);
+    });
+    socket.send('hello');
+    expect((await closed).code).toBe(1003);
+  });
+
+  it('keeps the committed OpenAPI description in step with the routes', async () => {
+    const generated = await generateOpenApi();
+    expect(await readFile(OPENAPI_FILE, 'utf8')).toBe(generated);
+    const document = JSON.parse(generated) as { paths: Record<string, unknown> };
+    expect(Object.keys(document.paths).sort()).toEqual([
+      '/api/v1/pause',
+      '/api/v1/resume',
+      '/api/v1/speed',
+      '/api/v1/status',
+      '/api/v1/step',
+      '/health/live',
+      '/health/ready',
+      '/metrics',
+    ]);
+  });
+});
+
+describe('environment configuration (#54)', () => {
+  it('applies defaults and coerces values', () => {
+    const result = parseEnv({ SIM_SPEED: '30', CONTROL_PORT: '9000', SIM_SEED: '' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.env).toMatchObject({
+        SIM_SEED: 1,
+        SIM_SPEED: 30,
+        SIM_START: Date.UTC(2026, 9, 12, 3),
+        CONTROL_HOST: '127.0.0.1',
+        CONTROL_PORT: 9000,
+        OPCUA_PORT_OFFSET: 0,
+        SIM_AUTOSTART: 'true',
+        LOG_LEVEL: 'info',
+      });
+    }
+  });
+
+  it('refuses invalid values and names every offending variable', () => {
+    const result = parseEnv({
+      SIM_SPEED: '100',
+      SIM_START: '2026-10-12T06:00:00',
+      CONTROL_PORT: 'http',
+      SIM_SEED: '-1',
+      LOG_LEVEL: 'loud',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues.map((issue) => issue.split(':')[0]).sort()).toEqual([
+        'CONTROL_PORT',
+        'LOG_LEVEL',
+        'SIM_SEED',
+        'SIM_SPEED',
+        'SIM_START',
+      ]);
+      expect(result.issues.join('\n')).toMatch(/SIM_START: expected ISO 8601 with an offset/);
+    }
+  });
+});

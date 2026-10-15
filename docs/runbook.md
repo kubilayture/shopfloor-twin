@@ -48,21 +48,35 @@ Runs the plant paced to wall time × speed and prints every machine state change
 pnpm sim:live --speed 60
 ```
 
-Options: `--seed` (default 1), `--speed` (0.5–60, default 60), `--start` (ISO 8601 with an offset), `--config`. Ctrl+C stops it. At 60×, one shift (8 h) takes 8 minutes. Pause, resume, step and speed control arrive with the control API (#54); the OPC UA servers (#51) run on top of the same live run.
+Options: `--seed` (default 1), `--speed` (0.5–60, default 60), `--start` (ISO 8601 with an offset), `--config`. Ctrl+C stops it. At 60×, one shift (8 h) takes 8 minutes. For pause, resume, step and speed control, use `pnpm sim:serve` and its control API.
 
-## Serve the plant over OPC UA
+## Serve the plant: OPC UA and the control API
 
-Runs the plant live and exposes the five OPC UA machines (contract: `docs/contracts/opcua-address-space.md`):
+Runs the plant live, exposes the five OPC UA machines (contract: `docs/contracts/opcua-address-space.md`) and the control API (contract: `docs/contracts/simulator-control-api.md`):
 
 ```bash
-pnpm sim:serve --speed 60
+pnpm sim:serve
 ```
 
-Options: `--seed`, `--speed` (0.5–60), `--start`, `--host` (default `localhost`), `--port-offset` (adds to 4841–4845), `--config`.
+Configuration comes from environment variables, validated at start-up. Examples: `SIM_SPEED=30`, `SIM_SEED=7`, `SIM_AUTOSTART=false`, `OPCUA_PORT_OFFSET=100`, `CONTROL_PORT=4800`. The full list is in the contract.
+
+```bash
+SIM_SPEED=30 SIM_AUTOSTART=false pnpm sim:serve
+```
+
+Control the run from another terminal:
+
+```bash
+curl -s -X POST localhost:4800/api/v1/resume
+```
+
+The other commands are `POST /api/v1/pause`, `POST /api/v1/step`, `PUT /api/v1/speed` with a JSON body `{"speed": 10}`, and `GET /api/v1/status`. Plant events stream over a WebSocket at `ws://localhost:4800/api/v1/events`; health is at `/health/live` and `/health/ready`, and metrics at `/metrics`.
 
 - Connect any OPC UA client, for example UaExpert, with security mode None.
 - Each server creates its own certificate on first start in `./.pki/<machine>` (git-ignored).
-- Ctrl+C stops the run and shuts the servers down.
+- Logs are JSON lines (pino). `LOG_LEVEL=warn` keeps only warnings and errors.
+- Ctrl+C or SIGTERM stops the run, closes the API and shuts the servers down. An invalid environment exits with status 2.
+- After changing a route, regenerate the OpenAPI description with `pnpm --filter @shopfloor/simulator openapi`. A test fails while it is out of date.
 
 ## Golden scenarios
 

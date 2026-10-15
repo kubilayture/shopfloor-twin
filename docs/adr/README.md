@@ -15,3 +15,4 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0008](0008-opcua-address-space-model.md)                   | OPC UA address space: companion types plus a project namespace           | accepted           |
 | [0009](0009-lossless-opcua-delivery.md)                     | Lossless OPC UA delivery: events with sequence numbers                   | accepted           |
 | [0010](0010-alarms-as-state-variables-and-events.md)        | Alarms on the device as state variables and events; lifecycle in the MES | accepted           |
+| [0012](0012-metrics-with-prom-client.md)                    | Prometheus metrics with prom-client; OpenTelemetry later                 | accepted           |

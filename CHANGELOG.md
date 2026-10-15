@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Simulator control API (Fastify): pause, resume, step, speed and status under `/api/v1`; plant events over WebSocket in the event-log format; `/health/live`, `/health/ready`, Prometheus `/metrics` (ADR-0012); environment configuration validated at start-up; graceful SIGTERM shutdown; generated OpenAPI in `docs/api/` with a drift test; contract `docs/contracts/simulator-control-api.md`. `pnpm sim:serve` is now configured through environment variables instead of flags (#54).
 - Alarms: failure codes active while a machine is down, `CALIBRATION-DUE` on LKT-01; `alarm` events; per-machine `ShopFloor.Alarms.<CODE>.Active` and `ActiveCount` on OPC UA with a `ShopFloorAlarmEventType` event per transition; alarm invariants. Golden `week-01` updated: 4 new alarm events, all other values unchanged (#53).
 - `LoadProgram(Product, Quantity)` on the CNCs: campaign at the front of the queue, changeover at the next cycle boundary; `program-loaded` event (#52).
 - One OPC UA server per machine (ports 4841–4845): companion model, project namespace, state and cycle events with sequence numbers, simulation-time timestamps, telemetry; contract in `@shopfloor/contracts` and `docs/contracts/opcua-address-space.md`; `pnpm sim:serve` (#51).

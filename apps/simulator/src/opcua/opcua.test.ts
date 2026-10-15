@@ -2,10 +2,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   OPCUA_EVENT_FIELDS,
+  OPCUA_EVENT_TYPES,
   OPCUA_METHODS,
   OPCUA_VARIABLES,
   SHOPFLOOR_NAMESPACE_URI,
+  opcuaAlarmPath,
   opcuaEndpoint,
+  opcuaEventTypeId,
   opcuaNodeId,
   toIndexedNodeId,
 } from '@shopfloor/contracts';
@@ -23,10 +26,14 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
-import type { PlantEvent } from '../plant/line.ts';
+import {
+  CALIBRATION_ALARM_CODE,
+  CALIBRATION_ALARM_SEVERITY,
+  type PlantEvent,
+} from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
 import { machineryItemState, machineryOperationMode } from './machinery-state.ts';
-import { PlantServers } from './plant-servers.ts';
+import { PlantServers, alarmCodes } from './plant-servers.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
 const OFFSET = 200;
@@ -137,7 +144,8 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
       });
       const received: { sequence: number; machine: string; time: Date }[] = [];
       const isCncFact = (e: PlantEvent) =>
-        (e.type === 'state' || e.type === 'cycle-complete') && e.machineId === 'cnc-01';
+        (e.type === 'state' || e.type === 'cycle-complete' || e.type === 'alarm') &&
+        e.machineId === 'cnc-01';
       const beforeSubscription = plantEvents.filter(isCncFact).length;
       const item = await subscription.monitor(
         { nodeId: resolveNodeId('i=2253'), attributeId: AttributeIds.EventNotifier },
@@ -260,6 +268,109 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
         attributeId: AttributeIds.Value,
       });
       expect(program.value.value).toBe('VB-200');
+    } finally {
+      await close();
+    }
+  }, 60_000);
+
+  it('exposes alarm states and raises an alarm event per transition (ADR-0010)', async () => {
+    const port = 4844 + OFFSET;
+    const { session, close } = await connect(port);
+    try {
+      const namespaces = await session.readNamespaceArray();
+      const nsIndex = namespaces.indexOf(SHOPFLOOR_NAMESPACE_URI);
+      const read = async (path: string) =>
+        (
+          await session.read({
+            nodeId: resolveNodeId(toIndexedNodeId(opcuaNodeId('lkt-01', path), namespaces)),
+            attributeId: AttributeIds.Value,
+          })
+        ).value.value as unknown;
+      expect(alarmCodes(config, 'lkt-01')).toEqual(['FIXTURE-SEAL', CALIBRATION_ALARM_CODE]);
+      expect(alarmCodes(config, 'cnc-01')).toEqual(['SPINDLE-OVERLOAD', 'COOLANT-PRESSURE']);
+      for (const code of alarmCodes(config, 'lkt-01')) {
+        expect(await read(opcuaAlarmPath(code))).toBe(false);
+      }
+      const fields = [
+        ...[...OPCUA_EVENT_FIELDS.common, ...OPCUA_EVENT_FIELDS.alarm].map(
+          (f) => `${String(nsIndex)}:${f}`,
+        ),
+        'Severity',
+        'EventType',
+      ];
+      const subscription = await session.createSubscription2({
+        requestedPublishingInterval: 50,
+        requestedMaxKeepAliveCount: 20,
+        requestedLifetimeCount: 600,
+        maxNotificationsPerPublish: 0,
+        publishingEnabled: true,
+        priority: 1,
+      });
+      const received: unknown[][] = [];
+      const item = await subscription.monitor(
+        { nodeId: resolveNodeId('i=2253'), attributeId: AttributeIds.EventNotifier },
+        {
+          samplingInterval: 0,
+          queueSize: 100,
+          discardOldest: false,
+          filter: constructEventFilter(fields),
+        },
+        TimestampsToReturn.Both,
+      );
+      item.on('changed', (values: unknown) => {
+        received.push((values as { value: unknown }[]).map((v) => v.value));
+      });
+      await wait(300);
+      const before = servers.servers.find((s) => s.machineId === 'lkt-01')?.sequence ?? 0;
+      const at = run.simulation.now;
+      const alarm = (transition: 'active' | 'cleared'): PlantEvent => ({
+        type: 'alarm',
+        at,
+        machineId: 'lkt-01',
+        code: CALIBRATION_ALARM_CODE,
+        transition,
+        severity: CALIBRATION_ALARM_SEVERITY,
+      });
+      servers.record(alarm('active'));
+      expect(await read(opcuaAlarmPath(CALIBRATION_ALARM_CODE))).toBe(true);
+      expect(await read(OPCUA_VARIABLES.alarmsActiveCount)).toBe(1);
+      servers.record(alarm('cleared'));
+      expect(await read(opcuaAlarmPath(CALIBRATION_ALARM_CODE))).toBe(false);
+      expect(await read(OPCUA_VARIABLES.alarmsActiveCount)).toBe(0);
+      for (let deadline = Date.now() + 10_000; Date.now() < deadline && received.length < 2;) {
+        await wait(50);
+      }
+      const eventType = resolveNodeId(
+        toIndexedNodeId(opcuaEventTypeId(OPCUA_EVENT_TYPES.alarm), namespaces),
+      ).toString();
+      expect(
+        received.map(([sequence, machine, code, transition, severity, type]) => [
+          Number(sequence),
+          machine,
+          code,
+          transition,
+          severity,
+          String(type),
+        ]),
+      ).toEqual([
+        [
+          before + 1,
+          'lkt-01',
+          CALIBRATION_ALARM_CODE,
+          'active',
+          CALIBRATION_ALARM_SEVERITY,
+          eventType,
+        ],
+        [
+          before + 2,
+          'lkt-01',
+          CALIBRATION_ALARM_CODE,
+          'cleared',
+          CALIBRATION_ALARM_SEVERITY,
+          eventType,
+        ],
+      ]);
+      await subscription.terminate();
     } finally {
       await close();
     }

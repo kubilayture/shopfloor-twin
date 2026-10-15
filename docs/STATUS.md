@@ -1,4 +1,4 @@
-# Status — updated 2026-10-14
+# Status — updated 2026-10-15
 
 ## Current phase: 02 – Device layer: OPC UA (planning, started 2026-10-14)
 
@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #52 merged (PR #64): LoadProgram on the CNCs.
 - #51 merged (PR #63): OPC UA server per machine.
 - #50 merged (PR #62): process values.
 - Owner's standing instruction (2026-10-15): continue through all phases without stopping or asking. Owner-only exit criteria are recorded as deferred to the owner, never as met.
@@ -34,11 +35,11 @@
 
 ## In progress
 
-- #52 LoadProgram (in review)
+- #53 alarms (in review)
 
 ## Next up
 
-- #53 alarms, #54 control API, #55 container, #56 integration tests and contract check
+- #54 control API, #55 container, #56 integration tests and contract check, #57 Phase 2 close
 
 ## Blockers and open questions for the owner
 

@@ -309,6 +309,14 @@ Source: `apps/simulator/src/plant/quality.ts` and `line.ts`. Parameters: `config
 - First-test failure rate: about 0.4% right after calibration, rising to about 2% after 7 days of drift.
 - Calibration every `calibrationIntervalDays` (7) is planned `Maintenance` with cause `CALIBRATION` for `calibrationMinutes` (20). It starts between parts, and resets the drift.
 
+### Alarms
+
+The model raises alarms and clears them; the lifecycle (acknowledge, shelve, history) belongs to the MES (ADR-0010).
+
+- **Failure alarms:** when a machine goes `Down`, the failure code becomes an active alarm (severity 700). It clears when the repair ends, at the same moment as the `repair-end` event.
+- **`CALIBRATION-DUE` on LKT-01 (severity 300):** it becomes active when `calibrationIntervalDays` have passed since the last calibration (or the run start), and clears when the calibration ends. If the line is off when it falls due, it stays active until the calibration actually happens at the next start of work.
+- Every transition is an `alarm` event. These events don't change the model's behaviour: the golden week gained 4 alarm events, and every other value stayed the same.
+
 ### Rework loop
 
 - A first leak failure gives `cycle-complete` with result `rework`, reason `LEAK`. The part goes to a **rework queue at OP30**, separate from the OP20→OP30 buffer, as a rework rack would be. ASM-01 takes rework parts before new ones.
@@ -398,6 +406,7 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 | `cycle-complete`             | `machineId`, `product`, `partId`, `serial`, `result` (`good`, `scrap`, `rework`), `reason?`, `measurement?` | A station finishes a cycle                                        |
 | `material-consumed`          | `machineId`, `partId`, `material`, `lotId`                                                                  | A unit of a lot is consumed                                       |
 | `repair-start`, `repair-end` | `machineId`, `failureCode`                                                                                  | A technician starts or finishes a repair                          |
+| `alarm`                      | `machineId`, `code`, `transition` (`active`, `cleared`), `severity`                                         | An alarm is raised or cleared (see Alarms)                        |
 | `program-loaded`             | `machineId`, `product`, `quantity`                                                                          | A program was loaded on a CNC from outside (OPC UA `LoadProgram`) |
 | `shift`                      | `action` (`shift-start`, `break-start`, `break-end`, `shift-end`), `shiftId`, `shiftDate`                   | A calendar boundary is reached                                    |
 | `operator`                   | `machineId`, `operatorId` (or null), `absent`                                                               | A station is staffed at shift start                               |
@@ -476,20 +485,21 @@ The wall clock is injected (`WallClock`), so tests use a manual clock and are ex
 
 Source: `apps/simulator/src/headless/invariants.ts` and `golden.ts`.
 
-`InvariantChecker` runs after **every** simulation step, once the step has been handled. In the middle of a step a part can legitimately be in transit, for example taken from a buffer but not yet in the machine, which is why it doesn't run after every emitted event. Each check verifies three things (plan section 4, built-in validation):
+`InvariantChecker` runs after **every** simulation step, once the step has been handled. In the middle of a step a part can legitimately be in transit, for example taken from a buffer but not yet in the machine, which is why it doesn't run after every emitted event. Each check verifies four things (plan section 4, built-in validation):
 
 1. **Conservation of parts, by identity:** every part started (ids 1 … n) is in exactly one place: finished, scrapped, a buffer, a machine or the rework queue. A count alone could hide one lost part plus one duplicated part.
 2. **Time accounting from two independent sources:** the checker rebuilds every machine's time per state from the emitted `state` events and compares it, state by state, with the machine's own accounting. Both must also sum to the elapsed time. Every `state` event must also start from the state the log last reported.
 3. **Conservation of material:** for every lot, units consumed (from `material-consumed` events) + remaining = initial quantity.
+4. **Alarms:** each alarm alternates between active and cleared in the log, the active set rebuilt from the log equals every station's own, and a machine that is down has its failure alarm active.
 
-The first violation stops the run with an `InvariantViolation` naming the time and the quantities. Tests prove the checker catches each kind of violation: a lost part, a part in two places, a state change missing from the event log, time charged to the wrong state, and a unit consumed without an event.
+The first violation stops the run with an `InvariantViolation` naming the time and the quantities. Tests prove the checker catches each kind of violation: a lost part, a part in two places, a state change missing from the event log, time charged to the wrong state, a unit consumed without an event, an alarm transition missing from the log, and an alarm raised twice.
 
 Coverage:
 
 - the three 5-day production weeks (Monday 06:00 to Saturday 06:00, seeds 1–3) in the test suite;
 - the golden scenario `week-01` (seed 20261012, 7 days, default plant), about 12,600 checks per run.
 
-The golden snapshot pins the run byte for byte: its summary file, and the SHA-256 of its 35,760-line event log. CI runs it on every pull request.
+The golden snapshot pins the run byte for byte: its summary file, and the SHA-256 of its 35,764-line event log. CI runs it on every pull request.
 
 ## Random numbers and distributions
 

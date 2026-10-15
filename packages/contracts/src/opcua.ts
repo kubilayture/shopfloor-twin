@@ -68,6 +68,10 @@ export const OPCUA_EVENT_FIELD_TYPES = {
 export const opcuaNodeId = (machineId: string, path: string): string =>
   `nsu=${SHOPFLOOR_NAMESPACE_URI};s=${machineId}.${path}`;
 
+export const OPCUA_ALARM_FOLDER = 'ShopFloor.Alarms';
+
+export const opcuaAlarmPath = (code: string): string => `${OPCUA_ALARM_FOLDER}.${code}.Active`;
+
 export const opcuaEventTypeId = (eventType: string): string =>
   `nsu=${SHOPFLOOR_NAMESPACE_URI};s=${eventType}`;
 

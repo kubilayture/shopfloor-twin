@@ -2,7 +2,12 @@ import { join } from 'node:path';
 import { OPCUA_MACHINES } from '@shopfloor/contracts';
 import type { PlantConfig } from '@shopfloor/plant-config';
 import type { SimTime, Simulation } from '@shopfloor/sim-core';
-import type { LineEvent, PlantEvent, ProductionLine } from '../plant/line.ts';
+import {
+  CALIBRATION_ALARM_CODE,
+  type LineEvent,
+  type PlantEvent,
+  type ProductionLine,
+} from '../plant/line.ts';
 import type { ProcessValues } from '../plant/process-values.ts';
 import { MachineServer } from './machine-server.ts';
 
@@ -18,6 +23,17 @@ export interface LiveSources {
   readonly line: ProductionLine;
   readonly simulation: Simulation<LineEvent>;
   readonly processValues: ProcessValues;
+}
+
+export function alarmCodes(config: PlantConfig, machineId: string): string[] {
+  const failures =
+    config.failures.equipment[machineId]?.failureModes.map((mode) => mode.code) ?? [];
+  const equipment = config.plant.areas
+    .flatMap((a) => a.workCenters.flatMap((w) => w.equipment))
+    .find((e) => e.id === machineId);
+  return equipment?.operation === config.process.leakTest.operation
+    ? [...failures, CALIBRATION_ALARM_CODE]
+    : failures;
 }
 
 export class PlantServers {
@@ -48,6 +64,7 @@ export class PlantServers {
         kind: machine.kind,
         port: machine.port + portOffset,
         pkiFolder: join(pkiFolder, machine.id),
+        alarmCodes: alarmCodes(config, machine.id),
         loadProgram: (product: string, quantity: number) => {
           const sources = this.#sources;
           if (!sources) {

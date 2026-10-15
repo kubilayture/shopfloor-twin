@@ -1,6 +1,7 @@
 export { UNS_CLASSES, UNS_ROOT, equipmentTopic } from './uns-topic.ts';
 export type { EquipmentTopic, UnsClass } from './uns-topic.ts';
 export {
+  OPCUA_ALARM_FOLDER,
   OPCUA_BASE_PORT,
   OPCUA_EVENT_FIELDS,
   OPCUA_EVENT_FIELD_TYPES,
@@ -9,6 +10,7 @@ export {
   OPCUA_METHODS,
   OPCUA_VARIABLES,
   SHOPFLOOR_NAMESPACE_URI,
+  opcuaAlarmPath,
   opcuaEndpoint,
   opcuaEventTypeId,
   opcuaNodeId,

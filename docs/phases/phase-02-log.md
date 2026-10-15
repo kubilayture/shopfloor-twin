@@ -14,3 +14,5 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
 - Merged #61 (#49): live mode. The review found re-entrancy when pacing is controlled from inside an event handler, and a circular accuracy test; both were fixed, and a property test was added.
 - Merged #62 (#50): process values. The review moved reads before the last state change to return no value and led to the rule that live readers use `simulation.now`.
 - Merged #63 (#51): OPC UA servers. The review found that the lossless test couldn't see lost initial events (now exact), that Machinery TransitionEvents share `i=2253` (documented), and that initial values had wall-clock timestamps (fixed).
+- Merged #64 (#52): LoadProgram. Status codes follow the OPC UA method rules, with the offending argument flagged.
+- #53 alarms: the alarm events are pure additions. The golden week gained 4 events and nothing else changed, which confirms that the extra `calibration-due` timer doesn't disturb event order.

@@ -105,6 +105,34 @@ describe('invariants at every simulation step (plan section 4, exit criterion 2)
     }).toThrow(/in the machine but .* in the event log|the event log had it in/);
   });
 
+  it('detects an alarm transition the event log never got', () => {
+    const dropped = partialRun(30).events.findLastIndex(
+      (e) => e.type === 'alarm' && e.transition === 'cleared',
+    );
+    expect(dropped).toBeGreaterThan(0);
+    const { checker, now, feed } = partialRun(30, (_, index) => index !== dropped);
+    expect(() => {
+      feed();
+      checker.check(now);
+    }).toThrow(/active alarms are \[.*\], but the event log says/);
+  });
+
+  it('detects an alarm raised twice without being cleared', () => {
+    const { checker } = partialRun(0);
+    const alarm = {
+      type: 'alarm',
+      at: MONDAY,
+      machineId: 'cnc-01',
+      code: 'SPINDLE-OVERLOAD',
+      transition: 'active',
+      severity: 700,
+    } as const;
+    checker.record(alarm);
+    expect(() => {
+      checker.record(alarm);
+    }).toThrow(/active twice in a row/);
+  });
+
   it('detects a material unit that was consumed without an event', () => {
     const { line, checker, now, feed } = partialRun(6);
     feed();

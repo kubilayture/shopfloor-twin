@@ -18,6 +18,7 @@
     "@fastify/websocket": "catalog:",
     "@shopfloor/contracts": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
+    "@shopfloor/shift-calendar": "workspace:*",
     "@shopfloor/sim-core": "workspace:*",
     "fastify": "catalog:",
     "modbus-serial": "catalog:",

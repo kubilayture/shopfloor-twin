@@ -1,18 +1,44 @@
-import type { PlantConfig } from '@shopfloor/plant-config';
-import type { SimTime } from '@shopfloor/sim-core';
+/**
+ * The plant's shift calendar (Temporal, any IANA time zone). Pure and shared: the simulator runs
+ * its shifts with it and the MES cuts its intervals with it, so both agree by construction.
+ */
+
+/** Milliseconds since 1970 UTC. */
+export type Millis = number;
+
+export const WEEKDAYS = [
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY',
+  'SUNDAY',
+] as const;
+
+export type Weekday = (typeof WEEKDAYS)[number];
+
+/** Structurally the same as `config/plant/shifts.yaml` (plant-config's `shifts`). */
+export interface ShiftPattern {
+  readonly timeZone: string;
+  readonly workdays: readonly Weekday[];
+  readonly shifts: readonly {
+    readonly id: string;
+    /** Local clock time, HH:MM. */
+    readonly start: string;
+    readonly end: string;
+    readonly break?: { readonly start: string; readonly minutes: number } | undefined;
+  }[];
+}
 
 export type CalendarAction = 'shift-start' | 'shift-end' | 'break-start' | 'break-end';
 
 export interface CalendarBoundary {
-  readonly at: SimTime;
+  readonly at: Millis;
   readonly action: CalendarAction;
   readonly shiftId: string;
   readonly shiftDate: string;
 }
-
-type ShiftsConfig = PlantConfig['shifts'];
-
-const WEEKDAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 
 const ORDER: Record<CalendarAction, number> = {
   'shift-end': 0,
@@ -21,22 +47,22 @@ const ORDER: Record<CalendarAction, number> = {
   'break-start': 3,
 };
 
-function at(date: Temporal.PlainDate, time: string, start: string, timeZone: string): SimTime {
+function at(date: Temporal.PlainDate, time: string, start: string, timeZone: string): Millis {
   const day = time < start ? date.add({ days: 1 }) : date;
   return day.toZonedDateTime({ timeZone, plainTime: Temporal.PlainTime.from(time) })
     .epochMilliseconds;
 }
 
-function endAt(date: Temporal.PlainDate, end: string, start: string, timeZone: string): SimTime {
+function endAt(date: Temporal.PlainDate, end: string, start: string, timeZone: string): Millis {
   const day = end <= start ? date.add({ days: 1 }) : date;
   return day.toZonedDateTime({ timeZone, plainTime: Temporal.PlainTime.from(end) })
     .epochMilliseconds;
 }
 
 export function shiftBoundaries(
-  shifts: ShiftsConfig,
-  from: SimTime,
-  to: SimTime,
+  shifts: ShiftPattern,
+  from: Millis,
+  to: Millis,
 ): CalendarBoundary[] {
   const zone = shifts.timeZone;
   const first = Temporal.Instant.fromEpochMilliseconds(from).toZonedDateTimeISO(zone).toPlainDate();
@@ -47,9 +73,8 @@ export function shiftBoundaries(
     Temporal.PlainDate.compare(date, last) <= 0;
     date = date.add({ days: 1 })
   ) {
-    if (
-      !shifts.workdays.includes(WEEKDAYS[date.dayOfWeek - 1] as ShiftsConfig['workdays'][number])
-    ) {
+    const weekday = WEEKDAYS[date.dayOfWeek - 1];
+    if (weekday === undefined || !shifts.workdays.includes(weekday)) {
       continue;
     }
     const shiftDate = date.toString();
@@ -85,7 +110,7 @@ export interface ShiftInstance {
   readonly inBreak: boolean;
 }
 
-export function shiftAt(shifts: ShiftsConfig, time: SimTime): ShiftInstance | undefined {
+export function shiftAt(shifts: ShiftPattern, time: Millis): ShiftInstance | undefined {
   const day = 24 * 3_600_000;
   let current: ShiftInstance | undefined;
   for (const boundary of shiftBoundaries(shifts, time - 2 * day, time + 1)) {
@@ -98,4 +123,23 @@ export function shiftAt(shifts: ShiftsConfig, time: SimTime): ShiftInstance | un
     }
   }
   return current;
+}
+
+/** The bucket a moment belongs to, as the ground truth keys it: `2026-10-13/B`, or `no-shift`. */
+export const NO_SHIFT = 'no-shift';
+
+export function shiftKeyAt(shifts: ShiftPattern, time: Millis): string {
+  const instance = shiftAt(shifts, time);
+  return instance ? `${instance.shiftDate}/${instance.shiftId}` : NO_SHIFT;
+}
+
+/** Instants in [from, to) where the shift bucket changes (shift starts and ends; breaks don't). */
+export function shiftCuts(shifts: ShiftPattern, from: Millis, to: Millis): Millis[] {
+  return [
+    ...new Set(
+      shiftBoundaries(shifts, from, to)
+        .filter((b) => b.action === 'shift-start' || b.action === 'shift-end')
+        .map((b) => b.at),
+    ),
+  ];
 }

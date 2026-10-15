@@ -13,6 +13,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/simulator/package.json apps/simulator/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/plant-config/package.json packages/plant-config/
+COPY packages/shift-calendar/package.json packages/shift-calendar/
 COPY packages/sim-core/package.json packages/sim-core/
 # Production dependencies of the simulator and its workspace packages only; no lifecycle scripts.
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts --filter @shopfloor/simulator...
@@ -27,6 +28,7 @@ COPY --from=deps /app ./
 COPY config/plant config/plant
 COPY packages/contracts/src packages/contracts/src
 COPY packages/plant-config/src packages/plant-config/src
+COPY packages/shift-calendar/src packages/shift-calendar/src
 COPY packages/sim-core/src packages/sim-core/src
 COPY apps/simulator/src apps/simulator/src
 RUN mkdir -p /var/lib/simulator/pki && chown node:node /var/lib/simulator/pki

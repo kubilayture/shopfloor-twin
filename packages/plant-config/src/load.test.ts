@@ -150,6 +150,14 @@ describe('cross-file checks', () => {
       'break does not fit inside the shift',
     ],
     [
+      'two shifts that overlap',
+      (c) => {
+        const shift = c.shifts.shifts[1];
+        if (shift) shift.start = '13:00';
+      },
+      'overlaps shift "A"',
+    ],
+    [
       'an unknown time zone',
       (c) => {
         c.shifts.timeZone = 'Europe/Gebze';

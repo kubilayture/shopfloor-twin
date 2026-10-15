@@ -14,6 +14,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- `@shopfloor/shift-calendar`: the simulator's shift calendar as a pure package shared with the MES, plus shift-bucket keys and cuts (golden snapshot unchanged); `@shopfloor/oee-core` with pure interval building and splitting at UTC hours and shift boundaries, with property tests; MES `master-data` module (hierarchy, products, shift pattern) seeded idempotently from `config/plant` at start-up (#94).
 - `mes-server` skeleton: validated environment, health with database readiness, metrics, graceful shutdown; Kysely on `pg`; plain SQL migration runner over `db/migrations` with checksums, advisory lock and per-migration transactions (ADR-0016); module schemas `master_data`, `ingest`, `equipment`; Testcontainers TimescaleDB harness; Docker-context helper moved to `@shopfloor/test-kit/docker` (#93).
 - Phase 4 plan with issues #92–#101 (#92).
 - Phase 3 closed: report and learning notes; all 4 exit criteria met; tag `phase-03` (#80).

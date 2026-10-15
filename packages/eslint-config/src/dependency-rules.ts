@@ -2,7 +2,7 @@ import type { Linter } from 'eslint';
 
 export const APPS = ['simulator', 'edge-gateway', 'mes-server', 'erp-mock', 'web'] as const;
 
-export const PURE_PACKAGES = ['sim-core', 'oee-core'] as const;
+export const PURE_PACKAGES = ['sim-core', 'oee-core', 'shift-calendar'] as const;
 
 export const MES_MODULES = [
   'master-data',
@@ -45,7 +45,7 @@ const relativeEscapeFromPackage: RestrictedPattern = {
 const pureOnlyRelative: RestrictedPattern = {
   regex: '^[^.]',
   message:
-    'sim-core and oee-core are pure: no I/O, Node.js built-ins or third-party packages, only relative imports (plan section 8).',
+    'sim-core, oee-core and shift-calendar are pure: no I/O, Node.js built-ins or third-party packages, only relative imports (plan section 8).',
 };
 
 const mesModuleInternals: RestrictedPattern = {

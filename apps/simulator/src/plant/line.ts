@@ -17,7 +17,7 @@ import {
   type Simulation,
 } from '@shopfloor/sim-core';
 import { PartBuffer, type Part } from './buffer.ts';
-import { shiftAt, shiftBoundaries, type CalendarBoundary } from './calendar.ts';
+import { shiftAt, shiftBoundaries, type CalendarBoundary } from '@shopfloor/shift-calendar';
 import { Crew, type Assignment } from './crew.ts';
 import { Inventory } from './materials.ts';
 import { LeakTester, ToolWear } from './quality.ts';

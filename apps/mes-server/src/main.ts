@@ -1,8 +1,11 @@
+import { resolve } from 'node:path';
+import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { sql } from 'kysely';
 import { createDatabase } from './db/database.ts';
 import { migrate } from './db/migrate.ts';
 import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
+import { MasterData } from './modules/master-data/index.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -12,6 +15,11 @@ if (!parsed.ok) {
   process.exit(2);
 }
 const env = parsed.env;
+const plant = await loadPlantConfig(resolve(env.PLANT_CONFIG_DIR));
+if (!plant.ok) {
+  console.error(formatIssues(plant.issues));
+  process.exit(1);
+}
 const db = createDatabase(env.DATABASE_URL);
 const state = { migrated: false, stopping: false };
 
@@ -55,6 +63,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 await app.listen({ host: env.HTTP_HOST, port: env.HTTP_PORT });
 try {
   const result = await migrate(db, env.MIGRATIONS_DIR);
+  await new MasterData(db).seed(plant.config);
   state.migrated = true;
   log.info({ applied: result.applied, alreadyApplied: result.skipped }, 'database migrated');
 } catch (error) {

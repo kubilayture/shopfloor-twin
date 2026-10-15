@@ -227,7 +227,7 @@ Reference week, default plant, seed 1, VB-100 only, running continuously (shifts
 
 ## Shifts, breaks and operators
 
-Source: `apps/simulator/src/plant/calendar.ts`, `crew.ts` and `line.ts`. Parameters: `config/plant/shifts.yaml` and `operators.yaml`.
+Source: `packages/shift-calendar` (shared with the MES, so both cut shifts identically), `apps/simulator/src/plant/crew.ts` and `line.ts`. Parameters: `config/plant/shifts.yaml` and `operators.yaml`.
 
 ### Calendar
 

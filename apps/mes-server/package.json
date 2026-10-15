@@ -11,6 +11,8 @@
     "migrate": "node src/db/cli.ts"
   },
   "dependencies": {
+    "@shopfloor/plant-config": "workspace:*",
+    "@shopfloor/shift-calendar": "workspace:*",
     "fastify": "catalog:",
     "kysely": "catalog:",
     "pg": "catalog:",

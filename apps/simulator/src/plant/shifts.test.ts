@@ -2,7 +2,7 @@ import type { PlantConfig } from '@shopfloor/plant-config';
 import { HOUR, MINUTE, RandomSource, SECOND, Simulation } from '@shopfloor/sim-core';
 import { chiSquareTest } from '@shopfloor/test-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { shiftAt } from './calendar.ts';
+import { shiftAt } from '@shopfloor/shift-calendar';
 import { ProductionLine, type LineEvent, type PlantEvent } from './line.ts';
 import {
   loadDefaultConfig,

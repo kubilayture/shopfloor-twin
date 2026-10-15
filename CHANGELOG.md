@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
+### Fixed
+
+- A CNC's first changeover with no product loaded gives cause `CHANGEOVER none→<product>` instead of `CHANGEOVER undefined→<product>`; the format is documented in `docs/simulation-model.md` and the OPC UA address-space contract. Golden week `week-01` not regenerated: a validated schedule always loads a CNC's first campaign at start, so the week never takes this path; its events (35,764 lines, `events.sha256` `e7c69736…009b740b`) and `summary.json` are byte-identical, and that hash is the baseline #117 must keep (#126).
+
 ### Changed
 
 - `pnpm verify` also runs `pnpm check:dockerfiles` (`scripts/check-dockerfiles.ts`): every app's Dockerfile must copy the `package.json` of each workspace package its `pnpm install --filter` selects and the `src` of each one it needs at run time, and nothing else from `apps/` or `packages/`; a root `tsconfig.json` type-checks and lints `scripts/*.ts`; the CI `stack smoke` job sets up Node.js for the web checks and gets 20 minutes (#99).

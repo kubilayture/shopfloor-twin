@@ -120,7 +120,7 @@ Source: `apps/simulator/src/plant/line.ts`. Failures, minor stops, shifts, opera
 Each CNC works through its campaigns in `config/plant/schedule.yaml` in order (plan rev. 5).
 
 - A CNC starts the run already set up for its first campaign.
-- When the next campaign is a different product, the CNC enters `Setup` for `changeoverMinutes` (default 25), with cause `CHANGEOVER <from>→<to>`.
+- When the next campaign is a different product, the CNC enters `Setup` for `changeoverMinutes` (default 25), with cause `CHANGEOVER <from>→<to>`. `<from>` is `none` when nothing is loaded: a validated schedule gives every CNC a first campaign, so this happens only to a CNC built without campaigns that then gets a program (#126).
 - When all campaigns are done, the CNC goes to `Idle` with cause `SCHEDULE-COMPLETE`.
 - In Phase 1 a CNC never runs out of blanks; material lots arrive with #27.
 

@@ -13,3 +13,8 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - a simulator restart moves simulation time backwards, so intervals are scoped per epoch.
 
   Also adopted: a plant watermark for provisional closing, UTC hours, a session expiry for the persistent session, a cursor table, `db/migrations` as in plan section 8, the interval functions in `oee-core`, and window-only recomputation.
+
+- Merged #102 (#92): Phase 4 plan.
+- #93: the migration runner is about 80 lines with an advisory lock, checksums and a transaction per file; tests start a real TimescaleDB and cover a concurrent start, a changed file, an unknown migration and a rollback. The Docker-context helper moved to `@shopfloor/test-kit/docker` for the gateway and the MES.
+- #93 review and CI: the gateway end-to-end test timed out in CI once the MES tests (a second database container) ran beside it. End-to-end tests (`*.e2e.test.ts`) now run in their own CI job, one at a time, and their waits say what they waited for. Migration runner: no-transaction files (PostgreSQL runs a multi-statement query as one implicit transaction, so they are split into statements), LF-normalised checksums, a lock wait limit, and a column list typed from `Database`.
+- CI again: the outbox outage test (#78) timed out under the same load. The gateway and MES test files now run one after another (`fileParallelism: false`); they start processes and containers.

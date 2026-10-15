@@ -1,2 +1,4 @@
 * text=auto
 apps/simulator/golden/** text eol=lf
+# Migration checksums are taken over LF text (ADR-0016).
+db/migrations/*.sql text eol=lf

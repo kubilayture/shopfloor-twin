@@ -11,6 +11,11 @@
     },
     "lint": {
       "dependsOn": ["^typecheck"]
+    },
+    "test:e2e": {
+      "dependsOn": ["^typecheck"],
+      "outputs": [],
+      "cache": false
     }
   }
 }

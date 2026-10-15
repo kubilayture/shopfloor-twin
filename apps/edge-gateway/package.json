@@ -7,7 +7,8 @@
     "typecheck": "tsc",
     "lint": "eslint .",
     "test": "vitest run --coverage",
-    "start": "node src/main.ts"
+    "start": "node src/main.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "dependencies": {
     "@shopfloor/contracts": "workspace:*",
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",
+    "@shopfloor/test-kit": "workspace:*",
     "@shopfloor/tsconfig": "workspace:*",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",

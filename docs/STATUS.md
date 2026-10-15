@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #70 merged (PR #81): Phase 3 plan, revised after review (event ring buffer for WSH-01, epochs in sequence spaces, fault controls).
 - Phase 3 plan with issues #70–#80 under milestone "Phase 03 – Edge gateway and UNS".
 - **Phase 2 closed** and tagged `phase-02`: all 5 exit criteria met (report: `docs/phases/phase-02-report.md`; learning notes: `docs/learning/phase-02.md`).
 - #56 merged (PR #68): OPC UA integration and contract tests.
@@ -41,11 +42,11 @@
 
 ## In progress
 
-- #70 Phase 3 plan (in review)
+- #71 spike: Modbus library and store-and-forward storage (in review)
 
 ## Next up
 
-- #71 spike (Modbus library, store-and-forward storage), #72 UNS contracts, #73 washer process values
+- #72 UNS contracts, #73 washer process values
 
 ## Blockers and open questions for the owner
 

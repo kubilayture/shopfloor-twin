@@ -562,7 +562,7 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 
 - [x] Alarm representation in OPC UA: state variables plus project alarm events; lifecycle in the MES (ADR-0010)
 - [x] Lossless state and event delivery from OPC UA: events with sequence numbers, exception-based values (ADR-0009)
-- [ ] Modbus library confirmation (Phase 3)
+- [x] Modbus library confirmation: `modbus-serial` (ADR-0013)
 - [ ] Micro-stop threshold and auto-classification rules for downtime (Phase 5)
 - [ ] Load-testing tool and performance targets (Phase 9)
 - [ ] Whether to add Sparkplug B after v1.0 (Phase 10 report)

@@ -1,6 +1,6 @@
 # Contract: Unified Namespace (UNS)
 
-Version 1 (Phase 3). Source of truth in code: `packages/contracts/src/uns/` (Zod schemas, topic helpers, reference dedup consumer). The JSON Schema of every payload is generated into `docs/contracts/uns/` (`pnpm --filter @shopfloor/contracts json-schema`); a test fails when it drifts from the Zod schemas. Decisions: plan section 5, ADR-0015 (identity, sequence and dedup). Any change bumps the version here and needs a changelog entry.
+Version 1.1 (Phase 4; version 1 in Phase 3). Version 1.1 adds the optional `deviceEpoch` to snapshots (#95). It is optional, so every version 1 message stays valid; the strict schemas mean an old consumer would refuse a snapshot that carries it, and the MES, the only consumer, accepts both. Source of truth in code: `packages/contracts/src/uns/` (Zod schemas, topic helpers, reference dedup consumer). The JSON Schema of every payload is generated into `docs/contracts/uns/` (`pnpm --filter @shopfloor/contracts json-schema`); a test fails when it drifts from the Zod schemas. Decisions: plan section 5, ADR-0015 (identity, sequence and dedup). Any change bumps the version here and needs a changelog entry.
 
 ## Broker
 
@@ -77,14 +77,14 @@ Every payload is one JSON object with these fields, and no others except those l
 | `quality`    | `good`, `uncertain`, `bad` | `bad` values must not be used (for example a silent device)                                       |
 | `value`      | per schema                 | The payload                                                                                       |
 
-| Schema                        | Extra fields                  | `value`                                                                                                                                                                                                            |
-| ----------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `uns.state.current/1`         | `kind`: `event` or `snapshot` | `{ state, cause }`. `state` is one of the ten machine states; `cause` is a string or null                                                                                                                          |
-| `uns.telemetry/1`             | `unit`                        | number                                                                                                                                                                                                             |
-| `uns.events.cycle-complete/1` | –                             | `{ product, partId, serial, result (good, scrap, rework), reason (or null), measurement ({ characteristic, value, unit, upperLimit } or null) }`                                                                   |
-| `uns.alarms/1`                | –                             | `{ code, transition (active, cleared), severity (1–1000) }`                                                                                                                                                        |
-| `uns.sys.status/1`            | –                             | `{ status (online, offline), startedAt, version }`                                                                                                                                                                 |
-| `uns.sys.incident/1`          | –                             | `{ type, equipment (or null), lost (or null), message }`, with `type` one of `sequence-gap`, `epoch-change`, `ring-overrun`, `device-silent`, `device-recovered`, `disconnected`, `reconnected`, `buffer-overflow` |
+| Schema                        | Extra fields                                                           | `value`                                                                                                                                                                                                            |
+| ----------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `uns.state.current/1`         | `kind`: `event` or `snapshot`; snapshots may carry `deviceEpoch` (1.1) | `{ state, cause }`. `state` is one of the ten machine states; `cause` is a string or null                                                                                                                          |
+| `uns.telemetry/1`             | `unit`                                                                 | number                                                                                                                                                                                                             |
+| `uns.events.cycle-complete/1` | –                                                                      | `{ product, partId, serial, result (good, scrap, rework), reason (or null), measurement ({ characteristic, value, unit, upperLimit } or null) }`                                                                   |
+| `uns.alarms/1`                | –                                                                      | `{ code, transition (active, cleared), severity (1–1000) }`                                                                                                                                                        |
+| `uns.sys.status/1`            | –                                                                      | `{ status (online, offline), startedAt, version }`                                                                                                                                                                 |
+| `uns.sys.incident/1`          | –                                                                      | `{ type, equipment (or null), lost (or null), message }`, with `type` one of `sequence-gap`, `epoch-change`, `ring-overrun`, `device-silent`, `device-recovered`, `disconnected`, `reconnected`, `buffer-overflow` |
 
 Validate any payload with `parseUnsMessage(json)`.
 
@@ -98,7 +98,7 @@ Validate any payload with `parseUnsMessage(json)`.
 | `CycleCompleteEventType`                                                                   | `events/cycle-complete`; an empty `Reason` becomes null; `MeasurementValue` (LKT-01) becomes `measurement` with characteristic `leak-rate`, unit `Pa/min` and the `LeakTest.UpperLimit` read at connect; NaN becomes null |
 | `ShopFloorAlarmEventType`                                                                  | `alarms/{code}` with `{ code, transition, severity }`                                                                                                                                                                     |
 | `ProcessValues.SpindleLoad`, `.CoolantTemperature` (CNCs), `LeakTest.LastReading` (LKT-01) | `telemetry/spindle-load`, `coolant-temperature`, `leak-rate`, sampled every `TELEMETRY_SAMPLING_MS` (wall, default 1 s); `sourceTime` is the value's SourceTimestamp (simulation time)                                    |
-| `State`, `StateCause` read after every (re)connect                                         | `state/current`, `kind: snapshot`                                                                                                                                                                                         |
+| `State`, `StateCause` read after every (re)connect                                         | `state/current`, `kind: snapshot`, `deviceEpoch` = `ShopFloor.Epoch`                                                                                                                                                      |
 
 The gateway subscribes first, then reads `Epoch` and `Sequence`; events wait until their epoch is known, at start-up and after every connection loss. History is everything before the first event the subscription delivered. After a reconnect it waits a grace period (2 s) for the repaired subscription to republish what it kept, then reports every number that never arrived as one `sequence-gap` incident with `lost`. A reported number counts as handled: it is never reported twice, and a copy arriving later is dropped, so every fact is either published once or counted lost once. Known limit: after a simulator restart (new epoch) the old run's last facts that never arrived can't be counted, because the old run's final number is unknown; its open holes are reported. A changed `Epoch` (the simulator restarted) gives an `epoch-change` incident. Connection loss and recovery give `disconnected` and `reconnected` incidents.
 
@@ -112,7 +112,7 @@ The poller reads the register map (docs/contracts/modbus-register-map.md) every 
 | Ring entry, type cycle                                              | `events/cycle-complete`; `serial` is empty (a legacy washer reads none), `reason` and `measurement` are null                       |
 | Ring entry, type alarm                                              | `alarms/{code}`, severity 700 (the washer's alarms are its failure codes)                                                          |
 | `bathTemperature`, `conveyorSpeed`                                  | `telemetry/bath-temperature`, `telemetry/conveyor-speed`, scaled by the configured resolutions; `sourceTime` is register `simTime` |
-| `state` on first contact, after a silence and after an epoch change | `state/current`, `kind: snapshot` (cause null: the map carries no cause for the current state)                                     |
+| `state` on first contact, after a silence and after an epoch change | `state/current`, `kind: snapshot`, `deviceEpoch` = register `epoch` (cause null: the map carries no cause for the current state)   |
 
 - Each poll walks the ring from the last entry handled to the counter, in requests of at most 12 entries, split at the ring end. An entry whose own number isn't the expected one was overwritten: a `ring-overrun` incident. So is a counter that moved by more than 64 since the last poll. One incident per poll carries the total; an entry that can't be decoded is a `sequence-gap` incident instead.
 - On first contact the facts already in the ring are history. The poller keeps a cursor (epoch and last sequence) and continues from it while the epoch is unchanged. The cursor is saved with the outbox (#78), so it survives gateway restarts.
@@ -138,7 +138,7 @@ Every UNS message passes through the gateway's outbox (ADR-0014), except the gat
 - **Device facts** (state changes, cycles, alarm transitions) have `scope: device`. Their `seq` is the device's own sequence: OPC UA `Sequence`, or the WSH-01 event-buffer sequence. It is shared across that device's `state`, `events` and `alarms` topics, so one stream per equipment orders all its facts.
 - **Gateway streams** (telemetry, snapshots, `_sys`) have `scope: topic`, with a gateway counter per topic.
 - **Epoch:** numbering restarts at 1 whenever the owner of a sequence restarts. The `epoch` (the owner's start time) separates the runs.
-- **Snapshots:** after every (re)connect, the gateway publishes the current state read from the device's variables as `uns.state.current/1` with `kind: snapshot` and `scope: topic`. They restore the current state. They are not facts, and they never take part in device dedup or gap checks.
+- **Snapshots:** after every (re)connect, the gateway publishes the current state read from the device's variables as `uns.state.current/1` with `kind: snapshot` and `scope: topic`. They restore the current state. They are not facts, and they never take part in device dedup or gap checks. Their `epoch` is the gateway's (the counter's owner); `deviceEpoch` (1.1) names the device run the state was read in, so a consumer can tell a snapshot of an earlier run.
 - **The consumer rule** (reference implementation: `Deduplicator`):
   - stream = `device:{equipment}` for device facts, `topic:{topic}` otherwise;
   - a message whose (epoch, `seq`) was already seen, or with an older epoch, is a **duplicate** and is dropped;
@@ -147,3 +147,45 @@ Every UNS message passes through the gateway's outbox (ADR-0014), except the gat
   - **gaps** are holes _between_ numbers seen (`gaps()`). Numbers before the first one seen are history the consumer joined after, not gaps. A gap recorded as an incident is written off with `acknowledge(gap)`. Memory grows with the number of open gaps, not with the number of messages;
   - messages the broker delivers as **retained** on subscribe are passed with `{ retained: true }`. They restore current state, and are dropped if already seen, but they neither start the stream nor create gaps: retained topics hold the latest facts of different kinds, so their numbers are far apart.
 - The gateway reports the gaps _it_ sees (from a device) as `uns.sys.incident/1` messages. The MES counts both kinds.
+
+## Consumer: MES ingest (#95)
+
+The MES `ingest` module (`apps/mes-server/src/modules/ingest/`, ADR-0017) is the UNS's durable consumer.
+
+**Session:** user `mes`, client id `mes-server`, MQTT 5, `clean: false` with a session expiry interval (`MQTT_SESSION_EXPIRY_S`, default 7 days) and receive maximum 100. The broker keeps the session and queues QoS 1 messages while the MES is down, up to `max_queued_messages` 100,000: about one hour of the plant at 60× (about 25 messages/s); beyond that, messages are lost and show up as sequence gaps. The MES stores about 1,000 messages/s (measured in the #95 review), so a full queue drains in about two minutes. Known limit: the queue survives a broker crash only up to its last autosave.
+
+**Subscriptions** (QoS 1, renewed and checked on every connect; readiness requires all granted; the ACL's `topic read orbis/#` for `mes` covers them):
+
+- `orbis/gebze/+/+/+/state/+`, `…/telemetry/+`, `…/events/+`, `…/alarms/+`;
+- `orbis/gebze/_sys/edge-gateway/+/status` and `…/incidents`.
+
+**Acknowledgement:** a message is acknowledged only after its transaction committed, one at a time in arrival order. A crash before the commit means the broker delivers the message again; a crash between commit and acknowledgement means a copy, which dedup removes. When a transaction fails (ADR-0017):
+
+- **data or integrity** (SQLSTATE classes 22, 23, 54) only: the message is recorded in `rejected_message` as `unstorable` with the error and acknowledged, so one message can't block the stream.
+- **anything else**, including unknown and non-SQL errors (connection, lock timeout, a deploy's missing table, an internal error): retried a few times with backoff. If it persists, the MES drops the session without acknowledging, waits until the database answers, reloads its cursors and reconnects; the broker queues meanwhile. (While a message waits, MQTT.js handles no other packet, not even the keepalive answer, so holding the session would only make it time out and reconnect again and again.)
+
+**What happens to each delivery** (tables in the `ingest` schema, `db/migrations/0003_ingest_raw.sql`):
+
+| Delivery                                                                       | Result                                                                                                                  |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Invalid JSON, a schema `parseUnsMessage` rejects, a topic/payload mismatch     | `rejected_message` with reason `invalid-json`, `invalid-payload`, `topic-mismatch` or `unexpected-topic` and the detail |
+| A time outside the years 1970–2199, a NUL character, a lone surrogate          | `rejected_message`, reason `invalid-payload` (the database couldn't store it)                                           |
+| A valid message the database still refuses                                     | `rejected_message`, reason `unstorable`                                                                                 |
+| State event, cycle, alarm (`scope: device`)                                    | `equipment_event` (hypertable; unique on equipment, epoch, seq, sourceTime)                                             |
+| Telemetry                                                                      | `telemetry_sample` (hypertable; unique on topic, epoch, seq, sourceTime)                                                |
+| Gateway incident                                                               | `data_quality_incident`, origin `gateway`                                                                               |
+| Gateway status                                                                 | `component_status`: the latest delivery wins                                                                            |
+| Snapshot (`kind: snapshot`), or `state/current` delivered with the retain flag | `state_anchor`: not a fact                                                                                              |
+| Other retained deliveries (telemetry, alarms, cycles)                          | not stored: current values, not facts (counted in metrics)                                                              |
+| A number already seen in the stream's current epoch                            | dropped as a duplicate (counted)                                                                                        |
+| An epoch older than the stream's current one                                   | `rejected_message`, reason `stale-epoch`                                                                                |
+
+Topic/payload checks: the schema must be the one of the topic class, an alarm's `code` must match its topic name, and `source.id` must be the topic's equipment (or the `_sys` instance).
+
+**Dedup and gaps** follow the consumer rule above, made durable: `source_cursor` holds each stream's current epoch, the ranges seen and the gaps already reported, so a restart neither forgets duplicates nor invents gaps.
+
+- A hole that stays open for `INGEST_GAP_GRACE_MS` (wall time, default 30 s) becomes a `sequence-gap` incident (origin `mes`, with the missing range and `lost`). A late message still fills it: `lost` goes down, and the incident is closed as `filled` once nothing is missing.
+- A newer epoch closes the old epoch's open gaps as `epoch-ended`, and records any hole not yet reported. Every epoch numbers from 1, so in a stream the MES already knows, numbers below the new epoch's first one are a hole too (facts lost at a restart). A stream seen for the first time starts at its first number: what came before is history.
+- `_sys` streams are deduplicated, never checked for gaps.
+
+**Anchors:** retained deliveries and snapshots never enter dedup or gap checks. A retained state event anchors its own device epoch, a snapshot its `deviceEpoch`. A snapshot without it (from a gateway older than 1.1) waits for the device epoch of the next device fact of its equipment; any newer snapshot of that equipment supersedes it first, so only the latest waiting one can be attributed. The first anchor to arrive per (equipment, device epoch) is the starting state, used by the equipment module when it knows no state for that epoch yet.

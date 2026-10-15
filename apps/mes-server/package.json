@@ -11,10 +11,12 @@
     "migrate": "node src/db/cli.ts"
   },
   "dependencies": {
+    "@shopfloor/contracts": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/shift-calendar": "workspace:*",
     "fastify": "catalog:",
     "kysely": "catalog:",
+    "mqtt": "catalog:",
     "pg": "catalog:",
     "prom-client": "catalog:",
     "zod": "catalog:"
@@ -27,6 +29,7 @@
     "@types/pg": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "eslint": "catalog:",
+    "fast-check": "catalog:",
     "testcontainers": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

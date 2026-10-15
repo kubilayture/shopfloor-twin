@@ -345,6 +345,8 @@ export class OpcuaCollector {
       scope: 'topic',
       epoch: this.#options.sequences.epoch,
       seq: this.#options.sequences.next(topic),
+      // The simulator run the state belongs to, so the MES anchors it to the right epoch.
+      deviceEpoch: serverEpoch,
       sourceTime: new Date(at).toISOString(),
       receivedAt: new Date(this.#now()).toISOString(),
       quality: quality(state.statusCode),

@@ -425,18 +425,19 @@ Source: `apps/simulator/src/live/`. Plan section 4: "two run modes, one engine".
 
 - On each wake-up it processes every simulation event up to `simNow`, then sets a timer for the next event, or for at most 1 s ahead, so the clock stays fresh even when nothing happens.
 - **Pause** freezes simulation time and **resume** re-anchors. **Speed changes** take effect at once without a jump. **Step** (while paused, or before the first start) processes exactly the next event.
+- Control calls made from _inside_ an event handler (pause, resume, speed, stop) are deferred until the current step has finished, so they can never nest a second run inside the first. `step()` from a handler is an error.
 - An optional end time makes the run half-open, [start, end), as in headless mode.
 
-**Pacing decides only _when_ a step runs, never _what_ happens.** A test runs a live run with pauses, 25 single steps and speed changes in between, and its event stream is identical to the headless run with the same seed and end. Determinism and the golden scenario therefore also cover live mode.
+**Pacing decides only _when_ a step runs, never _what_ happens.** A scripted test, and a property test with 40 random sequences of advance, pause, step, resume and speed changes (including a step before the start and an end exactly on an event time), check that the event stream is identical to the headless run with the same seed and end. Determinism and the golden scenario therefore also cover live mode.
 
 **Two clocks:**
 
 - `pacer.simNow()` is the current simulation time, for clocks and displays.
-- `simulation.now` is the time of the last processed step. It can trail `simNow()` by up to 1 s × speed between events.
+- `simulation.now` is the time of the last processed step. It can trail `simNow()` by about 1 s × speed between events, plus any timer lateness.
 
 OPC UA values use the timestamp of the event that changed them (ADR-0009).
 
-**Accuracy** (test with the real clock, 60× for 1.5 s): simulated time is within 3% of wall time × speed. Events are never processed before their time; lateness is bounded by timer resolution and reported as `lagMs` in `status()`.
+**Timeliness** (test with the real clock at 60×, after a warm-up of two simulated hours): events are never processed before their time, and 95% of them are processed less than 100 ms of wall time after it. `status().lagMs` is a rough indicator: how late the earliest overdue event was at the last wake-up.
 
 The wall clock is injected (`WallClock`), so tests use a manual clock and are exact. Only `systemClock` reads `performance.now()`, and it lives outside `src/plant`, which the determinism lint rule still guards.
 

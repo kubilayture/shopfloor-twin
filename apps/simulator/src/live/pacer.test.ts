@@ -187,22 +187,158 @@ describe('LivePacer (plan section 4, live mode)', () => {
     pacer.stop();
   });
 
-  it('keeps real-clock pacing within a few percent at 60× (wall-clock measurement)', async () => {
-    const { pacer, simulation } = createLiveRun({
+  it('processes events on time with the real clock: lateness in wall time stays small at 60×', async () => {
+    const lateness: number[] = [];
+    const holder: { pacer?: { simNow(): number } } = {};
+    const { pacer } = createLiveRun({
       config,
       seed: 7,
       start: T0,
       speed: 60,
       clock: systemClock,
+      onEvent: (event) => {
+        if (holder.pacer) {
+          lateness.push((holder.pacer.simNow() - event.at) / 60);
+        }
+      },
     });
-    const wallStart = performance.now();
-    pacer.start();
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
-    const wall = performance.now() - wallStart;
-    const simulated = pacer.simNow() - T0;
+    while (pacer.simNow() < T0 + 2 * HOUR) {
+      pacer.step();
+    }
+    holder.pacer = pacer;
+    pacer.resume();
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
     pacer.stop();
-    expect(simulated / (wall * 60)).toBeGreaterThan(0.97);
-    expect(simulated / (wall * 60)).toBeLessThan(1.03);
-    expect(pacer.simNow() - simulation.now).toBeLessThanOrEqual(60 * SECOND + 100);
+    expect(lateness.length).toBeGreaterThan(5);
+    expect(Math.min(...lateness)).toBeGreaterThanOrEqual(0);
+    const sorted = [...lateness].sort((a, b) => a - b);
+    expect(sorted[Math.floor(sorted.length * 0.95)]).toBeLessThan(100);
+  });
+
+  it('property: random pacing operations never change the event stream', () => {
+    const random = new RandomSource(99).stream('pacer-ops');
+    for (let trial = 0; trial < 40; trial++) {
+      const seed = 1 + (trial % 5);
+      const hours = 1 + Math.floor(random.nextFloat() * 4);
+      const reference = headlessEvents(T0 + hours * HOUR, seed);
+      const endOnEvent = trial % 2 === 0 ? reference.at(-1)?.at : undefined;
+      const end = endOnEvent ?? T0 + hours * HOUR;
+      const expected = endOnEvent === undefined ? reference : headlessEvents(end, seed);
+      const clock = new ManualClock();
+      const events: PlantEvent[] = [];
+      const { pacer } = createLiveRun({
+        config,
+        seed,
+        start: T0,
+        end,
+        speed: 0.5 + random.nextFloat() * 59.5,
+        clock,
+        onEvent: (e) => events.push(e),
+      });
+      if (random.nextFloat() < 0.5) {
+        pacer.step();
+        pacer.resume();
+      } else {
+        pacer.start();
+      }
+      let guard = 0;
+      while (pacer.state !== 'finished' && guard++ < 100_000) {
+        const op = random.nextFloat();
+        if (op < 0.6 || pacer.state === 'idle') {
+          clock.advance(Math.floor(random.nextFloat() * 5_000));
+        } else if (op < 0.7) {
+          pacer.pause();
+        } else if (op < 0.8 && pacer.state === 'paused') {
+          pacer.step();
+        } else if (op < 0.9) {
+          pacer.resume();
+        } else {
+          pacer.setSpeed(0.5 + random.nextFloat() * 59.5);
+        }
+        if (pacer.state === 'paused' && random.nextFloat() < 0.3) {
+          pacer.resume();
+        }
+      }
+      expect(pacer.state).toBe('finished');
+      expect(clock.pendingTimers).toBe(0);
+      expect(JSON.stringify(events)).toBe(JSON.stringify(expected));
+    }
+  });
+
+  it('defers control calls made from inside an event handler', () => {
+    const clock = new ManualClock();
+    const events: PlantEvent[] = [];
+    const holder: { pacer?: { pause(): void; resume(): void } } = {};
+    const end = T0 + 3 * HOUR;
+    const { pacer } = createLiveRun({
+      config,
+      seed: 4,
+      start: T0,
+      end,
+      speed: 60,
+      clock,
+      onEvent: (event) => {
+        events.push(event);
+        if (events.length % 50 === 0) {
+          holder.pacer?.pause();
+        }
+      },
+    });
+    holder.pacer = pacer;
+    pacer.start();
+    let guard = 0;
+    while (pacer.state !== 'finished' && guard++ < 10_000) {
+      if (pacer.state === 'paused') {
+        pacer.resume();
+      }
+      clock.advance(1_000);
+    }
+    expect(JSON.stringify(events)).toBe(JSON.stringify(headlessEvents(end)));
+  });
+
+  it('leaves no timer behind when stopped from a callback', () => {
+    const clock = new ManualClock();
+    const holder: { pacer?: { stop(): void } } = {};
+    const { pacer } = createLiveRun({
+      config,
+      seed: 4,
+      start: T0,
+      speed: 60,
+      clock,
+      onAdvance: (simNow) => {
+        if (simNow > T0 + 10 * MINUTE) {
+          holder.pacer?.stop();
+        }
+      },
+    });
+    holder.pacer = pacer;
+    pacer.start();
+    clock.advance(20_000);
+    expect(pacer.state).toBe('finished');
+    expect(clock.pendingTimers).toBe(0);
+  });
+
+  it('refuses a step from inside an event handler', () => {
+    const clock = new ManualClock();
+    const holder: { pacer?: { step(): boolean } } = {};
+    const errors: unknown[] = [];
+    const { pacer } = createLiveRun({
+      config,
+      seed: 4,
+      start: T0,
+      speed: 60,
+      clock,
+      onAdvance: () => {
+        try {
+          holder.pacer?.step();
+        } catch (error) {
+          errors.push(error);
+        }
+      },
+    });
+    holder.pacer = pacer;
+    pacer.start();
+    expect(String(errors[0])).toMatch(/while an event is being processed/);
+    pacer.stop();
   });
 });

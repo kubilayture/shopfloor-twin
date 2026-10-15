@@ -57,6 +57,8 @@ export class LivePacer<E> {
   #wallAnchor = 0;
   #timer: unknown;
   #lagMs = 0;
+  #busy = false;
+  readonly #deferred: (() => void)[] = [];
 
   constructor({
     simulation,
@@ -84,6 +86,9 @@ export class LivePacer<E> {
   }
 
   simNow(): SimTime {
+    if (this.#state === 'finished' && this.#end !== undefined) {
+      return Math.max(this.#simulation.now, this.#end);
+    }
     if (this.#state !== 'running') {
       return this.#simulation.now;
     }
@@ -104,6 +109,13 @@ export class LivePacer<E> {
   }
 
   pause(): void {
+    if (
+      this.#defer(() => {
+        this.pause();
+      })
+    ) {
+      return;
+    }
     if (this.#state !== 'running') {
       return;
     }
@@ -113,6 +125,13 @@ export class LivePacer<E> {
   }
 
   resume(): void {
+    if (
+      this.#defer(() => {
+        this.resume();
+      })
+    ) {
+      return;
+    }
     if (this.#state === 'paused') {
       this.#run();
     }
@@ -120,6 +139,13 @@ export class LivePacer<E> {
 
   setSpeed(speed: number): void {
     checkSpeed(speed);
+    if (
+      this.#defer(() => {
+        this.setSpeed(speed);
+      })
+    ) {
+      return;
+    }
     if (this.#state === 'running') {
       this.#advanceTo(this.simNow());
       this.#speed = speed;
@@ -131,6 +157,9 @@ export class LivePacer<E> {
   }
 
   step(): boolean {
+    if (this.#busy) {
+      throw new Error('step cannot be called while an event is being processed');
+    }
     if (this.#state !== 'paused' && this.#state !== 'idle') {
       throw new Error('step is only possible while paused');
     }
@@ -138,8 +167,9 @@ export class LivePacer<E> {
     if (next === undefined || (this.#end !== undefined && next >= this.#end)) {
       return false;
     }
-    this.#simulation.step(this.#handle);
-    this.#onAdvance(this.#simulation.now);
+    this.#process(() => {
+      this.#simulation.step(this.#handle);
+    });
     if (this.#state === 'idle') {
       this.#state = 'paused';
     }
@@ -147,6 +177,13 @@ export class LivePacer<E> {
   }
 
   stop(): void {
+    if (
+      this.#defer(() => {
+        this.stop();
+      })
+    ) {
+      return;
+    }
     this.#cancelTimer();
     if (this.#state !== 'finished') {
       this.#state = 'finished';
@@ -169,8 +206,34 @@ export class LivePacer<E> {
     if (limit < this.#simulation.now) {
       return;
     }
-    this.#simulation.runUntil(limit, this.#handle);
-    this.#onAdvance(this.#simulation.now);
+    this.#process(() => {
+      this.#simulation.runUntil(limit, this.#handle);
+    });
+  }
+
+  #isRunning(): boolean {
+    return this.#state === 'running';
+  }
+
+  #defer(action: () => void): boolean {
+    if (!this.#busy) {
+      return false;
+    }
+    this.#deferred.push(action);
+    return true;
+  }
+
+  #process(work: () => void): void {
+    this.#busy = true;
+    try {
+      work();
+      this.#onAdvance(this.#simulation.now);
+    } finally {
+      this.#busy = false;
+    }
+    for (let action = this.#deferred.shift(); action; action = this.#deferred.shift()) {
+      action();
+    }
   }
 
   #tick(): void {
@@ -182,6 +245,9 @@ export class LivePacer<E> {
     const next = this.#simulation.nextEventTime;
     this.#lagMs = next !== undefined && next < target ? (target - next) / this.#speed : 0;
     this.#advanceTo(target);
+    if (!this.#isRunning()) {
+      return;
+    }
     if (this.#end !== undefined && target >= this.#end) {
       this.stop();
       return;
@@ -193,7 +259,8 @@ export class LivePacer<E> {
     this.#cancelTimer();
     const next = this.#simulation.nextEventTime;
     const now = this.simNow();
-    const horizon = next ?? this.#end;
+    const horizon =
+      next === undefined ? this.#end : this.#end === undefined ? next : Math.min(next, this.#end);
     const wait =
       horizon === undefined ? MAX_TIMER_MS : Math.ceil(Math.max(0, horizon - now) / this.#speed);
     this.#timer = this.#clock.setTimeout(

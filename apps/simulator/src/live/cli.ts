@@ -42,7 +42,10 @@ try {
   usage(`invalid --start "${values.start}"`);
 }
 
-const loaded = await loadPlantConfig(resolve(values.config));
+const loaded = await loadPlantConfig(resolve(values.config)).catch((error: unknown) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});
 if (!loaded.ok) {
   console.error(formatIssues(loaded.issues));
   process.exit(1);
@@ -69,7 +72,8 @@ pacer.start();
 const stop = (): void => {
   pacer.stop();
   console.log(`stopped at simulation time ${time(pacer.simNow())}Z`);
-  process.exit(0);
+  process.exitCode = 130;
+  process.exit();
 };
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);

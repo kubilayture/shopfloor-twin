@@ -97,7 +97,7 @@ Out of scope here:
   - A closed epoch is final everywhere.
 - **Finality per piece:** a piece is stored final when it ends at or before that time, or when its interval is closed. `shiftTotals` then reports `provisionalMs = 0` for completed buckets, and the reconciliation drops Phase 4's "totals stable" workaround.
 - **Silent machines:** a machine that sends no facts keeps its open interval provisional until its next fact. That affects `no-shift` buckets (Off over the weekend, OEE null anyway) and also a machine that is Down, in Setup or in Maintenance across a shift end: Setup, Down and Maintenance carry on through shift ends and breaks, and ASM-01, LKT-01 and PCK-01 send no telemetry. Its last shift bucket becomes final at the repair or setup end. The live reconciliation therefore runs on until every machine has sent a fact after the shift end, with a bounded wait, and reports how long it waited.
-- **Revisions:** a gap reported as an incident lets finality move on, but ADR-0017 still stores a late fill. A bucket that changes after it was final gets its `revision` raised, and the API reports `revision` and `incidents` with it, so a consumer can tell a revised bucket from an unchanged one. The same applies to late facts of a closed epoch.
+- **Revisions:** a gap reported as an incident lets finality move on, but ADR-0017 still stores a late fill. A bucket that changes after it was final gets its `revision` raised, and the API reports `revision` and `incidents` with it, so a consumer can tell a revised bucket from an unchanged one. The same applies to late facts of a closed epoch. The `equipment` module owns this memory, in `equipment.bucket_finality`: per (equipment, epoch, hour), when the hour became final and its revision. It survives restarts and appears in the data model.
 - This issue comes before any OEE code. ADR-0018 is updated.
 
 ### Storage and aggregation (ADR-0022)
@@ -113,12 +113,12 @@ Out of scope here:
   - Both aggregates use `materialized_only = false`, so the open hour is read from the raw pieces.
   - A continuous aggregate has one watermark for all its rows. Refreshing a later hour moves it past every earlier hour, and an earlier hour that was never refreshed then disappears from the view, as does any later change below the watermark. This was checked on TimescaleDB 2.30.2 in the plan review. So:
     - every change below the aggregate's watermark marks its hour dirty: a late fact, a late cycle, or a new epoch whose simulation time lies earlier;
-    - the OEE module refreshes from the earliest dirty hour up to the latest final hour in one call, so the refreshed range stays contiguous;
+    - the OEE module refreshes `[earliest dirty hour, max(latest dirty hour, latest final hour) + 1 h)` in one call, counted across all epochs, so the refreshed range stays contiguous and also covers dirty hours that aren't final yet (a new epoch starting days earlier, or a silent machine's open hour below the watermark);
     - a bucket is `final` only after a refresh has covered it.
 
-    Equipment emits `piecesChanged` with the affected hours; ingest gets a new `cycle` notice. Tests cover a late fact below the watermark, a never-refreshed earlier hour, and a new epoch at an earlier time.
+    Equipment emits `piecesChanged` with the affected hours; ingest gets a new `cycle` notice. Tests cover a late fact below the watermark, a never-refreshed earlier hour, and a new epoch at an earlier time. A test also times a refresh after an epoch that starts several days below the watermark, because TimescaleDB re-materialises only the invalidated ranges of the window, and the plan relies on that.
 
-  - The open hour and the live dashboard read raw pieces above the watermark, so exit criterion 5 doesn't wait for a refresh.
+  - The open hour and the live dashboard read raw pieces above the watermark, so exit criterion 5 doesn't wait for a refresh. An open hour below the watermark (a new epoch at an earlier time) is shown through the debounced refresh, within about a second.
   - Refreshes are debounced to 1 s of wall time. They run off ingest's acknowledgement path, on their own connection and outside a transaction, as TimescaleDB requires.
   - At start-up the MES does a one-time catch-up refresh.
   - **No refresh policies:** `add_continuous_aggregate_policy` windows are relative to wall-clock `now()`. Simulation time runs ahead of wall time (at 60×, a wall day is two simulated months) and moves back under a new epoch, so a policy would never materialise the right range.
@@ -141,7 +141,8 @@ Out of scope here:
   - `Setup` + prefix `CHANGEOVER ` → SETUP/CHANGEOVER;
   - `Starved` + prefix `MATERIAL:` → MATERIAL;
   - `Starved` + `null` → STARVED, and `Blocked` + any → BLOCKED. An empty buffer and a blocked output carry no cause in the simulator, and the Modbus poller sends `cause: null`;
-  - `Idle` + `SCHEDULE-COMPLETE` → ORGANISATION/NO-SCHEDULE.
+  - `Idle` + `SCHEDULE-COMPLETE` → ORGANISATION/NO-SCHEDULE;
+  - a `state + null` fallback for every loss state (for example `Down` + `null` → BREAKDOWN/UNSPECIFIED): live OPC UA and Modbus snapshots open intervals with `cause: null` in any state, and the golden-week coverage test never sees those.
 - **Cause vocabulary:** today the causes come from three places, `failures.yaml`, strings hard-coded in `line.ts` (`TOOL-CHANGE`, `CALIBRATION`, `SCHEDULE-COMPLETE`, `NO-OPERATOR`, `BREAK`, `SHIFT-END`, `MATERIAL:<id>`, `CHANGEOVER <from>→<to>`) and the Modbus cause table. #119 moves the fixed ones into one vocabulary in `contracts`, used by the simulator and the cross-check. The cross-check refuses rules that name unknown reasons. A test runs the golden week and asserts that every distinct (state, cause) pair matches a rule other than UNCODED. The first changeover's cause reads `CHANGEOVER undefined→…` today; #126 fixes that before #117.
 - **Loss category** is not a property of a reason. A Stopped interval is a performance loss (micro-stop) below the threshold and an availability loss above it, whatever its reason. The category comes from the record's state and classification; reasons only name the cause.
 
@@ -179,7 +180,7 @@ Out of scope here:
   - cycles per (product, result), and ideal ms;
   - the A, P, Q and OEE fractions.
 
-  Cycles are bucketed by time with `shiftKeyAt`, not by the current shift event, so a cycle exactly at a boundary lands where the MES puts it. Stopped intervals are held until they close, then classified. The summary format becomes `sim-summary/2` and the control API 1.2 (`/ground-truth`). `golden/week-01/summary.json` is regenerated in that PR with a written reason. `events.sha256` must not change, which proves the simulation itself didn't; that holds because the config hash leaves `oee.yaml` out (see the OEE definitions) and #126's cause fix lands first.
+  Cycles are bucketed by time with `shiftKeyAt`, not by the current shift event, so a cycle exactly at a boundary lands where the MES puts it. Stopped intervals are held until they close, then classified. The summary format becomes `sim-summary/2` and the control API 1.2 (`/ground-truth`). `golden/week-01/summary.json` is regenerated in that PR with a written reason. `events.sha256` must not change against #126's new baseline (#126 changes it on purpose, with its own written reason), which proves the simulation itself didn't change in #117; that holds because the config hash leaves `oee.yaml` out (see the OEE definitions).
 
   Known limit: ground truth and MES share `oee-core` and the calendar, so the reconciliation can't catch a definition bug. The reference cases cover that.
 
@@ -231,8 +232,8 @@ Out of scope here:
 ## Exit criteria (plan section 11)
 
 1. **Reference cases:** every case in `docs/oee-reference-cases.md` passes, both as an exact fraction and as a four-decimal value. There are at least 12 cases, including mixed products, threshold ±1 ms, Down during a break, rework, zero PBT and P > 1. `oee-core` coverage is at least 95 / 90.
-2. **Golden scenario:** for every machine and both work centers, in all 15 shifts of the golden week, the MES's OEE inputs and its A, P, Q and OEE equal the simulator's ground truth exactly, and therefore also to four decimals. This holds both in order and shuffled with duplicates. Hourly aggregate rows sum to the shift totals and equal the raw pieces.
-3. **Live reconciliation:** shift A runs at 60× through simulator → gateway → broker → MES. It ends final (`provisionalMs = 0`), and its OEE equals the live ground truth exactly for all six machines. The CI job `reconcile` stays within its budget.
+2. **Golden scenario:** for every machine and both work centers, in all 15 shifts of the golden week, the MES's OEE inputs and its A, P, Q and OEE equal the simulator's ground truth exactly, and therefore also to four decimals. This holds both in order and shuffled with duplicates. The comparison runs after every message is ingested; the test sets the gap grace period above the run's length, so no incident and no revision occur. Hourly aggregate rows sum to the shift totals and equal the raw pieces.
+3. **Live reconciliation:** shift A runs at 60× through simulator → gateway → broker → MES. It ends final (`provisionalMs = 0`, `revision = 0`, `incidents = 0`), and its OEE equals the live ground truth exactly for all six machines. The CI job `reconcile` stays within its budget.
 4. **Downtime coding:**
    - every availability-loss interval of the golden week has a record;
    - every simulator cause is matched by an auto-rule, so the golden week has no UNCODED record;

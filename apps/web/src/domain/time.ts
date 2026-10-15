@@ -1,0 +1,54 @@
+/** Plant times are simulation time in UTC; people read them in the plant's zone (plan section 8). */
+export const PLANT_TIME_ZONE = 'Europe/Istanbul';
+
+const dateTime = new Intl.DateTimeFormat('en-GB', {
+  timeZone: PLANT_TIME_ZONE,
+  weekday: 'short',
+  day: '2-digit',
+  month: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
+
+const clockTime = new Intl.DateTimeFormat('en-GB', {
+  timeZone: PLANT_TIME_ZONE,
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+export function formatPlantTime(time: string | number): string {
+  return dateTime.format(new Date(time));
+}
+
+export function formatClockTime(time: string | number): string {
+  return clockTime.format(new Date(time));
+}
+
+const pad = (value: number): string => String(value).padStart(2, '0');
+
+/** A duration for people: `12 s`, `4 min 05 s`, `2 h 05 min`, `3 d 4 h`. */
+export function formatDuration(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${String(days)} d ${String(hours % 24)} h`;
+  if (hours > 0) return `${String(hours)} h ${pad(minutes % 60)} min`;
+  if (minutes > 0) return `${String(minutes)} min ${pad(seconds % 60)} s`;
+  return `${String(seconds)} s`;
+}
+
+export const RANGES = {
+  '1h': { label: 'Last hour', ms: 3_600_000 },
+  '8h': { label: 'Last 8 h', ms: 8 * 3_600_000 },
+  '24h': { label: 'Last 24 h', ms: 24 * 3_600_000 },
+} as const;
+
+export type RangeKey = keyof typeof RANGES;
+
+export function isRangeKey(value: unknown): value is RangeKey {
+  return typeof value === 'string' && Object.hasOwn(RANGES, value);
+}

@@ -238,6 +238,9 @@ importers:
 
   apps/simulator:
     dependencies:
+      '@shopfloor/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@shopfloor/plant-config':
         specifier: workspace:*
         version: link:../../packages/plant-config

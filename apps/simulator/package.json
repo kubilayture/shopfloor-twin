@@ -9,9 +9,11 @@
     "test": "vitest run --coverage",
     "headless": "node src/headless/cli.ts",
     "test:golden": "node src/headless/golden.ts",
-    "live": "node src/live/cli.ts"
+    "live": "node src/live/cli.ts",
+    "serve": "node src/opcua/serve.ts"
   },
   "dependencies": {
+    "@shopfloor/contracts": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/sim-core": "workspace:*",
     "node-opcua": "catalog:"

@@ -20,7 +20,8 @@
     "stack:smoke": "sh scripts/stack-smoke.sh",
     "sim:headless": "pnpm --filter @shopfloor/simulator headless",
     "test:golden": "pnpm --filter @shopfloor/simulator test:golden",
-    "sim:live": "pnpm --filter @shopfloor/simulator live"
+    "sim:live": "pnpm --filter @shopfloor/simulator live",
+    "sim:serve": "pnpm --filter @shopfloor/simulator serve"
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",

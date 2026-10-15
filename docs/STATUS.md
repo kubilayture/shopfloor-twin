@@ -6,6 +6,8 @@
 
 ## Done since last update
 
+- #50 merged (PR #62): process values.
+- Owner's standing instruction (2026-10-15): continue through all phases without stopping or asking. Owner-only exit criteria are recorded as deferred to the owner, never as met.
 - #49 merged (PR #61): live run mode.
 - #48 merged (PR #60): alarm spike, ADR-0010.
 - #47 merged (PR #59): OPC UA spike, ADR-0008, ADR-0009.
@@ -31,12 +33,11 @@
 
 ## In progress
 
-- #50 Process values (in review)
+- #51 OPC UA servers per machine (in review)
 
 ## Next up
 
-- #51 OPC UA servers per machine
-- #54 Control API (independent of #51)
+- #52 LoadProgram, #53 alarms, #54 control API, #55 container, #56 integration tests and contract check
 
 ## Blockers and open questions for the owner
 

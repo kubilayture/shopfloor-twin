@@ -12,3 +12,4 @@ packages/*/vitest.config.js
 apps/*/vitest.config.js
 runs/
 apps/*/runs/
+.pki/

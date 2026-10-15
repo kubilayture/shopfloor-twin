@@ -50,6 +50,20 @@ pnpm sim:live --speed 60
 
 Options: `--seed` (default 1), `--speed` (0.5–60, default 60), `--start` (ISO 8601 with an offset), `--config`. Ctrl+C stops it. At 60×, one shift (8 h) takes 8 minutes. Pause, resume, step and speed control arrive with the control API (#54); the OPC UA servers (#51) run on top of the same live run.
 
+## Serve the plant over OPC UA
+
+Runs the plant live and exposes the five OPC UA machines (contract: `docs/contracts/opcua-address-space.md`):
+
+```bash
+pnpm sim:serve --speed 60
+```
+
+Options: `--seed`, `--speed` (0.5–60), `--start`, `--host` (default `localhost`), `--port-offset` (adds to 4841–4845), `--config`.
+
+- Connect any OPC UA client, for example UaExpert, with security mode None.
+- Each server creates its own certificate on first start in `./.pki/<machine>` (git-ignored).
+- Ctrl+C stops the run and shuts the servers down.
+
 ## Golden scenarios
 
 A golden scenario is a fixed seed and configuration whose expected output is committed (plan section 9). Each one lives in `apps/simulator/golden/<name>/`:

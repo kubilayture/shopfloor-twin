@@ -1,4 +1,6 @@
 import {
+  OPCUA_EVENT_FIELD_TYPES,
+  OPCUA_EVENT_FIELDS,
   OPCUA_EVENT_TYPES,
   OPCUA_VARIABLES,
   SHOPFLOOR_NAMESPACE_URI,
@@ -128,13 +130,14 @@ export class MachineServer {
     return this.#server.getEndpointUrl();
   }
 
-  async start(telemetry: TelemetrySource): Promise<void> {
+  async start(telemetry: TelemetrySource, startTime: SimTime): Promise<void> {
     await this.#server.initialize();
     const addressSpace = this.#server.engine.addressSpace;
     if (!addressSpace) {
       throw new Error(`${this.machineId}: address space not available`);
     }
     this.#build(addressSpace, telemetry);
+    this.#initialise(startTime);
     await this.#server.start();
     this.#started = true;
   }
@@ -168,7 +171,14 @@ export class MachineServer {
     }
   }
 
+  #program = '';
+
+  get program(): string {
+    return this.#program;
+  }
+
   setProgram(product: string, at: SimTime): void {
+    this.#program = product;
     this.#set('program', product, at);
   }
 
@@ -212,6 +222,14 @@ export class MachineServer {
         },
       },
     );
+  }
+
+  #initialise(at: SimTime): void {
+    for (const [variable, kind] of Object.entries(VARIABLE_TYPES) as [OpcuaVariable, ValueKind][]) {
+      if (!TELEMETRY.includes(variable)) {
+        this.#set(variable, variable === 'state' ? 'Off' : kind === 'String' ? '' : 0, at);
+      }
+    }
   }
 
   #next(at: SimTime): number {
@@ -319,34 +337,9 @@ export class MachineServer {
             }
           : {}),
       });
-      if (!isTelemetry) {
-        variable.setValueFromSource({
-          dataType: DataType[kind],
-          value: kind === 'String' ? '' : 0,
-        });
-      }
       this.#variables.set(key, variable);
     }
 
-    const eventFields: Record<keyof typeof OPCUA_EVENT_TYPES, [string, ValueKind][]> = {
-      stateChange: [
-        ['FromState', 'String'],
-        ['ToState', 'String'],
-        ['Cause', 'String'],
-      ],
-      cycleComplete: [
-        ['Product', 'String'],
-        ['PartId', 'UInt32'],
-        ['Serial', 'String'],
-        ['Result', 'String'],
-        ['Reason', 'String'],
-        ['MeasurementValue', 'Double'],
-      ],
-      alarm: [
-        ['AlarmCode', 'String'],
-        ['Transition', 'String'],
-      ],
-    };
     for (const [kind, browseName] of Object.entries(OPCUA_EVENT_TYPES) as [
       keyof typeof OPCUA_EVENT_TYPES,
       string,
@@ -365,11 +358,8 @@ export class MachineServer {
           isAbstract: false,
         });
       if (!existing) {
-        for (const [field, dataType] of [
-          ['Sequence', 'UInt32'],
-          ['MachineId', 'String'],
-          ...eventFields[kind],
-        ] as [string, ValueKind][]) {
+        for (const field of [...OPCUA_EVENT_FIELDS.common, ...OPCUA_EVENT_FIELDS[kind]]) {
+          const dataType = OPCUA_EVENT_FIELD_TYPES[field];
           ns.addVariable({
             propertyOf: eventType,
             browseName: field,

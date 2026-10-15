@@ -30,7 +30,7 @@ Version 1 (Phase 2). Source of truth in code: `packages/contracts/src/opcua.ts`.
 - **`MachineryBuildingBlocks/MachineryOperationMode`:** None, Setup, Processing or Maintenance.
 - **Identification:** Manufacturer, SerialNumber and ProductInstanceUri are set.
 
-Both Machinery state machines are derived from the project `State`:
+Both Machinery state machines are derived from the project `State`. Their `CurrentState` timestamps are server (wall) time, because node-opcua sets them internally. Every `setState` also raises a standard `TransitionEventType` event on the Server object, without `Sequence`, with wall-clock `Time`. Clients that check sequences must filter for the project event types (see Events).
 
 | Project `State`                              | MachineryItemState | MachineryOperationMode |
 | -------------------------------------------- | ------------------ | ---------------------- |
@@ -60,7 +60,7 @@ Both Machinery state machines are derived from the project `State`:
 
 Value timestamps:
 
-- non-telemetry variables are served exception-based (`MinimumSamplingInterval = 0`), with **SourceTimestamp = simulation time** of the event that changed them;
+- non-telemetry variables are served exception-based (`MinimumSamplingInterval = 0`), with **SourceTimestamp = simulation time** of the event that changed them, or the run's start time before the first event. `State` starts as `Off`;
 - telemetry has SourceTimestamp = the simulation time of the read; it is `UncertainNoCommunicationLastUsableValue` before the simulation has started.
 
 ## Events (ADR-0009)
@@ -77,3 +77,6 @@ Events are raised on the machine object, which is a notifier of the Server objec
 - `Sequence` starts at 1 per machine and grows by 1 per event across all three types, so gaps mean loss (plan section 5).
 - After a reconnect, compare the `ShopFloor.Sequence` variable with the last event received (ADR-0009).
 - Clients that need every event subscribe with sampling 0, a queue of at least 1000 and `discardOldest = false`.
+- A subscription on `i=2253` also receives the standard Machinery `TransitionEventType` events (see above). Select the project event types with an OfType where-clause, or ignore events without `MachineId`.
+- Events raised before a client subscribes are not delivered later (no event history). A new client starts from the current `ShopFloor.Sequence` and the current values.
+- `ShopFloor.LoadProgram` (CNCs) arrives with #52.

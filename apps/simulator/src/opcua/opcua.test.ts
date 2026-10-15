@@ -134,13 +134,16 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
         priority: 1,
       });
       const received: { sequence: number; machine: string; time: Date }[] = [];
+      const isCncFact = (e: PlantEvent) =>
+        (e.type === 'state' || e.type === 'cycle-complete') && e.machineId === 'cnc-01';
+      const beforeSubscription = plantEvents.filter(isCncFact).length;
       const item = await subscription.monitor(
         { nodeId: resolveNodeId('i=2253'), attributeId: AttributeIds.EventNotifier },
         { samplingInterval: 0, queueSize: 10_000, discardOldest: false, filter },
         TimestampsToReturn.Both,
       );
-      item.on('changed', (values) => {
-        const v = values as unknown as { value: unknown }[];
+      item.on('changed', (values: unknown) => {
+        const v = values as { value: unknown }[];
         received.push({
           sequence: Number(v[0]?.value),
           machine: String(v[1]?.value),
@@ -154,17 +157,18 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
         await wait(5);
       }
       run.pacer.pause();
-      await wait(800);
-      const ours = received.filter((r) => r.machine === 'cnc-01');
-      const expected = plantEvents.filter(
-        (e) => (e.type === 'state' || e.type === 'cycle-complete') && e.machineId === 'cnc-01',
-      );
-      const firstSeen = ours[0]?.sequence ?? 1;
-      expect(ours.map((r) => r.sequence)).toEqual(
+      const expected = plantEvents.filter(isCncFact);
+      const ours = () => received.filter((r) => r.machine === 'cnc-01');
+      for (let deadline = Date.now() + 15_000; Date.now() < deadline;) {
+        if ((ours().at(-1)?.sequence ?? 0) >= expected.length) break;
+        await wait(50);
+      }
+      const firstSeen = beforeSubscription + 1;
+      expect(ours().map((r) => r.sequence)).toEqual(
         Array.from({ length: expected.length - firstSeen + 1 }, (_, i) => firstSeen + i),
       );
-      expect(ours.length).toBeGreaterThan(20);
-      expect(ours.at(-1)?.time.getTime()).toBe(expected.at(-1)?.at);
+      expect(ours().length).toBeGreaterThan(20);
+      expect(ours().at(-1)?.time.getTime()).toBe(expected.at(-1)?.at);
       await subscription.terminate();
     } finally {
       await close();

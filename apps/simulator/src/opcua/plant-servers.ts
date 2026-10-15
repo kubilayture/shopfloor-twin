@@ -54,26 +54,34 @@ export class PlantServers {
   }
 
   async start(): Promise<void> {
-    await Promise.all(
+    const results = await Promise.allSettled(
       this.servers.map((server) =>
-        server.start({
-          read: (variable) => {
-            const sources = this.#sources;
-            if (!sources) {
-              return undefined;
-            }
-            const now = sources.simulation.now;
-            const reading = sources.processValues.read(server.machineId, now);
-            if (!reading) {
-              return undefined;
-            }
-            return variable === 'spindleLoad'
-              ? { value: reading.spindleLoadPercent, at: now }
-              : { value: reading.coolantCelsius, at: now };
+        server.start(
+          {
+            read: (variable) => {
+              const sources = this.#sources;
+              if (!sources) {
+                return undefined;
+              }
+              const now = sources.simulation.now;
+              const reading = sources.processValues.read(server.machineId, now);
+              if (!reading) {
+                return undefined;
+              }
+              return variable === 'spindleLoad'
+                ? { value: reading.spindleLoadPercent, at: now }
+                : { value: reading.coolantCelsius, at: now };
+            },
           },
-        }),
+          this.#start,
+        ),
       ),
     );
+    const failed = results.find((r) => r.status === 'rejected');
+    if (failed) {
+      await Promise.allSettled(this.servers.filter((s) => s.started).map((s) => s.stop()));
+      throw failed.reason;
+    }
     const leak = this.servers.find((s) => s.machineId === 'lkt-01');
     leak?.setInitial('leakUpperLimit', this.#config.process.leakTest.upperLimit, this.#start);
     for (const server of this.servers) {
@@ -114,8 +122,9 @@ export class PlantServers {
     if (event.type === 'state' && event.to === 'Setup' && this.#sources) {
       const station = this.#sources.line.stations.find((s) => s.id === event.machineId);
       const product = station?.loadedProduct;
-      if (product) {
-        this.servers.find((s) => s.machineId === event.machineId)?.setProgram(product, event.at);
+      const server = this.servers.find((s) => s.machineId === event.machineId);
+      if (product && server && server.program !== product) {
+        server.setProgram(product, event.at);
       }
     }
   }

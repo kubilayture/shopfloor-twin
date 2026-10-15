@@ -83,10 +83,21 @@ const shutdown = (signal: string): void => {
   if (stopping) return;
   stopping = true;
   run.pacer.stop();
-  void servers.stop().then(() => {
-    console.log(`stopped on ${signal}`);
-    process.exit(signal === 'SIGINT' ? 130 : 0);
-  });
+  const code = signal === 'SIGINT' ? 130 : 0;
+  setTimeout(() => {
+    console.error('shutdown timed out');
+    process.exit(1);
+  }, 10_000).unref();
+  servers
+    .stop()
+    .then(() => {
+      console.log(`stopped on ${signal}`);
+      process.exit(code);
+    })
+    .catch((error: unknown) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    });
 };
 process.on('SIGINT', () => {
   shutdown('SIGINT');

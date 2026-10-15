@@ -49,6 +49,22 @@ export const OPCUA_EVENT_FIELDS = {
   alarm: ['AlarmCode', 'Transition'],
 } as const;
 
+export const OPCUA_EVENT_FIELD_TYPES = {
+  Sequence: 'UInt32',
+  MachineId: 'String',
+  FromState: 'String',
+  ToState: 'String',
+  Cause: 'String',
+  Product: 'String',
+  PartId: 'UInt32',
+  Serial: 'String',
+  Result: 'String',
+  Reason: 'String',
+  MeasurementValue: 'Double',
+  AlarmCode: 'String',
+  Transition: 'String',
+} as const satisfies Record<string, 'String' | 'UInt32' | 'Double'>;
+
 export const opcuaNodeId = (machineId: string, path: string): string =>
   `nsu=${SHOPFLOOR_NAMESPACE_URI};s=${machineId}.${path}`;
 

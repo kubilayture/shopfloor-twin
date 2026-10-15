@@ -4,19 +4,27 @@ import { current, EPOCH } from '../test/fixtures.ts';
 import { socketFactory } from '../test/fake-socket.ts';
 import {
   LIVE_SAMPLE_LIMIT,
+  TELEMETRY_GC_MS,
   applyMessage,
   connectLiveToCache,
   liveKeys,
+  setLiveQueryDefaults,
   type LiveStates,
   type LiveTelemetry,
 } from './live-cache.ts';
 import { LiveClient } from './live-client.ts';
 
+function liveQueryClient(): QueryClient {
+  const queryClient = new QueryClient();
+  setLiveQueryDefaults(queryClient);
+  return queryClient;
+}
+
 const states = (queryClient: QueryClient) => queryClient.getQueryData<LiveStates>(liveKeys.states);
 
 describe('applyMessage', () => {
   it('merges a states snapshot and keeps the newer state of each equipment', () => {
-    const queryClient = new QueryClient();
+    const queryClient = liveQueryClient();
     applyMessage(queryClient, {
       type: 'state',
       equipment: 'cnc-01',
@@ -37,7 +45,7 @@ describe('applyMessage', () => {
   });
 
   it('applies state deltas in order and a newer epoch over a higher seq', () => {
-    const queryClient = new QueryClient();
+    const queryClient = liveQueryClient();
     const push = (state: string, seq: number, epoch = EPOCH) => {
       applyMessage(queryClient, {
         type: 'state',
@@ -54,7 +62,7 @@ describe('applyMessage', () => {
   });
 
   it('moves the clock forward only', () => {
-    const queryClient = new QueryClient();
+    const queryClient = liveQueryClient();
     const clock = (watermark: string, epoch = EPOCH) => {
       applyMessage(queryClient, { type: 'clock', epoch, watermark });
     };
@@ -69,7 +77,7 @@ describe('applyMessage', () => {
   });
 
   it('collects telemetry from the snapshot and deltas, newest per instant, bounded', () => {
-    const queryClient = new QueryClient();
+    const queryClient = liveQueryClient();
     const sample = (t: string, value: number) => ({
       equipment: 'wsh-01',
       metric: 'bath-temperature',
@@ -92,26 +100,64 @@ describe('applyMessage', () => {
         { t: Date.parse('2026-10-15T06:00:00.000Z'), value: 59 },
         { t: Date.parse('2026-10-15T06:00:01.000Z'), value: 61 },
       ],
+      version: 3,
     });
 
-    for (let index = 0; index < LIVE_SAMPLE_LIMIT + 5; index += 1) {
+    applyMessage(queryClient, { type: 'telemetry', ...sample('2026-10-15T06:00:02.000Z', 62) });
+    const after = queryClient.getQueryData<LiveTelemetry>(liveKeys.telemetry('wsh-01'));
+    expect(after).not.toBe(telemetry);
+    expect(after?.['bath-temperature']?.version).toBe(4);
+    expect(after?.['bath-temperature']?.samples).toHaveLength(3);
+  });
+
+  it('bounds the samples kept per metric cheaply over a long session', () => {
+    const queryClient = liveQueryClient();
+    const start = Date.parse('2026-10-15T07:00:00.000Z');
+    for (let index = 0; index < 3 * LIVE_SAMPLE_LIMIT; index += 1) {
       applyMessage(queryClient, {
         type: 'telemetry',
-        ...sample(
-          new Date(Date.parse('2026-10-15T07:00:00.000Z') + index * 1000).toISOString(),
-          index,
-        ),
+        equipment: 'wsh-01',
+        metric: 'bath-temperature',
+        unit: 'degC',
+        t: new Date(start + index * 1000).toISOString(),
+        value: index,
       });
     }
     const samples =
       queryClient.getQueryData<LiveTelemetry>(liveKeys.telemetry('wsh-01'))?.['bath-temperature']
         ?.samples ?? [];
-    expect(samples).toHaveLength(LIVE_SAMPLE_LIMIT);
-    expect(samples.at(-1)?.value).toBe(LIVE_SAMPLE_LIMIT + 4);
+    expect(samples.length).toBeGreaterThanOrEqual(LIVE_SAMPLE_LIMIT);
+    expect(samples.length).toBeLessThanOrEqual(LIVE_SAMPLE_LIMIT * 1.25 + 1);
+    expect(samples.at(-1)?.value).toBe(3 * LIVE_SAMPLE_LIMIT - 1);
+  });
+
+  it("drops a machine's telemetry a while after nobody reads it", () => {
+    vi.useFakeTimers();
+    try {
+      const queryClient = liveQueryClient();
+      applyMessage(queryClient, {
+        type: 'telemetry',
+        equipment: 'wsh-01',
+        metric: 'bath-temperature',
+        unit: 'degC',
+        t: '2026-10-15T06:00:00.000Z',
+        value: 1,
+      });
+      applyMessage(queryClient, {
+        type: 'clock',
+        epoch: EPOCH,
+        watermark: '2026-10-15T06:00:00.000Z',
+      });
+      vi.advanceTimersByTime(TELEMETRY_GC_MS + 1);
+      expect(queryClient.getQueryData(liveKeys.telemetry('wsh-01'))).toBeUndefined();
+      expect(states(queryClient)?.clock).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('ignores acknowledgements and errors', () => {
-    const queryClient = new QueryClient();
+    const queryClient = liveQueryClient();
     applyMessage(queryClient, { type: 'subscribed', topic: 'states', metric: null });
     applyMessage(queryClient, { type: 'unsubscribed', topic: 'states', metric: null });
     applyMessage(queryClient, { type: 'error', code: 'busy', detail: 'x' });
@@ -128,7 +174,7 @@ describe('connectLiveToCache', () => {
   });
 
   it('feeds pushed messages into the cache and refetches REST reads after a reconnect', () => {
-    const queryClient = new QueryClient();
+    const queryClient = liveQueryClient();
     const factory = socketFactory();
     const client = new LiveClient({
       url: 'ws://x',

@@ -18,7 +18,8 @@ describe('plant overview', () => {
     const app = await renderApp('/');
     await app.open();
 
-    expect(await screen.findByRole('heading', { name: 'Machining', level: 2 })).toBeTruthy();
+    await screen.findByTestId('state-cnc-01');
+    expect(screen.getByRole('heading', { name: 'Machining', level: 2 })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Line A1', level: 3 })).toBeTruthy();
     const cnc = screen.getByTestId('state-cnc-01');
     expect(cnc.textContent).toBe('Running');
@@ -77,6 +78,14 @@ describe('plant overview', () => {
 
     await app.push({ type: 'clock', epoch: EPOCH, watermark: '2026-10-15T06:21:30.000Z' });
     expect(screen.getByTestId('time-in-state-cnc-01').textContent).toBe('2 min 30 s');
+  });
+
+  it('does not call states stale while it connects the first time', async () => {
+    vi.stubGlobal('fetch', fakeFetch(api));
+    await renderApp('/');
+    expect((await screen.findByTestId('state-cnc-01')).textContent).toBe('Running');
+    expect(screen.getByTestId('connection-status').textContent).toContain('Connecting…');
+    expect(screen.queryByTestId('stale-cnc-01')).toBeNull();
   });
 
   it('marks states stale while the connection is lost and reconnects', async () => {

@@ -37,6 +37,8 @@ interface Subscription {
   readonly metric: string | undefined;
   refs: number;
   confirmed: boolean;
+  /** A subscribe went out on the current connection, so the MES may hold it. */
+  sent: boolean;
 }
 
 /** Errors after which the unconfirmed subscriptions are asked for again (ADR-0019 limits). */
@@ -136,7 +138,7 @@ export class LiveClient {
     const existing = this.#subscriptions.get(key);
     if (existing) existing.refs += 1;
     else {
-      this.#subscriptions.set(key, { topic, metric, refs: 1, confirmed: false });
+      this.#subscriptions.set(key, { topic, metric, refs: 1, confirmed: false, sent: false });
       if (this.#isOpen()) this.#enqueue(subscribeMessage(topic, metric));
     }
     let released = false;
@@ -163,12 +165,12 @@ export class LiveClient {
     subscription.refs -= 1;
     if (subscription.refs > 0) return;
     this.#subscriptions.delete(key);
-    const queued = this.#outbox.length;
     this.#outbox = this.#outbox.filter(
       (message) => !(message.type === 'subscribe' && keyOf(message.topic, message.metric) === key),
     );
-    // A subscription still waiting in the outbox never reached the MES: nothing to undo.
-    if (this.#isOpen() && this.#outbox.length === queued) {
+    // Only a subscribe that went out needs undoing; one still waiting never reached the MES. A
+    // retry may have queued it again after it was sent, so the outbox alone can't tell.
+    if (this.#isOpen() && subscription.sent) {
       this.#enqueue({
         type: 'unsubscribe',
         topic: subscription.topic,
@@ -206,6 +208,7 @@ export class LiveClient {
       this.#setStatus('open');
       for (const subscription of this.#subscriptions.values()) {
         subscription.confirmed = false;
+        subscription.sent = false;
         this.#enqueue(subscribeMessage(subscription.topic, subscription.metric));
       }
     };
@@ -215,7 +218,10 @@ export class LiveClient {
     socket.onclose = () => {
       if (this.#socket !== socket) return;
       this.#socket = undefined;
-      for (const subscription of this.#subscriptions.values()) subscription.confirmed = false;
+      for (const subscription of this.#subscriptions.values()) {
+        subscription.confirmed = false;
+        subscription.sent = false;
+      }
       this.#clearSending();
       this.#scheduleReconnect();
     };
@@ -299,6 +305,10 @@ export class LiveClient {
       if (message === undefined) break;
       this.#tokens -= 1;
       this.#socket?.send(JSON.stringify(message));
+      if (message.type === 'subscribe') {
+        const subscription = this.#subscriptions.get(keyOf(message.topic, message.metric));
+        if (subscription) subscription.sent = true;
+      }
     }
     if (this.#outbox.length > 0 && this.#isOpen()) {
       const wait = Math.ceil(((1 - this.#tokens) / messagesPerSecond) * 1000);

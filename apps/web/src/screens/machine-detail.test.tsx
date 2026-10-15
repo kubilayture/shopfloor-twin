@@ -86,7 +86,8 @@ describe('machine detail', () => {
     const app = await renderApp('/equipment/cnc-01?range=1h');
     await app.open();
 
-    expect(await screen.findByRole('heading', { name: 'Machine cnc-01', level: 1 })).toBeTruthy();
+    await screen.findByTestId('current-state');
+    expect(screen.getByRole('heading', { name: 'Machine cnc-01', level: 1 })).toBeTruthy();
     expect(screen.getByTestId('current-state').dataset.state).toBe('Running');
     const timeline = await screen.findByTestId('state-timeline');
     const bands = [...timeline.querySelectorAll<HTMLElement>('[data-state]')];
@@ -112,11 +113,15 @@ describe('machine detail', () => {
     );
   });
 
-  it('draws a pushed state change on the timeline and in the header', async () => {
-    vi.stubGlobal('fetch', routes());
+  it('draws a pushed state change on the timeline and in the header, and rereads the intervals', async () => {
+    const requests: URL[] = [];
+    const intervalReads = () =>
+      requests.filter((url) => url.pathname.endsWith('/intervals')).length;
+    vi.stubGlobal('fetch', routes(requests));
     const app = await renderApp('/equipment/cnc-01?range=1h');
     await app.open();
     await screen.findByTestId('state-timeline');
+    expect(intervalReads()).toBe(1);
     await app.push(
       {
         type: 'state',
@@ -130,14 +135,17 @@ describe('machine detail', () => {
       ...screen.getByTestId('state-timeline').querySelectorAll<HTMLElement>('[data-state]'),
     ].map((band) => band.dataset.state);
     expect(states).toEqual(['Down', 'Running', 'Blocked']);
+    await waitFor(() => {
+      expect(intervalReads()).toBe(2);
+    });
   });
 
   it('lists metrics with units and charts min/max/avg with live samples appended', async () => {
     vi.stubGlobal('fetch', routes());
     const app = await renderApp('/equipment/cnc-01?range=1h');
     await app.open();
-    expect(await screen.findByRole('rowheader', { name: 'spindle-load' })).toBeTruthy();
-    expect(screen.getByText('42.5')).toBeTruthy();
+    expect((await screen.findByTestId('latest-spindle-load')).textContent).toBe('42.5');
+    expect(screen.getByRole('rowheader', { name: 'spindle-load' })).toBeTruthy();
     expect(app.factory.last.sent).toContainEqual({ type: 'subscribe', topic: 'telemetry:cnc-01' });
 
     const chart = await screen.findByTestId('chart-percent');
@@ -154,13 +162,38 @@ describe('machine detail', () => {
     expect((JSON.parse(screen.getByTestId('chart-percent').textContent) as number[][])[3]).toEqual([
       42, 50,
     ]);
+    expect(screen.getByTestId('latest-spindle-load').textContent).toBe('42.5');
+
+    await app.push({
+      type: 'telemetry',
+      equipment: 'cnc-01',
+      metric: 'spindle-load',
+      unit: 'percent',
+      t: at(11),
+      value: 51,
+    });
+    expect(screen.getByTestId('latest-spindle-load').textContent).toBe('51');
+  });
+
+  it("moves focus to the new screen's heading after navigating", async () => {
+    vi.stubGlobal('fetch', routes());
+    const app = await renderApp('/');
+    await app.open();
+    const link = within(await screen.findByTestId('machine-cnc-01')).getByRole('link');
+    link.focus();
+    fireEvent.click(link);
+    await waitFor(() => {
+      expect(document.activeElement?.textContent).toBe('Machine cnc-01');
+    });
+    expect(document.activeElement?.tagName).toBe('H1');
   });
 
   it('switches the range from the picker', async () => {
     vi.stubGlobal('fetch', routes());
     const app = await renderApp('/equipment/cnc-01');
     await app.open();
-    const picker = await screen.findByRole('navigation', { name: 'Time range' });
+    await screen.findByTestId('current-state');
+    const picker = screen.getByRole('navigation', { name: 'Time range' });
     expect(
       within(picker).getByRole('link', { name: 'Last 8 h' }).getAttribute('aria-current'),
     ).toBe('page');

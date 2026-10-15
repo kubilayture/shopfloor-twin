@@ -21,8 +21,10 @@ export type SeriesPoints = Series['series'][number]['points'];
 /**
  * The chart columns of one metric: the decimated buckets (ADR-0019) followed by the live samples
  * that arrived after the last bucket, clipped to the window, by time, one point per instant.
- * Buckets before a gap of more than three bucket widths are followed by a null point, so uPlot
- * breaks the line instead of drawing across a time without data.
+ * A gap of more than three times the usual spacing (the median distance between points, at least
+ * a bucket) is marked with a null point, so uPlot breaks the line instead of drawing across a time
+ * without data. The spacing comes from the data because sample rates differ: at 60× an OPC UA
+ * metric is sampled about once a simulated minute, far wider than a 1-hour range's buckets.
  */
 export function chartData(
   buckets: SeriesPoints,
@@ -49,7 +51,7 @@ export function chartData(
   const sorted = [...byTime.values()].sort((a, b) => a.t - b.t);
 
   const data: ChartData = [[], [], [], []];
-  const gap = 3 * Math.max(bucketMs, 1000);
+  const gap = 3 * Math.max(bucketMs, 1000, medianSpacing(sorted));
   let previous: number | undefined;
   for (const point of sorted) {
     if (previous !== undefined && point.t - previous > gap) {
@@ -67,19 +69,42 @@ export function chartData(
   return data;
 }
 
-/** Keeps live samples by time, the newest value per instant, at most `limit` of the latest. */
-export function appendSample(
-  samples: readonly LiveSample[],
-  sample: LiveSample,
-  limit: number,
-): LiveSample[] {
-  const last = samples.at(-1);
-  let next: LiveSample[];
-  if (last === undefined || sample.t > last.t) next = [...samples, sample];
-  else {
-    next = samples.filter((existing) => existing.t !== sample.t);
-    next.push(sample);
-    next.sort((a, b) => a.t - b.t);
+function medianSpacing(points: readonly SeriesPoint[]): number {
+  if (points.length < 2) return 0;
+  const spacings: number[] = [];
+  for (let index = 1; index < points.length; index += 1) {
+    spacings.push((points[index]?.t ?? 0) - (points[index - 1]?.t ?? 0));
   }
-  return next.length > limit ? next.slice(next.length - limit) : next;
+  spacings.sort((a, b) => a - b);
+  return spacings[Math.floor(spacings.length / 2)] ?? 0;
+}
+
+/** Index of the first sample at or after `t` (samples are by time). */
+function lowerBound(samples: readonly LiveSample[], t: number): number {
+  let low = 0;
+  let high = samples.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((samples[middle]?.t ?? 0) < t) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/**
+ * Adds a live sample in place, in time order, replacing one at the same instant, and keeps
+ * between `limit` and 1.25 × `limit` of the latest. In-order samples (the usual case) cost O(1)
+ * amortised: trimming happens in batches, not on every sample.
+ */
+export function appendSample(samples: LiveSample[], sample: LiveSample, limit: number): void {
+  const last = samples.at(-1);
+  if (last === undefined || sample.t > last.t) samples.push(sample);
+  else {
+    const index = lowerBound(samples, sample.t);
+    if (samples[index]?.t === sample.t) samples[index] = sample;
+    else samples.splice(index, 0, sample);
+  }
+  if (samples.length > limit + Math.max(1, Math.floor(limit / 4))) {
+    samples.splice(0, samples.length - limit);
+  }
 }

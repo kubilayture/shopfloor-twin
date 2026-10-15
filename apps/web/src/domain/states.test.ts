@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { current, EPOCH } from '../test/fixtures.ts';
-import { isNewer, newest, staleness, stateStyle, timeInState } from './states.ts';
+import { isConnectionLost, isNewer, newest, staleness, stateStyle, timeInState } from './states.ts';
 
 describe('isNewer and newest', () => {
   it('orders by epoch, then seq (an anchor has none), then start', () => {
@@ -35,10 +35,13 @@ describe('timeInState', () => {
 describe('staleness', () => {
   it('flags a lost connection and states from an older run', () => {
     const clock = { epoch: EPOCH + 1, watermark: '2026-10-15T06:00:00.000Z' };
-    expect(staleness(current(), clock, false)).toBe('disconnected');
-    expect(staleness(current(), clock, true)).toBe('older-run');
-    expect(staleness(current({ epoch: EPOCH + 1 }), clock, true)).toBeUndefined();
-    expect(staleness(current(), null, true)).toBeUndefined();
+    expect(staleness(current(), clock, true)).toBe('disconnected');
+    expect(staleness(current(), clock, false)).toBe('older-run');
+    expect(staleness(current({ epoch: EPOCH + 1 }), clock, false)).toBeUndefined();
+    expect(staleness(current(), null, false)).toBeUndefined();
+    expect(isConnectionLost('connecting')).toBe(false);
+    expect(isConnectionLost('reconnecting')).toBe(true);
+    expect(isConnectionLost('stopped')).toBe(true);
   });
 });
 

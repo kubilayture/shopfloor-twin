@@ -1,6 +1,7 @@
 import type { CurrentStateDto, IntervalDto } from '@shopfloor/contracts/mes-api';
 
 export interface Band {
+  readonly epoch: number;
   readonly state: string;
   readonly cause: string | null;
   readonly start: number;
@@ -17,6 +18,7 @@ export interface Window {
 }
 
 export interface Span {
+  readonly epoch: number;
   readonly state: string;
   readonly cause: string | null;
   readonly start: number;
@@ -26,6 +28,7 @@ export interface Span {
 
 function spans(intervals: readonly IntervalDto[]): Span[] {
   return intervals.map((interval) => ({
+    epoch: interval.epoch,
     state: interval.state,
     cause: interval.cause,
     start: Date.parse(interval.start),
@@ -56,6 +59,7 @@ export function withLiveState(
   return [
     ...before,
     {
+      epoch: current.epoch,
       state: current.state,
       cause: current.cause,
       start: since,

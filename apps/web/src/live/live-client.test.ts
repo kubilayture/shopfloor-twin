@@ -173,6 +173,26 @@ describe('LiveClient', () => {
     expect(client.lastError).toBeUndefined();
   });
 
+  it('unsubscribes a subscription that was sent, even while a retry queued it again', () => {
+    const { client, factory } = setup({ messagesPerSecond: 0.5, burst: 2 });
+    const offA = client.subscribe('telemetry:a');
+    client.subscribe('telemetry:b');
+    client.start();
+    const socket = factory.last;
+    socket.open();
+    expect(socket.sent).toHaveLength(2);
+    socket.receive({ type: 'error', code: 'busy', detail: 'too many snapshots at a time' });
+    vi.advanceTimersByTime(1_000);
+    expect(socket.sent).toHaveLength(2);
+
+    offA();
+    vi.advanceTimersByTime(10_000);
+    expect(socket.sent.slice(2)).toEqual([
+      { type: 'subscribe', topic: 'telemetry:b' },
+      { type: 'unsubscribe', topic: 'telemetry:a' },
+    ]);
+  });
+
   it('keeps errors that a retry would not fix', () => {
     const { client, factory } = setup();
     client.subscribe('telemetry:nope');

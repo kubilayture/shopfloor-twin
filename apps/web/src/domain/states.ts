@@ -9,7 +9,7 @@ export interface StateStyle {
 
 const STYLES: Readonly<Record<string, StateStyle>> = {
   Running: { label: 'Running', className: 'bg-emerald-700 text-white' },
-  Idle: { label: 'Idle', className: 'bg-slate-200 text-slate-900' },
+  Idle: { label: 'Idle', className: 'bg-slate-300 text-slate-950' },
   Starved: { label: 'Starved', className: 'bg-amber-200 text-amber-950' },
   Blocked: { label: 'Blocked', className: 'bg-orange-300 text-orange-950' },
   Stopped: { label: 'Stopped', className: 'bg-rose-200 text-rose-950' },
@@ -17,7 +17,7 @@ const STYLES: Readonly<Record<string, StateStyle>> = {
   Setup: { label: 'Setup', className: 'bg-sky-700 text-white' },
   PlannedStop: { label: 'Planned stop', className: 'bg-indigo-200 text-indigo-950' },
   Maintenance: { label: 'Maintenance', className: 'bg-violet-700 text-white' },
-  Off: { label: 'Off', className: 'bg-zinc-600 text-white' },
+  Off: { label: 'Off', className: 'bg-zinc-700 text-white' },
 };
 
 export const NO_DATA: StateStyle = {
@@ -78,12 +78,20 @@ export const STALE_TEXT = {
  * Why a shown state may be out of date: the live connection is down (nothing new arrives), or
  * the state belongs to an older run than the plant clock (the machine hasn't reported since).
  */
+/**
+ * Whether the live connection was lost: reconnecting, or stopped. The first connect is not a loss;
+ * the header shows "Connecting…" then and the states from REST are as fresh as they get.
+ */
+export function isConnectionLost(status: string): boolean {
+  return status === 'reconnecting' || status === 'stopped';
+}
+
 export function staleness(
   current: CurrentStateDto,
   clock: Clock | null | undefined,
-  connected: boolean,
+  connectionLost: boolean,
 ): Staleness {
-  if (!connected) return 'disconnected';
+  if (connectionLost) return 'disconnected';
   if (clock && current.epoch < clock.epoch) return 'older-run';
   return undefined;
 }

@@ -3,10 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { listEquipment } from '../api/client.ts';
 import { queryKeys, usePlantClock } from '../api/queries.ts';
+import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { StateBadge } from '../components/state-badge.tsx';
 import { groupEquipment } from '../domain/plant.ts';
-import { STALE_TEXT, newest, staleness, timeInState } from '../domain/states.ts';
+import { STALE_TEXT, isConnectionLost, newest, staleness, timeInState } from '../domain/states.ts';
 import { formatDuration, formatPlantTime } from '../domain/time.ts';
 import { useLiveConnection, useLiveStates } from '../live/live-context.tsx';
 
@@ -14,15 +15,15 @@ function MachineCard({
   equipment,
   current,
   clock,
-  connected,
+  connectionLost,
 }: {
   equipment: EquipmentDto;
   current: CurrentStateDto | undefined;
   clock: Clock | null;
-  connected: boolean;
+  connectionLost: boolean;
 }) {
   const headingId = `machine-${equipment.id}`;
-  const stale = current ? staleness(current, clock, connected) : undefined;
+  const stale = current ? staleness(current, clock, connectionLost) : undefined;
   return (
     <li>
       <article
@@ -84,17 +85,18 @@ function MachineCard({
 }
 
 export function Overview() {
+  const heading = useHeadingFocus<HTMLHeadingElement>();
   const equipment = useQuery({
     queryKey: queryKeys.equipmentList,
     queryFn: ({ signal }) => listEquipment(signal),
   });
   const live = useLiveStates();
   const { clock } = usePlantClock();
-  const connected = useLiveConnection().status === 'open';
+  const connectionLost = isConnectionLost(useLiveConnection().status);
 
   return (
     <section aria-labelledby="overview-title">
-      <h1 id="overview-title" className="text-2xl font-bold">
+      <h1 ref={heading} id="overview-title" tabIndex={-1} className="text-2xl font-bold">
         Plant overview
       </h1>
       {equipment.isPending ? <p className="mt-4">Loading equipment…</p> : null}
@@ -127,7 +129,7 @@ export function Overview() {
                     equipment={item}
                     current={newest(item.current, live?.states[item.id])}
                     clock={clock}
-                    connected={connected}
+                    connectionLost={connectionLost}
                   />
                 ))}
               </ul>

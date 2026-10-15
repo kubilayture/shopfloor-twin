@@ -135,8 +135,8 @@ pnpm --filter @shopfloor/web dev        # http://127.0.0.1:5173, proxies /api to
 pnpm --filter @shopfloor/web build      # static files in apps/web/dist
 ```
 
-- `MES_URL` changes the proxy target. The proxy sends the MES's host (so `HTTP_ALLOWED_HOSTS` keeps its default) and presents the dev server's own pages as the MES's origin for the WebSocket, so `HTTP_ALLOWED_ORIGINS` is not needed; pages from other origins are still refused.
-- The header shows the plant clock (simulation time, Istanbul) and the connection: `Live`, `Connecting…` or `Reconnecting…`. Machine states marked **Stale** are from before a lost connection or from an earlier simulator run.
+- `MES_URL` changes the proxy target. The proxy sends the MES's host (so `HTTP_ALLOWED_HOSTS` keeps its default). For the WebSocket it refuses upgrades whose `Host` is not `localhost`, `127.0.0.1` or `[::1]` (Vite's host check skips proxied upgrades, so this keeps the MES's DNS-rebinding protection), and presents a page served under that loopback name as the MES's origin, so `HTTP_ALLOWED_ORIGINS` is not needed; any other origin is passed on and refused by the MES. Open the app as `localhost` or `127.0.0.1`.
+- The header shows the plant clock (simulation time, Istanbul) and the connection: `Live`, `Connecting…` or `Reconnecting…`. Machine states marked **Stale** are from before a lost connection or from an earlier simulator run (not shown while the page first connects).
 - A blank overview with `Could not load the equipment` and `Forbidden: host not allowed` means the request reached the MES under a name not in `HTTP_ALLOWED_HOSTS`; a connection stuck at `Reconnecting…` with 403 upgrades in the MES log means the page's origin is not accepted (`HTTP_ALLOWED_ORIGINS`).
 - More (screens, test ids, nginx notes for #99): `apps/web/README.md`.
 

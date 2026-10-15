@@ -1,5 +1,7 @@
 import { STATES_TOPIC } from '@shopfloor/contracts/mes-api';
-import { Link, Outlet } from '@tanstack/react-router';
+import { Link, Outlet, useRouterState } from '@tanstack/react-router';
+import { useLayoutEffect, useRef } from 'react';
+import { requestHeadingFocus, useHeadingFocus } from '../components/heading-focus.ts';
 import { usePlantClock } from '../api/queries.ts';
 import { ConnectionStatus } from '../components/connection-status.tsx';
 import { formatPlantTime } from '../domain/time.ts';
@@ -21,8 +23,26 @@ function PlantClock() {
   );
 }
 
+/**
+ * After the route changes (not on the first load, not when only the search changes, so the range
+ * picker keeps its focus), focus moves to `main` at once, as the link that had it is gone, and
+ * then to the new screen's heading when it mounts (`useHeadingFocus`). A layout effect, so the
+ * request is in place before the new screen's own effects run.
+ */
+function useFocusOnNavigation() {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const previous = useRef(pathname);
+  useLayoutEffect(() => {
+    if (previous.current === pathname) return;
+    previous.current = pathname;
+    requestHeadingFocus();
+    document.getElementById('main')?.focus();
+  }, [pathname]);
+}
+
 export function RootLayout() {
   useLiveSubscription(STATES_TOPIC);
+  useFocusOnNavigation();
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <a
@@ -50,9 +70,12 @@ export function RootLayout() {
 }
 
 export function NotFound() {
+  const heading = useHeadingFocus<HTMLHeadingElement>();
   return (
     <section>
-      <h1 className="text-2xl font-bold">Page not found</h1>
+      <h1 ref={heading} tabIndex={-1} className="text-2xl font-bold">
+        Page not found
+      </h1>
       <p className="mt-2">
         <Link to="/" className="text-sky-800 underline">
           Back to the plant overview

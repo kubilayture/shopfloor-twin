@@ -10,9 +10,15 @@ export interface LiveStates {
   readonly states: Readonly<Record<string, CurrentStateDto>>;
 }
 
+/**
+ * Pushed samples of one metric. `samples` is a buffer the cache appends to in place (copying it
+ * per sample made a long session quadratic); every update wraps it in a new object with a new
+ * `version`, so readers re-render, and they only read it.
+ */
 export interface LiveMetric {
   readonly unit: string;
   readonly samples: readonly LiveSample[];
+  readonly version: number;
 }
 
 /** Pushed telemetry of one equipment, by metric. */
@@ -21,10 +27,13 @@ export type LiveTelemetry = Readonly<Record<string, LiveMetric>>;
 export const liveKeys = {
   all: ['live'] as const,
   states: ['live', 'states'] as const,
+  telemetryAll: ['live', 'telemetry'] as const,
   telemetry: (equipment: string) => ['live', 'telemetry', equipment] as const,
 };
 
-/** Live samples kept per metric for a chart (about an hour of 1 s samples). */
+export const TELEMETRY_GC_MS = 60_000;
+
+/** Live samples kept per metric for a chart (about an hour of 1 s samples), at least. */
 export const LIVE_SAMPLE_LIMIT = 4_000;
 
 const EMPTY: LiveStates = { clock: null, states: {} };
@@ -53,16 +62,30 @@ function mergeSamples(
   const next: Record<string, LiveMetric> = { ...telemetry };
   for (const sample of samples) {
     const known = next[sample.metric];
+    const buffer = (known?.samples ?? []) as LiveSample[];
+    appendSample(buffer, { t: Date.parse(sample.t), value: sample.value }, LIVE_SAMPLE_LIMIT);
     next[sample.metric] = {
       unit: sample.unit,
-      samples: appendSample(
-        known?.samples ?? [],
-        { t: Date.parse(sample.t), value: sample.value },
-        LIVE_SAMPLE_LIMIT,
-      ),
+      samples: buffer,
+      version: (known?.version ?? 0) + 1,
     };
   }
   return next;
+}
+
+/**
+ * Options of the `['live', …]` queries. Pushed data changes many times a second: structural
+ * sharing would compare whole sample buffers on every message (and, as buffers are appended in
+ * place, would keep the old object). States live as long as the tab; a machine's telemetry is
+ * dropped a minute after its detail screen, the only reader and subscriber, is gone.
+ */
+export function setLiveQueryDefaults(queryClient: QueryClient): void {
+  queryClient.setQueryDefaults(liveKeys.all, {
+    staleTime: Infinity,
+    gcTime: Infinity,
+    structuralSharing: false,
+  });
+  queryClient.setQueryDefaults(liveKeys.telemetryAll, { gcTime: TELEMETRY_GC_MS });
 }
 
 /** Applies one server message to the query cache; newer data always wins over older. */
@@ -108,7 +131,7 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
  * resubscription brings fresh snapshots. Returns the disconnect.
  */
 export function connectLiveToCache(client: LiveClient, queryClient: QueryClient): () => void {
-  queryClient.setQueryDefaults(liveKeys.all, { staleTime: Infinity, gcTime: Infinity });
+  setLiveQueryDefaults(queryClient);
   let wasLost = false;
   const stopStatus = client.onStatus(() => {
     if (client.status === 'reconnecting') wasLost = true;

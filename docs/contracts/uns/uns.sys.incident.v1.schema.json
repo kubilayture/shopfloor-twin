@@ -6,13 +6,6 @@
       "type": "string",
       "const": "uns.sys.incident/1"
     },
-    "scope": {
-      "type": "string",
-      "enum": [
-        "device",
-        "topic"
-      ]
-    },
     "epoch": {
       "type": "integer",
       "minimum": 0,
@@ -68,6 +61,10 @@
         "protocol"
       ],
       "additionalProperties": false
+    },
+    "scope": {
+      "type": "string",
+      "const": "topic"
     },
     "value": {
       "type": "object",
@@ -125,13 +122,13 @@
   },
   "required": [
     "schema",
-    "scope",
     "epoch",
     "seq",
     "sourceTime",
     "receivedAt",
     "quality",
     "source",
+    "scope",
     "value"
   ],
   "additionalProperties": false,

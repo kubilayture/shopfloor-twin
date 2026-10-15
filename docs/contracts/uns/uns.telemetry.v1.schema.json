@@ -6,13 +6,6 @@
       "type": "string",
       "const": "uns.telemetry/1"
     },
-    "scope": {
-      "type": "string",
-      "enum": [
-        "device",
-        "topic"
-      ]
-    },
     "epoch": {
       "type": "integer",
       "minimum": 0,
@@ -73,13 +66,16 @@
       "type": "string",
       "minLength": 1
     },
+    "scope": {
+      "type": "string",
+      "const": "topic"
+    },
     "value": {
       "type": "number"
     }
   },
   "required": [
     "schema",
-    "scope",
     "epoch",
     "seq",
     "sourceTime",
@@ -87,6 +83,7 @@
     "quality",
     "source",
     "unit",
+    "scope",
     "value"
   ],
   "additionalProperties": false,

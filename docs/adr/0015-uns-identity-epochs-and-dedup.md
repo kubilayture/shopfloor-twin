@@ -27,10 +27,12 @@ Chosen option: 3.
 - **`epoch`:** the start time (Unix seconds) of whoever owns the sequence: the simulator process for device sequences (exposed as `ShopFloor.Epoch` over OPC UA and in two Modbus registers), the gateway process for its counters. A larger epoch starts the stream over; a smaller one is old.
 - **Snapshots** are `uns.state.current/1` with `kind: snapshot` and `scope: topic`, so they never enter device dedup or gap checks.
 - **Consumer rule** (`Deduplicator` in `@shopfloor/contracts`, which the MES implements in Phase 4):
-  - a message with a newer epoch, or the first one seen, starts the stream;
-  - a seen `seq`, or an older epoch, is a duplicate;
-  - out-of-order deliveries are accepted;
-  - missing numbers below the highest seen are gaps.
+  - a seen (epoch, `seq`), or an older epoch, is a duplicate;
+  - a newer epoch starts the stream over and returns the old epoch's open gaps;
+  - out-of-order deliveries are accepted, also below the first number seen;
+  - gaps are holes between the numbers seen, written off by `acknowledge` once recorded;
+  - retained deliveries on subscribe restore state without entering the stream.
+    The stream is stored as ranges, so memory grows with open gaps, not with messages. (The first version set a high-water mark at the first message and dropped anything below it as a duplicate, which would lose retained alarms on a consumer's first start; the review of #72 found this.)
 
 Option 1 can't tell a restart from loss. Option 2 deduplicates, but can't detect gaps, which plan section 5 requires.
 

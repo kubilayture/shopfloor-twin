@@ -48,7 +48,9 @@ In code: `UNS_TELEMETRY`. Telemetry is sampled and may be decimated (plan sectio
 
 ## Envelope
 
-Every payload is one JSON object with these fields, and no others except those listed per schema:
+Every payload is one JSON object with these fields, and no others except those listed per schema.
+
+**Versioning:** the schemas are strict, so adding a field is a new version (`/2`). Publishers then send the new version only once every consumer accepts it. Consumers reject versions they don't know rather than guessing.
 
 | Field        | Type                       | Meaning                                                                                           |
 | ------------ | -------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -81,7 +83,9 @@ Validate any payload with `parseUnsMessage(json)`.
 - **Snapshots:** after every (re)connect, the gateway publishes the current state read from the device's variables as `uns.state.current/1` with `kind: snapshot` and `scope: topic`. They restore the current state. They are not facts, and they never take part in device dedup or gap checks.
 - **The consumer rule** (reference implementation: `Deduplicator`):
   - stream = `device:{equipment}` for device facts, `topic:{topic}` otherwise;
-  - the first message of a stream, or a message with a newer epoch, starts the stream: numbers before it are history the consumer joined after, not gaps;
-  - a message with an older epoch, or a `seq` already seen, is a **duplicate** and is dropped;
-  - out-of-order deliveries are accepted; numbers missing below the highest one seen are **gaps** (`gaps()`), which the consumer records as data-quality incidents.
+  - a message whose (epoch, `seq`) was already seen, or with an older epoch, is a **duplicate** and is dropped;
+  - a newer epoch starts the stream over. The verdict hands back the old epoch's open gaps (`closedGaps`), which can no longer be filled;
+  - out-of-order deliveries are accepted, including numbers below the first one seen, as with a reordered start;
+  - **gaps** are holes _between_ numbers seen (`gaps()`). Numbers before the first one seen are history the consumer joined after, not gaps. A gap recorded as an incident is written off with `acknowledge(gap)`. Memory grows with the number of open gaps, not with the number of messages;
+  - messages the broker delivers as **retained** on subscribe are passed with `{ retained: true }`. They restore current state, and are dropped if already seen, but they neither start the stream nor create gaps: retained topics hold the latest facts of different kinds, so their numbers are far apart.
 - The gateway reports the gaps _it_ sees (from a device) as `uns.sys.incident/1` messages. The MES counts both kinds.

@@ -146,6 +146,17 @@ describe('UNS payloads (envelope, plan section 5; ADR-0015)', () => {
       /state/,
     ],
     ['a state without kind', { ...SAMPLES['uns.state.current/1'], kind: undefined }, /kind/],
+    [
+      'a snapshot in the device scope',
+      { ...SAMPLES['uns.state.current/1'], kind: 'snapshot' },
+      /scope/,
+    ],
+    [
+      'a cycle in the topic scope',
+      { ...SAMPLES['uns.events.cycle-complete/1'], scope: 'topic' },
+      /scope/,
+    ],
+    ['telemetry in the device scope', { ...SAMPLES['uns.telemetry/1'], scope: 'device' }, /scope/],
     ['telemetry without a unit', { ...SAMPLES['uns.telemetry/1'], unit: undefined }, /unit/],
     [
       'a severity above 1000',
@@ -211,44 +222,99 @@ describe('Deduplicator: the consumer rule of ADR-0015', () => {
     expect(dedup.gaps()).toEqual([{ stream: 'device:cnc-01', epoch: 100, from: 6, to: 7 }]);
   });
 
-  it('treats a restarted source (new epoch) as new data, not as duplicates, and ignores old epochs', () => {
+  it('accepts numbers below the first one seen: a reordered start loses nothing', () => {
     const dedup = new Deduplicator();
-    for (const seq of [1, 2, 3]) dedup.accept('t', device(seq, 100));
-    expect(dedup.accept('t', device(1, 200))).toEqual({ status: 'new', epochChanged: true });
-    expect(dedup.accept('t', device(2, 200)).status).toBe('new');
-    expect(dedup.accept('t', device(3, 100)).status).toBe('duplicate');
+    expect([3, 1, 2, 4].map((seq) => dedup.accept('t', device(seq)).status)).toEqual([
+      'new',
+      'new',
+      'new',
+      'new',
+    ]);
+    expect(dedup.gaps()).toEqual([]);
   });
 
-  it('starts a stream at the first message seen: a late joiner reports no gap for earlier numbers', () => {
+  it('restores retained messages on join without starting the stream or creating gaps', () => {
     const dedup = new Deduplicator();
-    expect(dedup.accept('t', device(500))).toEqual({ status: 'new', epochChanged: false });
+    // A fresh consumer subscribes: retained state (50) and two retained alarms (48, 30) arrive.
+    const retained = [50, 48, 30].map(
+      (seq) => dedup.accept('t', device(seq), { retained: true }).status,
+    );
+    expect(retained).toEqual(['new', 'new', 'new']);
+    expect(dedup.accept('t', device(51)).status).toBe('new');
+    expect(dedup.accept('t', device(52)).status).toBe('new');
+    expect(dedup.gaps()).toEqual([]);
+    // A retained copy of something already seen live is a duplicate.
+    expect(dedup.accept('t', device(52), { retained: true }).status).toBe('duplicate');
+  });
+
+  it('keeps memory proportional to open gaps, not to messages, and writes gaps off when acknowledged', () => {
+    const dedup = new Deduplicator();
+    dedup.accept('t', device(1));
+    for (let seq = 3; seq <= 100_000; seq++) dedup.accept('t', device(seq));
+    const [gap] = dedup.gaps();
+    expect(dedup.gaps()).toEqual([{ stream: 'device:cnc-01', epoch: 100, from: 2, to: 2 }]);
+    if (gap) dedup.acknowledge(gap);
+    expect(dedup.gaps()).toEqual([]);
+    expect(dedup.accept('t', device(2)).status).toBe('duplicate');
+  });
+
+  it('treats a restarted source (new epoch) as new data, hands over the old open gaps, and ignores old epochs', () => {
+    const dedup = new Deduplicator();
+    for (const seq of [1, 3]) dedup.accept('t', device(seq, 100));
+    expect(dedup.accept('t', device(1, 200))).toEqual({
+      status: 'new',
+      epochChanged: true,
+      closedGaps: [{ stream: 'device:cnc-01', epoch: 100, from: 2, to: 2 }],
+    });
+    expect(dedup.accept('t', device(2, 200)).status).toBe('new');
+    expect(dedup.accept('t', device(3, 100)).status).toBe('duplicate');
     expect(dedup.gaps()).toEqual([]);
   });
 
   it('property: any at-least-once delivery of 1..n in any order yields each number once and no gaps', () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 1, max: 60 }),
-        fc.array(fc.integer({ min: 0, max: 59 }), { maxLength: 60 }),
-        fc.integer(),
-        (n, extra, seed) => {
-          const deliveries = [
-            ...Array.from({ length: n }, (_, i) => i + 1),
-            ...extra.map((e) => (e % n) + 1),
-          ];
-          const shuffled =
-            fc.sample(fc.shuffledSubarray(deliveries, { minLength: deliveries.length }), {
-              numRuns: 1,
-              seed,
-            })[0] ?? deliveries;
-          // The first delivery starts the stream; deliver 1 first, as a publisher replaying in order does.
-          const ordered = [1, ...shuffled.filter((s) => s !== 1)];
+        fc.integer({ min: 1, max: 60 }).chain((n) =>
+          fc.array(fc.integer({ min: 1, max: n }), { maxLength: 60 }).chain((extra) => {
+            const deliveries = [...Array.from({ length: n }, (_, i) => i + 1), ...extra];
+            return fc.tuple(
+              fc.constant(n),
+              fc.shuffledSubarray(deliveries, {
+                minLength: deliveries.length,
+                maxLength: deliveries.length,
+              }),
+            );
+          }),
+        ),
+        ([n, deliveries]) => {
           const dedup = new Deduplicator();
-          const accepted = ordered.filter((seq) => dedup.accept('t', device(seq)).status === 'new');
+          const accepted = deliveries.filter(
+            (seq) => dedup.accept('t', device(seq)).status === 'new',
+          );
           expect(accepted.sort((a, b) => a - b)).toEqual(
             Array.from({ length: n }, (_, i) => i + 1),
           );
           expect(dedup.gaps()).toEqual([]);
+        },
+      ),
+    );
+  });
+
+  it('property: removing numbers from an ordered delivery reports exactly the removed inner numbers', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 3, max: 80 }),
+        fc.array(fc.integer({ min: 2, max: 79 })),
+        (n, lost) => {
+          const missing = new Set(lost.filter((l) => l < n));
+          const dedup = new Deduplicator();
+          for (let seq = 1; seq <= n; seq++) {
+            if (!missing.has(seq)) dedup.accept('t', device(seq));
+          }
+          const reported = dedup
+            .gaps()
+            .flatMap((g) => Array.from({ length: g.to - g.from + 1 }, (_, i) => g.from + i));
+          expect(reported).toEqual([...missing].sort((a, b) => a - b));
         },
       ),
     );

@@ -34,7 +34,6 @@ export const sourceSchema = z.strictObject({
  * `epoch` changes whenever the owner of the sequence restarts.
  */
 const identity = {
-  scope: z.enum(['device', 'topic']),
   epoch: z
     .int()
     .min(0)
@@ -47,11 +46,12 @@ const identity = {
   source: sourceSchema,
 };
 
-function envelope<const N extends string, V extends z.ZodType, E extends z.ZodRawShape>(
-  name: N,
-  value: V,
-  extra: E,
-) {
+/** Each schema adds its `scope` (device or topic) and any extra fields. */
+function envelope<
+  const N extends string,
+  V extends z.ZodType,
+  E extends z.ZodRawShape & { scope: z.ZodLiteral<'device' | 'topic'> },
+>(name: N, value: V, extra: E) {
   return z.strictObject({
     schema: z.literal(`${name}/1`),
     ...identity,
@@ -60,21 +60,30 @@ function envelope<const N extends string, V extends z.ZodType, E extends z.ZodRa
   });
 }
 
-export const stateCurrentSchema = envelope(
-  'uns.state.current',
-  z.strictObject({
-    state: z.enum(MACHINE_STATES),
-    cause: z.string().nullable().describe('Failure code, CHANGEOVER A→B, MATERIAL:SK-1, …'),
-  }),
-  {
-    kind: z
-      .enum(['event', 'snapshot'])
-      .describe('snapshot: read from the variables after a (re)connect; scope is then topic'),
-  },
-).meta({ title: 'uns.state.current/1', description: 'Current machine state (retained)' });
+const stateValue = z.strictObject({
+  state: z.enum(MACHINE_STATES),
+  cause: z.string().nullable().describe('Failure code, CHANGEOVER A→B, MATERIAL:SK-1, …'),
+});
+
+const DEVICE = { scope: z.literal('device') };
+const TOPIC = { scope: z.literal('topic') };
+
+export const stateCurrentSchema = z
+  .discriminatedUnion('kind', [
+    envelope('uns.state.current', stateValue, { kind: z.literal('event'), ...DEVICE }),
+    envelope('uns.state.current', stateValue, {
+      kind: z.literal('snapshot').describe('Read from the variables after a (re)connect'),
+      ...TOPIC,
+    }),
+  ])
+  .meta({
+    title: 'uns.state.current/1',
+    description: 'Current machine state (retained): a state change (event) or a resync snapshot',
+  });
 
 export const telemetrySchema = envelope('uns.telemetry', z.number(), {
   unit: z.string().min(1),
+  ...TOPIC,
 }).meta({
   title: 'uns.telemetry/1',
   description: 'A sampled process value (retained, last value)',
@@ -97,7 +106,7 @@ export const cycleCompleteSchema = envelope(
     reason: z.string().nullable(),
     measurement: measurementSchema.nullable(),
   }),
-  {},
+  { ...DEVICE },
 ).meta({ title: 'uns.events.cycle-complete/1', description: 'A completed cycle (not retained)' });
 
 export const alarmSchema = envelope(
@@ -107,7 +116,7 @@ export const alarmSchema = envelope(
     transition: z.enum(['active', 'cleared']),
     severity: z.int().min(1).max(1000),
   }),
-  {},
+  { ...DEVICE },
 ).meta({ title: 'uns.alarms/1', description: 'Last transition of one alarm code (retained)' });
 
 export const statusSchema = envelope(
@@ -117,7 +126,7 @@ export const statusSchema = envelope(
     startedAt: isoTime,
     version: z.string().min(1),
   }),
-  {},
+  { ...TOPIC },
 ).meta({
   title: 'uns.sys.status/1',
   description: 'Component health (retained; last will offline)',
@@ -142,7 +151,7 @@ export const incidentSchema = envelope(
     lost: z.int().min(0).nullable().describe('Number of facts known to be lost, if known'),
     message: z.string().min(1),
   }),
-  {},
+  { ...TOPIC },
 ).meta({ title: 'uns.sys.incident/1', description: 'A data-quality incident (not retained)' });
 
 export const UNS_SCHEMAS = {

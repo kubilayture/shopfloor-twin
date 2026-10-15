@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #53 merged (PR #65): alarms.
 - #52 merged (PR #64): LoadProgram on the CNCs.
 - #51 merged (PR #63): OPC UA server per machine.
 - #50 merged (PR #62): process values.
@@ -35,11 +36,11 @@
 
 ## In progress
 
-- #53 alarms (in review)
+- #54 control API (in review)
 
 ## Next up
 
-- #54 control API, #55 container, #56 integration tests and contract check, #57 Phase 2 close
+- #55 container, #56 integration tests and contract check, #57 Phase 2 close
 
 ## Blockers and open questions for the owner
 

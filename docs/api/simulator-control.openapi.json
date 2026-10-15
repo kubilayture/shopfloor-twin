@@ -1,0 +1,629 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ShopFloor Twin simulator control API",
+    "version": "0.0.0",
+    "description": "Controls the pacing of the live simulation and streams its plant events. Plant events: WebSocket at /api/v1/events (see docs/contracts/simulator-control-api.md)."
+  },
+  "components": {
+    "schemas": {}
+  },
+  "paths": {
+    "/api/v1/status": {
+      "get": {
+        "summary": "Current pacing state and simulation time",
+        "tags": [
+          "simulation"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "idle",
+                        "running",
+                        "paused",
+                        "finished"
+                      ]
+                    },
+                    "speed": {
+                      "type": "number",
+                      "description": "Simulation seconds per wall-clock second"
+                    },
+                    "simTime": {
+                      "type": "string",
+                      "description": "Current simulation time, ISO 8601 UTC"
+                    },
+                    "lagMs": {
+                      "type": "number",
+                      "description": "How far event processing trails the paced clock, in wall ms"
+                    },
+                    "events": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Plant events emitted since start"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "speed",
+                    "simTime",
+                    "lagMs",
+                    "events"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pause": {
+      "post": {
+        "summary": "Freeze simulation time (no effect unless running)",
+        "tags": [
+          "simulation"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "idle",
+                        "running",
+                        "paused",
+                        "finished"
+                      ]
+                    },
+                    "speed": {
+                      "type": "number",
+                      "description": "Simulation seconds per wall-clock second"
+                    },
+                    "simTime": {
+                      "type": "string",
+                      "description": "Current simulation time, ISO 8601 UTC"
+                    },
+                    "lagMs": {
+                      "type": "number",
+                      "description": "How far event processing trails the paced clock, in wall ms"
+                    },
+                    "events": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Plant events emitted since start"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "speed",
+                    "simTime",
+                    "lagMs",
+                    "events"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/resume": {
+      "post": {
+        "summary": "Continue pacing from the current simulation time",
+        "tags": [
+          "simulation"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "idle",
+                        "running",
+                        "paused",
+                        "finished"
+                      ]
+                    },
+                    "speed": {
+                      "type": "number",
+                      "description": "Simulation seconds per wall-clock second"
+                    },
+                    "simTime": {
+                      "type": "string",
+                      "description": "Current simulation time, ISO 8601 UTC"
+                    },
+                    "lagMs": {
+                      "type": "number",
+                      "description": "How far event processing trails the paced clock, in wall ms"
+                    },
+                    "events": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Plant events emitted since start"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "speed",
+                    "simTime",
+                    "lagMs",
+                    "events"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/step": {
+      "post": {
+        "summary": "Process exactly one simulation event (only while paused or not yet started)",
+        "tags": [
+          "simulation"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "stepped": {
+                      "type": "boolean",
+                      "description": "False when there is no event left to process"
+                    },
+                    "status": {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "idle",
+                            "running",
+                            "paused",
+                            "finished"
+                          ]
+                        },
+                        "speed": {
+                          "type": "number",
+                          "description": "Simulation seconds per wall-clock second"
+                        },
+                        "simTime": {
+                          "type": "string",
+                          "description": "Current simulation time, ISO 8601 UTC"
+                        },
+                        "lagMs": {
+                          "type": "number",
+                          "description": "How far event processing trails the paced clock, in wall ms"
+                        },
+                        "events": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Plant events emitted since start"
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "speed",
+                        "simTime",
+                        "lagMs",
+                        "events"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "stepped",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/speed": {
+      "put": {
+        "summary": "Change the speed (0.5–60×)",
+        "tags": [
+          "simulation"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "speed": {
+                    "type": "number",
+                    "minimum": 0.5,
+                    "maximum": 60
+                  }
+                },
+                "required": [
+                  "speed"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "idle",
+                        "running",
+                        "paused",
+                        "finished"
+                      ]
+                    },
+                    "speed": {
+                      "type": "number",
+                      "description": "Simulation seconds per wall-clock second"
+                    },
+                    "simTime": {
+                      "type": "string",
+                      "description": "Current simulation time, ISO 8601 UTC"
+                    },
+                    "lagMs": {
+                      "type": "number",
+                      "description": "How far event processing trails the paced clock, in wall ms"
+                    },
+                    "events": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Plant events emitted since start"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "speed",
+                    "simTime",
+                    "lagMs",
+                    "events"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "summary": "The process is up",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "unavailable"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "summary": "Every OPC UA server is listening and the run has not finished",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "unavailable"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "unavailable"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Prometheus metrics (text format)",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "simulation",
+      "description": "Pacing of the live run"
+    },
+    {
+      "name": "operations",
+      "description": "Health and metrics"
+    }
+  ]
+}

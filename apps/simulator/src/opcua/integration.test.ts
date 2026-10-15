@@ -1,0 +1,365 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  OPCUA_ALARM_FOLDER,
+  OPCUA_EVENT_FIELDS,
+  OPCUA_EVENT_TYPES,
+  OPCUA_MACHINES,
+  OPCUA_METHODS,
+  OPCUA_VARIABLES,
+  SHOPFLOOR_NAMESPACE_URI,
+  opcuaAlarmPath,
+  opcuaEventTypeId,
+  opcuaNodeId,
+  toIndexedNodeId,
+} from '@shopfloor/contracts';
+import type { PlantConfig } from '@shopfloor/plant-config';
+import { HOUR, SECOND } from '@shopfloor/sim-core';
+import {
+  AttributeIds,
+  BrowseDirection,
+  DataType,
+  TimestampsToReturn,
+  constructEventFilter,
+  resolveNodeId,
+  type ClientSession,
+} from 'node-opcua';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createLiveRun, type LiveRun } from '../live/run.ts';
+import { ManualClock } from '../live/testing.ts';
+import type { PlantEvent } from '../plant/line.ts';
+import { loadDefaultConfig } from '../plant/testing.ts';
+import { PlantServers, alarmCodes } from './plant-servers.ts';
+import { connect, documentedVariables, wait, type DocumentedVariable } from './testing.ts';
+
+// Monday 06:00 Istanbul: the scripted shift is the first morning shift of the week.
+const T0 = Date.UTC(2026, 9, 12, 3);
+const OFFSET = 300;
+const SPEED = 60;
+let config: PlantConfig;
+let servers: PlantServers;
+let run: LiveRun;
+let clock: ManualClock;
+const plantEvents: PlantEvent[] = [];
+
+const port = (machineId: string): number =>
+  (OPCUA_MACHINES.find((m) => m.id === machineId)?.port ?? 0) + OFFSET;
+
+/** Advances wall time in 1 s ticks so that the servers publish between bursts, as in a real run. */
+async function play(wallMs: number): Promise<void> {
+  run.pacer.resume();
+  for (let t = 0; t < wallMs; t += 1_000) {
+    clock.advance(Math.min(1_000, wallMs - t));
+    await wait(5);
+  }
+  run.pacer.pause();
+}
+
+beforeAll(async () => {
+  config = await loadDefaultConfig();
+  clock = new ManualClock();
+  servers = new PlantServers({
+    config,
+    start: T0,
+    portOffset: OFFSET,
+    pkiFolder: join(tmpdir(), 'shopfloor-twin-integration-pki'),
+  });
+  run = createLiveRun({
+    config,
+    seed: 20261012,
+    start: T0,
+    speed: SPEED,
+    clock,
+    onEvent: (event) => {
+      plantEvents.push(event);
+      servers.record(event);
+    },
+  });
+  servers.attach(run);
+  await servers.start();
+  run.pacer.start();
+  run.pacer.pause();
+}, 60_000);
+
+afterAll(async () => {
+  run.pacer.stop();
+  await servers.stop();
+});
+
+const DATA_TYPES: Record<DocumentedVariable['type'], number> = {
+  Boolean: DataType.Boolean,
+  String: DataType.String,
+  UInt32: DataType.UInt32,
+  Double: DataType.Double,
+};
+
+function appliesTo(machines: string, machineId: string): boolean {
+  switch (machines) {
+    case 'all':
+      return true;
+    case 'CNCs':
+      return machineId.startsWith('cnc-');
+    default:
+      return machines.toLowerCase() === machineId;
+  }
+}
+
+async function nodeId(session: ClientSession, expanded: string) {
+  return resolveNodeId(toIndexedNodeId(expanded, await session.readNamespaceArray()));
+}
+
+describe('OPC UA contract against the live servers (#56, plan section 9)', () => {
+  it('documents exactly the variables the code serves', async () => {
+    const documented = await documentedVariables();
+    const paths = documented.map((v) => v.path).sort();
+    expect(paths).toEqual([...Object.values(OPCUA_VARIABLES), opcuaAlarmPath('<CODE>')].sort());
+    expect(new Set(documented.map((v) => v.type))).toEqual(
+      new Set(['String', 'UInt32', 'Double', 'Boolean']),
+    );
+  });
+
+  it('serves every documented variable with its data type on exactly the documented machines', async () => {
+    const documented = await documentedVariables();
+    for (const machine of OPCUA_MACHINES) {
+      const { session, close } = await connect(port(machine.id));
+      try {
+        const rows = documented.flatMap((v) =>
+          v.path === opcuaAlarmPath('<CODE>')
+            ? alarmCodes(config, machine.id).map((code) => ({ ...v, path: opcuaAlarmPath(code) }))
+            : [v],
+        );
+        for (const row of rows) {
+          const read = await session.read({
+            nodeId: await nodeId(session, opcuaNodeId(machine.id, row.path)),
+            attributeId: AttributeIds.DataType,
+          });
+          const where = `${machine.id} ${row.path}`;
+          if (appliesTo(row.machines, machine.id)) {
+            expect(read.statusCode.isGood(), where).toBe(true);
+            expect((read.value.value as { value: number }).value, where).toBe(DATA_TYPES[row.type]);
+          } else {
+            expect(read.statusCode.name, where).toBe('BadNodeIdUnknown');
+          }
+        }
+        const alarms = await session.browse({
+          nodeId: await nodeId(session, opcuaNodeId(machine.id, OPCUA_ALARM_FOLDER)),
+          referenceTypeId: 'HasComponent',
+          resultMask: 63,
+        });
+        expect(
+          alarms.references
+            ?.map((r) => r.browseName.name)
+            .filter((name) => name !== 'ActiveCount')
+            .sort(),
+        ).toEqual([...alarmCodes(config, machine.id)].sort());
+        const method = await session.read({
+          nodeId: await nodeId(session, opcuaNodeId(machine.id, OPCUA_METHODS.loadProgram)),
+          attributeId: AttributeIds.Executable,
+        });
+        expect(method.statusCode.isGood(), machine.id).toBe(machine.kind === 'machine-tool');
+      } finally {
+        await close();
+      }
+    }
+  }, 60_000);
+
+  it('declares each project event type with the documented fields', async () => {
+    const { session, close } = await connect(port('cnc-01'));
+    try {
+      for (const [kind, name] of Object.entries(OPCUA_EVENT_TYPES) as [
+        keyof typeof OPCUA_EVENT_TYPES,
+        string,
+      ][]) {
+        const browse = await session.browse({
+          nodeId: await nodeId(session, opcuaEventTypeId(name)),
+          browseDirection: BrowseDirection.Forward,
+          referenceTypeId: 'HasProperty',
+          resultMask: 63,
+        });
+        expect(browse.references?.map((r) => r.browseName.name).sort(), name).toEqual(
+          [...OPCUA_EVENT_FIELDS.common, ...OPCUA_EVENT_FIELDS[kind]].sort(),
+        );
+      }
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteria)', () => {
+  it('lets a generic client find every machine under Machinery/Machines; values follow the chosen speed', async () => {
+    for (const machine of OPCUA_MACHINES) {
+      const { session, close } = await connect(port(machine.id));
+      try {
+        const namespaces = await session.readNamespaceArray();
+        const machinery = namespaces.indexOf('http://opcfoundation.org/UA/Machinery/');
+        const machines = await session.browse({
+          nodeId: resolveNodeId(`ns=${String(machinery)};i=1001`),
+          resultMask: 63,
+        });
+        const found = machines.references?.find(
+          (r) => r.nodeId.namespace === namespaces.indexOf(SHOPFLOOR_NAMESPACE_URI),
+        );
+        expect(found?.nodeId.value, machine.id).toBe(machine.id);
+      } finally {
+        await close();
+      }
+    }
+
+    const { session, close } = await connect(port('cnc-01'));
+    try {
+      const load = await nodeId(session, opcuaNodeId('cnc-01', OPCUA_VARIABLES.spindleLoad));
+      const read = async () =>
+        (
+          await session.read({ nodeId: load, attributeId: AttributeIds.Value })
+        ).sourceTimestamp?.getTime() ?? 0;
+      const before = await read();
+      await play(10_000);
+      const after = await read();
+      expect(after - before).toBe(10 * SECOND * SPEED);
+    } finally {
+      await close();
+    }
+  }, 60_000);
+
+  it('delivers every event of a scripted shift to two clients per server on all five servers, without a gap', async () => {
+    const fields = (nsIndex: number) =>
+      constructEventFilter([
+        ...OPCUA_EVENT_FIELDS.common.map((f) => `${String(nsIndex)}:${f}`),
+        'EventType',
+      ]);
+    const clients = await Promise.all(
+      OPCUA_MACHINES.flatMap((machine) =>
+        [1, 2].map(async (client) => {
+          const connection = await connect(port(machine.id));
+          const namespaces = await connection.session.readNamespaceArray();
+          const subscription = await connection.session.createSubscription2({
+            requestedPublishingInterval: 100,
+            requestedMaxKeepAliveCount: 20,
+            requestedLifetimeCount: 600,
+            maxNotificationsPerPublish: 0,
+            publishingEnabled: true,
+            priority: 1,
+          });
+          const sequences: number[] = [];
+          const item = await subscription.monitor(
+            { nodeId: resolveNodeId('i=2253'), attributeId: AttributeIds.EventNotifier },
+            {
+              samplingInterval: 0,
+              queueSize: 5_000,
+              discardOldest: false,
+              filter: fields(namespaces.indexOf(SHOPFLOOR_NAMESPACE_URI)),
+            },
+            TimestampsToReturn.Both,
+          );
+          item.on('changed', (values: unknown) => {
+            const [sequence, machineId] = (values as { value: unknown }[]).map((v) => v.value);
+            if (machineId === machine.id) {
+              sequences.push(Number(sequence));
+            }
+          });
+          return { machine: machine.id, client, connection, subscription, sequences };
+        }),
+      ),
+    );
+    await wait(300);
+    const firstSeq = new Map(servers.servers.map((s) => [s.machineId, s.sequence + 1]));
+    const shiftStart = run.simulation.now;
+    const startIndex = plantEvents.length;
+
+    // The rest of the morning shift (to 14:00) at 60×: 8 hours in 8 wall minutes, compressed by the manual clock.
+    await play(Math.ceil((T0 + 8 * HOUR - shiftStart) / SPEED));
+    const lastSeq = new Map(servers.servers.map((s) => [s.machineId, s.sequence]));
+    for (let deadline = Date.now() + 30_000; Date.now() < deadline;) {
+      if (clients.every((c) => (c.sequences.at(-1) ?? 0) >= (lastSeq.get(c.machine) ?? 0))) break;
+      await wait(100);
+    }
+    const shiftEvents = plantEvents
+      .slice(startIndex)
+      .filter((e) => e.type === 'state' || e.type === 'cycle-complete' || e.type === 'alarm');
+    expect(shiftEvents.length).toBeGreaterThan(1_000);
+    for (const c of clients) {
+      const first = firstSeq.get(c.machine) ?? 0;
+      const last = lastSeq.get(c.machine) ?? 0;
+      expect(last - first, c.machine).toBeGreaterThan(50);
+      expect(c.sequences, `${c.machine} client ${String(c.client)}`).toEqual(
+        Array.from({ length: last - first + 1 }, (_, i) => first + i),
+      );
+    }
+    for (const machine of OPCUA_MACHINES) {
+      const emitted = shiftEvents.filter((e) => 'machineId' in e && e.machineId === machine.id);
+      expect((lastSeq.get(machine.id) ?? 0) - (firstSeq.get(machine.id) ?? 0) + 1).toBe(
+        emitted.length,
+      );
+    }
+    await Promise.all(
+      clients.map(async (c) => {
+        await c.subscription.terminate();
+        await c.connection.close();
+      }),
+    );
+  }, 120_000);
+
+  it('makes queue overflow visible: a deliberately small queue loses events, and Sequence shows the gap', async () => {
+    const { session, close } = await connect(port('cnc-01'));
+    try {
+      const namespaces = await session.readNamespaceArray();
+      const nsIndex = namespaces.indexOf(SHOPFLOOR_NAMESPACE_URI);
+      const subscription = await session.createSubscription2({
+        requestedPublishingInterval: 2_000,
+        requestedMaxKeepAliveCount: 20,
+        requestedLifetimeCount: 600,
+        maxNotificationsPerPublish: 0,
+        publishingEnabled: true,
+        priority: 1,
+      });
+      const sequences: number[] = [];
+      const item = await subscription.monitor(
+        { nodeId: resolveNodeId('i=2253'), attributeId: AttributeIds.EventNotifier },
+        {
+          samplingInterval: 0,
+          // node-opcua revises an event queue to at least 100 entries (and at most 5000).
+          queueSize: 3,
+          discardOldest: true,
+          filter: constructEventFilter([
+            `${String(nsIndex)}:Sequence`,
+            `${String(nsIndex)}:MachineId`,
+          ]),
+        },
+        TimestampsToReturn.Both,
+      );
+      item.on('changed', (values: unknown) => {
+        const [sequence, machineId] = (values as { value: unknown }[]).map((v) => v.value);
+        if (machineId === 'cnc-01') {
+          sequences.push(Number(sequence));
+        }
+      });
+      await wait(300);
+      const first = (servers.servers.find((s) => s.machineId === 'cnc-01')?.sequence ?? 0) + 1;
+      expect(item.result?.revisedQueueSize).toBe(100);
+      // One burst: a day of simulation in one tick, far more events than the queue holds.
+      run.pacer.resume();
+      clock.advance((24 * HOUR) / SPEED);
+      run.pacer.pause();
+      const last = servers.servers.find((s) => s.machineId === 'cnc-01')?.sequence ?? 0;
+      expect(last - first).toBeGreaterThan(150);
+      await wait(4_500);
+      const gaps = sequences.slice(1).filter((s, i) => s !== (sequences[i] ?? 0) + 1);
+      expect(sequences.length).toBeGreaterThan(0);
+      expect(sequences.length).toBeLessThan(last - first + 1);
+      expect(gaps.length + (sequences[0] === first ? 0 : 1)).toBeGreaterThan(0);
+      expect(sequences.at(-1)).toBe(last);
+      // Resynchronisation (ADR-0009): the Sequence variable says how far the server got.
+      const current = await session.read({
+        nodeId: resolveNodeId(
+          toIndexedNodeId(opcuaNodeId('cnc-01', OPCUA_VARIABLES.sequence), namespaces),
+        ),
+        attributeId: AttributeIds.Value,
+      });
+      expect(current.value.value).toBe(last);
+      await subscription.terminate();
+    } finally {
+      await close();
+    }
+  }, 60_000);
+});

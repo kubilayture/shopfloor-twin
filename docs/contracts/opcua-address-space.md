@@ -1,6 +1,6 @@
 # Contract: OPC UA address space
 
-Version 1 (Phase 2). Source of truth in code: `packages/contracts/src/opcua.ts`. Decisions: ADR-0008 (model), ADR-0009 (delivery), ADR-0010 (alarms). Any change bumps the version here and needs a changelog entry (plan section 2, Definition of Done).
+Version 1 (Phase 2). Source of truth in code: `packages/contracts/src/opcua.ts`. A contract test (`apps/simulator/src/opcua/integration.test.ts`) reads the Project variables table of this file and checks it against the code and the running servers: every path, data type and machine, plus the alarm codes, `LoadProgram` and the event-type fields. Decisions: ADR-0008 (model), ADR-0009 (delivery), ADR-0010 (alarms). Any change bumps the version here and needs a changelog entry (plan section 2, Definition of Done).
 
 ## Endpoints
 
@@ -111,6 +111,7 @@ Events are raised on the machine object, which is a notifier of the Server objec
 - `Time` is the simulation time; `ReceiveTime` is wall time.
 - `Sequence` starts at 1 per machine and grows by 1 per event across all three types, so gaps mean loss (plan section 5).
 - After a reconnect, compare the `ShopFloor.Sequence` variable with the last event received (ADR-0009).
-- Clients that need every event subscribe with sampling 0, a queue of at least 1000 and `discardOldest = false`.
+- Clients that need every event subscribe with sampling 0, a queue of 5000 and `discardOldest = false`. The server revises an event queue to 100–5000 entries, so a client should log `revisedQueueSize`.
+- A burst larger than the queue within one publishing interval is lost. The `Sequence` field shows the gap, and the `ShopFloor.Sequence` variable says how far the server got (tested in #56).
 - A subscription on `i=2253` also receives the standard Machinery `TransitionEventType` events (see above). Select the project event types with an OfType where-clause, or ignore events without `MachineId`.
 - Events raised before a client subscribes are not delivered later (no event history). A new client starts from the current `ShopFloor.Sequence` and the current values.

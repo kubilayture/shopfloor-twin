@@ -1,11 +1,13 @@
 # Status — updated 2026-10-15
 
-## Current phase: 04 – MES foundation: historian and equipment states (next; Phase 3 closed 2026-10-15)
+## Current phase: 04 – MES foundation: historian and equipment states (planning, started 2026-10-15)
 
-## Exit criteria progress: Phase 3 closed with 4 / 4 met; Phase 4 not planned yet
+## Exit criteria progress: 0 / 4 met
 
 ## Done since last update
 
+- Phase 4 plan with issues #92–#101 under milestone "Phase 04 – MES foundation".
+- #80 merged (PR #91): Phase 3 closed, tagged `phase-03`.
 - **Phase 3 closed**: all 4 exit criteria met; tag `phase-03` (report: `docs/phases/phase-03-report.md`; learning notes: `docs/learning/phase-03.md`).
 - #79 merged (PR #90): gateway container and end-to-end test.
 - #78 merged (PR #89): store-and-forward outbox.
@@ -52,11 +54,11 @@
 
 ## In progress
 
-- #80 Phase 3 close (in review)
+- #92 Phase 4 plan (in review)
 
 ## Next up
 
-- Phase 4 plan: MES server skeleton, migrations, idempotent ingest from the UNS, state intervals, REST and WebSocket, web overview
+- #93 `mes-server` skeleton and migrations, #94 shift calendar and master data
 
 ## Blockers and open questions for the owner
 

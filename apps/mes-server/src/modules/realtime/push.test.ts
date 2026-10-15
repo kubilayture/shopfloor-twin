@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { Registry } from 'prom-client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
 import { PushHub, type PushOptions, type PushSources } from './push.ts';
@@ -59,6 +59,8 @@ function fakeSources() {
   const states = new Map<string, CurrentState>();
   let watermark = T0;
   let metrics: TelemetryMetric[] = [];
+  let gate: Promise<void> | undefined;
+  let metricsCalls = 0;
   const sources: PushSources = {
     equipment: {
       currentStates: () => [...states.values()],
@@ -74,7 +76,11 @@ function fakeSources() {
         stored.add(listener);
         return () => stored.delete(listener);
       },
-      telemetryMetrics: () => Promise.resolve(metrics),
+      telemetryMetrics: async () => {
+        metricsCalls++;
+        await gate;
+        return metrics;
+      },
     },
     catalog: new Set(['cnc-01', 'wsh-01']),
   };
@@ -83,6 +89,18 @@ function fakeSources() {
     setMetrics(next: TelemetryMetric[]) {
       metrics = next;
     },
+    /** Holds telemetry snapshots until the returned function is called. */
+    holdSnapshots(): () => void {
+      let open: () => void = () => undefined;
+      gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      return () => {
+        open();
+        gate = undefined;
+      };
+    },
+    metricsCalls: () => metricsCalls,
     /** A new state of one equipment, as the equipment module announces it. */
     state(equipment: string, seq: number, state: string) {
       const value = current(equipment, seq, state);
@@ -113,12 +131,23 @@ function fakeSources() {
   };
 }
 
+/** One turn of the event loop (setImmediate stays real: the hub flushes on it). */
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Moves the fake clock (intervals, timeouts, Date) and lets the flushes run. */
+const advance = async (ms: number) => {
+  await vi.advanceTimersByTimeAsync(ms);
+  await tick();
+};
 
 const hubs: PushHub[] = [];
+beforeEach(() => {
+  vi.useFakeTimers({
+    toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+  });
+});
 afterEach(() => {
   for (const hub of hubs.splice(0)) hub.close();
+  vi.useRealTimers();
 });
 
 function setup(options: PushOptions = {}) {
@@ -217,7 +246,7 @@ describe('WebSocket push (#97)', () => {
     expect(fast.sent.filter((m) => m.type === 'state')).toHaveLength(50);
     expect(slow.sent.length).toBe(sentBefore);
     slow.bufferedAmount = 0;
-    await wait(30);
+    await advance(10);
     expect(slow.sent.slice(sentBefore)).toMatchObject([
       { type: 'telemetry', value: 50 },
       { type: 'state', current: { seq: 50, state: 'Running' } },
@@ -263,9 +292,11 @@ describe('WebSocket push (#97)', () => {
     const { hub, connect } = setup({ heartbeatMs: 20 });
     const answering = connect();
     const silent = connect();
-    const timer = setInterval(() => answering.emit('pong'), 5);
-    await wait(80);
-    clearInterval(timer);
+    // A ping every 20 ms: one client answers each, the other never does.
+    for (let i = 0; i < 4; i++) {
+      await advance(20);
+      answering.emit('pong');
+    }
     expect(answering.pings).toBeGreaterThan(1);
     expect(answering.terminated).toBe(false);
     expect(silent.terminated).toBe(true);
@@ -276,9 +307,9 @@ describe('WebSocket push (#97)', () => {
     const { fake, connect } = setup({ clockMs: 10 });
     const socket = connect();
     socket.request({ type: 'subscribe', topic: 'states' });
-    await wait(30);
+    await advance(30);
     fake.state('cnc-01', 5, 'Running');
-    await wait(30);
+    await advance(30);
     const clocks = socket.sent.filter((m) => m.type === 'clock');
     expect(clocks.at(-1)).toMatchObject({ epoch: 1, watermark: '2026-10-12T03:00:05.000Z' });
     expect(new Set(clocks.map((m) => 'watermark' in m && m.watermark)).size).toBe(clocks.length);
@@ -300,5 +331,76 @@ describe('WebSocket push (#97)', () => {
     hub.close();
     expect(fake.listeners()).toBe(0);
     expect(first.terminated).toBe(true);
+  });
+
+  it('counts every new metric against the subscription limit, not only new equipment', async () => {
+    const { fake, connect } = setup({ maxSubscriptions: 4, requestBurst: 2_000 });
+    const socket = connect();
+    for (let i = 0; i < 1_000; i++) {
+      socket.request({ type: 'subscribe', topic: 'telemetry:wsh-01', metric: `m-${String(i)}` });
+      await tick();
+    }
+    expect(socket.sent.filter((m) => m.type === 'subscribed')).toHaveLength(4);
+    expect(socket.sent.filter((m) => m.type === 'error')).toHaveLength(996);
+    expect(fake.metricsCalls()).toBe(4);
+    // Subscribing again to a metric already held, or a whole equipment instead, adds nothing.
+    socket.request({ type: 'subscribe', topic: 'telemetry:wsh-01', metric: 'm-0' });
+    socket.request({ type: 'subscribe', topic: 'telemetry:wsh-01' });
+    await tick();
+    expect(socket.sent.filter((m) => m.type === 'subscribed')).toHaveLength(6);
+  });
+
+  it('limits the rate of client messages and refills over time', async () => {
+    const { connect } = setup({ requestsPerSecond: 10, requestBurst: 20 });
+    const socket = connect();
+    for (let i = 0; i < 25; i++) socket.request({ type: 'subscribe', topic: 'states' });
+    const limited = () =>
+      socket.sent.filter((m) => m.type === 'error' && m.code === 'rate-limited').length;
+    expect(limited()).toBe(5);
+    await advance(1_000);
+    for (let i = 0; i < 10; i++) socket.request({ type: 'subscribe', topic: 'states' });
+    expect(limited()).toBe(5);
+    socket.request({ type: 'subscribe', topic: 'states' });
+    expect(limited()).toBe(6);
+  });
+
+  it('refuses to unsubscribe one metric of an equipment subscribed whole', async () => {
+    const { fake, connect } = setup();
+    const socket = connect();
+    socket.request({ type: 'subscribe', topic: 'telemetry:wsh-01' });
+    await tick();
+    socket.request({ type: 'unsubscribe', topic: 'telemetry:wsh-01', metric: 'bath-temperature' });
+    expect(socket.sent.at(-1)).toMatchObject({ type: 'error', code: 'invalid-message' });
+    fake.sample('wsh-01', 'bath-temperature', 60, 1);
+    await tick();
+    expect(socket.sent.at(-1)).toMatchObject({ type: 'telemetry', value: 60 });
+  });
+
+  it('sends no telemetry snapshot after the client unsubscribed while it was read', async () => {
+    const { fake, connect } = setup();
+    const open = fake.holdSnapshots();
+    const socket = connect();
+    socket.request({ type: 'subscribe', topic: 'telemetry:wsh-01' });
+    socket.request({ type: 'unsubscribe', topic: 'telemetry:wsh-01' });
+    open();
+    await tick();
+    await tick();
+    expect(socket.types()).toEqual(['subscribed', 'unsubscribed']);
+  });
+
+  it('keeps state deltas flowing while a telemetry snapshot is read', async () => {
+    const { fake, connect } = setup();
+    const socket = connect();
+    socket.request({ type: 'subscribe', topic: 'states' });
+    const open = fake.holdSnapshots();
+    socket.request({ type: 'subscribe', topic: 'telemetry:wsh-01' });
+    fake.sample('wsh-01', 'bath-temperature', 60, 1);
+    fake.state('cnc-01', 1, 'Running');
+    await tick();
+    expect(socket.types()).toEqual(['subscribed', 'snapshot', 'subscribed', 'state']);
+    open();
+    await tick();
+    await tick();
+    expect(socket.types().slice(4)).toEqual(['snapshot', 'telemetry']);
   });
 });

@@ -16,6 +16,14 @@ export const envSchema = z.object({
   PLANT_CONFIG_DIR: text.default(resolve(REPO, 'config/plant')),
   HTTP_HOST: text.default('127.0.0.1'),
   HTTP_PORT: port.default(4700),
+  // Host headers the API answers (DNS rebinding): comma-separated host names, `*` for any.
+  HTTP_ALLOWED_HOSTS: text.default('localhost,127.0.0.1,[::1]'),
+  // Origins (scheme://host[:port]) a WebSocket may connect from besides the MES's own host;
+  // a request without Origin (not a browser) is always allowed. Comma-separated, default none.
+  HTTP_ALLOWED_ORIGINS: z.string().trim().default(''),
+  // The API's own read pool, so dashboard reads never hold up ingest's writes.
+  API_DB_POOL_SIZE: integer.pipe(z.number().min(1).max(50)).default(4),
+  API_STATEMENT_TIMEOUT_MS: integer.pipe(z.number().min(100)).default(5_000),
   // The UNS (#95): a persistent session as user `mes`; the password is MQTT_MES_PASSWORD of .env
   // (the Compose service that passes it arrives with #99).
   MQTT_URL: z.url({ protocol: /^mqtts?$/ }).default('mqtt://127.0.0.1:1883'),

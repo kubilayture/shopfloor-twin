@@ -52,6 +52,12 @@ const range =
     }
   };
 
+/** A real calendar day: 2026-02-30 and 2026-13-45 are not. */
+function isCalendarDate(value: string): boolean {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
 // ---- requests ----
 
 export const noQuery = z.strictObject({});
@@ -60,6 +66,7 @@ export const shiftParams = z.strictObject({
   date: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine(isCalendarDate, 'no such date')
     .describe('Shift date (the day the shift starts, Istanbul)'),
   shift: z
     .string()
@@ -165,7 +172,17 @@ export const intervalsSchema = z.object({
   equipment: z.string(),
   from: time,
   to: time,
-  truncated: z.boolean().describe('True when the range held more pieces than one response takes'),
+  truncated: z
+    .boolean()
+    .describe(
+      'True when the range held more pieces than one response takes: intervals that may continue ' +
+        'beyond the limit are left out; request again with from = next',
+    ),
+  next: time
+    .nullable()
+    .describe(
+      'Where to continue when truncated (null otherwise); intervals before it are complete',
+    ),
   intervals: z
     .array(intervalSchema)
     .describe('State intervals, the stored hour and shift pieces merged back, by start'),
@@ -288,6 +305,7 @@ export const serverMessageSchema = z
         'unknown-equipment',
         'too-many-subscriptions',
         'busy',
+        'rate-limited',
         'unavailable',
       ]),
       detail: z.string(),

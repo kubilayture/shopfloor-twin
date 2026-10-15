@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { loadPlantConfig } from '@shopfloor/plant-config';
 import type { FastifyInstance } from 'fastify';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { Database } from './db/database.ts';
+import { createDatabase, type Database } from './db/database.ts';
 import { buildMesHttp } from './http.ts';
 import { Equipment } from './modules/equipment/index.ts';
 import { PLANT_CONFIG, UnsFeed, freshDatabase } from './modules/equipment/test-support.ts';
@@ -38,6 +39,8 @@ const feed = new UnsFeed(new Map());
 
 let container: StartedTestContainer;
 let db: Kysely<Database>;
+/** The API's own pool, with a short statement timeout (as main.ts wires it). */
+let readDb: Kysely<Database>;
 let app: FastifyInstance;
 let ingest: Ingest;
 let equipment: Equipment;
@@ -57,9 +60,22 @@ beforeAll(async () => {
   db = await freshDatabase(serverUrl, 'realtime');
   const masterData = new MasterData(db);
   await masterData.seed(plant.config);
-  ingest = new Ingest({ db, url: 'mqtt://127.0.0.1:1', username: 'mes', password: 'unused' });
+  const name = (await sql<{ name: string }>`SELECT current_database() AS name`.execute(db)).rows[0]
+    ?.name;
+  readDb = createDatabase(serverUrl.replace(/\/shopfloor$/, `/${String(name)}`), 2, {
+    statementTimeoutMs: 500,
+    connectionTimeoutMs: 500,
+  });
+  ingest = new Ingest({
+    db,
+    readDb,
+    url: 'mqtt://127.0.0.1:1',
+    username: 'mes',
+    password: 'unused',
+  });
   equipment = new Equipment({
     db,
+    readDb,
     source: ingest,
     shiftPattern: await masterData.shiftPattern(),
     provisionalStepMs: 0,
@@ -70,13 +86,14 @@ beforeAll(async () => {
     push: { clockMs: 50 },
   });
   app = http.app;
-  attach = () => http.realtime.attach({ masterData, equipment, ingest });
+  attach = () => http.realtime.attach({ masterData: new MasterData(readDb), equipment, ingest });
 }, 180_000);
 
 afterAll(async () => {
   await app.close();
   await equipment.stop();
   await db.destroy();
+  await readDb.destroy();
   await container.stop();
 });
 
@@ -216,6 +233,9 @@ describe('MES REST API (#97)', () => {
         404,
       ],
       ['/shifts/12-10-2026/A/totals', 400],
+      ['/shifts/2026-13-45/A/totals', 400],
+      ['/shifts/2026-02-30/A/totals', 400],
+      ['/shifts/2026-10-12/Z/totals', 404],
     ] as const) {
       const response = await get(url);
       expect([url, response.status]).toEqual([url, status]);
@@ -233,6 +253,7 @@ describe('MES REST API (#97)', () => {
     expect(response.status).toBe(200);
     const body = intervalsSchema.parse(response.body);
     expect(body.truncated).toBe(false);
+    expect(body.next).toBeNull();
     expect(
       body.intervals.map((i) => [
         i.start,
@@ -303,6 +324,33 @@ describe('MES REST API (#97)', () => {
       clock: { epoch: E1, watermark: iso('05:00') },
       epochs: [{ epoch: E1, watermark: iso('05:00') }],
     });
+  });
+
+  it('answers 503 when a read hits the statement timeout, and never delays ingest', async () => {
+    // A lock held elsewhere makes the API's read wait past its 500 ms statement timeout.
+    await db.transaction().execute(async (trx) => {
+      await sql`LOCK TABLE equipment.equipment_state_interval IN ACCESS EXCLUSIVE MODE`.execute(
+        trx,
+      );
+      const response = await get(
+        `/equipment/cnc-01/intervals?from=${iso('03:00')}&to=${iso('05:00')}`,
+      );
+      expect(response.status).toBe(503);
+      expect(problemSchema.parse(response.body).detail).toBe('the database is busy; try again');
+    });
+    expect((await get(`/shifts/2026-10-12/A/totals`)).status).toBe(200);
+  });
+
+  it('refuses Host headers outside the allowlist (DNS rebinding)', async () => {
+    for (const [host, status] of [
+      ['evil.example', 403],
+      ['evil.example:4700', 403],
+      ['127.0.0.1:4700', 200],
+      ['[::1]:4700', 200],
+    ] as const) {
+      const response = await app.inject({ url: '/api/v1/plant', headers: { host } });
+      expect([host, response.statusCode]).toEqual([host, status]);
+    }
   });
 
   it('keeps the committed OpenAPI description and message schemas in step with the code', async () => {
@@ -408,5 +456,37 @@ describe('MES WebSocket push (#97)', () => {
     expect(latencies).toHaveLength(75);
     expect(Math.max(...latencies)).toBeLessThan(2_000);
     ws.socket.close();
+  });
+
+  it('refuses a WebSocket from another origin, accepts one from its own host or without Origin', async () => {
+    const { hostname, port } = new URL(base.replace('ws', 'http'));
+    const upgrade = (origin?: string) =>
+      new Promise<number>((resolve, reject) => {
+        const req = httpRequest({
+          host: hostname,
+          port,
+          path: WS_PATH,
+          headers: {
+            Connection: 'Upgrade',
+            Upgrade: 'websocket',
+            'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+            'Sec-WebSocket-Version': '13',
+            ...(origin === undefined ? {} : { Origin: origin }),
+          },
+        });
+        req.on('upgrade', (response, socket) => {
+          socket.destroy();
+          resolve(response.statusCode ?? 0);
+        });
+        req.on('response', (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    expect(await upgrade('http://evil.example')).toBe(403);
+    expect(await upgrade(`http://${hostname}:${port}`)).toBe(101);
+    expect(await upgrade()).toBe(101);
   });
 });

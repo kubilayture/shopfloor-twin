@@ -1,4 +1,5 @@
 import websocket from '@fastify/websocket';
+import type { IncomingHttpHeaders } from 'node:http';
 import type { FastifyInstance } from 'fastify';
 import type { Registry } from 'prom-client';
 import type { Equipment, StoredInterval } from '../equipment/index.ts';
@@ -31,7 +32,7 @@ export const WS_PATH = `${API_PREFIX}/ws`;
 
 /** What the API reads from the other modules (their `index.ts` interfaces). */
 export interface ApiSources {
-  readonly masterData: Pick<MasterData, 'equipment' | 'site'>;
+  readonly masterData: Pick<MasterData, 'equipment' | 'site' | 'shiftPattern'>;
   readonly equipment: Pick<
     Equipment,
     | 'currentStates'
@@ -48,7 +49,13 @@ export interface ApiSources {
 export interface RealtimeOptions {
   readonly registry?: Registry;
   readonly push?: Omit<PushOptions, 'registry'>;
+  /** Host names the API answers (`Host` header, against DNS rebinding); `*` for any. */
+  readonly allowedHosts?: readonly string[];
+  /** Origins a WebSocket may connect from besides the MES's own host (none by default). */
+  readonly allowedOrigins?: readonly string[];
 }
+
+export const DEFAULT_ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]'] as const;
 
 /** The API and push, registered before the modules exist; `attach` connects them. */
 export interface Realtime {
@@ -59,16 +66,49 @@ export interface Realtime {
 interface Attached {
   readonly sources: ApiSources;
   readonly catalog: ReadonlyMap<string, EquipmentInfo>;
+  readonly shifts: ReadonlySet<string>;
+}
+
+/** The host name of a `Host` header (`[::1]:4700` → `[::1]`), lower-cased. */
+export function hostName(host: string): string {
+  const name = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0];
+  return (name ?? '').toLowerCase();
+}
+
+/** Whether an Origin header names the host the request was sent to. */
+function sameOrigin(origin: string, host: string | undefined): boolean {
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pool or statement timeouts of the read pool: the database is busy, try again (503), never 500.
+ * SQLSTATE 57014 is `query_canceled` (statement_timeout); pg reports a pool wait without a code.
+ */
+function isBusy(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === '57014' || /timeout exceeded when trying to connect/i.test(error.message);
 }
 
 const iso = (date: Date): string => date.toISOString();
 
-/** Merges the stored hour and shift pieces of each interval back, clipped to [from, to). */
+/**
+ * Merges the stored hour and shift pieces of each interval back, clipped to [from, to).
+ *
+ * `cutoff` is the start of the first piece left out by the row limit: an interval reaching it may
+ * have pieces beyond the limit, so it is dropped, and `next` (the earliest start of the dropped
+ * ones) is where the following request continues.
+ */
 export function mergePieces(
   pieces: readonly StoredInterval[],
   from: Date,
   to: Date,
-): IntervalDto[] {
+  cutoff?: Date,
+): { intervals: IntervalDto[]; next: Date | null } {
   const merged = new Map<
     string,
     { piece: StoredInterval; start: number; end: number; provisional: boolean }
@@ -89,9 +129,19 @@ export function mergePieces(
       });
     }
   }
-  return [...merged.values()]
-    .sort((a, b) => a.start - b.start || a.piece.epoch - b.piece.epoch)
-    .map(({ piece, start, end, provisional }) => ({
+  const all = [...merged.values()].sort(
+    (a, b) => a.start - b.start || a.piece.epoch - b.piece.epoch,
+  );
+  const limit = cutoff?.getTime() ?? Infinity;
+  const complete = all.filter((entry) => entry.end < limit);
+  const dropped = all.filter((entry) => entry.end >= limit);
+  const next =
+    cutoff === undefined
+      ? null
+      : new Date(Math.max(from.getTime(), Math.min(limit, ...dropped.map((e) => e.start))));
+  return {
+    next,
+    intervals: complete.map(({ piece, start, end, provisional }) => ({
       epoch: piece.epoch,
       start: iso(new Date(Math.max(start, from.getTime()))),
       end: iso(new Date(Math.min(end, to.getTime()))),
@@ -100,7 +150,8 @@ export function mergePieces(
       provisional,
       intervalStart: iso(piece.intervalStart),
       startSeq: piece.startSeq,
-    }));
+    })),
+  };
 }
 
 /**
@@ -141,10 +192,36 @@ export async function registerRealtime(
     };
   };
 
+  const allowedHosts = new Set(
+    (options.allowedHosts ?? DEFAULT_ALLOWED_HOSTS).map((host) => host.toLowerCase()),
+  );
+  const allowedOrigins = new Set(options.allowedOrigins ?? []);
+  // A page on another site must not read plant data: by DNS rebinding (its own name resolving to
+  // the MES, caught by the Host check) or by opening a WebSocket (not covered by CORS, caught by
+  // the Origin check). A request without Origin is not from a browser page.
+  const refusal = (headers: IncomingHttpHeaders): string | undefined => {
+    const host = hostName(headers.host ?? '');
+    if (!allowedHosts.has('*') && !allowedHosts.has(host)) {
+      return 'host not allowed (HTTP_ALLOWED_HOSTS)';
+    }
+    const origin = headers.origin;
+    if (origin === undefined || allowedOrigins.has(origin) || sameOrigin(origin, headers.host)) {
+      return undefined;
+    }
+    return 'origin not allowed (HTTP_ALLOWED_ORIGINS)';
+  };
+
   app.addSchema({ $id: 'Problem', ...jsonSchema(problemSchema, 'output') });
 
   await app.register(websocket, {
-    options: { maxPayload: 4096 },
+    options: {
+      maxPayload: 4096,
+      verifyClient: (info, done) => {
+        const refused = refusal(info.req.headers);
+        if (refused === undefined) done(true);
+        else done(false, 403, refused);
+      },
+    },
     // A client that stopped reading would hold up shutdown for ws's 30 s close timeout.
     preClose: (done) => {
       push.close();
@@ -155,24 +232,39 @@ export async function registerRealtime(
 
   await app.register(
     (api, _options, done) => {
+      // A page on another site must not read plant data: by DNS rebinding (its own name resolving
+      // to the MES, caught by the Host check) or by opening a WebSocket (not covered by CORS,
+      // caught by the Origin check). A request without Origin is not from a browser page.
+      api.addHook('onRequest', async (request, reply) => {
+        // WebSocket upgrades are checked by `verifyClient`, which can answer before the upgrade.
+        if (request.headers.upgrade !== undefined) return;
+        const refused = refusal(request.headers);
+        if (refused !== undefined) {
+          await reply
+            .code(403)
+            .type(PROBLEM_TYPE)
+            .send(problem(403, refused, request.url));
+        }
+      });
       api.setErrorHandler((error: { statusCode?: number; message: string }, request, reply) => {
-        const status =
-          error instanceof HttpProblem
+        const busy = isBusy(error);
+        const status = busy
+          ? 503
+          : error instanceof HttpProblem
             ? error.status
             : error.statusCode !== undefined && error.statusCode >= 400 && error.statusCode < 500
               ? error.statusCode
               : 500;
-        if (status >= 500 && status !== 503) request.log.error(error);
+        if (status >= 500) request.log[busy || status === 503 ? 'warn' : 'error'](error);
+        const detail = busy
+          ? 'the database is busy; try again'
+          : status >= 500 && status !== 503
+            ? 'internal error'
+            : error.message;
         return reply
           .code(status)
           .type(PROBLEM_TYPE)
-          .send(
-            problem(
-              status,
-              status >= 500 && status !== 503 ? 'internal error' : error.message,
-              request.url,
-            ),
-          );
+          .send(problem(status, detail, request.url));
       });
       api.setNotFoundHandler((request, reply) =>
         reply
@@ -239,16 +331,19 @@ export async function registerRealtime(
             },
           );
           const truncated = pieces.length > LIMITS.intervalPieces;
+          const { intervals, next } = mergePieces(
+            truncated ? pieces.slice(0, LIMITS.intervalPieces) : pieces,
+            query.from,
+            query.to,
+            truncated ? pieces[LIMITS.intervalPieces]?.start : undefined,
+          );
           return {
             equipment: params.id,
             from: iso(query.from),
             to: iso(query.to),
             truncated,
-            intervals: mergePieces(
-              truncated ? pieces.slice(0, LIMITS.intervalPieces) : pieces,
-              query.from,
-              query.to,
-            ),
+            next: next && iso(next),
+            intervals,
           };
         },
       );
@@ -345,6 +440,9 @@ export async function registerRealtime(
           errors: [400, 404, 503],
         },
         async ({ params, query }) => {
+          if (!ready().shifts.has(params.shift)) {
+            throw new HttpProblem(404, `no shift ${params.shift} in the shift pattern`);
+          }
           if (query.equipment !== undefined) known(query.equipment);
           const shiftKey = `${params.date}/${params.shift}`;
           const totals = await ready().sources.equipment.shiftTotals(
@@ -399,8 +497,9 @@ export async function registerRealtime(
     push,
     async attach(sources) {
       const equipment = await sources.masterData.equipment();
+      const pattern = await sources.masterData.shiftPattern();
       const catalog = new Map(equipment.map((info) => [info.id, info]));
-      attached = { sources, catalog };
+      attached = { sources, catalog, shifts: new Set(pattern.shifts.map((shift) => shift.id)) };
       push.attach({
         equipment: sources.equipment,
         ingest: sources.ingest,

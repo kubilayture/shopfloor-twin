@@ -486,6 +486,7 @@
                 "unknown-equipment",
                 "too-many-subscriptions",
                 "busy",
+                "rate-limited",
                 "unavailable"
               ]
             },

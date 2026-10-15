@@ -36,6 +36,8 @@ export interface IngestLog {
 
 export interface IngestOptions {
   readonly db: Kysely<Database>;
+  /** The pool for the API's telemetry reads; default `db` (see `EquipmentOptions.readDb`). */
+  readonly readDb?: Kysely<Database>;
   readonly url: string;
   readonly username: string;
   readonly password: string;
@@ -366,7 +368,7 @@ export class Ingest {
 
   /** One equipment's telemetry metrics, each with its unit and latest sample (API, #97). */
   async telemetryMetrics(equipment: string): Promise<TelemetryMetric[]> {
-    return telemetryMetrics(this.#options.db, equipment);
+    return telemetryMetrics(this.#options.readDb ?? this.#options.db, equipment);
   }
 
   /** Telemetry of [from, to) decimated into buckets of `bucketMs` per metric (API, #97). */
@@ -377,7 +379,14 @@ export class Ingest {
     to: Date,
     bucketMs: number,
   ): Promise<TelemetrySeries[]> {
-    return telemetrySeries(this.#options.db, equipment, metrics, from, to, bucketMs);
+    return telemetrySeries(
+      this.#options.readDb ?? this.#options.db,
+      equipment,
+      metrics,
+      from,
+      to,
+      bucketMs,
+    );
   }
 
   /** State changes of one equipment in one device epoch, by `seq` (optionally a window). */

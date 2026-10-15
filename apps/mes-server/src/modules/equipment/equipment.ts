@@ -34,6 +34,11 @@ export interface EquipmentLog {
 
 export interface EquipmentOptions {
   readonly db: Kysely<Database>;
+  /**
+   * The pool for the API's reads (`intervals`, `shiftTotals`); default `db`. A separate pool keeps
+   * dashboard reads from waiting in front of the writes on ingest's acknowledgement path.
+   */
+  readonly readDb?: Kysely<Database>;
   readonly source: StateSource;
   readonly shiftPattern: ShiftPattern;
   /**
@@ -160,6 +165,7 @@ const withAnchor = (anchor: StateAnchor | undefined, facts: readonly Point[]): P
  */
 export class Equipment {
   readonly #db: Kysely<Database>;
+  readonly #readDb: Kysely<Database>;
   readonly #source: StateSource;
   readonly #pattern: ShiftPattern;
   readonly #step: number;
@@ -175,6 +181,7 @@ export class Equipment {
 
   constructor(options: EquipmentOptions) {
     this.#db = options.db;
+    this.#readDb = options.readDb ?? options.db;
     this.#source = options.source;
     this.#pattern = options.shiftPattern;
     this.#step = options.provisionalStepMs ?? 60_000;
@@ -247,7 +254,7 @@ export class Equipment {
     to: Date,
     options: { readonly epoch?: number; readonly limit?: number } = {},
   ): Promise<StoredInterval[]> {
-    let query = this.#db
+    let query = this.#readDb
       .selectFrom('equipment.equipment_state_interval')
       .selectAll()
       .where('equipment', '=', equipment)
@@ -279,7 +286,7 @@ export class Equipment {
     options: { readonly equipment?: string; readonly epoch?: number } = {},
   ): Promise<ShiftTotal[]> {
     const ms = sql<string>`sum(extract(epoch from end_time - start_time) * 1000)::bigint`;
-    let query = this.#db
+    let query = this.#readDb
       .selectFrom('equipment.equipment_state_interval')
       .select([
         'equipment',

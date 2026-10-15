@@ -48,8 +48,11 @@ export interface PushOptions {
   /** How soon deltas held for a slow client are tried again (100 ms). */
   readonly retryMs?: number;
   readonly maxClients?: number;
-  /** Telemetry subscriptions per client. */
+  /** Telemetry subscriptions per client, counted per metric (a whole equipment counts one). */
   readonly maxSubscriptions?: number;
+  /** Client messages per second, on average (10); a burst may reach `requestBurst` (20). */
+  readonly requestsPerSecond?: number;
+  readonly requestBurst?: number;
   readonly registry?: Registry;
 }
 
@@ -61,8 +64,11 @@ interface Client {
   readonly telemetry: Map<string, Set<string> | null>;
   /** Deltas not yet sent, by key: a newer delta of the same key replaces the older one. */
   readonly pending: Map<string, string>;
-  /** Snapshots being read: deltas wait behind them. */
-  holds: number;
+  /** Telemetry snapshots being read, per equipment: that equipment's deltas wait behind them. */
+  readonly holds: Map<string, number>;
+  /** Request budget (token bucket) and when it was last refilled. */
+  tokens: number;
+  refilled: number;
 }
 
 const MAX_HOLDS = 4;
@@ -119,6 +125,8 @@ export class PushHub {
       retryMs: options.retryMs ?? 100,
       maxClients: options.maxClients ?? 64,
       maxSubscriptions: options.maxSubscriptions ?? 64,
+      requestsPerSecond: options.requestsPerSecond ?? 10,
+      requestBurst: options.requestBurst ?? 20,
     };
     this.#metrics = options.registry && createMetrics(options.registry, () => this.#clients.size);
     this.#timers.push(
@@ -170,7 +178,9 @@ export class PushHub {
       states: false,
       telemetry: new Map(),
       pending: new Map(),
-      holds: 0,
+      holds: new Map(),
+      tokens: this.#options.requestBurst,
+      refilled: Date.now(),
     };
     this.#clients.add(client);
     socket.on('pong', () => {
@@ -184,7 +194,28 @@ export class PushHub {
     });
   }
 
+  /** Takes one request from the client's budget; false when it is spent. */
+  #admit(client: Client): boolean {
+    const now = Date.now();
+    client.tokens = Math.min(
+      this.#options.requestBurst,
+      client.tokens + ((now - client.refilled) / 1_000) * this.#options.requestsPerSecond,
+    );
+    client.refilled = now;
+    if (client.tokens < 1) return false;
+    client.tokens--;
+    return true;
+  }
+
   #receive(client: Client, data: unknown, isBinary: boolean): void {
+    if (!this.#admit(client)) {
+      this.#send(client, {
+        type: 'error',
+        code: 'rate-limited',
+        detail: `at most ${String(this.#options.requestsPerSecond)} messages per second`,
+      });
+      return;
+    }
     let parsed: unknown;
     try {
       parsed = isBinary ? undefined : JSON.parse(String(data));
@@ -264,8 +295,17 @@ export class PushHub {
     request: ClientMessage,
   ): void {
     const existing = client.telemetry.get(equipment);
-    const size = [...client.telemetry.values()].reduce((n, set) => n + (set?.size ?? 1), 0);
-    if (existing === undefined && size >= this.#options.maxSubscriptions) {
+    const metric = request.metric;
+    // Counted per metric, an equipment subscribed whole as one.
+    const count = (map: ReadonlyMap<string, ReadonlySet<string> | null>) =>
+      [...map.values()].reduce((n, set) => n + (set?.size ?? 1), 0);
+    const next = new Map(client.telemetry);
+    if (metric === undefined) next.set(equipment, null);
+    else if (existing === undefined) next.set(equipment, new Set([metric]));
+    else if (existing !== null) next.set(equipment, new Set([...existing, metric]));
+    const before = count(client.telemetry);
+    const after = count(next);
+    if (after > before && after > this.#options.maxSubscriptions) {
       this.#send(client, {
         type: 'error',
         code: 'too-many-subscriptions',
@@ -273,35 +313,39 @@ export class PushHub {
       });
       return;
     }
-    if (client.holds >= MAX_HOLDS) {
+    const holds = [...client.holds.values()].reduce((n, h) => n + h, 0);
+    if (holds >= MAX_HOLDS) {
       this.#send(client, { type: 'error', code: 'busy', detail: 'too many snapshots in flight' });
       return;
     }
-    const metric = request.metric;
-    if (metric === undefined) client.telemetry.set(equipment, null);
-    else if (existing === undefined) client.telemetry.set(equipment, new Set([metric]));
-    else existing?.add(metric);
+    client.telemetry.set(equipment, next.get(equipment) ?? null);
     this.#send(client, { type: 'subscribed', topic: request.topic, metric: metric ?? null });
-    client.holds++;
+    client.holds.set(equipment, (client.holds.get(equipment) ?? 0) + 1);
     sources.ingest
       .telemetryMetrics(equipment)
       .then(
         (metrics) => {
+          // Unsubscribed (or gone) while the snapshot was read: nothing to send.
+          const wanted = metrics.filter(
+            (m) =>
+              (metric === undefined || m.metric === metric) &&
+              this.#wants(client, equipment, m.metric),
+          );
+          if (!this.#clients.has(client) || !this.#wants(client, equipment, metric)) return;
           this.#send(client, {
             type: 'snapshot',
             topic: request.topic,
-            samples: metrics
-              .filter((m) => metric === undefined || m.metric === metric)
-              .map((m) => ({
-                equipment,
-                metric: m.metric,
-                unit: m.unit,
-                t: m.latest.sourceTime.toISOString(),
-                value: m.latest.value,
-              })),
+            samples: wanted.map((m) => ({
+              equipment,
+              metric: m.metric,
+              unit: m.unit,
+              t: m.latest.sourceTime.toISOString(),
+              value: m.latest.value,
+            })),
           });
         },
         () => {
+          if (!this.#clients.has(client)) return;
           this.#send(client, {
             type: 'error',
             code: 'unavailable',
@@ -310,15 +354,34 @@ export class PushHub {
         },
       )
       .finally(() => {
-        client.holds--;
+        const left = (client.holds.get(equipment) ?? 1) - 1;
+        if (left > 0) client.holds.set(equipment, left);
+        else client.holds.delete(equipment);
         this.#scheduleFlush();
       });
+  }
+
+  /** Whether the client follows this metric (any metric of the equipment when undefined). */
+  #wants(client: Client, equipment: string, metric: string | undefined): boolean {
+    const subscribed = client.telemetry.get(equipment);
+    if (subscribed === undefined) return false;
+    return subscribed === null || metric === undefined || subscribed.has(metric);
   }
 
   #unsubscribeTelemetry(client: Client, equipment: string, request: ClientMessage): void {
     const metric = request.metric;
     const existing = client.telemetry.get(equipment);
-    if (metric === undefined || existing === null) {
+    if (metric !== undefined && existing === null) {
+      this.#send(client, {
+        type: 'error',
+        code: 'invalid-message',
+        detail:
+          'subscribed to every metric of this equipment: unsubscribe the topic, ' +
+          'then subscribe the metrics wanted',
+      });
+      return;
+    }
+    if (metric === undefined) {
       client.telemetry.delete(equipment);
       this.#dropPending(client, `telemetry:${equipment}:`);
     } else if (existing) {
@@ -411,7 +474,7 @@ export class PushHub {
   #flush(): void {
     let held = false;
     for (const client of this.#clients) {
-      if (client.pending.size === 0 || client.holds > 0) continue;
+      if (client.pending.size === 0) continue;
       const buffered = client.socket.bufferedAmount;
       if (buffered > this.#options.hardLimitBytes) {
         this.#drop(client, 'slow');
@@ -422,10 +485,12 @@ export class PushHub {
         continue;
       }
       for (const [key, data] of client.pending) {
+        // A telemetry delta waits while its equipment's snapshot is read; others flow.
+        if (key.startsWith('telemetry:') && client.holds.has(key.split(':')[1] ?? '')) continue;
         client.socket.send(data);
+        client.pending.delete(key);
         this.#metrics?.sent.inc({ type: key.split(':', 1)[0] ?? key });
       }
-      client.pending.clear();
     }
     if (held && this.#retry === undefined) {
       this.#retry = setTimeout(() => {

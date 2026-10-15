@@ -11,6 +11,12 @@ import { MasterData } from './modules/master-data/index.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
+const list = (value: string): string[] =>
+  value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+
 const parsed = parseEnv(process.env);
 if (!parsed.ok) {
   console.error(`invalid environment:\n  ${parsed.issues.join('\n  ')}`);
@@ -23,6 +29,11 @@ if (!plant.ok) {
   process.exit(1);
 }
 const db = createDatabase(env.DATABASE_URL);
+// The API reads through its own small pool with a statement timeout (ADR-0019).
+const readDb = createDatabase(env.DATABASE_URL, env.API_DB_POOL_SIZE, {
+  statementTimeoutMs: env.API_STATEMENT_TIMEOUT_MS,
+  connectionTimeoutMs: env.API_STATEMENT_TIMEOUT_MS,
+});
 const state = { migrated: false, stopping: false };
 
 let ingest: Ingest | undefined;
@@ -38,6 +49,8 @@ const { app, registry, realtime } = await buildMesHttp({
     );
   },
   logger: { level: env.LOG_LEVEL },
+  allowedHosts: list(env.HTTP_ALLOWED_HOSTS),
+  allowedOrigins: list(env.HTTP_ALLOWED_ORIGINS),
 });
 const log = app.log;
 
@@ -55,6 +68,7 @@ async function shutdown(signal: string): Promise<void> {
     async () => ingest?.stop(),
     async () => equipment?.stop(),
     () => db.destroy(),
+    () => readDb.destroy(),
   ]) {
     await close().catch((error: unknown) => {
       log.error(error);
@@ -80,6 +94,7 @@ try {
   log.info({ applied: result.applied, alreadyApplied: result.skipped }, 'database migrated');
   ingest = new Ingest({
     db,
+    readDb,
     url: env.MQTT_URL,
     username: env.MQTT_USERNAME,
     password: env.MQTT_PASSWORD,
@@ -92,19 +107,21 @@ try {
   // Intervals catch up from the tables first, then follow ingest's notices.
   equipment = new Equipment({
     db,
+    readDb,
     source: ingest,
     shiftPattern: await masterData.shiftPattern(),
     log: log.child({ module: 'equipment' }),
   });
   await equipment.start();
   // The API and push follow the modules from here; until then they answer 503.
-  await realtime.attach({ masterData, equipment, ingest });
+  await realtime.attach({ masterData: new MasterData(readDb), equipment, ingest });
   await ingest.start();
 } catch (error) {
   if (state.stopping) await new Promise(() => undefined); // shutdown() owns the exit
   log.fatal({ err: error }, 'start-up failed');
   await app.close();
   await db.destroy();
+  await readDb.destroy();
   process.exit(1);
 }
 log.info('mes-server started; ready once subscribed to the UNS');

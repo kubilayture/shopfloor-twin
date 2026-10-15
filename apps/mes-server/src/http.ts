@@ -14,6 +14,9 @@ export interface MesHttpOptions {
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
   readonly push?: Omit<PushOptions, 'registry'>;
   readonly version?: string;
+  /** See `RealtimeOptions`: Host names answered, extra WebSocket origins allowed. */
+  readonly allowedHosts?: readonly string[];
+  readonly allowedOrigins?: readonly string[];
 }
 
 export interface MesHttp {
@@ -28,6 +31,8 @@ export async function buildMesHttp({
   logger = false,
   push,
   version = '0.0.0',
+  allowedHosts,
+  allowedOrigins,
 }: MesHttpOptions): Promise<MesHttp> {
   const app = Fastify({ logger });
   const registry = new Registry();
@@ -94,6 +99,8 @@ export async function buildMesHttp({
   const realtime = await registerRealtime(app, {
     registry,
     ...(push === undefined ? {} : { push }),
+    ...(allowedHosts === undefined ? {} : { allowedHosts }),
+    ...(allowedOrigins === undefined ? {} : { allowedOrigins }),
   });
   return { app, registry, realtime };
 }

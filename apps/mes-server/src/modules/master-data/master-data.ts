@@ -1,4 +1,4 @@
-import type { PlantConfig } from '@shopfloor/plant-config';
+import { parentReason, type PlantConfig } from '@shopfloor/plant-config';
 import type { ShiftPattern } from '@shopfloor/shift-calendar';
 import type { Kysely } from 'kysely';
 import type { Database } from '../../db/database.ts';
@@ -21,6 +21,15 @@ export interface SiteInfo {
   readonly id: string;
   readonly name: string;
   readonly enterprise: { readonly id: string; readonly name: string };
+}
+
+/** A downtime reason (#119): its id is its path in the tree, `parent` the path above it. */
+export interface ReasonCode {
+  readonly id: string;
+  readonly parent: string | null;
+  readonly name: string;
+  /** False once the configuration no longer lists it. */
+  readonly active: boolean;
 }
 
 /** master-data's interface for the other modules (plan section 7). */
@@ -133,7 +142,55 @@ export class MasterData {
           })),
         )
         .execute();
+      // The reason tree (#119): parents come first in reasons.yaml, so each row's parent exists.
+      // Reasons the configuration no longer lists stay, inactive: records may name them.
+      const reasons = config.reasons.reasons;
+      await trx
+        .updateTable('master_data.reason_code')
+        .set({ active: false })
+        .where(
+          'id',
+          'not in',
+          reasons.map((reason) => reason.id),
+        )
+        .execute();
+      for (const [position, reason] of reasons.entries()) {
+        await trx
+          .insertInto('master_data.reason_code')
+          .values({
+            id: reason.id,
+            parent_id: parentReason(reason.id),
+            name: reason.name,
+            position,
+            active: true,
+          })
+          .onConflict((c) =>
+            c.column('id').doUpdateSet((eb) => ({
+              parent_id: eb.ref('excluded.parent_id'),
+              name: eb.ref('excluded.name'),
+              position: eb.ref('excluded.position'),
+              active: true,
+            })),
+          )
+          .execute();
+      }
     });
+  }
+
+  /**
+   * The downtime reason tree (#119), in configuration order (a parent before its children); the
+   * reasons the configuration no longer lists only with `inactive`.
+   */
+  async reasonCodes(options: { readonly inactive?: boolean } = {}): Promise<ReasonCode[]> {
+    let query = this.#db.selectFrom('master_data.reason_code').selectAll();
+    if (options.inactive !== true) query = query.where('active', '=', true);
+    const rows = await query.orderBy('active', 'desc').orderBy('position').orderBy('id').execute();
+    return rows.map((row) => ({
+      id: row.id,
+      parent: row.parent_id,
+      name: row.name,
+      active: row.active,
+    }));
   }
 
   /** Every piece of equipment with its place in the hierarchy, in line order. */

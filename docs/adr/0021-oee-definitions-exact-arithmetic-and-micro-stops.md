@@ -1,6 +1,6 @@
 # ADR-0021: OEE definitions, exact arithmetic and the micro-stop threshold
 
-- Status: accepted
+- Status: accepted; amended 2026-10-16 by #119 (automatic classification, below)
 - Date: 2026-10-16
 - Deciders: Claude (#116), within the Phase 5 plan; recorded for the owner under the standing instruction of 2026-10-15
 
@@ -67,7 +67,7 @@ Speed loss = APT − micro-stops − ideal time; it may be negative (P > 1). Qua
 
 **Reference cases.** `docs/oee-reference-cases.md` holds hand-calculated cases (inputs, step-by-step arithmetic, exact fractions and four-decimal values); `oee-core`'s tests parse that file, so the documentation and the tests can't disagree.
 
-This closes the micro-stop part of the plan section 12 open decision. The automatic downtime classification rules are added to this ADR by #119.
+This closes the micro-stop part of the plan section 12 open decision. The automatic downtime classification rules are added below (#119), which closes the rest of that decision.
 
 ### Consequences
 
@@ -76,3 +76,66 @@ This closes the micro-stop part of the plan section 12 open decision. The automa
 - Bad: callers convert fractions for display themselves; BigInt values need care at JSON and SQL boundaries (sums arrive as `numeric` and are parsed to BigInt).
 - Bad: hourly P > 1 and negative speed loss look odd on a dashboard; the UI must explain them (cycles credited at completion).
 - Bad: shared definitions mean the reconciliation can't catch a definition bug; the hand-calculated reference cases and the property tests are the guard.
+
+## Amendment (#119): automatic classification and downtime records
+
+The Phase 5 plan ("Downtime reason coding") fixes the reason tree, the rule form and the record key. Implementing it left these questions open: where the causes are defined, how the rules are written and checked, which time makes a record, and how records stay consistent with the intervals when those are recomputed.
+
+### Decision
+
+- **Cause vocabulary.** All causes are defined in `@shopfloor/contracts` (`causes.ts`): the fixed causes (`TOOL-CHANGE`, `CALIBRATION`, `SCHEDULE-COMPLETE`, `NO-OPERATOR`, `BREAK`, `SHIFT-END`) and the two parameterised forms (`MATERIAL:<id>` and `CHANGEOVER <from>→<to>`, with `none`). Failure codes and minor-stop causes still come from `failures.yaml`. The simulator emits these values, and its golden event log is byte-identical. `causeVocabulary` lists every (state, cause) pair a configuration can emit. The Modbus cause table uses the same constants.
+- **Reasons** (`config/plant/reasons.yaml`, seeded into `master_data.reason_code`).
+  - A reason's id is its path in the tree (`BREAKDOWN/SPINDLE-OVERLOAD`), and its parent is the path before the last `/`. Parents are listed first.
+  - The groups are BREAKDOWN, MINOR-STOP, SETUP, ORGANISATION, MATERIAL, STARVED, BLOCKED, PLANNED and UNCODED. The first four each have an `UNSPECIFIED` child for a missing cause.
+  - A reason has no loss category.
+  - A reason the configuration drops stays in the table, marked inactive.
+- **Rules.** The rules are an ordered list of `{ state, cause, reason }`. The cause pattern takes one of four forms:
+  - a string, which matches that cause exactly;
+  - `null`, which matches no cause;
+  - `{ prefix }`;
+  - `{ any: true }`.
+
+  The first match wins, and no match gives UNCODED. A cause the plant does not know therefore stays UNCODED, so that someone codes it; it is not hidden in a fallback.
+
+- **Cross-check** (`plant-config`). The cross-check refuses a configuration in these cases:
+  - an id is duplicated;
+  - a parent is not listed before its child;
+  - UNCODED is missing;
+  - a rule names an unknown reason;
+  - a loss state (Stopped, Down, Setup, Idle, Starved, Blocked) has no rule for `null`, which live snapshots need;
+  - a pair of the cause vocabulary would be UNCODED.
+
+  A simulator test runs the golden week and checks that every emitted cause is in the vocabulary and every non-Running pair has a reason. `reasons.yaml` is not part of the simulator's config hash.
+
+- **Records** (`equipment.downtime_record`).
+  - There is one record per availability-loss interval per scheduled shift bucket. It is keyed by (equipment, epoch, start), where the start is the later of the interval's start and the bucket's start.
+  - A record holds:
+    - its end, which is null while the interval is open and this is the last stored bucket;
+    - the interval's start and the bucket;
+    - the state and cause;
+    - the auto reason;
+    - `provisional`.
+  - Availability loss follows the loss table above. A Stopped interval counts from the threshold on, measured over its whole length (so far, if it is open). Because an open stop can only grow, a record made for it stays. Micro-stops, planned states and the `no-shift` bucket make no record, because nothing is planned there and so nothing is lost.
+- **Derived with the intervals.**
+  - Records are cut from the same pieces, in the same statement that stores those pieces. Each path stores the records of the whole intervals it replaces:
+    - an in-order fact;
+    - a window recompute after a late fact;
+    - a tail rewrite as the watermark moves;
+    - closing an epoch;
+    - a full rebuild.
+
+    The same paths delete the records of those intervals that no longer exist.
+
+  - A record is provisional while it is open or while any of its pieces is (#113). It becomes final in the same statement that promotes its pieces, and start-up sets its flag together with theirs.
+  - `interval_source.downtime_threshold_ms` records the threshold the records were derived with. Catch-up recomputes an (equipment, epoch) whose threshold differs, including every one stored before #119.
+  - At start-up, records whose (state, cause) gets a different reason under the current rules are recoded in place.
+- **Interface for #120.** `Equipment.downtimeRecords({ from, to, equipment?, epoch?, uncodedFirst?, limit? })` returns the records overlapping a range, each with its `loss` (own or external). `MasterData.reasonCodes()` returns the reason tree.
+
+### Consequences
+
+- Good: one definition of loss is shared by OEE and records (`availabilityLoss` in `oee-core`), so the downtime Pareto sums to the availability loss of OEE.
+- Good: records cannot drift from the intervals. Reordering, duplicates, late facts and restarts give the same records, and the golden-week reconciliation checks this both in order and shuffled.
+- Good: a new failure code, stop cause, product or material without a rule fails at configuration load, not in a week's data.
+- Bad: an open stop becomes a record only at the next tail rewrite after it reaches the threshold, which is at most `provisionalStepMs` late.
+- Bad: a breakdown on the weekend (`no-shift`) makes no record. It shows in the intervals only, until Phase 7 changes the scheduled-time rule.
+- Bad: changing the threshold recomputes every (equipment, epoch) at the next start-up. That costs one pass over ingest's state facts.

@@ -12,9 +12,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { EquipmentPath, MachineState } from '@shopfloor/contracts';
-import { HOUR } from '@shopfloor/oee-core';
-import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
-import { shiftSegments } from '@shopfloor/shift-calendar';
+import { HOUR, availabilityLoss } from '@shopfloor/oee-core';
+import { UNCODED, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
+import { NO_SHIFT, shiftSegments } from '@shopfloor/shift-calendar';
 import type { Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -29,7 +29,7 @@ import type { Database } from '../../db/database.ts';
 import { startDatabase } from '../../testing.ts';
 import { Ingest } from '../ingest/index.ts';
 import { MasterData } from '../master-data/index.ts';
-import { Equipment } from './index.ts';
+import { Equipment, downtimeRules } from './index.ts';
 import {
   PLANT_CONFIG,
   UnsFeed,
@@ -224,6 +224,7 @@ async function mes(): Promise<{
     shiftPattern: plant.shifts,
     provisionalStepMs: HOUR,
     refresh: {},
+    downtime: downtimeRules(plant),
   });
   await equipment.start();
   return {
@@ -405,6 +406,56 @@ async function expectFinality(equipment: Equipment, db: Kysely<Database>, run: R
   return provisional;
 }
 
+/** Every stored downtime record without the wall-clock column, in key order. */
+const storedRecords = (db: Kysely<Database>) =>
+  db
+    .selectFrom('equipment.downtime_record')
+    .select(['equipment', 'epoch', 'start_time', 'end_time', 'interval_start', 'shift_key'])
+    .select(['state', 'cause', 'auto_reason', 'provisional'])
+    .orderBy('equipment')
+    .orderBy('epoch')
+    .orderBy('start_time')
+    .execute();
+
+/**
+ * Downtime records (#119, Phase 5 exit criterion 4): every availability-loss interval of the run,
+ * computed here from the event log alone (ADR-0021's loss table, the micro-stop threshold over the
+ * whole interval, one record per scheduled shift bucket), has exactly its records, none of them
+ * UNCODED, all closed and final. Returns the counts for the log.
+ */
+async function expectRecords(db: Kysely<Database>, run: Run) {
+  const segments = shiftSegments(plant.shifts, run.start, run.end);
+  const expectedKeys: string[] = [];
+  const byMachine = new Map<string, { at: number; state: string }[]>();
+  for (const event of run.events) {
+    if (event.type !== 'state' || !event.machineId) continue;
+    const list = byMachine.get(event.machineId) ?? [{ at: run.start, state: 'Off' }];
+    list.push({ at: Date.parse(event.at), state: event.to ?? 'Idle' });
+    byMachine.set(event.machineId, list);
+  }
+  let lossIntervals = 0;
+  for (const [machine, points] of byMachine) {
+    points.forEach((point, i) => {
+      const end = points[i + 1]?.at ?? run.end;
+      if (end <= point.at) return;
+      if (!availabilityLoss(point.state, end - point.at, plant.oee.microStopThresholdMs)) return;
+      // Inside planned time only: the no-shift bucket has none, so nothing is lost there.
+      const keys = segments
+        .filter((seg) => seg.key !== NO_SHIFT && seg.to > point.at && seg.from < end)
+        .map((seg) => `${machine} ${new Date(Math.max(point.at, seg.from)).toISOString()}`);
+      if (keys.length > 0) lossIntervals++;
+      expectedKeys.push(...keys);
+    });
+  }
+  const stored = await storedRecords(db);
+  expect(stored.map((r) => `${r.equipment} ${r.start_time.toISOString()}`).sort()).toEqual(
+    expectedKeys.sort(),
+  );
+  expect(stored.filter((r) => r.auto_reason === UNCODED)).toEqual([]);
+  expect(stored.filter((r) => r.provisional || r.end_time === null)).toEqual([]);
+  return { lossIntervals, records: stored.length };
+}
+
 /**
  * Per-test limits: the golden week takes about 70 s in order and 125 s shuffled locally. Both
  * limits together (10 min) leave the end-to-end job (20 min, with the gateway's test and the
@@ -460,6 +511,9 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         expect(provisional.length).toBeGreaterThan(0);
         expect(provisional.filter((bucket) => !bucket.includes(' no-shift '))).toEqual([]);
         expect(await expectAggregates(equipment, ingest, db, run)).toBe(6);
+        const downtime = await expectRecords(db, run);
+        expect(downtime.records).toBeGreaterThanOrEqual(downtime.lossIntervals);
+        expect(downtime.lossIntervals).toBeGreaterThan(0);
         await equipment.stop();
         await ingest.stop();
       },
@@ -478,6 +532,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         await send([...mixed, end, ...mixed.slice(0, 500)]);
         await equipment.flush();
         expect(await storedPieces(db)).toEqual(await storedPieces(reference));
+        expect(await storedRecords(db)).toEqual(await storedRecords(reference));
         expect(await totals(equipment, db)).toEqual(expected(run.truth));
         await expectFinality(equipment, db, run);
         // Refreshed in the background all along, while late facts kept changing earlier hours.

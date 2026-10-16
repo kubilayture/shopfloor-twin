@@ -7,7 +7,7 @@ import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDatabase, type Database } from './db/database.ts';
 import { buildMesHttp } from './http.ts';
-import { Equipment } from './modules/equipment/index.ts';
+import { Equipment, downtimeRules } from './modules/equipment/index.ts';
 import { PLANT_CONFIG, UnsFeed, freshDatabase } from './modules/equipment/test-support.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
@@ -79,6 +79,7 @@ beforeAll(async () => {
     source: ingest,
     shiftPattern: await masterData.shiftPattern(),
     provisionalStepMs: 0,
+    downtime: downtimeRules(plant.config),
   });
   await equipment.start();
   const http = await buildMesHttp({

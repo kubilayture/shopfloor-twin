@@ -12,6 +12,7 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `master_data.area`
   - `master_data.equipment`
   - `master_data.product`
+  - `master_data.reason_code`
   - `master_data.shift_pattern`
   - `master_data.site`
   - `master_data.work_center`
@@ -26,6 +27,7 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `ingest.cycle_hourly` (view)
 - [`equipment`](#schema-equipment)
   - `equipment.bucket_finality`
+  - `equipment.downtime_record`
   - `equipment.equipment_state_interval`
   - `equipment.interval_source`
   - `equipment.state_hourly` (view)
@@ -65,6 +67,10 @@ erDiagram
     text id PK
     text work_center_id FK
   }
+  reason_code {
+    text id PK
+    text parent_id FK
+  }
   site {
     text id PK
   }
@@ -74,6 +80,7 @@ erDiagram
   }
   site ||--o{ area : "site_id"
   work_center ||--o{ equipment : "work_center_id"
+  reason_code |o--o{ reason_code : "parent_id"
   area ||--o{ work_center : "area_id"
 ```
 
@@ -81,7 +88,7 @@ The other schemas have no foreign keys; their references are by value, as descri
 
 ## Schema master_data
 
-Owner: master-data. The ISA-95 equipment hierarchy, products and the shift pattern, seeded from `config/plant`.
+Owner: master-data. The ISA-95 equipment hierarchy, products, the shift pattern and the downtime reason tree, seeded from `config/plant`.
 
 ### master_data.area
 
@@ -130,6 +137,24 @@ Products and their ideal cycle time per operation.
 | Kind | Name | Definition |
 | --- | --- | --- |
 | Primary key | `product_pkey` | `PRIMARY KEY (id)` |
+
+### master_data.reason_code
+
+The downtime reason tree from reasons.yaml: id (its path), parent and name; inactive once the configuration drops it (#119).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `text` | not null |  |
+| `parent_id` | `text` | null |  |
+| `name` | `text` | not null |  |
+| `position` | `integer` | not null |  |
+| `active` | `boolean` | not null | `true` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `reason_code_pkey` | `PRIMARY KEY (id)` |
+| Foreign key | `reason_code_parent_id_fkey` | `FOREIGN KEY (parent_id) REFERENCES master_data.reason_code(id)` |
+| Check | `reason_code_check` | `CHECK ((((parent_id IS NULL) AND (POSITION(('/'::text) IN (id)) = 0)) OR ((parent_id IS NOT NULL) AND (id = ((parent_id \|\| '/'::text) \|\| split_part(id, '/'::text, '-1'::integer))))))` |
 
 ### master_data.shift_pattern
 
@@ -384,7 +409,7 @@ SELECT equipment,
 
 ## Schema equipment
 
-Owner: equipment. State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE.
+Owner: equipment. State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE; and the downtime records derived from them (ADR-0021).
 
 ### equipment.bucket_finality
 
@@ -407,6 +432,35 @@ Per (equipment, epoch, UTC hour): when the hour became final, its revision (rais
 | Check | `bucket_finality_cycles_check` | `CHECK ((cycles >= 0))` |
 | Check | `bucket_finality_hour_check` | `CHECK ((hour = date_trunc('hour'::text, hour, 'UTC'::text)))` |
 | Check | `bucket_finality_revision_check` | `CHECK ((revision >= 0))` |
+
+### equipment.downtime_record
+
+Downtime records: one per availability-loss interval per scheduled shift bucket, keyed by its start in the bucket, with the auto reason; derived and rebuilt with the intervals (#119).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `start_time` | `timestamp with time zone` | not null |  |
+| `end_time` | `timestamp with time zone` | null |  |
+| `interval_start` | `timestamp with time zone` | not null |  |
+| `shift_key` | `text` | not null |  |
+| `state` | `text` | not null |  |
+| `cause` | `text` | null |  |
+| `auto_reason` | `text` | not null |  |
+| `provisional` | `boolean` | not null |  |
+| `recorded_at` | `timestamp with time zone` | not null | `now()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `downtime_record_pkey` | `PRIMARY KEY (equipment, epoch, start_time)` |
+| Check | `downtime_record_check` | `CHECK (((end_time IS NULL) OR (end_time > start_time)))` |
+| Check | `downtime_record_check1` | `CHECK ((interval_start <= start_time))` |
+| Check | `downtime_record_check2` | `CHECK (((end_time IS NOT NULL) OR provisional))` |
+| Check | `downtime_record_shift_key_check` | `CHECK ((shift_key <> 'no-shift'::text))` |
+| Check | `downtime_record_state_check` | `CHECK ((state = ANY (ARRAY['Stopped'::text, 'Down'::text, 'Setup'::text, 'Idle'::text, 'Starved'::text, 'Blocked'::text])))` |
+| Index | `downtime_record_range` | `equipment.downtime_record USING btree (equipment, start_time)` |
+| Index | `downtime_record_uncoded` | `equipment.downtime_record USING btree (start_time) WHERE (auto_reason = 'UNCODED'::text)` |
 
 ### equipment.equipment_state_interval
 
@@ -455,6 +509,7 @@ What the stored intervals of each (equipment, epoch) were computed from, so star
 | `closed_at` | `timestamp with time zone` | null |  |
 | `clamped` | `boolean` | not null |  |
 | `updated_at` | `timestamp with time zone` | not null | `now()` |
+| `downtime_threshold_ms` | `bigint` | null |  |
 
 | Kind | Name | Definition |
 | --- | --- | --- |

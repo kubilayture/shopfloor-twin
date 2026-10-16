@@ -1,4 +1,4 @@
-import type { JSONColumnType } from 'kysely';
+import type { ColumnType, JSONColumnType } from 'kysely';
 import type { ShiftPattern } from '@shopfloor/shift-calendar';
 
 export interface SiteTable {
@@ -42,6 +42,15 @@ export interface ShiftPatternTable {
   shifts: JSONColumnType<ShiftPattern['shifts']>;
 }
 
+/** The downtime reason tree (#119), from config/plant/reasons.yaml. */
+export interface ReasonCodeTable {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  position: number;
+  active: ColumnType<boolean, boolean | undefined, boolean>;
+}
+
 export interface MasterDataTables {
   'master_data.site': SiteTable;
   'master_data.area': AreaTable;
@@ -49,6 +58,7 @@ export interface MasterDataTables {
   'master_data.equipment': EquipmentTable;
   'master_data.product': ProductTable;
   'master_data.shift_pattern': ShiftPatternTable;
+  'master_data.reason_code': ReasonCodeTable;
 }
 
 export const MASTER_DATA_COLUMNS = {
@@ -58,4 +68,5 @@ export const MASTER_DATA_COLUMNS = {
   'master_data.equipment': ['id', 'work_center_id', 'name', 'operation', 'interface', 'position'],
   'master_data.product': ['id', 'name', 'ideal_cycle_seconds'],
   'master_data.shift_pattern': ['id', 'time_zone', 'workdays', 'shifts'],
+  'master_data.reason_code': ['id', 'parent_id', 'name', 'position', 'active'],
 } as const;

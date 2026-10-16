@@ -13,7 +13,7 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
     name: 'master_data',
     owner: 'master-data',
     about:
-      'The ISA-95 equipment hierarchy, products and the shift pattern, seeded from `config/plant`.',
+      'The ISA-95 equipment hierarchy, products, the shift pattern and the downtime reason tree, seeded from `config/plant`.',
   },
   {
     name: 'ingest',
@@ -25,7 +25,7 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
     name: 'equipment',
     owner: 'equipment',
     about:
-      'State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE.',
+      'State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE; and the downtime records derived from them (ADR-0021).',
   },
   {
     name: 'public',
@@ -46,6 +46,8 @@ const TABLES: Readonly<Record<string, string>> = {
     'The machines, with their operation, interface and position in the line.',
   'master_data.product': 'Products and their ideal cycle time per operation.',
   'master_data.shift_pattern': 'The shift pattern: time zone, workdays and shifts.',
+  'master_data.reason_code':
+    'The downtime reason tree from reasons.yaml: id (its path), parent and name; inactive once the configuration drops it (#119).',
   'ingest.equipment_event':
     'Device facts (state changes, cycles, alarm transitions), one stream per equipment; deduplicated by the unique key.',
   'ingest.telemetry_sample': 'Sampled process values, one stream per telemetry topic.',
@@ -62,6 +64,8 @@ const TABLES: Readonly<Record<string, string>> = {
     'State intervals cut into pieces inside one UTC hour and one shift bucket; the open interval is stored up to the plant watermark. A piece is provisional while it ends after the time its machine’s own facts have settled (#113).',
   'equipment.bucket_finality':
     'Per (equipment, epoch, UTC hour): when the hour became final, its revision (raised by each change after that) and the gap incidents over it.',
+  'equipment.downtime_record':
+    'Downtime records: one per availability-loss interval per scheduled shift bucket, keyed by its start in the bucket, with the auto reason; derived and rebuilt with the intervals (#119).',
   'equipment.interval_source':
     'What the stored intervals of each (equipment, epoch) were computed from, so start-up catch-up can recompute what differs.',
   'equipment.state_hourly':

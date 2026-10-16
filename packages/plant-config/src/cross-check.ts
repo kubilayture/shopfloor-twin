@@ -1,3 +1,4 @@
+import { checkReasons, plantCauses } from './reasons.ts';
 import type { PlantConfig } from './schema.ts';
 
 export interface ConfigIssue {
@@ -260,6 +261,11 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
       .forEach((campaign) => {
         report('schedule', `machines.${machine}`, `unknown product "${campaign.product}"`);
       });
+  }
+
+  // Reason codes and auto-classification rules (#119): known reasons, fallbacks, full coverage.
+  for (const issue of checkReasons(config.reasons, plantCauses(config))) {
+    report('reasons', issue.path, issue.message);
   }
 
   return issues;

@@ -5,7 +5,7 @@ import { createDatabase } from './db/database.ts';
 import { migrate } from './db/migrate.ts';
 import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
-import { Equipment } from './modules/equipment/index.ts';
+import { Equipment, downtimeRules } from './modules/equipment/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 
@@ -116,6 +116,7 @@ try {
     source: ingest,
     shiftPattern: await masterData.shiftPattern(),
     refresh: { db: aggregateDb },
+    downtime: downtimeRules(plant.config),
     log: log.child({ module: 'equipment' }),
   });
   await equipment.start();

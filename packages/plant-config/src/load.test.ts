@@ -398,7 +398,8 @@ describe('OEE configuration (ADR-0021)', () => {
     const sections = simulationSections(result.config);
     expect(Object.keys(sections).sort()).toEqual(Object.keys(SIMULATION_FILES).sort());
     expect(sections).not.toHaveProperty('oee');
-    expect(Object.keys(PLANT_FILES)).toEqual([...Object.keys(SIMULATION_FILES), 'oee']);
+    expect(sections).not.toHaveProperty('reasons');
+    expect(Object.keys(PLANT_FILES)).toEqual([...Object.keys(SIMULATION_FILES), 'oee', 'reasons']);
   });
 });
 

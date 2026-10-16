@@ -13,7 +13,10 @@ export type { Millis, StateFact, StateInterval } from './intervals.ts';
 export {
   CYCLE_RESULTS,
   EXCLUDED_STATES,
+  EXTERNAL_LOSS_STATES,
   OEE_STATES,
+  OWN_LOSS_STATES,
+  availabilityLoss,
   bucketOee,
   bucketTotals,
   oeeFromTotals,
@@ -21,6 +24,7 @@ export {
   workCenterOee,
 } from './oee.ts';
 export type {
+  AvailabilityLoss,
   BucketInput,
   CycleCount,
   CycleResult,

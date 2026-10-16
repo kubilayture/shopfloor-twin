@@ -30,6 +30,8 @@ export interface IntervalSourceTable {
   closed_at: ColumnType<Date | null, Date | string | null, Date | string | null>;
   clamped: boolean;
   updated_at: DefaultTimestamp;
+  /** The micro-stop threshold the downtime records were derived with (#119); null before. */
+  downtime_threshold_ms: ColumnType<number | null, number | null | undefined, number | null>;
 }
 
 /** Per (equipment, epoch, UTC hour): when it became final and how often it changed since (#113). */
@@ -60,11 +62,27 @@ export interface StateHourlyView {
   provisional_ms: ViewColumn<number>;
 }
 
+/** One downtime record: an availability-loss interval in one shift bucket (#119). */
+export interface DowntimeRecordTable {
+  equipment: string;
+  epoch: number;
+  start_time: Timestamp;
+  end_time: ColumnType<Date | null, Date | string | null, Date | string | null>;
+  interval_start: Timestamp;
+  shift_key: string;
+  state: string;
+  cause: string | null;
+  auto_reason: string;
+  provisional: boolean;
+  recorded_at: DefaultTimestamp;
+}
+
 export interface EquipmentTables {
   'equipment.equipment_state_interval': EquipmentStateIntervalTable;
   'equipment.interval_source': IntervalSourceTable;
   'equipment.bucket_finality': BucketFinalityTable;
   'equipment.state_hourly': StateHourlyView;
+  'equipment.downtime_record': DowntimeRecordTable;
 }
 
 export const EQUIPMENT_COLUMNS = {
@@ -92,6 +110,7 @@ export const EQUIPMENT_COLUMNS = {
     'closed_at',
     'clamped',
     'updated_at',
+    'downtime_threshold_ms',
   ],
   'equipment.bucket_finality': [
     'equipment',
@@ -111,5 +130,18 @@ export const EQUIPMENT_COLUMNS = {
     'state',
     'ms',
     'provisional_ms',
+  ],
+  'equipment.downtime_record': [
+    'equipment',
+    'epoch',
+    'start_time',
+    'end_time',
+    'interval_start',
+    'shift_key',
+    'state',
+    'cause',
+    'auto_reason',
+    'provisional',
+    'recorded_at',
   ],
 } as const;

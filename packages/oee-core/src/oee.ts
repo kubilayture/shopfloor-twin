@@ -25,6 +25,30 @@ export type OeeState = (typeof OEE_STATES)[number];
 /** Excluded from planned busy time: breaks, planned maintenance and the machine switched off. */
 export const EXCLUDED_STATES: readonly OeeState[] = ['PlannedStop', 'Maintenance', 'Off'];
 
+/** Availability loss inside planned busy time (ADR-0021): the machine's own, or external. */
+export type AvailabilityLoss = 'own' | 'external';
+
+/** Own availability loss; Stopped only when the whole interval reaches the micro-stop threshold. */
+export const OWN_LOSS_STATES: readonly OeeState[] = ['Stopped', 'Down', 'Setup', 'Idle'];
+
+/** External availability loss: not the machine's fault. */
+export const EXTERNAL_LOSS_STATES: readonly OeeState[] = ['Starved', 'Blocked'];
+
+/**
+ * The availability loss an interval counts as inside planned busy time (ADR-0021's loss table), or
+ * undefined: Running, a micro-stop (Stopped below the threshold, measured over the whole interval,
+ * so far if it is open) and the excluded states are no availability loss.
+ */
+export function availabilityLoss(
+  state: string,
+  wholeMs: Millis,
+  microStopThresholdMs: Millis,
+): AvailabilityLoss | undefined {
+  if (EXTERNAL_LOSS_STATES.some((s) => s === state)) return 'external';
+  if (!OWN_LOSS_STATES.some((s) => s === state)) return undefined;
+  return state !== 'Stopped' || wholeMs >= microStopThresholdMs ? 'own' : undefined;
+}
+
 export const CYCLE_RESULTS = ['good', 'scrap', 'rework'] as const;
 
 export type CycleResult = (typeof CYCLE_RESULTS)[number];

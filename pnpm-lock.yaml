@@ -725,6 +725,12 @@ importers:
 
   packages/plant-config:
     dependencies:
+      '@shopfloor/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@shopfloor/oee-core':
+        specifier: workspace:*
+        version: link:../oee-core
       yaml:
         specifier: 'catalog:'
         version: 2.9.1

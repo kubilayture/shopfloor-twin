@@ -7,6 +7,23 @@ All notable changes to this project are recorded here. The format follows [Keep 
 ### Added
 
 - Hourly continuous aggregates for OEE (#118, ADR-0022; migration `0006`): `equipment.state_hourly` (time and provisional time per state per equipment, epoch, UTC hour and shift bucket) and `ingest.cycle_hourly` (cycles per equipment, epoch, UTC hour, product and result), real-time, no refresh policies. Each owning module refreshes its aggregate explicitly through a shared helper (`AggregateRefresher`): every write below the watermark marks its hour dirty, a debounced (1 s) refresh off ingest's acknowledgement path covers `[earliest dirty hour, latest final hour + 1 h)` on its own connection, and a catch-up refresh runs at start-up. Equipment emits `piecesChanged`; ingest sends `cycle` and `epoch` notices. `Equipment.stateHourly` (with `final` and `revision`) and `Ingest.cycleHourly`/`cyclesRefreshed` are the read side for #120. `equipment.bucket_finality.cycles` remembers each final hour's cycle count; start-up compares it with `cycle_hourly` and revises an hour whose count changed unheard (the #113 proposal). The data-model generator documents views and continuous aggregates (definition, bucket, `materialized_only`), with drift tests.
+- Reason codes, auto-classification and downtime records (#119, ADR-0021 amended).
+  - **Cause vocabulary.** All causes are defined in `@shopfloor/contracts`: `CAUSES`, `materialCause`, `changeoverCause`, `NO_PRODUCT` and `causeVocabulary`. The simulator and the Modbus cause table use it. The golden week is byte-identical.
+  - **Reason tree and rules.** `config/plant/reasons.yaml` holds the reason tree (ids are paths such as `BREAKDOWN/SPINDLE-OVERLOAD`) and an ordered list of rules from (state, cause pattern: exact, `{prefix}`, `null` or `{any}`) to a reason. The first match wins, and no match gives UNCODED.
+  - **plant-config.** `plant-config` loads `reasons.yaml` outside the simulator's config hash and exports `classifyCause`. Its cross-check refuses:
+    - unknown reasons;
+    - parents not listed before their children;
+    - a missing UNCODED;
+    - loss states without a `null` fallback;
+    - any cause of the plant model left UNCODED.
+  - **Reason codes in master data.** Migration `0007_master_data_reason_codes.sql` adds `master_data.reason_code`. A reason the configuration drops stays, marked inactive. `MasterData.reasonCodes()` lists the tree.
+  - **Downtime records.** Migration `0008_equipment_downtime_records.sql` adds `equipment.downtime_record` and `interval_source.downtime_threshold_ms`.
+    - There is one record per availability-loss interval per scheduled shift bucket, keyed by its start in the bucket.
+    - A Stopped interval makes a record from the micro-stop threshold on. Micro-stops, planned states and `no-shift` make none.
+    - Records are stored in the same statement as the pieces on every interval path, and their `provisional` flag follows the pieces' finality.
+    - Catch-up derives the records again when the threshold changed. Start-up recodes the records whose reason changed with the rules.
+  - **Interface for #120.** `Equipment.downtimeRecords()` returns the records, with an UNCODED-first order. `availabilityLoss` is in `oee-core`.
+  - **Tests.** A simulator test checks that every (state, cause) pair of the golden week is in the vocabulary and none is UNCODED. The golden-week reconciliation checks that every availability-loss interval has its records, that none is UNCODED, and that shuffled delivery stores the same records. `docs/data-model.md` is regenerated, and `docs/simulation-model.md` gains a "Causes" section.
 - Simulator ground-truth OEE with `oee-core` (#117): `GroundTruth` keeps, per machine, the OEE inputs of every shift bucket and every UTC hour (time per state; Stopped intervals held until they close, then filed as pieces with their whole length; cycles per product and result, bucketed by their time with `shiftKeyAt`), and returns `bucketOee` per machine and shift bucket and `workCenterOee` for Cell M1 and Line A1, with fractions as `num/den` and four-decimal strings, losses, `unplanned`, `anomaly` and `provisional`. An open stop's whole length runs to the snapshot time (ADR-0021). Summary format `sim-summary/2` (new `oee` section; all other fields unchanged). Simulator control API 1.2: `GET /api/v1/ground-truth` includes the `oee` section; OpenAPI `info.version` `1.2.0`. Golden `week-01/summary.json` regenerated for the new section only (39,404 lines added; the schema line is the only changed line); `events.sha256` unchanged (`e7c69736…009b740b`), so the simulation itself is unchanged. A snapshot costs about 0.2 ms after a shift and about 3 ms after a week (response about 450 KB after a week).
 
 ### Fixed

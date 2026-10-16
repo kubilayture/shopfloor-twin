@@ -1,4 +1,9 @@
-import { FAILURE_ALARM_SEVERITY } from '@shopfloor/contracts';
+import {
+  CAUSES,
+  FAILURE_ALARM_SEVERITY,
+  changeoverCause,
+  materialCause,
+} from '@shopfloor/contracts';
 import type { PlantConfig } from '@shopfloor/plant-config';
 import {
   HOUR,
@@ -110,8 +115,6 @@ export const MAX_PROGRAM_QUANTITY = 100_000;
 export { FAILURE_ALARM_SEVERITY } from '@shopfloor/contracts';
 export const CALIBRATION_ALARM_CODE = 'CALIBRATION-DUE';
 export const CALIBRATION_ALARM_SEVERITY = 300;
-/** Stands for "no product loaded" in a changeover cause (`CHANGEOVER none→VB-100`). */
-export const NO_PRODUCT = 'none';
 
 export type LoadProgramResult =
   | { ok: true; position: number }
@@ -401,7 +404,7 @@ export class ProductionLine {
         this.#interrupt(
           station,
           this.#unavailable,
-          action === 'shift-end' ? 'SHIFT-END' : 'BREAK',
+          action === 'shift-end' ? CAUSES.shiftEnd : CAUSES.break,
           simulation,
         );
       } else {
@@ -433,7 +436,7 @@ export class ProductionLine {
 
   #unavailableCause(station: Station): string | undefined {
     return this.#unavailable === undefined && station.requiresOperator && !station.operator
-      ? 'NO-OPERATOR'
+      ? CAUSES.noOperator
       : undefined;
   }
 
@@ -461,7 +464,7 @@ export class ProductionLine {
       return;
     }
     if (!this.#canWork(station)) {
-      this.#interrupt(station, 'Idle', 'NO-OPERATOR', simulation);
+      this.#interrupt(station, 'Idle', CAUSES.noOperator, simulation);
       return;
     }
     const waiting = state === 'Off' || state === 'PlannedStop' || state === 'Idle';
@@ -643,7 +646,7 @@ export class ProductionLine {
       this.#occupy(
         station,
         'Setup',
-        'TOOL-CHANGE',
+        CAUSES.toolChange,
         this.#config.process.tool.changeMinutes,
         'setup-end',
         simulation,
@@ -654,7 +657,7 @@ export class ProductionLine {
       this.#occupy(
         station,
         'Maintenance',
-        'CALIBRATION',
+        CAUSES.calibration,
         this.#config.process.leakTest.calibrationMinutes,
         'maintenance-end',
         simulation,
@@ -676,11 +679,11 @@ export class ProductionLine {
   #nextBlank(station: Station, simulation: Simulation<LineEvent>): Part | undefined {
     const campaign = station.campaigns?.find((c) => c.remaining > 0);
     if (!campaign) {
-      this.#enter(station, 'Idle', 'SCHEDULE-COMPLETE');
+      this.#enter(station, 'Idle', CAUSES.scheduleComplete);
       return undefined;
     }
     if (station.loadedProduct !== campaign.product) {
-      const cause = `CHANGEOVER ${station.loadedProduct ?? NO_PRODUCT}→${campaign.product}`;
+      const cause = changeoverCause(station.loadedProduct, campaign.product);
       station.loadedProduct = campaign.product;
       station.busy = true;
       this.#enter(station, 'Setup', cause);
@@ -692,7 +695,7 @@ export class ProductionLine {
     }
     const blank = this.#product(campaign.product).blank;
     if (!this.inventory.available(blank)) {
-      this.#enter(station, 'Starved', `MATERIAL:${blank}`);
+      this.#enter(station, 'Starved', materialCause(blank));
       return undefined;
     }
     campaign.remaining--;
@@ -793,7 +796,7 @@ export class ProductionLine {
           : this.#product(next.product).components;
     const missing = needed.find((material) => !this.inventory.available(material));
     if (missing) {
-      this.#enter(station, 'Starved', `MATERIAL:${missing}`);
+      this.#enter(station, 'Starved', materialCause(missing));
       return undefined;
     }
     const part = rework ? rework.shift() : station.input?.shift();

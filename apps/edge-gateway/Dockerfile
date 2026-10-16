@@ -11,6 +11,7 @@ FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/edge-gateway/package.json apps/edge-gateway/
 COPY packages/contracts/package.json packages/contracts/
+COPY packages/oee-core/package.json packages/oee-core/
 COPY packages/plant-config/package.json packages/plant-config/
 # Production dependencies of the gateway and its workspace packages only; no lifecycle scripts.
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts --filter @shopfloor/edge-gateway...
@@ -25,6 +26,7 @@ WORKDIR /app
 COPY --from=deps /app ./
 COPY config/plant config/plant
 COPY packages/contracts/src packages/contracts/src
+COPY packages/oee-core/src packages/oee-core/src
 COPY packages/plant-config/src packages/plant-config/src
 COPY apps/edge-gateway/src apps/edge-gateway/src
 RUN mkdir -p /var/lib/gateway/buffer /var/lib/gateway/pki && chown -R node:node /var/lib/gateway

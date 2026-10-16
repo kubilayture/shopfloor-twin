@@ -1,3 +1,13 @@
+export {
+  CAUSES,
+  CHANGEOVER_CAUSE_PREFIX,
+  MATERIAL_CAUSE_PREFIX,
+  NO_PRODUCT,
+  causeVocabulary,
+  changeoverCause,
+  materialCause,
+} from './causes.ts';
+export type { CauseInputs, FixedCause, StateCause } from './causes.ts';
 export { UNS_CLASSES, UNS_ROOT, equipmentTopic } from './uns-topic.ts';
 export type { EquipmentTopic, UnsClass } from './uns-topic.ts';
 export {

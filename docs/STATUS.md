@@ -1,11 +1,13 @@
 # Status — updated 2026-10-16
 
-## Current phase: 05 – OEE and downtime (planning; Phase 4 closed 2026-10-16)
+## Current phase: 06 – Alarms and shifts (next, not planned yet; Phase 5 closed 2026-10-16)
 
-## Exit criteria progress: Phase 5: 0 / 5 met
+## Exit criteria progress: Phase 5 closed with 5 / 5 met; Phase 6 not planned yet
 
 ## Done since last update
 
+- **Phase 5 closed**: all 5 exit criteria met; tag `phase-05` after #124 merges (report: `docs/phases/phase-05-report.md`; learning notes: `docs/learning/phase-05.md`; data model: `docs/data-model.md`, confirmed current with both continuous aggregates and the new tables).
+- Phase 5 pull requests merged: #125 (plan), #127 (#126), #128 (#116), #129 (#113), #130 (#117), #131 (#119), #132 (#118), #133 (#120), #134 (#121), #135 (#122), #136 (#123); CI's `reconcile` job passed in 10.8 min on the final commit of #136.
 - #123 done (branch `test/123-e2e-oee`): end-to-end evidence for Phase 5 exit criteria 3, 4 and 5 in `pnpm test:reconcile`. Live OEE: shift A final and exactly equal to the live ground truth for all six machines and both work centers, 8 buckets compared (asserted). Dashboard: Playwright judges 874–890 OEE changes on both cards and six machine rows in 90 s, none later than 2 s (p95 about 0.9 s, max 1.2 s), and the page's values agree with the API (349–351 of 352 snapshots). Coding through the UI after the drain: a split and a recode audited, the Pareto moved exactly by the record, shift A's OEE byte-identical, 403/403/415 refusals. Two local runs RECONCILE-OK, 8 min 41 s each with cached images (CI before: 10.7 min of 30).
 - #122 done (branch `feat/122-web-oee`): web OEE dashboard (`/oee`: work-center cards, machine table, hourly bars, loss waterfall, downtime Pareto, shift picker; live from `oee:<id>`) and downtime coding screen (`/downtime`: uncoded first, reason tree, splits, comment, `codedBy`, 409 and write errors handled, audit history; live from `downtime`). ECharts 6.1.0 under the strict CSP (canvas tooltip), checked in a browser against a disposable Compose stack: no CSP violation, OEE updates about once a second, a recode and a split saved and audited, no horizontal scroll at 375 px.
 - #121 done (branch `feat/121-coding-writes`): downtime coding, the MES's first writes. Codings by time with splits, optimistic concurrency per (equipment, epoch) (409), clipping and orphaning after a re-cut, an append-only audit; the Pareto and the records' reason view use the reasons in effect, OEE is unchanged (tested); `PUT /api/v1/downtime/{id}/coding`, `GET /api/v1/downtime/{id}/audit`, `recoded` push. Write guards (ADR-0023): Origin required and same-origin, `Sec-Fetch-Site`, JSON only (415), 16 KiB, a global rate limit, `MES_WRITES=off` (405); nginx passes only GET, POST, PUT and DELETE; the Vite proxy rewrites `Origin` for HTTP too. Stack smoke writes and clears a coding through nginx and checks the 403/415 refusals (exit criterion 4, API and smoke parts; the UI part follows in #122 and #123).
@@ -75,25 +77,26 @@
 
 ## In progress
 
-- #113 interval finality per piece (in review): `equipment.bucket_finality`, `revision` and `incidents` in shift totals, the live reconciliation requires shift A final (ADR-0018 amended).
+- #124 Phase 5 close (in review)
 
 ## Next up
 
-- #123 end to end (Playwright on `/oee` and `/downtime` with the test ids of #122), then #124.
+- Phase 6 plan: Alarms and shifts (master plan section 11 row 6: alarm lifecycle, alarm list and KPIs, flood detection, handover notes, shift report reconciled with OEE data). Not planned yet. Carry-overs are in the Phase 5 report: the audit trigger and role separation (Phases 7 and 9), the global write rate limit, retention with continuous aggregates, and `prom-client` (ADR-0012).
 
 ## Blockers and open questions for the owner
 
+- Sign off Phase 5 (v1 success criterion 6); Claude closed it under the standing instruction without the owner's review.
 - Sign off Phase 4 (v1 success criterion 6); Claude closed it under the standing instruction without the owner's review.
 - Install the Renovate GitHub app for this repository (carried over from Phase 0).
-- Optional: run `pnpm stack:up` and look at the plant overview at <http://localhost:8080> (no exit criterion depends on it).
+- Optional: run `pnpm stack:up` and look at the plant overview at <http://localhost:8080>, the OEE dashboard at `/oee` and the coding screen at `/downtime` (no exit criterion depends on it). A coding saved there is audited permanently. The default dev database already holds one smoke coding and its clear from #121's first local smoke run (Phase 5 report, Known issues).
 - Raise the Docker VM's memory to 4 GiB (now 2 GiB on Colima): the full stack uses about 440 MiB at 60×, but its limits add up to about 2 GiB and the Testcontainers suites run beside it (runbook, "Full stack", Memory).
 
 Project board: https://github.com/users/kubilayture/projects/1
 
 ## Health: CI on main, coverage, open bugs
 
-- CI on `main`: green (`verify`, `end to end`, `stack smoke`, `reconcile`).
-- Tests: 738 (plus the `end to end` job: gateway, golden-week reconciliation; and the `reconcile` job).
-- Coverage: `sim-core` about 99 / 98 (floor 95 / 90), `oee-core` 100 / 98 (floor 95 / 90), `plant-config` 99 / 91 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 92 / 79, `mes-server` 95 / 85 and web 98 / 89 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
+- CI on `main`: green (`verify`, `end to end`, `stack smoke`, `reconcile`) on `92efe6a`, the merge of #136.
+- Tests: 988 (plus the `end to end` job: gateway, golden-week reconciliation of intervals, aggregates, records and 128 OEE buckets; and the `reconcile` job: live shift A, dashboard latency, UI coding).
+- Coverage (lines / branches): `sim-core` 99 / 98 (floor 95 / 90), `oee-core` 100 / 99 (floor 95 / 90), `plant-config` 99 / 93 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 91 / 78, `mes-server` 96 / 87 and web 96 / 86 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

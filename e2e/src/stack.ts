@@ -36,6 +36,7 @@ export class Stack {
     const secret = () => randomBytes(16).toString('hex');
     const values: Record<string, string> = {
       DB_PASSWORD: secret(),
+      DB_APP_PASSWORD: secret(),
       MQTT_HEALTHCHECK_PASSWORD: secret(),
       MQTT_DEV_PASSWORD: secret(),
       MQTT_GATEWAY_PASSWORD: secret(),

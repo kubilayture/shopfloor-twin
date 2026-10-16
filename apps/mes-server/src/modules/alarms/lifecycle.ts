@@ -8,6 +8,7 @@ import type { Priority } from '@shopfloor/alarm-core';
 import { PROBLEM_TYPES, type ProblemType } from '@shopfloor/contracts/mes-api';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
+import { Identity, auditActor, isAuthenticated, nameOf, type WriteBy } from '../identity/index.ts';
 import type { EndReason, TransitionAction } from './tables.ts';
 
 type Db = Kysely<Database> | Transaction<Database>;
@@ -276,11 +277,31 @@ export async function retrying<T>(work: () => Promise<T>): Promise<T> {
 }
 
 export interface WriteContext {
-  readonly actor: string;
+  /** The session's user, or (`MES_AUTH=off`, until #170) the name as typed. */
+  readonly actor: WriteBy;
   readonly requestId?: string | undefined;
   readonly clock: PlantClock | undefined;
 }
 
+/** Entity of an operator transition in `identity.audit_log` (#169, as migration 0018 maps). */
+export const auditEntity = (entry: {
+  readonly equipment: string;
+  readonly code: string;
+  readonly epoch?: number | null;
+  readonly seq?: number | null;
+}): { entityType: string; entityId: string } =>
+  entry.seq === undefined || entry.seq === null || entry.epoch === undefined || entry.epoch === null
+    ? { entityType: 'alarm-point', entityId: pointKey(entry.equipment, entry.code) }
+    : {
+        entityType: 'alarm-occurrence',
+        entityId: `${entry.equipment}~${String(entry.epoch)}~${String(entry.seq)}`,
+      };
+
+/**
+ * Records transitions in `alarms.alarm_transition` (the module's transition log) and, for an
+ * operator's (every one but `system`'s expiry and epoch end), in `identity.audit_log` as well
+ * (#169): both in the caller's transaction.
+ */
 async function audit(
   trx: Transaction<Database>,
   entries: readonly {
@@ -291,7 +312,7 @@ async function audit(
     action: TransitionAction;
     before?: Record<string, unknown> | null;
     after?: Record<string, unknown> | null;
-    actor: string;
+    actor: WriteBy;
     plantAt: Date | null;
     plantEpoch: number | null;
     requestId?: string | null | undefined;
@@ -312,7 +333,8 @@ async function audit(
           entry.before === undefined || entry.before === null ? null : JSON.stringify(entry.before),
         after:
           entry.after === undefined || entry.after === null ? null : JSON.stringify(entry.after),
-        actor: entry.actor,
+        actor: nameOf(entry.actor),
+        authenticated: isAuthenticated(entry.actor),
         plant_at: entry.plantAt,
         plant_epoch: entry.plantEpoch,
         request_id: entry.requestId ?? null,
@@ -320,7 +342,32 @@ async function audit(
       })),
     )
     .execute();
+  await Identity.audit(
+    trx,
+    ...entries.flatMap((entry) =>
+      SYSTEM_ACTIONS.has(entry.action)
+        ? []
+        : [
+            {
+              actor: auditActor(entry.actor),
+              authenticated: isAuthenticated(entry.actor),
+              action: `alarm.${entry.action}`,
+              ...auditEntity(entry),
+              before: entry.before ?? undefined,
+              after:
+                entry.version === undefined || entry.version === null
+                  ? (entry.after ?? undefined)
+                  : { ...entry.after, version: entry.version },
+              requestId: entry.requestId ?? undefined,
+              plantAt: entry.plantAt ?? undefined,
+            },
+          ],
+    ),
+  );
 }
+
+/** Transitions the module makes itself: only in its transition log, not in the audit log. */
+const SYSTEM_ACTIONS: ReadonlySet<TransitionAction> = new Set(['expire', 'epoch-ended']);
 
 /**
  * Locks the occurrences (FOR SHARE: a rebuild that rewrites or deletes one waits for this write)
@@ -369,7 +416,7 @@ export async function acknowledge(
       INSERT INTO alarms.occurrence_state AS s
         (equipment, epoch, seq, acknowledged_by, acknowledged_at, plant_at, plant_epoch, comment,
          request_id)
-      SELECT k.equipment, k.epoch, k.seq, ${context.actor}, ${now}, ${plantAt}::timestamptz,
+      SELECT k.equipment, k.epoch, k.seq, ${nameOf(context.actor)}, ${now}, ${plantAt}::timestamptz,
         ${plantEpoch}::bigint, ${context.comment}, ${context.requestId ?? null}::text
       FROM unnest(${equipment}::text[], ${epochs}::bigint[], ${seqs}::bigint[])
         WITH ORDINALITY AS k(equipment, epoch, seq, ord)
@@ -386,7 +433,7 @@ export async function acknowledge(
           seq: key.seq,
           action: 'ack' as const,
           before: { acknowledged: false },
-          after: { acknowledged: true, by: context.actor, comment: context.comment },
+          after: { acknowledged: true, by: nameOf(context.actor), comment: context.comment },
           actor: context.actor,
           plantAt,
           plantEpoch,
@@ -419,7 +466,8 @@ export async function addComment(
           action: 'comment',
           before: null,
           after: JSON.stringify({ text: context.text }),
-          actor: context.actor,
+          actor: nameOf(context.actor),
+          authenticated: isAuthenticated(context.actor),
           plant_at: plantAt,
           plant_epoch: plantEpoch,
           request_id: context.requestId ?? null,
@@ -427,10 +475,19 @@ export async function addComment(
         })
         .returning(['id', 'at', 'authenticated'])
         .executeTakeFirstOrThrow();
+      await Identity.audit(trx, {
+        actor: auditActor(context.actor),
+        authenticated: isAuthenticated(context.actor),
+        action: 'alarm.comment',
+        ...auditEntity({ ...key, code: codes.get(occurrenceKey(key)) ?? '' }),
+        after: { text: context.text },
+        requestId: context.requestId,
+        plantAt: plantAt ?? undefined,
+      });
       return {
         id: row.id,
         text: context.text,
-        actor: context.actor,
+        actor: nameOf(context.actor),
         authenticated: row.authenticated,
         at: row.at,
         plantAt,
@@ -634,7 +691,7 @@ export async function shelve(
     const after: AlarmShelf = {
       shelved: true,
       version: row.version + 1,
-      by: request.actor,
+      by: nameOf(request.actor),
       reason: request.reason,
       shelvedAt: now,
       epoch: clock.epoch,

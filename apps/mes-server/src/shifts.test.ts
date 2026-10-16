@@ -57,6 +57,7 @@ import {
   type ShiftRecord,
   type ShiftsSources,
 } from './modules/shifts/index.ts';
+import { Identity } from './modules/identity/index.ts';
 import { startDatabase } from './testing.ts';
 
 const E1 = 1_760_000_000;
@@ -696,7 +697,8 @@ describe('handover notes: versions, the handover window and the audit (ADR-0023)
       sql`DELETE FROM shifts.handover_note`,
       sql`TRUNCATE shifts.handover_note CASCADE`,
     ]) {
-      await expect(statement.execute(db)).rejects.toThrow(/append-only|never deleted/);
+      // mes_app (#169): no DELETE on notes, only SELECT on the frozen audit.
+      await expect(statement.execute(db)).rejects.toThrow(/permission denied/);
     }
   });
 
@@ -1125,6 +1127,81 @@ describe('the shifts API and push (#144)', () => {
         hub.close();
         resolve();
       });
+    });
+  });
+});
+
+describe('handover notes by a session user (#169)', () => {
+  it('records the user, its roles and authenticated in identity.audit_log, and reads the history back', async () => {
+    const { db, shifts } = await setup('notes_user');
+    const created = await new Identity({
+      db,
+      sweepMs: 0,
+      hashParams: { N: 1024, r: 8, p: 1 },
+    }).createUser(
+      { username: 'selin', roles: ['quality'], password: 'a long enough password' },
+      { system: 'test' },
+    );
+    const user = { userId: created.id, username: 'selin', roles: created.roles };
+    const note = await shifts.createNote(E1, '2026-10-12/A', {
+      author: user,
+      text: 'Leak test drifts',
+      category: 'quality',
+      requestId: 'req-n1',
+    });
+    expect(note).toMatchObject({ createdBy: 'selin', author: 'selin' });
+    await shifts.editNote(E1, '2026-10-12/A', note.id, {
+      author: 'Typed Name',
+      text: 'Leak test drifts (calibrated)',
+      category: 'quality',
+      retracted: false,
+      version: 1,
+    });
+    const rows = await db
+      .selectFrom('identity.audit_log')
+      .select(['action', 'entity_type', 'entity_id', 'user_id', 'username', 'roles'])
+      .select(['authenticated', 'request_id', 'after'])
+      .where('entity_type', '=', 'handover-note')
+      .orderBy('id')
+      .execute();
+    expect(rows).toEqual([
+      {
+        action: 'note.create',
+        entity_type: 'handover-note',
+        entity_id: String(note.id),
+        user_id: user.userId,
+        username: 'selin',
+        roles: ['quality'],
+        authenticated: true,
+        request_id: 'req-n1',
+        after: { category: 'quality', text: 'Leak test drifts', retracted: false, version: 1 },
+      },
+      {
+        action: 'note.edit',
+        entity_type: 'handover-note',
+        entity_id: String(note.id),
+        user_id: null,
+        username: 'Typed Name',
+        roles: [],
+        authenticated: false,
+        request_id: null,
+        after: {
+          category: 'quality',
+          text: 'Leak test drifts (calibrated)',
+          retracted: false,
+          version: 2,
+        },
+      },
+    ]);
+    const history = await shifts.noteAudit(note.id);
+    expect(history.map((e) => [e.action, e.actor, e.authenticated, e.version])).toEqual([
+      ['edited', 'Typed Name', false, 2],
+      ['created', 'selin', true, 1],
+    ]);
+    expect(history[1]?.after).toEqual({
+      category: 'quality',
+      text: 'Leak test drifts',
+      retracted: false,
     });
   });
 });

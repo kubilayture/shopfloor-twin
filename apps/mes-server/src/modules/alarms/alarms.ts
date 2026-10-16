@@ -29,6 +29,7 @@ import { NO_SHIFT, shiftSegments, type ShiftPattern } from '@shopfloor/shift-cal
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
 import type { Equipment } from '../equipment/index.ts';
+import type { WriteBy } from '../identity/index.ts';
 import type {
   AlarmFact,
   GapIncident,
@@ -202,8 +203,8 @@ export interface AlarmPointChange {
 
 /** What an alarm write names (#143). */
 export interface AlarmWriteRequest {
-  /** As typed: recorded as unauthenticated. */
-  readonly actor: string;
+  /** The session's user, or (`MES_AUTH=off`, until #170) the name as typed (unauthenticated). */
+  readonly actor: WriteBy;
   /** The HTTP request's id, for the audit. */
   readonly requestId?: string | undefined;
 }

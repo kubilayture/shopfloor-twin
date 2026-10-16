@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+import { Identity } from './modules/identity/index.ts';
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import type { FastifyInstance } from 'fastify';
@@ -409,14 +411,19 @@ describe('acknowledging alarms (#143)', () => {
       sql`DELETE FROM alarms.alarm_transition`,
       sql`TRUNCATE alarms.alarm_transition`,
     ]) {
-      await expect(statement.execute(db)).rejects.toThrow(/alarm_transition is append-only/);
+      // mes_app (#169) has no UPDATE, DELETE or TRUNCATE; the trigger refuses everyone else.
+      await expect(statement.execute(db)).rejects.toThrow(
+        /permission denied for table alarm_transition/,
+      );
     }
     for (const statement of [
       sql`UPDATE alarms.occurrence_state SET acknowledged_by = 'mallory'`,
       sql`DELETE FROM alarms.occurrence_state`,
       sql`TRUNCATE alarms.occurrence_state`,
     ]) {
-      await expect(statement.execute(db)).rejects.toThrow(/occurrence_state is insert-only/);
+      await expect(statement.execute(db)).rejects.toThrow(
+        /permission denied for table occurrence_state/,
+      );
     }
     expect((await transitions(db)).map((a) => a.actor)).toEqual(['a', 'a']);
   });
@@ -1136,5 +1143,92 @@ describe('the bounded operator measures query (#156)', () => {
       });
       expect([query, scope.id, actual.buckets]).toEqual([query, scope.id, expected]);
     }
+  });
+});
+
+describe('actors from the session (MES_AUTH=on, #169)', () => {
+  it('takes the user from the session, ignores a typed actor, and audits both logs', async () => {
+    const { db, front } = await world();
+    const identity = new Identity({ db, sweepMs: 0, hashParams: { N: 1024, r: 8, p: 1 } });
+    await identity.start();
+    cleanup.push(() => {
+      identity.stop();
+      return Promise.resolve();
+    });
+    const password = randomBytes(15).toString('base64url');
+    await identity.createUser(
+      { username: 'deniz', roles: ['maintenance'], password, mustChangePassword: false },
+      { system: 'test' },
+    );
+    const { token, principal } = await identity.login({
+      username: 'deniz',
+      password,
+      kind: 'desk',
+    });
+    const app = await front({
+      ready: () => Promise.resolve(true),
+      identity,
+      auth: true,
+      writeRate: { perSecond: 1000, burst: 1000 },
+    });
+    const headers = { ...JSON_WRITE, cookie: `sft_session=${token}` };
+    // A typed actor is ignored; none is needed.
+    const ack = await post(app, `/alarms/${ID2}/ack`, { actor: 'mallory' }, headers);
+    expect(ack.statusCode, ack.body).toBe(200);
+    const comment = await post(app, `/alarms/${ID2}/comments`, { text: 'checked' }, headers);
+    expect(comment.statusCode, comment.body).toBe(200);
+    const shelve = await post(
+      app,
+      `/alarm-points/cnc-01/${SO}/shelve`,
+      { reason: 'sensor', durationMs: 30 * MINUTE, version: 0 },
+      headers,
+    );
+    expect(shelve.statusCode, shelve.body).toBe(200);
+    expect((await transitions(db)).map((r) => [r.action, r.actor, r.authenticated])).toEqual([
+      ['ack', 'deniz', true],
+      ['comment', 'deniz', true],
+      ['shelve', 'deniz', true],
+    ]);
+    const audit = await db
+      .selectFrom('identity.audit_log')
+      .select(['action', 'entity_type', 'entity_id', 'user_id', 'username', 'roles'])
+      .select(['authenticated', 'request_id', 'plant_at'])
+      .where('action', 'like', 'alarm.%')
+      .orderBy('id')
+      .execute();
+    const row = (action: string, entityType: string, entityId: string, requestId: unknown) => ({
+      action,
+      entity_type: entityType,
+      entity_id: entityId,
+      user_id: principal.userId,
+      username: 'deniz',
+      roles: ['maintenance'],
+      authenticated: true,
+      request_id: requestId,
+      plant_at: new Date(t(70)),
+    });
+    expect(audit).toEqual([
+      row('alarm.ack', 'alarm-occurrence', ID2, ack.headers['x-request-id']),
+      row('alarm.comment', 'alarm-occurrence', ID2, comment.headers['x-request-id']),
+      row('alarm.shelve', 'alarm-point', `cnc-01/${SO}`, shelve.headers['x-request-id']),
+    ]);
+    // Without a session: 401, nothing written.
+    const anonymous = await post(app, `/alarms/${ID2}/comments`, { actor: 'x', text: 'y' });
+    expect(anonymous.statusCode).toBe(401);
+    expect(await transitions(db)).toHaveLength(3);
+  });
+
+  it('needs the typed actor while MES_AUTH=off (422 without one)', async () => {
+    const { app, db } = await world();
+    const missing = await post(app, `/alarms/${ID2}/ack`, {});
+    expect(missing.statusCode).toBe(422);
+    expect(missing.json<{ detail: string }>().detail).toMatch(/`actor` is needed/);
+    expect((await post(app, `/alarms/${ID2}/ack`, { actor: 'Ayşe' })).statusCode).toBe(200);
+    const audit = await db
+      .selectFrom('identity.audit_log')
+      .select(['username', 'user_id', 'authenticated'])
+      .where('action', '=', 'alarm.ack')
+      .execute();
+    expect(audit).toEqual([{ username: 'Ayşe', user_id: null, authenticated: false }]);
   });
 });

@@ -3,7 +3,7 @@ import { formatIssues, idealCycleMs, loadPlantConfig } from '@shopfloor/plant-co
 import { sql } from 'kysely';
 import { Gauge } from 'prom-client';
 import { createDatabase, poolStats } from './db/database.ts';
-import { migrate } from './db/migrate.ts';
+import { migrationStatus, type MigrationStatus } from './db/migrate.ts';
 import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
 import { Alarms } from './modules/alarms/index.ts';
@@ -15,6 +15,8 @@ import { DowntimeFeed, Oee } from './modules/oee/index.ts';
 import { Shifts } from './modules/shifts/index.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+/** How often a MES waiting for the migrate step looks at the migration history again. */
+const MIGRATION_POLL_MS = 2_000;
 
 const list = (value: string): string[] =>
   value
@@ -152,13 +154,41 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   });
 }
 
+/**
+ * Waits until the database's migration history equals this version's migrations (#169, ADR-0016
+ * amendment): the `migrate` step migrates as the owner, the MES never does. Not ready meanwhile.
+ */
+async function migrated(): Promise<void> {
+  for (let attempt = 0; !state.stopping; attempt++) {
+    let status: MigrationStatus | undefined;
+    let failure: unknown;
+    try {
+      status = await migrationStatus(db, env.MIGRATIONS_DIR);
+    } catch (error) {
+      failure = error;
+    }
+    if (status?.current === true) return;
+    // Every 30 s, so a missing `migrate` step is visible without flooding the log.
+    if (attempt % 15 === 0) {
+      log.warn(
+        status
+          ? { pending: status.pending, unknown: status.unknown, changed: status.changed }
+          : { err: failure },
+        'waiting for the database to be migrated (the migrate step: ' +
+          'pnpm --filter @shopfloor/mes-server migrate, or the Compose service `migrate`)',
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, MIGRATION_POLL_MS));
+  }
+}
+
 await app.listen({ host: env.HTTP_HOST, port: env.HTTP_PORT });
 try {
-  const result = await migrate(db, env.MIGRATIONS_DIR);
+  await migrated();
   const masterData = new MasterData(db);
   await masterData.seed(plant.config);
   state.migrated = true;
-  log.info({ applied: result.applied, alreadyApplied: result.skipped }, 'database migrated');
+  log.info('database migrated; connected as the application role');
   // Users and sessions (#168): the bootstrap admin, if asked for and none exists.
   await identity.start({ bootstrapAdminPassword: env.MES_BOOTSTRAP_ADMIN_PASSWORD });
   if (env.MES_AUTH === 'off') {

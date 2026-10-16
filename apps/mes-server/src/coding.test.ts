@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 /**
  * Downtime coding writes (#121, ADR-0023): the write guards with each refusal, coding with
  * splits and optimistic concurrency, clipping and orphaning after a re-cut, the append-only
@@ -19,6 +20,7 @@ import {
   type CodingChange,
 } from './modules/equipment/index.ts';
 import { PLANT_CONFIG, UnsFeed, freshDatabase } from './modules/equipment/test-support.ts';
+import { Identity } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 import { DowntimeFeed, Oee } from './modules/oee/index.ts';
@@ -525,16 +527,33 @@ describe('coding downtime records (#121)', () => {
     });
     expect(missing.statusCode).toBe(404);
 
-    // Append-only, whoever connects (the MES owns the table, so REVOKE would not bind it).
-    await expect(
-      sql`UPDATE equipment.downtime_audit SET actor = 'mallory'`.execute(db),
-    ).rejects.toThrow(/append-only \(UPDATE refused\)/);
-    await expect(sql`DELETE FROM equipment.downtime_audit`.execute(db)).rejects.toThrow(
-      /append-only \(DELETE refused\)/,
-    );
-    await expect(sql`TRUNCATE equipment.downtime_audit`.execute(db)).rejects.toThrow(
-      /append-only \(TRUNCATE refused\)/,
-    );
+    // The audit is identity.audit_log (#169), in the write's transaction; the MES (mes_app) may
+    // only add to it, and the frozen legacy audit only read.
+    const rows = await db
+      .selectFrom('identity.audit_log')
+      .select(['action', 'entity_type', 'entity_id', 'username', 'user_id', 'authenticated'])
+      .where('request_id', '=', response.headers['x-request-id'] as string)
+      .execute();
+    expect(rows).toEqual([
+      {
+        action: 'downtime.code',
+        entity_type: 'downtime-coding-set',
+        entity_id: `cnc-01~${String(E1)}`,
+        username: 'Zeynep',
+        user_id: null,
+        authenticated: false,
+      },
+    ]);
+    for (const statement of [
+      sql`UPDATE identity.audit_log SET username = 'mallory'`,
+      sql`DELETE FROM identity.audit_log`,
+      sql`TRUNCATE identity.audit_log`,
+      sql`INSERT INTO equipment.downtime_audit (equipment, epoch, from_time, action, before, after,
+        actor, version) VALUES ('cnc-01', 1, now(), 'coded', '[]', '[]', 'mallory', 1)`,
+      sql`UPDATE equipment.downtime_audit SET actor = 'mallory'`,
+    ]) {
+      await expect(statement.execute(db)).rejects.toThrow(/permission denied/);
+    }
   });
 
   it('changes the Pareto and the reason view, never OEE', async () => {
@@ -772,13 +791,20 @@ describe('codings after a re-cut (#121)', () => {
       stored.map((c) => [c.from_time.toISOString(), c.to_time.toISOString(), c.orphaned]),
     ).toEqual([[iso('05:00'), iso('05:30'), true]]);
     const clip = await db
-      .selectFrom('equipment.downtime_audit')
-      .select(['action', 'actor', 'before', 'after'])
-      .where('equipment', '=', 'cnc-02')
+      .selectFrom('identity.audit_log')
+      .select(['action', 'username', 'authenticated', 'before', 'after'])
+      .where('entity_type', '=', 'downtime-coding-set')
+      .where('entity_id', 'like', 'cnc-02~%')
       .orderBy('id', 'desc')
       .executeTakeFirst();
-    expect(clip).toMatchObject({ action: 'orphaned', actor: 'system' });
-    expect(clip?.after).toEqual([expect.objectContaining({ from: iso('05:00'), orphaned: true })]);
+    expect(clip).toMatchObject({
+      action: 'downtime.orphan',
+      username: 'system',
+      authenticated: false,
+    });
+    expect((clip?.after as { codings: unknown[] }).codings).toEqual([
+      expect.objectContaining({ from: iso('05:00'), orphaned: true }),
+    ]);
     // The Pareto has no trace of it.
     const pareto = paretoSchema.parse(
       (
@@ -930,6 +956,71 @@ describe('clipping (pure)', () => {
       failing.stop();
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('actors from the session (MES_AUTH=on, #169)', () => {
+  it('codes as the session user (the typed codedBy ignored), and needs codedBy only with MES_AUTH=off', async () => {
+    const identity = new Identity({ db, sweepMs: 0, hashParams: { N: 1024, r: 8, p: 1 } });
+    await identity.start();
+    const password = randomBytes(15).toString('base64url');
+    await identity.createUser(
+      { username: 'oya', roles: ['operator'], password, mustChangePassword: false },
+      { system: 'test' },
+    );
+    const { token, principal } = await identity.login({ username: 'oya', password, kind: 'desk' });
+    try {
+      const authed = await front({
+        ready: () => Promise.resolve(true),
+        identity,
+        auth: true,
+        writeRate: { perSecond: 1000, burst: 1000 },
+      });
+      const headers = { ...JSON_WRITE, cookie: `sft_session=${token}` };
+      const segments = [{ from: iso('03:40'), to: iso('04:00'), reason: 'MATERIAL' }];
+      const response = await put(
+        DOWN_ID,
+        { segments, codedBy: 'mallory', version: await version(DOWN_ID) },
+        headers,
+        authed,
+      );
+      expect(response.statusCode, response.body).toBe(200);
+      expect(codingResultSchema.parse(response.json()).record.codings).toEqual([
+        expect.objectContaining({ codedBy: 'oya' }),
+      ]);
+      const audit = downtimeAuditSchema.parse(
+        (
+          await authed.inject({
+            url: `/api/v1/downtime/${DOWN_ID}/audit`,
+            headers: { host: HOST, cookie: `sft_session=${token}` },
+          })
+        ).json(),
+      );
+      expect(audit.entries[0]).toMatchObject({
+        action: 'coded',
+        actor: 'oya',
+        authenticated: true,
+        requestId: response.headers['x-request-id'],
+      });
+      const row = await db
+        .selectFrom('identity.audit_log')
+        .select(['user_id', 'username', 'roles', 'authenticated', 'action'])
+        .where('request_id', '=', response.headers['x-request-id'] as string)
+        .executeTakeFirstOrThrow();
+      expect(row).toEqual({
+        user_id: principal.userId,
+        username: 'oya',
+        roles: ['operator'],
+        authenticated: true,
+        action: 'downtime.code',
+      });
+      // MES_AUTH=off: the typed name, and 422 without one.
+      const missing = await put(DOWN_ID, { segments: [], version: await version(DOWN_ID) });
+      expect(missing.statusCode).toBe(422);
+      expect(problemSchema.parse(missing.json()).detail).toMatch(/`codedBy` is needed/);
+    } finally {
+      identity.stop();
     }
   });
 });

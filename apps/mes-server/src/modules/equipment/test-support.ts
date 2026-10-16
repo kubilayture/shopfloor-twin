@@ -12,6 +12,7 @@ import {
 import { sql, type Kysely } from 'kysely';
 import { createDatabase, type Database } from '../../db/database.ts';
 import { migrate } from '../../db/migrate.ts';
+import { TEST_DB, appUrl, databaseUrl } from '../../testing.ts';
 
 export const MIGRATIONS = resolve(import.meta.dirname, '../../../../../db/migrations');
 export const PLANT_CONFIG = resolve(import.meta.dirname, '../../../../../config/plant');
@@ -168,16 +169,35 @@ export class UnsFeed {
 
 let databases = 0;
 
-/** A fresh, migrated database on the test server. */
+/**
+ * A fresh database on the test server, migrated as the stack's `migrate` step does it (by the
+ * superuser, objects owned by `mes_owner`), and a connection to it as `mes_app`, the role the MES
+ * runs as (#169): a grant the module code needs and the migrations don't give fails the test.
+ */
 export async function freshDatabase(serverUrl: string, prefix: string): Promise<Kysely<Database>> {
   databases++;
   const name = `${prefix}_${String(databases)}`;
   const admin = createDatabase(serverUrl, 1);
   await sql.raw(`CREATE DATABASE ${name}`).execute(admin);
   await admin.destroy();
-  const db = createDatabase(serverUrl.replace(/\/shopfloor$/, `/${name}`), 4);
-  await migrate(db, MIGRATIONS);
-  return db;
+  const owner = createDatabase(databaseUrl(serverUrl, name), 1);
+  try {
+    await migrate(owner, MIGRATIONS, { appPassword: TEST_DB.appPassword });
+  } finally {
+    await owner.destroy();
+  }
+  return createDatabase(appUrl(serverUrl, name), 4);
+}
+
+/**
+ * The superuser's connection to the database of an `mes_app` connection from `freshDatabase`: for
+ * what the MES itself may not do (DDL, fault injection with a trigger). The caller destroys it.
+ */
+export async function ownerOf(serverUrl: string, db: Kysely<Database>): Promise<Kysely<Database>> {
+  const name = (await sql<{ name: string }>`SELECT current_database() AS name`.execute(db)).rows[0]
+    ?.name;
+  if (name === undefined) throw new Error('no database name');
+  return createDatabase(databaseUrl(serverUrl, name), 1);
 }
 
 /** Every stored piece, without the wall-clock column, in key order. */

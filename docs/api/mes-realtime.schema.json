@@ -3586,7 +3586,7 @@
                       },
                       "codedBy": {
                         "type": "string",
-                        "description": "As typed by the operator: not authenticated (until Phase 7)"
+                        "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
                       },
                       "codedAt": {
                         "type": "string",
@@ -3806,7 +3806,7 @@
                       "properties": {
                         "by": {
                           "type": "string",
-                          "description": "As typed: unauthenticated"
+                          "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
                         },
                         "at": {
                           "type": "string",
@@ -4981,11 +4981,11 @@
                 },
                 "createdBy": {
                   "type": "string",
-                  "description": "As typed: not authenticated (until Phase 7)"
+                  "description": "The user name, or (MES_AUTH=off) the name as typed"
                 },
                 "author": {
                   "type": "string",
-                  "description": "Who wrote the current version, as typed"
+                  "description": "Who wrote the current version: user name, or as typed"
                 },
                 "version": {
                   "type": "integer",

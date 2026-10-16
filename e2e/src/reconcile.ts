@@ -96,8 +96,15 @@ const PREFIX_TEST =
 const ALARMS_SAMPLE_PAST_MS = 3 * 60_000;
 /** The OEE check stops sampling this long (simulated) before the first injection: 15 s at 60×. */
 const OEE_BEFORE_INJECTION_MS = 15 * 60_000;
-/** The audit tables that must refuse UPDATE and DELETE (append-only by trigger). */
-const AUDIT_TABLES = ['alarms.alarm_transition', 'shifts.handover_audit'] as const;
+/**
+ * The audit tables that must refuse UPDATE and DELETE (append-only by trigger), with a column to
+ * set: the alarm module's transition log and, since #169, the one audit log the note writes go to
+ * (shifts.handover_audit is frozen legacy and stays empty on a fresh stack).
+ */
+const AUDIT_TABLES = {
+  'alarms.alarm_transition': 'actor',
+  'identity.audit_log': 'username',
+} as const;
 /** Incident types that mean lost data: none may occur with the plan's start order. */
 const LOSS_INCIDENTS = new Set(['sequence-gap', 'ring-overrun', 'buffer-overflow']);
 
@@ -1341,7 +1348,7 @@ async function checkShiftReport(
   };
 }
 
-/** The append-only triggers' message (migrations 0013, 0014). */
+/** The append-only triggers' message (migrations 0013, 0016). */
 const APPEND_ONLY = /append-only \((UPDATE|DELETE) refused\)/;
 
 /**
@@ -1355,7 +1362,7 @@ async function auditRefusals(
   stack: Stack,
 ): Promise<NonNullable<NonNullable<Report['coding']>['auditRefusals']>> {
   const refusals: NonNullable<NonNullable<Report['coding']>['auditRefusals']> = {};
-  for (const table of AUDIT_TABLES) {
+  for (const [table, column] of Object.entries(AUDIT_TABLES)) {
     const rows = await stack.sqlJson<number>(`SELECT count(*) FROM ${table}`);
     const attempt = async (operation: 'UPDATE' | 'DELETE', statement: string) =>
       stack.sql(`BEGIN; ${statement}; ROLLBACK;`).then(
@@ -1368,7 +1375,7 @@ async function auditRefusals(
       );
     refusals[table] = {
       rows,
-      update: await attempt('UPDATE', `UPDATE ${table} SET actor = actor`),
+      update: await attempt('UPDATE', `UPDATE ${table} SET ${column} = ${column}`),
       delete: await attempt('DELETE', `DELETE FROM ${table}`),
     };
   }

@@ -47,6 +47,7 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `alarms.occurrence_source`
   - `alarms.occurrence_state`
 - [`shifts`](#schema-shifts)
+  - `shifts.crew_assignment`
   - `shifts.handover_audit`
   - `shifts.handover_note`
   - `shifts.shift_instance`
@@ -77,6 +78,63 @@ A unique key or primary key on a hypertable must include its partitioning column
 | `ingest.cycle_hourly` | `ingest.equipment_event` | 01:00:00 | yes (`materialized_only = false`) |
 
 Real-time: rows below the aggregate’s watermark come from its materialisation, rows above it from the table. There are no refresh policies: the owning module refreshes explicitly (ADR-0022).
+
+## Roles and grants
+
+Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_owner` (no login) owns every schema, table, view and function; `mes_cagg` (no login) owns the two continuous aggregates, the one role that may refresh them; the MES connects as `mes_app`, which owns nothing, and assumes `mes_cagg` (a membership without inherited rights) only to refresh (ADR-0027). The grants are `DECLARED_GRANTS` in `apps/mes-server/src/db/grants.ts`, which a test compares with the database.
+
+| Object | Owner | `mes_app` | `mes_cagg` |
+| --- | --- | --- | --- |
+| `alarms` | `mes_owner` | USAGE |  |
+| `alarms.alarm_occurrence` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `alarms.alarm_shelf` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `alarms.alarm_transition` | `mes_owner` | INSERT, SELECT |  |
+| `alarms.kpi_revision` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `alarms.occurrence_source` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `alarms.occurrence_state` | `mes_owner` | INSERT, SELECT |  |
+| `equipment` | `mes_owner` | USAGE | USAGE |
+| `equipment.bucket_finality` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `equipment.downtime_audit` | `mes_owner` | SELECT |  |
+| `equipment.downtime_coding` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `equipment.downtime_coding_set` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `equipment.downtime_record` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `equipment.equipment_state_interval` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE | SELECT |
+| `equipment.interval_source` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `equipment.state_hourly` | `mes_cagg` | SELECT |  |
+| `identity` | `mes_owner` | USAGE |  |
+| `identity.audit_log` | `mes_owner` | INSERT, SELECT |  |
+| `identity.role` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `identity.session` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `identity.user_account` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `identity.user_role` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `ingest` | `mes_owner` | USAGE | USAGE |
+| `ingest.alarm_anchor` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `ingest.alarm_snapshot` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `ingest.component_status` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `ingest.cycle_hourly` | `mes_cagg` | SELECT |  |
+| `ingest.data_quality_incident` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `ingest.equipment_event` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE | SELECT |
+| `ingest.rejected_message` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `ingest.source_cursor` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `ingest.state_anchor` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `ingest.telemetry_sample` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data` | `mes_owner` | USAGE |  |
+| `master_data.alarm_definition` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.alarm_position` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.alarm_position_work_center` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.area` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.equipment` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.product` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.reason_code` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.shift_pattern` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.site` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.work_center` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `public.schema_migrations` | `mes_owner` | SELECT |  |
+| `shifts` | `mes_owner` | USAGE |  |
+| `shifts.crew_assignment` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `shifts.handover_audit` | `mes_owner` | SELECT |  |
+| `shifts.handover_note` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `shifts.shift_instance` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 
 ## Relationships
 
@@ -143,6 +201,11 @@ Schema shifts:
 
 ```mermaid
 erDiagram
+  crew_assignment {
+    bigint id PK
+    bigint epoch FK
+    text shift_key FK
+  }
   handover_audit {
     bigint id PK
     bigint note_id FK
@@ -156,6 +219,7 @@ erDiagram
     bigint epoch PK
     text shift_key PK
   }
+  shift_instance ||--o{ crew_assignment : "epoch, shift_key"
   handover_note ||--o{ handover_audit : "note_id"
   shift_instance ||--o{ handover_note : "epoch, shift_key"
 ```
@@ -642,7 +706,7 @@ Per (equipment, epoch, UTC hour): when the hour became final, its revision (rais
 
 ### equipment.downtime_audit
 
-Append-only audit of coding writes and clips: action, before, after, actor, wall time and request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#121, ADR-0023).
+Frozen legacy audit of coding writes and clips until #169 (action, before, after, actor, wall time, request id): its rows were copied into `identity.audit_log` (migration 0018); triggers refuse INSERT, UPDATE, DELETE and TRUNCATE, and the MES may only read it (#121, ADR-0023, ADR-0027).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |
@@ -896,7 +960,7 @@ The shelf of each alarm point (equipment, code) ever shelved: who, why, the plan
 
 ### alarms.alarm_transition
 
-Append-only audit of every MES transition of an alarm (ack, comment, shelve, unshelve, expire, epoch-ended) with before, after, actor, `authenticated`, wall time, plant time and request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#143, ADR-0023).
+The alarm module’s append-only transition log: every MES transition of an alarm (ack, comment, shelve, unshelve, expire, epoch-ended) with before, after, actor, `authenticated`, wall time, plant time and request id; an operator’s transition is also in `identity.audit_log` (#169); a trigger refuses UPDATE, DELETE and TRUNCATE (#143, ADR-0023).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |
@@ -993,9 +1057,41 @@ Acknowledgement per occurrence (who, wall time, plant time, comment, request id)
 
 Owner: shifts. Shift instances as records per (plant epoch, shift key), with the shift report’s finality and composite revision, and the handover notes with their append-only audit (ADR-0025). The report is computed on read.
 
+### shifts.crew_assignment
+
+Who is signed on at a work center during a shift instance: user, work center, the terminal session, wall and plant time of sign-on and end, and why it ended (sign-off, session end, shift end); at most one open row per user and work center (#169; written from #177).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `user_id` | `bigint` | not null |  |
+| `username` | `text` | not null |  |
+| `work_center` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `shift_key` | `text` | not null |  |
+| `session_id` | `text` | null |  |
+| `from_at` | `timestamp with time zone` | not null |  |
+| `from_plant_at` | `timestamp with time zone` | not null |  |
+| `to_at` | `timestamp with time zone` | null |  |
+| `to_plant_at` | `timestamp with time zone` | null |  |
+| `end_reason` | `text` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `crew_assignment_pkey` | `PRIMARY KEY (id)` |
+| Foreign key | `crew_assignment_epoch_shift_key_fkey` | `FOREIGN KEY (epoch, shift_key) REFERENCES shifts.shift_instance(epoch, shift_key)` |
+| Check | `crew_assignment_check` | `CHECK (((to_at IS NULL) = (end_reason IS NULL)))` |
+| Check | `crew_assignment_check1` | `CHECK (((to_at IS NULL) = (to_plant_at IS NULL)))` |
+| Check | `crew_assignment_check2` | `CHECK (((to_at IS NULL) OR (to_at >= from_at)))` |
+| Check | `crew_assignment_end_reason_check` | `CHECK ((end_reason = ANY (ARRAY['sign-off'::text, 'session-ended'::text, 'shift-ended'::text])))` |
+| Check | `crew_assignment_session_id_check` | `CHECK ((session_id ~ '^[0-9a-f]{64}$'::text))` |
+| Check | `crew_assignment_username_check` | `CHECK (((length(username) >= 1) AND (length(username) <= 64)))` |
+| Index | `crew_assignment_instance` | `shifts.crew_assignment USING btree (epoch, shift_key, work_center)` |
+| Index | `crew_assignment_open` | `shifts.crew_assignment USING btree (user_id, work_center) WHERE (to_at IS NULL)` |
+
 ### shifts.handover_audit
 
-Append-only audit of every note create and edit: before, after, actor (unauthenticated), wall and plant time, request id and version; a trigger refuses UPDATE, DELETE and TRUNCATE (#144, ADR-0023).
+Frozen legacy audit of every note create and edit until #169 (before, after, actor as typed, wall and plant time, request id, version): its rows were copied into `identity.audit_log` (migration 0018); triggers refuse INSERT, UPDATE, DELETE and TRUNCATE, and the MES may only read it (#144, ADR-0023, ADR-0027).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |
@@ -1093,7 +1189,7 @@ Owner: identity. Users with their roles, scrypt password hashes, server-side ses
 
 ### identity.audit_log
 
-Append-only audit of every identity action (logins, failures, locks, logouts, user changes) and, from #169, every module write: user and roles at that moment, `authenticated`, action, entity, before, after, request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#168, ADR-0026).
+The one audit log: every identity action (logins, failures, locks, logouts, user changes) and every module write (downtime coding, alarm operator transitions, handover notes; written in the write’s transaction): user and roles at that moment, `authenticated`, action, entity, before, after, request id; `legacy` rows were copied from the module audits by migration 0018; a trigger refuses UPDATE, DELETE and TRUNCATE and the MES may only read and add (#168, #169, ADR-0026, ADR-0027).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |

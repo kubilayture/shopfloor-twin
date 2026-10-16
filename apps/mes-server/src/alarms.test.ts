@@ -12,6 +12,7 @@ import {
   PLANT_CONFIG,
   UnsFeed,
   freshDatabase,
+  ownerOf,
   type Delivery,
 } from './modules/equipment/test-support.ts';
 import { Ingest } from './modules/ingest/index.ts';
@@ -385,16 +386,19 @@ describe('lost clears, late facts and revisions (#142, ADR-0024 "Revisions")', (
     await mes.send(state(E1, 1, t(0)), raise(E1, 2, t(5)), state(E1, 4, t(30), 'Stopped'));
     await mes.retained(snapshot(E1, 4, t(30), []));
     await mes.send(state(E1, 5, t(125)));
+    // Fault injection is DDL: the owner's, not the MES's (#169).
+    const owner = await ownerOf(serverUrl, mes.db);
+    cleanup.push(() => owner.destroy());
     // Every write of an occurrence fails: the window between learning and committing stays open.
     await sql`CREATE FUNCTION alarms.refuse() RETURNS trigger LANGUAGE plpgsql AS
-      $$BEGIN RAISE EXCEPTION 'injected failure'; END$$`.execute(mes.db);
+      $$BEGIN RAISE EXCEPTION 'injected failure'; END$$`.execute(owner);
     await sql`CREATE TRIGGER refuse BEFORE INSERT OR UPDATE ON alarms.alarm_occurrence
-      FOR EACH ROW EXECUTE FUNCTION alarms.refuse()`.execute(mes.db);
+      FOR EACH ROW EXECUTE FUNCTION alarms.refuse()`.execute(owner);
     await writeOff(mes);
     // A reader in the window sees the old bounds with the old rows: nothing final yet.
     expect(await occurrences(mes.alarms)).toEqual([[2, CP, 'fact', t(5), null, null]]);
     expect([...(await equipmentHours(mes.alarms)).values()].some((b) => b.final)).toBe(false);
-    await sql`DROP TRIGGER refuse ON alarms.alarm_occurrence`.execute(mes.db);
+    await sql`DROP TRIGGER refuse ON alarms.alarm_occurrence`.execute(owner);
     // The next notice retries the derivation, judged by the bounds still published, then publishes.
     await mes.send(state(E1, 6, t(130)));
     expect(await occurrences(mes.alarms)).toEqual([[2, CP, 'fact', t(5), t(30), 'lost']]);
@@ -406,15 +410,17 @@ describe('lost clears, late facts and revisions (#142, ADR-0024 "Revisions")', (
   it('keeps an epoch open for readers until its close commits', async () => {
     const mes = await setup();
     await mes.send(state(E1, 1, t(0)), raise(E1, 2, t(10)), state(E1, 3, t(40), 'Stopped'));
+    const owner = await ownerOf(serverUrl, mes.db);
+    cleanup.push(() => owner.destroy());
     await sql`CREATE FUNCTION alarms.refuse() RETURNS trigger LANGUAGE plpgsql AS
-      $$BEGIN RAISE EXCEPTION 'injected failure'; END$$`.execute(mes.db);
+      $$BEGIN RAISE EXCEPTION 'injected failure'; END$$`.execute(owner);
     await sql`CREATE TRIGGER refuse BEFORE INSERT OR UPDATE ON alarms.alarm_occurrence
-      FOR EACH ROW EXECUTE FUNCTION alarms.refuse()`.execute(mes.db);
+      FOR EACH ROW EXECUTE FUNCTION alarms.refuse()`.execute(owner);
     await mes.send(state(E2, 1, t(0)));
     // The close failed: E1 is not final everywhere, its alarm still open.
     expect(await occurrences(mes.alarms, E1)).toEqual([[2, CP, 'fact', t(10), null, null]]);
     expect((await equipmentHours(mes.alarms, E1)).get(HOUR3)?.final).toBe(false);
-    await sql`DROP TRIGGER refuse ON alarms.alarm_occurrence`.execute(mes.db);
+    await sql`DROP TRIGGER refuse ON alarms.alarm_occurrence`.execute(owner);
     await mes.send(state(E2, 2, t(1)));
     expect(await occurrences(mes.alarms, E1)).toEqual([
       [2, CP, 'fact', t(10), t(40), 'epoch-ended'],

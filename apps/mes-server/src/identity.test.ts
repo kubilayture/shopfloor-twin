@@ -20,7 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Database } from './db/database.ts';
 import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
-import { freshDatabase } from './modules/equipment/test-support.ts';
+import { freshDatabase, ownerOf } from './modules/equipment/test-support.ts';
 import {
   IDENTITY_LIMITS,
   Identity,
@@ -548,11 +548,21 @@ describe('identity module (#168)', () => {
   });
 
   it('keeps the audit log append-only and deletes long-ended sessions', async () => {
-    await expect(sql`UPDATE identity.audit_log SET action = 'x.y'`.execute(db)).rejects.toThrow(
-      /append-only/,
-    );
-    await expect(sql`DELETE FROM identity.audit_log`.execute(db)).rejects.toThrow(/append-only/);
-    await expect(sql`TRUNCATE identity.audit_log`.execute(db)).rejects.toThrow(/append-only/);
+    // The MES (mes_app, #169) has no UPDATE, DELETE or TRUNCATE; the trigger stops anyone else,
+    // the owner and a superuser included.
+    const owner = await ownerOf(serverUrl, db);
+    try {
+      for (const statement of [
+        sql`UPDATE identity.audit_log SET action = 'x.y'`,
+        sql`DELETE FROM identity.audit_log`,
+        sql`TRUNCATE identity.audit_log`,
+      ]) {
+        await expect(statement.execute(db)).rejects.toThrow(/permission denied/);
+        await expect(statement.execute(owner)).rejects.toThrow(/append-only/);
+      }
+    } finally {
+      await owner.destroy();
+    }
     const before = await db.selectFrom('identity.session').select('token_hash').execute();
     clock += IDENTITY_LIMITS.absoluteMs + IDENTITY_LIMITS.keepEndedMs + MINUTE;
     expect(await identity.sweep()).toBe(before.length);
@@ -583,7 +593,12 @@ describe('environment and secrets (#168)', () => {
       .filter((m): m is RegExpExecArray => m !== null)
       .filter((m) => /_(PASSWORD|TOKEN)$/.test(m[1] ?? ''));
     expect(secrets.map((m) => m[1])).toEqual(
-      expect.arrayContaining(['DB_PASSWORD', 'MQTT_MES_PASSWORD', 'MES_BOOTSTRAP_ADMIN_PASSWORD']),
+      expect.arrayContaining([
+        'DB_PASSWORD',
+        'DB_APP_PASSWORD',
+        'MQTT_MES_PASSWORD',
+        'MES_BOOTSTRAP_ADMIN_PASSWORD',
+      ]),
     );
     for (const [, key, value] of secrets) {
       expect(['', 'change-me'], `${String(key)} must be a placeholder`).toContain(value);

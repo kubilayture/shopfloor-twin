@@ -35,10 +35,12 @@ async function freshDatabase(name: string): Promise<Kysely<Database>> {
   return db;
 }
 
-async function copyOfMigrations(): Promise<string> {
+/** A copy of the migrations, those numbered up to `upTo` only when given. */
+async function copyOfMigrations(upTo = Infinity): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'migrations-'));
-  for (const name of await readdir(MIGRATIONS))
-    await copyFile(join(MIGRATIONS, name), join(dir, name));
+  for (const name of await readdir(MIGRATIONS)) {
+    if (Number(name.slice(0, 4)) <= upTo) await copyFile(join(MIGRATIONS, name), join(dir, name));
+  }
   return dir;
 }
 
@@ -116,11 +118,11 @@ describe('migrations (ADR-0016)', () => {
     const dir = await copyOfMigrations();
     try {
       await writeFile(
-        join(dir, '9000_public_index.sql'),
-        '-- migrate:no-transaction\nCREATE TABLE IF NOT EXISTS public.t (x int);\nCREATE INDEX CONCURRENTLY IF NOT EXISTS t_x ON public.t (x);\n',
+        join(dir, '9000_ingest_index.sql'),
+        '-- migrate:no-transaction\nCREATE TABLE IF NOT EXISTS ingest.t (x int);\nCREATE INDEX CONCURRENTLY IF NOT EXISTS t_x ON ingest.t (x);\n',
       );
       const result = await migrate(db, dir);
-      expect(result.applied).toContain('9000_public_index.sql');
+      expect(result.applied).toContain('9000_ingest_index.sql');
       await writeFile(
         join(dir, '9001_public_sneaky.sql'),
         'COMMIT;\nCREATE TABLE public.u (x int);\n',
@@ -148,11 +150,11 @@ describe('migrations (ADR-0016)', () => {
 
   it('backfills content_at_final of reports already final from the note audit (0015, #163)', async () => {
     const db = await freshDatabase('m_content_at_final');
-    const dir = await copyOfMigrations();
+    // Up to 0014: the note audit is still written then (0018 freezes it).
+    const dir = await copyOfMigrations(14);
     const file = '0015_shifts_content_at_final.sql';
     try {
-      const text = await readFile(join(dir, file), 'utf8');
-      await rm(join(dir, file));
+      const text = await readFile(join(MIGRATIONS, file), 'utf8');
       await migrate(db, dir);
       const instance = (key: string, status: string, finalAt: string | null, content: number) =>
         sql`INSERT INTO shifts.shift_instance (epoch, shift_key, shift_date, shift_id, start_time,
@@ -209,10 +211,10 @@ describe('migrations (ADR-0016)', () => {
     try {
       await writeFile(
         join(dir, '9999_public_broken.sql'),
-        'CREATE TABLE public.half_done (x int);\nSELECT broken;',
+        'CREATE TABLE ingest.half_done (x int);\nSELECT broken;',
       );
       await expect(migrate(db, dir)).rejects.toThrow();
-      const table = await sql`SELECT to_regclass('public.half_done') AS t`.execute(db);
+      const table = await sql`SELECT to_regclass('ingest.half_done') AS t`.execute(db);
       expect(table.rows).toEqual([{ t: null }]);
     } finally {
       await rm(dir, { recursive: true, force: true });

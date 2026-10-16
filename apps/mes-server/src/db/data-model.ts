@@ -2,6 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { sql, type Kysely } from 'kysely';
 import { createDatabase, type Database } from './database.ts';
+import { actualGrants, actualOwners } from './grants.ts';
 import { migrate } from './migrate.ts';
 
 export const DATA_MODEL_FILE = resolve(import.meta.dirname, '../../../../docs/data-model.md');
@@ -99,7 +100,7 @@ const TABLES: Readonly<Record<string, string>> = {
   'equipment.downtime_coding':
     'Operator codings: time ranges inside a record’s loss time with a reason, comment and `coded_by` (unauthenticated), stored by time so they survive a re-cut; clipped and flagged orphaned when a re-cut leaves their time outside every loss interval (#121).',
   'equipment.downtime_audit':
-    'Append-only audit of coding writes and clips: action, before, after, actor, wall time and request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#121, ADR-0023).',
+    'Frozen legacy audit of coding writes and clips until #169 (action, before, after, actor, wall time, request id): its rows were copied into `identity.audit_log` (migration 0018); triggers refuse INSERT, UPDATE, DELETE and TRUNCATE, and the MES may only read it (#121, ADR-0023, ADR-0027).',
   'equipment.interval_source':
     'What the stored intervals of each (equipment, epoch) were computed from, so start-up catch-up can recompute what differs.',
   'equipment.state_hourly':
@@ -117,13 +118,15 @@ const TABLES: Readonly<Record<string, string>> = {
   'alarms.alarm_shelf':
     'The shelf of each alarm point (equipment, code) ever shelved: who, why, the plant time it ends at (`until`, at most maxShelveMs) and its version, the optimistic-concurrency token of shelve and unshelve (#143).',
   'alarms.alarm_transition':
-    'Append-only audit of every MES transition of an alarm (ack, comment, shelve, unshelve, expire, epoch-ended) with before, after, actor, `authenticated`, wall time, plant time and request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#143, ADR-0023).',
+    'The alarm module’s append-only transition log: every MES transition of an alarm (ack, comment, shelve, unshelve, expire, epoch-ended) with before, after, actor, `authenticated`, wall time, plant time and request id; an operator’s transition is also in `identity.audit_log` (#169); a trigger refuses UPDATE, DELETE and TRUNCATE (#143, ADR-0023).',
   'shifts.shift_instance':
     'One scheduled shift the plant clock entered, per (plant epoch, shift key): calendar start, end and breaks, status (running, ended, final), when the report became final and its composite revision {inputs, content} as stored counters, with `content` at the moment it became final (#144, #163, ADR-0025).',
   'shifts.handover_note':
     'Handover notes of a shift instance: the current version (category, text, retracted, author, version); never deleted, a trigger refuses DELETE and TRUNCATE (#144).',
   'shifts.handover_audit':
-    'Append-only audit of every note create and edit: before, after, actor (unauthenticated), wall and plant time, request id and version; a trigger refuses UPDATE, DELETE and TRUNCATE (#144, ADR-0023).',
+    'Frozen legacy audit of every note create and edit until #169 (before, after, actor as typed, wall and plant time, request id, version): its rows were copied into `identity.audit_log` (migration 0018); triggers refuse INSERT, UPDATE, DELETE and TRUNCATE, and the MES may only read it (#144, ADR-0023, ADR-0027).',
+  'shifts.crew_assignment':
+    'Who is signed on at a work center during a shift instance: user, work center, the terminal session, wall and plant time of sign-on and end, and why it ended (sign-off, session end, shift end); at most one open row per user and work center (#169; written from #177).',
   'identity.role':
     'The five roles (operator, maintenance, quality, supervisor, admin), as `ROLES` in contracts; what each may do is `ROLE_PERMISSIONS` there (#168).',
   'identity.user_account':
@@ -132,7 +135,7 @@ const TABLES: Readonly<Record<string, string>> = {
   'identity.session':
     'Login sessions by the SHA-256 of their cookie token: user, kind (desk or terminal), last use, idle and absolute expiry, and how it ended (#168).',
   'identity.audit_log':
-    'Append-only audit of every identity action (logins, failures, locks, logouts, user changes) and, from #169, every module write: user and roles at that moment, `authenticated`, action, entity, before, after, request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#168, ADR-0026).',
+    'The one audit log: every identity action (logins, failures, locks, logouts, user changes) and every module write (downtime coding, alarm operator transitions, handover notes; written in the write’s transaction): user and roles at that moment, `authenticated`, action, entity, before, after, request id; `legacy` rows were copied from the module audits by migration 0018; a trigger refuses UPDATE, DELETE and TRUNCATE and the MES may only read and add (#168, #169, ADR-0026, ADR-0027).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 
@@ -350,6 +353,30 @@ export async function generateDataModel(db: Kysely<Database>): Promise<string> {
     'Real-time: rows below the aggregate’s watermark come from its materialisation, rows above it from the table. There are no refresh policies: the owning module refreshes explicitly (ADR-0022).',
     '',
   );
+
+  // Owners and grants (#169, ADR-0027), as the database has them.
+  const owners = await actualOwners(db);
+  const grants = await actualGrants(db);
+  const privileges = (role: string, object: string): string =>
+    grants
+      .filter((g) => g.role === role && g.object === object)
+      .map((g) => g.privilege)
+      .join(', ');
+  out.push(
+    '## Roles and grants',
+    '',
+    'Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_owner` (no login) owns every schema, table, view and function; `mes_cagg` (no login) owns the two continuous aggregates, the one role that may refresh them; the MES connects as `mes_app`, which owns nothing, and assumes `mes_cagg` (a membership without inherited rights) only to refresh (ADR-0027). The grants are `DECLARED_GRANTS` in `apps/mes-server/src/db/grants.ts`, which a test compares with the database.',
+    '',
+    '| Object | Owner | `mes_app` | `mes_cagg` |',
+    '| --- | --- | --- | --- |',
+  );
+  for (const [object, owner] of Object.entries(owners)) {
+    if (!names.includes(object) && !schemas.includes(object)) continue;
+    out.push(
+      `| ${code(object)} | ${code(owner)} | ${privileges('mes_app', object)} | ${privileges('mes_cagg', object)} |`,
+    );
+  }
+  out.push('');
 
   // Entity-relationship diagrams: one per schema that has foreign keys, with the key columns.
   const foreignKeys = constraints.filter((c) => c.kind === 'f');

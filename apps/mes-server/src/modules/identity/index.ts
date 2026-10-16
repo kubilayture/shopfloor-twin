@@ -10,26 +10,36 @@
  *   `changePassword(...)`: sessions; every failed login throws the same `IdentityError`.
  * - `users()`, `user(name)`, `createUser(...)`, `updateUser(...)`, `resetPassword(...)`.
  * - `onSessionsEnded(listener)`: sessions ended before expiring (sockets close with 4401).
- * - `audit(trx, entry)`: one row of `identity.audit_log` inside the caller's transaction.
+ * - `Identity.audit(trx, ...entries)`: rows of `identity.audit_log` inside the caller's transaction,
+ *   the one way every module writes its audit (#169); `Identity.auditEntries(db, type, ids)` reads
+ *   an entity's rows back for its history endpoint. `WriteBy` (a session's user, or a typed name
+ *   with `MES_AUTH=off`) with `nameOf`, `isAuthenticated` and `auditActor`.
  */
 export {
   IDENTITY_LIMITS,
   Identity,
   IdentityError,
   LOGIN_FAILED,
+  auditActor,
+  isAuthenticated,
+  nameOf,
   parseToken,
   passwordProblem,
 } from './identity.ts';
 export type {
   Actor,
+  AuditActor,
   AuditEntry,
   IdentityErrorKind,
   IdentityLog,
   IdentityOptions,
   Principal,
   SessionInfo,
+  SessionUser,
   SessionsEnded,
+  StoredAuditEntry,
   User,
+  WriteBy,
 } from './identity.ts';
 export {
   SCRYPT_MAXMEM,

@@ -1,14 +1,23 @@
 /**
  * Operator coding of downtime (#121, ADR-0021, ADR-0023): time ranges inside a record's loss time
  * with a reason, stored by time in `equipment.downtime_coding`, so they survive a late fact that
- * re-cuts the intervals and rebuilds the records. Every write and every clip is audited in the
- * append-only `equipment.downtime_audit`.
+ * re-cuts the intervals and rebuilds the records. Every write and every clip is audited in
+ * `identity.audit_log` (#169; entity `downtime-coding-set`, `{equipment}~{epoch}`), in the same
+ * transaction; the old `equipment.downtime_audit` is frozen and its rows were copied there.
  */
 import { PROBLEM_TYPES, type ProblemType } from '@shopfloor/contracts/mes-api';
 import type { Millis } from '@shopfloor/oee-core';
 import { UNCODED } from '@shopfloor/plant-config';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
+import {
+  Identity,
+  auditActor,
+  isAuthenticated,
+  nameOf,
+  type StoredAuditEntry,
+  type WriteBy,
+} from '../identity/index.ts';
 
 const DAY = 24 * 3_600_000;
 /** 0001-01-01 and 9999-12-31: bounds of an open-ended range that PostgreSQL takes. */
@@ -23,7 +32,7 @@ export interface Coding {
   readonly to: Date;
   readonly reason: string;
   readonly comment: string;
-  /** Free text, unauthenticated until identity (Phase 7). */
+  /** The session's user name, or (`MES_AUTH=off`) the name as typed. */
   readonly codedBy: string;
   /** Wall time of the write. */
   readonly codedAt: Date;
@@ -77,7 +86,8 @@ export interface CodeRequest {
     readonly reason: string;
     readonly comment?: string | undefined;
   }[];
-  readonly codedBy: string;
+  /** The session's user, or (`MES_AUTH=off`, until #170) the name as typed. */
+  readonly codedBy: WriteBy;
   /** The coding set's version the client saw (409 when it moved on). */
   readonly version: number;
   /** The HTTP request's id, for the audit. */
@@ -122,6 +132,53 @@ export interface RecordSpan {
 
 export const recordId = (key: RecordKey): string =>
   `${key.equipment}~${String(key.epoch)}~${String(key.start.getTime())}`;
+
+/** The audit entity of codings (#169): the coding set of one (equipment, epoch). */
+export const AUDIT_ENTITY = 'downtime-coding-set';
+
+/** The audit entity id of a coding set: `{equipment}~{epoch}`. */
+export const auditEntityId = (equipment: string, epoch: number): string =>
+  `${equipment}~${String(epoch)}`;
+
+/** The audit actions in `identity.audit_log` (migration 0018 maps the legacy rows the same way). */
+export const AUDIT_ACTIONS: Readonly<Record<AuditAction, string>> = {
+  coded: 'downtime.code',
+  cleared: 'downtime.clear',
+  orphaned: 'downtime.orphan',
+};
+
+/** A coding audit entry back from its `identity.audit_log` row; undefined for another shape. */
+function fromAuditRow(row: StoredAuditEntry): AuditEntry | undefined {
+  const action = (Object.keys(AUDIT_ACTIONS) as AuditAction[]).find(
+    (key) => AUDIT_ACTIONS[key] === row.action,
+  );
+  const before = row.before as { codings?: AuditCoding[] } | null;
+  const after = row.after as {
+    recordId?: string | null;
+    from?: string;
+    to?: string | null;
+    version?: number;
+    codings?: AuditCoding[];
+  } | null;
+  if (!action || !after?.from || after.version === undefined) return undefined;
+  const [equipment = '', epoch = '0'] = row.entityId.split('~');
+  return {
+    id: row.id,
+    equipment,
+    epoch: Number(epoch),
+    recordId: after.recordId ?? null,
+    from: new Date(after.from),
+    to: after.to ? new Date(after.to) : null,
+    action,
+    before: before?.codings ?? [],
+    after: after.codings ?? [],
+    actor: row.username,
+    authenticated: row.authenticated,
+    at: row.at,
+    requestId: row.requestId,
+    version: after.version,
+  };
+}
 
 /** Parses `{equipment}~{epoch}~{startMs}`; undefined when it is not one. */
 export function parseRecordId(id: string): RecordKey | undefined {
@@ -455,7 +512,7 @@ export class DowntimeCoding {
             to_time: segment.to,
             reason: segment.reason,
             comment: segment.comment,
-            coded_by: request.codedBy,
+            coded_by: nameOf(request.codedBy),
             coded_at: now,
             version: next,
           })
@@ -477,11 +534,16 @@ export class DowntimeCoding {
         before: clippedBefore,
         after: segments.map((s) =>
           auditCoding(
-            { reason: s.reason, comment: s.comment, codedBy: request.codedBy, codedAt: now },
+            {
+              reason: s.reason,
+              comment: s.comment,
+              codedBy: nameOf(request.codedBy),
+              codedAt: now,
+            },
             { from: s.from.getTime(), to: s.to.getTime() },
           ),
         ),
-        actor: request.codedBy,
+        by: request.codedBy,
         requestId: request.requestId ?? null,
         version: next,
       });
@@ -512,57 +574,28 @@ export class DowntimeCoding {
       .executeTakeFirst();
     if (!record) throw new CodingError('not-found', `no downtime record ${recordId(key)}`);
     const id = recordId(key);
-    const writes = await db
-      .selectFrom('equipment.downtime_audit')
-      .select(['before', 'after'])
-      .where('equipment', '=', key.equipment)
-      .where('epoch', '=', key.epoch)
-      .where('record_id', '=', id)
-      .execute();
+    const entries = (
+      await Identity.auditEntries(db, AUDIT_ENTITY, [auditEntityId(key.equipment, key.epoch)])
+    ).flatMap((entry) => {
+      const parsed = fromAuditRow(entry);
+      return parsed ? [parsed] : [];
+    });
     let from = record.start_time.getTime();
     let to = record.end_time?.getTime() ?? LATEST;
-    for (const write of writes) {
-      for (const coding of [
-        ...(write.before as AuditCoding[]),
-        ...(write.after as AuditCoding[]),
-      ]) {
+    for (const write of entries.filter((entry) => entry.recordId === id)) {
+      for (const coding of [...write.before, ...write.after]) {
         from = Math.min(from, Date.parse(coding.from));
         to = Math.max(to, Date.parse(coding.to));
       }
     }
-    const rows = await db
-      .selectFrom('equipment.downtime_audit')
-      .selectAll()
-      .where('equipment', '=', key.equipment)
-      .where('epoch', '=', key.epoch)
-      .where((eb) =>
-        eb.or([
-          eb('record_id', '=', id),
-          eb.and([
-            eb('from_time', '<', new Date(to)),
-            eb.or([eb('to_time', 'is', null), eb('to_time', '>', new Date(from))]),
-          ]),
-        ]),
+    // Newest first (by id): the writes to the record and every entry over its time.
+    return entries
+      .filter(
+        (entry) =>
+          entry.recordId === id ||
+          (entry.from.getTime() < to && (entry.to === null || entry.to.getTime() > from)),
       )
-      .orderBy('id', 'desc')
-      .limit(500)
-      .execute();
-    return rows.map((row) => ({
-      id: row.id,
-      equipment: row.equipment,
-      epoch: row.epoch,
-      recordId: row.record_id,
-      from: row.from_time,
-      to: row.to_time,
-      action: row.action as AuditAction,
-      before: row.before as AuditCoding[],
-      after: row.after as AuditCoding[],
-      actor: row.actor,
-      authenticated: row.authenticated,
-      at: row.at,
-      requestId: row.request_id,
-      version: row.version,
-    }));
+      .slice(0, 500);
   }
 
   #note(equipment: string, epoch: number, from: Millis, to: Millis): void {
@@ -674,7 +707,7 @@ export class DowntimeCoding {
             ...clip.kept.map((part) => auditCoding(coding, part, false)),
             ...clip.orphaned.map((part) => auditCoding(coding, part, true)),
           ].sort((a, b) => a.from.localeCompare(b.from)),
-          actor: 'system',
+          by: null,
           requestId: null,
           version: next,
         });
@@ -797,24 +830,27 @@ export class DowntimeCoding {
 
   async #audit(
     trx: Transaction<Database>,
-    entry: Omit<AuditEntry, 'id' | 'at' | 'authenticated'>,
+    entry: Omit<AuditEntry, 'id' | 'at' | 'authenticated' | 'actor'> & {
+      /** The writer, or null for the module's own clip after a re-cut (actor `system`). */
+      readonly by: WriteBy | null;
+    },
   ): Promise<void> {
-    await trx
-      .insertInto('equipment.downtime_audit')
-      .values({
-        equipment: entry.equipment,
-        epoch: entry.epoch,
-        record_id: entry.recordId,
-        from_time: entry.from,
-        to_time: entry.to,
-        action: entry.action,
-        before: JSON.stringify(entry.before),
-        after: JSON.stringify(entry.after),
-        actor: entry.actor,
-        request_id: entry.requestId,
+    await Identity.audit(trx, {
+      actor: entry.by === null ? { system: 'system' } : auditActor(entry.by),
+      authenticated: entry.by !== null && isAuthenticated(entry.by),
+      action: AUDIT_ACTIONS[entry.action],
+      entityType: AUDIT_ENTITY,
+      entityId: auditEntityId(entry.equipment, entry.epoch),
+      before: { codings: entry.before },
+      after: {
+        recordId: entry.recordId,
+        from: entry.from.toISOString(),
+        to: entry.to?.toISOString() ?? null,
         version: entry.version,
-      })
-      .execute();
+        codings: entry.after,
+      },
+      requestId: entry.requestId ?? undefined,
+    });
   }
 
   #emit(change: CodingChange): void {

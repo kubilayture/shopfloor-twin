@@ -39,6 +39,7 @@ import {
   type Identity,
   type Principal,
   type User,
+  type WriteBy,
 } from '../identity/index.ts';
 import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
@@ -658,6 +659,22 @@ export async function registerRealtime(
       throw new HttpProblem(401, 'a session is needed', PROBLEM_TYPES.unauthenticated);
     }
     return principal;
+  };
+  /**
+   * Who a write is by (#169): with `MES_AUTH=on` the session's user, whatever the body says; with
+   * `off`, the name typed into the body's old actor field (422 without one), until #170 removes
+   * those fields from the requests.
+   */
+  const writeBy = (request: FastifyRequest, typed: string | undefined, field: string): WriteBy => {
+    const principal = principals.get(request);
+    if (principal) {
+      return { userId: principal.userId, username: principal.username, roles: principal.roles };
+    }
+    if (auth) throw new HttpProblem(401, 'a session is needed', PROBLEM_TYPES.unauthenticated);
+    if (typed === undefined) {
+      throw new HttpProblem(422, `\`${field}\` is needed while MES_AUTH=off (no session)`);
+    }
+    return typed;
   };
   const tokenOf = (request: FastifyRequest): Buffer | undefined =>
     parseToken(cookieValue(request.headers.cookie, cookieName));
@@ -1294,8 +1311,9 @@ export async function registerRealtime(
             '(not UNCODED); segments must not overlap; an empty list clears the codings. Time ' +
             'without a coding keeps the auto reason. `version` is the record’s `version` as read: ' +
             'it belongs to the coding set of the (equipment, epoch), and a mismatch is 409. ' +
-            '`codedBy` is free text, recorded as unauthenticated. Audited; reasons never change ' +
-            'OEE, only the Pareto and the reason view. Writes need an Origin of this host (or ' +
+            'The actor is the session’s user; with MES_AUTH=off the typed `codedBy` ' +
+            '(unauthenticated). Audited; reasons never change OEE, only the Pareto and the ' +
+            'reason view. Writes need an Origin of this host (or ' +
             'allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023).',
           tags: ['downtime'],
           params: downtimeParams,
@@ -1304,9 +1322,10 @@ export async function registerRealtime(
           errors: [400, 403, 404, 405, 409, 413, 415, 422, 429, 503],
         },
         LIMITS.writeBodyBytes,
-        async ({ params, body, requestId }) => {
+        async ({ params, body, requestId, request }) => {
           const { sources } = ready();
           const key = recordKey(params.id);
+          const codedBy = writeBy(request, body.codedBy, 'codedBy');
           const { version } = await sources.coding
             .code(key, {
               segments: body.segments.map((segment) => ({
@@ -1315,7 +1334,7 @@ export async function registerRealtime(
                 reason: segment.reason,
                 comment: segment.comment,
               })),
-              codedBy: body.codedBy,
+              codedBy,
               version: body.version,
               requestId,
             })
@@ -1483,7 +1502,8 @@ export async function registerRealtime(
           summary: 'Writes a handover note on a shift instance',
           description:
             'From the shift’s start until the end of the following shift (plant time); afterwards ' +
-            '409 (handover closed). `author` is free text, recorded as unauthenticated; audited. ' +
+            '409 (handover closed). The author is the session’s user; with MES_AUTH=off the ' +
+            'typed `author` (unauthenticated); audited. ' +
             'Raises the report’s `revision.content`. Writes need an Origin of this host (or ' +
             'allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023).',
           tags: ['shifts'],
@@ -1494,10 +1514,11 @@ export async function registerRealtime(
           errors: WRITE_ERRORS,
         },
         LIMITS.writeBodyBytes,
-        async ({ params, query, body, requestId }) => {
+        async ({ params, query, body, requestId, request }) => {
+          const author = writeBy(request, body.author, 'author');
           const instance = await stored(params, query.epoch);
           const note = await shiftsOf()
-            .createNote(instance.epoch, instance.key, { ...body, requestId })
+            .createNote(instance.epoch, instance.key, { ...body, author, requestId })
             .catch((error: unknown) => {
               throw shiftProblem(error);
             });
@@ -1538,10 +1559,11 @@ export async function registerRealtime(
           errors: WRITE_ERRORS,
         },
         LIMITS.writeBodyBytes,
-        async ({ params, body, requestId }) => {
+        async ({ params, body, requestId, request }) => {
+          const author = writeBy(request, body.author, 'author');
           const found = await noteOf(params);
           const note = await shiftsOf()
-            .editNote(found.epoch, found.shiftKey, found.id, { ...body, requestId })
+            .editNote(found.epoch, found.shiftKey, found.id, { ...body, author, requestId })
             .catch((error: unknown) => {
               throw shiftProblem(error);
             });
@@ -1861,8 +1883,9 @@ export async function registerRealtime(
           : error;
       const guarded =
         'Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when ' +
-        'sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated ' +
-        'in alarms.alarm_transition with wall time, plant time and the request id. Operator ' +
+        'sent, and application/json (ADR-0023). The actor is the session’s user; with MES_AUTH=off ' +
+        'the typed `actor` (unauthenticated). Audited in alarms.alarm_transition and ' +
+        'identity.audit_log with wall time, plant time and the request id. Operator ' +
         'actions never change alarm KPIs or their revisions (every raise counts).';
       const occurrenceAfterWrite = async (id: string) => {
         const occurrence = await alarmsOf().occurrence(id);
@@ -1889,12 +1912,13 @@ export async function registerRealtime(
           params: noParams,
           body: bulkAcknowledgeRequestSchema,
           response: bulkAcknowledgeResultSchema,
-          errors: [400, 403, 404, 405, 413, 415, 429, 503],
+          errors: [400, 403, 404, 405, 413, 415, 422, 429, 503],
         },
         LIMITS.writeBodyBytes,
-        async ({ body, requestId }) => {
+        async ({ body, requestId, request }) => {
+          const actor = writeBy(request, body.actor, 'actor');
           const results = await alarmsOf()
-            .acknowledge(body.ids, { actor: body.actor, comment: body.comment, requestId })
+            .acknowledge(body.ids, { actor, comment: body.comment, requestId })
             .catch((error: unknown) => {
               throw alarmWriteProblem(error);
             });
@@ -1918,12 +1942,16 @@ export async function registerRealtime(
           params: alarmParams,
           body: acknowledgeRequestSchema,
           response: acknowledgeResultSchema,
-          errors: [400, 403, 404, 405, 413, 415, 429, 503],
+          errors: [400, 403, 404, 405, 413, 415, 422, 429, 503],
         },
         LIMITS.writeBodyBytes,
-        async ({ params, body, requestId }) => {
+        async ({ params, body, requestId, request }) => {
           const [result] = await alarmsOf()
-            .acknowledge([params.id], { actor: body.actor, comment: body.comment, requestId })
+            .acknowledge([params.id], {
+              actor: writeBy(request, body.actor, 'actor'),
+              comment: body.comment,
+              requestId,
+            })
             .catch((error: unknown) => {
               throw alarmWriteProblem(error);
             });
@@ -1946,12 +1974,16 @@ export async function registerRealtime(
           params: alarmParams,
           body: commentRequestSchema,
           response: commentResultSchema,
-          errors: [400, 403, 404, 405, 413, 415, 429, 503],
+          errors: [400, 403, 404, 405, 413, 415, 422, 429, 503],
         },
         LIMITS.writeBodyBytes,
-        async ({ params, body, requestId }) => {
+        async ({ params, body, requestId, request }) => {
           const comment = await alarmsOf()
-            .comment(params.id, { actor: body.actor, text: body.text, requestId })
+            .comment(params.id, {
+              actor: writeBy(request, body.actor, 'actor'),
+              text: body.text,
+              requestId,
+            })
             .catch((error: unknown) => {
               throw alarmWriteProblem(error);
             });
@@ -2011,11 +2043,11 @@ export async function registerRealtime(
           errors: [400, 403, 404, 405, 409, 413, 415, 422, 429, 503],
         },
         LIMITS.writeBodyBytes,
-        async ({ params, body, requestId }) => {
+        async ({ params, body, requestId, request }) => {
           knownPoint(params.equipment);
           const point = await alarmsOf()
             .shelve(params.equipment, params.code, {
-              actor: body.actor,
+              actor: writeBy(request, body.actor, 'actor'),
               reason: body.reason,
               durationMs: body.durationMs,
               version: body.version,
@@ -2045,11 +2077,11 @@ export async function registerRealtime(
           errors: [400, 403, 404, 405, 409, 413, 415, 422, 429, 503],
         },
         LIMITS.writeBodyBytes,
-        async ({ params, body, requestId }) => {
+        async ({ params, body, requestId, request }) => {
           knownPoint(params.equipment);
           const point = await alarmsOf()
             .unshelve(params.equipment, params.code, {
-              actor: body.actor,
+              actor: writeBy(request, body.actor, 'actor'),
               version: body.version,
               requestId,
             })

@@ -35,7 +35,7 @@ import {
   generateOpenApi,
   generateRealtimeSchema,
 } from './openapi.ts';
-import { startDatabase } from './testing.ts';
+import { appUrl, startDatabase } from './testing.ts';
 
 const E1 = 1_760_000_000;
 /** Monday 2026-10-12, shift A (06:00 Istanbul) starts at 03:00 UTC. */
@@ -72,7 +72,7 @@ beforeAll(async () => {
   await masterData.seed(plant.config);
   const name = (await sql<{ name: string }>`SELECT current_database() AS name`.execute(db)).rows[0]
     ?.name;
-  readDb = createDatabase(serverUrl.replace(/\/shopfloor$/, `/${String(name)}`), 2, {
+  readDb = createDatabase(appUrl(serverUrl, String(name)), 2, {
     statementTimeoutMs: 500,
     connectionTimeoutMs: 500,
   });

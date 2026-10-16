@@ -1,11 +1,13 @@
 # Status — updated 2026-10-16
 
-## Current phase: 06 – Alarms and shifts (next, not planned yet; Phase 5 closed 2026-10-16)
+## Current phase: 06 – Alarms and shifts (planning; Phase 5 closed 2026-10-16)
 
-## Exit criteria progress: Phase 5 closed with 5 / 5 met; Phase 6 not planned yet
+## Exit criteria progress: Phase 6: 0 / 5 met (plan in review)
 
 ## Done since last update
 
+- Phase 6 plan with issues #138–#148 under milestone "Phase 06 – Alarms and shifts".
+- #124 merged (PR #137): Phase 5 closed, tagged `phase-05`.
 - **Phase 5 closed**: all 5 exit criteria met; tag `phase-05` after #124 merges (report: `docs/phases/phase-05-report.md`; learning notes: `docs/learning/phase-05.md`; data model: `docs/data-model.md`, confirmed current with both continuous aggregates and the new tables).
 - Phase 5 pull requests merged: #125 (plan), #127 (#126), #128 (#116), #129 (#113), #130 (#117), #131 (#119), #132 (#118), #133 (#120), #134 (#121), #135 (#122), #136 (#123); CI's `reconcile` job passed in 10.8 min on the final commit of #136.
 - #123 done (branch `test/123-e2e-oee`): end-to-end evidence for Phase 5 exit criteria 3, 4 and 5 in `pnpm test:reconcile`. Live OEE: shift A final and exactly equal to the live ground truth for all six machines and both work centers, 8 buckets compared (asserted). Dashboard: Playwright judges 874–890 OEE changes on both cards and six machine rows in 90 s, none later than 2 s (p95 about 0.9 s, max 1.2 s), and the page's values agree with the API (349–351 of 352 snapshots). Coding through the UI after the drain: a split and a recode audited, the Pareto moved exactly by the record, shift A's OEE byte-identical, 403/403/415 refusals. Two local runs RECONCILE-OK, 8 min 41 s each with cached images (CI before: 10.7 min of 30).
@@ -77,11 +79,11 @@
 
 ## In progress
 
-- #124 Phase 5 close (in review)
+- #138 Phase 6 plan (in review)
 
 ## Next up
 
-- Phase 6 plan: Alarms and shifts (master plan section 11 row 6: alarm lifecycle, alarm list and KPIs, flood detection, handover notes, shift report reconciled with OEE data). Not planned yet. Carry-overs are in the Phase 5 report: the audit trigger and role separation (Phases 7 and 9), the global write rate limit, retention with continuous aggregates, and `prom-client` (ADR-0012).
+- #139 `alarm-core`, then #140–#148 in the plan's order. Carry-overs are in the Phase 5 report: the audit trigger and role separation (Phases 7 and 9), the global write rate limit, retention with continuous aggregates, and `prom-client` (ADR-0012).
 
 ## Blockers and open questions for the owner
 

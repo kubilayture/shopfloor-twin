@@ -1,6 +1,6 @@
 # Contract: Unified Namespace (UNS)
 
-Version 1.2 (Phase 6; 1.1 in Phase 4, 1 in Phase 3). Version 1.1 adds the optional `deviceEpoch` to snapshots (#95) and to telemetry (#96). It is optional, so every version 1 message stays valid; the strict schemas mean an old consumer would refuse a snapshot that carries it, and the MES, the only consumer, accepts both. Version 1.2 (#141) adds the alarm snapshot: schema `uns.alarm-snapshot/1` on the topic `…/alarms/_snapshot`, the one topic name that isn't kebab-case. It is additive: no existing message changes, and a consumer that doesn't know the schema rejects it as unknown. Source of truth in code: `packages/contracts/src/uns/` (Zod schemas, topic helpers, reference dedup consumer). The JSON Schema of every payload is generated into `docs/contracts/uns/` (`pnpm --filter @shopfloor/contracts json-schema`); a test fails when it drifts from the Zod schemas. Decisions: plan section 5, ADR-0015 (identity, sequence and dedup). Any change bumps the version here and needs a changelog entry.
+Version 1.3 (Phase 7; 1.2 in Phase 6, 1.1 in Phase 4, 1 in Phase 3). Version 1.1 adds the optional `deviceEpoch` to snapshots (#95) and to telemetry (#96). It is optional, so every version 1 message stays valid; the strict schemas mean an old consumer would refuse a snapshot that carries it, and the MES, the only consumer, accepts both. Version 1.2 (#141) adds the alarm snapshot: schema `uns.alarm-snapshot/1` on the topic `…/alarms/_snapshot`, the one topic name that isn't kebab-case. It is additive: no existing message changes, and a consumer that doesn't know the schema rejects it as unknown. Version 1.3 (#173, ADR-0029) adds the command path: commands `uns.cmd.load-order/1` on `…/cmd/load-order`, the gateway's results `uns.cmd-res/1` on `…/cmd-res/load-order`, and the job facts `uns.events.job/1` on `…/events/job` (orders mode only); also additive. Source of truth in code: `packages/contracts/src/uns/` (Zod schemas, topic helpers, reference dedup consumer; commands and results in `commands.ts`). The JSON Schema of every payload is generated into `docs/contracts/uns/` (`pnpm --filter @shopfloor/contracts json-schema`); a test fails when it drifts from the Zod schemas. Decisions: plan section 5, ADR-0015 (identity, sequence and dedup). Any change bumps the version here and needs a changelog entry.
 
 ## Broker
 
@@ -8,14 +8,14 @@ Mosquitto on `127.0.0.1:1883`, MQTT 5. Every publish and subscription uses **QoS
 
 Users and topic rights are in `config/mosquitto/acl`. Mosquitto denies everything not listed, and answers a denied QoS 1 publish with PUBACK reason 0x87 (not authorized). Passwords come from `.env`.
 
-| User          | Reads                               | Publishes                                                                                                                      |
-| ------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `gw-01`       | its own `_sys/edge-gateway/gw-01/#` | `state`, `telemetry`, `events`, `alarms` of any equipment; its own `_sys` topics. `cmd` and `cmd-res` rights arrive in Phase 7 |
-| `mes`         | `orbis/#`                           | `mes` and `cmd` of any equipment; `_sys/mes-server/#`                                                                          |
-| `dev`         | `orbis/#`, `$SYS/#`                 | nothing (manual testing)                                                                                                       |
-| `healthcheck` | `$SYS/#`                            | nothing (the broker's Compose healthcheck)                                                                                     |
+| User          | Reads                                                             | Publishes                                                                                                         |
+| ------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `gw-01`       | its own `_sys/edge-gateway/gw-01/#`; `cmd` of any equipment (1.3) | `state`, `telemetry`, `events`, `alarms` and `cmd-res` (1.3) of any equipment; its own `_sys` topics. Never `cmd` |
+| `mes`         | `orbis/#` (`cmd-res` included)                                    | `mes` and `cmd` of any equipment; `_sys/mes-server/#`. Never `cmd-res`                                            |
+| `dev`         | `orbis/#`, `$SYS/#`                                               | nothing (manual testing)                                                                                          |
+| `healthcheck` | `$SYS/#`                                                          | nothing (the broker's Compose healthcheck)                                                                        |
 
-**Accepted risk until Phase 9:** the plain ACL file can't tie a client id to a user. Anyone with valid credentials can connect with client id `gw-01`; the broker then disconnects the real gateway, whose will says `offline` until it reconnects. Phase 9 (security) moves to Mosquitto's dynamic-security plugin, which binds client ids to users.
+**Accepted risk until Phase 9:** the plain ACL file can't tie a client id to a user. Anyone with valid credentials can connect with client id `gw-01`; the broker then disconnects the real gateway, whose will says `offline` until it reconnects. Phase 9 (security) moves to Mosquitto's dynamic-security plugin, which binds client ids to users. The same holds for the gateway's command session (client id `gw-01-cmd`, 1.3): both gateway connections log in as `gw-01`, and the ACL can't tie each client id to its use.
 
 ## Topics
 
@@ -25,7 +25,7 @@ Equipment data:
 
 - Segments are lower-case kebab-case.
 - The hierarchy is `config/plant/plant.yaml`, for example `machining/cell-m1/cnc-01` or `assembly/line-a1/lkt-01`.
-- Build topics only with the helpers `stateTopic`, `telemetryTopic`, `cycleTopic`, `alarmTopic`, `alarmSnapshotTopic` and `equipmentTopic`, and parse them with `parseEquipmentTopic`.
+- Build topics only with the helpers `stateTopic`, `telemetryTopic`, `cycleTopic`, `jobTopic`, `alarmTopic`, `alarmSnapshotTopic`, `commandTopic`, `commandResultTopic` and `equipmentTopic`, and parse them with `parseEquipmentTopic`.
 - One exception to kebab-case (1.2): the name `_snapshot` (`ALARM_SNAPSHOT_NAME`) under the `alarms` class. The underscore keeps it apart from every alarm code's topic name; anywhere else it is refused.
 
 | Class and name          | Example                            | Schema                        | Retained                       |
@@ -35,7 +35,9 @@ Equipment data:
 | `events/cycle-complete` | `…/lkt-01/events/cycle-complete`   | `uns.events.cycle-complete/1` | no                             |
 | `alarms/{code}`         | `…/cnc-01/alarms/spindle-overload` | `uns.alarms/1`                | yes (last transition per code) |
 | `alarms/_snapshot`      | `…/cnc-01/alarms/_snapshot`        | `uns.alarm-snapshot/1` (1.2)  | yes (latest resync)            |
-| `cmd/…`, `cmd-res/…`    | Phase 7                            | –                             | no                             |
+| `events/job`            | `…/cnc-01/events/job`              | `uns.events.job/1` (1.3)      | no                             |
+| `cmd/load-order`        | `…/cnc-01/cmd/load-order`          | `uns.cmd.load-order/1` (1.3)  | no                             |
+| `cmd-res/load-order`    | `…/cnc-01/cmd-res/load-order`      | `uns.cmd-res/1` (1.3)         | no                             |
 | `mes/…`                 | Phase 4 onwards                    | –                             | yes                            |
 
 Component topics (helper `sysTopic`):
@@ -84,12 +86,13 @@ Every payload is one JSON object with these fields, and no others except those l
 | `uns.state.current/1`         | `kind`: `event` or `snapshot`; snapshots may carry `deviceEpoch` (1.1) | `{ state, cause }`. `state` is one of the ten machine states; `cause` is a string or null                                                                                                                          |
 | `uns.telemetry/1`             | `unit`; may carry `deviceEpoch` (1.1)                                  | number                                                                                                                                                                                                             |
 | `uns.events.cycle-complete/1` | –                                                                      | `{ product, partId, serial, result (good, scrap, rework), reason (or null), measurement ({ characteristic, value, unit, upperLimit } or null) }`                                                                   |
+| `uns.events.job/1` (1.3)      | –                                                                      | `{ transition (accepted, started, completed), commandId, orderId, product, quantity }`: a job fact of a CNC in orders mode (ADR-0030)                                                                              |
 | `uns.alarms/1`                | –                                                                      | `{ code, transition (active, cleared), severity (1–1000) }`                                                                                                                                                        |
 | `uns.alarm-snapshot/1` (1.2)  | `kind: snapshot`, scope `topic`; `deviceEpoch` and `asOfSeq` required  | `{ active: [code…] }`: the codes active at device sequence `asOfSeq` of device epoch `deviceEpoch`, sorted, empty when none; `asOfSeq` 0 means the device had no fact yet                                          |
 | `uns.sys.status/1`            | –                                                                      | `{ status (online, offline), startedAt, version }`                                                                                                                                                                 |
 | `uns.sys.incident/1`          | –                                                                      | `{ type, equipment (or null), lost (or null), message }`, with `type` one of `sequence-gap`, `epoch-change`, `ring-overrun`, `device-silent`, `device-recovered`, `disconnected`, `reconnected`, `buffer-overflow` |
 
-Validate any payload with `parseUnsMessage(json)`.
+Validate any payload with `parseUnsMessage(json)`; commands and results (1.3) have their own envelope (see Commands) and are validated with `parseUnsCommandMessage(json)`.
 
 ## Sources
 
@@ -99,6 +102,7 @@ Validate any payload with `parseUnsMessage(json)`.
 | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ShopFloorStateChangeEventType`                                                                       | `state/current`, `kind: event`, `seq` = the event's `Sequence`, `epoch` = `ShopFloor.Epoch`; value `{ state: ToState, cause: Cause or null }`                                                                                                                                                                                                                            |
 | `CycleCompleteEventType`                                                                              | `events/cycle-complete`; an empty `Reason` becomes null; `MeasurementValue` (LKT-01) becomes `measurement` with characteristic `leak-rate`, unit `Pa/min` and the `LeakTest.UpperLimit` read at connect; NaN becomes null                                                                                                                                                |
+| `ShopFloorJobEventType` (CNCs, orders mode; 1.3)                                                      | `events/job`, `uns.events.job/1`, `scope: device` in the machine's shared sequence; value `{ transition, commandId, orderId, product, quantity }`                                                                                                                                                                                                                        |
 | `ShopFloorAlarmEventType`                                                                             | `alarms/{code}` with `{ code, transition, severity }`                                                                                                                                                                                                                                                                                                                    |
 | `ProcessValues.SpindleLoad`, `.CoolantTemperature` (CNCs), `LeakTest.LastReading` (LKT-01)            | `telemetry/spindle-load`, `coolant-temperature`, `leak-rate`, sampled every `TELEMETRY_SAMPLING_MS` (wall, default 1 s); `sourceTime` is the value's SourceTimestamp (simulation time); `deviceEpoch` (1.1) is the `Epoch` read by the resync of the current connection, left out after a connection loss until that resync ran                                          |
 | `State`, `StateCause` read after every (re)connect                                                    | `state/current`, `kind: snapshot`, `deviceEpoch` = `ShopFloor.Epoch`                                                                                                                                                                                                                                                                                                     |
@@ -138,10 +142,45 @@ Every UNS message passes through the gateway's outbox (ADR-0014), except the gat
 - The outbox holds at most `BUFFER_MAX_MESSAGES` (200,000, about 11 hours of the whole plant at 60×). Beyond that the oldest messages not yet handed to the broker are dropped, with a `buffer-overflow` incident.
 - The Modbus cursor is saved in the same transaction as the messages it produced, so a gateway restart neither repeats nor skips washer facts.
 
+## Commands (1.3, #173, ADR-0029)
+
+The MES dispatches a job to a CNC with `cmd/load-order`; the gateway calls OPC UA `LoadOrder` (docs/contracts/opcua-address-space.md) and answers every delivery on `cmd-res/load-order`. Delivery is at least once on every hop; the device's dedup by command id (ADR-0030) makes execution exactly-once, and the device's job facts (`events/job`) prove it.
+
+**Command envelope** (`uns.cmd.load-order/1`; a command is not a fact, so no `sourceTime`, `receivedAt` or `quality`):
+
+| Field       | Meaning                                                                                                                                                                                             |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schema`    | `uns.cmd.load-order/1`                                                                                                                                                                              |
+| `scope`     | `topic`; `epoch` (the issuer's start, Unix seconds) and `seq` (per topic) identify the message                                                                                                      |
+| `source`    | the issuer, `{ id: mes-server, protocol: internal }`                                                                                                                                                |
+| `issuedAt`  | wall time of this publish (a resend has its own)                                                                                                                                                    |
+| `expiresAt` | wall time; passed to the device as `ExpiresAt`: a command not accepted by then is refused                                                                                                           |
+| `value`     | `{ commandId, orderId, operation: OP10, product, quantity (1–100,000 blanks), notBefore (plant time), deviceEpoch }`; `commandId` is `{orderId}~OP10~{n}` (`loadOrderCommandId`), reused by resends |
+
+**Result envelope** (`uns.cmd-res/1`): `schema`, `scope: topic`, the gateway's `epoch` and `seq` per topic, `source` the equipment (`protocol: opcua`), `respondedAt` (gateway wall time) and a `value` with `commandId`, `orderId`, `deviceEpoch`, `expiresAt` (of the delivery it answers) and `statusCode` (the OPC UA status that gave the answer, or null), plus by `result`:
+
+| `result`    | Extra fields                            | Meaning                                                                                                                                                                                                    | Final for the MES?                                 |
+| ----------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `accepted`  | `position`, `acceptedSeq`, `acceptedAt` | the device accepted the job now; `acceptedSeq`/`acceptedAt` are the device sequence and plant time of its `accepted` fact                                                                                  | yes: the job exists                                |
+| `duplicate` | `position`, `acceptedSeq`, `acceptedAt` | the device had already accepted this command id (the original's acceptance)                                                                                                                                | yes: the job exists                                |
+| `rejected`  | `code`                                  | refused: `invalid-product`, `invalid-quantity`, `invalid-argument`, `command-conflict`, `epoch-mismatch`, `wrong-mode`, `queue-full`, or `unsupported-equipment` (no `LoadOrder` there; the gateway's own) | yes: no job                                        |
+| `expired`   | `seqAfterExpiry` (or null)              | the device answered `expired` on a dedup miss: never accepted. Never the gateway's own guess                                                                                                               | yes, for that `expiresAt`; a resend may follow     |
+| `unknown`   | `seqAfterExpiry` (or null), `reason`    | the gateway couldn't learn the outcome even with the settle call; `seqAfterExpiry` is `ShopFloor.Sequence` read after `expiresAt` + 1 s                                                                    | no: settled again; the MES decides `failed` itself |
+
+The gateway (ADR-0029):
+
+- **Session:** a second MQTT connection, client id `gw-01-cmd` (user `gw-01`), `clean: false` with session expiry `GATEWAY_CMD_SESSION_EXPIRY_S` (1 h), subscriptions `orbis/gebze/{area}/+/+/cmd/#` per area. A delivery is committed to the gateway's SQLite file before its PUBACK; one it can't record is never acknowledged, so the broker delivers it again.
+- **Calls:** one command at a time per equipment; only on a ready OPC UA session; each request with the deadline `GATEWAY_CALL_DEADLINE_MS` (5 s); before every retry `ShopFloor.Epoch` is read again, and a changed epoch is answered `rejected` (`epoch-mismatch`, `statusCode` null) without calling; retries until `expiresAt`. A command that arrives expired is still called once.
+- **Settling:** without a definitive answer by `expiresAt`, after `expiresAt` + 1 s the gateway reads `ShopFloor.Sequence` (`seqAfterExpiry`) and calls once more: `Duplicate` → `duplicate`, the device's `expired` → `expired`, `epoch-mismatch` → `rejected`, anything else → `unknown`, published and settled again every 5 s while the device epoch lasts. A finished simulator run answers every call with the transient `BadWaitingForInitialData`, so a command whose outcome is unknown when its run finishes stays `unknown` until a new epoch is seen.
+- **Result table:** definitive answers only, `accepted`, `duplicate` and `rejected` by command id, `expired` by command id and `expiresAt`; a redelivery or a resend of the same job is answered from it without calling. `unknown` is never stored.
+- **Delivery:** results go through the store-and-forward outbox like every other message, so a broker outage delays them and loses none. There may be several results per command id (redeliveries, resends, `unknown` then the settled answer): consumers treat them idempotently by command id.
+
+Until #174 the MES ingest refuses `events/job` and `cmd-res` (`unexpected-topic`): an orders-mode run seen by the MES has sequence gaps where its job facts are. Schedule mode, the default, has no job facts.
+
 ## Identity, duplicates and gaps (ADR-0015)
 
-- **Device facts** (state changes, cycles, alarm transitions) have `scope: device`. Their `seq` is the device's own sequence: OPC UA `Sequence`, or the WSH-01 event-buffer sequence. It is shared across that device's `state`, `events` and `alarms` topics, so one stream per equipment orders all its facts.
-- **Gateway streams** (telemetry, snapshots, `_sys`) have `scope: topic`, with a gateway counter per topic.
+- **Device facts** (state changes, cycles, alarm transitions, and job transitions from 1.3) have `scope: device`. Their `seq` is the device's own sequence: OPC UA `Sequence`, or the WSH-01 event-buffer sequence. It is shared across that device's `state`, `events` and `alarms` topics, so one stream per equipment orders all its facts.
+- **Gateway streams** (telemetry, snapshots, `_sys`, command results) have `scope: topic`, with a gateway counter per topic. Commands have `scope: topic` with the issuer's (the MES's) counter per topic.
 - **Epoch:** numbering restarts at 1 whenever the owner of a sequence restarts. The `epoch` (the owner's start time) separates the runs.
 - **Snapshots:** after every (re)connect, the gateway publishes the current state read from the device's variables as `uns.state.current/1` with `kind: snapshot` and `scope: topic`. They restore the current state. They are not facts, and they never take part in device dedup or gap checks. Their `epoch` is the gateway's (the counter's owner); `deviceEpoch` (1.1) names the device run the state was read in, so a consumer can tell a snapshot of an earlier run.
 - **Alarm snapshots (1.2):** with each state snapshot the gateway publishes `uns.alarm-snapshot/1`, retained, one topic per equipment. Its `asOfSeq` and active codes come from one atomic read (OPC UA: one Read call of `Epoch`, `Sequence` and every `Alarms.<CODE>.Active`, ADR-0010; Modbus: one read of the snapshot block, registers 0–17), so every fact up to `asOfSeq` is reflected in it and none after. It is not a fact and never takes part in the device stream's dedup or gap checks: `asOfSeq` only orders it against the device's facts. A consumer can tell from it that a clear it never received happened (the code is inactive at a higher sequence than the raise).

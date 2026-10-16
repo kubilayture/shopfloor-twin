@@ -1,11 +1,12 @@
-# Status — updated 2026-10-16
+# Status — updated 2026-10-17
 
 ## Current phase: 07 – Orders, ERP and execution (in progress, wave A; plan merged in PR #180, Phase 6 closed 2026-10-16)
 
-## Exit criteria progress: Phase 7: 0 / 6 met (#172 lays the simulator part of criteria 2, 4 and 6: golden `orders-01`, the order ground truth, `week-01` and `alarms-01` byte-identical event logs); Phase 6 closed with 5 / 5 met (criteria 2 and 5 with recorded deviations; evidence from local runs, GitHub Actions could not run)
+## Exit criteria progress: Phase 7: 0 / 6 met (#172 lays the simulator part of criteria 2, 4 and 6: golden `orders-01`, the order ground truth, `week-01` and `alarms-01` byte-identical event logs; #173 the gateway's cases of criterion 3, the MES's follow with #174); Phase 6 closed with 5 / 5 met (criteria 2 and 5 with recorded deviations; evidence from local runs, GitHub Actions could not run)
 
 ## Done since last update
 
+- #173 done (branch `feat/173-gateway-commands`): the gateway's command path (ADR-0029, UNS contract 1.3). A second, persistent MQTT session (client id `gw-01-cmd`, user `gw-01`, `clean: false`, `GATEWAY_CMD_SESSION_EXPIRY_S`) acknowledges a `cmd/load-order` delivery only after it is committed to the gateway's SQLite inbox. `LoadOrder` is called one command at a time per CNC, only on a ready OPC UA session, with the deadline `GATEWAY_CALL_DEADLINE_MS` (5 s), re-reading `ShopFloor.Epoch` before every retry (`rejected`, `epoch-mismatch`, without calling when it changed), until `expiresAt`; without a definitive answer it settles after `expiresAt` + 1 s by reading `ShopFloor.Sequence` (`seqAfterExpiry`) and one more call (`Duplicate` → `duplicate`, the device's `expired` → `expired`, `epoch-mismatch` → `rejected`, anything else `unknown`, settled again). Definitive answers are kept by command id (`expired` by command id and `expiresAt`) and answer redeliveries and resends without a call. `cmd-res` carries `AcceptedSeq` and `AcceptedAt` and goes through the outbox; job facts go to `events/job`. Broker ACL: `gw-01` reads `cmd` and writes `cmd-res`; refusals 0x87 tested for `cmd` as `gw-01` and `dev` and `cmd-res` as `mes` and `dev`. Integration tests against the simulator in orders mode through TCP proxies (`commands/executor.test.ts`) and end to end with Mosquitto and the gateway process (`commands.e2e.test.ts`): duplicate delivery, lost `cmd-res` and resend, restarts between receiving and recording and between the call and its result, client timeout after the device acted, TCP cut and simulator restart mid-call, expired command, wrong epoch, invalid product, broker outage with a result pending, crash after the call then an expired resend (`duplicate`); each ends with one `accepted` job fact per accepted command and none otherwise. The MES ingest still refuses `events/job` and `cmd-res` until #174.
 - #172 done (branch `feat/172-sim-orders`): the order-driven simulator (ADR-0030, ADR-0021 amendment). Production mode `orders` (`scenario.json` `production`, `SIM_PRODUCTION`; `schedule` stays the default, also in Compose): CNCs with `campaigns: []`, nothing loaded at the start (`CHANGEOVER none→…`), no initial `Program`, `LoadProgram` refused. OPC UA `LoadOrder` (address space 1.1) with `NotBefore`, `DeviceEpoch`, `ExpiresAt`, idempotent by command id with the dedup table checked first, then epoch, then expiry, outputs `Position`, `Duplicate`, `AcceptedSeq`, `AcceptedAt`; job facts (`accepted`, `started`, `completed`) in the event log and as `ShopFloorJobEventType`, variables `ActiveOrder` and `QueuedJobs`; cause `NO-ORDER` with wake-ups that respect breaks (tested at the break start, inside and at its end). Scenario `dispatches` applied after `line.start` and before the injections in headless and live runs (a live run dispatched at its idle start equals headless `orders-01` event for event). Ground truth per job, order and unit with material booked at cycle completion (`sim-summary/4`, control API 1.4). `oee-core` `scheduledTime: orders` with reference cases 20–25; `oee.yaml` switched (the MES applies `NO-ORDER` from #175). Golden `orders-01` (new, `events.sha256` `ebd1e4aa…a893`); `week-01` and `alarms-01` summaries regenerated with every value unchanged (asserted against a `shift-calendar` run) and `events.sha256` unchanged.
 - #171 merged (PR #181): ERP mock (`apps/erp-mock`, `@shopfloor/contracts/erp-api`, Compose service `erp`, ADR-0028).
 - Phase 7 plan with issues #167–#179 under milestone "Phase 07 – Orders, ERP and execution".
@@ -99,11 +100,11 @@
 
 ## In progress
 
-- #172 simulator orders mode (branch `feat/172-sim-orders`, in review)
+- #173 gateway command path (branch `feat/173-gateway-commands`, in review)
 
 ## Next up
 
-- #168 identity (PR #182, in review); then #169 database roles and one audit log, #170 web login, #173 gateway command path; then #174–#178; #179 closes the phase.
+- #168 identity (PR #182, in review); then #169 database roles and one audit log, #170 web login; then #174–#178; #179 closes the phase.
 
 ## Blockers and open questions for the owner
 

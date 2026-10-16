@@ -44,7 +44,7 @@
  * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_BROWSER=0 (no Playwright),
  * OVERVIEW_SAMPLE_MS and OEE_SAMPLE_MS (how long each live check samples, default 90000 each; the
  * `live` files run in name order: the OEE dashboard first, from the shift's start as in Phase 5,
- * so it must end before the first injection about 120 s after the resume; then the alarm check,
+ * ending 15 simulated minutes before the first injection at the latest; then the alarm check,
  * up to about 205 s; then the overview, which must end before the shift does, about 480 s),
  * RECONCILE_DEADLINE_MS (overall limit, default
  * 25 minutes), RECONCILE_SILENT_WAIT_MS (how long past the margin, in simulated time, the run may go
@@ -94,6 +94,8 @@ const PREFIX_TEST =
   'apps/simulator/src/headless/alarms-01.test.ts: logs exactly what week-01 logs up to the first injection';
 /** Sampling of /alarms runs this long (simulated) past the last injection of the shift. */
 const ALARMS_SAMPLE_PAST_MS = 3 * 60_000;
+/** The OEE check stops sampling this long (simulated) before the first injection: 15 s at 60×. */
+const OEE_BEFORE_INJECTION_MS = 15 * 60_000;
 /** The audit tables that must refuse UPDATE and DELETE (append-only by trigger). */
 const AUDIT_TABLES = ['alarms.alarm_transition', 'shifts.handover_audit'] as const;
 /** Incident types that mean lost data: none may occur with the plan's start order. */
@@ -290,7 +292,14 @@ interface Report {
     shiftReport?: unknown;
     alarmKpiIdentical?: boolean;
     oeeIdentical?: boolean;
-    auditRefusals?: Record<string, { rows: number; update: string; delete: string }>;
+    auditRefusals?: Record<
+      string,
+      {
+        rows: number;
+        update: { refused: boolean; message: string };
+        delete: { refused: boolean; message: string };
+      }
+    >;
   };
   totalMs?: number;
   failures: string[];
@@ -335,10 +344,14 @@ async function main(): Promise<boolean> {
   const injections = (scenario.injections ?? []).filter(
     (i) => Date.parse(i.at) >= shift.from && Date.parse(i.at) < shift.to,
   );
-  if (injections.length < 14) {
+  // Exactly alarms-01's 14 of shift A (13 on Cell M1, the fleeting one on LKT-01).
+  if (injections.length !== 14) {
     throw new Error(`${GOLDEN}: ${String(injections.length)} injections in ${shift.key}, not 14`);
   }
   const alarmsUntil = Math.max(...injections.map((i) => Date.parse(i.at))) + ALARMS_SAMPLE_PAST_MS;
+  // The OEE check (first) ends this long (simulated) before the first injection, so the alarm
+  // check has time to start before it, however slow the environment.
+  const oeeUntil = Math.min(...injections.map((i) => Date.parse(i.at))) - OEE_BEFORE_INJECTION_MS;
   report.seed = scenario.seed;
   report.shiftKey = shiftKey;
 
@@ -448,8 +461,15 @@ async function main(): Promise<boolean> {
           i.machine,
           i.code,
           Date.parse(i.at),
+          i.repairMs ?? null,
         ]);
-        const actualPosted = posted.map((i) => [i.id, i.machine, i.code, Date.parse(i.at)]);
+        const actualPosted = posted.map((i) => [
+          i.id,
+          i.machine,
+          i.code,
+          Date.parse(i.at),
+          i.repairMs ?? null,
+        ]);
         if (
           JSON.stringify(actualPosted) !== JSON.stringify(expectedPosted) ||
           posted.some((i) => i.status !== 'scheduled')
@@ -477,6 +497,7 @@ async function main(): Promise<boolean> {
             RECONCILE_RESULTS: RESULTS,
             RECONCILE_SHIFT: shiftKey,
             RECONCILE_ALARMS_UNTIL: new Date(alarmsUntil).toISOString(),
+            RECONCILE_OEE_UNTIL: new Date(oeeUntil).toISOString(),
           });
         }
 
@@ -859,6 +880,12 @@ async function main(): Promise<boolean> {
           if (JSON.stringify(truthHours) !== JSON.stringify(mesHours)) {
             diffs.push(`hours: MES ${mesHours.join(', ')}, truth ${truthHours.join(', ')}`);
           }
+          const goldenHours = Object.keys(scopeGolden?.hours ?? {})
+            .filter((h) => Date.parse(h) >= shift.from && Date.parse(h) < shift.to)
+            .sort();
+          if (JSON.stringify(goldenHours) !== JSON.stringify(mesHours)) {
+            goldenDiffs.push(`hours: golden ${goldenHours.join(', ')}, MES ${mesHours.join(', ')}`);
+          }
           for (const hour of hours) {
             const truthHour = scopeTruth?.hours[hour.key];
             if (truthHour === undefined) continue;
@@ -1083,7 +1110,7 @@ async function main(): Promise<boolean> {
           if (!alarmKpiIdentical) fail(`${shiftKey} alarm KPIs changed through the UI writes`);
           if (!oeeIdentical) fail(`${shiftKey} OEE changed through the UI writes`);
           for (const [table, audit] of Object.entries(audits)) {
-            if (audit.rows === 0 || audit.update === 'accepted' || audit.delete === 'accepted') {
+            if (audit.rows === 0 || !audit.update.refused || !audit.delete.refused) {
               fail(`${table} is not append-only, or empty: ${JSON.stringify(audit)}`);
             }
           }
@@ -1270,6 +1297,7 @@ async function checkShiftReport(
   const paretoMs = parsed.downtime.reasons.reduce((a, r) => a + r.ms, 0);
   const availabilityLossMs =
     parsed.downtime.availability.own + parsed.downtime.availability.external;
+  if (paretoMs <= 0) failures.push('the Pareto is empty: nothing to compare');
   if (paretoMs !== availabilityLossMs) {
     failures.push(
       `Pareto ${String(paretoMs)} ms, availability loss ${String(availabilityLossMs)} ms`,
@@ -1313,28 +1341,35 @@ async function checkShiftReport(
   };
 }
 
+/** The append-only triggers' message (migrations 0013, 0014). */
+const APPEND_ONLY = /append-only \((UPDATE|DELETE) refused\)/;
+
 /**
- * The audit tables refuse UPDATE and DELETE (exit criterion 3): each statement must fail with the
- * trigger's error, and the table must hold rows (the actions of the `final` project).
+ * The audit tables refuse UPDATE and DELETE (exit criterion 3): each statement runs inside
+ * `BEGIN; …; ROLLBACK`, so an accepted one changes nothing, and counts as refused only when it
+ * fails with the trigger's own message (`append-only (UPDATE refused)`); success, or any other
+ * error (a missing table or trigger, a typo), is not a refusal. The table must also hold rows (the
+ * actions of the `final` project), or the triggers would have nothing to refuse.
  */
 async function auditRefusals(
   stack: Stack,
-): Promise<Record<string, { rows: number; update: string; delete: string }>> {
-  const refusals: Record<string, { rows: number; update: string; delete: string }> = {};
+): Promise<NonNullable<NonNullable<Report['coding']>['auditRefusals']>> {
+  const refusals: NonNullable<NonNullable<Report['coding']>['auditRefusals']> = {};
   for (const table of AUDIT_TABLES) {
     const rows = await stack.sqlJson<number>(`SELECT count(*) FROM ${table}`);
-    const attempt = async (statement: string) =>
-      stack.sqlJson(statement).then(
-        () => 'accepted',
+    const attempt = async (operation: 'UPDATE' | 'DELETE', statement: string) =>
+      stack.sql(`BEGIN; ${statement}; ROLLBACK;`).then(
+        (out) => ({ refused: false, message: `accepted: ${out.trim().replace(/\s+/g, ' ')}` }),
         (error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          return /ERROR:\s*([^\n]*)/.exec(message)?.[1] ?? message.slice(0, 200);
+          const text = error instanceof Error ? error.message : String(error);
+          const message = /ERROR:\s*([^\n]*)/.exec(text)?.[1] ?? text.slice(0, 200);
+          return { refused: APPEND_ONLY.exec(message)?.[1] === operation, message };
         },
       );
     refusals[table] = {
       rows,
-      update: await attempt(`UPDATE ${table} SET actor = actor`),
-      delete: await attempt(`DELETE FROM ${table}`),
+      update: await attempt('UPDATE', `UPDATE ${table} SET actor = actor`),
+      delete: await attempt('DELETE', `DELETE FROM ${table}`),
     };
   }
   return refusals;

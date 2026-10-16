@@ -21,6 +21,9 @@ const shiftKey = process.env.RECONCILE_SHIFT ?? '2026-10-12/A';
 const AUTHOR = 'reconcile e2e';
 const TEXT = 'Flood on Cell M1 at 08:00 handled; coolant line on CNC-01 to watch (#147).';
 const EDITED = `${TEXT} Edited: the maintenance ticket is open.`;
+/** Alarms of shift A acknowledged and codings saved by the `final` files before this one. */
+const ACKNOWLEDGED = 14;
+const CODINGS = 1;
 
 interface RawReport {
   final: boolean;
@@ -50,6 +53,12 @@ test('a handover note written and edited through the UI revises the content, not
     0,
   ]);
   expect(before.revision.contentAtFinal).not.toBeNull();
+  // Changed after final, before this note (ADR-0025: one step per acknowledgement of an alarm
+  // raised in the shift, one per recode inside it): the 14 alarms acknowledged by
+  // alarm-actions.spec.ts and the one coding saved by downtime-coding.spec.ts.
+  expect(before.revision.content - (before.revision.contentAtFinal ?? 0)).toBe(
+    ACKNOWLEDGED + CODINGS,
+  );
   // The OEE section is the shift's OEE byte for byte; each alarm scope is /alarms/kpi's bucket.
   const oeeText = await api.shiftOeeText(shiftKey);
   expect(JSON.stringify(before.oee)).toBe(oeeText);

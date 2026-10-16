@@ -2,7 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { expect, test } from '@playwright/test';
-import { MesClient } from '../src/clients.ts';
+import { MesClient, SimulatorClient } from '../src/clients.ts';
 import { percentile } from '../src/compare.ts';
 import {
   judgeLatency,
@@ -29,6 +29,14 @@ const POLL_MS = 100;
 const SNAPSHOT_MS = 2_000;
 /** The push sends at most one delta a second per topic (docs/api/realtime.md). */
 const PACING_MS = 2_000;
+/**
+ * A page value counts as seen by the polls only when the API held it within this of the sample
+ * (#147): four-decimal OEE values repeat, so "seen anywhere in the run" took a transient value
+ * the polls missed for a stale one. At least the snapshot window (`PACING_MS` before), so a page
+ * lagging less still has its stale values judged as stale, and one lagging more fails the
+ * snapshot agreement (unit tests in src/latency.test.ts). `MAX_UNOBSERVED` stays run-wide.
+ */
+const SEEN_WITHIN_MS = 5_000;
 /** At least this many judged changes per work-center card, and in all. */
 const MIN_CARD_CHANGES = 20;
 const MIN_CHANGES = 100;
@@ -41,6 +49,12 @@ const MAX_UNOBSERVED = 0.05;
 const MIN_AGREEMENT = 0.95;
 
 const mesUrl = process.env.RECONCILE_MES_URL;
+const simUrl = process.env.RECONCILE_SIM_URL;
+/**
+ * Sampling also ends when the paced clock reaches this (simulation time; the first injection less
+ * a margin, from reconcile.ts), so the alarm check after it starts in time in a slow environment.
+ */
+const sampleUntil = Date.parse(process.env.RECONCILE_OEE_UNTIL ?? '');
 const results = process.env.RECONCILE_RESULTS;
 
 declare global {
@@ -144,7 +158,22 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   const ids = [...testIds.keys()];
   const api = new Map<string, Change[]>(ids.map((id) => [id, []]));
   const snapshots: Snapshot[] = [];
-  const end = Date.now() + SAMPLE_MS;
+  // The wall time the paced clock reaches `sampleUntil`, from one ground-truth answer.
+  const startedSampling = Date.now();
+  let end = startedSampling + SAMPLE_MS;
+  let endedBy = 'OEE_SAMPLE_MS';
+  if (simUrl && !Number.isNaN(sampleUntil)) {
+    const sim = new SimulatorClient(simUrl);
+    const { speed } = await sim.status();
+    const sent = Date.now();
+    const { pacedTime } = await sim.groundTruth();
+    const polled = (sent + Date.now()) / 2;
+    const deadline = polled + (sampleUntil - Date.parse(pacedTime)) / speed;
+    if (deadline < end) {
+      end = deadline;
+      endedBy = 'RECONCILE_OEE_UNTIL';
+    }
+  }
   let nextSnapshot = Date.now() + SNAPSHOT_MS;
   let polls = 0;
   while (Date.now() < end) {
@@ -191,7 +220,8 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   // The first value seen is the state when sampling started, not a change.
   const truth = new Map(ids.map((id) => [id, (api.get(id) ?? []).slice(1)]));
   const observed = new Map(ids.map((id) => [id, new Set(api.get(id)?.map((c) => c.state))]));
-  const result = judgeLatency(truth, shown, until, LIMIT_MS, { observed });
+  const seenWithin = { truth: api, windowMs: SEEN_WITHIN_MS };
+  const result = judgeLatency(truth, shown, until, LIMIT_MS, { seenWithin });
   // The push is paced (one delta a second per topic) while the API changes about twice a second,
   // yet the page changed about 0.7 times per judged change in real runs: half is the usual floor.
   const activity = pageActivityProblems(result.measured, shown);
@@ -202,7 +232,7 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   });
   // The same judgement on the WebSocket's arrivals (the MES's part), and the page's own delay from
   // a value's arrival to the DOM.
-  const pushResult = judgeLatency(truth, pushed, until, LIMIT_MS, { observed });
+  const pushResult = judgeLatency(truth, pushed, until, LIMIT_MS, { seenWithin });
   const pushLatencies = pushResult.measured.flatMap((m) =>
     m.latencyMs === undefined ? [] : [m.latencyMs],
   );
@@ -232,6 +262,8 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   const summary = {
     shiftKey,
     sampleMs: SAMPLE_MS,
+    sampledMs: until - startedSampling,
+    endedBy,
     limitMs: LIMIT_MS,
     polls,
     changes: result.measured.length,

@@ -1,4 +1,5 @@
 import {
+  LOAD_ORDER_INPUTS,
   OPCUA_EVENT_FIELD_TYPES,
   OPCUA_EVENT_FIELDS,
   OPCUA_EVENT_TYPES,
@@ -26,7 +27,12 @@ import {
   type VariantOptions,
 } from 'node-opcua';
 import type { SimTime } from '@shopfloor/sim-core';
-import type { LoadProgramResult, PlantEvent } from '../plant/line.ts';
+import type {
+  LoadOrderRequest,
+  LoadOrderResult,
+  LoadProgramResult,
+  PlantEvent,
+} from '../plant/line.ts';
 import type { MachineState } from '../plant/machine-state.ts';
 import { machineryItemState, machineryOperationMode } from './machinery-state.ts';
 
@@ -54,6 +60,13 @@ export interface MachineServerOptions {
   readonly pkiFolder: string;
   readonly alarmCodes?: readonly string[];
   readonly loadProgram?: (product: string, quantity: number) => LoadProgramResult;
+  /**
+   * `LoadOrder` (#172, ADR-0030): the line's `loadOrder` with this device's epoch and wall clock
+   * as its guard. The server adds the acceptance's device sequence number (`AcceptedSeq`).
+   */
+  readonly loadOrder?: (request: LoadOrderRequest, wallNow: number) => LoadOrderResult;
+  /** The wall clock `ExpiresAt` is compared with; `Date.now` when left out. */
+  readonly wallClock?: () => number;
 }
 
 export interface TelemetrySource {
@@ -79,6 +92,8 @@ const VARIABLE_TYPES: Record<OpcuaVariable, ValueKind> = {
   leakRate: 'Double',
   leakUpperLimit: 'Double',
   alarmsActiveCount: 'UInt32',
+  activeOrder: 'String',
+  queuedJobs: 'UInt32',
 };
 
 const TELEMETRY: readonly OpcuaVariable[] = ['spindleLoad', 'coolantTemperature'];
@@ -92,6 +107,9 @@ export class MachineServer {
   readonly #counters = { produced: 0, good: 0, scrap: 0, rework: 0 };
   readonly #alarms = new Map<string, UAVariable>();
   readonly #activeAlarms = new Set<string>();
+  /** Orders mode (#172): each accepted command's job fact, its sequence number and plant time. */
+  readonly #acceptedJobs = new Map<string, { readonly seq: number; readonly at: SimTime }>();
+  #queuedJobs = 0;
   #machine: UAObject | undefined;
   #eventTypes: Partial<Record<keyof typeof OPCUA_EVENT_TYPES, UAEventType>> = {};
   #itemState: ReturnType<typeof promoteToStateMachine> | undefined;
@@ -215,6 +233,9 @@ export class MachineServer {
       case 'alarm':
         this.#onAlarm(event);
         break;
+      case 'job':
+        this.#onJob(event);
+        break;
       case 'material-consumed':
       case 'program-loaded':
       case 'repair-start':
@@ -304,6 +325,39 @@ export class MachineServer {
         transition: { dataType: DataType.String, value: event.transition },
       },
       event.severity,
+    );
+  }
+
+  /** The device fact of an accepted command (#172): `AcceptedSeq` and `AcceptedAt`, if any. */
+  acceptance(commandId: string): { readonly seq: number; readonly at: SimTime } | undefined {
+    return this.#acceptedJobs.get(commandId);
+  }
+
+  #onJob(event: Extract<PlantEvent, { type: 'job' }>): void {
+    const sequence = this.#next(event.at);
+    if (event.transition === 'accepted') {
+      this.#acceptedJobs.set(event.commandId, { seq: sequence, at: event.at });
+      this.#queuedJobs++;
+      this.#set('queuedJobs', this.#queuedJobs, event.at);
+    } else if (event.transition === 'started') {
+      this.#set('activeOrder', event.orderId, event.at);
+    } else {
+      this.#queuedJobs--;
+      this.#set('queuedJobs', this.#queuedJobs, event.at);
+      this.#set('activeOrder', '', event.at);
+    }
+    this.#raise(
+      'job',
+      event.at,
+      `${this.machineId}: job ${event.commandId} ${event.transition}`,
+      sequence,
+      {
+        transition: { dataType: DataType.String, value: event.transition },
+        commandId: { dataType: DataType.String, value: event.commandId },
+        orderId: { dataType: DataType.String, value: event.orderId },
+        product: { dataType: DataType.String, value: event.product },
+        quantity: { dataType: DataType.UInt32, value: event.quantity },
+      },
     );
   }
 
@@ -482,7 +536,10 @@ export class MachineServer {
         const good = StatusCodes.Good;
         const bad = StatusCodes.BadInvalidArgument;
         callback(null, {
-          statusCode: result.code === 'not-attached' ? StatusCodes.BadInvalidState : bad,
+          statusCode:
+            result.code === 'not-attached' || result.code === 'wrong-mode'
+              ? StatusCodes.BadInvalidState
+              : bad,
           inputArgumentResults:
             result.code === 'invalid-product'
               ? [bad, good]
@@ -491,6 +548,11 @@ export class MachineServer {
                 : [good, good],
         });
       });
+    }
+
+    const loadOrder = this.#options.loadOrder;
+    if (loadOrder && this.#options.kind === 'machine-tool') {
+      this.#addLoadOrder(ns, shopFloor, loadOrder);
     }
 
     for (const [kind, browseName] of Object.entries(OPCUA_EVENT_TYPES) as [
@@ -525,9 +587,133 @@ export class MachineServer {
     }
   }
 
+  /**
+   * `ShopFloor.LoadOrder` (#172, ADR-0030). Refusals flag the offending argument in
+   * `inputArgumentResults` (index in `LOAD_ORDER_INPUTS`): `BadInvalidState` for a refusal that
+   * no retry changes (`wrong-mode` with no argument, `epoch-mismatch` on DeviceEpoch, `expired` on
+   * ExpiresAt), `BadWaitingForInitialData` with no argument for a run not attached or started yet
+   * or already finished (`not-attached`, `not-running`: transient for the caller, which retries
+   * until the command's `ExpiresAt`), `BadInvalidArgument` for the job (`command-conflict` on
+   * CommandId, the product, quantity and ids), `BadResourceUnavailable` for a full queue.
+   */
+  #addLoadOrder(
+    ns: Namespace,
+    shopFloor: UAObject,
+    loadOrder: NonNullable<MachineServerOptions['loadOrder']>,
+  ): void {
+    const descriptions: Record<(typeof LOAD_ORDER_INPUTS)[number], [DataType, string]> = {
+      CommandId: [DataType.String, 'Command id, unique per job: {orderId}~OP10~{n}'],
+      OrderId: [DataType.String, 'MES order id'],
+      Product: [DataType.String, 'Product id, e.g. VB-200'],
+      Quantity: [DataType.UInt32, 'Blanks to machine'],
+      NotBefore: [DataType.DateTime, 'Plant time; the job does not start earlier'],
+      DeviceEpoch: [DataType.UInt32, 'The device epoch (run) the command is meant for'],
+      ExpiresAt: [DataType.DateTime, 'Wall time; a command not accepted by then is refused'],
+    };
+    const method = ns.addMethod(shopFloor, {
+      browseName: 'LoadOrder',
+      nodeId: `s=${this.machineId}.${OPCUA_METHODS.loadOrder}`,
+      inputArguments: LOAD_ORDER_INPUTS.map((name) => {
+        const [dataType, text] = descriptions[name];
+        return { name, dataType, description: { text } };
+      }),
+      outputArguments: [
+        {
+          name: 'Position',
+          dataType: DataType.UInt32,
+          description: { text: 'Place of the job in the CNC queue when accepted (1 = next)' },
+        },
+        {
+          name: 'Duplicate',
+          dataType: DataType.Boolean,
+          description: { text: 'True when the command id was already accepted with this job' },
+        },
+        {
+          name: 'AcceptedSeq',
+          dataType: DataType.UInt32,
+          description: { text: "Device sequence number of the job's accepted event" },
+        },
+        {
+          name: 'AcceptedAt',
+          dataType: DataType.DateTime,
+          description: { text: "Plant time of the job's accepted event" },
+        },
+      ],
+    });
+    method.bindMethod((inputArguments, _context, callback) => {
+      const values = inputArguments.map((argument) => argument.value as unknown);
+      const [commandId, orderId, product, quantity, notBefore, deviceEpoch, expiresAt] = values;
+      const good = StatusCodes.Good;
+      const flag = (index: number, status: typeof good) =>
+        LOAD_ORDER_INPUTS.map((_, i) => (i === index ? status : good));
+      if (
+        typeof commandId !== 'string' ||
+        typeof orderId !== 'string' ||
+        typeof product !== 'string' ||
+        typeof quantity !== 'number' ||
+        !(notBefore instanceof Date) ||
+        typeof deviceEpoch !== 'number' ||
+        !(expiresAt instanceof Date)
+      ) {
+        callback(null, { statusCode: StatusCodes.BadInvalidArgument });
+        return;
+      }
+      const result = loadOrder(
+        {
+          commandId,
+          orderId,
+          product,
+          quantity,
+          notBefore: notBefore.getTime(),
+          deviceEpoch,
+          expiresAt: expiresAt.getTime(),
+        },
+        (this.#options.wallClock ?? Date.now)(),
+      );
+      if (!result.ok) {
+        const state =
+          result.code === 'wrong-mode' ||
+          result.code === 'epoch-mismatch' ||
+          result.code === 'expired';
+        const transient = result.code === 'not-attached' || result.code === 'not-running';
+        const statusCode = transient
+          ? StatusCodes.BadWaitingForInitialData
+          : state
+            ? StatusCodes.BadInvalidState
+            : result.code === 'queue-full'
+              ? StatusCodes.BadResourceUnavailable
+              : StatusCodes.BadInvalidArgument;
+        const index =
+          result.argument === undefined ? -1 : LOAD_ORDER_INPUTS.indexOf(result.argument);
+        callback(null, {
+          statusCode,
+          inputArgumentResults: flag(index, index < 0 ? good : statusCode),
+        });
+        return;
+      }
+      const acceptance = this.#acceptedJobs.get(result.job.commandId);
+      if (!acceptance) {
+        // The accepted event never reached this server (it is not attached to the plant events).
+        callback(null, { statusCode: StatusCodes.BadInternalError });
+        return;
+      }
+      callback(null, {
+        statusCode: good,
+        outputArguments: [
+          { dataType: DataType.UInt32, value: result.job.position },
+          { dataType: DataType.Boolean, value: result.duplicate },
+          { dataType: DataType.UInt32, value: acceptance.seq },
+          { dataType: DataType.DateTime, value: new Date(acceptance.at) },
+        ],
+      });
+    });
+  }
+
   #exposes(variable: OpcuaVariable): boolean {
     switch (variable) {
       case 'program':
+      case 'activeOrder':
+      case 'queuedJobs':
       case 'spindleLoad':
       case 'coolantTemperature':
         return this.#options.kind === 'machine-tool';

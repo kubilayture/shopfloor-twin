@@ -1,7 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { opcuaEndpoint } from '@shopfloor/contracts';
-import { OPCUAClient, type ClientSession } from 'node-opcua';
+import {
+  LOAD_ORDER_INPUTS,
+  OPCUA_METHODS,
+  SHOPFLOOR_NAMESPACE_URI,
+  opcuaEndpoint,
+  opcuaNodeId,
+  toIndexedNodeId,
+} from '@shopfloor/contracts';
+import { DataType, OPCUAClient, resolveNodeId, type ClientSession } from 'node-opcua';
 
 export const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -20,6 +27,50 @@ export async function connect(
       await session.close();
       await client.disconnect();
     },
+  };
+}
+
+export interface LoadOrderCall {
+  readonly commandId: string;
+  readonly orderId: string;
+  readonly product: string;
+  readonly quantity: number;
+  readonly notBefore: number;
+  readonly deviceEpoch: number;
+  readonly expiresAt: number;
+}
+
+/**
+ * Calls a CNC's `ShopFloor.LoadOrder` (#172): the status name, the flagged arguments
+ * (`<argument> <status>`) and the outputs (dates as epoch milliseconds).
+ */
+export async function callLoadOrder(session: ClientSession, machine: string, call: LoadOrderCall) {
+  const namespaces = await session.readNamespaceArray();
+  const result = await session.call({
+    objectId: resolveNodeId(
+      toIndexedNodeId(`nsu=${SHOPFLOOR_NAMESPACE_URI};s=${machine}.ShopFloor`, namespaces),
+    ),
+    methodId: resolveNodeId(
+      toIndexedNodeId(opcuaNodeId(machine, OPCUA_METHODS.loadOrder), namespaces),
+    ),
+    inputArguments: [
+      { dataType: DataType.String, value: call.commandId },
+      { dataType: DataType.String, value: call.orderId },
+      { dataType: DataType.String, value: call.product },
+      { dataType: DataType.UInt32, value: call.quantity },
+      { dataType: DataType.DateTime, value: new Date(call.notBefore) },
+      { dataType: DataType.UInt32, value: call.deviceEpoch },
+      { dataType: DataType.DateTime, value: new Date(call.expiresAt) },
+    ],
+  });
+  return {
+    status: result.statusCode.name,
+    flagged: (result.inputArgumentResults ?? [])
+      .map((r, i) => (r.name === 'Good' ? undefined : `${LOAD_ORDER_INPUTS[i] ?? '?'} ${r.name}`))
+      .filter((x) => x !== undefined),
+    outputs: (result.outputArguments ?? []).map((o) =>
+      o.value instanceof Date ? o.value.getTime() : (o.value as unknown),
+    ),
   };
 }
 

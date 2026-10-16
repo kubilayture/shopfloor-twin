@@ -95,6 +95,11 @@ export interface OeeResultJson {
 export interface BucketInputsJson {
   readonly scheduled: boolean;
   readonly stateMs: StateMs;
+  /**
+   * The part of `stateMs.Idle` with cause `NO-ORDER` (#172); present only when above 0, so a
+   * schedule-mode summary is unchanged.
+   */
+  readonly noOrderIdleMs?: number;
   readonly stops: readonly StopPiece[];
   readonly cycles: readonly CycleCount[];
 }
@@ -136,6 +141,7 @@ interface Bucket {
 
 interface HourBucket extends Bucket {
   readonly stateMs: StateMs;
+  noOrderIdleMs: number;
 }
 
 interface MachineOee {
@@ -299,11 +305,24 @@ export class OeeTruth {
     return key;
   }
 
-  /** Time in `state` over [from, to), credited to its UTC hours. */
-  addTime(machineId: string, state: MachineState, from: SimTime, to: SimTime): void {
+  /**
+   * Time in `state` over [from, to), credited to its UTC hours; `noOrder` marks Idle with cause
+   * `NO-ORDER` (#172), kept apart for `scheduledTime: orders`.
+   */
+  addTime(
+    machineId: string,
+    state: MachineState,
+    from: SimTime,
+    to: SimTime,
+    noOrder = false,
+  ): void {
     const machine = this.#machine(machineId);
     for (const piece of hourPieces(from, to)) {
-      this.#hour(machine, piece.hour).stateMs[state] += piece.ms;
+      const bucket = this.#hour(machine, piece.hour);
+      bucket.stateMs[state] += piece.ms;
+      if (noOrder) {
+        bucket.noOrderIdleMs += piece.ms;
+      }
     }
   }
 
@@ -343,8 +362,9 @@ export class OeeTruth {
    */
   summary(
     now: SimTime,
-    open: ReadonlyMap<string, { state: MachineState; since: SimTime }>,
+    open: ReadonlyMap<string, { state: MachineState; since: SimTime; noOrder?: boolean }>,
     byShift: ReadonlyMap<string, Readonly<Record<string, StateMs>>>,
+    noOrderByShift: ReadonlyMap<string, Readonly<Record<string, number>>> = new Map(),
   ): OeeSummary {
     const inputsByShift = new Map<string, Map<string, BucketInput>>();
     const machines: Record<string, MachineOeeJson> = {};
@@ -370,15 +390,20 @@ export class OeeTruth {
       for (const hour of hourKeys) {
         const bucket = machine.hours.get(hour);
         const stateMs = bucket ? { ...bucket.stateMs } : zeroStates();
+        let noOrderIdleMs = bucket?.noOrderIdleMs ?? 0;
         const extra = openHours.get(hour);
         if (extra !== undefined && current) {
           stateMs[current.state] += extra;
+          if (current.noOrder === true) {
+            noOrderIdleMs += extra;
+          }
         }
         const shift = this.shiftKeyOfHour(hour);
         hours[isoTime(hour)] = {
           shift,
           scheduled: shift !== NO_SHIFT,
           stateMs,
+          ...(noOrderIdleMs > 0 ? { noOrderIdleMs } : {}),
           stops: withOpen(bucket?.stops, hourStops.get(hour)),
           cycles: cycleCounts(bucket?.cycles ?? new Map()),
         };
@@ -391,12 +416,15 @@ export class OeeTruth {
       );
       const shifts: MachineOeeJson['shifts'] = {};
       const states = byShift.get(id) ?? {};
+      const noOrder = noOrderByShift.get(id) ?? {};
       const keys = [...new Set([...Object.keys(states), ...machine.shifts.keys()])].sort();
       for (const key of keys) {
         const bucket = machine.shifts.get(key);
+        const noOrderIdleMs = noOrder[key] ?? 0;
         const inputs: BucketInputsJson = {
           scheduled: key !== NO_SHIFT,
           stateMs: { ...(states[key] ?? zeroStates()) },
+          ...(noOrderIdleMs > 0 ? { noOrderIdleMs } : {}),
           stops: withOpen(bucket?.stops, shiftStops.get(key)),
           cycles: cycleCounts(bucket?.cycles ?? new Map()),
         };
@@ -471,7 +499,7 @@ export class OeeTruth {
   #hour(machine: MachineOee, hour: SimTime): HourBucket {
     let bucket = machine.hours.get(hour);
     if (!bucket) {
-      bucket = { stateMs: zeroStates(), stops: [], cycles: new Map() };
+      bucket = { stateMs: zeroStates(), noOrderIdleMs: 0, stops: [], cycles: new Map() };
       machine.hours.set(hour, bucket);
     }
     return bucket;

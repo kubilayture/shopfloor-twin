@@ -9,14 +9,16 @@ import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { isoTime } from '../headless/serialize.ts';
 import type { LiveGroundTruth } from '../live/run.ts';
 import type { FailureInjection, InjectFailureRequest, InjectFailureResult } from '../plant/line.ts';
+import { PRODUCTION_MODES } from '../plant/line.ts';
 import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
 import type { EventHub } from './event-hub.ts';
 
 /**
  * The contract version (docs/contracts/simulator-control-api.md); 1.2 adds the OEE ground truth,
- * 1.3 failure injection and the alarm ground truth (#140).
+ * 1.3 failure injection and the alarm ground truth (#140), 1.4 the production mode and the order
+ * ground truth (#172).
  */
-export const CONTROL_API_VERSION = '1.3.0';
+export const CONTROL_API_VERSION = '1.4.0';
 export const API_PREFIX = '/api/v1';
 export const EVENTS_PATH = `${API_PREFIX}/events`;
 /** A WebSocket client that falls this far behind is disconnected rather than buffered without bound. */
@@ -105,6 +107,9 @@ const oeeResultSchema = z
 const bucketInputsShape = {
   scheduled: z.boolean(),
   stateMs: stateMsSchema,
+  noOrderIdleMs: count
+    .optional()
+    .describe('The part of Idle with cause NO-ORDER (#172); only when above 0'),
   stops: z
     .array(z.object({ ms: count, wholeMs: count, open: z.boolean().optional() }))
     .describe('Stopped pieces with the whole interval length; an open one runs to simTime'),
@@ -115,7 +120,12 @@ const bucketInputsShape = {
 
 export const oeeSchema = z
   .object({
-    config: z.object({ microStopThresholdMs: count, scheduledTime: z.literal('shift-calendar') }),
+    config: z.object({
+      microStopThresholdMs: count,
+      scheduledTime: z
+        .enum(['shift-calendar', 'orders'])
+        .describe('oee.yaml: orders excludes Idle NO-ORDER from planned busy time (#172)'),
+    }),
     machines: z.record(
       z.string(),
       z.object({
@@ -239,6 +249,47 @@ export const alarmsSchema = z
   })
   .describe('Alarm occurrences and KPIs per position and plant, per hour and shift bucket (#140)');
 
+const operationQuantitiesSchema = z.object({ in: count, good: count, scrap: count, rework: count });
+
+export const ordersSchema = z
+  .object({
+    jobs: z.array(
+      z.object({
+        commandId: z.string(),
+        orderId: z.string(),
+        machine: z.string(),
+        product: z.string(),
+        quantity: count,
+        acceptedAt: isoSchema,
+        startedAt: isoSchema.nullable(),
+        completedAt: isoSchema.nullable(),
+      }),
+    ),
+    orders: z.record(
+      z.string(),
+      z.object({
+        product: z.string(),
+        jobs: z.array(z.string()),
+        quantity: count,
+        started: count,
+        scrap: z.record(z.string(), z.record(z.string(), count)),
+        reworkPasses: count,
+        packedGood: count,
+        wip: z.record(z.string(), count),
+        lastTerminalAt: isoSchema.nullable(),
+        completedAt: isoSchema.nullable(),
+        operations: z.record(z.string(), operationQuantitiesSchema),
+        material: z.record(z.string(), count),
+        materialInProcess: z.record(z.string(), count),
+      }),
+    ),
+    units: z.object({ count, sha256: z.string() }),
+  })
+  .describe(
+    "Jobs, per-order quantities, WIP and material, and the hash of every unit's operation " +
+      'records (#172); empty in schedule mode',
+  );
+
 export const injectionSchema = z.object({
   id: count,
   machine: z.string(),
@@ -270,6 +321,7 @@ export const injectBodySchema = z
 
 export const groundTruthSchema = z.object({
   epoch: count.describe('Run epoch (Unix seconds), as the devices publish it (ADR-0015)'),
+  productionMode: z.enum(PRODUCTION_MODES).describe('The production mode of the run (#172)'),
   start: z.string().describe('Simulation start, ISO 8601 UTC'),
   simTime: z
     .string()
@@ -310,6 +362,7 @@ export const groundTruthSchema = z.object({
   lots: z.record(z.string(), z.number()).describe('Remaining quantity per material lot'),
   oee: oeeSchema,
   alarms: alarmsSchema,
+  orders: ordersSchema,
 });
 
 /** The live ground truth with the run's epoch: what `GET /api/v1/ground-truth` returns. */

@@ -40,6 +40,7 @@ export class Stack {
       MQTT_DEV_PASSWORD: secret(),
       MQTT_GATEWAY_PASSWORD: secret(),
       MQTT_MES_PASSWORD: secret(),
+      ERP_API_TOKEN: secret(),
       ...this.#env,
     };
     const text = Object.entries(values)

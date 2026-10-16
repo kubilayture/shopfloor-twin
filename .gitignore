@@ -15,6 +15,7 @@ apps/*/runs/
 .pki/
 .pki-gateway/
 .buffer/
+.store/
 
 # Reconciliation run output (#100): report, compose logs, Playwright traces.
 e2e/results/

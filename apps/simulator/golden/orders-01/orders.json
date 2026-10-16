@@ -1,0 +1,105 @@
+{
+  "description": "ERP dataset of the golden scenario orders-01 (#172): every order version in feed order. The lots are config/plant/stock.yaml's, served by the ERP mock and stocked by the simulator.",
+  "orders": [
+    {
+      "feed": 1,
+      "number": "PO-2610-001",
+      "revision": 1,
+      "product": "VB-100",
+      "quantity": 12,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-12T14:00:00+03:00",
+      "priority": 2
+    },
+    {
+      "feed": 2,
+      "number": "PO-2610-002",
+      "revision": 1,
+      "product": "VB-200",
+      "quantity": 10,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-12T14:00:00+03:00",
+      "priority": 2
+    },
+    {
+      "feed": 3,
+      "number": "PO-2610-003",
+      "revision": 1,
+      "product": "VB-200",
+      "quantity": 8,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-12T14:00:00+03:00",
+      "priority": 2
+    },
+    {
+      "feed": 4,
+      "number": "PO-2610-004",
+      "revision": 1,
+      "product": "VB-100",
+      "quantity": 12,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-12T14:00:00+03:00",
+      "priority": 2
+    },
+    {
+      "feed": 5,
+      "number": "PO-2610-005",
+      "revision": 1,
+      "product": "VB-100",
+      "quantity": 150,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-13T06:00:00+03:00",
+      "priority": 3
+    },
+    {
+      "feed": 6,
+      "number": "PO-2610-006",
+      "revision": 1,
+      "product": "VB-100",
+      "quantity": 5,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-12T14:00:00+03:00",
+      "priority": 1
+    },
+    {
+      "feed": 7,
+      "number": "PO-2610-007",
+      "revision": 1,
+      "product": "VB-200",
+      "quantity": 20,
+      "plannedStart": "2026-10-13T11:17:00+03:00",
+      "dueDate": "2026-10-13T19:17:00+03:00",
+      "priority": 2
+    },
+    {
+      "feed": 8,
+      "number": "PO-2610-008",
+      "revision": 1,
+      "product": "VB-200",
+      "quantity": 30,
+      "plannedStart": "2026-10-13T11:17:00+03:00",
+      "dueDate": "2026-10-14T11:17:00+03:00",
+      "priority": 3
+    },
+    {
+      "feed": 9,
+      "number": "PO-2610-009",
+      "revision": 1,
+      "product": "VB-200",
+      "quantity": 200,
+      "plannedStart": "2026-10-13T11:17:00+03:00",
+      "dueDate": "2026-10-14T17:17:00+03:00",
+      "priority": 3
+    },
+    {
+      "feed": 10,
+      "number": "PO-2610-006",
+      "revision": 2,
+      "product": "VB-100",
+      "quantity": 6,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-12T14:00:00+03:00",
+      "priority": 1
+    }
+  ]
+}

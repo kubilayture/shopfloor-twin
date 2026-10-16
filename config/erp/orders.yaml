@@ -1,0 +1,49 @@
+# ERP mock dataset (#171, ADR-0028): the order versions the ERP mock serves, in change-feed order.
+# The feed number of an entry is its position (1-based); an order's revisions must rise in feed
+# order. Routing and BOM come from config/plant (products.yaml, plant.yaml) unless an entry gives
+# its own; lots come from config/plant/stock.yaml unless the file has a `lots` list.
+#
+# Fields: orderNumber, revision, product, quantity (units), plannedStart and dueDate (plant time,
+# ISO 8601 with offset), priority (1 most urgent, default 5), status (open | cancelled, default open).
+# Times are plant time: the dev stack's simulator starts on 2026-10-12 06:00 (+03:00).
+
+orders:
+  - orderNumber: ORD-1001
+    revision: 1
+    product: VB-100
+    quantity: 60
+    plannedStart: '2026-10-12T06:00:00+03:00'
+    dueDate: '2026-10-12T22:00:00+03:00'
+    priority: 3
+  - orderNumber: ORD-1002
+    revision: 1
+    product: VB-200
+    quantity: 40
+    plannedStart: '2026-10-12T06:00:00+03:00'
+    dueDate: '2026-10-13T06:00:00+03:00'
+  - orderNumber: ORD-1003
+    revision: 1
+    product: VB-100
+    quantity: 80
+    plannedStart: '2026-10-12T14:00:00+03:00'
+    dueDate: '2026-10-13T14:00:00+03:00'
+  - orderNumber: ORD-1004
+    revision: 1
+    product: VB-200
+    quantity: 50
+    plannedStart: '2026-10-13T06:00:00+03:00'
+    dueDate: '2026-10-14T06:00:00+03:00'
+  # A revision before release: the quantity changes.
+  - orderNumber: ORD-1003
+    revision: 2
+    product: VB-100
+    quantity: 100
+    plannedStart: '2026-10-12T14:00:00+03:00'
+    dueDate: '2026-10-13T14:00:00+03:00'
+  - orderNumber: ORD-1005
+    revision: 1
+    product: VB-100
+    quantity: 120
+    plannedStart: '2026-10-13T14:00:00+03:00'
+    dueDate: '2026-10-14T22:00:00+03:00'
+    priority: 7

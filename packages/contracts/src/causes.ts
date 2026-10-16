@@ -14,7 +14,7 @@ export const CAUSES = {
   toolChange: 'TOOL-CHANGE',
   /** Maintenance: the leak tester's planned calibration. */
   calibration: 'CALIBRATION',
-  /** Idle: a CNC has worked through its schedule. */
+  /** Idle: a CNC has worked through its schedule (production mode `schedule`). */
   scheduleComplete: 'SCHEDULE-COMPLETE',
   /** Idle: a station that needs an operator has none this shift. */
   noOperator: 'NO-OPERATOR',
@@ -22,6 +22,11 @@ export const CAUSES = {
   break: 'BREAK',
   /** Off: the end of a shift. */
   shiftEnd: 'SHIFT-END',
+  /**
+   * Idle: a CNC in production mode `orders` has no startable job: its queue is empty, or the head
+   * job waits for its `NotBefore` (#172, ADR-0030). Only orders-mode runs emit it.
+   */
+  noOrder: 'NO-ORDER',
 } as const;
 
 export type FixedCause = (typeof CAUSES)[keyof typeof CAUSES];
@@ -73,6 +78,7 @@ export function causeVocabulary(inputs: CauseInputs): StateCause[] {
     { state: 'Maintenance', cause: CAUSES.calibration },
     { state: 'Idle', cause: CAUSES.scheduleComplete },
     { state: 'Idle', cause: CAUSES.noOperator },
+    { state: 'Idle', cause: CAUSES.noOrder },
     { state: 'PlannedStop', cause: CAUSES.break },
     { state: 'Off', cause: CAUSES.shiftEnd },
     ...unique(inputs.materials).map((material) => ({

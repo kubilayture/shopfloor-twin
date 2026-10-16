@@ -13,6 +13,10 @@ export type { AlarmInputs, AlarmPoint } from './alarms.ts';
 export { ALARM_SNAPSHOT_NAME, UNS_CLASSES, UNS_ROOT, equipmentTopic } from './uns-topic.ts';
 export type { EquipmentTopic, UnsClass } from './uns-topic.ts';
 export {
+  JOB_TRANSITIONS,
+  LOAD_ORDER_INPUTS,
+  LOAD_ORDER_OUTPUTS,
+  MAX_QUEUED_JOBS,
   OPCUA_ALARM_FOLDER,
   OPCUA_BASE_PORT,
   OPCUA_EVENT_FIELDS,
@@ -28,7 +32,7 @@ export {
   opcuaNodeId,
   toIndexedNodeId,
 } from './opcua.ts';
-export type { OpcuaMachineId, OpcuaVariable } from './opcua.ts';
+export type { JobTransition, OpcuaMachineId, OpcuaVariable } from './opcua.ts';
 export {
   INCIDENT_TYPES,
   MACHINE_STATES,

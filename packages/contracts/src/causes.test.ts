@@ -19,6 +19,7 @@ describe('cause vocabulary (#119)', () => {
       'NO-OPERATOR',
       'BREAK',
       'SHIFT-END',
+      'NO-ORDER',
     ]);
     expect(materialCause('BLANK-100')).toBe('MATERIAL:BLANK-100');
     expect(changeoverCause('VB-100', 'VB-200')).toBe('CHANGEOVER VB-100→VB-200');
@@ -45,6 +46,7 @@ describe('cause vocabulary (#119)', () => {
       { state: 'Maintenance', cause: 'CALIBRATION' },
       { state: 'Idle', cause: 'SCHEDULE-COMPLETE' },
       { state: 'Idle', cause: 'NO-OPERATOR' },
+      { state: 'Idle', cause: 'NO-ORDER' },
       { state: 'PlannedStop', cause: 'BREAK' },
       { state: 'Off', cause: 'SHIFT-END' },
       { state: 'Starved', cause: 'MATERIAL:M-1' },

@@ -5,6 +5,7 @@
 **/dist
 **/.pki
 **/runs
+**/.store
 .git
 .github
 **/.env*

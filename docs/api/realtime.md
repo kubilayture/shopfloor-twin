@@ -43,7 +43,7 @@
 
 ### OEE and downtime topics (#120)
 
-- `oee:<id>` names an equipment or a work center (`cell-m1`, `line-a1`); another id gets `unknown-equipment`. The buckets are those the plant clock (the newest epoch's watermark) is in, read just before it: at 07:00:00.000 the current hour is 06:00. Each is the full bucket of `GET /api/v1/oee` (inputs, exact fractions, losses, `final`, `provisionalMs`, `revision`, `incidents`), so a client replaces what it holds.
+- `oee:<id>` names an equipment or a work center (`cell-m1`, `line-a1`); another id gets `unknown-equipment`. The epoch is the plant clock's, for all machines of a work center alike. The buckets are those the plant clock (the newest epoch's watermark) is in, read just before it: at 07:00:00.000 the current hour is 06:00. Each is the full bucket of `GET /api/v1/oee` (inputs, exact fractions, losses, `final`, `provisionalMs`, `revision`, `incidents`), so a client replaces what it holds.
 - The topic is computed off ingest's path: a change to a member's pieces or cycles marks it dirty, and a timer computes dirty topics at most once a second (`oee` delta only when the result differs). The snapshot of a new subscriber comes from the next computation, never from a stale one; a pending delta of that topic is dropped for it.
 - `downtime` has no snapshot (read `GET /api/v1/downtime` first). Every record change follows a change of its pieces; the MES reads the records of the changed hours about 250 ms later and compares them with those it knows. A record that is created and closed between two reads arrives once, as `created` with its end. Deltas are keyed per record, so a slow client may get only the latest event of a record: treat every `downtime` message as an upsert by `record.id` (`removed`: delete).
 

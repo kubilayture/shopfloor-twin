@@ -40,6 +40,12 @@ export interface AggregateStatus {
   readonly refreshes: number;
   /** Failed refreshes in a row (0 after a success): the retry backs off with them. */
   readonly failures: number;
+  /**
+   * Moves whenever `isRefreshed` may change: an hour marked dirty, a refresh finished or failed.
+   * A reader samples it before and after its reads; unchanged, the finality it saw held
+   * throughout (#120).
+   */
+  readonly generation: number;
 }
 
 const hourOf = (at: Millis): Millis => Math.floor(at / HOUR) * HOUR;
@@ -91,6 +97,7 @@ export class AggregateRefresher {
   #running: Promise<void> | undefined;
   #caughtUp: Promise<void> | undefined;
   #refreshes = 0;
+  #generation = 0;
   /** Failed refreshes in a row: the backoff. */
   #failures = 0;
   #stopped = false;
@@ -112,7 +119,10 @@ export class AggregateRefresher {
         marked = true;
       }
     }
-    if (marked) this.#schedule();
+    if (marked) {
+      this.#generation++;
+      this.#schedule();
+    }
   }
 
   /** Buckets are final up to `end` (a whole hour): the aggregate is to be materialised up to it. */
@@ -167,6 +177,7 @@ export class AggregateRefresher {
         .map((hour) => new Date(hour)),
       refreshes: this.#refreshes,
       failures: this.#failures,
+      generation: this.#generation,
     };
   }
 
@@ -295,10 +306,12 @@ export class AggregateRefresher {
       // Retried with the next refresh.
       for (const hour of taken) this.#dirty.add(hour);
       this.#inflight = new Set();
+      this.#generation++;
       throw error;
     }
     const ms = Math.round(performance.now() - began);
     this.#refreshes++;
+    this.#generation++;
     this.#inflight = new Set();
     this.#covered = Math.max(covered, end);
     const window: RefreshWindow = {

@@ -8,8 +8,8 @@
  * - `Oee.shift(bucket, epoch?)`: one shift bucket for every machine and work center.
  * - `Oee.current(scope, id)`: the hour and shift bucket at the plant clock (push).
  * - `Oee.onChange(listener)`: after the pieces or cycles of an hour changed.
- * - `Oee.downtimeRecords(...)` and `pareto(...)`: the downtime Pareto (loss by reason, micro-stops
- *   by cause); `DowntimeFeed`: record changes for push; `downtimeId(record)`: the API's record id.
+ * - `Oee.paretoInputs(...)` and `pareto(...)`: the downtime Pareto (loss by reason, without a
+ *   row limit; micro-stops by cause); `DowntimeFeed`: record changes for push; `downtimeId(record)`: the API's record id.
  * - `shiftInstances`, `shiftInstance`, `shiftBuckets`: shift instances from the calendar.
  */
 export { Oee } from './oee.ts';

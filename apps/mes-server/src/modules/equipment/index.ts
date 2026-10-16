@@ -28,7 +28,9 @@
  *   snapshot; `stopPieces(...)` reads the latter alone.
  *
  * For downtime (#119, #120):
- * - `Equipment.downtimeRecords({ from, to, equipment?, epoch?, uncodedFirst?, limit? })`: the
+ * - `Equipment.downtimeLoss({ from, to, equipment?, epoch? })`: the records' time per reason,
+ *   summed in the database without a row limit (#120, the Pareto).
+ * - `Equipment.downtimeRecords({ from, to, equipment?, epoch?, uncodedFirst?, uncoded?, limit? })`: the
  *   downtime records (availability-loss intervals per shift bucket, with their auto reason)
  *   overlapping a range; the reason tree itself is `MasterData.reasonCodes()`.
  * - `downtimeRules(config)`: the threshold and reason rules of a plant configuration, for
@@ -39,6 +41,7 @@ export { downtimeRules } from './downtime.ts';
 export type { DowntimeRules } from './downtime.ts';
 export type {
   CurrentState,
+  DowntimeLoss,
   DowntimeQuery,
   DowntimeRecord,
   EquipmentChange,

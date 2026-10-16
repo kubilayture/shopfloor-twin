@@ -129,7 +129,7 @@ describe('hourly aggregates (#118)', () => {
     expect(notices.filter((type) => type === 'epoch')).toHaveLength(2);
     expect(changes.length).toBeGreaterThan(0);
     // Pieces are written as they come; nothing is refreshed on the acknowledgement path.
-    expect(equipment.stateAggregate()).toEqual({
+    expect(equipment.stateAggregate()).toMatchObject({
       refreshedThrough: null,
       dirty: [],
       refreshes: 0,

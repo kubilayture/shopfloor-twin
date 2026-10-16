@@ -1,6 +1,5 @@
 import websocket from '@fastify/websocket';
 import type { IncomingHttpHeaders } from 'node:http';
-import { UNCODED } from '@shopfloor/plant-config';
 import { NO_SHIFT } from '@shopfloor/shift-calendar';
 import type { FastifyInstance } from 'fastify';
 import type { Registry } from 'prom-client';
@@ -77,7 +76,7 @@ export interface ApiSources {
     | 'current'
     | 'members'
     | 'workCenters'
-    | 'downtimeRecords'
+    | 'paretoInputs'
     | 'reasonCodes'
     | 'onChange'
     | 'config'
@@ -652,17 +651,17 @@ export async function registerRealtime(
         async ({ query }) => {
           if (query.equipment !== undefined) known(query.equipment);
           const { equipment } = ready().sources;
+          // Filtered in the database, so `truncated` counts only the records that match.
           const found = await equipment.downtimeRecords({
             from: query.from,
             to: query.to,
-            uncodedFirst: query.uncoded,
+            uncodedFirst: true,
+            uncoded: query.uncoded,
             limit: LIMITS.downtimeRecords + 1,
             ...(query.equipment === undefined ? {} : { equipment: query.equipment }),
           });
           const truncated = found.length > LIMITS.downtimeRecords;
-          const records = (truncated ? found.slice(0, LIMITS.downtimeRecords) : found).filter(
-            (record) => !query.uncoded || record.autoReason === UNCODED,
-          );
+          const records = truncated ? found.slice(0, LIMITS.downtimeRecords) : found;
           return {
             from: iso(query.from),
             to: iso(query.to),
@@ -680,33 +679,27 @@ export async function registerRealtime(
           description:
             'Own and external availability loss by reason from the downtime records, micro-stops ' +
             '(performance loss) by cause from the Stopped intervals below the threshold, all ' +
-            'clipped to the range. Per machine the newest epoch with data, unless `epoch` is given.',
+            'clipped to the range, without a row limit: the sums equal the OEE losses. Epoch: the ' +
+            'one given, else the newest with data (one for all machines of a work center).',
           tags: ['downtime', 'oee'],
           query: paretoQuery,
           response: paretoSchema,
           errors: [400, 404, 503],
         },
         async ({ query }) => {
-          const { oee, equipment } = ready().sources;
-          const machines = await members(query.scope, query.id);
+          const { oee } = ready().sources;
+          await members(query.scope, query.id);
           const [read, reasons] = await Promise.all([
-            oee.downtimeRecords(
-              machines,
-              query.from,
-              query.to,
-              query.epoch,
-              LIMITS.downtimeRecords,
-            ),
+            oee.paretoInputs(query.scope, query.id, query.from, query.to, query.epoch),
             oee.reasonCodes(),
           ]);
           const result = pareto({
-            records: read.records,
+            losses: read.losses,
             stops: read.stops,
             from: query.from,
             to: query.to,
             thresholdMs: oee.config.microStopThresholdMs,
             reasons,
-            watermark: (epoch) => equipment.watermark(epoch),
           });
           return {
             scope: query.scope,

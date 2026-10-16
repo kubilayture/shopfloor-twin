@@ -234,12 +234,12 @@ describe('OEE on read (#120)', () => {
   });
 
   it('builds the Pareto from the records and the micro-stops, equal to the OEE losses', async () => {
-    const read = await oee.downtimeRecords(
-      ['cnc-01'],
+    const read = await oee.paretoInputs(
+      'equipment',
+      'cnc-01',
       date('03:00'),
       date('11:00'),
       undefined,
-      100,
     );
     const result = pareto({
       ...read,
@@ -247,7 +247,6 @@ describe('OEE on read (#120)', () => {
       to: date('11:00'),
       thresholdMs: plant.oee.microStopThresholdMs,
       reasons: await oee.reasonCodes(),
-      watermark: (epoch) => equipment.watermark(epoch),
     });
     expect(result.availability).toEqual({ own: 30 * MINUTE, external: 0 });
     expect(result.reasons.map((r) => [r.reason, r.loss, r.ms, r.records])).toEqual([
@@ -256,9 +255,24 @@ describe('OEE on read (#120)', () => {
     ]);
     expect(result.microStops).toEqual([{ cause: 'jam', ms: MINUTE, stops: 1 }]);
     expect(read.members).toEqual([{ equipment: 'cnc-01', epoch: E1 }]);
-    expect(downtimeId(read.records[0] ?? { equipment: '', epoch: 0, start: new Date(0) })).toBe(
+    const [first] = await equipment.downtimeRecords({
+      from: date('03:00'),
+      to: date('11:00'),
+      equipment: 'cnc-01',
+    });
+    expect(downtimeId(first ?? { equipment: '', epoch: 0, start: new Date(0) })).toBe(
       `cnc-01~${String(E1)}~${String(at('03:50'))}`,
     );
+    // The work center sums its machines (CNC-02 and the washer ran without a loss).
+    const cell = await oee.paretoInputs(
+      'work-center',
+      'cell-m1',
+      date('03:00'),
+      date('11:00'),
+      undefined,
+    );
+    expect(cell.members.map((m) => m.equipment)).toEqual(['cnc-01']);
+    expect(cell.losses.reduce((sum, l) => sum + l.ms, 0)).toBe(30 * MINUTE);
   });
 
   it('keeps an open stop provisional and reports changes and downtime records as they happen', async () => {
@@ -308,5 +322,67 @@ describe('OEE on read (#120)', () => {
     expect(after.hour?.result.losses?.availability.own.stopped).toBe(BigInt(10 * MINUTE));
     feedOfRecords.stop();
     stopListening();
+  });
+
+  it('reports nothing final when the refresh state moved during both reads', async () => {
+    const query = {
+      scope: 'equipment' as const,
+      id: 'cnc-01',
+      bucket: 'shift' as const,
+      from: date('03:00'),
+      to: date('11:00'),
+    };
+    const [steady] = await oee.buckets(query);
+    expect(steady?.final).toBe(true);
+    // A refresh finishing between every sample: each read overlaps one.
+    let generation = 0;
+    const moving = new Oee({
+      equipment,
+      ingest: {
+        cycleHourly: (...args: Parameters<Ingest['cycleHourly']>) => ingest.cycleHourly(...args),
+        cyclesRefreshed: (hour: Date) => ingest.cyclesRefreshed(hour),
+        onStored: (listener: Parameters<Ingest['onStored']>[0]) => ingest.onStored(listener),
+        cycleAggregate: () => ({
+          refreshedThrough: null,
+          dirty: [],
+          refreshes: generation,
+          failures: 0,
+          generation: generation++,
+        }),
+      },
+      masterData,
+      shiftPattern: oee.shiftPattern,
+      config: plant.oee,
+      idealCycleMs: idealCycleMs(plant),
+    });
+    const [unsettled] = await moving.buckets(query);
+    expect(unsettled?.result).toEqual(steady?.result);
+    expect(unsettled?.final).toBe(false);
+    expect(generation).toBe(4); // sampled before and after, read twice
+  });
+
+  it('reads one epoch for a whole work center: the newest any of its machines has', async () => {
+    // CNC-02 restarts into a newer run during shift A; the others stay in E1.
+    const E2 = E1 + 3_600;
+    await send(
+      feed.state('cnc-02', E2, 1, at('10:00'), 'Running'),
+      feed.state('cnc-02', E2, 2, at('10:30'), 'Idle'),
+    );
+    await refresh();
+    const query = {
+      scope: 'work-center' as const,
+      id: 'cell-m1',
+      bucket: 'shift' as const,
+      from: date('03:00'),
+      to: date('11:00'),
+    };
+    const [cell] = await oee.buckets(query);
+    expect(cell?.members).toEqual([{ equipment: 'cnc-02', epoch: E2 }]);
+    expect(cell?.final).toBe(false); // the others have no data in E2
+    const [older] = await oee.buckets({ ...query, epoch: E1 });
+    expect(older?.members.map((m) => m.equipment)).toEqual(['cnc-01', 'cnc-02', 'wsh-01']);
+    // An equipment keeps its own newest epoch.
+    const [machine] = await oee.buckets({ ...query, scope: 'equipment', id: 'cnc-01' });
+    expect(machine?.members).toEqual([{ equipment: 'cnc-01', epoch: E1 }]);
   });
 });

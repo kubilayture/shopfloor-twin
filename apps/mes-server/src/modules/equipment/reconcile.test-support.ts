@@ -481,14 +481,13 @@ async function expectOee(
   for (const [key, bucket] of shiftResults) {
     const [machine = ''] = key.split(' ');
     if (bucket.shiftKey === NO_SHIFT) continue;
-    const read = await oee.downtimeRecords([machine], bucket.start, bucket.end, EPOCH, 10_000);
+    const read = await oee.paretoInputs('equipment', machine, bucket.start, bucket.end, EPOCH);
     const loss = pareto({
       ...read,
       from: bucket.start,
       to: bucket.end,
       thresholdMs: plant.oee.microStopThresholdMs,
       reasons,
-      watermark: (epoch) => equipment.watermark(epoch),
     });
     const losses = bucket.result.losses;
     expect([key, loss.availability, loss.microStops.reduce((sum, m) => sum + m.ms, 0)]).toEqual([
@@ -501,6 +500,12 @@ async function expectOee(
     ]);
   }
   oee.stop();
+  // Not vacuous: one comparison per (machine or work center, shift bucket) of the ground truth.
+  const expected =
+    Object.values(truth.machines).reduce((n, m) => n + Object.keys(m.shifts).length, 0) +
+    Object.values(truth.workCenters).reduce((n, wc) => n + Object.keys(wc.shifts).length, 0);
+  expect(expected).toBeGreaterThan(0);
+  expect(comparisons).toBe(expected);
   return comparisons;
 }
 
@@ -697,6 +702,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         expect(provisional.filter((bucket) => !bucket.includes(' no-shift '))).toEqual([]);
         expect(await expectAggregates(equipment, ingest, db, run)).toBe(6);
         const compared = await expectOee(equipment, ingest, masterData, run);
+        if (span.golden) expect(compared).toBe(128); // 6 machines and 2 work centers × 16 buckets
         console.log(`${title}: in order, ${String(compared)} OEE buckets equal the ground truth`);
         const downtime = await expectRecords(db, run);
         expect(downtime.records).toBeGreaterThanOrEqual(downtime.lossIntervals);
@@ -726,6 +732,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         expect(equipment.stateAggregate()?.refreshes).toBeGreaterThan(0);
         expect(await expectAggregates(equipment, ingest, db, run)).toBe(6);
         const compared = await expectOee(equipment, ingest, masterData, run);
+        expect(compared).toBeGreaterThan(0);
         console.log(`${title}: shuffled, ${String(compared)} OEE buckets equal the ground truth`);
         await equipment.stop();
         await ingest.stop();

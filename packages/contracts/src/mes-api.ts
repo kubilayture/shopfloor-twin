@@ -372,7 +372,7 @@ export const downtimeListSchema = z.object({
   truncated: z.boolean().describe('More records matched than one response takes'),
   records: z
     .array(downtimeRecordSchema)
-    .describe('Records overlapping the range; uncoded ones first when asked, then by start'),
+    .describe('Records overlapping the range: UNCODED ones first, then by start'),
 });
 
 export const paretoSchema = z.object({

@@ -4,7 +4,13 @@
  */
 import { HOUR, type AvailabilityLoss, type Millis } from '@shopfloor/oee-core';
 import { NO_SHIFT } from '@shopfloor/shift-calendar';
-import type { DowntimeRecord, Equipment, PiecesChanged, StopPiece } from '../equipment/index.ts';
+import type {
+  DowntimeLoss,
+  DowntimeRecord,
+  Equipment,
+  PiecesChanged,
+  StopPiece,
+} from '../equipment/index.ts';
 import type { ReasonCode } from '../master-data/index.ts';
 
 /** A record's id in the API: `{equipment}~{epoch}~{startMs}` (plan "API, push and web"). */
@@ -37,49 +43,40 @@ export interface Pareto {
 }
 
 /**
- * Availability loss by reason (own and external apart) from the records, and micro-stops by cause
- * from the Stopped pieces below the threshold in scheduled buckets, all clipped to [from, to).
- * Reasons never change OEE (ADR-0021), so the sums equal the OEE losses of the same time.
+ * Availability loss by reason (own and external apart) from the records' summed time
+ * (`Equipment.downtimeLoss`, no row limit), and micro-stops by cause from the Stopped pieces
+ * below the threshold in scheduled buckets, all clipped to [from, to). Reasons never change OEE
+ * (ADR-0021), so the sums equal the OEE losses of the same time.
  */
 export function pareto(input: {
-  readonly records: readonly DowntimeRecord[];
+  readonly losses: readonly DowntimeLoss[];
   readonly stops: readonly StopPiece[];
   readonly from: Date;
   readonly to: Date;
   readonly thresholdMs: Millis;
   readonly reasons: readonly ReasonCode[];
-  readonly watermark: (epoch: number) => Date | undefined;
 }): Pareto {
   const from = input.from.getTime();
   const to = input.to.getTime();
-  const clip = (start: Millis, end: Millis): Millis =>
-    Math.max(0, Math.min(end, to) - Math.max(start, from));
   const names = new Map(input.reasons.map((reason) => [reason.id, reason.name]));
   const byReason = new Map<
     string,
     { reason: string; loss: AvailabilityLoss; ms: number; records: number }
   >();
   const availability = { own: 0, external: 0 };
-  for (const record of input.records) {
-    const ms = clip(record.start.getTime(), recordEnd(record, input.watermark(record.epoch)));
-    if (ms === 0) continue;
+  for (const row of input.losses) {
     // The reason in effect: the auto reason until operator coding arrives (#121).
-    const key = `${record.loss}\u0000${record.autoReason}`;
-    const entry = byReason.get(key) ?? {
-      reason: record.autoReason,
-      loss: record.loss,
-      ms: 0,
-      records: 0,
-    };
-    entry.ms += ms;
-    entry.records++;
+    const key = `${row.loss}\u0000${row.reason}`;
+    const entry = byReason.get(key) ?? { reason: row.reason, loss: row.loss, ms: 0, records: 0 };
+    entry.ms += row.ms;
+    entry.records += row.records;
     byReason.set(key, entry);
-    availability[record.loss] += ms;
+    availability[row.loss] += row.ms;
   }
   const byCause = new Map<string | null, { ms: number; intervals: Set<string> }>();
   for (const stop of input.stops) {
     if (stop.wholeMs >= input.thresholdMs || stop.shiftKey === NO_SHIFT) continue;
-    const ms = clip(stop.start.getTime(), stop.end.getTime());
+    const ms = Math.max(0, Math.min(stop.end.getTime(), to) - Math.max(stop.start.getTime(), from));
     if (ms === 0) continue;
     const entry = byCause.get(stop.cause) ?? { ms: 0, intervals: new Set<string>() };
     entry.ms += ms;
@@ -128,7 +125,9 @@ const sameRecord = (a: DowntimeRecord, b: DowntimeRecord): boolean =>
   a.provisional === b.provisional;
 
 /**
- * Record changes for push (`downtime` topic). The equipment module writes records in the same
+ * Record changes for push (`downtime` topic). Push coalesces per record (ADR-0019), so a slow
+ * client may get only a record's latest event: consumers treat every event as an upsert by
+ * record id (`removed`: delete), never as a transition from the previous one. The equipment module writes records in the same
  * statement as their pieces, so every record change comes with a `piecesChanged`. The feed only
  * notes the hours there (never reads on ingest's acknowledgement path); a debounced pass reads the
  * records of those hours and compares them with the ones it knows.

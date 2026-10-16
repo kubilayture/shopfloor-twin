@@ -20,7 +20,7 @@ import {
   type OeeTotals,
 } from '@shopfloor/oee-core';
 import { NO_SHIFT, shiftKeyAt, shiftSegments, type ShiftPattern } from '@shopfloor/shift-calendar';
-import type { DowntimeRecord, Equipment, StateHour, StopPiece } from '../equipment/index.ts';
+import type { DowntimeLoss, Equipment, StateHour, StopPiece } from '../equipment/index.ts';
 import type { Ingest, IngestNotice } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData, ReasonCode } from '../master-data/index.ts';
 import { hourEnd, hourStart, shiftBuckets, type ShiftBucket } from './shifts.ts';
@@ -32,9 +32,15 @@ export type OeeBucketKind = 'hour' | 'shift';
 export interface OeeSources {
   readonly equipment: Pick<
     Equipment,
-    'oeeInputs' | 'stopPieces' | 'downtimeRecords' | 'onPiecesChanged' | 'watermark' | 'watermarks'
+    | 'oeeInputs'
+    | 'stopPieces'
+    | 'downtimeLoss'
+    | 'onPiecesChanged'
+    | 'watermark'
+    | 'watermarks'
+    | 'stateAggregate'
   >;
-  readonly ingest: Pick<Ingest, 'cycleHourly' | 'cyclesRefreshed' | 'onStored'>;
+  readonly ingest: Pick<Ingest, 'cycleHourly' | 'cyclesRefreshed' | 'onStored' | 'cycleAggregate'>;
   readonly masterData: Pick<MasterData, 'equipment' | 'reasonCodes'>;
 }
 
@@ -52,7 +58,10 @@ export interface OeeQuery {
   readonly bucket: OeeBucketKind;
   readonly from: Date;
   readonly to: Date;
-  /** The device epoch to read; default: per machine the newest with data in the range. */
+  /**
+   * The device epoch to read. Default: for an equipment its newest epoch with data in the range;
+   * for a work center one epoch for all its machines, the newest any of them has data in.
+   */
   readonly epoch?: number | undefined;
 }
 
@@ -111,16 +120,53 @@ interface HourCell {
   rows: boolean;
   /** Every row final (a `bucket_finality` row and `state_hourly` refreshed through it). */
   rowsFinal: boolean;
+  /** `cycle_hourly` holds the hour as it is (sampled with the reads). */
+  cyclesRefreshed: boolean;
   provisionalMs: number;
   revision: number;
   readonly incidentIds: Set<number>;
 }
 
+/** One machine's hour cells in one epoch. */
 interface MemberData {
   readonly equipment: string;
   readonly operation: string;
   readonly epoch: number;
   readonly cells: ReadonlyMap<Millis, HourCell>;
+}
+
+/** What one read gave: per machine its cells per epoch, and whether finality held throughout. */
+interface ReadResult {
+  readonly members: ReadonlyMap<string, ReadonlyMap<number, MemberData>>;
+  /** No refresh finished and no hour turned dirty while the read ran (#120 review). */
+  readonly stable: boolean;
+}
+
+/** The epochs read: the one asked for, else one per machine or (`unify`) one for all. */
+function choose(
+  members: readonly string[],
+  data: ReadResult,
+  epoch: number | undefined,
+  unify: boolean,
+): Map<string, MemberData> {
+  const newest = (equipment: string): number | undefined => {
+    const epochs = [...(data.members.get(equipment)?.keys() ?? [])];
+    return epochs.length === 0 ? undefined : epochs.reduce((a, b) => Math.max(a, b));
+  };
+  let common = epoch;
+  if (common === undefined && unify) {
+    for (const equipment of members) {
+      const own = newest(equipment);
+      if (own !== undefined && (common === undefined || own > common)) common = own;
+    }
+  }
+  const chosen = new Map<string, MemberData>();
+  for (const equipment of members) {
+    const wanted = common ?? newest(equipment);
+    const found = wanted === undefined ? undefined : data.members.get(equipment)?.get(wanted);
+    if (found) chosen.set(equipment, found);
+  }
+  return chosen;
 }
 
 interface Catalog {
@@ -256,8 +302,17 @@ export class Oee {
     const last = defs.at(-1);
     if (!first || !last) return [];
     const data = await this.#read(members, first.start, last.end, query.epoch);
+    const chosen = choose(members, data, query.epoch, query.scope === 'work-center');
     return defs.flatMap((def) => {
-      const bucket = this.#assemble(query.scope, query.id, query.bucket, def, members, data);
+      const bucket = this.#assemble(
+        query.scope,
+        query.id,
+        query.bucket,
+        def,
+        members,
+        chosen,
+        data,
+      );
       return bucket ? [bucket] : [];
     });
   }
@@ -273,11 +328,21 @@ export class Oee {
     const catalog = await this.#loadCatalog();
     const data = await this.#read(catalog.order, bucket.start, bucket.end, epoch);
     const equipment = catalog.order.flatMap((id) => {
-      const result = this.#assemble('equipment', id, 'shift', bucket, [id], data);
+      const chosen = choose([id], data, epoch, false);
+      const result = this.#assemble('equipment', id, 'shift', bucket, [id], chosen, data);
       return result ? [result] : [];
     });
     const workCenters = [...catalog.workCenters.values()].flatMap((wc) => {
-      const result = this.#assemble('work-center', wc.id, 'shift', bucket, wc.equipment, data);
+      const chosen = choose(wc.equipment, data, epoch, true);
+      const result = this.#assemble(
+        'work-center',
+        wc.id,
+        'shift',
+        bucket,
+        wc.equipment,
+        chosen,
+        data,
+      );
       return result ? [result] : [];
     });
     return { equipment, workCenters };
@@ -311,36 +376,62 @@ export class Oee {
     const from = Math.min(hour.start, shift.start);
     const to = Math.max(hour.end, shift.end);
     const data = await this.#read(members, from, to, clock.epoch);
+    const chosen = choose(members, data, clock.epoch, true);
     return {
-      hour: this.#assemble(scope, id, 'hour', hour, members, data) ?? null,
-      shift: this.#assemble(scope, id, 'shift', shift, members, data) ?? null,
+      hour: this.#assemble(scope, id, 'hour', hour, members, chosen, data) ?? null,
+      shift: this.#assemble(scope, id, 'shift', shift, members, chosen, data) ?? null,
     };
   }
 
-  /** Downtime records of the members, newest epoch per machine (or `epoch`), for the Pareto. */
-  async downtimeRecords(
-    members: readonly string[],
+  /**
+   * The Pareto's inputs (#120): the downtime records' time per reason, summed in the database
+   * without a row limit, and the Stopped pieces, of an equipment or work center over [from, to).
+   * Epochs as for OEE: the one asked for, else the newest (one for a whole work center).
+   */
+  async paretoInputs(
+    scope: OeeScope,
+    id: string,
     from: Date,
     to: Date,
     epoch: number | undefined,
-    limit: number,
-  ): Promise<{ records: DowntimeRecord[]; stops: StopPiece[]; members: OeeMember[] }> {
-    const records: DowntimeRecord[] = [];
-    const stops: StopPiece[] = [];
-    const chosen: OeeMember[] = [];
-    for (const equipment of members) {
-      const scope = { equipment, ...(epoch === undefined ? {} : { epoch }) };
-      const [own, pieces] = await Promise.all([
-        this.#options.equipment.downtimeRecords({ from, to, limit, ...scope }),
-        this.#options.equipment.stopPieces(from, to, scope),
-      ]);
-      const newest = epoch ?? newestEpoch(own, pieces);
-      if (newest === undefined) continue;
-      chosen.push({ equipment, epoch: newest });
-      records.push(...own.filter((r) => r.epoch === newest));
-      stops.push(...pieces.filter((p) => p.epoch === newest));
+  ): Promise<{ losses: DowntimeLoss[]; stops: StopPiece[]; members: OeeMember[] }> {
+    const members = await this.members(scope, id);
+    if (!members) throw new RangeError(`no ${scope} ${id}`);
+    const read = await Promise.all(
+      members.map(async (equipment) => {
+        const filter = { equipment, ...(epoch === undefined ? {} : { epoch }) };
+        const [losses, stops] = await Promise.all([
+          this.#options.equipment.downtimeLoss({ from, to, ...filter }),
+          this.#options.equipment.stopPieces(from, to, filter),
+        ]);
+        return { equipment, losses, stops, newest: epoch ?? newestEpoch(losses, stops) };
+      }),
+    );
+    const common =
+      epoch ??
+      (scope === 'work-center'
+        ? read.reduce<number | undefined>(
+            (max, m) =>
+              m.newest !== undefined && (max === undefined || m.newest > max) ? m.newest : max,
+            undefined,
+          )
+        : undefined);
+    const result = {
+      losses: [] as DowntimeLoss[],
+      stops: [] as StopPiece[],
+      members: [] as OeeMember[],
+    };
+    for (const m of read) {
+      const chosen = common ?? m.newest;
+      if (chosen === undefined) continue;
+      const losses = m.losses.filter((l) => l.epoch === chosen);
+      const stops = m.stops.filter((p) => p.epoch === chosen);
+      if (losses.length === 0 && stops.length === 0 && m.newest !== chosen) continue;
+      result.members.push({ equipment: m.equipment, epoch: chosen });
+      result.losses.push(...losses);
+      result.stops.push(...stops);
     }
-    return { records, stops, members: chosen };
+    return result;
   }
 
   #hourBuckets(from: Millis, to: Millis): ShiftBucket[] {
@@ -381,17 +472,38 @@ export class Oee {
     }
   }
 
+  /** The refresh state of both aggregates: unchanged across a read, its finality held. */
+  #generations(): string {
+    return `${String(this.#options.equipment.stateAggregate()?.generation)}/${String(
+      this.#options.ingest.cycleAggregate()?.generation,
+    )}`;
+  }
+
   /**
    * Reads the hours [from, to) of the machines: state rows and stop pieces in one snapshot, cycles
-   * after. Per machine, the epoch asked for or the newest one with data in the range.
+   * after, every epoch unless one is asked for. The aggregates' refresh state is sampled before
+   * and after; if a refresh finished or an hour turned dirty meanwhile, the read is tried once
+   * more, and if that also overlaps one, its buckets are reported not final (#120 review).
    */
   async #read(
     members: readonly string[],
     from: Millis,
     to: Millis,
     epoch: number | undefined,
-  ): Promise<Map<string, MemberData>> {
+  ): Promise<ReadResult> {
+    let result = await this.#readOnce(members, from, to, epoch);
+    if (!result.stable) result = await this.#readOnce(members, from, to, epoch);
+    return result;
+  }
+
+  async #readOnce(
+    members: readonly string[],
+    from: Millis,
+    to: Millis,
+    epoch: number | undefined,
+  ): Promise<ReadResult> {
     const catalog = await this.#loadCatalog();
+    const before = this.#generations();
     const range = { from: new Date(from), to: new Date(to) };
     const scope = epoch === undefined ? {} : { epoch };
     const inputs = await this.#options.equipment.oeeInputs(range.from, range.to, {
@@ -403,64 +515,67 @@ export class Oee {
         this.#options.ingest.cycleHourly(range.from, range.to, { equipment, ...scope }),
       ),
     );
-    const result = new Map<string, MemberData>();
-    members.forEach((equipment, i) => {
-      const rows = inputs.hours.filter((row) => row.equipment === equipment);
-      const stops = inputs.stops.filter((stop) => stop.equipment === equipment);
-      const counts = cycles[i] ?? [];
-      const newest = epoch ?? newestEpoch(rows, stops, counts);
-      if (newest === undefined) return;
-      const cells = new Map<Millis, HourCell>();
-      const cell = (hour: Millis): HourCell => {
-        let found = cells.get(hour);
-        if (!found) {
-          found = {
-            hour,
-            shiftKey: shiftKeyAt(this.#options.shiftPattern, hour),
-            stateMs: {},
-            stops: [],
-            cycles: new Map(),
-            rows: false,
-            rowsFinal: true,
-            provisionalMs: 0,
-            revision: 0,
-            incidentIds: new Set(),
-          };
-          cells.set(hour, found);
-        }
-        return found;
-      };
-      for (const row of rows) {
-        if (row.epoch !== newest) continue;
-        this.#addRow(cell(row.hour.getTime()), row);
+    const byMember = new Map<string, Map<number, MemberData>>();
+    const cellOf = (equipment: string, epochOf: number, hour: Millis): HourCell => {
+      let epochs = byMember.get(equipment);
+      if (!epochs) {
+        epochs = new Map();
+        byMember.set(equipment, epochs);
       }
-      for (const stop of stops) {
-        if (stop.epoch !== newest) continue;
-        cell(stop.hour.getTime()).stops.push({
-          ms: stop.end.getTime() - stop.start.getTime(),
-          wholeMs: stop.wholeMs,
-          open: stop.open,
-        });
+      let member = epochs.get(epochOf);
+      if (!member) {
+        member = {
+          equipment,
+          operation: catalog.equipment.get(equipment)?.operation ?? '',
+          epoch: epochOf,
+          cells: new Map(),
+        };
+        epochs.set(epochOf, member);
       }
-      for (const count of counts) {
-        if (count.epoch !== newest) continue;
-        const target = cell(count.hour.getTime()).cycles;
-        const key = cycleKey(count.product, count.result);
-        target.set(key, (target.get(key) ?? 0) + count.count);
+      const cells = member.cells as Map<Millis, HourCell>;
+      let found = cells.get(hour);
+      if (!found) {
+        found = {
+          hour,
+          shiftKey: shiftKeyAt(this.#options.shiftPattern, hour),
+          stateMs: {},
+          stops: [],
+          cycles: new Map(),
+          rows: false,
+          rowsFinal: true,
+          cyclesRefreshed: this.#options.ingest.cyclesRefreshed(new Date(hour)),
+          provisionalMs: 0,
+          revision: 0,
+          incidentIds: new Set(),
+        };
+        cells.set(hour, found);
       }
-      for (const found of cells.values()) {
-        // ADR-0021: Stopped time derived from the pieces read, never from a second read.
-        const stopped = found.stops.reduce((sum, stop) => sum + stop.ms, 0);
-        if (stopped > 0 || found.stateMs.Stopped !== undefined) found.stateMs.Stopped = stopped;
-      }
-      result.set(equipment, {
-        equipment,
-        operation: catalog.equipment.get(equipment)?.operation ?? '',
-        epoch: newest,
-        cells,
+      return found;
+    };
+    for (const row of inputs.hours)
+      this.#addRow(cellOf(row.equipment, row.epoch, row.hour.getTime()), row);
+    for (const stop of inputs.stops) {
+      cellOf(stop.equipment, stop.epoch, stop.hour.getTime()).stops.push({
+        ms: stop.end.getTime() - stop.start.getTime(),
+        wholeMs: stop.wholeMs,
+        open: stop.open,
       });
-    });
-    return result;
+    }
+    for (const count of cycles.flat()) {
+      const target = cellOf(count.equipment, count.epoch, count.hour.getTime()).cycles;
+      const key = cycleKey(count.product, count.result);
+      target.set(key, (target.get(key) ?? 0) + count.count);
+    }
+    for (const epochs of byMember.values()) {
+      for (const member of epochs.values()) {
+        for (const found of member.cells.values()) {
+          // ADR-0021: Stopped time derived from the pieces read, never from a second read.
+          const stopped = found.stops.reduce((sum, stop) => sum + stop.ms, 0);
+          if (stopped > 0 || found.stateMs.Stopped !== undefined) found.stateMs.Stopped = stopped;
+        }
+      }
+    }
+    return { members: byMember, stable: this.#generations() === before };
   }
 
   #addRow(cell: HourCell, row: StateHour): void {
@@ -494,7 +609,8 @@ export class Oee {
     kind: OeeBucketKind,
     def: ShiftBucket,
     members: readonly string[],
-    data: ReadonlyMap<string, MemberData>,
+    chosen: ReadonlyMap<string, MemberData>,
+    data: ReadResult,
   ): OeeBucket | undefined {
     const totals: OeeTotals[] = [];
     const stateMs = Object.fromEntries(OEE_STATES.map((state) => [state, 0])) as Record<
@@ -510,7 +626,7 @@ export class Oee {
     let revision = 0;
     let stops = 0;
     for (const equipment of members) {
-      const member = data.get(equipment);
+      const member = chosen.get(equipment);
       const cells = member
         ? [...member.cells.values()]
             .filter((cell) => cell.hour >= def.start && cell.hour < def.end)
@@ -529,8 +645,7 @@ export class Oee {
         }
         for (const [key, count] of cell.cycles) cycles.set(key, (cycles.get(key) ?? 0) + count);
         for (const incident of cell.incidentIds) incidents.add(incident);
-        cellsFinal &&=
-          cell.rows && cell.rowsFinal && this.#options.ingest.cyclesRefreshed(new Date(cell.hour));
+        cellsFinal &&= cell.rows && cell.rowsFinal && cell.cyclesRefreshed;
         provisionalMs += cell.provisionalMs;
         revision = Math.max(revision, cell.revision);
         stops += cell.stops.length;
@@ -551,7 +666,7 @@ export class Oee {
       cycles: cycleList(cycles),
       stops,
       result,
-      final: complete && cellsFinal && !result.provisional,
+      final: data.stable && complete && cellsFinal && !result.provisional,
       provisionalMs,
       revision,
       incidents: incidents.size,

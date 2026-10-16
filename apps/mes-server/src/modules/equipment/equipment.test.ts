@@ -562,6 +562,41 @@ describe('interval finality (#113)', () => {
     expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
   });
 
+  it('keeps a stop with an unsettled end open, and revises an hour whose stop changes class (#120)', async () => {
+    const clock = { now: Date.parse('2026-10-15T10:00:00Z') };
+    const { db, ingest, start, send } = await setup(
+      {},
+      { gapGraceMs: 30_000, sweepIntervalMs: 0, now: () => clock.now },
+    );
+    const equipment = await start();
+    const stopAt = at('10:59') + 30_000;
+    const whole = async () =>
+      (await equipment.stopPieces(new Date(at('10:00')), new Date(at('11:00')))).map((p) => [
+        p.wholeMs / 1_000,
+        p.open,
+      ]);
+    // A stop at 10:59:30; seq 3 (Running at 11:00:20) is late, seq 4 (Running at 11:10) early.
+    await send(
+      feed.state('cnc-a', E1, 1, at('10:10'), 'Running'),
+      feed.state('cnc-a', E1, 2, stopAt, 'Stopped', 'jam'),
+      feed.state('cnc-a', E1, 4, at('11:10'), 'Running'),
+      feed.cycle('cnc-b', E1, 1, at('11:30')),
+    );
+    // Its end lies past "final through" (10:59:30): open, its length so far the 30 s of the piece.
+    expect(await whole()).toEqual([[30, true]]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([]);
+    expect(await ingest.sweep()).toBe(0);
+    clock.now += 30_000;
+    expect(await ingest.sweep()).toBe(1); // the gap is an incident: 10:00 becomes final
+    expect(await whole()).toEqual([[630, false]]); // a long stop, 10.5 min
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 1]]);
+    // The late fill ends the stop at 11:00:20: a micro-stop. 10:00's pieces are the same, but
+    // its OEE changed, so its revision goes up.
+    await send(feed.state('cnc-a', E1, 3, at('11:00') + 20_000, 'Running'));
+    expect(await whole()).toEqual([[50, false]]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 1, 1]]);
+  });
+
   it('holds finality at a gap, releases it with the incident, and revises on a late fill', async () => {
     const clock = { now: Date.parse('2026-10-15T10:00:00Z') };
     const { db, ingest, start, send } = await setup(

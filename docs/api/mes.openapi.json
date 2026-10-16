@@ -3676,7 +3676,7 @@
                         ],
                         "additionalProperties": false
                       },
-                      "description": "Records overlapping the range; uncoded ones first when asked, then by start"
+                      "description": "Records overlapping the range: UNCODED ones first, then by start"
                     }
                   },
                   "required": [
@@ -3730,7 +3730,7 @@
           "downtime",
           "oee"
         ],
-        "description": "Own and external availability loss by reason from the downtime records, micro-stops (performance loss) by cause from the Stopped intervals below the threshold, all clipped to the range. Per machine the newest epoch with data, unless `epoch` is given.",
+        "description": "Own and external availability loss by reason from the downtime records, micro-stops (performance loss) by cause from the Stopped intervals below the threshold, all clipped to the range, without a row limit: the sums equal the OEE losses. Epoch: the one given, else the newest with data (one for all machines of a work center).",
         "parameters": [
           {
             "schema": {

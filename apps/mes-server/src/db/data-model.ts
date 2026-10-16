@@ -31,7 +31,7 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
     name: 'alarms',
     owner: 'alarms',
     about:
-      'Alarm occurrences derived from the device’s raise and clear facts, anchors and resync snapshots (ADR-0010, ADR-0024), what they were derived from, and the revisions of final alarm KPI hours. KPIs are computed on read.',
+      'Alarm occurrences derived from the device’s raise and clear facts, anchors and resync snapshots (ADR-0010, ADR-0024), what they were derived from, and the revisions of final alarm KPI hours; the operator’s acknowledgements, point shelves and the append-only audit of every MES transition (ADR-0023). KPIs are computed on read and never read the operator’s tables.',
   },
   {
     name: 'public',
@@ -100,6 +100,12 @@ const TABLES: Readonly<Record<string, string>> = {
     'What the occurrences of each (equipment, epoch) were derived from (alarm fact count, anchors and snapshot used, epoch closing) and how far they were final, for catch-up (#142).',
   'alarms.kpi_revision':
     'Per (scope, epoch, UTC hour): how often a final alarm KPI hour changed after it was final; no row means revision 0 (#142, ADR-0024).',
+  'alarms.occurrence_state':
+    'Acknowledgement per occurrence (who, wall time, plant time, comment, request id); insert-only by a trigger, so acknowledging is monotonic and needs no version; never touched by a rebuild (#143).',
+  'alarms.alarm_shelf':
+    'The shelf of each alarm point (equipment, code) ever shelved: who, why, the plant time it ends at (`until`, at most maxShelveMs) and its version, the optimistic-concurrency token of shelve and unshelve (#143).',
+  'alarms.alarm_transition':
+    'Append-only audit of every MES transition of an alarm (ack, comment, shelve, unshelve, expire, epoch-ended) with before, after, actor, `authenticated`, wall time, plant time and request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#143, ADR-0023).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

@@ -60,3 +60,7 @@ The answer to a write carries `X-Request-Id` (a UUID per request, Fastify's requ
 - Bad: one global rate limit lets one noisy client slow everyone's writes; at plant-floor rates (a few codings a minute) it never triggers.
 - Bad: a version per (equipment, epoch) makes two operators coding different records of the same machine conflict; the second one reads again and retries.
 - Bad: an allowlisted origin on another port still sends `Sec-Fetch-Site: same-site` from a browser and is refused; the allowlist serves proxies and non-browser clients.
+
+## Note: alarm writes (#143)
+
+The alarm writes (acknowledge, bulk acknowledge, comment, shelve, unshelve) pass the same guards, unchanged and in the same order, and use only `POST`, which nginx already passes. A bulk acknowledgement of up to 100 occurrences is one request and so one token of the global rate limit. Acknowledgement is monotonic and needs no version; a shelf has its own version per alarm point (not per equipment and epoch), raised also by the MES's own expiry. Their audit, `alarms.alarm_transition`, follows `downtime_audit`'s pattern (a trigger refuses UPDATE, DELETE and TRUNCATE; actor free text, `authenticated: false`, wall time, request id), and `alarms.occurrence_state` is insert-only by the same kind of trigger. Both move to `identity`'s audit log with the downtime audit in Phase 7.

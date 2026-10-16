@@ -144,6 +144,7 @@ try {
     masterData,
     shiftPattern: await masterData.shiftPattern(),
     config: plant.config.alarms.kpi,
+    maxShelveMs: plant.config.alarms.maxShelveMs,
     log: log.child({ module: 'alarms' }),
   });
   await alarms.start();
@@ -189,7 +190,7 @@ try {
     },
     alarms,
   });
-  log.info({ writes: env.MES_WRITES }, 'downtime coding writes');
+  log.info({ writes: env.MES_WRITES }, 'operator writes (downtime coding, alarms)');
   await ingest.start();
 } catch (error) {
   if (state.stopping) await new Promise(() => undefined); // shutdown() owns the exit

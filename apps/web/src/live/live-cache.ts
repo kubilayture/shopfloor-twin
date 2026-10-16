@@ -237,7 +237,8 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       return;
     case 'alarm':
     case 'alarm-kpi':
-      // Alarm occurrences and KPIs (#142) have no screen yet (#145).
+    case 'alarm-point':
+      // Alarm occurrences, shelves (#143) and KPIs (#142) have no screen yet (#145).
       return;
     case 'subscribed':
     case 'unsubscribed':

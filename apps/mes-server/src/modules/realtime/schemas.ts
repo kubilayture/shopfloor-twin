@@ -7,6 +7,18 @@ export {
   ALARMS_TOPIC,
   ALARM_VIEWS,
   DOWNTIME_TOPIC,
+  acknowledgeRequestSchema,
+  acknowledgeResultSchema,
+  alarmPointAuditSchema,
+  alarmPointListSchema,
+  alarmPointSchema,
+  bulkAcknowledgeRequestSchema,
+  bulkAcknowledgeResultSchema,
+  commentRequestSchema,
+  commentResultSchema,
+  shelfResultSchema,
+  shelveRequestSchema,
+  unshelveRequestSchema,
   alarmDetailSchema,
   alarmHistorySchema,
   alarmKpiBucketSchema,
@@ -46,6 +58,10 @@ export {
   shiftTotalsSchema,
 } from '@shopfloor/contracts';
 export type {
+  AlarmCommentDto,
+  AlarmPointDto,
+  AlarmShelfDto,
+  AlarmTransitionDto,
   AlarmHistory,
   AlarmKpiBucketDto,
   AlarmOccurrenceDto,
@@ -100,6 +116,8 @@ function isCalendarDate(value: string): boolean {
 // ---- requests ----
 
 export const noQuery = z.strictObject({});
+/** Path parameters of a write route without any (`POST /alarms/ack`). */
+export const noParams = z.strictObject({});
 export const equipmentParams = z.strictObject({ id: identifier });
 export const shiftParams = z.strictObject({
   date: z
@@ -248,11 +266,11 @@ const optionalRange =
 export const alarmListQuery = z
   .strictObject({
     view: z
-      .enum(['active', 'history'])
+      .enum(['active', 'acknowledged', 'shelved', 'history'])
       .optional()
       .transform((value) => value ?? 'active')
       .describe(
-        'active: not ended (default); history: ended (cleared, lost, superseded, epoch-ended), needs a range',
+        'The operator lists (#143), a partition: active (default): not acknowledged and not closed, point not shelved (a cleared one stays until acknowledged); acknowledged: acknowledged and still active, point not shelved; shelved: not closed, point shelved; history: closed (ended and acknowledged, or ended by a newer epoch), needs a range',
       ),
     position: identifier.optional().describe('Only the equipment of this operator position'),
     equipment: identifier.optional().describe('Only this equipment'),
@@ -329,3 +347,17 @@ export const badActorsQuery = z
     scopeId(query, ctx);
     range(LIMITS.oeeShiftRangeMs)(query, ctx);
   });
+
+// ---- Alarm writes and points (#143) ----
+
+/** An alarm point: `/alarm-points/{equipment}/{code}`. */
+export const alarmPointParams = z.strictObject({
+  equipment: identifier.describe('Equipment id'),
+  code: identifier.describe('Alarm code, e.g. COOLANT-PRESSURE'),
+});
+
+export const alarmPointsQuery = z.strictObject({
+  equipment: identifier.optional().describe('Only this equipment'),
+  position: identifier.optional().describe('Only the equipment of this operator position'),
+  shelved: flag.describe('Only points shelved now'),
+});

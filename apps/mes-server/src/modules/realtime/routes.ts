@@ -27,12 +27,12 @@ export function problem(status: number, detail: string, url: string) {
 const ERROR_TEXT: Readonly<Record<number, string>> = {
   400: 'Invalid path, query parameters or body',
   403: 'Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin)',
-  404: 'Unknown equipment, work center, metric, shift, record or route',
+  404: 'Unknown equipment, work center, metric, shift, record, alarm, alarm point or route',
   405: 'Writes are turned off (MES_WRITES=off)',
-  409: 'The version sent is not the current one: read again and retry',
+  409: 'The version sent is not the current one (coding set, alarm shelf): read again and retry',
   413: 'Body larger than 16 KiB',
   415: 'Content-Type is not application/json',
-  422: 'Well-formed, but not applicable to the record (outside it, overlapping, unknown reason)',
+  422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock, or an unshelve of a point not shelved)',
   429: 'Too many writes (one global limit): retry after Retry-After seconds',
   503: 'The MES is starting',
 };

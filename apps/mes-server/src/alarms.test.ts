@@ -242,13 +242,15 @@ describe('alarm occurrences from facts (#142)', () => {
       [3, SO, 'fact', t(20), t(40), 'superseded'],
       [5, SO, 'fact', t(40), t(50), 'cleared'],
     ]);
-    const [occurrence] = await mes.alarms.list({ view: 'history', limit: 1 });
+    // Cleared but not acknowledged: still in the active list (#143), newest first.
+    const [occurrence] = await mes.alarms.list({ view: 'active', limit: 1 });
     expect(occurrence).toMatchObject({
       id: `cnc-01~${String(E1)}~5`,
       priority: 'high',
       defined: true,
       final: true,
       endSeq: 6,
+      state: 'unacked-cleared',
     });
     const hours = await equipmentHours(mes.alarms);
     const hour = hours.get(HOUR3);
@@ -646,13 +648,19 @@ describe('alarm API and push (#142)', () => {
     const active = await get('/alarms');
     expect(active.status).toBe(200);
     const list = alarmListSchema.parse(active.body);
-    expect(list.alarms.map((a) => [a.id, a.active, a.priority])).toEqual([
-      [`cnc-01~${String(E1)}~4`, true, 'high'],
+    // A clear does not acknowledge (#143): the cleared one stays in the active list.
+    expect(list.alarms.map((a) => [a.id, a.active, a.priority, a.state])).toEqual([
+      [`cnc-01~${String(E1)}~4`, true, 'high', 'unacked-active'],
+      [`cnc-01~${String(E1)}~2`, false, 'medium', 'unacked-cleared'],
     ]);
+    // Acknowledged, it is closed and moves to the history.
+    await mes.alarms.acknowledge([`cnc-01~${String(E1)}~2`], { actor: 'test' });
+    const after = alarmListSchema.parse((await get('/alarms')).body);
+    expect(after.alarms.map((a) => a.seq)).toEqual([4]);
     const range = `from=${iso(t(0))}&to=${iso(t(60))}`;
     const history = alarmListSchema.parse((await get(`/alarms?view=history&${range}`)).body);
-    expect(history.alarms.map((a) => [a.seq, a.endReason, a.endedAt])).toEqual([
-      [2, 'cleared', iso(t(12))],
+    expect(history.alarms.map((a) => [a.seq, a.endReason, a.endedAt, a.state])).toEqual([
+      [2, 'cleared', iso(t(12)), 'closed'],
     ]);
     expect(history.next).toBeNull();
     const filtered = alarmListSchema.parse(
@@ -701,13 +709,21 @@ describe('alarm API and push (#142)', () => {
     expect(first.alarms[0]).toMatchObject({ code: 'WORKPIECE-PROBE', defined: false, text: null });
   });
 
-  it('returns an occurrence with its definition and its device history', async () => {
+  it('returns an occurrence with its definition and its history', async () => {
     const id = `cnc-01~${String(E1)}~2`;
     const detail = alarmDetailSchema.parse((await get(`/alarms/${id}`)).body);
     expect(detail.occurrence).toMatchObject({ id, code: CP, endReason: 'cleared', final: true });
     expect(detail.definition?.text.length).toBeGreaterThan(0);
     const history = alarmHistorySchema.parse((await get(`/alarms/${id}/history`)).body);
-    expect(history.entries).toEqual([
+    const audit = {
+      actor: null,
+      authenticated: null,
+      recordedAt: null,
+      requestId: null,
+      auditId: null,
+      detail: null,
+    };
+    expect(history.entries.slice(0, 2)).toEqual([
       {
         source: 'fact',
         transition: 'raised',
@@ -715,6 +731,7 @@ describe('alarm API and push (#142)', () => {
         seq: 2,
         receivedAt: '2026-10-15T10:00:00.000Z',
         protocol: 'opcua',
+        ...audit,
       },
       {
         source: 'fact',
@@ -723,7 +740,12 @@ describe('alarm API and push (#142)', () => {
         seq: 3,
         receivedAt: '2026-10-15T10:00:00.000Z',
         protocol: 'opcua',
+        ...audit,
       },
+    ]);
+    // The acknowledgement of the first test, at the plant clock (the last fact, 04:10).
+    expect(history.entries.slice(2)).toMatchObject([
+      { source: 'audit', transition: 'ack', at: iso(t(70)), actor: 'test', authenticated: false },
     ]);
   });
 

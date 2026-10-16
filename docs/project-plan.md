@@ -570,8 +570,8 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 - [x] Modbus library confirmation: `modbus-serial` (ADR-0013)
 - [x] Micro-stop threshold: 120 s over the whole Stopped interval, in `config/plant/oee.yaml` (ADR-0021)
 - [x] Auto-classification rules for downtime: an ordered list of (state, cause pattern) → reason in `config/plant/reasons.yaml`, first match wins, else UNCODED (ADR-0021, #119)
-- [x] Order-driven simulation and the command path: `orders` mode beside the schedule, idempotent `LoadOrder`, job facts in the device sequence (ADR-0029, ADR-0030; Phase 7)
-- [x] Identity: sessions in a cookie, scrypt, five roles, one audit log; separate database roles (ADR-0026, ADR-0027; Phase 7)
+- [ ] Order-driven simulation and the command path (decided in the Phase 7 plan; ADR pending): `orders` mode beside the schedule, idempotent `LoadOrder`, job facts in the device sequence (ADR-0029, ADR-0030; Phase 7)
+- [ ] Identity (decided in the Phase 7 plan; ADR pending): sessions in a cookie, scrypt, five roles, one audit log; separate database roles (ADR-0026, ADR-0027; Phase 7)
 - [ ] Load-testing tool and performance targets (Phase 9)
 - [ ] Whether to add Sparkplug B after v1.0 (Phase 10 report)
 

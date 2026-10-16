@@ -5,7 +5,8 @@
  * database and the broker, the MES ready, the simulator idle (`SIM_AUTOSTART=false`) and the
  * gateway connected with every machine's start-up state anchored in the MES, the web app; then
  * resumes the simulator at 60× from 06:00, the start of shift A. While the shift runs, Playwright
- * checks the live overview (browser/overview.spec.ts). After shift end plus a margin, the run goes
+ * checks the live overview (browser/overview.spec.ts) and the live OEE dashboard
+ * (browser/oee-live.spec.ts, #123). After shift end plus a margin, the run goes
  * on until every machine has sent a fact after the shift end (#113: a machine Down, in Setup or in
  * Maintenance across the shift end, or one without telemetry, keeps its last shift bucket
  * provisional until then), with a bounded wait that the report records. Then the simulator is
@@ -15,13 +16,17 @@
  * and no data may have been lost (no gap incidents). Its OEE (`GET /api/v1/shifts/{date}/A/oee`,
  * #120) must be final for all six machines (`final`, `provisionalMs = 0`, `revision = 0`,
  * `incidents = 0`) and equal the live ground truth's OEE exactly: inputs, fractions, four-decimal
- * strings, totals, losses and `unplanned`, per machine and per work center.
+ * strings, totals, losses and `unplanned`, per machine and per work center; the comparison count
+ * (six machines and two work centers, as in the plant configuration) is asserted. Then Playwright
+ * recodes and splits one of shift A's downtime records through the UI
+ * (browser/final/downtime-coding.spec.ts, #123): the audit and the Pareto change, OEE does not.
  *
  * Usage: pnpm test:reconcile. Results (report.json, compose.log on failure, Playwright traces) go
  * to e2e/results/. Environment: RECONCILE_PROJECT (Compose project, default shopfloor-reconcile),
  * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_BROWSER=0 (no Playwright),
- * OVERVIEW_SAMPLE_MS (how long the browser samples, default 90000; must stay below about 470 s,
- * the shift's wall time after the browser starts), RECONCILE_DEADLINE_MS (overall limit, default
+ * OVERVIEW_SAMPLE_MS and OEE_SAMPLE_MS (how long each live check samples, default 90000 each; they
+ * run one after the other and together must stay below about 400 s, the shift's wall time after
+ * the browser starts, less the pages' start-up), RECONCILE_DEADLINE_MS (overall limit, default
  * 25 minutes), RECONCILE_SILENT_WAIT_MS (how long past the margin, in simulated time, the run may go
  * on for a silent machine's next fact; default 2 hours, 2 wall minutes at 60×). SIGINT and SIGTERM remove the stack and the env file before exiting.
  */
@@ -90,12 +95,16 @@ async function until(what: string, check: () => Promise<boolean>, timeoutMs: num
   }
 }
 
-/** Runs Playwright (browser/overview.spec.ts) against the stack; resolves with its exit code. */
+/**
+ * Runs one Playwright project against the stack (playwright.config.ts): `live` during the shift
+ * (overview and OEE dashboard), `final` after the drain (downtime coding). Resolves with its exit
+ * code.
+ */
 let browserChild: ChildProcess | undefined;
 
-function runBrowser(env: Record<string, string>): Promise<number> {
+function runBrowser(project: 'live' | 'final', env: Record<string, string>): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn('pnpm', ['exec', 'playwright', 'test'], {
+    const child = spawn('pnpm', ['exec', 'playwright', 'test', '--project', project], {
       cwd: join(REPO, 'e2e'),
       env: { ...process.env, ...env },
       stdio: 'inherit',
@@ -147,6 +156,8 @@ interface Report {
   /** Shift A's OEE from the MES against the live ground truth (#120). */
   oee?: {
     waitedMs: number;
+    /** Buckets compared with the ground truth: six machines and two work centers. */
+    compared: number;
     machines: Record<
       string,
       {
@@ -159,12 +170,26 @@ interface Report {
         differences: string[];
       }
     >;
-    workCenters: Record<string, { equal: boolean; oee: string | null; differences: string[] }>;
+    workCenters: Record<
+      string,
+      {
+        equal: boolean;
+        final: boolean;
+        provisionalMs: number;
+        revision: number;
+        incidents: number;
+        oee: string | null;
+        differences: string[];
+      }
+    >;
   };
   pieces?: { count: number; violations: string[] };
   incidents?: unknown[];
   rejectedMessages?: number;
-  browser?: { exitCode: number; report?: unknown };
+  /** The live checks: the overview (#100) and the OEE dashboard (#123). */
+  browser?: { exitCode: number; report?: unknown; oee?: unknown };
+  /** The downtime coding through the UI after the drain (#123). */
+  coding?: { exitCode: number; report?: unknown };
   failures: string[];
 }
 
@@ -191,6 +216,10 @@ async function main(): Promise<boolean> {
   const loaded = await loadPlantConfig(join(REPO, 'config/plant'));
   if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
   const shifts = loaded.config.shifts;
+  // The plant's machines and work centers: every one must be reconciled (exit criterion 3).
+  const plantWorkCenters = loaded.config.plant.areas.flatMap((area) => area.workCenters);
+  const plantMachines = plantWorkCenters.flatMap((wc) => wc.equipment.map((e) => e.id)).sort();
+  const workCenterIds = plantWorkCenters.map((wc) => wc.id).sort();
   const start = Date.parse(scenario.start);
   const [shift] = shiftSegments(shifts, start, start + 24 * 3_600_000);
   if (shift?.from !== start || shift.key === 'no-shift') {
@@ -271,6 +300,11 @@ async function main(): Promise<boolean> {
         }
         const initial = await sim.groundTruth();
         const machines = Object.keys(initial.machines).sort();
+        if (JSON.stringify(machines) !== JSON.stringify(plantMachines)) {
+          throw new Error(
+            `the ground truth's machines ${machines.join(', ')} are not the plant's ${plantMachines.join(', ')}`,
+          );
+        }
         await until(
           'gateway ready with every machine connected',
           async () => {
@@ -305,9 +339,10 @@ async function main(): Promise<boolean> {
         const resumedAt = Date.now();
         await sim.resume();
         if (withBrowser) {
-          browser = runBrowser({
+          browser = runBrowser('live', {
             RECONCILE_WEB_URL: webUrl,
             RECONCILE_SIM_URL: sim.base,
+            RECONCILE_MES_URL: mes.base,
             RECONCILE_RESULTS: RESULTS,
           });
         }
@@ -486,7 +521,29 @@ async function main(): Promise<boolean> {
         ).catch((error: unknown) => {
           fail(error instanceof Error ? error.message : String(error));
         });
-        report.oee = { waitedMs: Date.now() - oeeFrom, machines: {}, workCenters: {} };
+        report.oee = {
+          waitedMs: Date.now() - oeeFrom,
+          compared: 0,
+          machines: {},
+          workCenters: {},
+        };
+        // Exactly the plant's machines and work centers, on both sides.
+        const ids = (list: readonly { id: string }[]) =>
+          list
+            .map((b) => b.id)
+            .sort()
+            .join(', ');
+        for (const [what, actual, expected] of [
+          ['MES machines', ids(shiftOee.equipment), machines.join(', ')],
+          ['MES work centers', ids(shiftOee.workCenters), workCenterIds.join(', ')],
+          [
+            'ground-truth work centers',
+            Object.keys(truth.oee.workCenters).sort().join(', '),
+            workCenterIds.join(', '),
+          ],
+        ] as const) {
+          if (actual !== expected) fail(`${shiftKey} OEE: ${what} are ${actual}, not ${expected}`);
+        }
         for (const id of machines) {
           const bucket = shiftOee.equipment.find((b) => b.id === id);
           const expectedOee = truth.oee.machines[id]?.shifts[shiftKey];
@@ -499,6 +556,7 @@ async function main(): Promise<boolean> {
                 }
               : null,
           );
+          if (expectedOee && bucket) report.oee.compared++;
           report.oee.machines[id] = {
             equal: diffs.length === 0,
             final: bucket?.final ?? false,
@@ -522,17 +580,41 @@ async function main(): Promise<boolean> {
             );
           }
         }
-        for (const [id, wc] of Object.entries(truth.oee.workCenters)) {
+        for (const id of workCenterIds) {
           const bucket = shiftOee.workCenters.find((b) => b.id === id);
-          const diffs = jsonDifferences(wc.shifts[shiftKey] ?? null, bucket?.result ?? null);
+          const expectedOee = truth.oee.workCenters[id]?.shifts[shiftKey];
+          // A work center's inputs are its machines' sums, compared above; here its result.
+          const diffs = jsonDifferences(expectedOee ?? null, bucket?.result ?? null);
+          if (expectedOee && bucket) report.oee.compared++;
           report.oee.workCenters[id] = {
             equal: diffs.length === 0,
+            final: bucket?.final ?? false,
+            provisionalMs: bucket?.provisionalMs ?? -1,
+            revision: bucket?.revision ?? -1,
+            incidents: bucket?.incidents ?? -1,
             oee: bucket?.result.oee?.decimal ?? null,
             differences: diffs,
           };
           if (diffs.length > 0) {
             fail(`${id}: ${shiftKey} OEE differs from the ground truth:\n  ${diffs.join('\n  ')}`);
           }
+          if (
+            !bucket?.final ||
+            bucket.provisionalMs !== 0 ||
+            bucket.revision !== 0 ||
+            bucket.incidents !== 0
+          ) {
+            fail(
+              `${id}: ${shiftKey} OEE not final (final ${String(bucket?.final)}, provisionalMs ${String(bucket?.provisionalMs)}, revision ${String(bucket?.revision)}, incidents ${String(bucket?.incidents)})`,
+            );
+          }
+        }
+        // Every bucket compared: six machines and two work centers in the golden plant.
+        const comparisons = plantMachines.length + workCenterIds.length;
+        if (report.oee.compared !== comparisons || comparisons !== 8) {
+          fail(
+            `${shiftKey} OEE: ${String(report.oee.compared)} buckets compared, not ${String(comparisons)} (6 machines and 2 work centers)`,
+          );
         }
 
         // The live run reproduces the headless golden week's shift A: pacing never changes the run.
@@ -592,11 +674,35 @@ async function main(): Promise<boolean> {
             (text) => JSON.parse(text) as unknown,
             () => undefined,
           );
-          report.browser = { exitCode, report: browserReport };
+          const oeeReport = await readFile(join(RESULTS, 'oee-latency.json'), 'utf8').then(
+            (text) => JSON.parse(text) as unknown,
+            () => undefined,
+          );
+          report.browser = { exitCode, report: browserReport, oee: oeeReport };
           if (exitCode !== 0)
-            fail(`the live overview check failed (Playwright exit ${String(exitCode)})`);
+            fail(`the live overview or OEE check failed (Playwright exit ${String(exitCode)})`);
         }
         phase('browser');
+
+        // 6. Exit criterion 4 through the UI (#123): shift A is final and the simulator paused, so
+        //    nothing but the recode can change the Pareto, and OEE must not change at all.
+        if (withBrowser) {
+          browser = runBrowser('final', {
+            RECONCILE_WEB_URL: webUrl,
+            RECONCILE_RESULTS: RESULTS,
+            RECONCILE_SHIFT: shiftKey,
+          });
+          const exitCode = await browser;
+          browser = undefined;
+          const codingReport = await readFile(join(RESULTS, 'downtime-coding.json'), 'utf8').then(
+            (text) => JSON.parse(text) as unknown,
+            () => undefined,
+          );
+          report.coding = { exitCode, report: codingReport };
+          if (exitCode !== 0)
+            fail(`the downtime coding check failed (Playwright exit ${String(exitCode)})`);
+        }
+        phase('coding');
       })(),
       deadline,
     ]);
@@ -648,9 +754,15 @@ function summarize(report: Report): void {
     );
   }
   for (const [id, wc] of Object.entries(report.oee?.workCenters ?? {})) {
-    console.log(`  OEE ${id}: ${wc.equal ? 'equal' : 'DIFFERENT'} (OEE ${String(wc.oee)})`);
+    console.log(
+      `  OEE ${id}: ${wc.equal ? 'equal' : 'DIFFERENT'} (OEE ${String(wc.oee)}; final ${String(wc.final)}, provisional ${String(wc.provisionalMs)}, revision ${String(wc.revision)}, incidents ${String(wc.incidents)})`,
+    );
   }
-  if (report.oee) console.log(`  OEE final after ${String(report.oee.waitedMs)} ms`);
+  if (report.oee) {
+    console.log(
+      `  OEE final after ${String(report.oee.waitedMs)} ms, ${String(report.oee.compared)} buckets compared`,
+    );
+  }
   if (report.goldenShiftEqual !== undefined) {
     console.log(
       `  live ground truth equals the golden week's shift: ${String(report.goldenShiftEqual)}`,
@@ -662,6 +774,7 @@ function summarize(report: Report): void {
     );
   if (report.incidents) console.log(`  incidents: ${JSON.stringify(report.incidents)}`);
   if (report.browser) console.log(`  browser: ${JSON.stringify(report.browser)}`);
+  if (report.coding) console.log(`  coding: ${JSON.stringify(report.coding)}`);
   console.log(
     report.failures.length === 0
       ? 'RECONCILE-OK'

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { judgeLatency, pageActivityProblems, type Change } from './latency.ts';
+import { judgeLatency, pageActivityProblems, snapshotAgreement, type Change } from './latency.ts';
 
 const run = (truth: Change[], page: Change[], until = 100_000, limit = 2_000) =>
   judgeLatency(new Map([['m', truth]]), new Map([['m', page]]), until, limit);
@@ -104,5 +104,89 @@ describe('latest state within the limit (#100, exit criterion 3)', () => {
     expect(pageActivityProblems(measured, page)).toEqual([
       'b: the page never changed state, the truth did',
     ]);
+  });
+});
+
+describe('OEE values within the limit (#123, Phase 5 exit criterion 5)', () => {
+  // The API's OEE changes about twice a second; the page takes a push at most once a second.
+  const truth: Change[] = [
+    { at: 1_000, state: '0.8001' },
+    { at: 1_500, state: '0.8002' },
+    { at: 2_000, state: '0.8003' },
+    { at: 2_500, state: '0.8004' },
+  ];
+  const observed = new Map([['wc', new Set(['0.8000', ...truth.map((c) => c.state)])]]);
+  const judge = (page: Change[]) =>
+    judgeLatency(new Map([['wc', truth]]), new Map([['wc', page]]), 100_000, 2_000, {
+      observed,
+    });
+
+  it('accepts a later value for skipped ones', () => {
+    const result = judge([
+      { at: 0, state: '0.8000' },
+      { at: 1_700, state: '0.8002' },
+      { at: 2_700, state: '0.8004' },
+    ]);
+    expect(result.violations).toEqual([]);
+    expect(result.measured.map((m) => m.latencyMs)).toEqual([700, 200, 700, 200]);
+  });
+
+  it('accepts a value the polls missed only when the page took it after the change', () => {
+    // 0.80035 was held between two polls, after 0.8003 was seen.
+    const missed = { at: 2_300, state: '0.80035' };
+    const result = judge([{ at: 0, state: '0.8000' }, missed]);
+    // 0.8001 to 0.8003: the page took the missed value after them; 0.8004 never came.
+    expect(result.measured.map((m) => m.latencyMs)).toEqual([1_300, 800, 300, undefined]);
+    // Without `observed`, an unknown value never counts.
+    const strict = judgeLatency(
+      new Map([['wc', truth]]),
+      new Map([['wc', [{ at: 0, state: '0.8000' }, missed]]]),
+      100_000,
+      2_000,
+    );
+    expect(strict.violations).toHaveLength(4);
+  });
+
+  it('refuses a page stuck on a stale value', () => {
+    const result = judge([{ at: 0, state: '0.8000' }]);
+    expect(result.violations).toHaveLength(4);
+  });
+
+  it('lowers the frozen-page ratio for a paced page', () => {
+    const page = [
+      { at: 0, state: '0.8000' },
+      { at: 1_700, state: '0.8002' },
+    ];
+    const { measured } = judge(page);
+    const pages = new Map([['wc', page]]);
+    expect(pageActivityProblems(measured, pages)).toEqual([
+      'the page changed state 1 times for 4 judged changes',
+    ]);
+    expect(pageActivityProblems(measured, pages, 0.25)).toEqual([]);
+  });
+
+  it('compares snapshots with what the API held around their moment', () => {
+    const api = new Map([['wc', [{ at: 0, state: '0.8000' }, ...truth]]]);
+    const agreement = snapshotAgreement(
+      [
+        { at: 1_200, values: { wc: '0.8001' } }, // held now
+        { at: 2_600, values: { wc: '0.8001' } }, // held until 1.5 s: within 2 s before
+        { at: 4_000, values: { wc: '0.8001' } }, // stale by 2.5 s
+        { at: 900, values: { wc: '0.8001' } }, // the API took it 100 ms later
+        { at: 1_000, values: { wc: '0.7999' } }, // never held
+      ],
+      api,
+      2_000,
+      500,
+    );
+    expect(agreement).toEqual({
+      compared: 5,
+      matched: 3,
+      matchedPerKey: { wc: 3 },
+      mismatches: [
+        'wc at 1970-01-01T00:00:04.000Z: page 0.8001',
+        'wc at 1970-01-01T00:00:01.000Z: page 0.7999',
+      ],
+    });
   });
 });

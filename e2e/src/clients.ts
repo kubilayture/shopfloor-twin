@@ -3,10 +3,16 @@
  * apps never share code), the gateway's metrics and the MES's REST API (the shared
  * `@shopfloor/contracts/mes-api` schemas). Every answer is parsed at the boundary.
  */
+import { request as httpRequest } from 'node:http';
 import {
+  currentShiftSchema,
+  downtimeAuditSchema,
+  downtimeListSchema,
   equipmentListSchema,
   oeeResultSchema,
+  paretoSchema,
   plantSchema,
+  reasonCodesSchema,
   shiftOeeSchema,
   shiftTotalsSchema,
 } from '@shopfloor/contracts/mes-api';
@@ -128,6 +134,65 @@ export class MesClient {
   shiftOee(shiftKey: string) {
     return request(`${this.base}/api/v1/shifts/${shiftKey}/oee`, shiftOeeSchema);
   }
+
+  /** The same answer as raw text, for a byte-for-byte comparison (#123). */
+  async shiftOeeText(shiftKey: string): Promise<string> {
+    const url = `${this.base}/api/v1/shifts/${shiftKey}/oee`;
+    const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`GET ${url}: ${String(response.status)} ${text}`);
+    return text;
+  }
+
+  currentShift() {
+    return request(`${this.base}/api/v1/shifts/current`, currentShiftSchema);
+  }
+
+  reasonCodes() {
+    return request(`${this.base}/api/v1/reason-codes`, reasonCodesSchema);
+  }
+
+  downtime(from: string, to: string) {
+    const query = new URLSearchParams({ from, to });
+    return request(`${this.base}/api/v1/downtime?${query.toString()}`, downtimeListSchema);
+  }
+
+  pareto(scope: 'equipment' | 'work-center', id: string, from: string, to: string) {
+    const query = new URLSearchParams({ scope, id, from, to });
+    return request(`${this.base}/api/v1/downtime/pareto?${query.toString()}`, paretoSchema);
+  }
+
+  audit(id: string) {
+    return request(
+      `${this.base}/api/v1/downtime/${encodeURIComponent(id)}/audit`,
+      downtimeAuditSchema,
+    );
+  }
+}
+
+/**
+ * One HTTP request with exactly these headers (fetch adds or drops some, such as `Origin`):
+ * resolves with the status and body.
+ */
+export function rawRequest(
+  method: string,
+  url: string,
+  headers: Readonly<Record<string, string>>,
+  body?: string,
+): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(new URL(url), { method, headers, timeout: 5_000 }, (response) => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk: string) => (text += chunk));
+      response.on('end', () => {
+        resolve({ status: response.statusCode ?? 0, text });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error(`${method} ${url}: timed out`)));
+    req.on('error', reject);
+    req.end(body);
+  });
 }
 
 /** One gauge per label value from a Prometheus text exposition, e.g. per `machine`. */

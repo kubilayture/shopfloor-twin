@@ -101,12 +101,12 @@ Four mechanisms matter:
 
 - **Watermark.** Each aggregate has one watermark: the end of the last materialised bucket that had data. It never moves back.
 - **Real-time aggregation** (`materialized_only = false`). A query reads materialised rows below the watermark and computes rows above it from the raw table, so the open hour is always current without a refresh.
-- **Invalidation.** A change to the raw table _below_ the watermark is recorded in an invalidation log, but the view keeps showing the old materialised value until a refresh covers that range. A refresh then re-materialises only the invalidated parts of its window. A refresh after a new epoch five days back took 3 ms; materialising the whole week took 81 ms.
+- **Invalidation.** A change to the raw table below the _invalidation threshold_ (a value set by the refresh windows, separate from the watermark) is recorded in an invalidation log, but the view keeps showing the old materialised value until a refresh covers that range. A refresh then re-materialises the invalidated parts of its window below that threshold, and the part of its window above the threshold in full. A refresh after a new epoch five days back took 3 ms; materialising the whole week took 81 ms.
 - **Refresh outside transactions.** `CALL refresh_continuous_aggregate(...)` commits internally, so it can't run inside a transaction block. The MES runs it on its own small pool, from a timer, never on ingest's acknowledgement path.
 
 The trap the plan review found: refreshing a later hour moves the watermark past earlier hours that were never refreshed. Those hours then vanish from the view, because they are below the watermark and not materialised. So does any later change below it.
 
-The MES therefore marks every change below the watermark dirty, including a new epoch whose simulation time lies earlier. Each refresh covers one contiguous window, from the earliest dirty hour to the latest final hour + 1 h, debounced to 1 s. A one-time catch-up runs at start-up. There are no refresh policies: their windows follow wall-clock `now()`, while simulation time runs at 60× and goes back under a new epoch (ADR-0022).
+The MES therefore marks every change below the watermark dirty, including a new epoch whose simulation time lies earlier. Each refresh covers one contiguous window, from the earliest dirty hour to `max(latest dirty hour + 1 h, end of the latest final hour)`, debounced to 1 s. A one-time catch-up runs at start-up. There are no refresh policies: their windows follow wall-clock `now()`, while simulation time runs at 60× and goes back under a new epoch (ADR-0022).
 
 ### Finality and revisions
 
@@ -160,7 +160,7 @@ The guards (ADR-0023), in order, are:
 4. `Sec-Fetch-Site: same-origin` when sent;
 5. `application/json`, else 415.
 
-The 415 is the key against forms. A cross-site form or `text/plain` fetch is a "simple request" that the browser sends without asking first. With JSON required, it never reaches a handler. A JSON request from another origin needs a CORS preflight, and the MES sends no CORS headers, so the browser never sends it.
+For the coding route, which is a PUT, the method already forces a CORS preflight: an HTML form can't send PUT, and a cross-origin PUT is never a simple request. The 415 is defence in depth for POST (which nginx and the write guard allow) and for any future write a form could send: a cross-site form or `text/plain` fetch is a "simple request" that the browser sends without asking first, and with JSON required it never reaches a handler. A JSON request from another origin needs a CORS preflight, and the MES sends no CORS headers, so the browser never sends it.
 
 Two further guards follow: a 16 KiB body limit and one global rate limit. The limit is global because behind nginx every request comes from nginx, and `X-Forwarded-For` can be forged.
 
@@ -168,7 +168,7 @@ Two further guards follow: a 16 KiB body limit and one global rate limit. The li
 
 The web's Content Security Policy has `style-src 'self'`, with no `unsafe-inline`.
 
-- **What CSP blocks.** It refuses inline `style="…"` attributes that arrive through HTML parsing (`innerHTML`), but not styles set through the DOM (`element.style.x = …`).
+- **What CSP blocks.** It refuses inline `style="…"` attributes that arrive through HTML parsing (`innerHTML`), but not styles set through the CSSOM (`element.style.x = …`); `setAttribute('style', …)` is blocked like the parsed attribute.
 - **ECharts.** Its HTML tooltip builds its markup as a string with `style` attributes and assigns it through `innerHTML`, so the CSP would refuse it. Its canvas tooltip (`renderMode: 'richText'`) draws on the canvas instead.
 - **How to check a library.** Render it under the real header with a `securitypolicyviolation` listener and watch for violations, as #135 did. Reading the documentation isn't enough.
 - **Bundle size.** ECharts is tree-shaken from `echarts/core` (bar, grid, legend, tooltip, canvas) and loaded lazily, so the overview doesn't pay for it.
@@ -271,7 +271,7 @@ The version belongs to the (equipment, epoch) coding set, so the second write ge
 
 **15. Why does `Content-Type: application/json` (415 otherwise) matter as much as the Origin check?**
 
-A cross-site `<form>` or a `text/plain` fetch is a "simple request": the browser sends it without a preflight, cookies and all, and only hides the response. Refusing any non-JSON write means such a request never reaches a handler. A JSON request from another origin needs a CORS preflight, which the MES never approves (no CORS headers), so the browser never sends it.
+A cross-site `<form>` or a `text/plain` fetch is a "simple request": the browser sends it without a preflight, cookies and all, and only hides the response. Refusing any non-JSON write means such a request never reaches a handler. (The coding route is a PUT, which a form can't send and which always needs a preflight cross-origin; the 415 covers POST and future routes.) A JSON request from another origin needs a CORS preflight, which the MES never approves (no CORS headers), so the browser never sends it.
 
 **16. The audit table has a trigger refusing UPDATE and DELETE. Why isn't that tamper-proof yet?**
 

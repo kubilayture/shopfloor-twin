@@ -1,0 +1,9 @@
+{
+  "about": "SHA-256 of stableStringify of the sim-summary/3 summary.json on main before #172 (ffd4a06), without the fields #172 changed (stripped). The sim-summary/4 summaries must give the same digest without them (#172, M6).",
+  "source": "ffd4a06",
+  "stripped": ["schema", "analysisConfigSha256", "oee.config.scheduledTime", "orders"],
+  "digests": {
+    "alarms-01": "cffa1bf8a707f09cd5f345db508f72aaf4b257c2a4cd73f1218debd522866c15",
+    "week-01": "5cd9728361101b72366e531c08fe51be62a7a924c58916b3366ce28af42b9488"
+  }
+}

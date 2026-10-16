@@ -1,10 +1,7 @@
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { HOUR, RandomSource, Simulation } from '@shopfloor/sim-core';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { groundTruthSchema } from '../control/app.ts';
-import { scenarioOptions } from '../headless/golden.ts';
 import { runHeadless } from '../headless/run.ts';
-import { EVENT_SCHEMA, isoTime, stableStringify } from '../headless/serialize.ts';
 import { GroundTruth } from '../headless/summary.ts';
 import { ProductionLine, type LineEvent, type PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
@@ -122,52 +119,4 @@ describe('live ground truth (#100)', () => {
     expect(live.simTime).toBe(new Date(until).toISOString());
     expect(Object.keys(live.current).sort()).toEqual(Object.keys(live.machines).sort());
   });
-
-  it('reproduces headless orders-01 when the jobs are dispatched through LoadOrder at the idle start, then injected (#172, B3)', async () => {
-    const options = await scenarioOptions('orders-01');
-    const until = options.start + 8 * HOUR;
-    const headless: string[] = [];
-    runHeadless({ ...options, end: until }, (line) => headless.push(line));
-    const events: PlantEvent[] = [];
-    const run = createLiveRun({
-      config: options.config,
-      seed: options.seed,
-      start: options.start,
-      speed: 60,
-      clock: new ManualClock(),
-      production: 'orders',
-      onEvent: (event) => events.push(event),
-    });
-    // The live order: attached and idle at the start time, every job dispatched (and accepted)
-    // through LoadOrder with the device's guard, then the injections, then the run resumes.
-    expect(run.pacer.state).toBe('idle');
-    const guard = { epoch: 1_791_000_000, wallNow: Date.UTC(2026, 9, 16) };
-    for (const dispatch of options.dispatches ?? []) {
-      const result = run.line.loadOrder(
-        dispatch.machine,
-        { ...dispatch, deviceEpoch: guard.epoch, expiresAt: guard.wallNow + 60_000 },
-        run.simulation,
-        guard,
-      );
-      expect(result).toMatchObject({ ok: true, duplicate: false });
-    }
-    for (const injection of options.injections ?? []) {
-      expect(run.injectFailure(injection).ok).toBe(true);
-    }
-    while (run.simulation.nextEventTime !== undefined && run.simulation.nextEventTime < until) {
-      run.pacer.step();
-    }
-    const live = events.map((event, i) =>
-      stableStringify({ ...event, schema: EVENT_SCHEMA, seq: i + 1, at: isoTime(event.at) }),
-    );
-    expect(live.length).toBeGreaterThan(1_000);
-    expect(live).toEqual(headless.slice(1));
-    // The control API 1.4 serves this run's order ground truth whole.
-    const truth = run.groundTruth();
-    expect(truth.productionMode).toBe('orders');
-    expect(groundTruthSchema.parse({ epoch: 1, ...truth }).orders).toEqual(
-      JSON.parse(JSON.stringify(truth.orders)),
-    );
-    expect(truth.orders.jobs).toHaveLength(options.dispatches?.length ?? 0);
-  }, 60_000);
 });

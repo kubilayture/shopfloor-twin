@@ -8,7 +8,6 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  LOAD_ORDER_INPUTS,
   OPCUA_EVENT_FIELDS,
   OPCUA_EVENT_TYPES,
   OPCUA_METHODS,
@@ -26,7 +25,6 @@ import {
   constructEventFilter,
   resolveNodeId,
   type ClientSession,
-  type VariantOptions,
 } from 'node-opcua';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLiveRun, type LiveRun } from '../live/run.ts';
@@ -34,7 +32,7 @@ import { ManualClock } from '../live/testing.ts';
 import type { PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
 import { PlantServers } from './plant-servers.ts';
-import { connect, wait } from './testing.ts';
+import { callLoadOrder, connect, wait } from './testing.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
 const OFFSET = 600;
@@ -87,34 +85,15 @@ interface Call {
 }
 
 async function loadOrder(session: ClientSession, machine: string, call: Call = {}) {
-  const namespaces = await session.readNamespaceArray();
-  const args: VariantOptions[] = [
-    { dataType: DataType.String, value: call.commandId ?? 'PO-1~OP10~1' },
-    { dataType: DataType.String, value: call.orderId ?? 'PO-1' },
-    { dataType: DataType.String, value: call.product ?? 'VB-100' },
-    { dataType: DataType.UInt32, value: call.quantity ?? 4 },
-    { dataType: DataType.DateTime, value: new Date(call.notBefore ?? T0) },
-    { dataType: DataType.UInt32, value: call.deviceEpoch ?? EPOCH },
-    { dataType: DataType.DateTime, value: new Date(call.expiresAt ?? WALL + 60_000) },
-  ];
-  const result = await session.call({
-    objectId: resolveNodeId(
-      toIndexedNodeId(`nsu=${SHOPFLOOR_NAMESPACE_URI};s=${machine}.ShopFloor`, namespaces),
-    ),
-    methodId: resolveNodeId(
-      toIndexedNodeId(opcuaNodeId(machine, OPCUA_METHODS.loadOrder), namespaces),
-    ),
-    inputArguments: args,
+  return callLoadOrder(session, machine, {
+    commandId: call.commandId ?? 'PO-1~OP10~1',
+    orderId: call.orderId ?? 'PO-1',
+    product: call.product ?? 'VB-100',
+    quantity: call.quantity ?? 4,
+    notBefore: call.notBefore ?? T0,
+    deviceEpoch: call.deviceEpoch ?? EPOCH,
+    expiresAt: call.expiresAt ?? WALL + 60_000,
   });
-  return {
-    status: result.statusCode.name,
-    flagged: (result.inputArgumentResults ?? [])
-      .map((r, i) => (r.name === 'Good' ? undefined : `${LOAD_ORDER_INPUTS[i] ?? '?'} ${r.name}`))
-      .filter((x) => x !== undefined),
-    outputs: (result.outputArguments ?? []).map((o) =>
-      o.value instanceof Date ? o.value.getTime() : (o.value as unknown),
-    ),
-  };
 }
 
 async function read(session: ClientSession, machine: string, path: string): Promise<unknown> {
@@ -202,7 +181,7 @@ describe('LoadOrder over OPC UA in orders mode (#172)', () => {
     }
   }, 60_000);
 
-  it('answers a late or wrong-epoch call for an accepted command as a duplicate with the original acceptance', async () => {
+  it('answers a late or wrong-epoch call for an accepted command as a duplicate, and the same id on the other CNC as a conflict', async () => {
     const { session, close } = await connect(4841 + OFFSET);
     try {
       const first = servers.servers[0]?.acceptance('PO-1~OP10~1');
@@ -220,6 +199,20 @@ describe('LoadOrder over OPC UA in orders mode (#172)', () => {
       });
     } finally {
       await close();
+    }
+    // The dedup table is line-wide: the same command id with the same job on the other CNC.
+    const other = await connect(4842 + OFFSET);
+    try {
+      const sequence = servers.servers[1]?.sequence;
+      expect(await loadOrder(other.session, 'cnc-02')).toEqual({
+        status: 'BadInvalidArgument',
+        flagged: ['CommandId BadInvalidArgument'],
+        outputs: [],
+      });
+      expect(servers.servers[1]?.sequence).toBe(sequence);
+      expect(await read(other.session, 'cnc-02', OPCUA_VARIABLES.queuedJobs)).toBe(0);
+    } finally {
+      await other.close();
     }
   }, 60_000);
 

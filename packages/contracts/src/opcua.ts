@@ -46,7 +46,9 @@ export const OPCUA_METHODS = {
 /**
  * `LoadOrder`'s input arguments, in call order (#172, ADR-0030). A refusal flags the offending
  * argument in `inputArgumentResults` at its index here, which is how a client tells
- * `epoch-mismatch` (DeviceEpoch) from `expired` (ExpiresAt): both are `BadInvalidState`.
+ * `epoch-mismatch` (DeviceEpoch) from `expired` (ExpiresAt): both are `BadInvalidState`. With no argument
+ * flagged, `BadInvalidState` is production mode `schedule` (permanent) and
+ * `BadWaitingForInitialData` a run not attached or finished (transient).
  */
 export const LOAD_ORDER_INPUTS = [
   'CommandId',

@@ -234,6 +234,42 @@ describe('production mode orders (#172)', () => {
       ]);
     });
 
+    it('starts nothing for a dispatch that lands at the break-start instant before the boundary is processed', () => {
+      // A stepped run: the dispatch comes with the simulation at 10:00 and the calendar's break
+      // boundary for that instant still queued, as an OPC UA call between two pacer steps can.
+      const { line, simulation, events } = setup({ continuous: false });
+      let dispatched = false;
+      const handle = (event: LineEvent, sim: Simulation<LineEvent>) => {
+        if (!dispatched && sim.now === BREAK_START) {
+          dispatched = true;
+          expect(states(events, 'cnc-01').at(-1)).toMatchObject({ to: 'Idle', at: T0 });
+          expect(line.loadOrder('cnc-01', job({ notBefore: T0 }), sim)).toMatchObject({
+            ok: true,
+            duplicate: false,
+          });
+        }
+        line.handle(event, sim);
+      };
+      while (
+        simulation.nextEventTime !== undefined &&
+        simulation.nextEventTime <= BREAK_END + HOUR
+      ) {
+        simulation.step(handle);
+      }
+      expect(dispatched).toBe(true);
+      const cnc = states(events, 'cnc-01');
+      expect(cnc.slice(0, 4).map((e) => [e.at, e.to, e.cause])).toEqual([
+        [T0, 'Idle', CAUSES.noOrder],
+        [BREAK_START, 'PlannedStop', CAUSES.break],
+        [BREAK_END, 'Setup', 'CHANGEOVER none→VB-100'],
+        [BREAK_END + 25 * MINUTE, 'Running', undefined],
+      ]);
+      expect(jobFacts(events).slice(0, 2)).toEqual(['PO-1~OP10~1 accepted', 'PO-1~OP10~1 started']);
+      expect(events.find((e) => e.type === 'job' && e.transition === 'started')?.at).toBe(
+        BREAK_END + 25 * MINUTE,
+      );
+    });
+
     it('starts nothing for a dispatch during a break, before the break ends', () => {
       const { line, simulation, events, runTo } = setup({ continuous: false });
       runTo(BREAK_START + 5 * MINUTE);
@@ -291,6 +327,27 @@ describe('LoadOrder: idempotency and refusals (#172, ADR-0030)', () => {
         argument: 'CommandId',
       });
     }
+  });
+
+  it('keeps one dedup table for the line: the same command id on the other CNC is a command-conflict', () => {
+    const { line, simulation, events } = setup();
+    line.loadOrder('cnc-01', live(), simulation, guard);
+    // Also with the same job, and also late or for another epoch: the id is taken line-wide.
+    for (const call of [live(), live({ expiresAt: guard.wallNow - 1, deviceEpoch: 1 })]) {
+      expect(line.loadOrder('cnc-02', call, simulation, guard)).toMatchObject({
+        ok: false,
+        code: 'command-conflict',
+        argument: 'CommandId',
+        reason: 'command PO-1~OP10~1 was accepted for cnc-01',
+      });
+    }
+    expect(line.queue('cnc-02')).toEqual([]);
+    expect(jobFacts(events)).toEqual(['PO-1~OP10~1 accepted']);
+    // The original CNC still answers it as a duplicate.
+    expect(line.loadOrder('cnc-01', live(), simulation, guard)).toMatchObject({
+      ok: true,
+      duplicate: true,
+    });
   });
 
   it.each<[string, Partial<LoadOrderRequest>, string, string]>([

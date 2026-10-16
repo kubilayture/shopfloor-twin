@@ -589,10 +589,12 @@ export class MachineServer {
 
   /**
    * `ShopFloor.LoadOrder` (#172, ADR-0030). Refusals flag the offending argument in
-   * `inputArgumentResults` (index in `LOAD_ORDER_INPUTS`): `BadInvalidState` for the run's state
-   * (`wrong-mode`, `not-attached`, `epoch-mismatch` on DeviceEpoch, `expired` on ExpiresAt),
-   * `BadInvalidArgument` for the job (`command-conflict` on CommandId, the product, quantity and
-   * ids), `BadResourceUnavailable` for a full queue.
+   * `inputArgumentResults` (index in `LOAD_ORDER_INPUTS`): `BadInvalidState` for a refusal that
+   * no retry changes (`wrong-mode` with no argument, `epoch-mismatch` on DeviceEpoch, `expired` on
+   * ExpiresAt), `BadWaitingForInitialData` with no argument for a run not attached or started yet
+   * or already finished (`not-attached`, `not-running`: transient for the caller, which retries
+   * until the command's `ExpiresAt`), `BadInvalidArgument` for the job (`command-conflict` on
+   * CommandId, the product, quantity and ids), `BadResourceUnavailable` for a full queue.
    */
   #addLoadOrder(
     ns: Namespace,
@@ -671,14 +673,16 @@ export class MachineServer {
       if (!result.ok) {
         const state =
           result.code === 'wrong-mode' ||
-          result.code === 'not-attached' ||
           result.code === 'epoch-mismatch' ||
           result.code === 'expired';
-        const statusCode = state
-          ? StatusCodes.BadInvalidState
-          : result.code === 'queue-full'
-            ? StatusCodes.BadResourceUnavailable
-            : StatusCodes.BadInvalidArgument;
+        const transient = result.code === 'not-attached' || result.code === 'not-running';
+        const statusCode = transient
+          ? StatusCodes.BadWaitingForInitialData
+          : state
+            ? StatusCodes.BadInvalidState
+            : result.code === 'queue-full'
+              ? StatusCodes.BadResourceUnavailable
+              : StatusCodes.BadInvalidArgument;
         const index =
           result.argument === undefined ? -1 : LOAD_ORDER_INPUTS.indexOf(result.argument);
         callback(null, {

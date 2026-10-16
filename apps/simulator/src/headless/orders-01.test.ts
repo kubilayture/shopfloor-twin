@@ -7,6 +7,7 @@
  * and that the order ground truth equals what the event log shows. Also: week-01's and alarms-01's
  * regenerated summaries differ from a `shift-calendar` run only in the fields #172 changed.
  */
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { CAUSES } from '@shopfloor/contracts';
@@ -14,6 +15,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { readScenario, scenarioOptions } from './golden.ts';
 import { unitsHash, type UnitJson } from './order-truth.ts';
 import { runHeadless, summaryDocument, type HeadlessResult } from './run.ts';
+import { stableStringify } from './serialize.ts';
 
 const GOLDEN = resolve(import.meta.dirname, '../../golden');
 const MINUTE = 60_000;
@@ -395,5 +397,29 @@ describe('week-01 and alarms-01 under sim-summary/4 (#172, M6)', () => {
       expect(committed).toEqual(previous);
     },
     60_000,
+  );
+
+  it.each(['week-01', 'alarms-01'])(
+    '%s: the committed summary without the fields #172 changed is the sim-summary/3 summary of main, by digest',
+    async (name) => {
+      const fixture = JSON.parse(
+        await readFile(resolve(GOLDEN, 'sim-summary-3.digests.json'), 'utf8'),
+      ) as { stripped: string[]; digests: Record<string, string> };
+      expect(fixture.stripped).toEqual([
+        'schema',
+        'analysisConfigSha256',
+        'oee.config.scheduledTime',
+        'orders',
+      ]);
+      const committed = JSON.parse(
+        await readFile(resolve(GOLDEN, name, 'summary.json'), 'utf8'),
+      ) as Record<string, unknown> & { oee: { config: Record<string, unknown> } };
+      delete committed.schema;
+      delete committed.analysisConfigSha256;
+      delete committed.oee.config.scheduledTime;
+      delete committed.orders;
+      const digest = createHash('sha256').update(stableStringify(committed)).digest('hex');
+      expect(digest).toBe(fixture.digests[name]);
+    },
   );
 });

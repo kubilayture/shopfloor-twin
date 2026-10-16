@@ -2,7 +2,15 @@ import { join } from 'node:path';
 import { OPCUA_MACHINES } from '@shopfloor/contracts';
 import { plantAlarms, type PlantConfig } from '@shopfloor/plant-config';
 import type { SimTime, Simulation } from '@shopfloor/sim-core';
-import type { LineEvent, PlantEvent, ProductionLine, ProductionMode } from '../plant/line.ts';
+import type { PacerState } from '../live/pacer.ts';
+import type {
+  LineEvent,
+  LoadOrderRequest,
+  LoadOrderResult,
+  PlantEvent,
+  ProductionLine,
+  ProductionMode,
+} from '../plant/line.ts';
 import type { ProcessValues } from '../plant/process-values.ts';
 import { MachineServer } from './machine-server.ts';
 
@@ -27,6 +35,8 @@ export interface LiveSources {
   readonly line: ProductionLine;
   readonly simulation: Simulation<LineEvent>;
   readonly processValues: ProcessValues;
+  /** The live run's pacer: `LoadOrder` is refused (`not-running`) once it has finished. */
+  readonly pacer?: { readonly state: PacerState };
 }
 
 /** The alarm codes a machine can raise: its slice of the plant's alarm vocabulary (ADR-0024). */
@@ -83,22 +93,7 @@ export class PlantServers {
           }
           return sources.line.loadProgram(machine.id, product, quantity, sources.simulation);
         },
-        loadOrder: (request, wallNow) => {
-          const sources = this.#sources;
-          // The accepted event must reach this server at once, so that the call can answer its
-          // sequence number: not before every server has started and replayed what it missed.
-          if (!sources || this.#pending.length > 0 || !this.#started()) {
-            return {
-              ok: false as const,
-              code: 'not-attached' as const,
-              reason: 'simulation not attached or servers not started',
-            };
-          }
-          return sources.line.loadOrder(machine.id, request, sources.simulation, {
-            epoch: this.epoch,
-            wallNow,
-          });
-        },
+        loadOrder: (request, wallNow) => this.loadOrder(machine.id, request, wallNow),
         ...(wallClock ? { wallClock } : {}),
         ...(host ? { host } : {}),
       });
@@ -151,6 +146,31 @@ export class PlantServers {
     for (const event of this.#pending.splice(0)) {
       this.#route(event);
     }
+  }
+
+  /**
+   * `LoadOrder` on a CNC (#172, ADR-0030), as its OPC UA method calls it: the line's `loadOrder`
+   * with this run's epoch and the wall clock as the guard. Refused `not-attached` until the run is
+   * attached and every server has started and replayed what it missed (the accepted event must
+   * reach the server at once, so that the call can answer its sequence number), and
+   * `not-running` once the run's pacer has finished.
+   */
+  loadOrder(machineId: string, request: LoadOrderRequest, wallNow: number): LoadOrderResult {
+    const sources = this.#sources;
+    if (!sources || this.#pending.length > 0 || !this.#started()) {
+      return {
+        ok: false,
+        code: 'not-attached',
+        reason: 'simulation not attached or servers not started',
+      };
+    }
+    if (sources.pacer?.state === 'finished') {
+      return { ok: false, code: 'not-running', reason: 'the simulation run has finished' };
+    }
+    return sources.line.loadOrder(machineId, request, sources.simulation, {
+      epoch: this.epoch,
+      wallNow,
+    });
   }
 
   attach(sources: LiveSources): void {

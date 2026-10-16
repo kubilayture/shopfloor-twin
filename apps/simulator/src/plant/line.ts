@@ -195,6 +195,7 @@ export interface LoadOrderGuard {
 export type LoadOrderRefusal =
   | 'not-a-cnc'
   | 'not-attached'
+  | 'not-running'
   | 'wrong-mode'
   | 'command-conflict'
   | 'epoch-mismatch'
@@ -384,6 +385,8 @@ export class ProductionLine {
   readonly #crew: Crew;
   readonly #injections: Injection[] = [];
   readonly #jobs: Job[] = [];
+  /** Orders mode: every job this run accepted, by command id, line-wide (the dedup table). */
+  readonly #acceptedCommands = new Map<string, Job>();
   readonly production: ProductionMode;
   #unavailable: Unavailable | undefined = 'Off';
   #freeTechnicians: number;
@@ -558,7 +561,7 @@ export class ProductionLine {
         this.#onInjection(station, this.#injection(event.injection), simulation);
         break;
       case 'wake':
-        this.#onWake(station, simulation);
+        this.#startInShift(station, simulation);
         break;
       case 'repair-end':
         this.#finishRepair(station, simulation);
@@ -1116,12 +1119,13 @@ export class ProductionLine {
   }
 
   /**
-   * A job's `NotBefore` came (#172). Only the normal start path: a wake-up in a break, a planned
-   * stop or outside a shift starts nothing (the job starts when the machine next leaves that
-   * state), also when it falls on the very instant of a calendar boundary that the event queue
-   * happens to process after it.
+   * A job's `NotBefore` came, or a job was accepted (#172). Only the normal start path, and only
+   * for an `Idle` CNC inside a shift and outside its break, checked against the calendar: a
+   * wake-up or dispatch in a break, a planned stop or outside a shift starts nothing (the job
+   * starts when the machine next leaves that state), also when it falls on the very instant of a
+   * calendar boundary that the event queue happens to process after it.
    */
-  #onWake(station: Station, simulation: Simulation<LineEvent>): void {
+  #startInShift(station: Station, simulation: Simulation<LineEvent>): void {
     const shift = shiftAt(this.#config.shifts, this.#now);
     if (station.machine.state !== 'Idle' || !shift || shift.inBreak) {
       return;
@@ -1131,9 +1135,9 @@ export class ProductionLine {
 
   /**
    * `LoadOrder` (#172, ADR-0030): appends a job to a CNC's queue, idempotently by command id.
-   * The dedup table is checked first: a known command id with the same job answers `duplicate`
-   * with the original acceptance, whatever the epoch or expiry; with another job it is a
-   * `command-conflict`. Only on a miss come the epoch and expiry checks (with a guard, i.e. on an
+   * The dedup table is line-wide and checked first: a known command id with the same job on the
+   * same machine answers `duplicate` with the original acceptance, whatever the epoch or expiry;
+   * with another job, or for another machine, it is a `command-conflict`. Only on a miss come the epoch and expiry checks (with a guard, i.e. on an
    * OPC UA call) and the argument checks.
    */
   loadOrder(
@@ -1154,9 +1158,10 @@ export class ProductionLine {
       };
     }
     this.#now = simulation.now;
-    const known = station.accepted.get(request.commandId);
+    const known = this.#acceptedCommands.get(request.commandId);
     if (known) {
       const same =
+        known.machine === machineId &&
         known.orderId === request.orderId &&
         known.product === request.product &&
         known.quantity === request.quantity &&
@@ -1166,7 +1171,10 @@ export class ProductionLine {
         : {
             ok: false,
             code: 'command-conflict',
-            reason: `command ${request.commandId} was accepted with another job`,
+            reason:
+              known.machine === machineId
+                ? `command ${request.commandId} was accepted with another job`
+                : `command ${request.commandId} was accepted for ${known.machine}`,
             argument: 'CommandId',
           };
     }
@@ -1212,14 +1220,13 @@ export class ProductionLine {
     };
     station.jobs.push(job);
     station.accepted.set(job.commandId, job);
+    this.#acceptedCommands.set(job.commandId, job);
     this.#jobs.push(job);
     this.#jobEvent(job, 'accepted');
     if (job.notBefore > this.#now) {
       simulation.schedule(job.notBefore, { type: 'wake', station: station.id });
     }
-    if (station.machine.state === 'Idle') {
-      this.#tryStart(station, simulation);
-    }
+    this.#startInShift(station, simulation);
     return { ok: true, duplicate: false, job: this.#jobView(job) };
   }
 

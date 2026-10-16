@@ -1,6 +1,6 @@
 # ADR-0005: Enforce dependency rules with ESLint's no-restricted-imports
 
-- Status: accepted
+- Status: accepted; amended 2026-10-16 by ADR-0024 (pure packages may import other pure packages by name)
 - Date: 2026-10-11
 - Deciders: Claude, owner on review
 
@@ -24,6 +24,8 @@ Chosen option: 2.
 Known limitation: ESLint replaces, not merges, a rule's options when several config objects match one file, so each folder scope lists its full set of patterns. The tests catch a scope that forgets one.
 
 The pure-package rule is an allowlist: `sim-core` and `oee-core` source files may import only relative paths. Test files are exempt so they can import `vitest` and `fast-check`. Allowing any other import needs an ADR.
+
+_Amended by ADR-0024 (#139):_ the pure packages are now `sim-core`, `oee-core`, `shift-calendar` and `alarm-core`, and a pure package may also import another pure package by its exact name (`@shopfloor/oee-core`), never a subpath, a non-pure workspace package or an app. Purity stays transitive.
 
 ### Consequences
 

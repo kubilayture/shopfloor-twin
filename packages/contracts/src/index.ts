@@ -8,6 +8,8 @@ export {
   materialCause,
 } from './causes.ts';
 export type { CauseInputs, FixedCause, StateCause } from './causes.ts';
+export { CALIBRATION_ALARM_CODE, CALIBRATION_ALARM_SEVERITY, alarmVocabulary } from './alarms.ts';
+export type { AlarmInputs, AlarmPoint } from './alarms.ts';
 export { UNS_CLASSES, UNS_ROOT, equipmentTopic } from './uns-topic.ts';
 export type { EquipmentTopic, UnsClass } from './uns-topic.ts';
 export {

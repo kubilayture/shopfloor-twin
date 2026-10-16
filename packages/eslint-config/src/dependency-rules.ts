@@ -2,7 +2,7 @@ import type { Linter } from 'eslint';
 
 export const APPS = ['simulator', 'edge-gateway', 'mes-server', 'erp-mock', 'web'] as const;
 
-export const PURE_PACKAGES = ['sim-core', 'oee-core', 'shift-calendar'] as const;
+export const PURE_PACKAGES = ['sim-core', 'oee-core', 'shift-calendar', 'alarm-core'] as const;
 
 export const MES_MODULES = [
   'master-data',
@@ -42,10 +42,13 @@ const relativeEscapeFromPackage: RestrictedPattern = {
     'Do not reach into another package or app by relative path; import it by its @shopfloor/ name.',
 };
 
-const pureOnlyRelative: RestrictedPattern = {
-  regex: '^[^.]',
-  message:
-    'sim-core, oee-core and shift-calendar are pure: no I/O, Node.js built-ins or third-party packages, only relative imports (plan section 8).',
+/**
+ * A pure package imports only relative paths and other pure packages by name (ADR-0024 amends
+ * plan section 8): no I/O, Node.js built-ins, third-party packages or non-pure workspace packages.
+ */
+const pureOnlyRelativeOrPure: RestrictedPattern = {
+  regex: `^(?!\\.|@shopfloor/${anyOf(PURE_PACKAGES)}$)`,
+  message: `${PURE_PACKAGES.join(', ')} are pure: no I/O, Node.js built-ins or third-party packages, only relative imports and other pure packages by name (plan section 8, ADR-0024).`,
 };
 
 const mesModuleInternals: RestrictedPattern = {
@@ -73,7 +76,7 @@ export function dependencyRules(): Linter.Config[] {
   const pure = PURE_PACKAGES.map((name) =>
     restrict(
       sourceFiles(`packages/${name}/src`),
-      [appImports(), relativeEscapeFromPackage, pureOnlyRelative],
+      [appImports(), relativeEscapeFromPackage, pureOnlyRelativeOrPure],
       TEST_FILES,
     ),
   );

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { alarmsSchema } from './alarms.ts';
 import { reasonsSchema } from './reasons.ts';
 
 const id = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'lower-case kebab-case id');
@@ -203,6 +204,7 @@ export const PLANT_FILES = {
   ...SIMULATION_FILES,
   oee: oeeSchema,
   reasons: reasonsSchema,
+  alarms: alarmsSchema,
 } as const;
 
 export type PlantFiles = typeof PLANT_FILES;

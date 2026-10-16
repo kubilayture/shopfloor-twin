@@ -1,10 +1,10 @@
 import type { Linter } from 'eslint';
 
 /** Code whose results must match exactly, as fractions and as four-decimal strings (ADR-0021). */
-export const EXACT_SOURCES = ['packages/oee-core/src'] as const;
+export const EXACT_SOURCES = ['packages/oee-core/src', 'packages/alarm-core/src'] as const;
 
 const why =
-  'oee-core is exact: integers and BigInt fractions only, no floating point (ADR-0021). Divide bigints in fraction.ts only.';
+  'oee-core and alarm-core are exact: integers and BigInt fractions only, no floating point (ADR-0021, ADR-0024). Divide bigints in oee-core/src/fraction.ts only.';
 
 export function exactnessRules(): Linter.Config[] {
   return [

@@ -12,7 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createDatabase, type Database } from '../../db/database.ts';
 import { migrate } from '../../db/migrate.ts';
 import { startDatabase } from '../../testing.ts';
-import { Ingest, resolveAlarmBaseline, type IngestNotice } from './index.ts';
+import { Ingest, baselineState, resolveAlarmBaseline, type IngestNotice } from './index.ts';
 
 /**
  * Ingest for alarms (#141, ADR-0017 amendment): alarm facts and their notices, retained alarm
@@ -301,6 +301,26 @@ describe('ingest: alarm snapshots from the gateway (#141)', () => {
     // A later fact numbered below the snapshot's asOfSeq is a fact like any other.
     await deliverAlarm(ingest, alarm(NEW, 4, 'SPINDLE-OVERLOAD', 'cleared'));
     expect(ingest.count('stored')).toBe(4);
+  });
+
+  it('a snapshot that doesn\u2019t name a code says it was inactive at asOfSeq: a lost clear', async () => {
+    const { ingest } = await setup();
+    await deliverAlarm(ingest, alarm(NEW, 5, 'X', 'active')); // a fact; its clear at 6 is lost
+    await deliverSnapshot(ingest, alarmSnapshot(NEW, 7, []));
+    const [raise] = await ingest.alarmFacts('cnc-01', NEW, { code: 'X' });
+    expect(raise).toMatchObject({ seq: 5, transition: 'active' });
+    const baseline = await ingest.alarmBaseline('cnc-01');
+    expect(baseline?.points).toEqual([]);
+    expect(baseline?.snapshot).toEqual({ asOfSeq: 7, sourceTime: new Date(at(7)) });
+    if (!baseline) throw new Error('no baseline');
+    expect(baselineState(baseline, 'X')).toEqual({
+      active: false,
+      source: 'snapshot',
+      seq: 7,
+      sourceTime: new Date(at(7)),
+    });
+    // So X, raised at 5 < 7, is inactive at 7.
+    expect((baselineState(baseline, 'X')?.seq ?? 0) > (raise?.seq ?? 0)).toBe(true);
   });
 
   it('resolves anchors against the snapshot by sequence: the higher number wins', async () => {

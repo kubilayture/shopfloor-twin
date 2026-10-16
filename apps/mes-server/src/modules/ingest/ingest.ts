@@ -149,11 +149,37 @@ export interface AlarmFactCount {
   readonly facts: number;
 }
 
-/** What the anchors and the snapshot of an equipment's newest epoch say about its alarms (#141). */
+/**
+ * What the anchors and the snapshot of an equipment's newest epoch say about its alarms (#141).
+ * `points` lists the codes an anchor or the snapshot names. The snapshot says more: **every code it
+ * doesn't name was inactive at its `asOfSeq`**, so an occurrence raised by a fact below `asOfSeq`
+ * whose code is not listed active had its clear lost (`baselineState` answers per code).
+ */
 export interface AlarmBaseline {
   readonly equipment: string;
   readonly epoch: number;
   readonly points: readonly AlarmPointState[];
+  /** The latest snapshot of the epoch, if any. */
+  readonly snapshot: { readonly asOfSeq: number; readonly sourceTime: Date } | undefined;
+}
+
+/**
+ * One code's state by the baseline (#141): its point when listed; otherwise inactive at the
+ * snapshot's `asOfSeq` when there is a snapshot (it names every active code); otherwise unknown.
+ */
+export function baselineState(
+  baseline: AlarmBaseline,
+  code: string,
+): Pick<AlarmPointState, 'active' | 'source' | 'seq' | 'sourceTime'> | undefined {
+  const point = baseline.points.find((p) => p.code === code);
+  if (point) return point;
+  if (!baseline.snapshot) return undefined;
+  return {
+    active: false,
+    source: 'snapshot',
+    seq: baseline.snapshot.asOfSeq,
+    sourceTime: baseline.snapshot.sourceTime,
+  };
 }
 
 export type IngestOutcome = 'stored' | 'duplicate' | 'rejected' | 'anchor' | 'status' | 'retained';
@@ -765,13 +791,15 @@ export class Ingest {
     ]);
     const epoch = Math.max(...anchors.map((a) => a.epoch), ...snapshots.map((s) => s.deviceEpoch));
     if (!Number.isFinite(epoch)) return undefined;
+    const snapshot = snapshots.find((s) => s.deviceEpoch === epoch);
     return {
       equipment,
       epoch,
       points: resolveAlarmBaseline(
         anchors.filter((a) => a.epoch === epoch),
-        snapshots.find((s) => s.deviceEpoch === epoch),
+        snapshot,
       ),
+      snapshot: snapshot && { asOfSeq: snapshot.asOfSeq, sourceTime: snapshot.sourceTime },
     };
   }
 

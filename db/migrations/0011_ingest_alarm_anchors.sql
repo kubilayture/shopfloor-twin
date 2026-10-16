@@ -5,6 +5,11 @@
 -- equipment (from any fact, state anchor, alarm anchor or alarm snapshot) is stored with
 -- stale = true and never used; when a newer epoch arrives later, the older rows become stale then.
 
+-- Alarm facts by (equipment, epoch, seq), for Ingest.alarmFacts and the alarms module's rebuilds
+-- without scanning the state and cycle facts.
+CREATE INDEX equipment_event_alarm ON ingest.equipment_event (equipment, epoch, seq)
+WHERE event_type = 'alarm';
+
 -- A retained alarm delivery: the device's own last fact for one code, with its true epoch, seq and
 -- sourceTime. The highest seq per (equipment, epoch, code) wins.
 CREATE TABLE ingest.alarm_anchor (

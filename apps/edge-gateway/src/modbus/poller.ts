@@ -229,13 +229,6 @@ export class ModbusPoller {
       this.#epoch = epoch;
       this.#snapshotDue = true;
     }
-    if (this.#snapshotDue) {
-      this.#snapshotDue = false;
-      // Until a snapshot is accepted (the broker may not be connected yet), try again next poll.
-      this.#snapshot(snapshot, simTime).catch(() => {
-        this.#snapshotDue = true;
-      });
-    }
     this.#telemetry(snapshot, simTime);
     if (counter < this.#handled) {
       // The cursor is ahead of the device: another run started within the same epoch second.
@@ -253,6 +246,8 @@ export class ModbusPoller {
         lost,
         `${this.machineId}: ${String(lost)} facts overwritten in the ring before they were read`,
       );
+      // A lost fact may be an alarm clear: the snapshot of this read tells the MES (#141).
+      this.#snapshotDue = true;
       this.#handled = counter - RING_CAPACITY;
     }
     let overwritten = 0;
@@ -284,6 +279,7 @@ export class ModbusPoller {
       seq += count;
     }
     if (overwritten > 0) {
+      this.#snapshotDue = true;
       this.#report(
         'ring-overrun',
         overwritten,
@@ -291,11 +287,23 @@ export class ModbusPoller {
       );
     }
     if (undecodable.length > 0) {
+      this.#snapshotDue = true;
       this.#report(
         'sequence-gap',
         undecodable.length,
         `${this.machineId}: ring entries ${undecodable.join(', ')} could not be decoded (register map or tables out of step?)`,
       );
+    }
+    // After the ring loop, so the snapshot (consistent with `counter`) follows the facts up to it
+    // that this poll published. Due on first contact, after a silence or an epoch change, and
+    // after any fact this poll lost (overrun, undecodable): every lost number is at or below
+    // `counter`, so the snapshot of this read covers it (#141).
+    if (this.#snapshotDue) {
+      this.#snapshotDue = false;
+      // Until a snapshot is accepted (the broker may not be connected yet), try again next poll.
+      this.#snapshot(snapshot, simTime).catch(() => {
+        this.#snapshotDue = true;
+      });
     }
   }
 

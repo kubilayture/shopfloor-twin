@@ -264,6 +264,20 @@ describe('cross-file checks', () => {
       'processValues.washer.heaterFaultCode: "NO-SUCH-FAULT" is not a failure mode of wsh-01',
     ],
     [
+      'more alarm codes on the Modbus washer than activeAlarms has bits (#141)',
+      (c) => {
+        const washer = c.failures.equipment['wsh-01'];
+        const mode = washer?.failureModes[0];
+        if (washer && mode) {
+          washer.failureModes = Array.from({ length: 17 }, (_, i) => ({
+            ...mode,
+            code: `WASHER-FAULT-${String(i)}`,
+          }));
+        }
+      },
+      'the Modbus washer has at most 16 alarm codes (one activeAlarms bit each), got 17',
+    ],
+    [
       'a leak test on an unknown operation',
       (c) => {
         c.process.leakTest.operation = 'OP99';

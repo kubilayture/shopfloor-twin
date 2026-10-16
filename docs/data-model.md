@@ -422,6 +422,7 @@ TimescaleDB hypertable, partitioned by `source_time` in chunks of 7 days.
 | Check | `equipment_event_check` | `CHECK (((event_type = 'state'::text) = (state IS NOT NULL)))` |
 | Check | `equipment_event_event_type_check` | `CHECK ((event_type = ANY (ARRAY['state'::text, 'cycle'::text, 'alarm'::text])))` |
 | Check | `equipment_event_quality_check` | `CHECK ((quality = ANY (ARRAY['good'::text, 'uncertain'::text, 'bad'::text])))` |
+| Index | `equipment_event_alarm` | `ingest.equipment_event USING btree (equipment, epoch, seq) WHERE (event_type = 'alarm'::text)` |
 | Index | `equipment_event_source_time_idx` | `ingest.equipment_event USING btree (source_time DESC)` |
 
 ### ingest.rejected_message

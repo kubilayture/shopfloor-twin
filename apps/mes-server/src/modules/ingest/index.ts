@@ -50,7 +50,7 @@
  *   `alarmAnchors()`, `alarmSnapshots()` (stale ones only on request), and `alarmBaseline(equipment)`:
  *   the newest epoch's anchors and snapshot resolved by sequence (`resolveAlarmBaseline`).
  */
-export { INGEST_TOPICS, Ingest } from './ingest.ts';
+export { INGEST_TOPICS, Ingest, baselineState } from './ingest.ts';
 export { resolveAlarmBaseline } from './alarm-baseline.ts';
 export type { AlarmPointState } from './alarm-baseline.ts';
 export type {

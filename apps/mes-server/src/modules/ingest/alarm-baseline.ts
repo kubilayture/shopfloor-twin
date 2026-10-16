@@ -19,7 +19,8 @@ export interface AlarmPointState {
  * beats the anchor (it saw a later fact, such as a clear the MES never got); an anchor with a
  * higher `seq` beats the snapshot (it is a later fact). At equal numbers both describe the same
  * moment and the anchor, which carries the fact's own time and severity, is kept. A code that only
- * the snapshot names is active from the snapshot. Pure: the caller passes rows of one epoch that
+ * the snapshot names is active from the snapshot; a code it doesn't name was inactive at its
+ * `asOfSeq` (see `baselineState`), and is listed here only when an anchor names it. Pure: the caller passes rows of one epoch that
  * are not stale. Sorted by code.
  */
 export function resolveAlarmBaseline(

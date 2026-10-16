@@ -63,6 +63,8 @@ services:
       SIM_SPEED: ${SIM_SPEED:-60}
       SIM_START: ${SIM_START:-2026-10-12T06:00:00+03:00}
       SIM_AUTOSTART: ${SIM_AUTOSTART:-true}
+      # schedule (default) or orders (#172): the CNCs then run only LoadOrder jobs.
+      SIM_PRODUCTION: ${SIM_PRODUCTION:-schedule}
       OPCUA_HOST: ${SIM_OPCUA_HOST:-localhost}
       LOG_LEVEL: ${SIM_LOG_LEVEL:-info}
     ports:

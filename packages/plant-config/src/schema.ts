@@ -183,8 +183,12 @@ export const scheduleSchema = z.strictObject({
  */
 export const oeeSchema = z.strictObject({
   microStopThresholdMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  /** Phases 1–6: every shift in the calendar is scheduled. Phase 7 adds an order-based rule. */
-  scheduledTime: z.enum(['shift-calendar']),
+  /**
+   * `shift-calendar` (Phases 1–6): every shift in the calendar is scheduled. `orders` (Phase 7,
+   * #172): as `shift-calendar`, except that an `Idle` interval with cause `NO-ORDER` is excluded
+   * from planned busy time (ADR-0021 amendment).
+   */
+  scheduledTime: z.enum(['shift-calendar', 'orders']),
 });
 
 /** The files the simulation reads. The run header's `configSha256` hashes exactly these. */

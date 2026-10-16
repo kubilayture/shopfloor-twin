@@ -163,6 +163,11 @@ describe('OPC UA contract against the live servers (#56, plan section 9)', () =>
           attributeId: AttributeIds.Executable,
         });
         expect(method.statusCode.isGood(), machine.id).toBe(machine.kind === 'machine-tool');
+        const loadOrder = await session.read({
+          nodeId: await nodeId(session, opcuaNodeId(machine.id, OPCUA_METHODS.loadOrder)),
+          attributeId: AttributeIds.Executable,
+        });
+        expect(loadOrder.statusCode.isGood(), machine.id).toBe(machine.kind === 'machine-tool');
       } finally {
         await close();
       }

@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
+import { PRODUCTION_MODES } from '../plant/line.ts';
 
 const DEFAULT_CONFIG = resolve(import.meta.dirname, '../../../../config/plant');
 
@@ -32,6 +33,8 @@ export const envSchema = z.object({
     }),
   SIM_CONFIG_DIR: text.default(DEFAULT_CONFIG),
   SIM_AUTOSTART: z.enum(['true', 'false']).default('true'),
+  /** `schedule` (default, Phases 1–6) or `orders` (#172): CNCs run only `LoadOrder` jobs. */
+  SIM_PRODUCTION: z.enum(PRODUCTION_MODES).default('schedule'),
   OPCUA_HOST: text.default('localhost'),
   OPCUA_PORT_OFFSET: integer.pipe(z.number().max(9_999)).default(0),
   OPCUA_PKI_DIR: text.optional(),

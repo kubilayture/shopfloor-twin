@@ -62,8 +62,43 @@ describe('bucket inputs', () => {
       { cycles: [{ product: 'VB-100', result: 'good', count: 1.5 }] },
       /VB-100 good count/,
     ],
+    [
+      'more NO-ORDER idle time than Idle time',
+      { stateMs: { Idle: 10 }, noOrderIdleMs: 11 },
+      /NO-ORDER idle time 11 ms is more than the Idle time 10 ms/,
+    ],
+    ['a fractional NO-ORDER idle time', { stateMs: { Idle: 10 }, noOrderIdleMs: 0.5 }, /NO-ORDER/],
   ])('refuses %s', (_case, overrides, message) => {
     expect(() => bucketTotals(input(overrides), CONFIG)).toThrow(message);
+  });
+
+  it('refuses an unknown scheduled-time rule', () => {
+    const config = { ...CONFIG, scheduledTime: 'released' } as unknown as OeeConfig;
+    expect(() => bucketTotals(input({}), config)).toThrow(/unknown scheduled-time rule/);
+  });
+
+  it('excludes NO-ORDER idle time only under the orders rule, and only in scheduled buckets (#172)', () => {
+    const bucket = input({
+      stateMs: { Running: 600_000, Idle: 3_000_000 },
+      noOrderIdleMs: 1_000_000,
+    });
+    const orders = bucketTotals(bucket, { ...CONFIG, scheduledTime: 'orders' });
+    const calendar = bucketTotals(bucket, CONFIG);
+    expect(orders.plannedBusyMs).toBe(2_600_000n);
+    expect(orders.plannedStateMs.Idle).toBe(2_000_000n);
+    expect(orders.excludedMs).toBe(1_000_000n);
+    expect(orders.stateMs.Idle).toBe(3_000_000n);
+    expect(calendar.plannedBusyMs).toBe(3_600_000n);
+    expect(calendar.plannedStateMs.Idle).toBe(3_000_000n);
+    const unscheduled = { ...bucket, scheduled: false };
+    expect(bucketTotals(unscheduled, { ...CONFIG, scheduledTime: 'orders' })).toEqual(
+      bucketTotals(unscheduled, CONFIG),
+    );
+    // Without NO-ORDER time the two rules agree exactly (schedule-mode runs, #172).
+    const plain = input({ stateMs: { Running: 600_000, Idle: 3_000_000 } });
+    expect(bucketTotals(plain, { ...CONFIG, scheduledTime: 'orders' })).toEqual(
+      bucketTotals(plain, CONFIG),
+    );
   });
 
   it('refuses a threshold that is not a positive integer', () => {

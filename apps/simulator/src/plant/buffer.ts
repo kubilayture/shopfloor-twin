@@ -3,6 +3,8 @@ export interface Part {
   readonly product: string;
   serial?: string;
   leakFailures?: number;
+  /** Orders mode (#172): the command id of the job whose blank this part is. */
+  readonly commandId?: string;
   readonly lots: { readonly material: string; readonly lotId: string }[];
 }
 

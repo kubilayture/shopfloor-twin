@@ -1,6 +1,7 @@
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { isoTime } from '../headless/serialize.ts';
+import { applyDispatches, type DispatchSpec } from '../headless/run.ts';
 import { GroundTruth, type GroundTruthSummary } from '../headless/summary.ts';
 import {
   ProductionLine,
@@ -9,6 +10,7 @@ import {
   type InjectFailureResult,
   type LineEvent,
   type PlantEvent,
+  type ProductionMode,
 } from '../plant/line.ts';
 import type { MachineState } from '../plant/machine-state.ts';
 import { ProcessValues } from '../plant/process-values.ts';
@@ -23,6 +25,14 @@ export interface LiveOptions {
   readonly clock?: WallClock;
   readonly onEvent?: (event: PlantEvent) => void;
   readonly onAdvance?: (simNow: SimTime) => void;
+  /** `schedule` (default) or `orders` (#172, `SIM_PRODUCTION`). */
+  readonly production?: ProductionMode;
+  /**
+   * Orders mode (#172, B3): jobs given to the CNCs right after `line.start`, before anything else
+   * can schedule an injection, exactly as a headless run applies a scenario's dispatches. A live
+   * dispatch through `LoadOrder` while the run is idle at its start time does the same.
+   */
+  readonly dispatches?: readonly DispatchSpec[];
 }
 
 /**
@@ -30,6 +40,8 @@ export interface LiveOptions {
  * run ended at `simTime`, plus where the run is. Times are ISO 8601 UTC.
  */
 export interface LiveGroundTruth extends GroundTruthSummary {
+  /** The run's production mode (#172). */
+  readonly productionMode: ProductionMode;
   /** Simulation start. */
   readonly start: string;
   /** How far events have been processed; the summary counts up to here. */
@@ -78,6 +90,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     config: options.config,
     random: new RandomSource(options.seed),
     startTime: options.start,
+    production: options.production,
     onEvent: (event) => {
       truth.record(event);
       processValues.record(event);
@@ -86,6 +99,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
   });
   const simulation = new Simulation<LineEvent>(options.start);
   line.start(simulation);
+  applyDispatches(line, simulation, options.dispatches ?? []);
   const pacer = new LivePacer<LineEvent>({
     simulation,
     handle: (event, sim) => {
@@ -105,6 +119,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
       currentBucket,
     ]);
     return {
+      productionMode: line.production,
       start: isoTime(options.start),
       simTime: isoTime(now),
       pacedTime: isoTime(pacer.simNow()),

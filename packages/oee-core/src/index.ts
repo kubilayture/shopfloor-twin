@@ -16,6 +16,7 @@ export {
   EXTERNAL_LOSS_STATES,
   OEE_STATES,
   OWN_LOSS_STATES,
+  SCHEDULED_TIME_RULES,
   availabilityLoss,
   bucketOee,
   bucketTotals,
@@ -33,5 +34,6 @@ export type {
   OeeResult,
   OeeState,
   OeeTotals,
+  ScheduledTimeRule,
   StopPiece,
 } from './oee.ts';

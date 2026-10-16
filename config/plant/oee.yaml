@@ -6,5 +6,8 @@
 # micro-stop.
 microStopThresholdMs: 120000
 
-# Phases 1–6: every shift in the shift calendar is scheduled; the no-shift bucket never is.
-scheduledTime: shift-calendar
+# Phases 1–6 used `shift-calendar`: every shift in the shift calendar is scheduled; the no-shift
+# bucket never is. Phase 7 (#172, ADR-0021 amendment) switches to `orders`: the same, except that
+# an Idle interval with cause NO-ORDER (an orders-mode CNC with no startable job) is excluded from
+# planned busy time. Schedule-mode runs never emit NO-ORDER, so their OEE doesn't move.
+scheduledTime: orders

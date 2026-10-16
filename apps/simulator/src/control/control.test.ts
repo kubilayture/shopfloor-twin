@@ -162,6 +162,9 @@ describe('control API (#54)', () => {
     });
     expect(Object.keys(idle.machines).sort()).toEqual(Object.keys(idle.current).sort());
     expect(idle.current['cnc-01']?.since).toBe('2026-10-12T03:00:00.000Z');
+    // 1.4 (#172): the production mode, and an empty orders section in schedule mode.
+    expect(idle.productionMode).toBe('schedule');
+    expect(idle.orders).toMatchObject({ jobs: [], orders: {}, units: { count: 0 } });
 
     await served.inject({ method: 'POST', url: '/api/v1/resume' });
     clock.advance(8 * 60_000 + 10_000);
@@ -474,9 +477,13 @@ describe('environment configuration (#54)', () => {
         CONTROL_PORT: 9000,
         OPCUA_PORT_OFFSET: 0,
         SIM_AUTOSTART: 'true',
+        SIM_PRODUCTION: 'schedule',
         LOG_LEVEL: 'info',
       });
     }
+    // The production mode (#172): orders only on request.
+    const orders = parseEnv({ SIM_PRODUCTION: 'orders' });
+    expect(orders.ok && orders.env.SIM_PRODUCTION).toBe('orders');
   });
 
   it.each([
@@ -489,6 +496,7 @@ describe('environment configuration (#54)', () => {
     ['SIM_SPEED', 'Infinity'],
     ['CONTROL_HOST', ' '],
     ['SIM_CONFIG_DIR', '  '],
+    ['SIM_PRODUCTION', 'campaigns'],
   ])('refuses %s=%j', (key, value) => {
     const result = parseEnv({ [key]: value });
     expect(result.ok).toBe(false);

@@ -22,7 +22,10 @@ export const OEE_STATES = [
 
 export type OeeState = (typeof OEE_STATES)[number];
 
-/** Excluded from planned busy time: breaks, planned maintenance and the machine switched off. */
+/**
+ * Excluded from planned busy time: breaks, planned maintenance and the machine switched off. Under
+ * `scheduledTime: orders`, also the `NO-ORDER` part of Idle (`BucketInput.noOrderIdleMs`).
+ */
 export const EXCLUDED_STATES: readonly OeeState[] = ['PlannedStop', 'Maintenance', 'Off'];
 
 /** Availability loss inside planned busy time (ADR-0021): the machine's own, or external. */
@@ -53,11 +56,20 @@ export const CYCLE_RESULTS = ['good', 'scrap', 'rework'] as const;
 
 export type CycleResult = (typeof CYCLE_RESULTS)[number];
 
+/** The scheduled-time rules of `oee.yaml` (ADR-0021 and its Phase 7 amendment). */
+export const SCHEDULED_TIME_RULES = ['shift-calendar', 'orders'] as const;
+
+export type ScheduledTimeRule = (typeof SCHEDULED_TIME_RULES)[number];
+
 /** `config/plant/oee.yaml`. */
 export interface OeeConfig {
   readonly microStopThresholdMs: Millis;
-  /** Phases 1–6: every shift bucket is scheduled and the no-shift bucket never is. */
-  readonly scheduledTime: 'shift-calendar';
+  /**
+   * `shift-calendar` (Phases 1–6): every shift bucket is scheduled and the no-shift bucket never
+   * is. `orders` (Phase 7): the same, except that a bucket's `noOrderIdleMs` (Idle with cause
+   * `NO-ORDER`) is excluded from planned busy time, like a planned stop.
+   */
+  readonly scheduledTime: ScheduledTimeRule;
 }
 
 /** The part of one Stopped interval that lies in the bucket. */
@@ -82,6 +94,12 @@ export interface BucketInput {
   readonly scheduled: boolean;
   /** Time per state in the bucket, integer ms; missing states are 0. */
   readonly stateMs: Readonly<Partial<Record<OeeState, Millis>>>;
+  /**
+   * The part of `stateMs.Idle` with cause `NO-ORDER` (an orders-mode CNC with no startable job),
+   * integer ms; 0 when left out. Excluded from planned busy time under `scheduledTime: orders`, an
+   * availability loss like any Idle under `shift-calendar`. At most `stateMs.Idle`.
+   */
+  readonly noOrderIdleMs?: Millis;
   /** The Stopped pieces of the bucket; their `ms` must sum to `stateMs.Stopped`. */
   readonly stops: readonly StopPiece[];
   /** Cycles whose `sourceTime` lies in the bucket, per product and result. */
@@ -227,12 +245,26 @@ export function bucketTotals(input: BucketInput, config: OeeConfig): OeeTotals {
     idealMs += integer(ideal, `ideal cycle time of ${cycle.product}`) * count;
   }
 
+  const noOrderIdle = integer(input.noOrderIdleMs ?? 0, 'NO-ORDER idle time');
+  if (noOrderIdle > stateMs.Idle) {
+    throw new RangeError(
+      `NO-ORDER idle time ${String(noOrderIdle)} ms is more than the Idle time ${String(stateMs.Idle)} ms`,
+    );
+  }
+  if (!SCHEDULED_TIME_RULES.includes(config.scheduledTime)) {
+    throw new RangeError(`unknown scheduled-time rule "${config.scheduledTime}"`);
+  }
+
   const produced = counts.good + counts.scrap + counts.rework;
   const planned = input.scheduled;
   const plannedStateMs = emptyStates();
   if (planned) {
     for (const state of OEE_STATES) {
       plannedStateMs[state] = EXCLUDED_STATES.includes(state) ? 0n : stateMs[state];
+    }
+    if (config.scheduledTime === 'orders') {
+      // Idle without a startable order is not planned busy time (master plan section 7).
+      plannedStateMs.Idle -= noOrderIdle;
     }
   }
   const plannedBusyMs = OEE_STATES.reduce((sum, state) => sum + plannedStateMs[state], 0n);

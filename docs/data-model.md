@@ -27,6 +27,9 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `ingest.cycle_hourly` (view)
 - [`equipment`](#schema-equipment)
   - `equipment.bucket_finality`
+  - `equipment.downtime_audit`
+  - `equipment.downtime_coding`
+  - `equipment.downtime_coding_set`
   - `equipment.downtime_record`
   - `equipment.equipment_state_interval`
   - `equipment.interval_source`
@@ -82,6 +85,22 @@ erDiagram
   work_center ||--o{ equipment : "work_center_id"
   reason_code |o--o{ reason_code : "parent_id"
   area ||--o{ work_center : "area_id"
+```
+
+Schema equipment:
+
+```mermaid
+erDiagram
+  downtime_coding {
+    bigint id PK
+    text equipment FK
+    bigint epoch FK
+  }
+  downtime_coding_set {
+    text equipment PK
+    bigint epoch PK
+  }
+  downtime_coding_set ||--o{ downtime_coding : "equipment, epoch"
 ```
 
 The other schemas have no foreign keys; their references are by value, as described above.
@@ -409,7 +428,7 @@ SELECT equipment,
 
 ## Schema equipment
 
-Owner: equipment. State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE; and the downtime records derived from them (ADR-0021).
+Owner: equipment. State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE; the downtime records derived from them (ADR-0021); and the operator codings of downtime with their append-only audit (ADR-0023).
 
 ### equipment.bucket_finality
 
@@ -432,6 +451,78 @@ Per (equipment, epoch, UTC hour): when the hour became final, its revision (rais
 | Check | `bucket_finality_cycles_check` | `CHECK ((cycles >= 0))` |
 | Check | `bucket_finality_hour_check` | `CHECK ((hour = date_trunc('hour'::text, hour, 'UTC'::text)))` |
 | Check | `bucket_finality_revision_check` | `CHECK ((revision >= 0))` |
+
+### equipment.downtime_audit
+
+Append-only audit of coding writes and clips: action, before, after, actor, wall time and request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#121, ADR-0023).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `record_id` | `text` | null |  |
+| `from_time` | `timestamp with time zone` | not null |  |
+| `to_time` | `timestamp with time zone` | null |  |
+| `action` | `text` | not null |  |
+| `before` | `jsonb` | not null |  |
+| `after` | `jsonb` | not null |  |
+| `actor` | `text` | not null |  |
+| `authenticated` | `boolean` | not null | `false` |
+| `at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `request_id` | `text` | null |  |
+| `version` | `bigint` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `downtime_audit_pkey` | `PRIMARY KEY (id)` |
+| Check | `downtime_audit_action_check` | `CHECK ((action = ANY (ARRAY['coded'::text, 'cleared'::text, 'orphaned'::text])))` |
+| Index | `downtime_audit_range` | `equipment.downtime_audit USING btree (equipment, epoch, from_time)` |
+
+### equipment.downtime_coding
+
+Operator codings: time ranges inside a record’s loss time with a reason, comment and `coded_by` (unauthenticated), stored by time so they survive a re-cut; clipped and flagged orphaned when a re-cut leaves their time outside every loss interval (#121).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `from_time` | `timestamp with time zone` | not null |  |
+| `to_time` | `timestamp with time zone` | not null |  |
+| `reason` | `text` | not null |  |
+| `comment` | `text` | not null | `''::text` |
+| `coded_by` | `text` | not null |  |
+| `coded_at` | `timestamp with time zone` | not null |  |
+| `version` | `bigint` | not null |  |
+| `orphaned` | `boolean` | not null | `false` |
+| `orphaned_at` | `timestamp with time zone` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `downtime_coding_pkey` | `PRIMARY KEY (id)` |
+| Foreign key | `downtime_coding_equipment_epoch_fkey` | `FOREIGN KEY (equipment, epoch) REFERENCES equipment.downtime_coding_set(equipment, epoch)` |
+| Check | `downtime_coding_check` | `CHECK ((to_time > from_time))` |
+| Check | `downtime_coding_check1` | `CHECK ((orphaned = (orphaned_at IS NOT NULL)))` |
+| Check | `downtime_coding_coded_by_check` | `CHECK (((length(coded_by) >= 1) AND (length(coded_by) <= 100)))` |
+| Check | `downtime_coding_comment_check` | `CHECK ((length(comment) <= 500))` |
+| Index | `downtime_coding_range` | `equipment.downtime_coding USING btree (equipment, epoch, from_time) WHERE (NOT orphaned)` |
+
+### equipment.downtime_coding_set
+
+The coding set of each (equipment, epoch): its version is the optimistic-concurrency token of every coding write (#121).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `version` | `bigint` | not null | `0` |
+| `updated_at` | `timestamp with time zone` | not null | `now()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `downtime_coding_set_pkey` | `PRIMARY KEY (equipment, epoch)` |
+| Check | `downtime_coding_set_version_check` | `CHECK ((version >= 0))` |
 
 ### equipment.downtime_record
 

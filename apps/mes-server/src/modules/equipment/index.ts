@@ -35,9 +35,39 @@
  *   overlapping a range; the reason tree itself is `MasterData.reasonCodes()`.
  * - `downtimeRules(config)`: the threshold and reason rules of a plant configuration, for
  *   `EquipmentOptions.downtime`.
+ *
+ * For operator coding (#121, ADR-0023):
+ * - `DowntimeCoding`: `code(key, request)` replaces a record's codings (optimistic concurrency
+ *   per (equipment, epoch): `CodingError` 'conflict'), `audit(key)` reads its append-only audit,
+ *   `onChange(listener)` follows written and clipped codings; after a re-cut it clips codings to
+ *   the loss time they still cover and flags the rest orphaned.
+ * - Records carry their `codings` and `codingVersion`; `effectiveSegments`, `dominantReason`
+ *   give the reasons in effect; `parseRecordId` / `recordId` the API's record id.
  */
 export { Equipment } from './equipment.ts';
 export { downtimeRules } from './downtime.ts';
+export {
+  CodingError,
+  DowntimeCoding,
+  MAX_SEGMENTS,
+  clipToRecords,
+  dominantReason,
+  effectiveSegments,
+  parseRecordId,
+  recordId,
+} from './coding.ts';
+export type {
+  AuditAction,
+  AuditCoding,
+  AuditEntry,
+  CodeRequest,
+  Coding,
+  CodingChange,
+  CodingErrorKind,
+  DowntimeCodingOptions,
+  EffectiveSegment,
+  RecordKey,
+} from './coding.ts';
 export type { DowntimeRules } from './downtime.ts';
 export type {
   CurrentState,

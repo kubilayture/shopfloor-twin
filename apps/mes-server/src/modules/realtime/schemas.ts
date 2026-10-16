@@ -7,8 +7,11 @@ export {
   DOWNTIME_TOPIC,
   STATES_TOPIC,
   clientMessageSchema,
+  codingRequestSchema,
+  codingResultSchema,
   currentShiftSchema,
   currentStateSchema,
+  downtimeAuditSchema,
   downtimeListSchema,
   downtimeRecordSchema,
   equipmentListSchema,
@@ -33,6 +36,7 @@ export {
 } from '@shopfloor/contracts';
 export type {
   ClientMessage,
+  CodingResult,
   CurrentStateDto,
   DowntimeRecordDto,
   EquipmentDto,
@@ -171,7 +175,7 @@ export const downtimeQuery = z
     equipment: identifier.optional().describe('Only this equipment'),
     from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
     to: queryTime.describe('End of the range (exclusive), ISO 8601; at most 31 days after `from`'),
-    uncoded: flag.describe('Only records still UNCODED (the coding screen)'),
+    uncoded: flag.describe('Only records with time still UNCODED (the coding screen)'),
   })
   .superRefine(range(LIMITS.oeeShiftRangeMs));
 
@@ -184,3 +188,15 @@ export const paretoQuery = z
     epoch: epochParam.optional(),
   })
   .superRefine(range(LIMITS.oeeShiftRangeMs));
+
+// ---- Downtime coding writes (#121) ----
+
+export const downtimeParams = z.strictObject({
+  id: z
+    .string()
+    .regex(
+      /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\d{1,15}~\d{1,15}$/,
+      'expected {equipment}~{epoch}~{startMs}',
+    )
+    .describe('A downtime record id: `{equipment}~{epoch}~{startMs}`'),
+});

@@ -25,7 +25,7 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
     name: 'equipment',
     owner: 'equipment',
     about:
-      'State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE; and the downtime records derived from them (ADR-0021).',
+      'State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE; the downtime records derived from them (ADR-0021); and the operator codings of downtime with their append-only audit (ADR-0023).',
   },
   {
     name: 'public',
@@ -66,6 +66,12 @@ const TABLES: Readonly<Record<string, string>> = {
     'Per (equipment, epoch, UTC hour): when the hour became final, its revision (raised by each change after that) and the gap incidents over it.',
   'equipment.downtime_record':
     'Downtime records: one per availability-loss interval per scheduled shift bucket, keyed by its start in the bucket, with the auto reason; derived and rebuilt with the intervals (#119).',
+  'equipment.downtime_coding_set':
+    'The coding set of each (equipment, epoch): its version is the optimistic-concurrency token of every coding write (#121).',
+  'equipment.downtime_coding':
+    'Operator codings: time ranges inside a record’s loss time with a reason, comment and `coded_by` (unauthenticated), stored by time so they survive a re-cut; clipped and flagged orphaned when a re-cut leaves their time outside every loss interval (#121).',
+  'equipment.downtime_audit':
+    'Append-only audit of coding writes and clips: action, before, after, actor, wall time and request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#121, ADR-0023).',
   'equipment.interval_source':
     'What the stored intervals of each (equipment, epoch) were computed from, so start-up catch-up can recompute what differs.',
   'equipment.state_hourly':

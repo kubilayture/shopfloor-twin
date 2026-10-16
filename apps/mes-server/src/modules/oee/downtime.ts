@@ -1,10 +1,12 @@
 /**
  * Downtime for the API and push (#120): record ids, the loss Pareto, and a feed of record changes
- * (created, closed, recoded) derived from the equipment module's piece changes.
+ * (created, closed, recoded) derived from the equipment module's piece changes and, for operator
+ * coding (#121), from the coding changes.
  */
 import { HOUR, type AvailabilityLoss, type Millis } from '@shopfloor/oee-core';
 import { NO_SHIFT } from '@shopfloor/shift-calendar';
 import type {
+  DowntimeCoding,
   DowntimeLoss,
   DowntimeRecord,
   Equipment,
@@ -65,7 +67,7 @@ export function pareto(input: {
   >();
   const availability = { own: 0, external: 0 };
   for (const row of input.losses) {
-    // The reason in effect: the auto reason until operator coding arrives (#121).
+    // The reason in effect: a coding's where one lies, the auto reason elsewhere (#121).
     const key = `${row.loss}\u0000${row.reason}`;
     const entry = byReason.get(key) ?? { reason: row.reason, loss: row.loss, ms: 0, records: 0 };
     entry.ms += row.ms;
@@ -105,6 +107,8 @@ export interface DowntimeChange {
 
 export interface DowntimeFeedOptions {
   readonly equipment: Pick<Equipment, 'downtimeRecords' | 'onPiecesChanged' | 'watermarks'>;
+  /** Written and clipped codings (#121): a record whose reasons changed is `recoded`. */
+  readonly codings?: Pick<DowntimeCoding, 'onChange'>;
   /** How long changes gather before the records are read again (250 ms of wall time). */
   readonly debounceMs?: number;
   /** How long a record is remembered after it ended, in simulation time (2 days). */
@@ -115,6 +119,16 @@ export interface DowntimeFeedOptions {
 /** The longest a record reaches back before the hours that changed: a shift bucket, plus a margin. */
 const LOOKBACK_MS = 25 * HOUR;
 
+/**
+ * What operator coding changed about a record: its codings (#121). Not the set's version, which
+ * moves with every write to any record of the same (equipment, epoch): clients that write read
+ * the version again or retry on 409.
+ */
+const codingOf = (record: DowntimeRecord): string =>
+  JSON.stringify(
+    record.codings.map((c) => [c.from.getTime(), c.to.getTime(), c.reason, c.comment, c.codedBy]),
+  );
+
 const sameRecord = (a: DowntimeRecord, b: DowntimeRecord): boolean =>
   a.end?.getTime() === b.end?.getTime() &&
   a.intervalStart.getTime() === b.intervalStart.getTime() &&
@@ -122,7 +136,8 @@ const sameRecord = (a: DowntimeRecord, b: DowntimeRecord): boolean =>
   a.cause === b.cause &&
   a.shiftKey === b.shiftKey &&
   a.autoReason === b.autoReason &&
-  a.provisional === b.provisional;
+  a.provisional === b.provisional &&
+  codingOf(a) === codingOf(b);
 
 /**
  * Record changes for push (`downtime` topic). Push coalesces per record (ADR-0019), so a slow
@@ -133,8 +148,8 @@ const sameRecord = (a: DowntimeRecord, b: DowntimeRecord): boolean =>
  * records of those hours and compares them with the ones it knows.
  */
 export class DowntimeFeed {
-  readonly #options: Required<Omit<DowntimeFeedOptions, 'onError'>> &
-    Pick<DowntimeFeedOptions, 'onError'>;
+  readonly #options: Required<Omit<DowntimeFeedOptions, 'onError' | 'codings'>> &
+    Pick<DowntimeFeedOptions, 'onError' | 'codings'>;
   readonly #listeners = new Set<(change: DowntimeChange) => void>();
   readonly #known = new Map<string, DowntimeRecord>();
   readonly #pending = new Map<string, { from: Millis; to: Millis }>();
@@ -149,6 +164,7 @@ export class DowntimeFeed {
       debounceMs: options.debounceMs ?? 250,
       keepMs: options.keepMs ?? 48 * HOUR,
       ...(options.onError ? { onError: options.onError } : {}),
+      ...(options.codings ? { codings: options.codings } : {}),
     };
   }
 
@@ -180,9 +196,16 @@ export class DowntimeFeed {
   }
 
   async #start(): Promise<void> {
-    this.#detach = this.#options.equipment.onPiecesChanged((change) => {
+    const pieces = this.#options.equipment.onPiecesChanged((change) => {
       this.#changed(change);
     });
+    const codings = this.#options.codings?.onChange((change) => {
+      this.#changed(change);
+    });
+    this.#detach = () => {
+      pieces();
+      codings?.();
+    };
     // The records already there are known, not new: the latest two days of the newest epoch.
     const clock = this.#options.equipment.watermarks()[0];
     if (!clock) return;
@@ -198,7 +221,7 @@ export class DowntimeFeed {
     }
   }
 
-  #changed(change: PiecesChanged): void {
+  #changed(change: Pick<PiecesChanged, 'equipment' | 'from' | 'to'>): void {
     const pending = this.#pending.get(change.equipment);
     const from = change.from.getTime();
     const to = change.to.getTime();
@@ -255,8 +278,9 @@ export class DowntimeFeed {
       this.#known.set(id, record);
       if (!before) this.#send('created', record);
       else if (before.end === null && record.end !== null) this.#send('closed', record);
-      else if (before.autoReason !== record.autoReason) this.#send('recoded', record);
-      else if (!sameRecord(before, record)) this.#send('updated', record);
+      else if (before.autoReason !== record.autoReason || codingOf(before) !== codingOf(record)) {
+        this.#send('recoded', record);
+      } else if (!sameRecord(before, record)) this.#send('updated', record);
     }
     // Known records of the same hours that are gone: a late fact re-cut their interval.
     for (const [id, record] of this.#known) {

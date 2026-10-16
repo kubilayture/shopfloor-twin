@@ -18,6 +18,7 @@ import type {
   StateFact,
   StoredSample,
 } from '../ingest/index.ts';
+import { pairKey, readCodings, type Coding } from './coding.ts';
 import { deriveRecords, type DerivedRecord, type DowntimeRules } from './downtime.ts';
 import { clamp, cutPieces, monotonic, type Piece, type Point } from './pieces.ts';
 
@@ -108,6 +109,13 @@ export interface DowntimeRecord {
   readonly autoReason: string;
   /** Open, or some of its time may still change (#113). */
   readonly provisional: boolean;
+  /**
+   * Operator codings inside the record, clipped to it, by time (#121): their reasons are in effect
+   * there, the auto reason elsewhere.
+   */
+  readonly codings: readonly Coding[];
+  /** The version of its (equipment, epoch)'s coding set: the token a coding write sends (#121). */
+  readonly codingVersion: number;
 }
 
 /** Which downtime records to read (#120). */
@@ -118,9 +126,12 @@ export interface DowntimeQuery {
   /** One equipment, or all. */
   readonly equipment?: string;
   readonly epoch?: number;
-  /** UNCODED records first (the coding screen), then by start; otherwise by start only. */
+  /**
+   * Records with uncoded time first (the coding screen), then by start; otherwise by start only.
+   * Uncoded time: the auto reason is UNCODED and no coding covers it (#121).
+   */
   readonly uncodedFirst?: boolean;
-  /** Only the records still UNCODED. */
+  /** Only the records with uncoded time. */
   readonly uncoded?: boolean;
   readonly limit?: number;
 }
@@ -129,6 +140,7 @@ export interface DowntimeQuery {
 export interface DowntimeLoss {
   readonly equipment: string;
   readonly epoch: number;
+  /** The reason in effect: a coding's where one lies, the auto reason elsewhere (#121). */
   readonly reason: string;
   readonly loss: AvailabilityLoss;
   /** Clipped to the range; an open record runs to its epoch's watermark. */
@@ -341,6 +353,20 @@ const UNSETTLED = {
 
 const INSERT_CHUNK = 1_000;
 const DAY = 24 * HOUR;
+
+/** Where the codings of an open record are read up to: 9999-12-31 (PostgreSQL takes it). */
+const OPEN_END = 253_402_214_400_000;
+
+/**
+ * A record (alias `r`) with uncoded time (#121): its auto reason is UNCODED and its codings
+ * don't cover it all (an open record never is covered: it keeps growing).
+ */
+const UNCODED_TIME = sql<boolean>`(r.auto_reason = ${UNCODED} AND (r.end_time IS NULL OR coalesce((
+  SELECT sum(least(c.to_time, r.end_time) - greatest(c.from_time, r.start_time))
+  FROM equipment.downtime_coding c
+  WHERE c.equipment = r.equipment AND c.epoch = r.epoch AND NOT c.orphaned
+    AND c.from_time < r.end_time AND c.to_time > r.start_time), interval '0')
+  < r.end_time - r.start_time))`;
 
 const silent: EquipmentLog = { info: () => undefined, error: () => undefined };
 
@@ -788,46 +814,71 @@ export class Equipment {
 
   /**
    * Downtime records overlapping [from, to) (#119, for #120's downtime list and Pareto), by start
-   * (and equipment, epoch); with `uncodedFirst`, the UNCODED ones before the rest.
+   * (and equipment, epoch); with `uncodedFirst`, the ones with uncoded time before the rest. Each
+   * carries its codings and its coding set's version (#121).
    */
   async downtimeRecords(query: DowntimeQuery): Promise<DowntimeRecord[]> {
     let select = this.#readDb
-      .selectFrom('equipment.downtime_record')
-      .selectAll()
+      .selectFrom('equipment.downtime_record as r')
+      .selectAll('r')
       // A record lies inside one shift bucket, open ones too (the tail is rewritten at every
       // boundary), so none that overlaps the range starts more than a bucket before it: this
       // bound lets the index on start_time do the work.
-      .where('start_time', '>', new Date(query.from.getTime() - this.#maxBucketMs))
-      .where('start_time', '<', query.to)
-      .where((eb) => eb.or([eb('end_time', 'is', null), eb('end_time', '>', query.from)]));
-    if (query.equipment !== undefined) select = select.where('equipment', '=', query.equipment);
-    if (query.epoch !== undefined) select = select.where('epoch', '=', query.epoch);
-    if (query.uncoded === true) select = select.where('auto_reason', '=', UNCODED);
-    if (query.uncodedFirst === true) {
-      select = select.orderBy(sql`auto_reason = ${UNCODED}`, 'desc');
-    }
+      .where('r.start_time', '>', new Date(query.from.getTime() - this.#maxBucketMs))
+      .where('r.start_time', '<', query.to)
+      .where((eb) => eb.or([eb('r.end_time', 'is', null), eb('r.end_time', '>', query.from)]));
+    if (query.equipment !== undefined) select = select.where('r.equipment', '=', query.equipment);
+    if (query.epoch !== undefined) select = select.where('r.epoch', '=', query.epoch);
+    if (query.uncoded === true) select = select.where(UNCODED_TIME);
+    if (query.uncodedFirst === true) select = select.orderBy(UNCODED_TIME, 'desc');
     if (query.limit !== undefined) select = select.limit(query.limit);
-    const rows = await select.orderBy('start_time').orderBy('equipment').orderBy('epoch').execute();
-    return rows.map((row) => ({
-      equipment: row.equipment,
-      epoch: row.epoch,
-      start: row.start_time,
-      end: row.end_time,
-      intervalStart: row.interval_start,
-      shiftKey: row.shift_key,
-      state: row.state,
-      cause: row.cause,
-      // Stored records are availability loss by construction (a CHECK lists their states).
-      loss: availabilityLoss(row.state, Infinity, 0) ?? 'own',
-      autoReason: row.auto_reason,
-      provisional: row.provisional,
-    }));
+    const rows = await select
+      .orderBy('r.start_time')
+      .orderBy('r.equipment')
+      .orderBy('r.epoch')
+      .execute();
+    if (rows.length === 0) return [];
+    const from = Math.min(...rows.map((row) => row.start_time.getTime()));
+    const to = Math.max(...rows.map((row) => row.end_time?.getTime() ?? OPEN_END));
+    const { codings, versions } = await readCodings(
+      this.#readDb,
+      rows.map((row) => ({ equipment: row.equipment, epoch: row.epoch })),
+      new Date(from),
+      new Date(to),
+    );
+    return rows.map((row) => {
+      const key = pairKey(row.equipment, row.epoch);
+      const start = row.start_time.getTime();
+      const end = row.end_time?.getTime() ?? Infinity;
+      return {
+        equipment: row.equipment,
+        epoch: row.epoch,
+        start: row.start_time,
+        end: row.end_time,
+        intervalStart: row.interval_start,
+        shiftKey: row.shift_key,
+        state: row.state,
+        cause: row.cause,
+        // Stored records are availability loss by construction (a CHECK lists their states).
+        loss: availabilityLoss(row.state, Infinity, 0) ?? 'own',
+        autoReason: row.auto_reason,
+        provisional: row.provisional,
+        codings: (codings.get(key) ?? []).flatMap((coding) => {
+          const from = Math.max(coding.from.getTime(), start);
+          const to = Math.min(coding.to.getTime(), end);
+          return to > from ? [{ ...coding, from: new Date(from), to: new Date(to) }] : [];
+        }),
+        codingVersion: versions.get(key) ?? 0,
+      };
+    });
   }
 
   /**
-   * Downtime records overlapping [from, to), summed in the database per (equipment, epoch, auto
-   * reason, state), each clipped to the range, without a row limit (#120: the Pareto must equal
-   * the OEE losses). An open record runs to its epoch's watermark.
+   * Downtime records overlapping [from, to), summed in the database per (equipment, epoch,
+   * reason in effect, state), each clipped to the range, without a row limit (#120: the Pareto
+   * must equal the OEE losses). Coded time counts under the coding's reason, the rest under the
+   * auto reason (#121); `records` counts the records with time under a reason. An open record
+   * runs to its epoch's watermark.
    */
   async downtimeLoss(query: {
     readonly from: Date;
@@ -851,18 +902,41 @@ export class Equipment {
       ms: number;
       records: number;
     }>`
-      SELECT r.equipment, r.epoch, r.auto_reason AS reason, r.state,
-        coalesce(sum(greatest(0, (extract(epoch FROM
-          least(coalesce(r.end_time, w.watermark, r.start_time), ${query.to})
-          - greatest(r.start_time, ${query.from})) * 1000)::bigint)), 0)::bigint AS ms,
-        count(*)::bigint AS records
-      FROM equipment.downtime_record r
-      LEFT JOIN unnest(${marks.map(([epoch]) => epoch)}::bigint[],
-        ${marks.map(([, at]) => new Date(at))}::timestamptz[]) AS w(epoch, watermark)
-        ON w.epoch = r.epoch
-      WHERE ${sql.join(filters, sql` AND `)}
-      GROUP BY r.equipment, r.epoch, r.auto_reason, r.state
-      ORDER BY r.equipment, r.epoch, r.auto_reason, r.state`.execute(this.#readDb);
+      WITH rec AS (
+        SELECT r.equipment, r.epoch, r.start_time, r.state, r.auto_reason,
+          greatest(r.start_time, ${query.from}) AS s,
+          greatest(r.start_time, ${query.from},
+            least(coalesce(r.end_time, w.watermark, r.start_time), ${query.to})) AS e
+        FROM equipment.downtime_record r
+        LEFT JOIN unnest(${marks.map(([epoch]) => epoch)}::bigint[],
+          ${marks.map(([, at]) => new Date(at))}::timestamptz[]) AS w(epoch, watermark)
+          ON w.epoch = r.epoch
+        WHERE ${sql.join(filters, sql` AND `)}
+      ),
+      coded AS (
+        SELECT rec.equipment, rec.epoch, rec.start_time, rec.state, c.reason,
+          greatest(0, (extract(epoch FROM least(c.to_time, rec.e) - greatest(c.from_time, rec.s))
+            * 1000)::bigint) AS ms
+        FROM rec
+        JOIN equipment.downtime_coding c
+          ON c.equipment = rec.equipment AND c.epoch = rec.epoch AND NOT c.orphaned
+          AND c.from_time < rec.e AND c.to_time > rec.s
+      ),
+      auto AS (
+        SELECT rec.equipment, rec.epoch, rec.start_time, rec.state, rec.auto_reason AS reason,
+          (extract(epoch FROM rec.e - rec.s) * 1000)::bigint - coalesce((
+            SELECT sum(coded.ms) FROM coded
+            WHERE coded.equipment = rec.equipment AND coded.epoch = rec.epoch
+              AND coded.start_time = rec.start_time), 0) AS ms
+        FROM rec
+      ),
+      parts AS (SELECT * FROM coded UNION ALL SELECT * FROM auto)
+      SELECT equipment, epoch, reason, state,
+        coalesce(sum(ms), 0)::bigint AS ms,
+        count(DISTINCT start_time) FILTER (WHERE ms > 0)::bigint AS records
+      FROM parts
+      GROUP BY equipment, epoch, reason, state
+      ORDER BY equipment, epoch, reason, state`.execute(this.#readDb);
     const merged = new Map<string, DowntimeLoss>();
     for (const row of rows.rows) {
       // Stored records are availability loss by construction (a CHECK lists their states).

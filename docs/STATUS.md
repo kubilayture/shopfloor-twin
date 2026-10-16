@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #121 done (branch `feat/121-coding-writes`): downtime coding, the MES's first writes. Codings by time with splits, optimistic concurrency per (equipment, epoch) (409), clipping and orphaning after a re-cut, an append-only audit; the Pareto and the records' reason view use the reasons in effect, OEE is unchanged (tested); `PUT /api/v1/downtime/{id}/coding`, `GET /api/v1/downtime/{id}/audit`, `recoded` push. Write guards (ADR-0023): Origin required and same-origin, `Sec-Fetch-Site`, JSON only (415), 16 KiB, a global rate limit, `MES_WRITES=off` (405); nginx passes only GET, POST, PUT and DELETE; the Vite proxy rewrites `Origin` for HTTP too. Stack smoke writes and clears a coding through nginx and checks the 403/415 refusals (exit criterion 4, API and smoke parts; the UI part follows in #122 and #123).
 - #120 done (branch `feat/120-oee-module`): the `oee` module computes OEE on read per equipment and work center, per hour and shift bucket; REST (`/oee`, `/shifts/{date}/{shift}/oee`, `/shifts`, `/shifts/current`, `/reason-codes`, `/downtime`, `/downtime/pareto`) and WebSocket topics `oee:<id>` and `downtime`. The golden week's OEE equals the ground truth exactly for every machine and both work centers in all shift buckets, in order and shuffled (exit criterion 2); the live reconciliation also requires shift A's OEE final and equal to the live ground truth (exit criterion 3 groundwork).
 - #118 done (branch `feat/118-aggregates`): hourly continuous aggregates `equipment.state_hourly` and `ingest.cycle_hourly`, refreshed explicitly by their owning modules (ADR-0022); `piecesChanged`, `cycle` and `epoch` notices; cycle counts kept with the final hours and checked at start-up; golden week equal to the raw rows and to the ground truth's hourly OEE inputs for every machine and hour.
 - #119 done (branch `feat/119-reason-codes`): reason codes and downtime records. The cause vocabulary is in `@shopfloor/contracts`, and the simulator uses it (golden week byte-identical). `config/plant/reasons.yaml` holds the reason tree and the auto-rules, with a cross-check, and is seeded into `master_data.reason_code`. `equipment.downtime_record` is derived and rebuilt with the intervals. In the golden week no record is UNCODED (exit criterion 4, first two points). ADR-0021 is amended, and the master plan's section 12 decision is closed.
@@ -76,7 +77,7 @@
 
 ## Next up
 
-- #121 downtime coding writes, then #122–#124 in the plan's order.
+- #122 web: OEE dashboard and downtime coding screen, then #123 and #124 in the plan's order.
 
 ## Blockers and open questions for the owner
 

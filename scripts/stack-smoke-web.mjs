@@ -3,6 +3,9 @@
 // with Node.js 26 (built-in fetch and WebSocket, no dependencies), so the requests carry the
 // Host and Origin a browser on this machine would send.
 // Usage: node scripts/stack-smoke-web.mjs [web base URL, default http://127.0.0.1:8080]
+// Since #121 it also writes: it codes one downtime record and clears the coding again.
+
+import { request as httpRequest } from 'node:http';
 
 const base = new URL(process.argv[2] ?? 'http://127.0.0.1:8080');
 const MACHINES = ['asm-01', 'cnc-01', 'cnc-02', 'lkt-01', 'pck-01', 'wsh-01'];
@@ -98,3 +101,97 @@ const foreign = await snapshot('http://evil.test').then(
 );
 if (foreign !== 'connection refused or failed') fail(`WebSocket from a foreign Origin: ${foreign}`);
 console.log('ok: WebSocket from a foreign Origin refused');
+
+// Writes through the web (#121, ADR-0023): the page's own origin may code a downtime record and
+// clear it again; a foreign Origin, a missing Origin and a form content type are refused, and
+// nginx passes only GET, POST, PUT and DELETE under /api/.
+
+/** One request with exactly these headers (fetch would add or drop some). */
+function send(method, path, headers, body) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(new URL(path, base), { method, headers }, (response) => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => (text += chunk));
+      response.on('end', () => resolve({ status: response.statusCode, text }));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+const getJson = async (path) => (await fetch(new URL(path, base))).json();
+const json = { 'content-type': 'application/json' };
+const page = { origin: base.origin, ...json };
+
+const reasons = (await getJson('/api/v1/reason-codes')).reasons;
+const reason = reasons.find((r) => r.id !== 'UNCODED' && r.parent !== null)?.id;
+if (reason === undefined) fail('no reason code to code with');
+// A closed downtime record of the last 30 days of plant time (a fresh plant makes one quickly).
+let record;
+for (const begun = Date.now(); record === undefined;) {
+  const { clock } = await getJson('/api/v1/plant');
+  if (clock !== null) {
+    const to = new Date(Date.parse(clock.watermark) + 1);
+    const from = new Date(to.getTime() - 30 * 86_400_000);
+    const list = await getJson(
+      `/api/v1/downtime?from=${from.toISOString()}&to=${to.toISOString()}`,
+    );
+    record = list.records?.find((r) => r.end !== null && r.ms > 0);
+  }
+  if (record === undefined) {
+    if (Date.now() - begun > 3 * DEADLINE_MS) fail('no closed downtime record to code');
+    await sleep(2000);
+  }
+}
+const coding = `/api/v1/downtime/${encodeURIComponent(record.id)}/coding`;
+const segments = [{ from: record.start, to: record.end, reason, comment: 'stack smoke' }];
+
+/** PUT with the record's current version, read again once on 409 (a clip may move it on). */
+async function code(body) {
+  for (let attempt = 0; ; attempt++) {
+    const list = await getJson(
+      `/api/v1/downtime?equipment=${record.equipment}&from=${record.start}&to=${record.end}`,
+    );
+    const version = list.records.find((r) => r.id === record.id)?.version;
+    if (version === undefined) fail(`record ${record.id} disappeared`);
+    const answer = await send('PUT', coding, page, JSON.stringify({ ...body, version }));
+    if (answer.status !== 409 || attempt > 0) return answer;
+  }
+}
+const coded = await code({ segments, codedBy: 'stack smoke' });
+if (coded.status !== 200) fail(`coding ${record.id} answered ${coded.status}: ${coded.text}`);
+const codedRecord = JSON.parse(coded.text).record;
+if (codedRecord.reason !== reason || codedRecord.codings.length !== 1) {
+  fail(`coding not applied: ${coded.text}`);
+}
+const cleared = await code({ segments: [], codedBy: 'stack smoke' });
+if (cleared.status !== 200)
+  fail(`clearing ${record.id} answered ${cleared.status}: ${cleared.text}`);
+if (JSON.parse(cleared.text).record.codings.length !== 0) fail('codings not cleared');
+const audit = await getJson(`/api/v1/downtime/${encodeURIComponent(record.id)}/audit`);
+const actions = audit.entries
+  .slice(0, 2)
+  .map((e) => `${e.action}:${e.actor}`)
+  .join(',');
+if (actions !== 'cleared:stack smoke,coded:stack smoke') fail(`audit: ${actions}`);
+console.log(
+  `ok: write through the web with the page's origin (${record.id} coded, cleared, audited)`,
+);
+
+const body = JSON.stringify({ segments: [], codedBy: 'stack smoke', version: 0 });
+for (const [name, headers, status] of [
+  ['a foreign Origin', { origin: 'http://evil.test', ...json }, 403],
+  ['no Origin', json, 403],
+  [
+    'a form content type',
+    { origin: base.origin, 'content-type': 'application/x-www-form-urlencoded' },
+    415,
+  ],
+]) {
+  const answer = await send('PUT', coding, headers, body);
+  if (answer.status !== status) fail(`write with ${name} answered ${answer.status}, not ${status}`);
+  console.log(`ok: write with ${name} refused (${status})`);
+}
+const patch = await send('PATCH', coding, page, body);
+if (patch.status !== 403) fail(`PATCH through the web answered ${patch.status}, not 403`);
+console.log('ok: nginx passes only GET, POST, PUT and DELETE under /api/ (PATCH refused, 403)');

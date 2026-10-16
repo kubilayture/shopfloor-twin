@@ -3,7 +3,7 @@
   "info": {
     "title": "ShopFloor Twin MES API",
     "version": "0.0.0",
-    "description": "Read-only API of the MES (Phases 4 and 5): equipment with current state, state intervals, telemetry series, shift totals, the plant clock, OEE per hour and shift, shift instances, reason codes, downtime records and the loss Pareto. No authentication yet (Phase 7); bound to loopback by default. Errors are RFC 9457 problem details. Push: WebSocket at /api/v1/ws (see docs/api/realtime.md)."
+    "description": "API of the MES (Phases 4 and 5): equipment with current state, state intervals, telemetry series, shift totals, the plant clock, OEE per hour and shift, shift instances, reason codes, downtime records and the loss Pareto; one write, downtime coding (#121), with its audit. No authentication yet (Phase 7): writes are guarded (ADR-0023: Origin of this host, Sec-Fetch-Site, application/json, 16 KiB, a global rate limit, MES_WRITES=off answers 405) and audited as unauthenticated; bound to loopback by default. Errors are RFC 9457 problem details. Push: WebSocket at /api/v1/ws (see docs/api/realtime.md)."
   },
   "components": {
     "schemas": {
@@ -280,7 +280,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -500,7 +500,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -510,7 +510,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift or route",
+            "description": "Unknown equipment, work center, metric, shift, record or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -695,7 +695,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -705,7 +705,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift or route",
+            "description": "Unknown equipment, work center, metric, shift, record or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -805,7 +805,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -815,7 +815,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift or route",
+            "description": "Unknown equipment, work center, metric, shift, record or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1012,7 +1012,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1022,7 +1022,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift or route",
+            "description": "Unknown equipment, work center, metric, shift, record or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1156,7 +1156,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1166,7 +1166,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift or route",
+            "description": "Unknown equipment, work center, metric, shift, record or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1869,7 +1869,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1879,7 +1879,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift or route",
+            "description": "Unknown equipment, work center, metric, shift, record or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3083,7 +3083,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3093,7 +3093,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift or route",
+            "description": "Unknown equipment, work center, metric, shift, record or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3238,7 +3238,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3389,7 +3389,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3482,7 +3482,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3555,7 +3555,7 @@
             "in": "query",
             "name": "uncoded",
             "required": false,
-            "description": "Only records still UNCODED (the coding screen)"
+            "description": "Only records with time still UNCODED (the coding screen)"
           }
         ],
         "responses": {
@@ -3646,7 +3646,7 @@
                           },
                           "reason": {
                             "type": "string",
-                            "description": "The reason in effect: the auto reason until operator coding arrives (#121)"
+                            "description": "The reason in effect over most of the record: codings where they lie, the auto reason elsewhere (#121)"
                           },
                           "provisional": {
                             "type": "boolean"
@@ -3656,6 +3656,103 @@
                             "minimum": -9007199254740991,
                             "maximum": 9007199254740991,
                             "description": "Length so far (to the epoch watermark while open)"
+                          },
+                          "segments": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "from": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                "to": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                "reason": {
+                                  "type": "string"
+                                },
+                                "coded": {
+                                  "type": "boolean",
+                                  "description": "Coded by an operator; otherwise the auto reason"
+                                }
+                              },
+                              "required": [
+                                "from",
+                                "to",
+                                "reason",
+                                "coded"
+                              ],
+                              "additionalProperties": false,
+                              "description": "A stretch of a record with the reason in effect there"
+                            },
+                            "description": "The reasons in effect over the record (to the watermark while open), by time"
+                          },
+                          "codings": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "from": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                "to": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "description": "A reason code id"
+                                },
+                                "comment": {
+                                  "type": "string"
+                                },
+                                "codedBy": {
+                                  "type": "string",
+                                  "description": "As typed by the operator: not authenticated (until Phase 7)"
+                                },
+                                "codedAt": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                  "description": "Wall time of the write"
+                                },
+                                "version": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "The coding set's version it was written at"
+                                }
+                              },
+                              "required": [
+                                "from",
+                                "to",
+                                "reason",
+                                "comment",
+                                "codedBy",
+                                "codedAt",
+                                "version"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An operator coding: a time range of a record with a reason (#121)"
+                            },
+                            "description": "Operator codings inside the record, by time"
+                          },
+                          "uncoded": {
+                            "type": "boolean",
+                            "description": "Some of its time is still UNCODED"
+                          },
+                          "version": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The version of its (equipment, epoch)'s coding set: send it with a coding write"
                           }
                         },
                         "required": [
@@ -3672,7 +3769,11 @@
                           "autoReason",
                           "reason",
                           "provisional",
-                          "ms"
+                          "ms",
+                          "segments",
+                          "codings",
+                          "uncoded",
+                          "version"
                         ],
                         "additionalProperties": false
                       },
@@ -3691,7 +3792,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3701,7 +3802,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift or route",
+            "description": "Unknown equipment, work center, metric, shift, record or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3949,7 +4050,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3959,7 +4060,668 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift or route",
+            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downtime/{id}/coding": {
+      "put": {
+        "summary": "Codes one downtime record: replaces its codings (splits, comment, who)",
+        "tags": [
+          "downtime"
+        ],
+        "description": "Each segment is a time range [from, to) inside the record with an active reason (not UNCODED); segments must not overlap; an empty list clears the codings. Time without a coding keeps the auto reason. `version` is the record’s `version` as read: it belongs to the coding set of the (equipment, epoch), and a mismatch is 409. `codedBy` is free text, recorded as unauthenticated. Audited; reasons never change OEE, only the Pareto and the reason view. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "segments": {
+                    "maxItems": 32,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "from": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                          "description": "Start (inclusive), inside the record"
+                        },
+                        "to": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                          "description": "End (exclusive), inside the record (an open one: up to its watermark)"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(\\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}){0,7}$",
+                          "description": "An active reason code id, not UNCODED"
+                        },
+                        "comment": {
+                          "type": "string",
+                          "maxLength": 500
+                        }
+                      },
+                      "required": [
+                        "from",
+                        "to",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "description": "Non-overlapping ranges inside the record; empty clears its codings. A split is two"
+                  },
+                  "codedBy": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Who codes, as typed: recorded as unauthenticated"
+                  },
+                  "version": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "The record's `version` as read: 409 when the set moved on"
+                  }
+                },
+                "required": [
+                  "segments",
+                  "codedBy",
+                  "version"
+                ],
+                "additionalProperties": false,
+                "description": "Replaces the codings of one downtime record"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\\d{1,15}~\\d{1,15}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "A downtime record id: `{equipment}~{epoch}~{startMs}`"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "record": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "`{equipment}~{epoch}~{startMs}`"
+                        },
+                        "equipment": {
+                          "type": "string"
+                        },
+                        "epoch": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "start": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "The later of the interval start and its shift bucket start"
+                        },
+                        "end": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Null while open"
+                        },
+                        "intervalStart": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        "shiftKey": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "cause": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "loss": {
+                          "type": "string",
+                          "enum": [
+                            "own",
+                            "external"
+                          ]
+                        },
+                        "autoReason": {
+                          "type": "string",
+                          "description": "From the auto-rules; UNCODED when none matched"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "description": "The reason in effect over most of the record: codings where they lie, the auto reason elsewhere (#121)"
+                        },
+                        "provisional": {
+                          "type": "boolean"
+                        },
+                        "ms": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Length so far (to the epoch watermark while open)"
+                        },
+                        "segments": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "from": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              "to": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "coded": {
+                                "type": "boolean",
+                                "description": "Coded by an operator; otherwise the auto reason"
+                              }
+                            },
+                            "required": [
+                              "from",
+                              "to",
+                              "reason",
+                              "coded"
+                            ],
+                            "additionalProperties": false,
+                            "description": "A stretch of a record with the reason in effect there"
+                          },
+                          "description": "The reasons in effect over the record (to the watermark while open), by time"
+                        },
+                        "codings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "from": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              "to": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              "reason": {
+                                "type": "string",
+                                "description": "A reason code id"
+                              },
+                              "comment": {
+                                "type": "string"
+                              },
+                              "codedBy": {
+                                "type": "string",
+                                "description": "As typed by the operator: not authenticated (until Phase 7)"
+                              },
+                              "codedAt": {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                "description": "Wall time of the write"
+                              },
+                              "version": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "The coding set's version it was written at"
+                              }
+                            },
+                            "required": [
+                              "from",
+                              "to",
+                              "reason",
+                              "comment",
+                              "codedBy",
+                              "codedAt",
+                              "version"
+                            ],
+                            "additionalProperties": false,
+                            "description": "An operator coding: a time range of a record with a reason (#121)"
+                          },
+                          "description": "Operator codings inside the record, by time"
+                        },
+                        "uncoded": {
+                          "type": "boolean",
+                          "description": "Some of its time is still UNCODED"
+                        },
+                        "version": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The version of its (equipment, epoch)'s coding set: send it with a coding write"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "equipment",
+                        "epoch",
+                        "start",
+                        "end",
+                        "intervalStart",
+                        "shiftKey",
+                        "state",
+                        "cause",
+                        "loss",
+                        "autoReason",
+                        "reason",
+                        "provisional",
+                        "ms",
+                        "segments",
+                        "codings",
+                        "uncoded",
+                        "version"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "version": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The coding set's new version"
+                    }
+                  },
+                  "required": [
+                    "record",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The version sent is not the current one: read again and retry",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed, but not applicable to the record (outside it, overlapping, unknown reason)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (one global limit): retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downtime/{id}/audit": {
+      "get": {
+        "summary": "The coding history of one downtime record (append-only audit)",
+        "tags": [
+          "downtime"
+        ],
+        "description": "Writes to the record and clips of codings that lay in its time (after a late fact re-cut the intervals), newest first, at most 500.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\\d{1,15}~\\d{1,15}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "A downtime record id: `{equipment}~{epoch}~{startMs}`"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "record": {
+                      "type": "string",
+                      "description": "The record id asked for"
+                    },
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "recordId": {
+                            "description": "The record written to; null for a clip",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "from": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "to": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "coded",
+                              "cleared",
+                              "orphaned"
+                            ],
+                            "description": "A write, a write with no segments, or a clip after a re-cut"
+                          },
+                          "before": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "from": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                "to": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                "reason": {
+                                  "type": "string"
+                                },
+                                "comment": {
+                                  "type": "string"
+                                },
+                                "codedBy": {
+                                  "type": "string"
+                                },
+                                "codedAt": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                "orphaned": {
+                                  "description": "After a clip: true for the part left outside every loss interval",
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "from",
+                                "to",
+                                "reason",
+                                "comment",
+                                "codedBy",
+                                "codedAt"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "after": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "from": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                "to": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                "reason": {
+                                  "type": "string"
+                                },
+                                "comment": {
+                                  "type": "string"
+                                },
+                                "codedBy": {
+                                  "type": "string"
+                                },
+                                "codedAt": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                "orphaned": {
+                                  "description": "After a clip: true for the part left outside every loss interval",
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "from",
+                                "to",
+                                "reason",
+                                "comment",
+                                "codedBy",
+                                "codedAt"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "actor": {
+                            "type": "string",
+                            "description": "`codedBy` as typed, or 'system' for a clip"
+                          },
+                          "authenticated": {
+                            "type": "boolean",
+                            "description": "Always false until identity (Phase 7)"
+                          },
+                          "at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "Wall time"
+                          },
+                          "requestId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "version": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The coding set's version after the change"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "recordId",
+                          "from",
+                          "to",
+                          "action",
+                          "before",
+                          "after",
+                          "actor",
+                          "authenticated",
+                          "at",
+                          "requestId",
+                          "version"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Newest first: entries of the record and of codings that lay in its time"
+                    }
+                  },
+                  "required": [
+                    "record",
+                    "entries"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4102,7 +4864,7 @@
             }
           },
           "400": {
-            "description": "Invalid path or query parameters",
+            "description": "Invalid path, query parameters or body",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -4,7 +4,8 @@
  * ground truth (`resultJson` of sim-summary/2), so the two compare with one equality.
  */
 import { formatFraction, toDecimal, type Fraction, type OeeResult } from '@shopfloor/oee-core';
-import type { DowntimeRecord } from '../equipment/index.ts';
+import { UNCODED } from '@shopfloor/plant-config';
+import { dominantReason, effectiveSegments, type DowntimeRecord } from '../equipment/index.ts';
 import { downtimeId, recordEnd, type OeeBucket, type ShiftInstance } from '../oee/index.ts';
 import type {
   DowntimeRecordDto,
@@ -118,7 +119,11 @@ export const shiftInstanceDto = (instance: ShiftInstance): ShiftInstanceDto => (
   breaks: instance.breaks.map((b) => ({ start: iso(b.start), end: iso(b.end) })),
 });
 
+/** A record with the reasons in effect (#121): codings where they lie, the auto reason elsewhere. */
 export function recordDto(record: DowntimeRecord, watermark: Date | undefined): DowntimeRecordDto {
+  const start = record.start.getTime();
+  const end = recordEnd(record, watermark);
+  const segments = effectiveSegments(start, end, record.autoReason, record.codings);
   return {
     id: downtimeId(record),
     equipment: record.equipment,
@@ -131,8 +136,28 @@ export function recordDto(record: DowntimeRecord, watermark: Date | undefined): 
     cause: record.cause,
     loss: record.loss,
     autoReason: record.autoReason,
-    reason: record.autoReason,
+    reason: dominantReason(segments),
     provisional: record.provisional,
-    ms: recordEnd(record, watermark) - record.start.getTime(),
+    ms: end - start,
+    segments: segments.map((segment) => ({
+      from: iso(segment.from),
+      to: iso(segment.to),
+      reason: segment.reason,
+      coded: segment.coded,
+    })),
+    codings: record.codings.map((coding) => ({
+      from: iso(coding.from),
+      to: iso(coding.to),
+      reason: coding.reason,
+      comment: coding.comment,
+      codedBy: coding.codedBy,
+      codedAt: iso(coding.codedAt),
+      version: coding.version,
+    })),
+    // An open record keeps growing under its auto reason, so it is never fully coded.
+    uncoded:
+      record.autoReason === UNCODED &&
+      (record.end === null || segments.some((segment) => !segment.coded)),
+    version: record.codingVersion,
   };
 }

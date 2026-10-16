@@ -18,9 +18,12 @@ export const envSchema = z.object({
   HTTP_PORT: port.default(4700),
   // Host headers the API answers (DNS rebinding): comma-separated host names, `*` for any.
   HTTP_ALLOWED_HOSTS: text.default('localhost,127.0.0.1,[::1]'),
-  // Origins (scheme://host[:port]) a WebSocket may connect from besides the MES's own host;
-  // a request without Origin (not a browser) is always allowed. Comma-separated, default none.
+  // Origins (scheme://host[:port]) a WebSocket may connect from, or a write may come from,
+  // besides the MES's own host; a read or WebSocket without Origin (not a browser) is allowed, a
+  // write without one is not (ADR-0023). Comma-separated, default none.
   HTTP_ALLOWED_ORIGINS: z.string().trim().default(''),
+  // Writes (#121, ADR-0023): `off` answers every non-GET request under /api/v1 with 405.
+  MES_WRITES: z.enum(['on', 'off']).default('on'),
   // The API's own read pool, so dashboard reads never hold up ingest's writes.
   API_DB_POOL_SIZE: integer.pipe(z.number().min(1).max(50)).default(4),
   API_STATEMENT_TIMEOUT_MS: integer.pipe(z.number().min(100)).default(5_000),

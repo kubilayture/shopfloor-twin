@@ -25,9 +25,21 @@ export const MES_API_LIMITS = {
   downtimeRecords: 2_000,
   /** OEE topics (`oee:<id>`) one WebSocket client may follow. */
   oeeTopics: 16,
+  /** Writes (#121, ADR-0023): most bytes in a request body. */
+  writeBodyBytes: 16 * 1024,
+  /** Segments in one coding write. */
+  codingSegments: 32,
+  /** Characters of a coding's comment and of `codedBy`. */
+  codingComment: 500,
+  codedBy: 100,
+  /** The global write rate (all clients together): tokens per second and the burst. */
+  writesPerSecond: 10,
+  writeBurst: 20,
 } as const;
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+/** A reason code id: its path in the tree, e.g. BREAKDOWN/SPINDLE-OVERLOAD. */
+const REASON_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}){0,7}$/;
 
 export const identifier = z.string().regex(IDENTIFIER).describe('An id from master data');
 export const metricName = z
@@ -347,6 +359,27 @@ export const reasonCodesSchema = z.object({
     .describe('Parents before children'),
 });
 
+export const codingSchema = z
+  .object({
+    from: time,
+    to: time,
+    reason: z.string().describe('A reason code id'),
+    comment: z.string(),
+    codedBy: z.string().describe('As typed by the operator: not authenticated (until Phase 7)'),
+    codedAt: time.describe('Wall time of the write'),
+    version: int.describe("The coding set's version it was written at"),
+  })
+  .describe('An operator coding: a time range of a record with a reason (#121)');
+
+export const reasonSegmentSchema = z
+  .object({
+    from: time,
+    to: time,
+    reason: z.string(),
+    coded: z.boolean().describe('Coded by an operator; otherwise the auto reason'),
+  })
+  .describe('A stretch of a record with the reason in effect there');
+
 export const downtimeRecordSchema = z.object({
   id: z.string().describe('`{equipment}~{epoch}~{startMs}`'),
   equipment: z.string(),
@@ -361,9 +394,19 @@ export const downtimeRecordSchema = z.object({
   autoReason: z.string().describe('From the auto-rules; UNCODED when none matched'),
   reason: z
     .string()
-    .describe('The reason in effect: the auto reason until operator coding arrives (#121)'),
+    .describe(
+      'The reason in effect over most of the record: codings where they lie, the auto reason elsewhere (#121)',
+    ),
   provisional: z.boolean(),
   ms: ms.describe('Length so far (to the epoch watermark while open)'),
+  segments: z
+    .array(reasonSegmentSchema)
+    .describe('The reasons in effect over the record (to the watermark while open), by time'),
+  codings: z.array(codingSchema).describe('Operator codings inside the record, by time'),
+  uncoded: z.boolean().describe('Some of its time is still UNCODED'),
+  version: int.describe(
+    "The version of its (equipment, epoch)'s coding set: send it with a coding write",
+  ),
 });
 
 export const downtimeListSchema = z.object({
@@ -373,6 +416,80 @@ export const downtimeListSchema = z.object({
   records: z
     .array(downtimeRecordSchema)
     .describe('Records overlapping the range: UNCODED ones first, then by start'),
+});
+
+// ---- Downtime coding writes (#121, ADR-0023) ----
+
+/** A time in a request body: ISO 8601 with `Z` or an offset. */
+const bodyTime = z.iso.datetime({ offset: true });
+
+export const codingRequestSchema = z
+  .strictObject({
+    segments: z
+      .array(
+        z.strictObject({
+          from: bodyTime.describe('Start (inclusive), inside the record'),
+          to: bodyTime.describe(
+            'End (exclusive), inside the record (an open one: up to its watermark)',
+          ),
+          reason: z.string().regex(REASON_ID).describe('An active reason code id, not UNCODED'),
+          comment: z.string().max(MES_API_LIMITS.codingComment).optional(),
+        }),
+      )
+      .max(MES_API_LIMITS.codingSegments)
+      .describe(
+        'Non-overlapping ranges inside the record; empty clears its codings. A split is two',
+      ),
+    codedBy: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MES_API_LIMITS.codedBy)
+      .describe('Who codes, as typed: recorded as unauthenticated'),
+    version: int.min(0).describe("The record's `version` as read: 409 when the set moved on"),
+  })
+  .describe('Replaces the codings of one downtime record');
+
+export const codingResultSchema = z.object({
+  record: downtimeRecordSchema,
+  version: int.describe("The coding set's new version"),
+});
+
+const auditCodingSchema = z.object({
+  from: time,
+  to: time,
+  reason: z.string(),
+  comment: z.string(),
+  codedBy: z.string(),
+  codedAt: time,
+  orphaned: z
+    .boolean()
+    .optional()
+    .describe('After a clip: true for the part left outside every loss interval'),
+});
+
+export const downtimeAuditSchema = z.object({
+  record: z.string().describe('The record id asked for'),
+  entries: z
+    .array(
+      z.object({
+        id: int,
+        recordId: z.string().nullable().describe('The record written to; null for a clip'),
+        from: time,
+        to: time.nullable(),
+        action: z
+          .enum(['coded', 'cleared', 'orphaned'])
+          .describe('A write, a write with no segments, or a clip after a re-cut'),
+        before: z.array(auditCodingSchema),
+        after: z.array(auditCodingSchema),
+        actor: z.string().describe("`codedBy` as typed, or 'system' for a clip"),
+        authenticated: z.boolean().describe('Always false until identity (Phase 7)'),
+        at: time.describe('Wall time'),
+        requestId: z.string().nullable(),
+        version: int.describe("The coding set's version after the change"),
+      }),
+    )
+    .describe('Newest first: entries of the record and of codings that lay in its time'),
 });
 
 export const paretoSchema = z.object({
@@ -421,6 +538,11 @@ export type ReasonCodes = z.infer<typeof reasonCodesSchema>;
 export type DowntimeRecordDto = z.infer<typeof downtimeRecordSchema>;
 export type DowntimeList = z.infer<typeof downtimeListSchema>;
 export type Pareto = z.infer<typeof paretoSchema>;
+export type CodingDto = z.infer<typeof codingSchema>;
+export type ReasonSegmentDto = z.infer<typeof reasonSegmentSchema>;
+export type CodingRequest = z.input<typeof codingRequestSchema>;
+export type CodingResult = z.infer<typeof codingResultSchema>;
+export type DowntimeAudit = z.infer<typeof downtimeAuditSchema>;
 
 // ---- WebSocket messages (docs/api/realtime.md) ----
 

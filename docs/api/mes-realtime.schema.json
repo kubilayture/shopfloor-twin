@@ -2783,7 +2783,7 @@
                 },
                 "reason": {
                   "type": "string",
-                  "description": "The reason in effect: the auto reason until operator coding arrives (#121)"
+                  "description": "The reason in effect over most of the record: codings where they lie, the auto reason elsewhere (#121)"
                 },
                 "provisional": {
                   "type": "boolean"
@@ -2793,6 +2793,103 @@
                   "minimum": -9007199254740991,
                   "maximum": 9007199254740991,
                   "description": "Length so far (to the epoch watermark while open)"
+                },
+                "segments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "from": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      },
+                      "to": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "coded": {
+                        "type": "boolean",
+                        "description": "Coded by an operator; otherwise the auto reason"
+                      }
+                    },
+                    "required": [
+                      "from",
+                      "to",
+                      "reason",
+                      "coded"
+                    ],
+                    "additionalProperties": false,
+                    "description": "A stretch of a record with the reason in effect there"
+                  },
+                  "description": "The reasons in effect over the record (to the watermark while open), by time"
+                },
+                "codings": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "from": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      },
+                      "to": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "description": "A reason code id"
+                      },
+                      "comment": {
+                        "type": "string"
+                      },
+                      "codedBy": {
+                        "type": "string",
+                        "description": "As typed by the operator: not authenticated (until Phase 7)"
+                      },
+                      "codedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                        "description": "Wall time of the write"
+                      },
+                      "version": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991,
+                        "description": "The coding set's version it was written at"
+                      }
+                    },
+                    "required": [
+                      "from",
+                      "to",
+                      "reason",
+                      "comment",
+                      "codedBy",
+                      "codedAt",
+                      "version"
+                    ],
+                    "additionalProperties": false,
+                    "description": "An operator coding: a time range of a record with a reason (#121)"
+                  },
+                  "description": "Operator codings inside the record, by time"
+                },
+                "uncoded": {
+                  "type": "boolean",
+                  "description": "Some of its time is still UNCODED"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "description": "The version of its (equipment, epoch)'s coding set: send it with a coding write"
                 }
               },
               "required": [
@@ -2809,7 +2906,11 @@
                 "autoReason",
                 "reason",
                 "provisional",
-                "ms"
+                "ms",
+                "segments",
+                "codings",
+                "uncoded",
+                "version"
               ],
               "additionalProperties": false
             }

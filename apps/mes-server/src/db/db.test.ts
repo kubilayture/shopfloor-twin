@@ -249,4 +249,14 @@ describe('MES server basics (#93)', () => {
       expect(bad.issues.join('\n')).not.toMatch(/secret/);
     }
   });
+
+  it('reads MES_WRITES: on by default, off turns writes off, nothing else (#121)', () => {
+    const base = { DATABASE_URL: 'postgres://u:p@localhost:5442/shopfloor', MQTT_PASSWORD: 'pw' };
+    const on = parseEnv(base);
+    expect(on.ok && on.env.MES_WRITES).toBe('on');
+    const off = parseEnv({ ...base, MES_WRITES: 'off' });
+    expect(off.ok && off.env.MES_WRITES).toBe('off');
+    const bad = parseEnv({ ...base, MES_WRITES: 'false' });
+    expect(!bad.ok && bad.issues.map((i) => i.split(':')[0])).toEqual(['MES_WRITES']);
+  });
 });

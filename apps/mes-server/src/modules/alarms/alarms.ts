@@ -211,8 +211,16 @@ interface Track {
   finalThrough: Millis;
   /** As last stored in `occurrence_source.final_through` (what a restart will find final). */
   persistedFinal: Millis;
+  /** Published: readers count a closed epoch final everywhere (set only after its rows commit). */
   closed: boolean;
+  /** A newer epoch closes it; its derivation ends what is open, not yet committed. */
+  closing: boolean;
   closedAt: Millis | null;
+  /**
+   * A "final through" learned but not yet published: readers and revisions keep the old one until
+   * the derivation it makes applicable (a snapshot) has committed.
+   */
+  pendingFinal: Millis | undefined;
   incidents: readonly IncidentSpan[];
   /** The alarm facts by seq; undefined until loaded. */
   facts: Map<number, DeviceTransition> | undefined;
@@ -1032,6 +1040,7 @@ export class Alarms {
       try {
         await this.#reload(track);
         this.#dirty.delete(track);
+        await this.#publish(track);
       } catch (error) {
         this.#log.error({ err: error, equipment: track.equipment }, 'alarm rebuild failed');
         return;
@@ -1068,7 +1077,9 @@ export class Alarms {
       ...UNSETTLED,
       persistedFinal: -Infinity,
       closed: false,
+      closing: false,
       closedAt: null,
+      pendingFinal: undefined,
       facts: undefined,
       rows: undefined,
       anchors: [],
@@ -1084,7 +1095,7 @@ export class Alarms {
    * else the latest time known in it.
    */
   async #close(track: Track): Promise<void> {
-    track.closed = true;
+    track.closing = true;
     const end = this.#sources.equipment.epochEnd(track.equipment, track.epoch);
     const known = end.closedAt ?? this.#sources.equipment.watermark(track.epoch);
     track.closedAt = known?.getTime() ?? this.#latest(track);
@@ -1092,8 +1103,14 @@ export class Alarms {
       (await this.#sources.ingest.settled(track.equipment, track.epoch)).incidents,
     );
     // Closing changes nothing before the close, which is at or after what was final: no revision.
-    await this.#rederive(track, true, null);
-    this.#emit({ type: 'finality', equipment: track.equipment, epoch: track.epoch });
+    try {
+      await this.#rederive(track, true, null);
+    } catch (error) {
+      // Still open for readers; the dirty retry derives the close again and publishes it.
+      this.#dirty.add(track);
+      throw error;
+    }
+    await this.#publish(track);
   }
 
   /** The latest time the track knows of (facts and anchors), or null. */
@@ -1195,7 +1212,7 @@ export class Alarms {
       [...facts.values()],
       track.anchors,
       snapshot,
-      track.closed ? { closedAt: track.closedAt } : null,
+      track.closed || track.closing ? { closedAt: track.closedAt } : null,
     ).map((d) => this.#row(track, d));
     const next = new Map(derived.map((row) => [row.seq, row]));
     const changes: { before: Row | undefined; after: Row | undefined }[] = [];
@@ -1294,7 +1311,7 @@ export class Alarms {
       facts: track.facts?.size ?? 0,
       anchors: JSON.stringify(track.anchors),
       snapshot: track.snapshot === null ? null : JSON.stringify(track.snapshot),
-      closed: track.closed,
+      closed: track.closed || track.closing,
       closed_at: track.closedAt === null ? null : new Date(track.closedAt),
       final_through: Number.isFinite(track.finalThrough) ? new Date(track.finalThrough) : null,
     };
@@ -1406,14 +1423,13 @@ export class Alarms {
     settledSeq: number | null | undefined,
     fact?: { readonly seq: number; readonly at: Millis },
   ): Promise<void> {
-    if (settledSeq === undefined || settledSeq === null || track.closed) return;
+    if (settledSeq === undefined || settledSeq === null || track.closed || track.closing) return;
     const known = track.settledSeq;
     if (known !== null && settledSeq <= known) return;
-    const before = this.#live(track);
     if (fact && known !== null && fact.seq === settledSeq && known === fact.seq - 1) {
       track.settledSeq = settledSeq;
-      track.finalThrough = Math.max(track.finalThrough, fact.at);
-      await this.#advanced(track, before);
+      track.pendingFinal = Math.max(track.pendingFinal ?? track.finalThrough, fact.at);
+      await this.#publish(track);
       return;
     }
     const state = await this.#sources.ingest.settled(
@@ -1422,8 +1438,17 @@ export class Alarms {
       known ?? undefined,
     );
     await this.#verify(track);
-    this.#apply(track, state);
-    await this.#advanced(track, before);
+    track.incidents = spans(state.incidents);
+    if (state.settledSeq !== null) {
+      track.settledSeq = Math.max(track.settledSeq ?? state.settledSeq, state.settledSeq);
+      if (state.settledTime) {
+        track.pendingFinal = Math.max(
+          track.pendingFinal ?? track.finalThrough,
+          state.settledTime.getTime(),
+        );
+      }
+    }
+    await this.#publish(track);
   }
 
   #apply(track: Track, state: SettledState): void {
@@ -1455,16 +1480,30 @@ export class Alarms {
   }
 
   /**
-   * After "final through" moved from `before`: a snapshot that became applicable (judged by what was
-   * final before the move: hours it made final were never reported final without it), the stored
-   * bound, push.
+   * Publishes what the track learned once what it makes applicable has committed: a snapshot the
+   * settled stream now reaches is applied first, judged by the "final through" readers still see
+   * (hours it makes final were never final without it); only then does the new "final through"
+   * (or a close) become visible. If the derivation fails, the old bounds stay published and the
+   * dirty retry, judged by them, publishes after it succeeds.
    */
-  async #advanced(track: Track, before: Millis): Promise<void> {
+  async #publish(track: Track): Promise<void> {
     const snapshot = this.#applicable(track);
-    const { fleetingMs } = this.#config;
     if (snapshot && track.appliedSnapshot !== snapshot.asOfSeq) {
-      await this.#rederive(track, true, (t) => (t === track ? before : this.#live(t)));
-    } else if (
+      await this.#rederive(track, true);
+    }
+    let moved = false;
+    if (track.closing) {
+      track.closed = true;
+      track.closing = false;
+      moved = true;
+    }
+    if (track.pendingFinal !== undefined) {
+      moved ||= track.pendingFinal > track.finalThrough;
+      track.finalThrough = Math.max(track.finalThrough, track.pendingFinal);
+      track.pendingFinal = undefined;
+    }
+    const { fleetingMs } = this.#config;
+    if (
       Number.isFinite(track.finalThrough) &&
       // An hour is final at its end plus fleetingMs: store the bound once it passes one.
       (!Number.isFinite(track.persistedFinal) ||
@@ -1473,8 +1512,8 @@ export class Alarms {
       // About once an hour per equipment: what was final, for a late fact found at start-up.
       await this.#db.transaction().execute((trx) => this.#saveSource(trx, track));
       track.persistedFinal = Math.max(track.persistedFinal, track.finalThrough);
-      this.#emit({ type: 'finality', equipment: track.equipment, epoch: track.epoch });
     }
+    if (moved) this.#emit({ type: 'finality', equipment: track.equipment, epoch: track.epoch });
   }
 
   /**

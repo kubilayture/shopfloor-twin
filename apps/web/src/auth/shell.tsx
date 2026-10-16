@@ -27,15 +27,22 @@ const buttonClass =
  * draft is silently dropped.
  */
 export function Shell() {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  if (pathname === '/login') return <Outlet />;
+  // By the matched route, not the location: during a navigation the location changes before the
+  // matches, and the outlet must never render a protected screen without the check.
+  const login = useRouterState({
+    select: (state) => state.matches.some((match) => match.routeId === '/login'),
+  });
+  if (login) return <Outlet />;
   return <Protected />;
 }
 
 function Protected() {
   const auth = useAuth();
-  const href = useRouterState({ select: (state) => state.location.href });
+  const location = useRouterState({ select: (state) => state.location });
   const { session, lost } = auth;
+  // On the way to /login (the location moved, the matches not yet): nothing to show or redirect.
+  if (location.pathname === '/login') return null;
+  const href = location.href;
   if (session === undefined) {
     return <SessionPending error={auth.error} />;
   }

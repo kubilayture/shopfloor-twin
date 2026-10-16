@@ -128,7 +128,12 @@ describe('hourly aggregates (#118)', () => {
     expect(notices.filter((type) => type === 'epoch')).toHaveLength(2);
     expect(changes.length).toBeGreaterThan(0);
     // Pieces are written as they come; nothing is refreshed on the acknowledgement path.
-    expect(equipment.stateAggregate()).toEqual({ refreshedThrough: null, dirty: [], refreshes: 0 });
+    expect(equipment.stateAggregate()).toEqual({
+      refreshedThrough: null,
+      dirty: [],
+      refreshes: 0,
+      failures: 0,
+    });
     // Unrefreshed, the aggregates read everything raw.
     await expectCurrent(db);
     await equipment.refreshAggregates();
@@ -236,8 +241,19 @@ describe('hourly aggregates (#118)', () => {
         .orderBy('hour')
         .execute();
     expect(await finality()).toMatchObject([{ hour: hour('10:00'), cycles: 1, revision: 0 }]);
-    // A cycle the module hears of in a final hour revises it and is counted.
+    // A cycle the module hears of in a final hour revises it and is counted. Right after the
+    // equipment module has handled it (a listener behind it), the new revision is visible but
+    // cycle_hourly is not refreshed yet: the hour must not read as refreshed meanwhile.
+    const seen: { revision: number | undefined; refreshed: boolean }[] = [];
+    const unsubscribe = ingest.onStored(async (notice) => {
+      if (notice.type !== 'sample' || notice.sample.kind !== 'cycle') return;
+      const [row] = await finality();
+      seen.push({ revision: row?.revision, refreshed: ingest.cyclesRefreshed(hour('10:00')) });
+    });
+    expect(ingest.cyclesRefreshed(hour('10:00'))).toBe(true);
     await send(feed.cycle('cnc-a', E1, 4, at('10:40')));
+    unsubscribe();
+    expect(seen).toEqual([{ revision: 1, refreshed: false }]);
     expect(await finality()).toMatchObject([{ hour: hour('10:00'), cycles: 2, revision: 1 }]);
 
     // While the module is down, a late cycle and a late state fact are stored unheard (a notice

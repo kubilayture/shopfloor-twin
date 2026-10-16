@@ -162,6 +162,22 @@ describe('explicit refresh of an hourly aggregate (#118, ADR-0022)', () => {
     expect(after.isRefreshed(hour(6))).toBe(true);
   });
 
+  it('retries a failing refresh with backoff; flush gives up after five attempts, then recovers', async () => {
+    const admin = createDatabase(url, 1);
+    const name = `refresh_${String(++count)}`;
+    await sql.raw(`CREATE DATABASE ${name}`).execute(admin);
+    await admin.destroy();
+    // Not migrated yet: the aggregate doesn't exist, as during a failed deploy.
+    const db = createDatabase(url.replace(/\/shopfloor$/, `/${name}`), 3);
+    databases.push(db);
+    const r = refresher(db, 60_000);
+    await expect(r.flush()).rejects.toThrow(/no continuous aggregate|does not exist/);
+    expect(r.status()).toMatchObject({ refreshedThrough: null, failures: 5 });
+    await migrate(db, MIGRATIONS);
+    await r.flush();
+    expect(r.status()).toMatchObject({ failures: 0 });
+  });
+
   it('refreshes quickly after an epoch that starts days below the watermark', async () => {
     const db = await freshDatabase();
     const r = refresher(db, 60_000);

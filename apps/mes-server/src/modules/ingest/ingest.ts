@@ -381,7 +381,7 @@ export class Ingest {
           'numbers below a stream’s first one written off as history (no incident)',
         );
       }
-      for (const notice of result.notices) await this.#notify(notice);
+      await this.#announce(result.notices);
       return result.recorded;
     });
     if (recorded > 0) {
@@ -533,7 +533,7 @@ export class Ingest {
         this.#loaded = true;
       }
       const notices = await this.#process(topic, payload, retained);
-      for (const notice of notices) await this.#notify(notice);
+      await this.#announce(notices);
     });
   }
 
@@ -753,7 +753,7 @@ export class Ingest {
       if (this.#isStopping() || this.#client !== client || this.#suspended) throw new Suspended();
       try {
         const notices = await this.#process(packet.topic, packet.payload, packet.retain);
-        for (const notice of notices) await this.#notify(notice);
+        await this.#announce(notices);
         await this.#options.beforeAck?.(packet.topic);
         this.#failedResumes = 0;
         return;
@@ -892,16 +892,26 @@ export class Ingest {
     this.#messages?.inc({ outcome });
   }
 
-  async #notify(notice: IngestNotice): Promise<void> {
-    // A cycle, or a new epoch's first fact, changes the hour's row of `cycle_hourly` (or may lie
-    // below its watermark): the refresh is only scheduled here, never awaited.
-    if (notice.type === 'cycle') {
-      const at = notice.cycle.sourceTime.getTime();
-      this.#cycles?.changed(at, at + 1);
-    } else if (notice.type === 'epoch') {
-      const at = notice.sourceTime.getTime();
-      this.#cycles?.changed(at, at + 1);
+  /**
+   * Tells listeners what one committed message (or sweep) added. Every hour of `cycle_hourly` it
+   * changes is marked first, before any listener runs: a listener (equipment) may record a final
+   * hour's new revision, and from then on the hour must not count as refreshed while the aggregate
+   * still holds the old count (#118). The refresh is only scheduled, never awaited.
+   */
+  async #announce(notices: readonly IngestNotice[]): Promise<void> {
+    for (const notice of notices) {
+      const at =
+        notice.type === 'cycle'
+          ? notice.cycle.sourceTime.getTime()
+          : notice.type === 'epoch'
+            ? notice.sourceTime.getTime()
+            : undefined;
+      if (at !== undefined) this.#cycles?.changed(at, at + 1);
     }
+    for (const notice of notices) await this.#notify(notice);
+  }
+
+  async #notify(notice: IngestNotice): Promise<void> {
     for (const listener of this.#listeners) {
       try {
         await listener(notice);

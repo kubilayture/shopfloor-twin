@@ -38,12 +38,19 @@ export interface AggregateStatus {
   readonly dirty: readonly Date[];
   /** Refreshes run since start. */
   readonly refreshes: number;
+  /** Failed refreshes in a row (0 after a success): the retry backs off with them. */
+  readonly failures: number;
 }
 
 const hourOf = (at: Millis): Millis => Math.floor(at / HOUR) * HOUR;
 /** TimescaleDB's watermark of an aggregate never refreshed: its lowest timestamp (4714 BC). */
 const NEVER_MS = -210_866_803_200_000;
 const iso = (at: Millis): string => new Date(at).toISOString();
+/** Longest wait before retrying a refresh that keeps failing. */
+const RETRY_MAX_MS = 60_000;
+/** Attempts `flush` makes before it gives up and throws. */
+const FLUSH_ATTEMPTS = 5;
+const FLUSH_RETRY_MS = 250;
 
 /**
  * Refreshes one hourly continuous aggregate explicitly (ADR-0022), for the module that owns it.
@@ -61,7 +68,9 @@ const iso = (at: Millis): string => new Date(at).toISOString();
  *   restart (TimescaleDB keeps their invalidations).
  *
  * Refreshes are debounced (`debounceMs` of wall time after the first change), run one at a time
- * from a timer, never on the caller's path; a failed one is retried after the next debounce.
+ * from a timer, never on the caller's path. A failed one puts its hours back and is retried with
+ * exponential backoff (the debounce doubled per failure in a row, at most a minute), back to the
+ * plain debounce after a success.
  */
 export class AggregateRefresher {
   readonly #view: HourlyAggregate;
@@ -82,6 +91,8 @@ export class AggregateRefresher {
   #running: Promise<void> | undefined;
   #caughtUp: Promise<void> | undefined;
   #refreshes = 0;
+  /** Failed refreshes in a row: the backoff. */
+  #failures = 0;
   #stopped = false;
   readonly #listeners = new Set<(window: RefreshWindow) => void>();
 
@@ -155,6 +166,7 @@ export class AggregateRefresher {
         .sort((a, b) => a - b)
         .map((hour) => new Date(hour)),
       refreshes: this.#refreshes,
+      failures: this.#failures,
     };
   }
 
@@ -164,10 +176,14 @@ export class AggregateRefresher {
     return () => this.#listeners.delete(listener);
   }
 
-  /** Runs what is pending now, without waiting for the debounce, and waits until idle. */
+  /**
+   * Runs what is pending now, without waiting for the debounce, and waits until idle. A failing
+   * refresh is tried `FLUSH_ATTEMPTS` times in all, with a growing pause, before the error is
+   * thrown (a transient database error at start-up must not stop the MES).
+   */
   async flush(): Promise<void> {
-    await this.catchUp().catch(() => undefined);
-    for (;;) {
+    // The first refresh is the catch-up (pending until it has run).
+    for (let failed = 0; ;) {
       clearTimeout(this.#timer);
       this.#timer = undefined;
       if (this.#running) {
@@ -175,7 +191,12 @@ export class AggregateRefresher {
         continue;
       }
       if (!this.#pending()) return;
-      await this.#run();
+      try {
+        await this.#run();
+      } catch (error) {
+        if (++failed >= FLUSH_ATTEMPTS) throw error;
+        await new Promise((done) => setTimeout(done, FLUSH_RETRY_MS * 2 ** (failed - 1)));
+      }
     }
   }
 
@@ -197,21 +218,37 @@ export class AggregateRefresher {
 
   #schedule(): void {
     if (this.#stopped || this.#timer || this.#running) return;
-    this.#timer = setTimeout(() => {
-      this.#timer = undefined;
-      // A flush or the catch-up is running: it schedules again when it ends, if anything is left.
-      if (this.#running) return;
-      this.#run().catch(() => undefined);
-    }, this.#debounceMs);
+    const delay = Math.min(this.#debounceMs * 2 ** this.#failures, RETRY_MAX_MS);
+    this.#timer = setTimeout(
+      () => {
+        this.#timer = undefined;
+        // A flush or the catch-up is running: it schedules again when it ends, if anything is left.
+        if (this.#running) return;
+        this.#run().catch(() => undefined);
+      },
+      Math.max(delay, this.#debounceMs),
+    );
     this.#timer.unref();
   }
 
   /** One refresh; the first one is the catch-up. Another follows if changes came meanwhile. */
   #run(): Promise<void> {
-    const run = this.#refresh().finally(() => {
-      this.#running = undefined;
-      if (this.#pending()) this.#schedule();
-    });
+    const run = this.#refresh()
+      .then(() => {
+        this.#failures = 0;
+      })
+      .catch((error: unknown) => {
+        this.#failures++;
+        this.#log.error(
+          { err: error, view: this.#view, failures: this.#failures },
+          'continuous aggregate refresh failed',
+        );
+        throw error;
+      })
+      .finally(() => {
+        this.#running = undefined;
+        if (this.#pending()) this.#schedule();
+      });
     this.#running = run;
     return run;
   }
@@ -258,7 +295,6 @@ export class AggregateRefresher {
       // Retried with the next refresh.
       for (const hour of taken) this.#dirty.add(hour);
       this.#inflight = new Set();
-      this.#log.error({ err: error, view: this.#view }, 'continuous aggregate refresh failed');
       throw error;
     }
     const ms = Math.round(performance.now() - began);

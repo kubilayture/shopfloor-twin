@@ -1,22 +1,36 @@
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { OPCUACertificateManager } from 'node-opcua';
+import {
+  DataType,
+  DataValue,
+  OPCUACertificateManager,
+  StatusCodes,
+  resolveNodeId,
+} from 'node-opcua';
 import {
   OPCUA_MACHINES,
+  OPCUA_VARIABLES,
+  opcuaAlarmPath,
   parseUnsMessage,
+  type AlarmSnapshot,
   type StateCurrent,
   type Telemetry,
   type UnsMessage,
 } from '@shopfloor/contracts';
-import { formatIssues, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
+import {
+  formatIssues,
+  loadPlantConfig,
+  plantAlarms,
+  type PlantConfig,
+} from '@shopfloor/plant-config';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { equipmentPaths } from '../hierarchy.ts';
 import { TopicSequences } from '../identity.ts';
 import type { IncidentInput } from '../incidents.ts';
 import type { Publisher, UnsPublication } from '../publisher.ts';
 import { startSimulator, type RunningSimulator, type SimEvent } from '../testing.ts';
-import { OpcuaCollector } from './collector.ts';
+import { OpcuaCollector, readAlarmSnapshot } from './collector.ts';
 
 // Clear of the Compose stack (TimescaleDB on 5442, broker on 1883, simulator on 4800–5020).
 const PORTS = { opcuaOffset: 3100, modbusPort: 8120, controlPort: 7900 };
@@ -43,6 +57,17 @@ const snapshotsOf = (machineId: string): number =>
       p.message.schema === 'uns.state.current/1' &&
       p.message.kind === 'snapshot',
   ).length;
+
+/** The latest state snapshot of a machine (it carries the device epoch, contract 1.1). */
+const snapshotOf = (machineId: string): UnsMessage | undefined =>
+  published
+    .filter(
+      (p) =>
+        p.message.source.id === machineId &&
+        p.message.schema === 'uns.state.current/1' &&
+        p.message.kind === 'snapshot',
+    )
+    .at(-1)?.message;
 
 const publisher: Publisher = {
   publish: (publication) => {
@@ -89,6 +114,9 @@ beforeAll(async () => {
         publisher,
         sequences,
         incidents: { report: (incident) => incidents.push(incident) },
+        alarmCodes: plantAlarms(config)
+          .filter((point) => point.equipment === machine.id)
+          .map((point) => point.code),
         telemetrySamplingMs: 500,
         resyncGraceMs: 1_500,
         sessionTimeoutMs: 5_000,
@@ -241,4 +269,99 @@ describe('OPC UA collector (#76)', () => {
       .reduce((sum, i) => sum + (i.lost ?? 0), 0);
     expect(reportedLost).toBe(lost.length);
   }, 180_000);
+
+  it('publishes an alarm snapshot on every resync, consistent with the facts up to its asOfSeq (#141)', () => {
+    for (const machine of OPCUA_MACHINES) {
+      const snapshots = published.filter((p) => p.message.schema === 'uns.alarm-snapshot/1');
+      const own = snapshots.filter((p) => p.message.source.id === machine.id);
+      // One per (re)connect, like the state snapshot, retained, numbered by the topic counter.
+      expect(own.length, machine.id).toBe(snapshotsOf(machine.id));
+      expect(own.every((p) => p.retain && p.topic.endsWith('/alarms/_snapshot'))).toBe(true);
+      const baseline = baselines.get(machine.id) ?? 0;
+      const facts = deviceFacts(machine.id);
+      for (const p of own) {
+        const message = p.message as AlarmSnapshot;
+        expect(message.deviceEpoch, machine.id).toBe(
+          (snapshotOf(machine.id) as { deviceEpoch?: number }).deviceEpoch,
+        );
+        expect(message.asOfSeq).toBeGreaterThanOrEqual(baseline);
+        // The run starts without alarms: replay the facts up to asOfSeq.
+        const active = new Set<string>();
+        for (const event of facts.slice(0, message.asOfSeq - baseline)) {
+          if (event.type !== 'alarm') continue;
+          if (event.transition === 'active') active.add(String(event.code));
+          else active.delete(String(event.code));
+        }
+        expect(message.value.active, `${machine.id} at ${String(message.asOfSeq)}`).toEqual(
+          [...active].sort(),
+        );
+      }
+    }
+    // cnc-01 reconnected at least twice: its topic counter numbers the snapshots 1, 2, 3, ...
+    const seqs = published
+      .filter(
+        (p) => p.message.schema === 'uns.alarm-snapshot/1' && p.message.source.id === 'cnc-01',
+      )
+      .map((p) => p.message.seq);
+    expect(seqs.length).toBeGreaterThanOrEqual(3);
+    expect(seqs).toEqual(seqs.map((_, i) => i + 1));
+  });
+});
+
+describe('readAlarmSnapshot (#141)', () => {
+  const nodeIdOf = (path: string) => resolveNodeId(`ns=1;s=cnc-01.${path}`);
+  const good = (dataType: DataType, value: unknown, at?: Date) =>
+    new DataValue({
+      value: { dataType, value },
+      statusCode: StatusCodes.Good,
+      ...(at ? { sourceTimestamp: at } : {}),
+    });
+
+  it('reads Epoch, Sequence and every Alarms.<CODE>.Active in one Read call', async () => {
+    const calls: string[][] = [];
+    const at = new Date('2026-10-12T05:00:00.000Z');
+    const result = await readAlarmSnapshot(
+      (nodes) => {
+        calls.push(nodes.map((n) => n.nodeId.toString()));
+        return Promise.resolve([
+          good(DataType.UInt32, 1_791_774_000),
+          good(DataType.UInt32, 42, at),
+          good(DataType.Boolean, true), // COOLANT-PRESSURE, sorted first
+          good(DataType.Boolean, false), // SPINDLE-OVERLOAD
+        ]);
+      },
+      nodeIdOf,
+      ['SPINDLE-OVERLOAD', 'COOLANT-PRESSURE'],
+    );
+    expect(calls).toEqual([
+      [
+        OPCUA_VARIABLES.epoch,
+        OPCUA_VARIABLES.sequence,
+        opcuaAlarmPath('COOLANT-PRESSURE'),
+        opcuaAlarmPath('SPINDLE-OVERLOAD'),
+      ].map((path) => nodeIdOf(path).toString()),
+    ]);
+    expect(result).toEqual({
+      deviceEpoch: 1_791_774_000,
+      asOfSeq: 42,
+      sourceTime: at.getTime(),
+      active: ['COOLANT-PRESSURE'],
+    });
+  });
+
+  it('publishes nothing when a value of the read is not Good', async () => {
+    const result = await readAlarmSnapshot(
+      () =>
+        Promise.resolve([
+          good(DataType.UInt32, 1),
+          good(DataType.UInt32, 2),
+          new DataValue({ statusCode: StatusCodes.BadNodeIdUnknown }),
+        ]),
+      nodeIdOf,
+      ['X'],
+    );
+    expect(result).toEqual({
+      error: expect.stringMatching(/Alarms\.X\.Active reads Bad/) as unknown,
+    });
+  });
 });

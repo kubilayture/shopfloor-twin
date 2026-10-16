@@ -13,7 +13,7 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
     name: 'master_data',
     owner: 'master-data',
     about:
-      'The ISA-95 equipment hierarchy, products, the shift pattern and the downtime reason tree, seeded from `config/plant`.',
+      'The ISA-95 equipment hierarchy, products, the shift pattern, the downtime reason tree and the alarm definitions and operator positions, seeded from `config/plant`.',
   },
   {
     name: 'ingest',
@@ -48,6 +48,12 @@ const TABLES: Readonly<Record<string, string>> = {
   'master_data.shift_pattern': 'The shift pattern: time zone, workdays and shifts.',
   'master_data.reason_code':
     'The downtime reason tree from reasons.yaml: id (its path), parent and name; inactive once the configuration drops it (#119).',
+  'master_data.alarm_position':
+    'Operator positions for alarm KPIs from alarms.yaml (a set of work centers until operators log in); inactive once the configuration drops one (#141).',
+  'master_data.alarm_position_work_center':
+    'The position each work center belongs to; rewritten on every seed (#141).',
+  'master_data.alarm_definition':
+    'One alarm point per (equipment, code) from alarms.yaml: priority, operator text, consequence and response; inactive once the configuration drops it (#141, ADR-0024).',
   'ingest.equipment_event':
     'Device facts (state changes, cycles, alarm transitions), one stream per equipment; deduplicated by the unique key.',
   'ingest.telemetry_sample': 'Sampled process values, one stream per telemetry topic.',
@@ -55,6 +61,10 @@ const TABLES: Readonly<Record<string, string>> = {
     'Durable dedup and gap state per stream: current epoch, sequence ranges seen, gaps already reported.',
   'ingest.state_anchor':
     'Retained deliveries and state snapshots: the starting state of an (equipment, device epoch) when no fact gives one yet.',
+  'ingest.alarm_anchor':
+    'Retained alarm deliveries: the device’s last fact per (equipment, device epoch, code), highest seq wins; stale once a newer epoch of the equipment is known. Never a fact (#141).',
+  'ingest.alarm_snapshot':
+    'The gateway’s alarm snapshot on resync: active codes at a device sequence (asOfSeq), the latest per (equipment, device epoch); stale like anchors; outside dedup and gap checks (#141).',
   'ingest.data_quality_incident':
     'Sequence gaps found by the MES and incidents reported by the gateway.',
   'ingest.component_status': 'Latest online/offline status of each component (last will).',

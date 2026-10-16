@@ -36,9 +36,26 @@
  * - `Ingest.telemetryMetrics(equipment)`: metrics with unit and latest sample.
  * - `Ingest.telemetrySeries(equipment, metrics, from, to, bucketMs)`: decimated series.
  * - `sample` notices of telemetry carry `telemetry` (metric, value, unit) for push.
+ *
+ * For alarms (#141, ADR-0017 amendment):
+ * - `alarm` notices (a stored alarm transition, after its `sample`, with `settledSeq`).
+ * - `alarm-anchor` notices: a retained alarm delivery stored in `ingest.alarm_anchor` (the
+ *   highest `seq` per equipment, epoch and code wins); `alarm-snapshot` notices: the gateway's
+ *   resync snapshot stored in `ingest.alarm_snapshot` (the highest `asOfSeq` per equipment and
+ *   device epoch wins). Neither enters dedup or gap checks.
+ * - Old epochs: an anchor or snapshot older than the newest device epoch known for its equipment
+ *   (any fact, state anchor, alarm anchor or snapshot) is stored `stale` and never used; when a
+ *   newer epoch arrives, an `alarm-stale` notice lists the rows that became stale.
+ * - `Ingest.alarmFacts(equipment, epoch, { code?, fromSeq?, toSeq? })`, `alarmFactCounts()`,
+ *   `alarmAnchors()`, `alarmSnapshots()` (stale ones only on request), and `alarmBaseline(equipment)`:
+ *   the newest epoch's anchors and snapshot resolved by sequence (`resolveAlarmBaseline`).
  */
-export { INGEST_TOPICS, Ingest } from './ingest.ts';
+export { INGEST_TOPICS, Ingest, baselineState } from './ingest.ts';
+export { resolveAlarmBaseline } from './alarm-baseline.ts';
+export type { AlarmPointState } from './alarm-baseline.ts';
 export type {
+  AlarmBaseline,
+  AlarmFactCount,
   CycleCount,
   CycleHour,
   FactSummary,
@@ -47,11 +64,14 @@ export type {
   IngestOutcome,
 } from './ingest.ts';
 export type {
+  AlarmAnchor,
+  AlarmFact,
   GapIncident,
   IngestNotice,
   SettledState,
   StateAnchor,
   StateFact,
+  StoredAlarmSnapshot,
   StoredCycle,
   StoredSample,
 } from './store.ts';

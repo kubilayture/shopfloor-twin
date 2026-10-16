@@ -131,6 +131,38 @@ export const alarmSchema = envelope(
   { ...DEVICE },
 ).meta({ title: 'uns.alarms/1', description: 'Last transition of one alarm code (retained)' });
 
+/**
+ * The gateway's alarm snapshot (contract 1.2, #141): on every resync, the device's active alarm
+ * codes read together with its `Sequence` (OPC UA, one Read call) or ring head (Modbus, one register
+ * read). Topic-scoped like the state snapshot: `epoch` and `seq` are the gateway's, `deviceEpoch`
+ * and `asOfSeq` place it in the device's stream. Never a fact: it takes no part in dedup or gaps.
+ */
+export const alarmSnapshotSchema = envelope(
+  'uns.alarm-snapshot',
+  z.strictObject({
+    active: z
+      .array(z.string().min(1))
+      .describe('Codes active at asOfSeq, sorted and without duplicates; empty when none'),
+  }),
+  {
+    kind: z.literal('snapshot'),
+    ...TOPIC,
+    deviceEpoch: identity.epoch.describe(
+      'The device epoch (ADR-0015) the alarms were read in; epoch is the gateway counter epoch',
+    ),
+    asOfSeq: z
+      .int()
+      .min(0)
+      .max(Number.MAX_SAFE_INTEGER)
+      .describe(
+        'The device sequence the alarm bits are consistent with: every fact up to it is reflected, none after it (0: no fact yet)',
+      ),
+  },
+).meta({
+  title: 'uns.alarm-snapshot/1',
+  description: 'Active alarm codes of one device, read atomically on resync (retained)',
+});
+
 export const statusSchema = envelope(
   'uns.sys.status',
   z.strictObject({
@@ -171,6 +203,7 @@ export const UNS_SCHEMAS = {
   'uns.telemetry/1': telemetrySchema,
   'uns.events.cycle-complete/1': cycleCompleteSchema,
   'uns.alarms/1': alarmSchema,
+  'uns.alarm-snapshot/1': alarmSnapshotSchema,
   'uns.sys.status/1': statusSchema,
   'uns.sys.incident/1': incidentSchema,
 } as const;
@@ -180,9 +213,11 @@ export type StateCurrent = z.infer<typeof stateCurrentSchema>;
 export type Telemetry = z.infer<typeof telemetrySchema>;
 export type CycleComplete = z.infer<typeof cycleCompleteSchema>;
 export type Alarm = z.infer<typeof alarmSchema>;
+export type AlarmSnapshot = z.infer<typeof alarmSnapshotSchema>;
 export type Status = z.infer<typeof statusSchema>;
 export type Incident = z.infer<typeof incidentSchema>;
-export type UnsMessage = StateCurrent | Telemetry | CycleComplete | Alarm | Status | Incident;
+export type UnsMessage =
+  StateCurrent | Telemetry | CycleComplete | Alarm | AlarmSnapshot | Status | Incident;
 
 /** Parses any UNS payload by its `schema` field. */
 export function parseUnsMessage(

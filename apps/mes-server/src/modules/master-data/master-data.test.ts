@@ -1,5 +1,10 @@
 import { resolve } from 'node:path';
-import { formatIssues, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
+import {
+  formatIssues,
+  loadPlantConfig,
+  plantAlarms,
+  type PlantConfig,
+} from '@shopfloor/plant-config';
 import { shiftKeyAt } from '@shopfloor/shift-calendar';
 import { sql, type Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
@@ -136,6 +141,84 @@ describe('master-data (#94)', () => {
     await expect(
       sql`INSERT INTO master_data.reason_code (id, parent_id, name, position)
           VALUES ('SETUP/X', 'BREAKDOWN', 'Wrong parent', 99)`.execute(db),
+    ).rejects.toThrow(/check constraint/);
+  });
+
+  it('seeds alarm definitions with priorities and operator positions from alarms.yaml (#141)', async () => {
+    const masterData = new MasterData(db);
+    await masterData.seed(config);
+    const definitions = await masterData.alarmDefinitions();
+    // One definition for every point the plant can raise, in configuration order.
+    expect(definitions.map((d) => `${d.equipment}/${d.code}`)).toEqual(
+      config.alarms.definitions.map((d) => `${d.equipment}/${d.code}`),
+    );
+    expect(new Set(definitions.map((d) => `${d.equipment}/${d.code}`))).toEqual(
+      new Set(plantAlarms(config).map((p) => `${p.equipment}/${p.code}`)),
+    );
+    expect(definitions[0]).toEqual({
+      equipment: 'cnc-01',
+      code: 'SPINDLE-OVERLOAD',
+      priority: 'high',
+      text: 'Spindle overload on CNC-01',
+      consequence: 'Tool or spindle damage; the machine is down.',
+      response: 'Stop feeding parts, call maintenance, check the tool and the workpiece clamping.',
+      active: true,
+    });
+    const priority = (equipment: string, code: string) =>
+      definitions.find((d) => d.equipment === equipment && d.code === code)?.priority;
+    expect(priority('wsh-01', 'HEATER-FAULT')).toBe('high');
+    expect(priority('cnc-01', 'COOLANT-PRESSURE')).toBe('medium');
+    expect(priority('lkt-01', 'CALIBRATION-DUE')).toBe('low');
+    expect(await masterData.alarmPositions()).toEqual([
+      {
+        id: 'cell-m1',
+        name: 'Cell M1',
+        workCenters: ['cell-m1'],
+        equipment: ['cnc-01', 'cnc-02', 'wsh-01'],
+      },
+      {
+        id: 'line-a1',
+        name: 'Line A1',
+        workCenters: ['line-a1'],
+        equipment: ['asm-01', 'lkt-01', 'pck-01'],
+      },
+    ]);
+
+    // Idempotent; a changed configuration is followed, and dropped rows stay, inactive.
+    await masterData.seed(config);
+    expect(await masterData.alarmDefinitions()).toEqual(definitions);
+    const changed = structuredClone(config);
+    changed.alarms.definitions = changed.alarms.definitions
+      .filter((d) => d.code !== 'PRINTER-FAULT')
+      .map((d) => (d.code === 'COOLANT-PRESSURE' ? { ...d, priority: 'high' as const } : d));
+    changed.alarms.positions = [
+      { id: 'plant-floor', name: 'Plant floor', workCenters: ['cell-m1', 'line-a1'] },
+    ];
+    await masterData.seed(changed);
+    expect(priority('cnc-01', 'COOLANT-PRESSURE')).toBe('medium'); // the earlier read
+    const after = await masterData.alarmDefinitions();
+    expect(after.find((d) => d.code === 'COOLANT-PRESSURE')?.priority).toBe('high');
+    expect(after.some((d) => d.code === 'PRINTER-FAULT')).toBe(false);
+    expect((await masterData.alarmDefinitions({ inactive: true })).at(-1)).toMatchObject({
+      equipment: 'pck-01',
+      code: 'PRINTER-FAULT',
+      active: false,
+    });
+    expect((await masterData.alarmPositions()).map((p) => [p.id, p.workCenters])).toEqual([
+      ['plant-floor', ['cell-m1', 'line-a1']],
+    ]);
+    await masterData.seed(config);
+    expect(await masterData.alarmDefinitions()).toEqual(definitions);
+    expect((await masterData.alarmPositions()).map((p) => p.id)).toEqual(['cell-m1', 'line-a1']);
+    // A definition must name known equipment; `plant` is not a position id.
+    await expect(
+      sql`INSERT INTO master_data.alarm_definition (equipment_id, code, priority, text, position)
+          VALUES ('nope-01', 'X', 'low', 'x', 99)`.execute(db),
+    ).rejects.toThrow(/foreign key/);
+    await expect(
+      sql`INSERT INTO master_data.alarm_position (id, name, position) VALUES ('plant', 'P', 9)`.execute(
+        db,
+      ),
     ).rejects.toThrow(/check constraint/);
   });
 

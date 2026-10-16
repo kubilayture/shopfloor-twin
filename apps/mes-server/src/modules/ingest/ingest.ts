@@ -1,4 +1,4 @@
-import { SYS_SEGMENT, UNS_ROOT, type MachineState } from '@shopfloor/contracts';
+import { SYS_SEGMENT, UNS_ROOT, type Alarm, type MachineState } from '@shopfloor/contracts';
 import { sql, type Kysely } from 'kysely';
 import mqtt, { type IClientOptions, type IPublishPacket, type MqttClient } from 'mqtt';
 import { Counter, Gauge, type Registry } from 'prom-client';
@@ -8,10 +8,16 @@ import {
   type RefreshOptions,
 } from '../../db/aggregate-refresh.ts';
 import type { Database } from '../../db/database.ts';
+import { resolveAlarmBaseline, type AlarmPointState } from './alarm-baseline.ts';
 import { classify } from './classify.ts';
 import {
   IngestStore,
+  toAlarmAnchor,
+  toAlarmSnapshot,
   toAnchor,
+  type AlarmAnchor,
+  type AlarmFact,
+  type StoredAlarmSnapshot,
   type IngestNotice,
   type SettledState,
   type StateAnchor,
@@ -134,6 +140,46 @@ export interface FactSummary {
   readonly stateFacts: number;
   readonly lastStateSeq: number | null;
   readonly latestSourceTime: Date;
+}
+
+/** Alarm facts of one (equipment, device epoch) (#141). */
+export interface AlarmFactCount {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly facts: number;
+}
+
+/**
+ * What the anchors and the snapshot of an equipment's newest epoch say about its alarms (#141).
+ * `points` lists the codes an anchor or the snapshot names. The snapshot says more: **every code it
+ * doesn't name was inactive at its `asOfSeq`**, so an occurrence raised by a fact below `asOfSeq`
+ * whose code is not listed active had its clear lost (`baselineState` answers per code).
+ */
+export interface AlarmBaseline {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly points: readonly AlarmPointState[];
+  /** The latest snapshot of the epoch, if any. */
+  readonly snapshot: { readonly asOfSeq: number; readonly sourceTime: Date } | undefined;
+}
+
+/**
+ * One code's state by the baseline (#141): its point when listed; otherwise inactive at the
+ * snapshot's `asOfSeq` when there is a snapshot (it names every active code); otherwise unknown.
+ */
+export function baselineState(
+  baseline: AlarmBaseline,
+  code: string,
+): Pick<AlarmPointState, 'active' | 'source' | 'seq' | 'sourceTime'> | undefined {
+  const point = baseline.points.find((p) => p.code === code);
+  if (point) return point;
+  if (!baseline.snapshot) return undefined;
+  return {
+    active: false,
+    source: 'snapshot',
+    seq: baseline.snapshot.asOfSeq,
+    sourceTime: baseline.snapshot.sourceTime,
+  };
 }
 
 export type IngestOutcome = 'stored' | 'duplicate' | 'rejected' | 'anchor' | 'status' | 'retained';
@@ -655,6 +701,108 @@ export class Ingest {
     return this.#store.settled(equipment, epoch, afterSeq);
   }
 
+  /**
+   * Alarm transitions of one equipment in one device epoch, by `seq` (#141), optionally of one
+   * code and within `fromSeq`..`toSeq` (inclusive): for the alarms module's rebuilds and catch-up.
+   */
+  async alarmFacts(
+    equipment: string,
+    epoch: number,
+    options: { readonly code?: string; readonly fromSeq?: number; readonly toSeq?: number } = {},
+  ): Promise<AlarmFact[]> {
+    let query = this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select(['equipment', 'epoch', 'seq', 'source_time', 'quality', 'payload'])
+      .where('equipment', '=', equipment)
+      .where('epoch', '=', epoch)
+      .where('event_type', '=', 'alarm');
+    if (options.code !== undefined) {
+      query = query.where(sql<string>`payload -> 'value' ->> 'code'`, '=', options.code);
+    }
+    if (options.fromSeq !== undefined) query = query.where('seq', '>=', options.fromSeq);
+    if (options.toSeq !== undefined) query = query.where('seq', '<=', options.toSeq);
+    const rows = await query.orderBy('seq').execute();
+    return rows.map((row) => {
+      const value = (row.payload as Alarm).value;
+      return {
+        equipment: row.equipment,
+        epoch: row.epoch,
+        seq: row.seq,
+        sourceTime: row.source_time,
+        code: value.code,
+        transition: value.transition,
+        severity: value.severity,
+        quality: row.quality,
+      };
+    });
+  }
+
+  /** Alarm facts per (equipment, device epoch) (#141): the alarms module's catch-up compares them. */
+  async alarmFactCounts(): Promise<AlarmFactCount[]> {
+    const rows = await this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select((eb) => ['equipment', 'epoch', eb.fn.countAll<string>().as('facts')])
+      .where('event_type', '=', 'alarm')
+      .groupBy(['equipment', 'epoch'])
+      .orderBy('equipment')
+      .orderBy('epoch')
+      .execute();
+    return rows.map((row) => ({
+      equipment: row.equipment,
+      epoch: row.epoch,
+      facts: Number(row.facts),
+    }));
+  }
+
+  /**
+   * Alarm anchors (#141), by equipment, epoch and code. Stale ones (an epoch older than the newest
+   * known for the equipment) only with `stale: true`; they are never to be used.
+   */
+  async alarmAnchors(
+    options: { readonly equipment?: string; readonly stale?: boolean } = {},
+  ): Promise<AlarmAnchor[]> {
+    let query = this.#options.db.selectFrom('ingest.alarm_anchor').selectAll();
+    if (options.equipment !== undefined) query = query.where('equipment', '=', options.equipment);
+    if (options.stale !== true) query = query.where('stale', '=', false);
+    const rows = await query.orderBy('equipment').orderBy('epoch').orderBy('code').execute();
+    return rows.map(toAlarmAnchor);
+  }
+
+  /** The latest alarm snapshot per (equipment, device epoch) (#141); stale ones as for anchors. */
+  async alarmSnapshots(
+    options: { readonly equipment?: string; readonly stale?: boolean } = {},
+  ): Promise<StoredAlarmSnapshot[]> {
+    let query = this.#options.db.selectFrom('ingest.alarm_snapshot').selectAll();
+    if (options.equipment !== undefined) query = query.where('equipment', '=', options.equipment);
+    if (options.stale !== true) query = query.where('stale', '=', false);
+    const rows = await query.orderBy('equipment').orderBy('device_epoch').execute();
+    return rows.map(toAlarmSnapshot);
+  }
+
+  /**
+   * The alarm state of an equipment's newest epoch from its anchors and latest snapshot, by
+   * sequence (`resolveAlarmBaseline`, #141); undefined when it has none that isn't stale. Facts
+   * with a higher `seq` than both are the alarms module's to apply.
+   */
+  async alarmBaseline(equipment: string): Promise<AlarmBaseline | undefined> {
+    const [anchors, snapshots] = await Promise.all([
+      this.alarmAnchors({ equipment }),
+      this.alarmSnapshots({ equipment }),
+    ]);
+    const epoch = Math.max(...anchors.map((a) => a.epoch), ...snapshots.map((s) => s.deviceEpoch));
+    if (!Number.isFinite(epoch)) return undefined;
+    const snapshot = snapshots.find((s) => s.deviceEpoch === epoch);
+    return {
+      equipment,
+      epoch,
+      points: resolveAlarmBaseline(
+        anchors.filter((a) => a.epoch === epoch),
+        snapshot,
+      ),
+      snapshot: snapshot && { asOfSeq: snapshot.asOfSeq, sourceTime: snapshot.sourceTime },
+    };
+  }
+
   /** The anchor of every (equipment, device epoch) that has one (see `anchor`). */
   async anchors(): Promise<StateAnchor[]> {
     const rows = await this.#options.db
@@ -842,9 +990,25 @@ export class Ingest {
         this.#counted('status');
         return [];
       case 'anchor': {
-        const anchor = await this.#store.anchor(item.equipment, item.message, retained);
+        const { anchor, notices } = await this.#store.anchor(
+          item.equipment,
+          item.message,
+          retained,
+        );
         this.#counted('anchor');
-        return anchor && anchor.deviceEpoch !== null ? [{ type: 'anchor', anchor }] : [];
+        return anchor && anchor.deviceEpoch !== null
+          ? [...notices, { type: 'anchor', anchor }]
+          : notices;
+      }
+      case 'alarm-anchor': {
+        const notices = await this.#store.alarmAnchor(item.equipment, item.message);
+        this.#counted('anchor');
+        return notices;
+      }
+      case 'alarm-snapshot': {
+        const notices = await this.#store.alarmSnapshot(item.equipment, item.message);
+        this.#counted('anchor');
+        return notices;
       }
       case 'event':
       case 'telemetry':

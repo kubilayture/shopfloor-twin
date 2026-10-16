@@ -10,7 +10,8 @@ export const FAILURE_ALARM_SEVERITY = 700;
 
 export const MODBUS_PORT = 5020;
 export const MODBUS_UNIT_ID = 1;
-export const MODBUS_MAP_VERSION = 1;
+/** 2 (#141): register 17, the active alarms, joins the snapshot block. */
+export const MODBUS_MAP_VERSION = 2;
 /** Standard Modbus limit for one read of holding registers. */
 export const MODBUS_MAX_READ = 125;
 
@@ -26,10 +27,13 @@ export const REGISTERS = {
   eventCounter: 13, // u32, sequence of the newest ring entry (0: none yet)
   ringCapacity: 15,
   entrySize: 16,
+  activeAlarms: 17, // bit i: alarm table entry i is active (map version 2, #141)
   ring: 100,
 } as const;
 
-export const SNAPSHOT_LENGTH = 17;
+export const SNAPSHOT_LENGTH = 18;
+/** One register of active-alarm bits: the alarm table may hold at most 16 codes. */
+export const MAX_MODBUS_ALARMS = 16;
 export const RING_CAPACITY = 64;
 export const ENTRY_SIZE = 10;
 export const RING_END = REGISTERS.ring + RING_CAPACITY * ENTRY_SIZE;
@@ -60,6 +64,26 @@ export function modbusTables(input: {
     products: [...input.products],
     alarms: [...input.failureCodes],
   };
+}
+
+/** The `activeAlarms` register for a set of active codes; throws for a code outside the table. */
+export function encodeActiveAlarms(codes: Iterable<string>, tables: ModbusTables): number {
+  let word = 0;
+  for (const code of codes) {
+    const index = indexIn(tables.alarms, code, 'alarm code');
+    if (index >= MAX_MODBUS_ALARMS) {
+      throw new RangeError(`alarm code "${code}" has no bit in the activeAlarms register`);
+    }
+    word |= 1 << index;
+  }
+  return word;
+}
+
+/** The active codes of an `activeAlarms` register, in table order; bits without a code are ignored. */
+export function decodeActiveAlarms(word: number, tables: ModbusTables): string[] {
+  return tables.alarms.filter(
+    (_code, index) => index < MAX_MODBUS_ALARMS && ((word >> index) & 1) === 1,
+  );
 }
 
 export const ringSlot = (seq: number): number =>

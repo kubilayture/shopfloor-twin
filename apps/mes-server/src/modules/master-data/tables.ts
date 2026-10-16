@@ -51,6 +51,31 @@ export interface ReasonCodeTable {
   active: ColumnType<boolean, boolean | undefined, boolean>;
 }
 
+/** Operator positions for alarm KPIs (#141), from config/plant/alarms.yaml. */
+export interface AlarmPositionTable {
+  id: string;
+  name: string;
+  position: number;
+  active: ColumnType<boolean, boolean | undefined, boolean>;
+}
+
+export interface AlarmPositionWorkCenterTable {
+  work_center_id: string;
+  position_id: string;
+}
+
+/** One alarm point per (equipment, code) (#141), from config/plant/alarms.yaml. */
+export interface AlarmDefinitionTable {
+  equipment_id: string;
+  code: string;
+  priority: 'high' | 'medium' | 'low';
+  text: string;
+  consequence: string | null;
+  response: string | null;
+  position: number;
+  active: ColumnType<boolean, boolean | undefined, boolean>;
+}
+
 export interface MasterDataTables {
   'master_data.site': SiteTable;
   'master_data.area': AreaTable;
@@ -59,6 +84,9 @@ export interface MasterDataTables {
   'master_data.product': ProductTable;
   'master_data.shift_pattern': ShiftPatternTable;
   'master_data.reason_code': ReasonCodeTable;
+  'master_data.alarm_position': AlarmPositionTable;
+  'master_data.alarm_position_work_center': AlarmPositionWorkCenterTable;
+  'master_data.alarm_definition': AlarmDefinitionTable;
 }
 
 export const MASTER_DATA_COLUMNS = {
@@ -69,4 +97,16 @@ export const MASTER_DATA_COLUMNS = {
   'master_data.product': ['id', 'name', 'ideal_cycle_seconds'],
   'master_data.shift_pattern': ['id', 'time_zone', 'workdays', 'shifts'],
   'master_data.reason_code': ['id', 'parent_id', 'name', 'position', 'active'],
+  'master_data.alarm_position': ['id', 'name', 'position', 'active'],
+  'master_data.alarm_position_work_center': ['work_center_id', 'position_id'],
+  'master_data.alarm_definition': [
+    'equipment_id',
+    'code',
+    'priority',
+    'text',
+    'consequence',
+    'response',
+    'position',
+    'active',
+  ],
 } as const;

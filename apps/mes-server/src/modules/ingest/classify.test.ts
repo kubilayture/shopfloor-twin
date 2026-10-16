@@ -1,4 +1,10 @@
-import { alarmTopic, stateTopic, sysTopic, telemetryTopic } from '@shopfloor/contracts';
+import {
+  alarmSnapshotTopic,
+  alarmTopic,
+  stateTopic,
+  sysTopic,
+  telemetryTopic,
+} from '@shopfloor/contracts';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { classify } from './classify.ts';
@@ -71,6 +77,28 @@ describe('classify (#95)', () => {
     };
     expect(reason(alarmTopic(AT, 'SPINDLE-OVERLOAD'), JSON.stringify(alarm))).toBe('event');
     expect(reason(alarmTopic(AT, 'OTHER'), JSON.stringify(alarm))).toBe('topic-mismatch');
+    // Retained alarm deliveries are anchors (#141); the snapshot topic takes only snapshots.
+    expect(classify(alarmTopic(AT, 'SPINDLE-OVERLOAD'), JSON.stringify(alarm), true)).toMatchObject(
+      { kind: 'alarm-anchor', equipment: 'cnc-01' },
+    );
+    expect(reason(alarmSnapshotTopic(AT), JSON.stringify(alarm))).toBe('topic-mismatch');
+    const alarmSnapshot = {
+      ...base,
+      schema: 'uns.alarm-snapshot/1',
+      kind: 'snapshot',
+      scope: 'topic',
+      deviceEpoch: 1_760_000_000,
+      asOfSeq: 9,
+      value: { active: ['SPINDLE-OVERLOAD'] },
+    };
+    for (const retained of [false, true]) {
+      expect(
+        classify(alarmSnapshotTopic(AT), JSON.stringify(alarmSnapshot), retained),
+      ).toMatchObject({ kind: 'alarm-snapshot', equipment: 'cnc-01' });
+    }
+    expect(reason(alarmTopic(AT, 'SPINDLE-OVERLOAD'), JSON.stringify(alarmSnapshot))).toBe(
+      'topic-mismatch',
+    );
     const incident = {
       ...base,
       schema: 'uns.sys.incident/1',

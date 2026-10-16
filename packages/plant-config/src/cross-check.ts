@@ -1,3 +1,4 @@
+import { MAX_MODBUS_ALARMS } from '@shopfloor/contracts';
 import { checkAlarms, plantAlarms } from './alarms.ts';
 import { checkReasons, plantCauses } from './reasons.ts';
 import type { PlantConfig } from './schema.ts';
@@ -221,6 +222,15 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
       'process',
       'processValues.washer.heaterFaultCode',
       `"${washer.heaterFaultCode}" is not a failure mode of ${washer.machine}`,
+    );
+  }
+  // The WSH-01 register map has one activeAlarms bit per alarm table entry (#141).
+  const washerModes = config.failures.equipment[washer.machine]?.failureModes.length ?? 0;
+  if (washerModes > MAX_MODBUS_ALARMS) {
+    report(
+      'failures',
+      `equipment.${washer.machine}.failureModes`,
+      `the Modbus washer has at most ${String(MAX_MODBUS_ALARMS)} alarm codes (one activeAlarms bit each), got ${String(washerModes)}`,
     );
   }
   const curve = config.process.tool.defectProbability;

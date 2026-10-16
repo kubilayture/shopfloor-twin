@@ -5,8 +5,10 @@ import {
   OPCUA_VARIABLES,
   SHOPFLOOR_NAMESPACE_URI,
   UNS_TELEMETRY,
+  alarmSnapshotTopic,
   alarmTopic,
   cycleTopic,
+  opcuaAlarmPath,
   opcuaEndpoint,
   opcuaEventTypeId,
   opcuaNodeId,
@@ -14,6 +16,7 @@ import {
   telemetryTopic,
   toIndexedNodeId,
   type Alarm,
+  type AlarmSnapshot,
   type CycleComplete,
   type EquipmentPath,
   type MachineState,
@@ -51,6 +54,11 @@ export interface OpcuaCollectorOptions {
   readonly publisher: Publisher;
   readonly sequences: TopicSequences;
   readonly incidents: IncidentReporter;
+  /**
+   * The alarm codes the machine can raise (its slice of the plant's alarm vocabulary): the
+   * `ShopFloor.Alarms.<CODE>.Active` variables the resync reads for the alarm snapshot (#141).
+   */
+  readonly alarmCodes?: readonly string[];
   readonly now?: () => number;
   /** How often telemetry is sampled, wall ms (plan section 5: telemetry may be decimated). */
   readonly telemetrySamplingMs?: number;
@@ -85,6 +93,50 @@ const TELEMETRY = {
 
 const quality = (statusCode: DataValue['statusCode']): Telemetry['quality'] =>
   statusCode.isGood() ? 'good' : statusCode.isGoodish() ? 'uncertain' : 'bad';
+
+/** What one alarm snapshot read found (#141). */
+export type AlarmSnapshotRead =
+  | {
+      readonly deviceEpoch: number;
+      readonly asOfSeq: number;
+      /** The Sequence's source timestamp: the simulation time of fact asOfSeq, when the server has one. */
+      readonly sourceTime: number | undefined;
+      /** Active codes, sorted. */
+      readonly active: string[];
+    }
+  | { readonly error: string };
+
+/**
+ * Reads `Epoch`, `Sequence` and every `ShopFloor.Alarms.<CODE>.Active` of one machine in one Read
+ * call (#141). The server answers a Read from one consistent view, and ADR-0010's server changes a
+ * fact's `Sequence` and its alarm variable in the same step, so `asOfSeq` and the bits belong
+ * together; separate reads could straddle a fact. A value that isn't Good makes the read an error:
+ * nothing is published, and the next resync tries again.
+ */
+export async function readAlarmSnapshot(
+  read: (nodes: { nodeId: NodeId; attributeId: number }[]) => Promise<DataValue[]>,
+  nodeIdOf: (path: string) => NodeId,
+  alarmCodes: readonly string[],
+): Promise<AlarmSnapshotRead> {
+  const codes = [...new Set(alarmCodes)].sort();
+  const paths = [OPCUA_VARIABLES.epoch, OPCUA_VARIABLES.sequence, ...codes.map(opcuaAlarmPath)];
+  const values = await read(
+    paths.map((path) => ({ nodeId: nodeIdOf(path), attributeId: AttributeIds.Value })),
+  );
+  for (const [i, path] of paths.entries()) {
+    const value = values[i];
+    if (!value?.statusCode.isGood()) {
+      return { error: `${path} reads ${value?.statusCode.toString() ?? 'nothing'}` };
+    }
+  }
+  const [epoch, sequence, ...active] = values;
+  return {
+    deviceEpoch: Number(epoch?.value.value),
+    asOfSeq: Number(sequence?.value.value),
+    sourceTime: sequence?.sourceTimestamp?.getTime(),
+    active: codes.filter((_code, i) => active[i]?.value.value === true),
+  };
+}
 
 export interface LostRange {
   readonly epoch: number;
@@ -357,6 +409,9 @@ export class OpcuaCollector {
       },
     };
     this.#send({ topic, message: snapshot, retain: true });
+    await this.#alarmSnapshot(session).catch((error: unknown) => {
+      this.#options.onError?.(error);
+    });
     this.#ready = true;
     if (afterReconnect || epochChanged) {
       await new Promise<void>((resolve) => {
@@ -369,6 +424,37 @@ export class OpcuaCollector {
       }
       this.#writeOff(missing);
     }
+  }
+
+  /** The alarm snapshot (#141), published retained; see `readAlarmSnapshot`. */
+  async #alarmSnapshot(session: ClientSession): Promise<void> {
+    const read = await readAlarmSnapshot(
+      (nodes) => session.read(nodes),
+      (path) => this.#nodeId(opcuaNodeId(this.machineId, path)),
+      this.#options.alarmCodes ?? [],
+    );
+    if ('error' in read) {
+      this.#options.onError?.(
+        new Error(`${this.machineId}: alarm snapshot not published, ${read.error}`),
+      );
+      return;
+    }
+    const topic = alarmSnapshotTopic(this.#options.path);
+    const message: AlarmSnapshot = {
+      schema: 'uns.alarm-snapshot/1',
+      kind: 'snapshot',
+      scope: 'topic',
+      epoch: this.#options.sequences.epoch,
+      seq: this.#options.sequences.next(topic),
+      deviceEpoch: read.deviceEpoch,
+      asOfSeq: read.asOfSeq,
+      sourceTime: new Date(read.sourceTime ?? this.#now()).toISOString(),
+      receivedAt: new Date(this.#now()).toISOString(),
+      quality: 'good',
+      source: { id: this.machineId, protocol: 'opcua' },
+      value: { active: read.active },
+    };
+    this.#send({ topic, message, retain: true });
   }
 
   /** A new epoch: a sentinel 0 plus the history 1..historyUpTo count as handled. */

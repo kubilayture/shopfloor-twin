@@ -2,9 +2,12 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   ENTRY_SIZE,
+  MAX_MODBUS_ALARMS,
   RING_CAPACITY,
   REGISTERS,
+  decodeActiveAlarms,
   decodeEntry,
+  encodeActiveAlarms,
   encodeEntry,
   i16,
   modbusTables,
@@ -99,5 +102,23 @@ describe('WSH-01 register map encoding', () => {
     expect(ringSlot(64)).toBe(REGISTERS.ring + 63 * ENTRY_SIZE);
     expect(ringSlot(65)).toBe(REGISTERS.ring);
     expect(RING_CAPACITY).toBe(64);
+  });
+
+  it('encodes the active alarms as one bit per alarm table entry (map version 2, #141)', () => {
+    const many = modbusTables({
+      products: ['VB-100'],
+      failureCodes: Array.from({ length: MAX_MODBUS_ALARMS + 1 }, (_, i) => `F-${String(i)}`),
+      minorStopCauses: [],
+    });
+    expect(encodeActiveAlarms([], tables)).toBe(0);
+    expect(encodeActiveAlarms(['HEATER-FAULT'], tables)).toBe(1);
+    expect(decodeActiveAlarms(1, tables)).toEqual(['HEATER-FAULT']);
+    expect(decodeActiveAlarms(0, tables)).toEqual([]);
+    expect(decodeActiveAlarms(0b110, tables)).toEqual([]); // bits without a code
+    expect(encodeActiveAlarms(['F-0', 'F-15'], many)).toBe(0x8001);
+    expect(decodeActiveAlarms(0x8001, many)).toEqual(['F-0', 'F-15']);
+    expect(() => encodeActiveAlarms(['F-16'], many)).toThrow(/no bit/);
+    expect(() => encodeActiveAlarms(['NOPE'], tables)).toThrow(/not in the register map/);
+    expect(REGISTERS.activeAlarms).toBe(17);
   });
 });

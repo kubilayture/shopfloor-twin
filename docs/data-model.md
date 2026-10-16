@@ -9,6 +9,9 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
 ## Contents
 
 - [`master_data`](#schema-master_data)
+  - `master_data.alarm_definition`
+  - `master_data.alarm_position`
+  - `master_data.alarm_position_work_center`
   - `master_data.area`
   - `master_data.equipment`
   - `master_data.product`
@@ -17,6 +20,8 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `master_data.site`
   - `master_data.work_center`
 - [`ingest`](#schema-ingest)
+  - `ingest.alarm_anchor`
+  - `ingest.alarm_snapshot`
   - `ingest.component_status`
   - `ingest.data_quality_incident`
   - `ingest.equipment_event`
@@ -62,6 +67,17 @@ Schema master_data:
 
 ```mermaid
 erDiagram
+  alarm_definition {
+    text equipment_id FK, PK
+    text code PK
+  }
+  alarm_position {
+    text id PK
+  }
+  alarm_position_work_center {
+    text work_center_id PK, FK
+    text position_id FK
+  }
   area {
     text id PK
     text site_id FK
@@ -81,6 +97,9 @@ erDiagram
     text id PK
     text area_id FK
   }
+  equipment ||--o{ alarm_definition : "equipment_id"
+  alarm_position ||--o{ alarm_position_work_center : "position_id"
+  work_center ||--o{ alarm_position_work_center : "work_center_id"
   site ||--o{ area : "site_id"
   work_center ||--o{ equipment : "work_center_id"
   reason_code |o--o{ reason_code : "parent_id"
@@ -107,7 +126,59 @@ The other schemas have no foreign keys; their references are by value, as descri
 
 ## Schema master_data
 
-Owner: master-data. The ISA-95 equipment hierarchy, products, the shift pattern and the downtime reason tree, seeded from `config/plant`.
+Owner: master-data. The ISA-95 equipment hierarchy, products, the shift pattern, the downtime reason tree and the alarm definitions and operator positions, seeded from `config/plant`.
+
+### master_data.alarm_definition
+
+One alarm point per (equipment, code) from alarms.yaml: priority, operator text, consequence and response; inactive once the configuration drops it (#141, ADR-0024).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment_id` | `text` | not null |  |
+| `code` | `text` | not null |  |
+| `priority` | `text` | not null |  |
+| `text` | `text` | not null |  |
+| `consequence` | `text` | null |  |
+| `response` | `text` | null |  |
+| `position` | `integer` | not null |  |
+| `active` | `boolean` | not null | `true` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `alarm_definition_pkey` | `PRIMARY KEY (equipment_id, code)` |
+| Foreign key | `alarm_definition_equipment_id_fkey` | `FOREIGN KEY (equipment_id) REFERENCES master_data.equipment(id)` |
+| Check | `alarm_definition_priority_check` | `CHECK ((priority = ANY (ARRAY['high'::text, 'medium'::text, 'low'::text])))` |
+
+### master_data.alarm_position
+
+Operator positions for alarm KPIs from alarms.yaml (a set of work centers until operators log in); inactive once the configuration drops one (#141).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `text` | not null |  |
+| `name` | `text` | not null |  |
+| `position` | `integer` | not null |  |
+| `active` | `boolean` | not null | `true` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `alarm_position_pkey` | `PRIMARY KEY (id)` |
+| Check | `alarm_position_id_check` | `CHECK ((id <> 'plant'::text))` |
+
+### master_data.alarm_position_work_center
+
+The position each work center belongs to; rewritten on every seed (#141).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `work_center_id` | `text` | not null |  |
+| `position_id` | `text` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `alarm_position_work_center_pkey` | `PRIMARY KEY (work_center_id)` |
+| Foreign key | `alarm_position_work_center_position_id_fkey` | `FOREIGN KEY (position_id) REFERENCES master_data.alarm_position(id)` |
+| Foreign key | `alarm_position_work_center_work_center_id_fkey` | `FOREIGN KEY (work_center_id) REFERENCES master_data.work_center(id)` |
 
 ### master_data.area
 
@@ -224,6 +295,56 @@ Work centers (lines) of an area.
 
 Owner: ingest. Every UNS message the MES receives, stored idempotently (ADR-0015, ADR-0017), with dedup state, data-quality incidents and rejected messages.
 
+### ingest.alarm_anchor
+
+Retained alarm deliveries: the device’s last fact per (equipment, device epoch, code), highest seq wins; stale once a newer epoch of the equipment is known. Never a fact (#141).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `code` | `text` | not null |  |
+| `seq` | `bigint` | not null |  |
+| `transition` | `text` | not null |  |
+| `severity` | `integer` | not null |  |
+| `source_time` | `timestamp with time zone` | not null |  |
+| `quality` | `text` | not null |  |
+| `received_at` | `timestamp with time zone` | not null |  |
+| `ingested_at` | `timestamp with time zone` | not null | `now()` |
+| `stale` | `boolean` | not null | `false` |
+| `payload` | `jsonb` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `alarm_anchor_pkey` | `PRIMARY KEY (equipment, epoch, code)` |
+| Check | `alarm_anchor_quality_check` | `CHECK ((quality = ANY (ARRAY['good'::text, 'uncertain'::text, 'bad'::text])))` |
+| Check | `alarm_anchor_transition_check` | `CHECK ((transition = ANY (ARRAY['active'::text, 'cleared'::text])))` |
+
+### ingest.alarm_snapshot
+
+The gateway’s alarm snapshot on resync: active codes at a device sequence (asOfSeq), the latest per (equipment, device epoch); stale like anchors; outside dedup and gap checks (#141).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `device_epoch` | `bigint` | not null |  |
+| `as_of_seq` | `bigint` | not null |  |
+| `active` | `text[]` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `seq` | `bigint` | not null |  |
+| `source_time` | `timestamp with time zone` | not null |  |
+| `quality` | `text` | not null |  |
+| `source_protocol` | `text` | not null |  |
+| `received_at` | `timestamp with time zone` | not null |  |
+| `ingested_at` | `timestamp with time zone` | not null | `now()` |
+| `stale` | `boolean` | not null | `false` |
+| `payload` | `jsonb` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `alarm_snapshot_pkey` | `PRIMARY KEY (equipment, device_epoch)` |
+| Check | `alarm_snapshot_quality_check` | `CHECK ((quality = ANY (ARRAY['good'::text, 'uncertain'::text, 'bad'::text])))` |
+
 ### ingest.component_status
 
 Latest online/offline status of each component (last will).
@@ -301,6 +422,7 @@ TimescaleDB hypertable, partitioned by `source_time` in chunks of 7 days.
 | Check | `equipment_event_check` | `CHECK (((event_type = 'state'::text) = (state IS NOT NULL)))` |
 | Check | `equipment_event_event_type_check` | `CHECK ((event_type = ANY (ARRAY['state'::text, 'cycle'::text, 'alarm'::text])))` |
 | Check | `equipment_event_quality_check` | `CHECK ((quality = ANY (ARRAY['good'::text, 'uncertain'::text, 'bad'::text])))` |
+| Index | `equipment_event_alarm` | `ingest.equipment_event USING btree (equipment, epoch, seq) WHERE (event_type = 'alarm'::text)` |
 | Index | `equipment_event_source_time_idx` | `ingest.equipment_event USING btree (source_time DESC)` |
 
 ### ingest.rejected_message

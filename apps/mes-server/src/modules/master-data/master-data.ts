@@ -1,6 +1,6 @@
 import { parentReason, type PlantConfig } from '@shopfloor/plant-config';
 import type { ShiftPattern } from '@shopfloor/shift-calendar';
-import type { Kysely } from 'kysely';
+import type { Kysely, Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
 
 /** The plant's single shift pattern (Phase 4: one site, one pattern). */
@@ -30,6 +30,28 @@ export interface ReasonCode {
   readonly name: string;
   /** False once the configuration no longer lists it. */
   readonly active: boolean;
+}
+
+/** An alarm point's definition (#141, ADR-0024), from config/plant/alarms.yaml. */
+export interface AlarmDefinition {
+  readonly equipment: string;
+  readonly code: string;
+  readonly priority: 'high' | 'medium' | 'low';
+  readonly text: string;
+  readonly consequence: string | null;
+  readonly response: string | null;
+  /** False once the configuration no longer lists it. */
+  readonly active: boolean;
+}
+
+/** An operator position (#141): the work centers whose alarms one operator handles. */
+export interface AlarmPosition {
+  readonly id: string;
+  readonly name: string;
+  /** In line order. */
+  readonly workCenters: readonly string[];
+  /** The equipment of those work centers, in line order. */
+  readonly equipment: readonly string[];
 }
 
 /** master-data's interface for the other modules (plan section 7). */
@@ -174,6 +196,58 @@ export class MasterData {
           )
           .execute();
       }
+      await seedAlarms(trx, config);
+    });
+  }
+
+  /**
+   * Alarm definitions (#141), in configuration order; those the configuration no longer lists only
+   * with `inactive`.
+   */
+  async alarmDefinitions(
+    options: { readonly inactive?: boolean } = {},
+  ): Promise<AlarmDefinition[]> {
+    let query = this.#db.selectFrom('master_data.alarm_definition').selectAll();
+    if (options.inactive !== true) query = query.where('active', '=', true);
+    const rows = await query
+      .orderBy('active', 'desc')
+      .orderBy('position')
+      .orderBy('equipment_id')
+      .orderBy('code')
+      .execute();
+    return rows.map((row) => ({
+      equipment: row.equipment_id,
+      code: row.code,
+      priority: row.priority,
+      text: row.text,
+      consequence: row.consequence,
+      response: row.response,
+      active: row.active,
+    }));
+  }
+
+  /** The active operator positions (#141), in configuration order, with their work centers. */
+  async alarmPositions(): Promise<AlarmPosition[]> {
+    const positions = await this.#db
+      .selectFrom('master_data.alarm_position')
+      .selectAll()
+      .where('active', '=', true)
+      .orderBy('position')
+      .execute();
+    const members = await this.#db
+      .selectFrom('master_data.alarm_position_work_center as p')
+      .innerJoin('master_data.equipment as e', 'e.work_center_id', 'p.work_center_id')
+      .select(['p.position_id', 'p.work_center_id', 'e.id as equipment_id'])
+      .orderBy('e.position')
+      .execute();
+    return positions.map((position) => {
+      const own = members.filter((m) => m.position_id === position.id);
+      return {
+        id: position.id,
+        name: position.name,
+        workCenters: [...new Set(own.map((m) => m.work_center_id))],
+        equipment: own.map((m) => m.equipment_id),
+      };
     });
   }
 
@@ -250,5 +324,72 @@ export class MasterData {
       .where('id', '=', SHIFT_PATTERN_ID)
       .executeTakeFirstOrThrow(() => new Error('no shift pattern: master data not seeded'));
     return { timeZone: row.time_zone, workdays: row.workdays, shifts: row.shifts };
+  }
+}
+
+/**
+ * Operator positions and alarm definitions from alarms.yaml (#141), inside the seed's transaction.
+ * Positions and definitions the configuration drops stay, inactive; the work-center mapping is
+ * rewritten, so a work center belongs to the position the configuration names now.
+ */
+async function seedAlarms(trx: Transaction<Database>, config: PlantConfig): Promise<void> {
+  const { positions, definitions } = config.alarms;
+  await trx.deleteFrom('master_data.alarm_position_work_center').execute();
+  await trx
+    .updateTable('master_data.alarm_position')
+    .set({ active: false })
+    .where(
+      'id',
+      'not in',
+      positions.map((p) => p.id),
+    )
+    .execute();
+  for (const [position, item] of positions.entries()) {
+    await trx
+      .insertInto('master_data.alarm_position')
+      .values({ id: item.id, name: item.name, position, active: true })
+      .onConflict((c) =>
+        c.column('id').doUpdateSet((eb) => ({
+          name: eb.ref('excluded.name'),
+          position: eb.ref('excluded.position'),
+          active: true,
+        })),
+      )
+      .execute();
+    await trx
+      .insertInto('master_data.alarm_position_work_center')
+      .values(
+        item.workCenters.map((workCenter) => ({
+          work_center_id: workCenter,
+          position_id: item.id,
+        })),
+      )
+      .execute();
+  }
+  await trx.updateTable('master_data.alarm_definition').set({ active: false }).execute();
+  for (const [position, item] of definitions.entries()) {
+    await trx
+      .insertInto('master_data.alarm_definition')
+      .values({
+        equipment_id: item.equipment,
+        code: item.code,
+        priority: item.priority,
+        text: item.text,
+        consequence: item.consequence ?? null,
+        response: item.response ?? null,
+        position,
+        active: true,
+      })
+      .onConflict((c) =>
+        c.columns(['equipment_id', 'code']).doUpdateSet((eb) => ({
+          priority: eb.ref('excluded.priority'),
+          text: eb.ref('excluded.text'),
+          consequence: eb.ref('excluded.consequence'),
+          response: eb.ref('excluded.response'),
+          position: eb.ref('excluded.position'),
+          active: true,
+        })),
+      )
+      .execute();
   }
 }

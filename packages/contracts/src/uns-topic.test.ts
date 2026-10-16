@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { equipmentTopic } from './uns-topic.ts';
+import { ALARM_SNAPSHOT_NAME, equipmentTopic } from './uns-topic.ts';
 
 const cnc01State = {
   area: 'machining',
@@ -20,4 +20,11 @@ describe('equipmentTopic', () => {
       expect(() => equipmentTopic({ ...cnc01State, equipment })).toThrow(RangeError);
     },
   );
+
+  it('accepts _snapshot only as the name of an alarms topic (#141)', () => {
+    const snapshot = { ...cnc01State, topicClass: 'alarms', name: ALARM_SNAPSHOT_NAME } as const;
+    expect(equipmentTopic(snapshot)).toBe('orbis/gebze/machining/cell-m1/cnc-01/alarms/_snapshot');
+    expect(() => equipmentTopic({ ...snapshot, topicClass: 'state' })).toThrow(RangeError);
+    expect(() => equipmentTopic({ ...snapshot, equipment: '_snapshot' })).toThrow(RangeError);
+  });
 });

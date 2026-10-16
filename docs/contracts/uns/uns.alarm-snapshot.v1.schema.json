@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "uns.alarm-snapshot/1"
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Start of the sequence owner, Unix seconds"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "sourceTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+      "description": "Simulation (device) time of the fact"
+    },
+    "receivedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+      "description": "Gateway wall time when it read the fact"
+    },
+    "quality": {
+      "type": "string",
+      "enum": [
+        "good",
+        "uncertain",
+        "bad"
+      ],
+      "description": "OPC UA-style quality: bad means the value must not be used"
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "Equipment id (cnc-01, wsh-01) or component instance (gw-01)"
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "opcua",
+            "modbus",
+            "internal"
+          ],
+          "description": "Where the gateway got it"
+        }
+      },
+      "required": [
+        "id",
+        "protocol"
+      ],
+      "additionalProperties": false
+    },
+    "kind": {
+      "type": "string",
+      "const": "snapshot"
+    },
+    "scope": {
+      "type": "string",
+      "const": "topic"
+    },
+    "deviceEpoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "The device epoch (ADR-0015) the alarms were read in; epoch is the gateway counter epoch"
+    },
+    "asOfSeq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The device sequence the alarm bits are consistent with: every fact up to it is reflected, none after it (0: no fact yet)"
+    },
+    "value": {
+      "type": "object",
+      "properties": {
+        "active": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Codes active at asOfSeq, sorted and without duplicates; empty when none"
+        }
+      },
+      "required": [
+        "active"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema",
+    "epoch",
+    "seq",
+    "sourceTime",
+    "receivedAt",
+    "quality",
+    "source",
+    "kind",
+    "scope",
+    "deviceEpoch",
+    "asOfSeq",
+    "value"
+  ],
+  "additionalProperties": false,
+  "title": "uns.alarm-snapshot/1",
+  "description": "Active alarm codes of one device, read atomically on resync (retained)"
+}

@@ -3,13 +3,18 @@ import {
   ENTRY_SIZE,
   MODBUS_MAX_READ,
   REGISTERS,
+  RING_CAPACITY,
   RING_END,
+  SNAPSHOT_LENGTH,
+  encodeActiveAlarms,
   encodeEntry,
   modbusTables,
   parseUnsMessage,
   ringSlot,
+  u32,
   writeU32,
   writeU64,
+  type AlarmSnapshot,
   type RingEntry,
   type StateCurrent,
   type Telemetry,
@@ -38,6 +43,7 @@ class FakeWasher implements RegisterReader {
   silent = false;
   reads: [number, number][] = [];
   #seq = 0;
+  readonly #active = new Set<string>();
 
   constructor(epoch: number) {
     writeU32(this.registers, REGISTERS.epoch, epoch);
@@ -47,12 +53,18 @@ class FakeWasher implements RegisterReader {
     this.registers.fill(0);
     writeU32(this.registers, REGISTERS.epoch, epoch);
     this.#seq = 0;
+    this.#active.clear();
   }
 
   fact(entry: Fact): void {
     this.#seq++;
     const words = encodeEntry({ ...entry, seq: this.#seq }, tables);
     this.registers.splice(ringSlot(this.#seq), ENTRY_SIZE, ...words);
+    if (entry.type === 'alarm') {
+      if (entry.transition === 'active') this.#active.add(entry.code);
+      else this.#active.delete(entry.code);
+      this.registers[REGISTERS.activeAlarms] = encodeActiveAlarms(this.#active, tables);
+    }
     writeU32(this.registers, REGISTERS.eventCounter, this.#seq);
     writeU64(this.registers, REGISTERS.simTime, entry.at);
   }
@@ -125,9 +137,10 @@ describe('Modbus poller against a register map in memory (#77)', () => {
     await poller.poll();
     expect(facts()).toEqual([]);
     expect(published.map((p) => p.topic)).toEqual([
-      'orbis/gebze/machining/cell-m1/wsh-01/state/current',
       'orbis/gebze/machining/cell-m1/wsh-01/telemetry/bath-temperature',
       'orbis/gebze/machining/cell-m1/wsh-01/telemetry/conveyor-speed',
+      'orbis/gebze/machining/cell-m1/wsh-01/state/current',
+      'orbis/gebze/machining/cell-m1/wsh-01/alarms/_snapshot',
     ]);
     washer.fact({ type: 'cycle', at: 61, product: 'VB-200', result: 'good', partId: 4711 });
     washer.fact({ type: 'alarm', at: 62, code: 'HEATER-FAULT', transition: 'active' });
@@ -158,6 +171,93 @@ describe('Modbus poller against a register map in memory (#77)', () => {
     expect(published.every((p) => parseUnsMessage(p.message).ok)).toBe(true);
     await poller.poll();
     expect(facts()).toHaveLength(12);
+  });
+
+  it('publishes an alarm snapshot from the ring head and the alarm bits of one read, on every resync (#141)', async () => {
+    const washer = new FakeWasher(100);
+    washer.fact(state(1));
+    washer.fact({ type: 'alarm', at: 2, code: 'HEATER-FAULT', transition: 'active' });
+    const { poller, published } = setup(washer);
+    const alarmSnapshots = () =>
+      published
+        .filter((p) => p.message.schema === 'uns.alarm-snapshot/1')
+        .map((p) => {
+          expect(p.retain).toBe(true);
+          const message = p.message as AlarmSnapshot;
+          return [message.seq, message.deviceEpoch, message.asOfSeq, message.value.active];
+        });
+    await poller.poll();
+    // One read of the snapshot block (0-17) gives the counter and the bits together.
+    expect(washer.reads[0]).toEqual([0, SNAPSHOT_LENGTH]);
+    expect(SNAPSHOT_LENGTH).toBe(REGISTERS.activeAlarms + 1);
+    expect(alarmSnapshots()).toEqual([[1, 100, 2, ['HEATER-FAULT']]]);
+    // No resync, no snapshot: the facts carry the changes.
+    washer.fact({ type: 'alarm', at: 3, code: 'HEATER-FAULT', transition: 'cleared' });
+    await poller.poll();
+    expect(alarmSnapshots()).toHaveLength(1);
+    // After a silence.
+    washer.silent = true;
+    await poller.poll();
+    await poller.poll();
+    washer.silent = false;
+    await poller.poll();
+    expect(alarmSnapshots().at(-1)).toEqual([2, 100, 3, []]);
+    // After a device restart (new epoch), numbered by the gateway's topic counter.
+    washer.restart(200);
+    washer.fact({ type: 'alarm', at: 4, code: 'HEATER-FAULT', transition: 'active' });
+    await poller.poll();
+    expect(alarmSnapshots().at(-1)).toEqual([3, 200, 1, ['HEATER-FAULT']]);
+    expect(published.every((p) => parseUnsMessage(p.message).ok)).toBe(true);
+  });
+
+  it('publishes an alarm snapshot after a poll that lost facts, after its ring loop (#141)', async () => {
+    const washer = new FakeWasher(100);
+    const { poller, published } = setup(washer);
+    const snapshots = () =>
+      published
+        .filter((p) => p.message.schema === 'uns.alarm-snapshot/1')
+        .map((p) => {
+          const message = p.message as AlarmSnapshot;
+          return [message.asOfSeq, message.value.active];
+        });
+    await poller.poll();
+    expect(snapshots()).toEqual([[0, []]]);
+    // An overrun: the raise and its clear are among the 6 facts overwritten before the poll.
+    washer.fact({ type: 'alarm', at: 1, code: 'HEATER-FAULT', transition: 'active' });
+    washer.fact({ type: 'alarm', at: 2, code: 'HEATER-FAULT', transition: 'cleared' });
+    washer.fact({ type: 'alarm', at: 3, code: 'HEATER-FAULT', transition: 'active' });
+    for (let i = 0; i < 67; i++) washer.fact(state(10 + i));
+    await poller.poll();
+    expect(snapshots()).toEqual([
+      [0, []],
+      [70, ['HEATER-FAULT']],
+    ]);
+    // The snapshot follows the facts of the same poll.
+    const last = published.findLastIndex((p) => p.message.scope === 'device');
+    const snapshotAt = published.findLastIndex((p) => p.message.schema === 'uns.alarm-snapshot/1');
+    expect(snapshotAt).toBeGreaterThan(last);
+    // A poll without losses publishes none.
+    washer.fact(state(100));
+    await poller.poll();
+    expect(snapshots()).toHaveLength(2);
+    // Overwritten while the ring was being read.
+    washer.fact(state(101));
+    washer.afterRead = (address) => {
+      if (address !== 0) return;
+      washer.afterRead = () => undefined;
+      for (let i = 0; i < RING_CAPACITY; i++) washer.fact(state(200 + i));
+    };
+    await poller.poll();
+    expect(snapshots()).toHaveLength(3);
+    // An undecodable entry.
+    await poller.poll(); // catches up with what was written meanwhile
+    const before = snapshots().length;
+    washer.fact(state(300));
+    const counter = u32(washer.registers, REGISTERS.eventCounter);
+    washer.registers[ringSlot(counter) + 6] = 99; // an unknown entry type
+    await poller.poll();
+    expect(snapshots()).toHaveLength(before + 1);
+    expect(snapshots().at(-1)).toEqual([counter, ['HEATER-FAULT']]);
   });
 
   it('reports an overrun when more than 64 facts happened between two polls, and continues', async () => {
@@ -403,10 +503,24 @@ describe('Modbus poller against the real simulator (#77)', () => {
     expect(topics).toEqual(
       new Set([
         'state/current',
+        'alarms/_snapshot',
         'events/cycle-complete',
         'telemetry/bath-temperature',
         'telemetry/conveyor-speed',
       ]),
     );
+    // Alarm snapshots (#141) on first contact and after the silence; each consistent with the
+    // facts up to its asOfSeq (no alarm was active at either).
+    const alarmSnapshots = published
+      .map((p) => p.message)
+      .filter((m): m is AlarmSnapshot => m.schema === 'uns.alarm-snapshot/1');
+    const firstSeq = device[0]?.seq ?? 0;
+    expect(alarmSnapshots.map((m) => [m.seq, m.value.active])).toEqual([
+      [1, []],
+      [2, []],
+    ]);
+    expect(alarmSnapshots[0]?.asOfSeq).toBe(firstSeq - 1);
+    expect(alarmSnapshots[1]?.asOfSeq).toBeGreaterThanOrEqual(firstSeq);
+    expect(alarmSnapshots[1]?.asOfSeq).toBeLessThanOrEqual(device.at(-1)?.seq ?? 0);
   }, 120_000);
 });

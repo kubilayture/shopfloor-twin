@@ -6,8 +6,10 @@ import {
   RING_CAPACITY,
   SNAPSHOT_LENGTH,
   UNS_TELEMETRY,
+  alarmSnapshotTopic,
   alarmTopic,
   cycleTopic,
+  decodeActiveAlarms,
   decodeEntry,
   i16,
   MACHINE_STATES,
@@ -17,6 +19,7 @@ import {
   u32,
   u64,
   type Alarm,
+  type AlarmSnapshot,
   type CycleComplete,
   type EquipmentPath,
   type ModbusTables,
@@ -226,13 +229,6 @@ export class ModbusPoller {
       this.#epoch = epoch;
       this.#snapshotDue = true;
     }
-    if (this.#snapshotDue) {
-      this.#snapshotDue = false;
-      // Until a snapshot is accepted (the broker may not be connected yet), try again next poll.
-      this.#snapshot(snapshot, simTime).catch(() => {
-        this.#snapshotDue = true;
-      });
-    }
     this.#telemetry(snapshot, simTime);
     if (counter < this.#handled) {
       // The cursor is ahead of the device: another run started within the same epoch second.
@@ -250,6 +246,8 @@ export class ModbusPoller {
         lost,
         `${this.machineId}: ${String(lost)} facts overwritten in the ring before they were read`,
       );
+      // A lost fact may be an alarm clear: the snapshot of this read tells the MES (#141).
+      this.#snapshotDue = true;
       this.#handled = counter - RING_CAPACITY;
     }
     let overwritten = 0;
@@ -281,6 +279,7 @@ export class ModbusPoller {
       seq += count;
     }
     if (overwritten > 0) {
+      this.#snapshotDue = true;
       this.#report(
         'ring-overrun',
         overwritten,
@@ -288,11 +287,23 @@ export class ModbusPoller {
       );
     }
     if (undecodable.length > 0) {
+      this.#snapshotDue = true;
       this.#report(
         'sequence-gap',
         undecodable.length,
         `${this.machineId}: ring entries ${undecodable.join(', ')} could not be decoded (register map or tables out of step?)`,
       );
+    }
+    // After the ring loop, so the snapshot (consistent with `counter`) follows the facts up to it
+    // that this poll published. Due on first contact, after a silence or an epoch change, and
+    // after any fact this poll lost (overrun, undecodable): every lost number is at or below
+    // `counter`, so the snapshot of this read covers it (#141).
+    if (this.#snapshotDue) {
+      this.#snapshotDue = false;
+      // Until a snapshot is accepted (the broker may not be connected yet), try again next poll.
+      this.#snapshot(snapshot, simTime).catch(() => {
+        this.#snapshotDue = true;
+      });
     }
   }
 
@@ -352,7 +363,41 @@ export class ModbusPoller {
     }
   }
 
-  #snapshot(snapshot: number[], simTime: number): Promise<void> {
+  /** The state snapshot and the alarm snapshot (#141), both from the same register read. */
+  async #snapshot(snapshot: number[], simTime: number): Promise<void> {
+    await Promise.all([
+      this.#stateSnapshot(snapshot, simTime),
+      this.#alarmSnapshot(snapshot, simTime),
+    ]);
+  }
+
+  /**
+   * The alarm snapshot (#141): the `activeAlarms` bits and the ring head `eventCounter` come from
+   * one read of the snapshot block, and the device writes both in the same step (map version 2),
+   * so `asOfSeq` and the bits belong together. Topic-scoped and retained; never a fact.
+   */
+  #alarmSnapshot(snapshot: number[], simTime: number): Promise<void> {
+    const topic = alarmSnapshotTopic(this.#options.path);
+    const message: AlarmSnapshot = {
+      ...this.#common(simTime),
+      schema: 'uns.alarm-snapshot/1',
+      kind: 'snapshot',
+      scope: 'topic',
+      epoch: this.#options.sequences.epoch,
+      seq: this.#options.sequences.next(topic),
+      deviceEpoch: u32(snapshot, REGISTERS.epoch),
+      asOfSeq: u32(snapshot, REGISTERS.eventCounter),
+      value: {
+        active: decodeActiveAlarms(
+          snapshot[REGISTERS.activeAlarms] ?? 0,
+          this.#options.tables,
+        ).sort(),
+      },
+    };
+    return this.#options.publisher.publish({ topic, message, retain: true });
+  }
+
+  #stateSnapshot(snapshot: number[], simTime: number): Promise<void> {
     const state = MACHINE_STATES[snapshot[REGISTERS.state] ?? -1];
     if (!state) return Promise.resolve();
     const topic = stateTopic(this.#options.path);

@@ -6,8 +6,10 @@ import {
   RING_CAPACITY,
   SNAPSHOT_LENGTH,
   UNS_TELEMETRY,
+  alarmSnapshotTopic,
   alarmTopic,
   cycleTopic,
+  decodeActiveAlarms,
   decodeEntry,
   i16,
   MACHINE_STATES,
@@ -17,6 +19,7 @@ import {
   u32,
   u64,
   type Alarm,
+  type AlarmSnapshot,
   type CycleComplete,
   type EquipmentPath,
   type ModbusTables,
@@ -352,7 +355,41 @@ export class ModbusPoller {
     }
   }
 
-  #snapshot(snapshot: number[], simTime: number): Promise<void> {
+  /** The state snapshot and the alarm snapshot (#141), both from the same register read. */
+  async #snapshot(snapshot: number[], simTime: number): Promise<void> {
+    await Promise.all([
+      this.#stateSnapshot(snapshot, simTime),
+      this.#alarmSnapshot(snapshot, simTime),
+    ]);
+  }
+
+  /**
+   * The alarm snapshot (#141): the `activeAlarms` bits and the ring head `eventCounter` come from
+   * one read of the snapshot block, and the device writes both in the same step (map version 2),
+   * so `asOfSeq` and the bits belong together. Topic-scoped and retained; never a fact.
+   */
+  #alarmSnapshot(snapshot: number[], simTime: number): Promise<void> {
+    const topic = alarmSnapshotTopic(this.#options.path);
+    const message: AlarmSnapshot = {
+      ...this.#common(simTime),
+      schema: 'uns.alarm-snapshot/1',
+      kind: 'snapshot',
+      scope: 'topic',
+      epoch: this.#options.sequences.epoch,
+      seq: this.#options.sequences.next(topic),
+      deviceEpoch: u32(snapshot, REGISTERS.epoch),
+      asOfSeq: u32(snapshot, REGISTERS.eventCounter),
+      value: {
+        active: decodeActiveAlarms(
+          snapshot[REGISTERS.activeAlarms] ?? 0,
+          this.#options.tables,
+        ).sort(),
+      },
+    };
+    return this.#options.publisher.publish({ topic, message, retain: true });
+  }
+
+  #stateSnapshot(snapshot: number[], simTime: number): Promise<void> {
     const state = MACHINE_STATES[snapshot[REGISTERS.state] ?? -1];
     if (!state) return Promise.resolve();
     const topic = stateTopic(this.#options.path);

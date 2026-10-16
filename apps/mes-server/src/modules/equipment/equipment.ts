@@ -970,6 +970,12 @@ export class Equipment {
         case 'cycle':
         case 'epoch':
           return;
+        // For the alarms module (#141); an alarm's `sample` notice moves the watermark.
+        case 'alarm':
+        case 'alarm-anchor':
+        case 'alarm-snapshot':
+        case 'alarm-stale':
+          return;
         case 'state':
           track = await this.#track(notice.fact.equipment, notice.fact.epoch);
           await this.#onState(track, notice.fact, notice.settledSeq);

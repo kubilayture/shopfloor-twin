@@ -3,10 +3,12 @@ import { resolve } from 'node:path';
 import {
   ENTRY_SIZE,
   MACHINE_STATES,
+  MODBUS_MAP_VERSION,
   REGISTERS,
   RING_CAPACITY,
   SNAPSHOT_LENGTH,
   STATUS_BITS,
+  decodeActiveAlarms,
   decodeEntry,
   i16,
   ringSlot,
@@ -128,7 +130,8 @@ describe('WSH-01 Modbus server (#74)', () => {
     ]);
     expect(Object.fromEntries(rows)).toEqual(REGISTERS);
     const snapshot = await read(0, SNAPSHOT_LENGTH);
-    expect(snapshot[REGISTERS.mapVersion]).toBe(1);
+    expect(snapshot[REGISTERS.mapVersion]).toBe(MODBUS_MAP_VERSION);
+    expect(MODBUS_MAP_VERSION).toBe(2);
     expect(u32(snapshot, REGISTERS.epoch)).toBe(EPOCH);
     expect(snapshot[REGISTERS.ringCapacity]).toBe(RING_CAPACITY);
     expect(snapshot[REGISTERS.entrySize]).toBe(ENTRY_SIZE);
@@ -209,11 +212,11 @@ describe('WSH-01 Modbus server (#74)', () => {
     washer.silent = true;
     await expect(read(0, 1)).rejects.toThrow(/Timed out/);
     washer.silent = false;
-    expect(await read(0, 1)).toEqual([1]);
+    expect(await read(0, 1)).toEqual([MODBUS_MAP_VERSION]);
     await expect(client.readInputRegisters(0, 1)).rejects.toMatchObject({ modbusCode: 1 });
     await expect(client.readCoils(0, 1)).rejects.toMatchObject({ modbusCode: 1 });
     await expect(client.writeRegister(0, 5)).rejects.toMatchObject({ modbusCode: 1 });
-    expect(await read(0, 1)).toEqual([1]);
+    expect(await read(0, 1)).toEqual([MODBUS_MAP_VERSION]);
   });
 
   it('reads across the ring end in two requests: one read across it would be refused', async () => {
@@ -230,8 +233,9 @@ describe('WSH-01 Modbus server (#74)', () => {
     });
   });
 
-  it('carries alarm transitions through the ring', async () => {
+  it('carries alarm transitions through the ring, and the active alarms with the counter (#141)', async () => {
     const at = run.simulation.now;
+    const snapshots: number[][] = [];
     for (const transition of ['active', 'cleared'] as const) {
       washer.record({
         type: 'alarm',
@@ -241,7 +245,18 @@ describe('WSH-01 Modbus server (#74)', () => {
         transition,
         severity: 700,
       });
+      snapshots.push(await read(0, SNAPSHOT_LENGTH));
     }
+    // One read of the snapshot block: the bits belong to its eventCounter.
+    expect(
+      snapshots.map((words) => [
+        u32(words, REGISTERS.eventCounter),
+        decodeActiveAlarms(words[REGISTERS.activeAlarms] ?? 0, washer.tables),
+      ]),
+    ).toEqual([
+      [washer.sequence - 1, ['HEATER-FAULT']],
+      [washer.sequence, []],
+    ]);
     const counter = u32(await read(0, SNAPSHOT_LENGTH), REGISTERS.eventCounter);
     expect(await readEntries(counter - 1, counter)).toEqual([
       { type: 'alarm', seq: counter - 1, at, code: 'HEATER-FAULT', transition: 'active' },

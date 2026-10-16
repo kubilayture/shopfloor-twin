@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { FAILURE_ALARM_SEVERITY, OPCUA_MACHINES, modbusTables } from '@shopfloor/contracts';
 import { OPCUACertificateManager } from 'node-opcua';
-import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
+import { formatIssues, loadPlantConfig, plantAlarms } from '@shopfloor/plant-config';
 import { parseEnv } from './env.ts';
 import { buildGatewayHttp } from './http.ts';
 import { TopicSequences, unixSeconds } from './identity.ts';
@@ -31,6 +31,7 @@ if (!loaded.ok) {
   process.exit(1);
 }
 
+const alarmPoints = plantAlarms(loaded.config);
 const startedAt = Date.now();
 const sequences = new TopicSequences(unixSeconds(startedAt));
 const link = new MqttLink({
@@ -88,6 +89,8 @@ const collectors = OPCUA_MACHINES.map((machine) => {
     publisher: outbox,
     sequences,
     incidents,
+    // The Alarms.<CODE>.Active variables the resync reads for the alarm snapshot (#141).
+    alarmCodes: alarmPoints.filter((p) => p.equipment === machine.id).map((p) => p.code),
     telemetrySamplingMs: env.TELEMETRY_SAMPLING_MS,
     certificateManager,
     onError: (error) => {

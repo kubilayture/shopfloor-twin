@@ -10,7 +10,7 @@ export {
 export type { CauseInputs, FixedCause, StateCause } from './causes.ts';
 export { CALIBRATION_ALARM_CODE, CALIBRATION_ALARM_SEVERITY, alarmVocabulary } from './alarms.ts';
 export type { AlarmInputs, AlarmPoint } from './alarms.ts';
-export { UNS_CLASSES, UNS_ROOT, equipmentTopic } from './uns-topic.ts';
+export { ALARM_SNAPSHOT_NAME, UNS_CLASSES, UNS_ROOT, equipmentTopic } from './uns-topic.ts';
 export type { EquipmentTopic, UnsClass } from './uns-topic.ts';
 export {
   OPCUA_ALARM_FOLDER,
@@ -35,6 +35,7 @@ export {
   UNS_SCHEMAS,
   UNS_TELEMETRY,
   alarmSchema,
+  alarmSnapshotSchema,
   cycleCompleteSchema,
   incidentSchema,
   measurementSchema,
@@ -47,6 +48,7 @@ export {
 } from './uns/payloads.ts';
 export type {
   Alarm,
+  AlarmSnapshot,
   CycleComplete,
   Incident,
   MachineState,
@@ -59,6 +61,7 @@ export type {
 export {
   RETAINED_CLASSES,
   SYS_SEGMENT,
+  alarmSnapshotTopic,
   alarmTopic,
   cycleTopic,
   isRetained,
@@ -77,6 +80,7 @@ export {
   ENTRY_SIZE,
   ENTRY_TYPES,
   FAILURE_ALARM_SEVERITY,
+  MAX_MODBUS_ALARMS,
   MODBUS_MAP_VERSION,
   MODBUS_MAX_READ,
   MODBUS_PORT,
@@ -87,7 +91,9 @@ export {
   SNAPSHOT_LENGTH,
   STATUS_BITS,
   UNAVAILABLE_CAUSES,
+  decodeActiveAlarms,
   decodeEntry,
+  encodeActiveAlarms,
   encodeEntry,
   i16,
   modbusTables,

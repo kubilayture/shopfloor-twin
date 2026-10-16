@@ -245,7 +245,8 @@ describe('ingest (#95)', () => {
     expect(samples.map((s) => [s.equipment, s.name, s.value, s.unit, s.seq])).toEqual([
       [id, 'spindle-load', 41.5, '%', 1],
     ]);
-    // The stream's first fact opens its epoch; a cycle also sends `cycle` (#118).
+    // The stream's first fact opens its epoch; a cycle also sends `cycle` (#118), an alarm
+    // `alarm` (#141).
     expect(notices.map((n) => n.type)).toEqual([
       'epoch',
       'state',
@@ -253,6 +254,7 @@ describe('ingest (#95)', () => {
       'sample',
       'cycle',
       'sample',
+      'alarm',
       'sample',
     ]);
     expect(notices[0]).toEqual({
@@ -280,6 +282,7 @@ describe('ingest (#95)', () => {
       2,
       3,
       'none',
+      4,
       4,
       'none',
     ]);
@@ -482,8 +485,9 @@ describe('ingest (#95)', () => {
       notices.push(notice);
     });
     await waitFor(() => handled(ingest) === 4, 'the retained messages');
-    expect(ingest.count('anchor')).toBe(2);
-    expect(ingest.count('retained')).toBe(2);
+    // The retained alarm is an anchor too (#141); only the telemetry is a current value.
+    expect(ingest.count('anchor')).toBe(3);
+    expect(ingest.count('retained')).toBe(1);
     expect(await db.selectFrom('ingest.equipment_event').selectAll().execute()).toEqual([]);
     expect(await db.selectFrom('ingest.telemetry_sample').selectAll().execute()).toEqual([]);
     expect(await db.selectFrom('ingest.source_cursor').selectAll().execute()).toEqual([]);
@@ -505,7 +509,8 @@ describe('ingest (#95)', () => {
       retained: true,
       deviceEpoch: EPOCH + 5,
     });
-    expect(notices.map((n) => n.type)).toEqual([
+    expect(notices.filter((n) => n.type === 'alarm-anchor')).toHaveLength(1);
+    expect(notices.map((n) => n.type).filter((type) => type !== 'alarm-anchor')).toEqual([
       'anchor',
       'epoch',
       'state',
@@ -526,7 +531,7 @@ describe('ingest (#95)', () => {
     await ingest.stop();
     ingest = await start();
     await waitFor(() => handled(ingest) === 4, 'the retained messages again');
-    expect(ingest.count('anchor')).toBe(2);
+    expect(ingest.count('anchor')).toBe(3);
     const anchors = await db
       .selectFrom('ingest.state_anchor')
       .select(['equipment', 'kind', 'device_epoch'])

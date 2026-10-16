@@ -22,10 +22,18 @@ export interface EquipmentTopic {
 
 const SEGMENT = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
+/**
+ * The one name that isn't kebab-case: the gateway's alarm snapshot (`…/alarms/_snapshot`, #141).
+ * The underscore keeps it apart from every alarm code's topic name.
+ */
+export const ALARM_SNAPSHOT_NAME = '_snapshot';
+
 export function equipmentTopic(topic: EquipmentTopic): string {
   const segments = [topic.area, topic.workCenter, topic.equipment, topic.topicClass, topic.name];
-  for (const segment of segments) {
-    if (!SEGMENT.test(segment)) {
+  for (const [index, segment] of segments.entries()) {
+    const snapshotName =
+      index === 4 && topic.topicClass === 'alarms' && segment === ALARM_SNAPSHOT_NAME;
+    if (!SEGMENT.test(segment) && !snapshotName) {
       throw new RangeError(`Invalid UNS topic segment: "${segment}"`);
     }
   }

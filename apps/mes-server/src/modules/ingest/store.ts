@@ -2,6 +2,8 @@ import {
   SYS_SEGMENT,
   UNS_ROOT,
   parseEquipmentTopic,
+  type Alarm,
+  type AlarmSnapshot,
   type CycleComplete,
   type Incident,
   type MachineState,
@@ -21,7 +23,12 @@ import {
   union,
   type Range,
 } from './ranges.ts';
-import type { RejectReason, StateAnchorTable } from './tables.ts';
+import type {
+  AlarmAnchorTable,
+  AlarmSnapshotTable,
+  RejectReason,
+  StateAnchorTable,
+} from './tables.ts';
 
 /** Durable dedup and gap state of one stream (`ingest.source_cursor`). */
 export interface Cursor {
@@ -75,6 +82,75 @@ export interface StoredSample {
   readonly telemetry?: { readonly metric: string; readonly value: number; readonly unit: string };
 }
 
+/** An alarm transition as stored (#141): one device fact of `ingest.equipment_event`. */
+export interface AlarmFact {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly seq: number;
+  readonly sourceTime: Date;
+  readonly code: string;
+  readonly transition: 'active' | 'cleared';
+  /** The wire severity, 1–1000. */
+  readonly severity: number;
+  readonly quality: 'good' | 'uncertain' | 'bad';
+}
+
+/**
+ * A retained alarm delivery (#141, `ingest.alarm_anchor`): the device's own last fact for one
+ * code, with its true epoch, `seq` and time; the highest `seq` per (equipment, epoch, code) is
+ * kept. `stale`: its epoch is older than the newest one ingest knows for the equipment, so it is
+ * never used.
+ */
+export interface AlarmAnchor {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly code: string;
+  readonly seq: number;
+  readonly transition: 'active' | 'cleared';
+  readonly severity: number;
+  readonly sourceTime: Date;
+  readonly stale: boolean;
+}
+
+/**
+ * The latest alarm snapshot of one (equipment, device epoch) (#141, `ingest.alarm_snapshot`): the
+ * codes active at device sequence `asOfSeq`, read on a gateway resync. `stale` as for anchors.
+ */
+export interface StoredAlarmSnapshot {
+  readonly equipment: string;
+  readonly deviceEpoch: number;
+  readonly asOfSeq: number;
+  /** Sorted, without duplicates. */
+  readonly active: readonly string[];
+  /** A simulation time at which the bits held (OPC UA: fact asOfSeq's; Modbus: the read's). */
+  readonly sourceTime: Date;
+  readonly stale: boolean;
+}
+
+export function toAlarmAnchor(row: Selectable<AlarmAnchorTable>): AlarmAnchor {
+  return {
+    equipment: row.equipment,
+    epoch: row.epoch,
+    code: row.code,
+    seq: row.seq,
+    transition: row.transition,
+    severity: row.severity,
+    sourceTime: row.source_time,
+    stale: row.stale,
+  };
+}
+
+export function toAlarmSnapshot(row: Selectable<AlarmSnapshotTable>): StoredAlarmSnapshot {
+  return {
+    equipment: row.equipment,
+    deviceEpoch: row.device_epoch,
+    asOfSeq: row.as_of_seq,
+    active: row.active,
+    sourceTime: row.source_time,
+    stale: row.stale,
+  };
+}
+
 /** A completed cycle as stored (#118): what changes `ingest.cycle_hourly`. */
 export interface StoredCycle {
   readonly equipment: string;
@@ -109,6 +185,24 @@ export type IngestNotice =
       readonly settledSeq: number | null;
     }
   | { readonly type: 'cycle'; readonly cycle: StoredCycle }
+  /** A stored alarm transition (#141), after its `sample`. */
+  | { readonly type: 'alarm'; readonly fact: AlarmFact; readonly settledSeq: number | null }
+  /** A retained alarm delivery stored or raised to a higher `seq` (#141); may be `stale`. */
+  | { readonly type: 'alarm-anchor'; readonly anchor: AlarmAnchor }
+  /** An alarm snapshot stored or raised to a higher `asOfSeq` (#141); may be `stale`. */
+  | { readonly type: 'alarm-snapshot'; readonly snapshot: StoredAlarmSnapshot }
+  /**
+   * A newer device epoch of `equipment` arrived (fact, state anchor, alarm anchor or snapshot):
+   * these alarm anchors and snapshots of older epochs became stale (#141).
+   */
+  | {
+      readonly type: 'alarm-stale';
+      readonly equipment: string;
+      /** The newer epoch. */
+      readonly epoch: number;
+      readonly anchors: readonly { readonly epoch: number; readonly code: string }[];
+      readonly snapshots: readonly number[];
+    }
   | {
       readonly type: 'epoch';
       readonly equipment: string;
@@ -261,9 +355,12 @@ export class IngestStore {
     equipment: string,
     message: StateCurrent,
     retained: boolean,
-  ): Promise<StateAnchor | undefined> {
+  ): Promise<{ anchor: StateAnchor | undefined; notices: IngestNotice[] }> {
     const deviceEpoch = message.kind === 'event' ? message.epoch : (message.deviceEpoch ?? null);
     return this.#db.transaction().execute(async (trx) => {
+      // A state anchor of a newer device epoch makes older alarm anchors and snapshots stale (#141).
+      const notices =
+        deviceEpoch === null ? [] : await this.#staleBefore(trx, equipment, deviceEpoch);
       const row = await trx
         .insertInto('ingest.state_anchor')
         .values({
@@ -294,8 +391,133 @@ export class IngestStore {
           .where('arrival', '<', row.arrival)
           .execute();
       }
-      return row && toAnchor(row);
+      return { anchor: row && toAnchor(row), notices };
     });
+  }
+
+  /**
+   * Stores a retained alarm delivery as an anchor (#141): the highest `seq` per (equipment, epoch,
+   * code) wins; a lower or equal one changes nothing. Its epoch is the device's (alarms are scope
+   * device). Never a fact: no dedup, no gaps, no cursor. Stale when its epoch is older than the
+   * newest one known for the equipment; a newer one makes older anchors and snapshots stale.
+   */
+  async alarmAnchor(equipment: string, message: Alarm): Promise<IngestNotice[]> {
+    return this.#db.transaction().execute(async (trx) => {
+      const newest = await this.#newestEpoch(trx, equipment);
+      const stale = newest !== null && message.epoch < newest;
+      const values = {
+        seq: message.seq,
+        transition: message.value.transition,
+        severity: message.value.severity,
+        source_time: message.sourceTime,
+        quality: message.quality,
+        received_at: message.receivedAt,
+        stale,
+        payload: JSON.stringify(message),
+      };
+      const row = await trx
+        .insertInto('ingest.alarm_anchor')
+        .values({ ...values, equipment, epoch: message.epoch, code: message.value.code })
+        .onConflict((c) =>
+          c
+            .columns(['equipment', 'epoch', 'code'])
+            .doUpdateSet({ ...values, ingested_at: new Date() })
+            .whereRef('ingest.alarm_anchor.seq', '<', 'excluded.seq'),
+        )
+        .returningAll()
+        .executeTakeFirst();
+      const notices = stale ? [] : await this.#staleBefore(trx, equipment, message.epoch);
+      if (row) notices.push({ type: 'alarm-anchor', anchor: toAlarmAnchor(row) });
+      return notices;
+    });
+  }
+
+  /**
+   * Stores the gateway's alarm snapshot (#141): the highest `asOfSeq` per (equipment, device epoch)
+   * wins. It never enters the device stream's dedup or gap checks (ADR-0017 amendment): `asOfSeq`
+   * only orders it against the device's facts and anchors. Stale by the same rule as anchors.
+   */
+  async alarmSnapshot(equipment: string, message: AlarmSnapshot): Promise<IngestNotice[]> {
+    return this.#db.transaction().execute(async (trx) => {
+      const newest = await this.#newestEpoch(trx, equipment);
+      const stale = newest !== null && message.deviceEpoch < newest;
+      const values = {
+        as_of_seq: message.asOfSeq,
+        active: [...new Set(message.value.active)].sort(),
+        epoch: message.epoch,
+        seq: message.seq,
+        source_time: message.sourceTime,
+        quality: message.quality,
+        source_protocol: message.source.protocol,
+        received_at: message.receivedAt,
+        stale,
+        payload: JSON.stringify(message),
+      };
+      const row = await trx
+        .insertInto('ingest.alarm_snapshot')
+        .values({ ...values, equipment, device_epoch: message.deviceEpoch })
+        .onConflict((c) =>
+          c
+            .columns(['equipment', 'device_epoch'])
+            .doUpdateSet({ ...values, ingested_at: new Date() })
+            .whereRef('ingest.alarm_snapshot.as_of_seq', '<', 'excluded.as_of_seq'),
+        )
+        .returningAll()
+        .executeTakeFirst();
+      const notices = stale ? [] : await this.#staleBefore(trx, equipment, message.deviceEpoch);
+      if (row) notices.push({ type: 'alarm-snapshot', snapshot: toAlarmSnapshot(row) });
+      return notices;
+    });
+  }
+
+  /**
+   * The newest device epoch ingest knows for an equipment, from any fact (the device stream's
+   * cursor: older epochs are refused), state anchor, alarm anchor or alarm snapshot; null if none.
+   */
+  async #newestEpoch(trx: Transaction<Database>, equipment: string): Promise<number | null> {
+    const stream = `device:${equipment}`;
+    const result = await sql<{ newest: number | null }>`
+      SELECT GREATEST(
+        (SELECT epoch FROM ingest.source_cursor WHERE stream = ${stream}),
+        (SELECT max(device_epoch) FROM ingest.state_anchor WHERE equipment = ${equipment}),
+        (SELECT max(epoch) FROM ingest.alarm_anchor WHERE equipment = ${equipment}),
+        (SELECT max(device_epoch) FROM ingest.alarm_snapshot WHERE equipment = ${equipment})
+      ) AS newest`.execute(trx);
+    return result.rows[0]?.newest ?? null;
+  }
+
+  /** Device epoch `epoch` is known: alarm anchors and snapshots of older ones become stale (#141). */
+  async #staleBefore(
+    trx: Transaction<Database>,
+    equipment: string,
+    epoch: number,
+  ): Promise<IngestNotice[]> {
+    const anchors = await trx
+      .updateTable('ingest.alarm_anchor')
+      .set({ stale: true })
+      .where('equipment', '=', equipment)
+      .where('epoch', '<', epoch)
+      .where('stale', '=', false)
+      .returning(['epoch', 'code'])
+      .execute();
+    const snapshots = await trx
+      .updateTable('ingest.alarm_snapshot')
+      .set({ stale: true })
+      .where('equipment', '=', equipment)
+      .where('device_epoch', '<', epoch)
+      .where('stale', '=', false)
+      .returning('device_epoch')
+      .execute();
+    if (anchors.length === 0 && snapshots.length === 0) return [];
+    return [
+      {
+        type: 'alarm-stale',
+        equipment,
+        epoch,
+        anchors: anchors.map((a) => ({ epoch: a.epoch, code: a.code })),
+        snapshots: snapshots.map((row) => row.device_epoch),
+      },
+    ];
   }
 
   /**
@@ -353,6 +575,11 @@ export class IngestStore {
         )
         .execute();
       const notices: IngestNotice[] = [];
+      if ((!cursor || epoch > cursor.epoch) && stream.startsWith('device:')) {
+        // The first fact of a newer device epoch: older alarm anchors and snapshots of the
+        // equipment are stale from now on (#141).
+        notices.push(...(await this.#staleBefore(trx, stream.slice('device:'.length), epoch)));
+      }
       if (cursor && epoch > cursor.epoch && stream.startsWith('device:')) {
         // The old epoch's open gaps became incidents (`epoch-ended`): a closed epoch's final
         // hours carry them too (#113).
@@ -756,6 +983,25 @@ function factNotices(input: FactInput, settledSeq: number | null): IngestNotice[
           },
         ]
       : [];
+  const alarm: IngestNotice[] =
+    input.kind === 'event' && input.eventType === 'alarm'
+      ? [
+          {
+            type: 'alarm',
+            fact: {
+              equipment: input.equipment,
+              epoch: message.epoch,
+              seq: message.seq,
+              sourceTime,
+              code: (input.message as Alarm).value.code,
+              transition: (input.message as Alarm).value.transition,
+              severity: (input.message as Alarm).value.severity,
+              quality: message.quality,
+            },
+            settledSeq,
+          },
+        ]
+      : [];
   return [
     {
       type: 'sample',
@@ -781,5 +1027,6 @@ function factNotices(input: FactInput, settledSeq: number | null): IngestNotice[
       },
     },
     ...cycle,
+    ...alarm,
   ];
 }

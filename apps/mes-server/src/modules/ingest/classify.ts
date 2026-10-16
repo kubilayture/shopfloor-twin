@@ -1,4 +1,5 @@
 import {
+  ALARM_SNAPSHOT_NAME,
   SYS_SEGMENT,
   UNS_ROOT,
   parseEquipmentTopic,
@@ -6,6 +7,7 @@ import {
   streamKey,
   unsName,
   type Alarm,
+  type AlarmSnapshot,
   type CycleComplete,
   type Incident,
   type StateCurrent,
@@ -36,6 +38,10 @@ export type Classified =
       readonly message: Telemetry;
     }
   | { readonly kind: 'anchor'; readonly equipment: string; readonly message: StateCurrent }
+  /** A retained alarm delivery (#141): the device's last fact for its code, never a fact here. */
+  | { readonly kind: 'alarm-anchor'; readonly equipment: string; readonly message: Alarm }
+  /** The gateway's alarm snapshot (#141), retained or not: never a fact. */
+  | { readonly kind: 'alarm-snapshot'; readonly equipment: string; readonly message: AlarmSnapshot }
   | {
       readonly kind: 'incident';
       readonly stream: string;
@@ -48,7 +54,7 @@ export type Classified =
       readonly instance: string;
       readonly message: Status;
     }
-  /** A retained copy of a fact topic (telemetry, cycle, alarm, incident): current value, not a fact. */
+  /** A retained copy of a fact topic (telemetry, cycle, incident): current value, not a fact. */
   | { readonly kind: 'retained'; readonly detail: string };
 
 const SEGMENT = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -83,7 +89,9 @@ function topicInfo(topic: string): TopicInfo | string {
           ? { type: 'equipment', equipment, name, expected: 'uns.events.cycle-complete/1' }
           : `no event topic "${name}" (only events/cycle-complete)`;
       case 'alarms':
-        return { type: 'equipment', equipment, name, expected: 'uns.alarms/1' };
+        return name === ALARM_SNAPSHOT_NAME
+          ? { type: 'equipment', equipment, name, expected: 'uns.alarm-snapshot/1' }
+          : { type: 'equipment', equipment, name, expected: 'uns.alarms/1' };
       case 'cmd':
       case 'cmd-res':
       case 'mes':
@@ -225,7 +233,7 @@ export function classify(topic: string, text: string, retained: boolean): Classi
       if (unsName(message.value.code) !== info.name) {
         return rejected('topic-mismatch', `alarm ${message.value.code} on alarms/${info.name}`);
       }
-      if (retained) return { kind: 'retained', detail: 'retained alarm' };
+      if (retained) return { kind: 'alarm-anchor', equipment, message };
       return {
         kind: 'event',
         stream: streamKey(topic, message),
@@ -233,6 +241,8 @@ export function classify(topic: string, text: string, retained: boolean): Classi
         eventType: 'alarm',
         message,
       };
+    case 'uns.alarm-snapshot/1':
+      return { kind: 'alarm-snapshot', equipment, message };
     case 'uns.sys.status/1':
     case 'uns.sys.incident/1':
       throw new Error('unreachable: checked against the topic above');

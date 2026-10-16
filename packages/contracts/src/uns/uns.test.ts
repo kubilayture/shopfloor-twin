@@ -5,6 +5,7 @@ import { Deduplicator, type Identified } from './dedup.ts';
 import { generateJsonSchemas } from './json-schema.ts';
 import { UNS_SCHEMAS, parseUnsMessage, type UnsMessage } from './payloads.ts';
 import {
+  alarmSnapshotTopic,
   alarmTopic,
   cycleTopic,
   isRetained,
@@ -57,6 +58,15 @@ const SAMPLES: Record<keyof typeof UNS_SCHEMAS, UnsMessage> = {
     schema: 'uns.alarms/1',
     value: { code: 'SPINDLE-OVERLOAD', transition: 'active', severity: 700 },
   },
+  'uns.alarm-snapshot/1': {
+    ...base,
+    scope: 'topic',
+    schema: 'uns.alarm-snapshot/1',
+    kind: 'snapshot',
+    deviceEpoch: 1_791_770_000,
+    asOfSeq: 41,
+    value: { active: ['COOLANT-PRESSURE'] },
+  },
   'uns.sys.status/1': {
     ...base,
     scope: 'topic',
@@ -80,25 +90,30 @@ describe('UNS topics (plan section 5)', () => {
       telemetryTopic(CNC01, 'spindle-load'),
       cycleTopic(CNC01),
       alarmTopic(CNC01, 'SPINDLE-OVERLOAD'),
+      alarmSnapshotTopic(CNC01),
     ];
     expect(topics).toEqual([
       'orbis/gebze/machining/cell-m1/cnc-01/state/current',
       'orbis/gebze/machining/cell-m1/cnc-01/telemetry/spindle-load',
       'orbis/gebze/machining/cell-m1/cnc-01/events/cycle-complete',
       'orbis/gebze/machining/cell-m1/cnc-01/alarms/spindle-overload',
+      'orbis/gebze/machining/cell-m1/cnc-01/alarms/_snapshot',
     ]);
     expect(topics.map((t) => parseEquipmentTopic(t)?.topicClass)).toEqual([
       'state',
       'telemetry',
       'events',
       'alarms',
+      'alarms',
     ]);
+    expect(parseEquipmentTopic(alarmSnapshotTopic(CNC01))?.name).toBe('_snapshot');
   });
 
   it.each([
     'orbis/gebze/_sys/edge-gateway/gw-01/status',
     'orbis/gebze/machining/cell-m1/cnc-01/state',
     'orbis/gebze/machining/cell-m1/cnc-01/bogus/x',
+    'orbis/gebze/machining/cell-m1/cnc-01/state/_snapshot',
     'other/root/machining/cell-m1/cnc-01/state/current',
   ])('does not parse %s as an equipment topic', (topic) => {
     expect(parseEquipmentTopic(topic)).toBeUndefined();
@@ -191,6 +206,21 @@ describe('UNS payloads (envelope, plan section 5; ADR-0015)', () => {
       'a device epoch on a state event',
       { ...SAMPLES['uns.state.current/1'], deviceEpoch: 5 },
       /deviceEpoch/,
+    ],
+    [
+      'an alarm snapshot without a device epoch',
+      { ...SAMPLES['uns.alarm-snapshot/1'], deviceEpoch: undefined },
+      /deviceEpoch/,
+    ],
+    [
+      'an alarm snapshot in the device scope',
+      { ...SAMPLES['uns.alarm-snapshot/1'], scope: 'device' },
+      /scope/,
+    ],
+    [
+      'an alarm snapshot with a negative asOfSeq',
+      { ...SAMPLES['uns.alarm-snapshot/1'], asOfSeq: -1 },
+      /asOfSeq/,
     ],
     ['a non-object', 'hello', /unknown schema/],
   ])('rejects %s', (_label, input, pattern) => {

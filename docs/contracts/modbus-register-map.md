@@ -1,6 +1,6 @@
 # Contract: WSH-01 Modbus register map
 
-Version 1 (Phase 3). Source of truth in code: `packages/contracts/src/modbus.ts`. Server: `apps/simulator/src/modbus/washer-server.ts`. A contract test (`washer-server.test.ts`) parses the Registers table below and checks it against the code and the running server. Any change bumps `mapVersion` and the version here, and needs a changelog entry.
+Version 2 (#141; version 1 in Phase 3). Version 2 adds register 17, `activeAlarms`, to the snapshot block, so that one read gives the active alarms together with the ring head they belong to (the gateway's alarm snapshot, docs/contracts/uns.md). A version 1 reader that reads registers 0–16 is unaffected. Source of truth in code: `packages/contracts/src/modbus.ts`. Server: `apps/simulator/src/modbus/washer-server.ts`. A contract test (`washer-server.test.ts`) parses the Registers table below and checks it against the code and the running server. Any change bumps `mapVersion` and the version here, and needs a changelog entry.
 
 WSH-01, the conveyor washer, is a legacy device (plan section 3): it exposes raw registers without semantics. The gateway gives them meaning through this map.
 
@@ -19,7 +19,7 @@ WSH-01, the conveyor washer, is a legacy device (plan section 3): it exposes raw
 
 | Address | Name              | Type    | Meaning                                                                                                                       |
 | ------- | ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| 0       | `mapVersion`      | u16     | Register map version, 1                                                                                                       |
+| 0       | `mapVersion`      | u16     | Register map version, 2                                                                                                       |
 | 1       | `epoch`           | u32     | Start of this simulator run, Unix seconds: the epoch of the event sequence (ADR-0015). Same value as OPC UA `ShopFloor.Epoch` |
 | 3       | `simTime`         | u64     | Simulation time of this snapshot, ms since 1970 UTC                                                                           |
 | 7       | `state`           | u16     | Current machine state, as an index into the state table                                                                       |
@@ -30,6 +30,7 @@ WSH-01, the conveyor washer, is a legacy device (plan section 3): it exposes raw
 | 13      | `eventCounter`    | u32     | Sequence number of the newest ring entry; 0 before the first                                                                  |
 | 15      | `ringCapacity`    | u16     | Entries in the ring, 64                                                                                                       |
 | 16      | `entrySize`       | u16     | Registers per entry, 10                                                                                                       |
+| 17      | `activeAlarms`    | u16     | Bit _i_ set: alarm table entry _i_ is active. Written in the same step as the ring entry and `eventCounter` (version 2)       |
 | 100     | `ring`            | entries | 64 entries of 10 registers each (100–739). The entry with sequence _s_ is at 100 + ((_s_ − 1) mod 64) × 10                    |
 
 The scaling of `bathTemperature` and `conveyorSpeed` comes from the resolutions in `processValues.washer` in `process.yaml`. Changing a resolution changes the map and needs a new map version.
@@ -48,7 +49,7 @@ Every state change, completed cycle and alarm transition of WSH-01 becomes one e
 
 **Reading without loss:**
 
-1. Read `eventCounter` (with the snapshot block, registers 0–16).
+1. Read `eventCounter` (with the snapshot block, registers 0–17).
 2. Read the entries from the last sequence handled up to the counter, in requests of at most 12 entries (120 registers). Split a request where the ring ends (address 740): entries 64 and 65 are not next to each other in the address space, and a read across the end answers exception 2.
 3. Check every entry's own sequence number. If an entry carries a higher number than expected, the ring wrapped: more than 64 facts happened since the last poll. That is an overrun, and the facts in between are lost.
 4. After a gateway restart, continue from the last sequence handled, kept on disk, if the epoch is unchanged; otherwise start from the current counter.
@@ -65,6 +66,6 @@ The other tables are derived from the plant configuration by `modbusTables()`, i
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Causes   | 0 none, 1 `HEATER-FAULT`, 2 `CONVEYOR-JAM`, 3 `BREAK`, 4 `SHIFT-END`, 5 `NO-OPERATOR` (the washer's failure codes, then its minor-stop causes, then the unavailability causes) |
 | Products | 0 `VB-100`, 1 `VB-200` (`products.yaml` order)                                                                                                                                 |
-| Alarms   | 0 `HEATER-FAULT` (the washer's failure codes; severity 700, as on OPC UA)                                                                                                      |
+| Alarms   | 0 `HEATER-FAULT` (the washer's failure codes; severity 700, as on OPC UA). At most 16 entries, one bit each in `activeAlarms`                                                  |
 
 A legacy washer doesn't read serial numbers: cycle entries carry the part id but no serial.

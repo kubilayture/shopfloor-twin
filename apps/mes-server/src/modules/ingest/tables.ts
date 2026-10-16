@@ -1,4 +1,11 @@
-import type { Incident, StateCurrent, Status, UnsMessage } from '@shopfloor/contracts';
+import type {
+  Alarm,
+  AlarmSnapshot,
+  Incident,
+  StateCurrent,
+  Status,
+  UnsMessage,
+} from '@shopfloor/contracts';
 import type { ColumnType, Generated, JSONColumnType } from 'kysely';
 import type { Range } from './ranges.ts';
 
@@ -68,6 +75,39 @@ export interface StateAnchorTable {
   payload: JSONColumnType<StateCurrent>;
 }
 
+/** A retained alarm delivery (#141): the device's last fact for one code. */
+export interface AlarmAnchorTable {
+  equipment: string;
+  epoch: number;
+  code: string;
+  seq: number;
+  transition: 'active' | 'cleared';
+  severity: number;
+  source_time: Timestamp;
+  quality: Quality;
+  received_at: Timestamp;
+  ingested_at: DefaultTimestamp;
+  stale: ColumnType<boolean, boolean | undefined, boolean>;
+  payload: JSONColumnType<Alarm>;
+}
+
+/** The gateway's alarm snapshot on resync (#141), the latest per (equipment, device epoch). */
+export interface AlarmSnapshotTable {
+  equipment: string;
+  device_epoch: number;
+  as_of_seq: number;
+  active: string[];
+  epoch: number;
+  seq: number;
+  source_time: Timestamp;
+  quality: Quality;
+  source_protocol: string;
+  received_at: Timestamp;
+  ingested_at: DefaultTimestamp;
+  stale: ColumnType<boolean, boolean | undefined, boolean>;
+  payload: JSONColumnType<AlarmSnapshot>;
+}
+
 export interface DataQualityIncidentTable {
   id: Generated<number>;
   origin: 'mes' | 'gateway';
@@ -133,6 +173,8 @@ export interface IngestTables {
   'ingest.telemetry_sample': TelemetrySampleTable;
   'ingest.source_cursor': SourceCursorTable;
   'ingest.state_anchor': StateAnchorTable;
+  'ingest.alarm_anchor': AlarmAnchorTable;
+  'ingest.alarm_snapshot': AlarmSnapshotTable;
   'ingest.data_quality_incident': DataQualityIncidentTable;
   'ingest.component_status': ComponentStatusTable;
   'ingest.rejected_message': RejectedMessageTable;
@@ -187,6 +229,35 @@ export const INGEST_COLUMNS = {
     'quality',
     'received_at',
     'ingested_at',
+    'payload',
+  ],
+  'ingest.alarm_anchor': [
+    'equipment',
+    'epoch',
+    'code',
+    'seq',
+    'transition',
+    'severity',
+    'source_time',
+    'quality',
+    'received_at',
+    'ingested_at',
+    'stale',
+    'payload',
+  ],
+  'ingest.alarm_snapshot': [
+    'equipment',
+    'device_epoch',
+    'as_of_seq',
+    'active',
+    'epoch',
+    'seq',
+    'source_time',
+    'quality',
+    'source_protocol',
+    'received_at',
+    'ingested_at',
+    'stale',
     'payload',
   ],
   'ingest.data_quality_incident': [

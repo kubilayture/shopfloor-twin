@@ -144,6 +144,7 @@ function describeFact(message: UnsMessage): string {
     case 'uns.alarms/1':
       return `alarm ${message.value.code} ${message.value.transition}`;
     case 'uns.telemetry/1':
+    case 'uns.alarm-snapshot/1':
     case 'uns.sys.status/1':
     case 'uns.sys.incident/1':
       return message.schema;

@@ -9,6 +9,7 @@ import {
   REGISTERS,
   STATUS_BITS,
   MACHINE_STATES,
+  encodeActiveAlarms,
   encodeEntry,
   modbusTables,
   ringSlot,
@@ -76,6 +77,7 @@ export class WasherModbusServer {
   #seq = 0;
   #cycles = 0;
   #heaterFaultActive = false;
+  readonly #activeAlarms = new Set<string>();
   #silent = false;
 
   constructor({
@@ -151,6 +153,17 @@ export class WasherModbusServer {
         if (event.code === this.#heaterFault) {
           this.#heaterFaultActive = event.transition === 'active';
         }
+        if (event.transition === 'active') {
+          this.#activeAlarms.add(event.code);
+        } else {
+          this.#activeAlarms.delete(event.code);
+        }
+        // Written with the entry and its counter in the same turn, so one read of the snapshot
+        // block gives bits that belong to its eventCounter (map version 2, #141).
+        this.#registers[REGISTERS.activeAlarms] = encodeActiveAlarms(
+          this.#activeAlarms,
+          this.tables,
+        );
         this.#append({
           type: 'alarm',
           seq: this.#seq + 1,

@@ -1,4 +1,5 @@
 import {
+  ALARM_SNAPSHOT_NAME,
   UNS_CLASSES,
   UNS_ROOT,
   equipmentTopic,
@@ -55,6 +56,10 @@ export const cycleTopic = (at: EquipmentPath): string =>
 
 export const alarmTopic = (at: EquipmentPath, code: string): string =>
   equipmentTopic({ ...at, topicClass: 'alarms', name: unsName(code) });
+
+/** The gateway's alarm snapshot of one equipment (`uns.alarm-snapshot/1`, retained, #141). */
+export const alarmSnapshotTopic = (at: EquipmentPath): string =>
+  equipmentTopic({ ...at, topicClass: 'alarms', name: ALARM_SNAPSHOT_NAME });
 
 export interface ParsedTopic extends EquipmentTopic {
   readonly topic: string;

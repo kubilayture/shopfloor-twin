@@ -14,20 +14,28 @@ topic read $SYS/#
 # this): a `+` in the area position would also match `_sys` and let a client write into another
 # component's topics.
 
-# Edge gateway: publishes machine data and its own component topics. Its cmd and cmd-res rights
-# arrive with commands in Phase 7.
+# Edge gateway: publishes machine data and its own component topics; reads commands and answers
+# them (Phase 7, #173, ADR-0029). Both of its connections log in as gw-01: client id gw-01
+# publishes (the cmd-res answers go through its outbox), client id gw-01-cmd only subscribes to
+# cmd. The plain ACL file grants per user, not per client id (dynamic security, Phase 9). It may
+# not publish cmd: only the MES commands.
 user gw-01
 topic write orbis/gebze/machining/+/+/state/#
 topic write orbis/gebze/machining/+/+/telemetry/#
 topic write orbis/gebze/machining/+/+/events/#
 topic write orbis/gebze/machining/+/+/alarms/#
+topic read orbis/gebze/machining/+/+/cmd/#
+topic write orbis/gebze/machining/+/+/cmd-res/#
 topic write orbis/gebze/assembly/+/+/state/#
 topic write orbis/gebze/assembly/+/+/telemetry/#
 topic write orbis/gebze/assembly/+/+/events/#
 topic write orbis/gebze/assembly/+/+/alarms/#
+topic read orbis/gebze/assembly/+/+/cmd/#
+topic write orbis/gebze/assembly/+/+/cmd-res/#
 topic readwrite orbis/gebze/_sys/edge-gateway/gw-01/#
 
-# MES: reads everything; publishes MES context, commands and its own component topics.
+# MES: reads everything (cmd-res included); publishes MES context, commands and its own component
+# topics. It may not publish cmd-res: only the gateway answers commands.
 user mes
 topic read orbis/#
 topic write orbis/gebze/machining/+/+/mes/#

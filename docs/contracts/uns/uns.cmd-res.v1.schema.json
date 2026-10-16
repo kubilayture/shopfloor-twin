@@ -1,0 +1,437 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "uns.cmd-res/1"
+    },
+    "scope": {
+      "type": "string",
+      "const": "topic"
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Start of the gateway, Unix seconds"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Per topic, from the gateway"
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "Equipment id (cnc-01, wsh-01) or component instance (gw-01)"
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "opcua",
+            "modbus",
+            "internal"
+          ],
+          "description": "Where the gateway got it"
+        }
+      },
+      "required": [
+        "id",
+        "protocol"
+      ],
+      "additionalProperties": false,
+      "description": "The equipment, protocol opcua"
+    },
+    "respondedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+      "description": "Gateway wall time of the answer"
+    },
+    "value": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "accepted",
+              "description": "The device accepted the job now"
+            },
+            "commandId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^\\S(.*\\S)?$"
+            },
+            "orderId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^\\S(.*\\S)?$"
+            },
+            "deviceEpoch": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "The deviceEpoch of the command"
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+              "description": "The expiresAt of the delivery this result answers"
+            },
+            "statusCode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The OPC UA status of the call that gave the answer; null if none"
+            },
+            "position": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "description": "Place of the job in the queue when it was accepted"
+            },
+            "acceptedSeq": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "description": "Device sequence number of the job's accepted fact (M4)"
+            },
+            "acceptedAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+              "description": "Plant time of that fact"
+            }
+          },
+          "required": [
+            "result",
+            "commandId",
+            "orderId",
+            "deviceEpoch",
+            "expiresAt",
+            "statusCode",
+            "position",
+            "acceptedSeq",
+            "acceptedAt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "duplicate",
+              "description": "The device had already accepted this command id"
+            },
+            "commandId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^\\S(.*\\S)?$"
+            },
+            "orderId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^\\S(.*\\S)?$"
+            },
+            "deviceEpoch": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "The deviceEpoch of the command"
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+              "description": "The expiresAt of the delivery this result answers"
+            },
+            "statusCode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The OPC UA status of the call that gave the answer; null if none"
+            },
+            "position": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "description": "Place of the job in the queue when it was accepted"
+            },
+            "acceptedSeq": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "description": "Device sequence number of the job's accepted fact (M4)"
+            },
+            "acceptedAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+              "description": "Plant time of that fact"
+            }
+          },
+          "required": [
+            "result",
+            "commandId",
+            "orderId",
+            "deviceEpoch",
+            "expiresAt",
+            "statusCode",
+            "position",
+            "acceptedSeq",
+            "acceptedAt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "rejected",
+              "description": "The device refused the job: no job"
+            },
+            "commandId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^\\S(.*\\S)?$"
+            },
+            "orderId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^\\S(.*\\S)?$"
+            },
+            "deviceEpoch": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "The deviceEpoch of the command"
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+              "description": "The expiresAt of the delivery this result answers"
+            },
+            "statusCode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The OPC UA status of the call that gave the answer; null if none"
+            },
+            "code": {
+              "type": "string",
+              "enum": [
+                "invalid-product",
+                "invalid-quantity",
+                "invalid-argument",
+                "command-conflict",
+                "epoch-mismatch",
+                "wrong-mode",
+                "queue-full",
+                "unsupported-equipment"
+              ]
+            }
+          },
+          "required": [
+            "result",
+            "commandId",
+            "orderId",
+            "deviceEpoch",
+            "expiresAt",
+            "statusCode",
+            "code"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "expired",
+              "description": "The device answered expired on a dedup miss: never accepted"
+            },
+            "commandId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^\\S(.*\\S)?$"
+            },
+            "orderId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^\\S(.*\\S)?$"
+            },
+            "deviceEpoch": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "The deviceEpoch of the command"
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+              "description": "The expiresAt of the delivery this result answers"
+            },
+            "statusCode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The OPC UA status of the call that gave the answer; null if none"
+            },
+            "seqAfterExpiry": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ShopFloor.Sequence read after expiresAt + 1 s (gateway and device clocks), before the settle call; null when not read. Every accepted fact of the command has seq <= seqAfterExpiry, so a re-dispatch may follow once the final-through is >= seqAfterExpiry with none of them"
+            }
+          },
+          "required": [
+            "result",
+            "commandId",
+            "orderId",
+            "deviceEpoch",
+            "expiresAt",
+            "statusCode",
+            "seqAfterExpiry"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "type": "string",
+              "const": "unknown",
+              "description": "Not final: the outcome is still being settled"
+            },
+            "commandId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^\\S(.*\\S)?$"
+            },
+            "orderId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^\\S(.*\\S)?$"
+            },
+            "deviceEpoch": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295,
+              "description": "The deviceEpoch of the command"
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+              "description": "The expiresAt of the delivery this result answers"
+            },
+            "statusCode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The OPC UA status of the call that gave the answer; null if none"
+            },
+            "seqAfterExpiry": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ShopFloor.Sequence read after expiresAt + 1 s (gateway and device clocks), before the settle call; null when not read. Every accepted fact of the command has seq <= seqAfterExpiry, so a re-dispatch may follow once the final-through is >= seqAfterExpiry with none of them"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "result",
+            "commandId",
+            "orderId",
+            "deviceEpoch",
+            "expiresAt",
+            "statusCode",
+            "seqAfterExpiry",
+            "reason"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "scope",
+    "epoch",
+    "seq",
+    "source",
+    "respondedAt",
+    "value"
+  ],
+  "additionalProperties": false,
+  "title": "uns.cmd-res/1",
+  "description": "The gateway's answer to one command delivery (QoS 1, not retained)"
+}

@@ -28,6 +28,20 @@ export const envSchema = z.object({
   MODBUS_POLL_MS: integer.pipe(z.number().min(50).max(60_000)).default(250),
   TELEMETRY_SAMPLING_MS: integer.pipe(z.number().min(100).max(60_000)).default(1_000),
   BUFFER_PATH: text.default('.buffer/gateway.db'),
+  /**
+   * Commands (#173, ADR-0029): the application-level deadline of each OPC UA request on the
+   * command path (calls and the epoch and sequence reads), independent of node-opcua's timeouts.
+   */
+  GATEWAY_CALL_DEADLINE_MS: integer.pipe(z.number().min(100).max(60_000)).default(5_000),
+  /** The command session's MQTT 5 session expiry: longer than any command's life (default 1 h). */
+  GATEWAY_CMD_SESSION_EXPIRY_S: integer
+    .pipe(
+      z
+        .number()
+        .min(60)
+        .max(7 * 24 * 3600),
+    )
+    .default(3_600),
   BUFFER_MAX_MESSAGES: integer.pipe(z.number().min(1_000)).default(200_000),
   HTTP_HOST: text.default('127.0.0.1'),
   HTTP_PORT: port.default(4900),

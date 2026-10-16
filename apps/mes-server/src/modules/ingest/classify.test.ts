@@ -59,6 +59,13 @@ describe('classify (#95)', () => {
     };
     expect(reason('orbis/gebze/machining/cell-m1/cnc-01/cmd/start', '{}')).toBe('unexpected-topic');
     expect(reason('elsewhere/x', '{}')).toBe('unexpected-topic');
+    // Job facts (UNS 1.3, published from #173) are ingested only from #174; refused until then.
+    expect(reason('orbis/gebze/machining/cell-m1/cnc-01/events/job', '{}')).toBe(
+      'unexpected-topic',
+    );
+    expect(reason('orbis/gebze/machining/cell-m1/cnc-01/cmd-res/load-order', '{}')).toBe(
+      'unexpected-topic',
+    );
     expect(reason('orbis/gebze/machining/cell-m1/cnc-01/state/other', '{}')).toBe(
       'unexpected-topic',
     );

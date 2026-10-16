@@ -267,6 +267,25 @@ const span = (values: readonly Millis[]): Millis[] => {
   return values.length === 0 ? [] : [low, high];
 };
 
+const minutesOfDay = (hhmm: string): number => {
+  const [hours = 0, minutes = 0] = hhmm.split(':').map(Number);
+  return hours * 60 + minutes;
+};
+
+/**
+ * The longest shift of the pattern in ms (a shift ending at its start lasts a day), plus an hour
+ * for a daylight-saving change inside it: the longest a scheduled shift bucket can be.
+ */
+const longestShiftMs = (pattern: ShiftPattern): Millis =>
+  Math.max(
+    0,
+    ...pattern.shifts.map(
+      (shift) => (minutesOfDay(shift.end) - minutesOfDay(shift.start) + 1440) % 1440 || 1440,
+    ),
+  ) *
+    60_000 +
+  HOUR;
+
 /** The fields #113 adds to a new track: nothing settled or recorded yet. */
 const UNSETTLED = {
   settledSeq: null,
@@ -324,6 +343,8 @@ export class Equipment {
   readonly #pattern: ShiftPattern;
   readonly #step: number;
   readonly #downtime: DowntimeRules;
+  /** The longest scheduled shift bucket: no downtime record is longer (#119). */
+  readonly #maxBucketMs: Millis;
   readonly #log: EquipmentLog;
   readonly #tracks = new Map<string, Map<number, Track>>();
   readonly #watermarks = new Map<number, Millis>();
@@ -346,6 +367,7 @@ export class Equipment {
     this.#pattern = options.shiftPattern;
     this.#step = options.provisionalStepMs ?? 60_000;
     this.#downtime = options.downtime;
+    this.#maxBucketMs = longestShiftMs(this.#pattern);
     this.#log = options.log ?? silent;
     const states =
       options.refresh &&
@@ -599,6 +621,10 @@ export class Equipment {
     let select = this.#readDb
       .selectFrom('equipment.downtime_record')
       .selectAll()
+      // A record lies inside one shift bucket, open ones too (the tail is rewritten at every
+      // boundary), so none that overlaps the range starts more than a bucket before it: this
+      // bound lets the index on start_time do the work.
+      .where('start_time', '>', new Date(query.from.getTime() - this.#maxBucketMs))
       .where('start_time', '<', query.to)
       .where((eb) => eb.or([eb('end_time', 'is', null), eb('end_time', '>', query.from)]));
     if (query.equipment !== undefined) select = select.where('equipment', '=', query.equipment);
@@ -1588,7 +1614,11 @@ export class Equipment {
       .where('equipment', '=', track.equipment)
       .where('epoch', '=', track.epoch);
     if (window.from !== undefined) {
-      remove = remove.where('interval_start', '>=', new Date(window.from));
+      // start_time >= interval_start >= from: the bound on the key lets the primary key do the
+      // work, so an in-order fact touches only the tail, not every record of its epoch.
+      remove = remove
+        .where('start_time', '>=', new Date(window.from))
+        .where('interval_start', '>=', new Date(window.from));
     }
     if (window.to !== undefined) remove = remove.where('interval_start', '<', new Date(window.to));
     if (window.records.length > 0) {
@@ -1838,7 +1868,11 @@ export class Equipment {
     }
     const changed = await query.returning('start_time').execute();
     this.#piecesChanged(track, span(changed.map((row) => row.start_time.getTime())));
-    // Downtime records likewise: provisional while open or ending after the bound (#119).
+    // Downtime records likewise: provisional while open or ending after the bound (#119). No
+    // `finalEnd` guard is needed, unlike the pieces: a record's flag depends only on its end and
+    // the bound, never on per-hour state, and a record inside the final hours ends at or before
+    // `finalEnd` <= bound, so it is set false here exactly as it already is. A record reaching
+    // past `finalEnd` has pieces outside the final hours, whose flags were just set by the same rule.
     const recordFlag = Number.isFinite(bound)
       ? sql<boolean>`end_time IS NULL OR end_time > ${new Date(bound)}`
       : sql<boolean>`end_time IS NULL OR ${sql.lit(bound < 0)}`;

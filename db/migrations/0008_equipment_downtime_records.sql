@@ -33,8 +33,12 @@ CREATE TABLE equipment.downtime_record (
   CHECK (state IN ('Stopped', 'Down', 'Setup', 'Idle', 'Starved', 'Blocked')),
   PRIMARY KEY (equipment, epoch, start_time)
 );
--- Records of one equipment, or of all, in a time range (#120: downtime list and Pareto).
-CREATE INDEX downtime_record_range ON equipment.downtime_record (start_time, equipment);
+-- Records of one equipment in a time range (#120: downtime list and Pareto). A record lies inside
+-- one shift bucket, so readers bound start_time from below by the longest bucket.
+CREATE INDEX downtime_record_range ON equipment.downtime_record (equipment, start_time);
+-- The coding screen lists UNCODED records first (#120, #121).
+CREATE INDEX downtime_record_uncoded ON equipment.downtime_record (start_time)
+  WHERE auto_reason = 'UNCODED';
 
 -- The micro-stop threshold the stored records were derived with: catch-up rederives an
 -- (equipment, epoch) whose threshold differs, including every one stored before #119 (null).

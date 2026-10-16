@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parse } from 'yaml';
+import { EXTERNAL_LOSS_STATES, OWN_LOSS_STATES } from '@shopfloor/oee-core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { formatIssues, loadPlantConfig, validatePlantConfig } from './load.ts';
 import {
@@ -77,6 +78,15 @@ describe('rule matching (#119)', () => {
     // The state must match too.
     expect(classifyCause(rules, 'Stopped', 'SPINDLE-OVERLOAD')).toBe(UNCODED);
     expect(classifyCause([], 'Down', null)).toBe(UNCODED);
+    // An empty cause is no cause.
+    expect(classifyCause(rules, 'Starved', '')).toBe('STARVED');
+  });
+
+  it('takes the loss states from oee-core, own and external', () => {
+    expect([...LOSS_STATES].sort()).toEqual(
+      ['Blocked', 'Down', 'Idle', 'Setup', 'Starved', 'Stopped'].sort(),
+    );
+    expect(LOSS_STATES).toEqual([...OWN_LOSS_STATES, ...EXTERNAL_LOSS_STATES]);
   });
 
   it('derives the parent from the id path', () => {

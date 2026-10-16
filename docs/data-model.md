@@ -459,7 +459,8 @@ Downtime records: one per availability-loss interval per scheduled shift bucket,
 | Check | `downtime_record_check2` | `CHECK (((end_time IS NOT NULL) OR provisional))` |
 | Check | `downtime_record_shift_key_check` | `CHECK ((shift_key <> 'no-shift'::text))` |
 | Check | `downtime_record_state_check` | `CHECK ((state = ANY (ARRAY['Stopped'::text, 'Down'::text, 'Setup'::text, 'Idle'::text, 'Starved'::text, 'Blocked'::text])))` |
-| Index | `downtime_record_range` | `equipment.downtime_record USING btree (start_time, equipment)` |
+| Index | `downtime_record_range` | `equipment.downtime_record USING btree (equipment, start_time)` |
+| Index | `downtime_record_uncoded` | `equipment.downtime_record USING btree (start_time) WHERE (auto_reason = 'UNCODED'::text)` |
 
 ### equipment.equipment_state_interval
 

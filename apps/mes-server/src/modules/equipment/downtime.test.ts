@@ -274,6 +274,31 @@ describe('downtime records in the equipment module (#119)', () => {
     });
   });
 
+  it('reads a record that started most of a shift before the range', async () => {
+    const { start, send } = await setup();
+    const equipment = await start();
+    // Down for all of shift B but ten minutes (11:00 to 18:50 UTC), read from 18:40 on.
+    await send(
+      feed.state('cnc-a', E1, 1, at('11:00'), 'Down', 'SPINDLE-OVERLOAD'),
+      feed.state('cnc-a', E1, 2, at('18:50'), 'Running'),
+    );
+    const read = await equipment.downtimeRecords({
+      from: new Date(at('18:40')),
+      to: new Date(at('19:00')),
+      equipment: 'cnc-a',
+    });
+    expect(read.map((r) => [hhmm(r.start), hhmm(r.end), r.shiftKey])).toEqual([
+      ['11:00:00', '18:50:00', SHIFT_B],
+    ]);
+    expect(
+      await equipment.downtimeRecords({
+        from: new Date(at('18:50')),
+        to: new Date(at('19:00')),
+        uncodedFirst: true,
+      }),
+    ).toEqual([]);
+  });
+
   it('promotes an open Stopped interval to a record once it reaches the threshold', async () => {
     const { db, start, send } = await setup();
     await start();
@@ -288,9 +313,21 @@ describe('downtime records in the equipment module (#119)', () => {
     expect(await records(db, 'cnc-a')).toEqual([
       ['E1', '09:00:00', '09:05:00', 'Stopped', SHIFT_A, 'MINOR-STOP/CHIP-JAM', 'final'],
     ]);
-    // A late fact shortens the stop below the threshold: the record goes.
+    // A 4-minute stop is a record; a late fact splits it below the threshold, and the record goes.
     await send(feed.state('cnc-a', E1, 3, at('09:06'), 'Stopped', 'DOOR-INTERLOCK'));
-    await send(feed.state('cnc-a', E1, 5, at('09:07'), 'Running'));
+    await send(feed.state('cnc-a', E1, 5, at('09:10'), 'Running'));
+    expect(await records(db, 'cnc-a')).toEqual([
+      ['E1', '09:00:00', '09:05:00', 'Stopped', SHIFT_A, 'MINOR-STOP/CHIP-JAM', 'final'],
+      [
+        'E1',
+        '09:06:00',
+        '09:10:00',
+        'Stopped',
+        SHIFT_A,
+        'MINOR-STOP/DOOR-INTERLOCK',
+        'provisional',
+      ],
+    ]);
     await send(feed.state('cnc-a', E1, 4, at('09:06:30'), 'Running'));
     expect(await records(db, 'cnc-a')).toEqual([
       ['E1', '09:00:00', '09:05:00', 'Stopped', SHIFT_A, 'MINOR-STOP/CHIP-JAM', 'final'],

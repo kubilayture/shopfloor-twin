@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@shopfloor/contracts": "workspace:*",
+    "@shopfloor/oee-core": "workspace:*",
     "yaml": "catalog:",
     "zod": "catalog:"
   },

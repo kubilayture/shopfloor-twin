@@ -5,17 +5,21 @@
  * rule wins; no match gives UNCODED.
  */
 import { MACHINE_STATES, causeVocabulary, type StateCause } from '@shopfloor/contracts';
+import { EXTERNAL_LOSS_STATES, OWN_LOSS_STATES } from '@shopfloor/oee-core';
 import { z } from 'zod';
 
 /** The reason of an interval no rule matches. */
 export const UNCODED = 'UNCODED';
 
 /**
- * States whose intervals can become downtime records (availability loss, ADR-0021); each needs a
- * rule for `cause: null`, because a snapshot (OPC UA resync, Modbus poll) opens an interval
- * without a cause in any state.
+ * States whose intervals can become downtime records: `oee-core`'s own and external availability
+ * loss states (ADR-0021), one source. Each needs a rule for `cause: null`, because a snapshot
+ * (OPC UA resync, Modbus poll) opens an interval without a cause in any state.
  */
-export const LOSS_STATES = ['Stopped', 'Down', 'Setup', 'Idle', 'Starved', 'Blocked'] as const;
+export const LOSS_STATES: readonly StateCause['state'][] = [
+  ...OWN_LOSS_STATES,
+  ...EXTERNAL_LOSS_STATES,
+];
 
 const segment = '[A-Z0-9]+(-[A-Z0-9]+)*';
 /** A reason id is its path in the tree: `BREAKDOWN/SPINDLE-OVERLOAD`; the parent is the prefix. */
@@ -65,8 +69,10 @@ export function classifyCause(
   state: string,
   cause: string | null,
 ): string {
+  // An empty cause is no cause (the Modbus table's index 0 is ''; a device may send either).
+  const given = cause === '' ? null : cause;
   return (
-    rules.find((rule) => rule.state === state && matchesCause(rule.cause, cause))?.reason ?? UNCODED
+    rules.find((rule) => rule.state === state && matchesCause(rule.cause, given))?.reason ?? UNCODED
   );
 }
 

@@ -143,4 +143,16 @@ web="http://127.0.0.1:${WEB_PORT:-8080}"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.test:${WEB_PORT:-8080}" "$web/api/v1/equipment")
 [ "$code" = 403 ] || fail "MES answered a foreign Host through the web ($code)"
 echo "ok: foreign Host refused through the web (DNS rebinding)"
+
+# Identity (#170): every API route and the WebSocket need a session (MES_AUTH=on by default). The
+# smoke logs in as a user of its own, made for this run with `user:create` inside the MES container
+# (password generated here, passed on stdin and in the environment of the web checks only; never
+# written to a file). One user row and its audit entry per run stay in the database.
+SMOKE_USERNAME="smoke-$(openssl rand -hex 4)"
+SMOKE_PASSWORD=$(openssl rand -hex 16)
+export SMOKE_USERNAME SMOKE_PASSWORD
+printf '%s' "$SMOKE_PASSWORD" | docker compose exec -T mes \
+  node apps/mes-server/src/user-cli.ts --username "$SMOKE_USERNAME" --role operator >/dev/null ||
+  fail "user:create could not create the smoke user"
+echo "ok: user:create made the operator $SMOKE_USERNAME"
 node scripts/stack-smoke-web.mjs "$web" || fail "web checks failed"

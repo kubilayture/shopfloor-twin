@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { DowntimeRecordDto, Pareto } from '@shopfloor/contracts/mes-api';
 import { expect, test, type Page } from '@playwright/test';
 import { MesClient, rawRequest } from '../../src/clients.ts';
+import { logIn, reconcileUser } from '../login.ts';
 
 /**
  * Phase 5 exit criterion 4, the UI part (#123): after shift A is final and the MES has drained,
@@ -14,7 +15,8 @@ import { MesClient, rawRequest } from '../../src/clients.ts';
 const webUrl = process.env.RECONCILE_WEB_URL;
 const results = process.env.RECONCILE_RESULTS;
 const shiftKey = process.env.RECONCILE_SHIFT ?? '2026-10-12/A';
-const CODED_BY = 'reconcile e2e';
+/** The coding's author is the logged-in user (#170). */
+const CODED_BY = reconcileUser;
 /** Shortest record to split: both halves at least a few seconds, on whole plant seconds. */
 const MIN_MS = 10_000;
 
@@ -48,8 +50,8 @@ test('a recode and a split through the UI change the Pareto and the audit, not O
   test.skip(!webUrl, 'runs inside pnpm test:reconcile, after the drain');
   test.setTimeout(120_000);
   const base = webUrl ?? '';
-  // The API as the page reads it: through nginx, same origin.
-  const api = new MesClient(base);
+  // The API as the page reads it: through nginx, same origin, with the page's session.
+  const api = new MesClient(base, await logIn(page));
 
   const shift = await api.shiftOee(shiftKey);
   expect(shift.equipment.every((bucket) => bucket.final)).toBe(true);
@@ -113,7 +115,8 @@ test('a recode and a split through the UI change the Pareto and the audit, not O
   await expect(pickers).toHaveCount(2);
   await pickers.nth(0).selectOption(first);
   await pickers.nth(1).selectOption(second);
-  await page.getByTestId('coded-by').fill(CODED_BY);
+  // No name to type any more (#170): the MES takes it from the session.
+  await expect(page.getByTestId('coded-by')).toHaveCount(0);
   await page.getByTestId('save-coding').click();
   await expect(page.getByTestId('coding-message')).toHaveAttribute('data-kind', 'saved');
   await expect(page.getByTestId('draft-conflict')).toHaveCount(0);
@@ -173,7 +176,7 @@ test('a recode and a split through the UI change the Pareto and the audit, not O
   // Writes the MES must refuse (ADR-0023), against a version no write can have: a guard that let
   // one through would answer 422, never code the record.
   const coding = `${base}/api/v1/downtime/${encodeURIComponent(record.id)}/coding`;
-  const body = JSON.stringify({ segments: [], codedBy: CODED_BY, version: -1 });
+  const body = JSON.stringify({ segments: [], version: -1 });
   const json = { 'content-type': 'application/json' };
   const refusals: Record<string, number> = {};
   for (const [name, headers] of [
@@ -183,10 +186,17 @@ test('a recode and a split through the UI change the Pareto and the audit, not O
       'form content type',
       { origin: new URL(base).origin, 'content-type': 'application/x-www-form-urlencoded' },
     ],
+    // The page's own origin and JSON, but no session (#170).
+    ['no session', { origin: new URL(base).origin, ...json }],
   ] as const) {
     refusals[name] = (await rawRequest('PUT', coding, headers, body)).status;
   }
-  expect(refusals).toEqual({ 'foreign Origin': 403, 'no Origin': 403, 'form content type': 415 });
+  expect(refusals).toEqual({
+    'foreign Origin': 403,
+    'no Origin': 403,
+    'form content type': 415,
+    'no session': 401,
+  });
   expect((await api.audit(record.id)).entries).toHaveLength(1);
 
   // OEE unchanged: byte for byte in the API, and on the dashboard's cards.

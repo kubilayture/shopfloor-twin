@@ -3,6 +3,7 @@
  * apps never share code), the gateway's metrics and the MES's REST API (the shared
  * `@shopfloor/contracts/mes-api` schemas). Every answer is parsed at the boundary.
  */
+import { randomBytes } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import {
   alarmDetailSchema,
@@ -182,9 +183,23 @@ export class SimulatorClient {
 
 export class MesClient {
   readonly base: string;
+  /** The session cookie (`sft_session=…`) every API request sends (#170: MES_AUTH=on). */
+  readonly cookie: string | undefined;
 
-  constructor(base: string) {
+  constructor(base: string, cookie?: string) {
     this.base = base;
+    this.cookie = cookie;
+  }
+
+  /** The same MES with this session. */
+  withCookie(cookie: string): MesClient {
+    return new MesClient(this.base, cookie);
+  }
+
+  #get<T>(path: string, schema: z.ZodType<T>): Promise<T> {
+    return request(`${this.base}${path}`, schema, {
+      headers: this.cookie === undefined ? {} : { cookie: this.cookie },
+    });
   }
 
   async ready(): Promise<boolean> {
@@ -195,21 +210,21 @@ export class MesClient {
   }
 
   equipment() {
-    return request(`${this.base}/api/v1/equipment`, equipmentListSchema);
+    return this.#get(`/api/v1/equipment`, equipmentListSchema);
   }
 
   plant() {
-    return request(`${this.base}/api/v1/plant`, plantSchema);
+    return this.#get(`/api/v1/plant`, plantSchema);
   }
 
   /** `shiftKey` as the ground truth keys it: `2026-10-12/A`. */
   shiftTotals(shiftKey: string) {
-    return request(`${this.base}/api/v1/shifts/${shiftKey}/totals`, shiftTotalsSchema);
+    return this.#get(`/api/v1/shifts/${shiftKey}/totals`, shiftTotalsSchema);
   }
 
   /** OEE of one shift for every machine and work center (#120). */
   shiftOee(shiftKey: string) {
-    return request(`${this.base}/api/v1/shifts/${shiftKey}/oee`, shiftOeeSchema);
+    return this.#get(`/api/v1/shifts/${shiftKey}/oee`, shiftOeeSchema);
   }
 
   /** Alarm KPIs of the plant or a position per shift bucket over [from, to) (#142). */
@@ -221,7 +236,7 @@ export class MesClient {
       from: new Date(from).toISOString(),
       to: new Date(to).toISOString(),
     });
-    return request(`${this.base}/api/v1/alarms/kpi?${query.toString()}`, alarmKpiListSchema);
+    return this.#get(`/api/v1/alarms/kpi?${query.toString()}`, alarmKpiListSchema);
   }
 
   /** Alarm KPIs of a scope per hour or shift bucket over [from, to), as raw text (#147). */
@@ -257,10 +272,7 @@ export class MesClient {
       from: new Date(from).toISOString(),
       to: new Date(to).toISOString(),
     });
-    return request(
-      `${this.base}/api/v1/alarms/operator-kpi?${query.toString()}`,
-      operatorKpiListSchema,
-    );
+    return this.#get(`/api/v1/alarms/operator-kpi?${query.toString()}`, operatorKpiListSchema);
   }
 
   /** One view of the alarm list (#142): newest raise first, up to `limit`. */
@@ -271,35 +283,32 @@ export class MesClient {
       ...(from === undefined ? {} : { from }),
       ...(to === undefined ? {} : { to }),
     });
-    return request(`${this.base}/api/v1/alarms?${query.toString()}`, alarmListSchema);
+    return this.#get(`/api/v1/alarms?${query.toString()}`, alarmListSchema);
   }
 
   /** The plant and the operator positions with their equipment (#142). */
   alarmScopes() {
-    return request(`${this.base}/api/v1/alarms/scopes`, alarmScopesSchema);
+    return this.#get(`/api/v1/alarms/scopes`, alarmScopesSchema);
   }
 
   alarm(id: string) {
-    return request(`${this.base}/api/v1/alarms/${encodeURIComponent(id)}`, alarmDetailSchema);
+    return this.#get(`/api/v1/alarms/${encodeURIComponent(id)}`, alarmDetailSchema);
   }
 
   alarmHistory(id: string) {
-    return request(
-      `${this.base}/api/v1/alarms/${encodeURIComponent(id)}/history`,
-      alarmHistorySchema,
-    );
+    return this.#get(`/api/v1/alarms/${encodeURIComponent(id)}/history`, alarmHistorySchema);
   }
 
   pointAudit(equipment: string, code: string) {
-    return request(
-      `${this.base}/api/v1/alarm-points/${encodeURIComponent(equipment)}/${encodeURIComponent(code)}/audit`,
+    return this.#get(
+      `/api/v1/alarm-points/${encodeURIComponent(equipment)}/${encodeURIComponent(code)}/audit`,
       alarmPointAuditSchema,
     );
   }
 
   /** The stored shift instance (#144) and the calendar's shifts over a range. */
   shiftRecord(shiftKey: string) {
-    return request(`${this.base}/api/v1/shifts/${shiftKey}`, shiftRecordSchema);
+    return this.#get(`/api/v1/shifts/${shiftKey}`, shiftRecordSchema);
   }
 
   shifts(from: number, to: number) {
@@ -307,12 +316,12 @@ export class MesClient {
       from: new Date(from).toISOString(),
       to: new Date(to).toISOString(),
     });
-    return request(`${this.base}/api/v1/shifts?${query.toString()}`, shiftListSchema);
+    return this.#get(`/api/v1/shifts?${query.toString()}`, shiftListSchema);
   }
 
   /** The shift report (#144): parsed, and as raw text for byte-for-byte comparisons. */
   shiftReport(shiftKey: string) {
-    return request(`${this.base}/api/v1/shifts/${shiftKey}/report`, shiftReportSchema);
+    return this.#get(`/api/v1/shifts/${shiftKey}/report`, shiftReportSchema);
   }
 
   shiftReportText(shiftKey: string): Promise<string> {
@@ -322,7 +331,10 @@ export class MesClient {
   /** A GET answer as raw text (`path` from `/api/v1`), for byte-for-byte comparisons. */
   async text(path: string): Promise<string> {
     const url = `${this.base}${path}`;
-    const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(5_000),
+      headers: this.cookie === undefined ? {} : { cookie: this.cookie },
+    });
     const text = await response.text();
     if (!response.ok) throw new Error(`GET ${url}: ${String(response.status)} ${text}`);
     return text;
@@ -331,35 +343,35 @@ export class MesClient {
   /** The same answer as raw text, for a byte-for-byte comparison (#123). */
   async shiftOeeText(shiftKey: string): Promise<string> {
     const url = `${this.base}/api/v1/shifts/${shiftKey}/oee`;
-    const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(5_000),
+      headers: this.cookie === undefined ? {} : { cookie: this.cookie },
+    });
     const text = await response.text();
     if (!response.ok) throw new Error(`GET ${url}: ${String(response.status)} ${text}`);
     return text;
   }
 
   currentShift() {
-    return request(`${this.base}/api/v1/shifts/current`, currentShiftSchema);
+    return this.#get(`/api/v1/shifts/current`, currentShiftSchema);
   }
 
   reasonCodes() {
-    return request(`${this.base}/api/v1/reason-codes`, reasonCodesSchema);
+    return this.#get(`/api/v1/reason-codes`, reasonCodesSchema);
   }
 
   downtime(from: string, to: string) {
     const query = new URLSearchParams({ from, to });
-    return request(`${this.base}/api/v1/downtime?${query.toString()}`, downtimeListSchema);
+    return this.#get(`/api/v1/downtime?${query.toString()}`, downtimeListSchema);
   }
 
   pareto(scope: 'equipment' | 'work-center', id: string, from: string, to: string) {
     const query = new URLSearchParams({ scope, id, from, to });
-    return request(`${this.base}/api/v1/downtime/pareto?${query.toString()}`, paretoSchema);
+    return this.#get(`/api/v1/downtime/pareto?${query.toString()}`, paretoSchema);
   }
 
   audit(id: string) {
-    return request(
-      `${this.base}/api/v1/downtime/${encodeURIComponent(id)}/audit`,
-      downtimeAuditSchema,
-    );
+    return this.#get(`/api/v1/downtime/${encodeURIComponent(id)}/audit`, downtimeAuditSchema);
   }
 }
 
@@ -372,20 +384,115 @@ export function rawRequest(
   url: string,
   headers: Readonly<Record<string, string>>,
   body?: string,
-): Promise<{ status: number; text: string }> {
+): Promise<{ status: number; text: string; setCookie: readonly string[] }> {
   return new Promise((resolve, reject) => {
     const req = httpRequest(new URL(url), { method, headers, timeout: 5_000 }, (response) => {
       let text = '';
       response.setEncoding('utf8');
       response.on('data', (chunk: string) => (text += chunk));
       response.on('end', () => {
-        resolve({ status: response.statusCode ?? 0, text });
+        resolve({
+          status: response.statusCode ?? 0,
+          text,
+          setCookie: response.headers['set-cookie'] ?? [],
+        });
       });
     });
     req.on('timeout', () => req.destroy(new Error(`${method} ${url}: timed out`)));
     req.on('error', reject);
     req.end(body);
   });
+}
+
+// Identity (#170): logins and user administration through the MES API, as a browser page of the
+// MES's own origin would send them (ADR-0023 guards: Origin, JSON).
+
+/** A JSON write to the MES with its own origin and, if given, the session cookie. */
+export async function mesWrite(
+  base: string,
+  method: 'POST' | 'PUT' | 'DELETE',
+  path: string,
+  body: unknown,
+  cookie?: string,
+): Promise<{ status: number; text: string; setCookie: readonly string[] }> {
+  return rawRequest(
+    method,
+    `${base}${path}`,
+    {
+      origin: new URL(base).origin,
+      'content-type': 'application/json',
+      ...(cookie === undefined ? {} : { cookie }),
+    },
+    JSON.stringify(body),
+  );
+}
+
+/** Logs in; resolves with the session cookie and whether the password must change first. */
+export async function mesLogin(
+  base: string,
+  username: string,
+  password: string,
+): Promise<{ cookie: string; mustChangePassword: boolean }> {
+  const answer = await mesWrite(base, 'POST', '/api/v1/session', { username, password });
+  if (answer.status !== 200) {
+    throw new Error(`login as ${username}: ${String(answer.status)} ${answer.text}`);
+  }
+  const cookie = answer.setCookie.map((c) => c.split(';')[0] ?? '').find((c) => c.includes('='));
+  if (cookie === undefined) throw new Error(`login as ${username} set no cookie`);
+  const session = z
+    .object({ user: z.object({ mustChangePassword: z.boolean() }) })
+    .parse(JSON.parse(answer.text));
+  return { cookie, mustChangePassword: session.user.mustChangePassword };
+}
+
+/** A random password for a generated test user (never written anywhere). */
+export const generatedPassword = (): string => randomBytes(18).toString('base64url');
+
+/**
+ * Users for a test run (#170), made through the API with the bootstrap admin: it logs in with its
+ * temporary password, changes it, creates each user with a temporary password, and each user logs
+ * in and changes its own. Resolves with every user's final password and a logged-in cookie.
+ */
+export async function provisionUsers(
+  base: string,
+  bootstrapPassword: string,
+  users: readonly { readonly username: string; readonly roles: readonly string[] }[],
+): Promise<Map<string, { password: string; cookie: string }>> {
+  const done = new Map<string, { password: string; cookie: string }>();
+  const own = async (username: string, temporary: string) => {
+    const first = await mesLogin(base, username, temporary);
+    if (!first.mustChangePassword) throw new Error(`${username}: password not temporary`);
+    const password = generatedPassword();
+    const changed = await mesWrite(
+      base,
+      'POST',
+      '/api/v1/account/password',
+      { currentPassword: temporary, newPassword: password },
+      first.cookie,
+    );
+    if (changed.status !== 200) {
+      throw new Error(`${username}: password change ${String(changed.status)} ${changed.text}`);
+    }
+    const login = await mesLogin(base, username, password);
+    done.set(username, { password, cookie: login.cookie });
+    return login.cookie;
+  };
+  const admin = await own('admin', bootstrapPassword);
+  for (const user of users) {
+    const temporary = generatedPassword();
+    const created = await mesWrite(
+      base,
+      'POST',
+      '/api/v1/users',
+      { username: user.username, roles: user.roles, password: temporary },
+      admin,
+    );
+    if (created.status !== 200) {
+      throw new Error(`create ${user.username}: ${String(created.status)} ${created.text}`);
+    }
+    await own(user.username, temporary);
+  }
+  return done;
 }
 
 /** One gauge per label value from a Prometheus text exposition, e.g. per `machine`. */

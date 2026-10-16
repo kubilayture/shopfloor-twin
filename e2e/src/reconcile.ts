@@ -66,6 +66,7 @@ import {
   GatewayClient,
   MesClient,
   SimulatorClient,
+  provisionUsers,
   gauge,
   groundTruthSchema,
   type GroundTruth,
@@ -122,6 +123,8 @@ const OEE_FINAL_MS = 30_000;
 const DEADLINE_MS = Number(process.env.RECONCILE_DEADLINE_MS ?? 25 * 60_000);
 
 const project = process.env.RECONCILE_PROJECT ?? 'shopfloor-reconcile';
+/** The run's supervisor (#170): created per run, with a generated password. */
+const RECONCILE_USER = 'reconcile-supervisor';
 const skipBuild = process.env.RECONCILE_SKIP_BUILD === '1';
 const withBrowser = process.env.RECONCILE_BROWSER !== '0';
 
@@ -415,8 +418,21 @@ async function main(): Promise<boolean> {
         // 1. Database and broker, then the MES ready (migrated, subscribed to the UNS).
         log('starting db, broker and mes');
         await stack.compose(['up', '--detach', '--wait', '--no-build', 'db', 'broker', 'mes']);
-        const mes = new MesClient(await stack.url('mes', 4700));
-        await until('MES ready', () => mes.ready(), 60_000);
+        const mesBase = await stack.url('mes', 4700);
+        await until('MES ready', () => new MesClient(mesBase).ready(), 60_000);
+        // Identity (#170, MES_AUTH=on): the bootstrap admin (generated password, must change it)
+        // creates the run's supervisor through the API; every read and the browser log in as it.
+        const users = await provisionUsers(mesBase, stack.bootstrapAdminPassword, [
+          { username: RECONCILE_USER, roles: ['supervisor'] },
+        ]);
+        const supervisor = users.get(RECONCILE_USER);
+        if (!supervisor) throw new Error(`${RECONCILE_USER} was not created`);
+        const mes = new MesClient(mesBase, supervisor.cookie);
+        const browserLogin = {
+          RECONCILE_USERNAME: RECONCILE_USER,
+          RECONCILE_PASSWORD: supervisor.password,
+        };
+        log(`logged in as ${RECONCILE_USER} (supervisor, made by the bootstrap admin)`);
         phase('mesReady');
 
         // 2. The simulator, idle at 06:00, and the gateway connected to it and to the broker. The
@@ -507,6 +523,7 @@ async function main(): Promise<boolean> {
             RECONCILE_SHIFT: shiftKey,
             RECONCILE_ALARMS_UNTIL: new Date(alarmsUntil).toISOString(),
             RECONCILE_OEE_UNTIL: new Date(oeeUntil).toISOString(),
+            ...browserLogin,
           });
         }
 
@@ -1090,6 +1107,7 @@ async function main(): Promise<boolean> {
             RECONCILE_WEB_URL: webUrl,
             RECONCILE_RESULTS: RESULTS,
             RECONCILE_SHIFT: shiftKey,
+            ...browserLogin,
           });
           const exitCode = await browser;
           browser = undefined;

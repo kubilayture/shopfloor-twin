@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { PROBLEM_TYPES, type HandoverNotes } from '@shopfloor/contracts/mes-api';
 import { expect, test } from '@playwright/test';
 import { MesClient, rawRequest } from '../../src/clients.ts';
+import { logIn, reconcileUser } from '../login.ts';
 
 /**
  * Phase 6 exit criteria 4 and 5, the handover part (#147): on shift A's final report, an operator
@@ -18,7 +19,8 @@ import { MesClient, rawRequest } from '../../src/clients.ts';
 const webUrl = process.env.RECONCILE_WEB_URL;
 const results = process.env.RECONCILE_RESULTS;
 const shiftKey = process.env.RECONCILE_SHIFT ?? '2026-10-12/A';
-const AUTHOR = 'reconcile e2e';
+/** The note's author is the logged-in user (#170). */
+const AUTHOR = reconcileUser;
 const TEXT = 'Flood on Cell M1 at 08:00 handled; coolant line on CNC-01 to watch (#147).';
 const EDITED = `${TEXT} Edited: the maintenance ticket is open.`;
 /** Alarms of shift A acknowledged and codings saved by the `final` files before this one. */
@@ -41,7 +43,7 @@ test('a handover note written and edited through the UI revises the content, not
   test.skip(!webUrl, 'runs inside pnpm test:reconcile, after the drain');
   test.setTimeout(120_000);
   const base = webUrl ?? '';
-  const api = new MesClient(base);
+  const api = new MesClient(base, await logIn(page));
   const [date, shiftName] = shiftKey.split('/');
 
   const beforeText = await api.shiftReportText(shiftKey);
@@ -85,7 +87,8 @@ test('a handover note written and edited through the UI revises the content, not
   await expect(report).toHaveAttribute('data-revision-inputs', '0');
 
   // Write the note.
-  await page.getByTestId('note-author').fill(AUTHOR);
+  // No name to type any more (#170): the MES takes it from the session.
+  await expect(page.getByTestId('note-author')).toHaveCount(0);
   const form = page.getByTestId('new-note');
   await form.getByTestId('note-category').selectOption('equipment');
   await form.getByTestId('note-text-input').fill(TEXT);
@@ -132,15 +135,15 @@ test('a handover note written and edited through the UI revises the content, not
   expect(
     audit.entries.map((e) => [e.action, e.version, e.actor, e.authenticated, e.after.text]),
   ).toEqual([
-    ['edited', 2, AUTHOR, false, EDITED],
-    ['created', 1, AUTHOR, false, TEXT],
+    ['edited', 2, AUTHOR, true, EDITED],
+    ['created', 1, AUTHOR, true, TEXT],
   ]);
   expect(audit.entries[0]?.before?.text).toBe(TEXT);
   for (const entry of audit.entries) expect(entry.requestId).toMatch(/\S/);
 
   // Note writes the MES must refuse (ADR-0023), each with its problem type; nothing is stored.
   const url = `${base}/api/v1/shifts/${shiftKey}/notes`;
-  const body = JSON.stringify({ author: AUTHOR, text: 'refused', category: 'general' });
+  const body = JSON.stringify({ text: 'refused', category: 'general' });
   const json = { 'content-type': 'application/json' };
   const refusals: Record<string, { status: number; type: string }> = {};
   for (const [name, headers] of [
@@ -150,6 +153,8 @@ test('a handover note written and edited through the UI revises the content, not
       'form content type',
       { origin: new URL(base).origin, 'content-type': 'application/x-www-form-urlencoded' },
     ],
+    // The page's own origin and JSON, but no session (#170).
+    ['no session', { origin: new URL(base).origin, ...json }],
   ] as const) {
     const answer = await rawRequest('POST', url, headers, body);
     refusals[name] = {
@@ -161,6 +166,7 @@ test('a handover note written and edited through the UI revises the content, not
     'foreign Origin': { status: 403, type: PROBLEM_TYPES.writeOrigin },
     'no Origin': { status: 403, type: PROBLEM_TYPES.writeOrigin },
     'form content type': { status: 415, type: PROBLEM_TYPES.writeNotJson },
+    'no session': { status: 401, type: PROBLEM_TYPES.unauthenticated },
   });
 
   // The report after: content +2, contentAtFinal and inputs unchanged, OEE and alarms byte for

@@ -59,6 +59,17 @@ export function parseEnv(source: Readonly<Record<string, string | undefined>>): 
   );
   const result = envSchema.safeParse(known);
   if (result.success) {
+    // `*` answers any Host, which turns off the DNS-rebinding check: with writes on, a page on a
+    // rebound name would be same-origin and could write (ADR-0023).
+    const anyHost = result.data.HTTP_ALLOWED_HOSTS.split(',').some((host) => host.trim() === '*');
+    if (anyHost && result.data.MES_WRITES === 'on') {
+      return {
+        ok: false,
+        issues: [
+          'HTTP_ALLOWED_HOSTS: `*` turns off the DNS-rebinding check; not allowed while MES_WRITES=on (got "*")',
+        ],
+      };
+    }
     return { ok: true, env: result.data };
   }
   return {

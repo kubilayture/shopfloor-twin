@@ -258,5 +258,12 @@ describe('MES server basics (#93)', () => {
     expect(off.ok && off.env.MES_WRITES).toBe('off');
     const bad = parseEnv({ ...base, MES_WRITES: 'false' });
     expect(!bad.ok && bad.issues.map((i) => i.split(':')[0])).toEqual(['MES_WRITES']);
+    // Any Host (`*`) would let a rebound name write: refused unless writes are off.
+    const anyHost = parseEnv({ ...base, HTTP_ALLOWED_HOSTS: 'localhost, *' });
+    expect(!anyHost.ok && anyHost.issues).toEqual([
+      expect.stringMatching(/^HTTP_ALLOWED_HOSTS: .*MES_WRITES=on/),
+    ]);
+    const readOnly = parseEnv({ ...base, HTTP_ALLOWED_HOSTS: '*', MES_WRITES: 'off' });
+    expect(readOnly.ok && readOnly.env.HTTP_ALLOWED_HOSTS).toBe('*');
   });
 });

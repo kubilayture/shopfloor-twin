@@ -7,7 +7,7 @@ import { idealCycleMs, loadPlantConfig, type PlantConfig } from '@shopfloor/plan
 import type { FastifyInstance } from 'fastify';
 import { sql, type Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Database } from './db/database.ts';
 import { buildMesHttp } from './http.ts';
 import {
@@ -15,6 +15,7 @@ import {
   Equipment,
   clipToRecords,
   downtimeRules,
+  type CodingChange,
 } from './modules/equipment/index.ts';
 import { PLANT_CONFIG, UnsFeed, freshDatabase } from './modules/equipment/test-support.ts';
 import { Ingest } from './modules/ingest/index.ts';
@@ -197,6 +198,13 @@ describe('write guards (ADR-0023)', () => {
       ],
       ['other port', { ...JSON_WRITE, origin: 'http://localhost:5173' }, 403, /origin not allowed/],
       ['null Origin', { ...JSON_WRITE, origin: 'null' }, 403, /origin not allowed/],
+      ['Origin with a path', { ...JSON_WRITE, origin: `${ORIGIN}/` }, 403, /origin not allowed/],
+      [
+        'Origin with userinfo',
+        { ...JSON_WRITE, origin: `http://u@${HOST}` },
+        403,
+        /origin not allowed/,
+      ],
       [
         'cross-site fetch',
         { ...JSON_WRITE, 'sec-fetch-site': 'cross-site' },
@@ -610,7 +618,12 @@ describe('coding downtime records (#121)', () => {
       (m) => m.type === 'downtime' && m.event === 'recoded' && m.record.id === DOWN_ID,
     );
     expect(pushed).toMatchObject({
-      record: { reason: 'SETUP/TOOL-CHANGE', autoReason: 'BREAKDOWN/SPINDLE-OVERLOAD' },
+      record: {
+        reason: 'SETUP/TOOL-CHANGE',
+        autoReason: 'BREAKDOWN/SPINDLE-OVERLOAD',
+        // The coding set's new version, as the PUT answered it.
+        version: codingResultSchema.parse(response.json()).version,
+      },
     });
     // OEE did not change, so its topic sends nothing.
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -765,6 +778,56 @@ describe('codings after a re-cut (#121)', () => {
     );
     expect(pareto.reasons).toEqual([]);
   });
+
+  it('holds a re-cut of the record back until the write committed (FOR SHARE)', async () => {
+    // ASM-01 is down 06:00-06:30.
+    await send(
+      feed.state('asm-01', E1, 1, at('03:00'), 'Running'),
+      feed.state('asm-01', E1, 2, at('06:00'), 'Down', 'PRESS-FAULT'),
+      feed.state('asm-01', E1, 3, at('06:30'), 'Running'),
+    );
+    await equipment.flush();
+    const id = `asm-01~${String(E1)}~${String(at('06:00'))}`;
+    const first = codingResultSchema.parse(
+      (await put(id, { segments: [], codedBy: 'x', version: await version(id) })).json(),
+    );
+    // Another write holds the coding set, so this one waits after reading its record.
+    let release = (): void => undefined;
+    let locked = (): void => undefined;
+    const isLocked = new Promise<void>((resolve) => (locked = resolve));
+    const holder = db.transaction().execute(async (trx) => {
+      await trx
+        .selectFrom('equipment.downtime_coding_set')
+        .select('version')
+        .where('equipment', '=', 'asm-01')
+        .forUpdate()
+        .execute();
+      locked();
+      await new Promise<void>((resolve) => (release = resolve));
+    });
+    await isLocked;
+    const write = put(id, {
+      segments: [{ from: iso('06:00'), to: iso('06:30'), reason: 'BREAKDOWN/PRESS-FAULT' }],
+      codedBy: 'Ayşe',
+      version: first.version,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // A rebuild deleting the record must wait for the write (here: give up after 300 ms).
+    await expect(
+      db.transaction().execute(async (trx) => {
+        await sql`SET LOCAL lock_timeout = '300ms'`.execute(trx);
+        await trx
+          .deleteFrom('equipment.downtime_record')
+          .where('equipment', '=', 'asm-01')
+          .where('start_time', '=', new Date(at('06:00')))
+          .execute();
+      }),
+    ).rejects.toThrow(/lock timeout/);
+    release();
+    await holder;
+    expect((await write).statusCode).toBe(200);
+    expect((await records('asm-01')).find((r) => r.id === id)?.codings).toHaveLength(1);
+  });
 });
 
 describe('clipping (pure)', () => {
@@ -792,5 +855,69 @@ describe('clipping (pure)', () => {
         { from: 20, to: 30 },
       ],
     });
+  });
+
+  it('backs failed clips off exponentially, up to 30 s, and resets after a success', async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      let healthy = false;
+      const changed: ((change: CodingChange) => void)[] = [];
+      const failing = new DowntimeCoding({
+        // Only `transaction` is used by a clip; it fails until `healthy`.
+        db: {
+          transaction: () => ({
+            execute: () => {
+              attempts++;
+              return healthy ? Promise.resolve(undefined) : Promise.reject(new Error('down'));
+            },
+          }),
+        } as unknown as Kysely<Database>,
+        equipment: {
+          onPiecesChanged: (listener) => {
+            changed.push(listener);
+            return () => undefined;
+          },
+          watermark: () => undefined,
+        },
+        codable: () => Promise.resolve(true),
+        debounceMs: 100,
+      });
+      const notify = () => {
+        for (const listener of changed) {
+          listener({ equipment: 'cnc-01', epoch: 1, from: new Date(0), to: new Date(3_600_000) });
+        }
+      };
+      const attemptsAt = async (ms: number): Promise<number> => {
+        await vi.advanceTimersByTimeAsync(ms);
+        return attempts;
+      };
+      // start() subscribes, then fails reading the coding sets from the fake database.
+      await failing.start().catch(() => undefined);
+      attempts = 0;
+      notify();
+      // 100 ms debounce, then 200, 400, 800 ms, …
+      expect(await attemptsAt(100)).toBe(1);
+      expect(await attemptsAt(199)).toBe(1);
+      expect(await attemptsAt(1)).toBe(2);
+      expect(await attemptsAt(400)).toBe(3);
+      // More changes don't shorten the backoff.
+      notify();
+      expect(await attemptsAt(799)).toBe(3);
+      expect(await attemptsAt(1)).toBe(4);
+      // The wait is capped at 30 s.
+      await attemptsAt(60_000);
+      const before = attempts;
+      expect(await attemptsAt(30_000)).toBe(before + 1);
+      // A success resets it: the next change waits only the debounce.
+      healthy = true;
+      await attemptsAt(30_000);
+      notify();
+      const settled = attempts;
+      expect(await attemptsAt(100)).toBe(settled + 1);
+      failing.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

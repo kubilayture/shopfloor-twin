@@ -28,10 +28,10 @@ Chosen option: 2. Browsers always send `Origin` on POST, PUT and DELETE (also sa
 
 **Guards on every non-GET (and non-HEAD) request under `/api/v1`, in this order:**
 
-1. `Host` in `HTTP_ALLOWED_HOSTS` (the existing check of ADR-0019), else 403.
+1. `Host` in `HTTP_ALLOWED_HOSTS` (the existing check of ADR-0019), else 403. `HTTP_ALLOWED_HOSTS=*` turns that check off, so the MES refuses to start with it while `MES_WRITES=on`.
 2. `MES_WRITES=off` answers 405 with `Allow: GET, HEAD`.
 3. `Origin` present, else 403 (`a write needs an Origin header`). Tests and `curl` must set it.
-4. `Origin` same-origin with the request's `Host`, or listed in `HTTP_ALLOWED_ORIGINS`, else 403. **Same-origin compares host and port, not the scheme**: the MES itself speaks plain HTTP, and a TLS front (a later phase) would make the browser's origin `https://` while the MES sees `Host` only. That is acceptable on loopback, where no network attacker can downgrade the scheme; a deployment beyond loopback needs identity (Phase 7) and hardening (Phase 9) first.
+4. `Origin` same-origin with the request's `Host`, or listed in `HTTP_ALLOWED_ORIGINS`, else 403. Only an exact origin string counts (`scheme://host[:port]`, as browsers send it; no path, no user info). **Same-origin compares host and port, not the scheme**: the MES itself speaks plain HTTP, and a TLS front (a later phase) would make the browser's origin `https://` while the MES sees `Host` only. That is acceptable on loopback, where no network attacker can downgrade the scheme; a deployment beyond loopback needs identity (Phase 7) and hardening (Phase 9) first.
 5. `Sec-Fetch-Site`, when present, must be `same-origin`, else 403. Browsers send it on every request; a `same-site` page (another port on localhost) or a `cross-site` one is refused even before the Origin check could be fooled. Non-browser clients don't send it.
 6. `Content-Type: application/json` (parameters such as `charset` allowed), else 415. So a cross-site form or other simple request never reaches a handler.
 7. A **global** write rate limit, a token bucket for all clients together (10 per second, bursts of 20), else 429 with `Retry-After`. A per-client limit means nothing behind nginx.
@@ -54,6 +54,7 @@ The answer to a write carries `X-Request-Id` (a UUID per request, Fastify's requ
 - Good: no other page can write, also not through DNS rebinding or a form; no token to hand out, store or rotate.
 - Good: every write is audited with a request id that also appears in the MES log; the audit can't be edited from the MES's connection.
 - Good: concurrent screens can't silently overwrite each other's codings.
+- Bad: the trigger binds the MES's connection, not the database owner: the role the MES connects as owns the table and could `ALTER TABLE … DISABLE TRIGGER`. Separate roles (the MES writing as a role that doesn't own its tables) come with identity and hardening (Phases 7 and 9).
 - Bad: anyone with a browser on the machine can write under any name. That is the accepted risk until identity (Phase 7); the audit marks every entry unauthenticated.
 - Bad: the same-origin check ignores the scheme; acceptable on loopback only (see above).
 - Bad: one global rate limit lets one noisy client slow everyone's writes; at plant-floor rates (a few codings a minute) it never triggers.

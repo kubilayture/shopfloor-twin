@@ -13,6 +13,8 @@ const DAY = 24 * 3_600_000;
 /** 0001-01-01 and 9999-12-31: bounds of an open-ended range that PostgreSQL takes. */
 const EARLIEST = -62_135_596_800_000;
 const LATEST = 253_402_214_400_000;
+/** The longest wait before a failed clip is tried again. */
+const MAX_RETRY_MS = 30_000;
 
 /** One stored coding (not orphaned), as the records and the API show it. */
 export interface Coding {
@@ -311,6 +313,8 @@ export class DowntimeCoding {
   readonly #pending = new Map<string, { equipment: string; epoch: number } & Range>();
   #timer: NodeJS.Timeout | undefined;
   #running: Promise<void> | undefined;
+  /** Clip passes failed in a row: the backoff of the next one. */
+  #failures = 0;
   #detach: (() => void) | undefined;
 
   constructor(options: DowntimeCodingOptions) {
@@ -384,12 +388,16 @@ export class DowntimeCoding {
     }
     const id = recordId(key);
     const result = await this.#db.transaction().execute(async (trx) => {
+      // FOR SHARE: a rebuild that re-cuts this record (it deletes or rewrites the row) waits for
+      // this write, so its `onPiecesChanged`, and the clip that follows, see the new codings. A
+      // plain read would let a re-cut commit in between and leave the coding outside its record.
       const record = await trx
         .selectFrom('equipment.downtime_record')
         .select(['start_time', 'end_time'])
         .where('equipment', '=', key.equipment)
         .where('epoch', '=', key.epoch)
         .where('start_time', '=', key.start)
+        .forShare()
         .executeTakeFirst();
       if (!record) throw new CodingError('not-found', `no downtime record ${id}`);
       const start = record.start_time.getTime();
@@ -558,13 +566,19 @@ export class DowntimeCoding {
       from: Math.min(pending?.from ?? from, from),
       to: Math.max(pending?.to ?? to, to),
     });
+    // While clips fail, the next pass waits for the backoff instead.
+    if (this.#failures === 0) this.#schedule(this.#options.debounceMs ?? 100);
+  }
+
+  #schedule(delayMs: number): void {
     this.#timer ??= setTimeout(() => {
       this.#timer = undefined;
       this.#running ??= this.#pass();
-    }, this.#options.debounceMs ?? 100).unref();
+    }, delayMs).unref();
   }
 
   async #pass(): Promise<void> {
+    let failed = false;
     try {
       const work = [...this.#pending.values()];
       this.#pending.clear();
@@ -577,12 +591,25 @@ export class DowntimeCoding {
             to: item.to + DAY,
           });
         } catch (error) {
+          failed = true;
           this.#options.log?.error({ err: error }, 'clipping downtime codings failed; retrying');
-          this.#note(item.equipment, item.epoch, item.from, item.to);
+          const key = pairKey(item.equipment, item.epoch);
+          const pending = this.#pending.get(key);
+          this.#pending.set(key, {
+            ...item,
+            from: Math.min(pending?.from ?? item.from, item.from),
+            to: Math.max(pending?.to ?? item.to, item.to),
+          });
         }
       }
     } finally {
       this.#running = undefined;
+      const debounce = this.#options.debounceMs ?? 100;
+      // Failures back off exponentially (0.2 s, 0.4 s, … at most 30 s); a success resets it.
+      this.#failures = failed ? this.#failures + 1 : 0;
+      if (this.#pending.size > 0) {
+        this.#schedule(failed ? Math.min(MAX_RETRY_MS, debounce * 2 ** this.#failures) : debounce);
+      }
     }
   }
 

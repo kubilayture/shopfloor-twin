@@ -174,7 +174,9 @@ export function hostName(host: string): string {
  */
 export function sameOrigin(origin: string, host: string | undefined): boolean {
   try {
-    return new URL(origin).host === host;
+    const url = new URL(origin);
+    // Only an exact origin string (scheme://host[:port], nothing after it) is one.
+    return url.origin === origin && url.host === host;
   } catch {
     return false;
   }

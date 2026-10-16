@@ -198,7 +198,6 @@ export function plantTimeInRecord(text: string, record: DowntimeRecordDto): numb
 
 export interface Draft {
   readonly segments: readonly DraftSegment[];
-  readonly codedBy: string;
 }
 
 /** What is wrong with the form, for people; empty when it can be sent. */
@@ -208,11 +207,6 @@ export function validateDraft(
   reasons: readonly ReasonOption[],
 ): string[] {
   const errors: string[] = [];
-  const codedBy = draft.codedBy.trim();
-  if (codedBy.length === 0) errors.push('Enter your name in "Coded by".');
-  if (codedBy.length > MES_API_LIMITS.codedBy) {
-    errors.push(`"Coded by" may have at most ${String(MES_API_LIMITS.codedBy)} characters.`);
-  }
   const start = Date.parse(record.start);
   const end = recordEnd(record);
   const coded = draft.segments.filter((segment) => segment.reason !== '');
@@ -241,7 +235,8 @@ export function validateDraft(
 
 /**
  * The `PUT /downtime/{id}/coding` body: the segments with a reason (others keep the auto
- * reason), `codedBy` trimmed and the record's `version` as read. Checked with the shared schema.
+ * reason) and the record's `version` as read; the MES records the session's user as the coder
+ * (#170). Checked with the shared schema.
  */
 export function codingBody(draft: Draft, version: number): CodingRequest {
   const body: CodingRequest = {
@@ -253,7 +248,6 @@ export function codingBody(draft: Draft, version: number): CodingRequest {
         reason: segment.reason,
         ...(segment.comment.trim() === '' ? {} : { comment: segment.comment.trim() }),
       })),
-    codedBy: draft.codedBy.trim(),
     version,
   };
   codingRequestSchema.parse(body);
@@ -270,23 +264,4 @@ export function codingFailure(error: unknown): WriteFailure {
     conflict:
       'the codings of this machine changed since the record was read (another coding of the same machine, or a re-cut). The record was reloaded; check it and code again.',
   });
-}
-
-const CODED_BY_KEY = 'shopfloor.codedBy';
-
-/** The operator's name from the last coding on this browser; storage may be unavailable. */
-export function loadCodedBy(storage: () => Storage = () => globalThis.localStorage): string {
-  try {
-    return storage().getItem(CODED_BY_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-export function saveCodedBy(value: string, storage: () => Storage = () => globalThis.localStorage) {
-  try {
-    storage().setItem(CODED_BY_KEY, value.trim());
-  } catch {
-    // Private mode or blocked storage: the name is typed again next time.
-  }
 }

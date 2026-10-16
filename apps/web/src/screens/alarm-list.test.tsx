@@ -1,6 +1,6 @@
 import type { AlarmConfig, AlarmOccurrenceDto, AlarmPointDto } from '@shopfloor/contracts/mes-api';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ACK,
   SCOPES,
@@ -12,7 +12,7 @@ import {
   point,
   shelf,
 } from '../test/alarm-fixtures.ts';
-import { EQUIPMENT, PLANT, json, problem } from '../test/fixtures.ts';
+import { EQUIPMENT, PLANT, json, problem, sessionOf } from '../test/fixtures.ts';
 import { requestBody, requestUrl } from '../test/oee-fixtures.ts';
 import { renderApp } from '../test/render-app.tsx';
 
@@ -144,32 +144,7 @@ function mes(state: State, post: Post = () => json({})) {
   return { calls, fetch };
 }
 
-/** An in-memory Storage: Node's own `localStorage` global (without a file) shadows jsdom's. */
-function memoryStorage(): Storage {
-  const values = new Map<string, string>();
-  return {
-    get length() {
-      return values.size;
-    },
-    clear: () => {
-      values.clear();
-    },
-    getItem: (key) => values.get(key) ?? null,
-    key: (index) => [...values.keys()][index] ?? null,
-    removeItem: (key) => {
-      values.delete(key);
-    },
-    setItem: (key, value) => {
-      values.set(key, value);
-    },
-  };
-}
-
 const empty = (): State => ({ active: [], acknowledged: [], shelved: [], history: [], points: [] });
-
-beforeEach(() => {
-  vi.stubGlobal('localStorage', memoryStorage());
-});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -279,7 +254,6 @@ describe('alarm list', () => {
   });
 
   it('acknowledges the selected alarms in one bulk request', async () => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     const a = occurrence(1);
     const b = occurrence(2);
     const c = occurrence(3, { state: 'unacked-cleared', endedAt: '2026-10-15T05:10:00.000Z' });
@@ -309,7 +283,7 @@ describe('alarm list', () => {
     expect(message.textContent).toBe('Acknowledged 1 (1 already acknowledged).');
     const post = server.calls.find((call) => call.method === 'POST');
     expect(post?.path).toBe('/api/v1/alarms/ack');
-    expect(post?.body).toEqual({ ids: [c.id, a.id], actor: 'Ayşe' });
+    expect(post?.body).toEqual({ ids: [c.id, a.id] });
     // The selection is cleared, and select all picks every alarm that can be acknowledged.
     expect(screen.getByTestId<HTMLInputElement>(`select-${a.id}`).checked).toBe(false);
     fireEvent.click(screen.getByTestId('select-all'));
@@ -318,7 +292,7 @@ describe('alarm list', () => {
     expect(screen.getByTestId('ack-selected').textContent).toContain('(0)');
   });
 
-  it('asks for the operator name before any write and remembers it', async () => {
+  it("acknowledges as the session's user, with no name to type", async () => {
     const a = occurrence(1);
     const server = mes({ ...empty(), active: [a] }, () =>
       json({ occurrence: { ...a, state: 'acked-active', acknowledged: ACK }, changed: true }),
@@ -326,18 +300,11 @@ describe('alarm list', () => {
     vi.stubGlobal('fetch', server.fetch);
     await renderApp('/alarms');
     fireEvent.click(await screen.findByTestId(`ack-${a.id}`));
-    const message = screen.getByTestId('alarm-list-message');
-    expect(message.dataset.kind).toBe('invalid');
-    expect(document.activeElement).toBe(screen.getByTestId('operator-name'));
-    expect(server.calls.some((call) => call.method === 'POST')).toBe(false);
-
-    fireEvent.change(screen.getByTestId('operator-name'), { target: { value: ' Ali ' } });
-    fireEvent.click(screen.getByTestId(`ack-${a.id}`));
+    expect(screen.queryByTestId('operator-name')).toBeNull();
     await waitFor(() => {
       expect(screen.getByTestId('alarm-list-message').dataset.kind).toBe('saved');
     });
-    expect(server.calls.find((call) => call.method === 'POST')?.body).toEqual({ actor: 'Ali' });
-    expect(localStorage.getItem('shopfloor.codedBy')).toBe('Ali');
+    expect(server.calls.find((call) => call.method === 'POST')?.body).toEqual({});
     // The answer is applied at once: the alarm moves to the acknowledged list.
     await waitFor(() => {
       expect(screen.queryByTestId(`alarm-row-${a.id}`)).toBeNull();
@@ -351,7 +318,6 @@ describe('alarm list', () => {
     [422, 'Unprocessable Entity', 'not applicable', /cannot apply this acknowledgement/],
     [429, 'Too Many Requests', 'write rate limit', /too many writes/],
   ])('explains a %i on acknowledge', async (status, title, detail, expected) => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     const a = occurrence(1);
     const server = mes({ ...empty(), active: [a] }, () =>
       problem(status, title, detail, '/api/v1/alarms/x/ack'),
@@ -415,7 +381,6 @@ describe('alarm list', () => {
 
 describe('alarm panel', () => {
   it('shows the definition, comments and history, and acknowledges with a comment', async () => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     const a = occurrence(1, { comments: 1 });
     const server = mes({ ...empty(), active: [a], points: [point()] }, (path, body) =>
       path.endsWith('/comments')
@@ -447,9 +412,10 @@ describe('alarm panel', () => {
     const panel = await screen.findByTestId('alarm-panel');
     expect(panel.dataset.alarm).toBe(a.id);
     await within(panel).findByText('Check the pump');
-    expect((await within(panel).findByTestId('comment')).textContent).toContain(
-      'checking the pump',
-    );
+    const comment = await within(panel).findByTestId('comment');
+    expect(comment.textContent).toContain('checking the pump');
+    // A legacy comment typed before login says so.
+    expect(comment.textContent).toContain('Mehmet (not authenticated)');
     const entries = await within(panel).findAllByTestId('history-entry');
     expect(entries.map((entry) => entry.dataset.transition)).toEqual(['raised', 'comment']);
     expect(entries[0]?.textContent).toContain('seq 1');
@@ -463,7 +429,6 @@ describe('alarm panel', () => {
       expect(within(panel).getByTestId('alarm-message').textContent).toBe('Comment added.');
     });
     expect(server.calls.find((call) => call.path.endsWith('/comments'))?.body).toEqual({
-      actor: 'Ayşe',
       text: 'pump replaced',
     });
 
@@ -473,7 +438,6 @@ describe('alarm panel', () => {
       expect(within(panel).getByTestId('alarm-message').textContent).toBe('Acknowledged.');
     });
     expect(server.calls.find((call) => call.path.endsWith('/ack'))?.body).toEqual({
-      actor: 'Ayşe',
       comment: 'on it',
     });
     expect(within(panel).getByTestId('alarm-state').dataset.state).toBe('acked-active');
@@ -488,7 +452,6 @@ describe('alarm panel', () => {
   });
 
   it('on 409 reads the shelf again and sends the new version next time', async () => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     const a = occurrence(1);
     const state = { ...empty(), active: [a], points: [point({ shelf: shelf({ version: 1 }) })] };
     let posts = 0;
@@ -545,8 +508,8 @@ describe('alarm panel', () => {
     });
     const bodies = server.calls.filter((call) => call.method === 'POST').map((call) => call.body);
     expect(bodies).toEqual([
-      { actor: 'Ayşe', reason: 'sensor fault', durationMs: 3_600_000, version: 1 },
-      { actor: 'Ayşe', reason: 'sensor fault', durationMs: 3_600_000, version: 3 },
+      { reason: 'sensor fault', durationMs: 3_600_000, version: 1 },
+      { reason: 'sensor fault', durationMs: 3_600_000, version: 3 },
     ]);
     expect(server.calls.find((call) => call.method === 'POST')?.path).toBe(
       '/api/v1/alarm-points/cnc-01/COOLANT-PRESSURE/shelve',
@@ -603,7 +566,6 @@ describe('alarm panel', () => {
   });
 
   it('never sends a shelve draft over a shelf that moved on, and unshelves', async () => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     const a = occurrence(1);
     const state = { ...empty(), active: [a], points: [point({ shelf: shelf({ version: 1 }) })] };
     const server = mes(state, (path) =>
@@ -638,7 +600,6 @@ describe('alarm panel', () => {
       expect(screen.getByTestId('alarm-message').textContent).toBe('Unshelved.');
     });
     expect(server.calls.find((call) => call.method === 'POST')?.body).toEqual({
-      actor: 'Ayşe',
       version: 2,
     });
   });
@@ -663,7 +624,6 @@ describe('alarm panel', () => {
   });
 
   it('starts every draft afresh when another alarm is opened', async () => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     const a = occurrence(1);
     const b = occurrence(2);
     const server = mes({ ...empty(), active: [a, b], points: [point()] });
@@ -768,5 +728,96 @@ describe('alarm list after leaving it', () => {
       expect(screen.getByTestId('ack-selected').textContent).toContain('(0)');
     });
     expect(screen.getByTestId<HTMLInputElement>(`select-${a.id}`).checked).toBe(false);
+  });
+});
+
+describe('alarm writes by role (#170)', () => {
+  it('offers an admin no acknowledgement, comment or shelf action', async () => {
+    const a = occurrence(1);
+    const server = mes({
+      ...empty(),
+      active: [a],
+      points: [point({ shelf: shelf({ version: 1 }) })],
+    });
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp(`/alarms?alarm=${encodeURIComponent(a.id)}`, {
+      session: sessionOf(['admin']),
+    });
+    await screen.findByTestId(`alarm-row-${a.id}`);
+    expect(screen.queryByTestId(`ack-${a.id}`)).toBeNull();
+    expect(screen.queryByTestId(`select-${a.id}`)).toBeNull();
+    expect(screen.queryByTestId('ack-selected')).toBeNull();
+    const panel = await screen.findByTestId('alarm-panel');
+    // The alarm, its comments and history stay visible.
+    expect(await within(panel).findByTestId('comment')).toBeTruthy();
+    expect((await within(panel).findAllByTestId('history-entry')).length).toBe(2);
+    expect(within(panel).queryByTestId('ack-detail')).toBeNull();
+    expect(within(panel).queryByTestId('ack-comment')).toBeNull();
+    expect(within(panel).queryByTestId('comment-text')).toBeNull();
+    expect(within(panel).queryByTestId('add-comment')).toBeNull();
+    await waitFor(() => {
+      expect(within(panel).getByTestId('shelf-state').dataset.shelved).toBe('false');
+    });
+    expect(within(panel).queryByTestId('shelve')).toBeNull();
+    expect(within(panel).queryByTestId('shelve-reason')).toBeNull();
+  });
+
+  it('offers quality acknowledgement and comments but no shelving', async () => {
+    const a = occurrence(1);
+    const state = { ...empty(), active: [a], points: [point({ shelf: shelf({ version: 1 }) })] };
+    const server = mes(state, (path, body) =>
+      path.endsWith('/comments')
+        ? json({
+            comment: {
+              id: 8,
+              text: (body as { text: string }).text,
+              actor: 'ayse',
+              authenticated: true,
+              at: '2026-10-16T08:01:00.000Z',
+              plantAt: null,
+              requestId: 'req-2',
+            },
+            occurrence: { ...a, comments: 2 },
+          })
+        : json({ occurrence: { ...a, state: 'acked-active', acknowledged: ACK }, changed: true }),
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp(`/alarms?alarm=${encodeURIComponent(a.id)}`, {
+      session: sessionOf(['quality']),
+    });
+    await app.open();
+    await screen.findByTestId(`alarm-row-${a.id}`);
+    expect(screen.getByTestId(`ack-${a.id}`)).toBeTruthy();
+    expect(screen.getByTestId('ack-selected')).toBeTruthy();
+    const panel = await screen.findByTestId('alarm-panel');
+    expect(within(panel).getByTestId('ack-detail')).toBeTruthy();
+    await waitFor(() => {
+      expect(within(panel).getByTestId('shelf-state').dataset.shelved).toBe('false');
+    });
+    expect(within(panel).queryByTestId('shelve')).toBeNull();
+
+    fireEvent.change(within(panel).getByTestId('comment-text'), { target: { value: 'seen' } });
+    fireEvent.click(within(panel).getByTestId('add-comment'));
+    await waitFor(() => {
+      expect(within(panel).getByTestId('alarm-message').textContent).toBe('Comment added.');
+    });
+    fireEvent.click(within(panel).getByTestId('ack-detail'));
+    await waitFor(() => {
+      expect(within(panel).getByTestId('alarm-message').textContent).toBe('Acknowledged.');
+    });
+    const posts = server.calls.filter((call) => call.method === 'POST');
+    expect(posts.map((call) => call.body)).toEqual([{ text: 'seen' }, {}]);
+    for (const post of posts) expect(post.body).not.toHaveProperty('actor');
+
+    // A shelf made by someone else is shown, but not offered to be lifted.
+    await app.push({
+      type: 'alarm-point',
+      event: 'shelved',
+      point: point({ shelf: shelf({ shelved: true, version: 2, by: 'mehmet', reason: 'test' }) }),
+    });
+    await waitFor(() => {
+      expect(within(panel).getByTestId('shelf-state').textContent).toContain('mehmet');
+    });
+    expect(within(panel).queryByTestId('unshelve')).toBeNull();
   });
 });

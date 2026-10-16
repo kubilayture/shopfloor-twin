@@ -9,7 +9,7 @@ import { useEffect, useId, useRef, useState, type Ref } from 'react';
 import { createNote, editNote, getNoteAudit, getShiftNotes, type ShiftRef } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { QueryError } from '../components/query-error.tsx';
-import { loadCodedBy, saveCodedBy } from '../domain/downtime.ts';
+import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import {
   CATEGORY_LABELS,
   NOTE_LIMIT,
@@ -120,21 +120,18 @@ function TextInput({
 }
 
 /** What the forms check before sending (the shared schema checks again). */
-function problems(author: string, text: string): string[] {
+function problems(text: string): string[] {
   const found: string[] = [];
-  if (author.trim() === '') found.push('Enter your name under Author first.');
   if (text.trim() === '') found.push('Write the note first.');
   return found;
 }
 
 function NewNoteForm({
   shift,
-  author,
   full,
   onSaved,
 }: {
   readonly shift: ShiftRef;
-  readonly author: string;
   readonly full: boolean;
   readonly onSaved: () => void;
 }) {
@@ -142,8 +139,9 @@ function NewNoteForm({
   const [category, setCategory] = useState<NoteCategory>('general');
   const [text, setText] = useState('');
   const [message, setMessage] = useState<Message | undefined>(undefined);
+  useUnsavedDraft(text.trim() !== '');
   const create = useMutation({
-    mutationFn: () => createNote(shift, { author, text, category }),
+    mutationFn: () => createNote(shift, { text, category }),
     onSuccess: (result) => {
       upsertNote(queryClient, result.note);
       upsertShift(queryClient, result.shift);
@@ -166,7 +164,7 @@ function NewNoteForm({
       className="flex flex-col gap-2 rounded-lg border border-slate-300 bg-white p-3 print:hidden"
       onSubmit={(event) => {
         event.preventDefault();
-        const found = problems(author, text);
+        const found = problems(text);
         if (found.length > 0) {
           setMessage({ kind: 'invalid', text: found.join(' ') });
           return;
@@ -201,19 +199,24 @@ function NewNoteForm({
 function NoteEditor({
   note,
   shift,
-  author,
   onClose,
   onSaved,
 }: {
   readonly note: HandoverNoteDto;
   readonly shift: ShiftRef;
-  readonly author: string;
   readonly onClose: (saved?: string) => void;
   readonly onSaved: () => Promise<void>;
 }) {
   const queryClient = useQueryClient();
   // The draft keeps the version it started from; once the note moves on it is stale.
   const [draft, setDraft] = useState<NoteDraft>(() => draftOf(note));
+  // What the draft started from (or was reloaded to): unsaved while the draft differs from it.
+  const [origin, setOrigin] = useState<NoteDraft>(draft);
+  useUnsavedDraft(
+    draft.text !== origin.text ||
+      draft.category !== origin.category ||
+      draft.retracted !== origin.retracted,
+  );
   const [message, setMessage] = useState<Message | undefined>(undefined);
   const text = useRef<HTMLTextAreaElement>(null);
   const retractedId = useId();
@@ -228,7 +231,6 @@ function NoteEditor({
   const save = useMutation({
     mutationFn: (from: NoteDraft) =>
       editNote(shift, note.id, {
-        author,
         text: from.text,
         category: from.category,
         retracted: from.retracted,
@@ -257,7 +259,7 @@ function NoteEditor({
       onSubmit={(event) => {
         event.preventDefault();
         if (stale) return;
-        const found = problems(author, draft.text);
+        const found = problems(draft.text);
         if (found.length > 0) {
           setMessage({ kind: 'invalid', text: found.join(' ') });
           return;
@@ -316,6 +318,7 @@ function NoteEditor({
             className={`${buttonClass} mt-2`}
             onClick={() => {
               setDraft(draftOf(note));
+              setOrigin(draftOf(note));
               setMessage(undefined);
               text.current?.focus();
             }}
@@ -381,7 +384,8 @@ function NoteHistory({
           >
             <p>
               Version {entry.version}, {entry.action === 'created' ? 'created' : 'edited'} by{' '}
-              {entry.actor} (not authenticated) at{' '}
+              {entry.actor}
+              {entry.authenticated ? '' : ' (not authenticated)'} at{' '}
               <time dateTime={entry.plantAt}>{formatPlantTime(entry.plantAt)}</time> plant time
               {entry.requestId ? `, request ${entry.requestId}` : ''}
             </p>
@@ -400,14 +404,13 @@ function NoteHistory({
 function NoteItem({
   note,
   shift,
-  author,
   onSaved,
 }: {
   readonly note: HandoverNoteDto;
   readonly shift: ShiftRef;
-  readonly author: string;
   readonly onSaved: () => Promise<void>;
 }) {
+  const canWrite = useCan('note:write');
   const [editing, setEditing] = useState(false);
   const [history, setHistory] = useState(false);
   const [saved, setSaved] = useState<string | undefined>(undefined);
@@ -453,7 +456,7 @@ function NoteItem({
         </p>
       ) : null}
       <div className="mt-2 flex flex-wrap gap-2 print:hidden">
-        {!editing ? (
+        {canWrite && !editing ? (
           <button
             ref={editButton}
             type="button"
@@ -479,11 +482,10 @@ function NoteItem({
           {history ? 'Hide history' : 'History'}
         </button>
       </div>
-      {editing ? (
+      {canWrite && editing ? (
         <NoteEditor
           note={note}
           shift={shift}
-          author={author}
           onSaved={onSaved}
           onClose={(text) => {
             setEditing(false);
@@ -518,10 +520,8 @@ export function HandoverNotes({
     report.epoch,
     report.key,
   );
-  const [author, setAuthor] = useState(loadCodedBy);
-  const authorId = useId();
+  const canWrite = useCan('note:write');
   const onSaved = async () => {
-    saveCodedBy(author);
     await queryClient.refetchQueries({ queryKey: notesKey });
   };
   return (
@@ -543,7 +543,7 @@ export function HandoverNotes({
       ) : null}
       <ol className="mt-2 flex flex-col gap-2" aria-label="Notes">
         {notes.map((note) => (
-          <NoteItem key={note.id} note={note} shift={shift} author={author} onSaved={onSaved} />
+          <NoteItem key={note.id} note={note} shift={shift} onSaved={onSaved} />
         ))}
       </ol>
       {notes.length === 0 ? (
@@ -552,31 +552,17 @@ export function HandoverNotes({
         </p>
       ) : null}
       <div className="mt-3 flex flex-col gap-3 print:hidden">
-        <div className="flex flex-col gap-1">
-          <label htmlFor={authorId} className="text-sm font-medium">
-            Author
-          </label>
-          <input
-            id={authorId}
-            data-testid="note-author"
-            value={author}
-            maxLength={MES_API_LIMITS.noteAuthor}
-            autoComplete="name"
-            onChange={(event) => {
-              setAuthor(event.target.value);
-            }}
-            className={`${inputClass} max-w-xs`}
+        {canWrite ? (
+          <NewNoteForm
+            shift={shift}
+            full={notes.length >= NOTE_LIMIT}
+            onSaved={() => void onSaved()}
           />
-          <p className="text-xs text-slate-700">
-            Recorded as typed, not authenticated (until login comes). Remembered on this browser.
+        ) : (
+          <p data-testid="notes-read-only" className="text-sm text-slate-800">
+            Your role cannot write handover notes: they are shown read-only.
           </p>
-        </div>
-        <NewNoteForm
-          shift={shift}
-          author={author}
-          full={notes.length >= NOTE_LIMIT}
-          onSaved={() => void onSaved()}
-        />
+        )}
       </div>
     </section>
   );

@@ -1,3 +1,4 @@
+import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { ZodError } from 'zod';
 import { ApiError } from '../api/client.ts';
 
@@ -33,7 +34,24 @@ export function writeFailure(error: unknown, texts: WriteTexts): WriteFailure {
   switch (error.status) {
     case 409:
       return { kind: 'conflict', text: `${texts.not}: ${texts.conflict}` };
+    case 401:
+      return {
+        kind: 'refused',
+        text: `${texts.not}: your session has ended (401). Log in again; what you entered is kept.`,
+      };
     case 403:
+      if (error.problem?.type === PROBLEM_TYPES.forbidden) {
+        return {
+          kind: 'refused',
+          text: `${texts.not}: your role may not do this (403, ${detail}).`,
+        };
+      }
+      if (error.problem?.type === PROBLEM_TYPES.passwordChangeRequired) {
+        return {
+          kind: 'refused',
+          text: `${texts.not}: change your password first (403).`,
+        };
+      }
       return {
         kind: 'refused',
         text: `${texts.not}: the MES refused the write (403, ${detail}). Open the app through its own address; writes are accepted only from the MES's own origin.`,

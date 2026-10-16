@@ -10,9 +10,9 @@ const root = document.getElementById('root');
 if (!root) throw new Error('index.html has no #root element');
 
 const queryClient = createQueryClient();
+// Started once a session is known (#170): without one the MES would close it with 4401.
 const live = new LiveClient({ url: sameOriginWsUrl(`${API_BASE}/ws`) });
 connectLiveToCache(live, queryClient);
-live.start();
 
 createRoot(root).render(
   <StrictMode>

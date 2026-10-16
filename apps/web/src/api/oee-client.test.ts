@@ -64,7 +64,7 @@ describe('putCoding', () => {
       seen = { url: requestUrl(input), init };
       return Promise.resolve(json({ record: record(), version: 4 }));
     });
-    const body = { segments: [], codedBy: 'Ayşe', version: 3 };
+    const body = { segments: [], version: 3 };
     const result = await putCoding('cnc-01~1790000000~1', body);
     expect(result.version).toBe(4);
     expect(seen?.url).toBe('/api/v1/downtime/cnc-01~1790000000~1/coding');
@@ -95,7 +95,7 @@ describe('putCoding', () => {
         ),
       ),
     );
-    const error = await putCoding('cnc-01~1~1', { segments: [], codedBy: 'a', version: 0 }).catch(
+    const error = await putCoding('cnc-01~1~1', { segments: [], version: 0 }).catch(
       (caught: unknown) => caught,
     );
     expect(error).toBeInstanceOf(ApiError);

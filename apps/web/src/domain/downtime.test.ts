@@ -6,11 +6,9 @@ import {
   codingFailure,
   initialSegments,
   joinSegment,
-  loadCodedBy,
   mergeRecords,
   plantTimeInRecord,
   reasonOptions,
-  saveCodedBy,
   splitSegments,
   validateDraft,
   type DraftSegment,
@@ -93,7 +91,7 @@ describe('segments', () => {
 });
 
 describe('the coding form', () => {
-  const draft = (segments: DraftSegment[], codedBy = 'Ayşe') => ({ segments, codedBy });
+  const draft = (segments: DraftSegment[]) => ({ segments });
 
   it('accepts a valid split and refuses what the MES would refuse', () => {
     const at = T('2026-10-15T04:04:00.000Z');
@@ -102,12 +100,6 @@ describe('the coding form', () => {
       { from: at, to: END, reason: '', comment: '' },
     ]);
     expect(validateDraft(valid, record(), options)).toEqual([]);
-    expect(validateDraft(draft(valid.segments, '  '), record(), options)).toEqual([
-      'Enter your name in "Coded by".',
-    ]);
-    expect(validateDraft(draft(valid.segments, 'x'.repeat(101)), record(), options)).toHaveLength(
-      1,
-    );
     expect(
       validateDraft(
         draft([
@@ -137,17 +129,14 @@ describe('the coding form', () => {
     expect(validateDraft(draft(many), record(), options)).toEqual(['At most 32 coded segments.']);
   });
 
-  it('sends only coded segments, trimmed, with the version read', () => {
+  it('sends only coded segments, trimmed, with the version read and no coder', () => {
     const at = T('2026-10-15T04:04:00.000Z');
     expect(
       codingBody(
-        draft(
-          [
-            { from: START, to: at, reason: 'BREAKDOWN/SPINDLE-OVERLOAD', comment: ' bearing ' },
-            { from: at, to: END, reason: '', comment: 'ignored' },
-          ],
-          '  Ayşe ',
-        ),
+        draft([
+          { from: START, to: at, reason: 'BREAKDOWN/SPINDLE-OVERLOAD', comment: ' bearing ' },
+          { from: at, to: END, reason: '', comment: 'ignored' },
+        ]),
         7,
       ),
     ).toEqual({
@@ -159,10 +148,9 @@ describe('the coding form', () => {
           comment: 'bearing',
         },
       ],
-      codedBy: 'Ayşe',
       version: 7,
     });
-    expect(codingBody(draft([]), 0)).toEqual({ segments: [], codedBy: 'Ayşe', version: 0 });
+    expect(codingBody(draft([]), 0)).toEqual({ segments: [], version: 0 });
   });
 
   it('explains every refusal of the MES', () => {
@@ -186,24 +174,6 @@ describe('the coding form', () => {
     expect(codingFailure(new ApiError('down', 0)).kind).toBe('unavailable');
     expect(codingFailure(problem(503, 'starting')).text).toContain('503');
     expect(codingFailure(new Error('boom')).text).toBe('boom');
-  });
-
-  it('remembers the name, and survives storage that throws', () => {
-    const values = new Map<string, string>();
-    const storage = () =>
-      ({
-        getItem: (key: string) => values.get(key) ?? null,
-        setItem: (key: string, value: string) => values.set(key, value),
-      }) as unknown as Storage;
-    saveCodedBy(' Ayşe ', storage);
-    expect(loadCodedBy(storage)).toBe('Ayşe');
-    const blocked = () => {
-      throw new DOMException('blocked', 'SecurityError');
-    };
-    expect(loadCodedBy(blocked)).toBe('');
-    expect(() => {
-      saveCodedBy('x', blocked);
-    }).not.toThrow();
   });
 });
 

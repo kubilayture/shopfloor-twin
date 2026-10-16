@@ -1,7 +1,7 @@
 import type { DowntimeRecordDto } from '@shopfloor/contracts/mes-api';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EQUIPMENT, PLANT, json, problem } from '../test/fixtures.ts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EQUIPMENT, PLANT, json, problem, sessionOf } from '../test/fixtures.ts';
 import {
   CURRENT_SHIFT,
   REASONS,
@@ -100,31 +100,6 @@ function mes(put: (body: unknown) => Response, records: () => DowntimeRecordDto[
   return { calls, fetch };
 }
 
-/** An in-memory Storage: Node's own `localStorage` global (without a file) shadows jsdom's. */
-function memoryStorage(): Storage {
-  const values = new Map<string, string>();
-  return {
-    get length() {
-      return values.size;
-    },
-    clear: () => {
-      values.clear();
-    },
-    getItem: (key) => values.get(key) ?? null,
-    key: (index) => [...values.keys()][index] ?? null,
-    removeItem: (key) => {
-      values.delete(key);
-    },
-    setItem: (key, value) => {
-      values.set(key, value);
-    },
-  };
-}
-
-beforeEach(() => {
-  vi.stubGlobal('localStorage', memoryStorage());
-});
-
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -137,7 +112,6 @@ async function openRecord() {
 
 describe('downtime coding', () => {
   it('lists uncoded records first and codes a split with a reason and a comment', async () => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     const saved = {
       ...UNCODED,
       uncoded: true,
@@ -169,8 +143,9 @@ describe('downtime coding', () => {
 
     const panel = await openRecord();
     expect(within(panel).getByRole('heading', { level: 2 }).textContent).toContain('Down');
-    // The history from the audit.
-    expect((await within(panel).findByTestId('audit-entry')).textContent).toContain('Mehmet');
+    // The history from the audit; a legacy entry written before login says so.
+    const entry = await within(panel).findByTestId('audit-entry');
+    expect(entry.textContent).toContain('Mehmet (not authenticated)');
 
     fireEvent.change(within(panel).getByTestId('split-at'), { target: { value: '07:04:00' } });
     fireEvent.click(within(panel).getByTestId('split'));
@@ -188,9 +163,8 @@ describe('downtime coding', () => {
     fireEvent.change(first.getByTestId('segment-comment'), {
       target: { value: 'bearing noise' },
     });
-    const codedBy = within(panel).getByTestId<HTMLInputElement>('coded-by');
-    expect(codedBy.value).toBe('Ayşe');
-    fireEvent.change(codedBy, { target: { value: 'Ayşe K.' } });
+    // No name to type: the MES records the session's user (#170).
+    expect(within(panel).queryByTestId('coded-by')).toBeNull();
     fireEvent.click(within(panel).getByTestId('save-coding'));
 
     const message = await within(panel).findByTestId('coding-message');
@@ -206,10 +180,9 @@ describe('downtime coding', () => {
           comment: 'bearing noise',
         },
       ],
-      codedBy: 'Ayşe K.',
       version: 3,
     });
-    expect(localStorage.getItem('shopfloor.codedBy')).toBe('Ayşe K.');
+    expect(put?.body).not.toHaveProperty('codedBy');
     // The saved record is shown, and the history read again.
     await waitFor(() => {
       expect(screen.getByTestId(`downtime-row-${UNCODED.id}`).dataset.reason).toBe(
@@ -235,8 +208,12 @@ describe('downtime coding', () => {
     vi.stubGlobal('fetch', server.fetch);
     await renderApp('/downtime');
     const panel = await openRecord();
+    fireEvent.change(within(panel).getByTestId('reason-picker'), { target: { value: 'SETUP' } });
+    fireEvent.change(within(panel).getByTestId('segment-comment'), {
+      target: { value: 'y'.repeat(501) },
+    });
     fireEvent.click(within(panel).getByTestId('save-coding'));
-    expect(within(panel).getByTestId('coding-errors').textContent).toContain('Coded by');
+    expect(within(panel).getByTestId('coding-errors').textContent).toContain('500 characters');
     fireEvent.change(within(panel).getByTestId('split-at'), { target: { value: '09:00' } });
     fireEvent.click(within(panel).getByTestId('split'));
     expect(within(panel).getByText(/inside the record/)).toBeTruthy();
@@ -244,7 +221,6 @@ describe('downtime coding', () => {
   });
 
   it('on 409 reads the records again and says the codings changed', async () => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     let version = 3;
     const server = mes(
       () => problem(409, 'Conflict', 'version 3 is not the current 5', '/api/v1/downtime/x/coding'),
@@ -284,7 +260,6 @@ describe('downtime coding', () => {
     [422, 'Unprocessable Entity', 'segment outside the record', /segment outside the record/],
     [429, 'Too Many Requests', 'write rate limit', /too many writes/],
   ])('explains a %i from the MES', async (status, title, detail, expected) => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     const server = mes(
       () => problem(status, title, detail, '/api/v1/downtime/x/coding'),
       () => [UNCODED],
@@ -299,7 +274,6 @@ describe('downtime coding', () => {
   });
 
   it('never sends a stale draft after someone else recoded the record mid-edit', async () => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     const server = mes(
       () => json({ record: { ...UNCODED, version: 6 }, version: 6 }),
       () => [UNCODED],
@@ -355,7 +329,6 @@ describe('downtime coding', () => {
   });
 
   it('adopts a moved version for an unchanged record and sends it', async () => {
-    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
     const server = mes(
       () => json({ record: { ...UNCODED, version: 9 }, version: 9 }),
       () => [UNCODED],
@@ -382,7 +355,7 @@ describe('downtime coding', () => {
     vi.stubGlobal('fetch', server.fetch);
     await renderApp('/downtime');
     const panel = await openRecord();
-    fireEvent.keyDown(within(panel).getByTestId('coded-by'), { key: 'Escape' });
+    fireEvent.keyDown(within(panel).getByTestId('reason-picker'), { key: 'Escape' });
     await waitFor(() => {
       expect(screen.queryByTestId('coding-panel')).toBeNull();
     });
@@ -432,5 +405,47 @@ describe('downtime coding', () => {
     await app.push({ type: 'downtime', event: 'removed', record: created });
     expect(screen.queryByTestId(`downtime-row-${created.id}`)).toBeNull();
     expect(screen.getByText('No uncoded downtime in this shift.')).toBeTruthy();
+  });
+
+  it.each([
+    ['admin', sessionOf(['admin'])],
+    ['quality', sessionOf(['quality'])],
+  ])('shows the record and its history but no coding form to a %s', async (_role, session) => {
+    const server = mes(
+      () => json({}),
+      () => [UNCODED],
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/downtime', { session });
+    const panel = await openRecord();
+    expect(within(panel).getByTestId('coding-not-allowed').textContent).toContain(
+      'cannot code downtime',
+    );
+    expect(await within(panel).findByTestId('audit-entry')).toBeTruthy();
+    expect(within(panel).queryByTestId('save-coding')).toBeNull();
+    expect(within(panel).queryByTestId('reason-picker')).toBeNull();
+    expect(within(panel).queryByTestId('split')).toBeNull();
+  });
+
+  it('shows no "(not authenticated)" for a coding written with a session', async () => {
+    const server = mes(
+      () => json({}),
+      () => [UNCODED],
+    );
+    const legacy = server.fetch;
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await legacy(input, init);
+      if (!requestUrl(input).endsWith('/audit')) return response;
+      const body = (await response.json()) as { entries: { authenticated: boolean }[] };
+      return json({
+        ...body,
+        entries: body.entries.map((entry) => ({ ...entry, authenticated: true })),
+      });
+    });
+    await renderApp('/downtime');
+    const panel = await openRecord();
+    const entry = await within(panel).findByTestId('audit-entry');
+    expect(entry.textContent).toContain('by Mehmet at');
+    expect(entry.textContent).not.toContain('not authenticated');
   });
 });

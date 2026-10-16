@@ -257,6 +257,9 @@ describe('commands exactly once through Mosquitto, the gateway and the simulator
     expect(answers(c)[2]).toEqual({ ...answers(c)[0], expiresAt: resend.expiresAt });
     expect(await metric('gateway_command_calls')).toBe(calls);
     factOnUns.push(c);
+    // The job fact travels apart from the call's answer (subscription vs. call): wait for it here,
+    // before a later case holds or cuts the session it is still on.
+    await until('the job fact on the UNS', () => unsAccepted(c) === 1);
   });
 
   it('answers a wrong device epoch, an invalid product and an expired command from the device', async () => {
@@ -285,6 +288,9 @@ describe('commands exactly once through Mosquitto, the gateway and the simulator
     await until('answered', () => answers(c).length === 1);
     expect(answers(c)[0]).toMatchObject({ result: 'duplicate' });
     factOnUns.push(c);
+    // The job fact travels apart from the call's answer (subscription vs. call): wait for it here,
+    // before a later case holds or cuts the session it is still on.
+    await until('the job fact on the UNS', () => unsAccepted(c) === 1);
   });
 
   it('retries after a TCP cut mid-call (Duplicate)', async () => {
@@ -326,6 +332,9 @@ describe('commands exactly once through Mosquitto, the gateway and the simulator
     expect(answers(c)[0]).toMatchObject({ result: 'accepted' });
     await until('the gateway ready again', ready, 30_000);
     factOnUns.push(c);
+    // The job fact travels apart from the call's answer (subscription vs. call): wait for it here,
+    // before a later case holds or cuts the session it is still on.
+    await until('the job fact on the UNS', () => unsAccepted(c) === 1);
   }, 90_000);
 
   it('processes again a command the gateway crashed on between the call and storing its result', async () => {
@@ -371,6 +380,9 @@ describe('commands exactly once through Mosquitto, the gateway and the simulator
     await until('redelivered, recorded and answered', () => answers(c).length >= 1, 60_000);
     expect(answers(c)[0]).toMatchObject({ result: 'accepted' });
     factOnUns.push(c);
+    // The job fact travels apart from the call's answer (subscription vs. call): wait for it here,
+    // before a later case holds or cuts the session it is still on.
+    await until('the job fact on the UNS', () => unsAccepted(c) === 1);
   }, 120_000);
 
   it('answers rejected (epoch-mismatch) after a simulator restart mid-call, without a second job', async () => {
@@ -404,9 +416,10 @@ describe('commands exactly once through Mosquitto, the gateway and the simulator
     }
     // The UNS carried each fact the gateway saw live exactly once (after dedup), and no other.
     expect(factOnUns).toHaveLength(4);
-    for (const c of factOnUns) {
-      await until(`the fact of ${c.value.commandId}`, () => unsAccepted(c) === 1);
-    }
+    const missing = () =>
+      factOnUns.filter((c) => unsAccepted(c) !== 1).map((c) => c.value.commandId);
+    await until('every live fact on the UNS', () => missing().length === 0).catch(() => undefined);
+    expect(missing()).toEqual([]);
     for (const c of sent) expect(unsAccepted(c), c.value.commandId).toBeLessThanOrEqual(1);
     const perOrder = new Map<string, number>();
     for (const e of [...pastRuns, simulator.events].flat()) {

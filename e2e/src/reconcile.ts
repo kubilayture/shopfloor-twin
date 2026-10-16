@@ -17,19 +17,35 @@
  * #120) must be final for all six machines (`final`, `provisionalMs = 0`, `revision = 0`,
  * `incidents = 0`) and equal the live ground truth's OEE exactly: inputs, fractions, four-decimal
  * strings, totals, losses and `unplanned`, per machine and per work center; the comparison count
- * (six machines and two work centers, as in the plant configuration) is asserted. So are its alarm
- * KPIs (#142, `GET /api/v1/alarms/kpi`) for the plant and both operator positions: final, with no
- * revision or incident, and equal to the live ground truth's `alarms` section and to the golden
- * week's (three buckets compared; week-01's shift A raises none, #147 adds injections). Then Playwright
- * recodes and splits one of shift A's downtime records through the UI
- * (browser/final/downtime-coding.spec.ts, #123): the audit and the Pareto change, OEE does not.
+ * (six machines and two work centers, as in the plant configuration) is asserted.
+ *
+ * Phase 6 (#147): the run is the golden scenario `alarms-01` (the week-01 seed and start with
+ * injected failures). Before the resume, shift A's injections are posted through the control API
+ * 1.3 (`POST /faults/failure/{machine}` with their `at`), in the scenario's order, exactly as the
+ * headless run schedules them; the injected flood, chattering and fleeting alarms then come through
+ * the whole chain. `alarms-01`'s event log equals week-01's up to the first injection (the prefix
+ * test in apps/simulator/src/headless/alarms-01.test.ts), so week-01's live evidence carries over,
+ * and every Phase 4/5 check above keeps comparing with the live ground truth. Shift A's alarm KPIs
+ * (`GET /api/v1/alarms/kpi`) for the plant and both operator positions, per hour and per shift,
+ * must be final (`provisional` false, revision 0, incidents 0) and equal the live ground truth's
+ * `alarms` section and `alarms-01`'s golden summary exactly (counts asserted). Shift A's report
+ * (`GET /shifts/{date}/A/report`) must be final with `revision.inputs = 0`, its OEE section the
+ * shift's OEE byte for byte, its alarm sections `GET /alarms/kpi`'s and the ground truth's, its
+ * production the OEE inputs and the ground truth. During the shift, Playwright also judges
+ * `/alarms` (every raise within 2 s, the flood banner) and the `/alarms/kpi` cards
+ * (browser/alarms-live.spec.ts). After the drain, Playwright acknowledges, comments, shelves and
+ * unshelves alarms (browser/final/alarm-actions.spec.ts), recodes and splits one of shift A's
+ * downtime records (browser/final/downtime-coding.spec.ts, #123: the audit and the Pareto change,
+ * OEE does not) and writes a handover note (browser/final/shift-report.spec.ts); the alarm KPIs and
+ * OEE stay byte-identical across all of it, and the audit tables refuse UPDATE and DELETE.
  *
  * Usage: pnpm test:reconcile. Results (report.json, compose.log on failure, Playwright traces) go
  * to e2e/results/. Environment: RECONCILE_PROJECT (Compose project, default shopfloor-reconcile),
  * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_BROWSER=0 (no Playwright),
  * OVERVIEW_SAMPLE_MS and OEE_SAMPLE_MS (how long each live check samples, default 90000 each; they
- * run one after the other and together must stay below about 400 s, the shift's wall time after
- * the browser starts, less the pages' start-up), RECONCILE_DEADLINE_MS (overall limit, default
+ * run one after the other, after the alarm check's about 205 s, and together must stay below about
+ * 200 s, the shift's wall time after the browser starts, less the alarm check and the pages'
+ * start-up), RECONCILE_DEADLINE_MS (overall limit, default
  * 25 minutes), RECONCILE_SILENT_WAIT_MS (how long past the margin, in simulated time, the run may go
  * on for a silent machine's next fact; default 2 hours, 2 wall minutes at 60×). SIGINT and SIGTERM remove the stack and the env file before exiting.
  */
@@ -37,10 +53,23 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import type { AlarmKpiBucketDto } from '@shopfloor/contracts/mes-api';
+import {
+  alarmKpiListSchema,
+  shiftReportSchema,
+  type AlarmKpiBucketDto,
+} from '@shopfloor/contracts/mes-api';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { shiftSegments } from '@shopfloor/shift-calendar';
-import { GatewayClient, MesClient, SimulatorClient, gauge, type GroundTruth } from './clients.ts';
+import {
+  GatewayClient,
+  MesClient,
+  SimulatorClient,
+  gauge,
+  groundTruthSchema,
+  type GroundTruth,
+  type Injection,
+  type ScenarioInjection,
+} from './clients.ts';
 import {
   differences,
   formatDifferences,
@@ -57,7 +86,15 @@ const SPEED = 60;
 /** Simulated time past shift end before the simulator is paused (5 wall seconds at 60×). */
 const MARGIN_MS = 5 * 60_000;
 const RESULTS = join(REPO, 'e2e/results');
-const GOLDEN = join(REPO, 'apps/simulator/golden/week-01');
+/** The golden scenario the live run reproduces (#147): week-01's seed with injected failures. */
+const GOLDEN = join(REPO, 'apps/simulator/golden/alarms-01');
+/** Where the event log's prefix equality with week-01 is proven (headless, #140). */
+const PREFIX_TEST =
+  'apps/simulator/src/headless/alarms-01.test.ts: logs exactly what week-01 logs up to the first injection';
+/** Sampling of /alarms runs this long (simulated) past the last injection of the shift. */
+const ALARMS_SAMPLE_PAST_MS = 3 * 60_000;
+/** The audit tables that must refuse UPDATE and DELETE (append-only by trigger). */
+const AUDIT_TABLES = ['alarms.alarm_transition', 'shifts.handover_audit'] as const;
 /** Incident types that mean lost data: none may occur with the plan's start order. */
 const LOSS_INCIDENTS = new Set(['sequence-gap', 'ring-overrun', 'buffer-overflow']);
 
@@ -157,12 +194,28 @@ interface Report {
     }
   >;
   goldenShiftEqual?: boolean;
-  /** Shift A's alarm KPIs from the MES against the live ground truth (#142). */
+  /** Shift A's OEE in the live ground truth equals alarms-01's golden summary (#147). */
+  goldenOeeEqual?: boolean;
+  /** The scenario's shift A injections posted before the resume, and how they were applied. */
+  injections?: {
+    scenario: string;
+    posted: number;
+    prefixEvidence: string;
+    applied: Pick<
+      Injection,
+      'id' | 'machine' | 'code' | 'at' | 'status' | 'heldAt' | 'appliedAt'
+    >[];
+  };
+  /** Shift A's alarm KPIs from the MES against the live ground truth (#142, #147). */
   alarms?: {
     waitedMs: number;
     /** Shift buckets compared: the plant and both positions. */
     compared: number;
+    /** Hour buckets of shift A compared, over the plant and both positions. */
+    hoursCompared: number;
     goldenEqual: boolean;
+    /** Raises of shift A per scope, and the flood, chattering and fleeting counts asserted. */
+    raises: Record<string, number>;
     scopes: Record<
       string,
       {
@@ -205,13 +258,40 @@ interface Report {
       }
     >;
   };
+  /** Shift A's report (#144) against OEE, `/alarms/kpi` and the ground truth (#147). */
+  shiftReport?: {
+    waitedMs: number;
+    final: boolean;
+    revision: { inputs: number; content: number; contentAtFinal: number | null };
+    incidents: number;
+    oeeSectionIdentical: boolean;
+    alarmScopesCompared: number;
+    productionCompared: number;
+    finished: { equipment: string | null; good: number };
+    paretoMs: number;
+    availabilityLossMs: number;
+    instance: { start: string; end: string; breaks: number; calendarEqual: boolean };
+    failures: string[];
+  };
   pieces?: { count: number; violations: string[] };
   incidents?: unknown[];
   rejectedMessages?: number;
-  /** The live checks: the overview (#100) and the OEE dashboard (#123). */
-  browser?: { exitCode: number; report?: unknown; oee?: unknown };
-  /** The downtime coding through the UI after the drain (#123). */
-  coding?: { exitCode: number; report?: unknown };
+  /** The live checks: the overview (#100), the OEE dashboard (#123) and the alarms (#147). */
+  browser?: { exitCode: number; report?: unknown; oee?: unknown; alarms?: unknown };
+  /**
+   * The checks after the drain: alarm actions and the handover note (#147), the downtime coding
+   * (#123), with the alarm KPIs and OEE byte-identical across them and the audits append-only.
+   */
+  coding?: {
+    exitCode: number;
+    report?: unknown;
+    alarmActions?: unknown;
+    shiftReport?: unknown;
+    alarmKpiIdentical?: boolean;
+    oeeIdentical?: boolean;
+    auditRefusals?: Record<string, { rows: number; update: string; delete: string }>;
+  };
+  totalMs?: number;
   failures: string[];
 }
 
@@ -230,10 +310,11 @@ async function main(): Promise<boolean> {
     phaseStart = now;
   };
 
-  // The golden week's seed and start (Monday 06:00 Istanbul, the start of shift A).
+  // alarms-01's seed and start (week-01's: Monday 06:00 Istanbul, the start of shift A).
   const scenario = JSON.parse(await readFile(join(GOLDEN, 'scenario.json'), 'utf8')) as {
     seed: number;
     start: string;
+    injections?: ScenarioInjection[];
   };
   const loaded = await loadPlantConfig(join(REPO, 'config/plant'));
   if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
@@ -249,6 +330,14 @@ async function main(): Promise<boolean> {
   }
   const shiftKey = shift.key;
   const stopAt = shift.to + MARGIN_MS;
+  // Shift A's injections, in the scenario's order (the order fixes the queue's tie-breaking).
+  const injections = (scenario.injections ?? []).filter(
+    (i) => Date.parse(i.at) >= shift.from && Date.parse(i.at) < shift.to,
+  );
+  if (injections.length < 14) {
+    throw new Error(`${GOLDEN}: ${String(injections.length)} injections in ${shift.key}, not 14`);
+  }
+  const alarmsUntil = Math.max(...injections.map((i) => Date.parse(i.at))) + ALARMS_SAMPLE_PAST_MS;
   report.seed = scenario.seed;
   report.shiftKey = shiftKey;
 
@@ -349,6 +438,25 @@ async function main(): Promise<boolean> {
         );
         phase('gatewayConnected');
 
+        // The scenario's shift A injections, before the resume, in its order: the same events in
+        // the queue as in the headless run (control API 1.3, "Determinism").
+        const posted: Injection[] = [];
+        for (const injection of injections) posted.push(await sim.inject(injection));
+        const expectedPosted = injections.map((i, n) => [
+          n + 1,
+          i.machine,
+          i.code,
+          Date.parse(i.at),
+        ]);
+        const actualPosted = posted.map((i) => [i.id, i.machine, i.code, Date.parse(i.at)]);
+        if (
+          JSON.stringify(actualPosted) !== JSON.stringify(expectedPosted) ||
+          posted.some((i) => i.status !== 'scheduled')
+        ) {
+          throw new Error(`injections not scheduled as posted: ${JSON.stringify(posted)}`);
+        }
+        log(`scheduled ${String(posted.length)} injections of ${shiftKey}`);
+
         log('starting web');
         await stack.compose(['up', '--detach', '--wait', '--no-build', 'web']);
         const webUrl = await stack.url('web', 8080);
@@ -366,6 +474,8 @@ async function main(): Promise<boolean> {
             RECONCILE_SIM_URL: sim.base,
             RECONCILE_MES_URL: mes.base,
             RECONCILE_RESULTS: RESULTS,
+            RECONCILE_SHIFT: shiftKey,
+            RECONCILE_ALARMS_UNTIL: new Date(alarmsUntil).toISOString(),
           });
         }
 
@@ -641,34 +751,80 @@ async function main(): Promise<boolean> {
           );
         }
 
-        // The live run reproduces the headless golden week's shift A: pacing never changes the run.
+        // The live run reproduces the headless alarms-01's shift A: pacing never changes the run.
         const golden = JSON.parse(await readFile(join(GOLDEN, 'summary.json'), 'utf8')) as {
           machines: Record<string, { byShift: Record<string, StateMs> }>;
-          alarms: { scopes: Record<string, { shifts: Record<string, unknown> }> };
+          oee: unknown;
+          alarms: {
+            scopes: Record<
+              string,
+              { shifts: Record<string, unknown>; hours: Record<string, unknown> }
+            >;
+          };
         };
 
-        // Alarm KPIs (#142): shift A of the plant and of each position, final and equal to the live
-        // ground truth and to the golden week's shift A.
+        // The injections: every one of shift A applied inside it (held ones a little later).
+        const applied = await sim.injections();
+        report.injections = {
+          scenario: GOLDEN.slice(REPO.length + 1),
+          posted: injections.length,
+          prefixEvidence: PREFIX_TEST,
+          applied: applied.map(({ id, machine, code, at, status, heldAt, appliedAt }) => ({
+            id,
+            machine,
+            code,
+            at,
+            status,
+            ...(heldAt === undefined ? {} : { heldAt }),
+            ...(appliedAt === undefined ? {} : { appliedAt }),
+          })),
+        };
+        for (const injection of applied) {
+          const appliedAt = Date.parse(injection.appliedAt ?? '');
+          if (
+            injection.status !== 'applied' ||
+            !(appliedAt >= shift.from && appliedAt < shift.to)
+          ) {
+            fail(
+              `injection ${String(injection.id)} not applied in ${shiftKey}: ${JSON.stringify(injection)}`,
+            );
+          }
+        }
+        if (applied.length !== injections.length) {
+          fail(`${String(applied.length)} injections listed, ${String(injections.length)} posted`);
+        }
+
+        // Alarm KPIs (#142, #147): shift A of the plant and of each position, per shift and per
+        // hour, final and equal to the live ground truth and to alarms-01's golden summary.
         const alarmFrom = Date.now();
         const alarmScopes = Object.keys(truth.alarms.scopes).sort();
         const readAlarms = () =>
           Promise.all(
             alarmScopes.map(async (id) => {
-              const list = await mes.alarmShifts(
-                id === 'plant' ? 'plant' : 'position',
+              const scope = id === 'plant' ? 'plant' : 'position';
+              const [shifts, hours] = await Promise.all([
+                mes.alarmShifts(scope, id, shift.from, shift.to),
+                mes
+                  .alarmKpiText(scope, id, 'hour', shift.from, shift.to)
+                  .then((text) => alarmKpiListSchema.parse(JSON.parse(text))),
+              ]);
+              return {
                 id,
-                shift.from,
-                shift.to,
-              );
-              return [id, list.buckets.find((b) => b.key === shiftKey)] as const;
+                bucket: shifts.buckets.find((b) => b.key === shiftKey),
+                hours: hours.buckets.filter(
+                  (b) => Date.parse(b.from) >= shift.from && Date.parse(b.to) <= shift.to,
+                ),
+              };
             }),
           );
         let alarmBuckets = await readAlarms();
         await until(
-          `${shiftKey} alarm KPIs final for the plant and every position`,
+          `${shiftKey} alarm KPIs final for the plant and every position, per shift and hour`,
           async () => {
             alarmBuckets = await readAlarms();
-            return alarmBuckets.every(([, bucket]) => bucket?.final === true);
+            return alarmBuckets.every(
+              ({ bucket, hours }) => bucket?.final === true && hours.every((h) => h.final),
+            );
           },
           OEE_FINAL_MS,
         ).catch((error: unknown) => {
@@ -677,18 +833,49 @@ async function main(): Promise<boolean> {
         report.alarms = {
           waitedMs: Date.now() - alarmFrom,
           compared: 0,
+          hoursCompared: 0,
           goldenEqual: true,
+          raises: {},
           scopes: {},
         };
-        for (const [id, bucket] of alarmBuckets) {
-          const expected = truth.alarms.scopes[id]?.shifts[shiftKey];
+        const notFinal = (b: AlarmKpiBucketDto | undefined) =>
+          !b?.final || b.provisional || b.revision !== 0 || b.incidents !== 0;
+        for (const { id, bucket, hours } of alarmBuckets) {
+          const scopeTruth = truth.alarms.scopes[id];
+          const scopeGolden = golden.alarms.scopes[id];
+          const expected = scopeTruth?.shifts[shiftKey];
           const diffs = jsonDifferences(expected ?? null, bucket ? alarmTruthShape(bucket) : null);
           const goldenDiffs = jsonDifferences(
-            golden.alarms.scopes[id]?.shifts[shiftKey] ?? null,
+            scopeGolden?.shifts[shiftKey] ?? null,
             expected ?? null,
           );
-          if (goldenDiffs.length > 0) report.alarms.goldenEqual = false;
           if (expected && bucket) report.alarms.compared++;
+          // Hours of the shift: the same hours listed (where something happened), each equal.
+          const truthHours = Object.keys(scopeTruth?.hours ?? {})
+            .filter((h) => Date.parse(h) >= shift.from && Date.parse(h) < shift.to)
+            .sort();
+          const mesHours = hours.map((h) => h.key).sort();
+          if (JSON.stringify(truthHours) !== JSON.stringify(mesHours)) {
+            diffs.push(`hours: MES ${mesHours.join(', ')}, truth ${truthHours.join(', ')}`);
+          }
+          for (const hour of hours) {
+            const truthHour = scopeTruth?.hours[hour.key];
+            if (truthHour === undefined) continue;
+            report.alarms.hoursCompared++;
+            for (const d of jsonDifferences(truthHour, alarmTruthShape(hour))) {
+              diffs.push(`${hour.key}: ${d}`);
+            }
+            for (const d of jsonDifferences(scopeGolden?.hours[hour.key] ?? null, truthHour)) {
+              goldenDiffs.push(`${hour.key}: ${d}`);
+            }
+            if (notFinal(hour)) {
+              diffs.push(
+                `${hour.key} not final (final ${String(hour.final)}, provisional ${String(hour.provisional)}, revision ${String(hour.revision)}, incidents ${String(hour.incidents)})`,
+              );
+            }
+          }
+          if (goldenDiffs.length > 0) report.alarms.goldenEqual = false;
+          report.alarms.raises[id] = bucket?.raises ?? -1;
           report.alarms.scopes[id] = {
             equal: diffs.length === 0,
             final: bucket?.final ?? false,
@@ -704,12 +891,12 @@ async function main(): Promise<boolean> {
           }
           if (goldenDiffs.length > 0) {
             fail(
-              `${id}: the live ground truth's ${shiftKey} alarm KPIs differ from the golden week's:\n  ${goldenDiffs.join('\n  ')}`,
+              `${id}: the live ground truth's ${shiftKey} alarm KPIs differ from alarms-01's:\n  ${goldenDiffs.join('\n  ')}`,
             );
           }
-          if (!bucket?.final || bucket.revision !== 0 || bucket.incidents !== 0) {
+          if (notFinal(bucket)) {
             fail(
-              `${id}: ${shiftKey} alarm KPIs not final (final ${String(bucket?.final)}, revision ${String(bucket?.revision)}, incidents ${String(bucket?.incidents)})`,
+              `${id}: ${shiftKey} alarm KPIs not final (final ${String(bucket?.final)}, provisional ${String(bucket?.provisional)}, revision ${String(bucket?.revision)}, incidents ${String(bucket?.incidents)})`,
             );
           }
         }
@@ -718,6 +905,27 @@ async function main(): Promise<boolean> {
             `${shiftKey} alarm KPIs: ${String(report.alarms.compared)} buckets compared, not 3 (the plant and 2 positions)`,
           );
         }
+        // Not vacuous: the injected flood, chattering and fleeting alarms are in the buckets, and
+        // the hours were compared too.
+        const cell = alarmBuckets.find((b) => b.id === 'cell-m1')?.bucket;
+        const line = alarmBuckets.find((b) => b.id === 'line-a1')?.bucket;
+        const injected = {
+          raises: ['plant', 'cell-m1', 'line-a1'].map((id) => report.alarms?.raises[id]),
+          floods: cell?.floods.length ?? 0,
+          chattering: cell?.chatteringPoints.includes('cnc-01/COOLANT-PRESSURE') ?? false,
+          fleeting: line?.fleeting ?? 0,
+          hours: report.alarms.hoursCompared,
+        };
+        if (
+          JSON.stringify(injected.raises) !== JSON.stringify([14, 13, 1]) ||
+          injected.floods < 1 ||
+          !injected.chattering ||
+          injected.fleeting < 1 ||
+          injected.hours < 4
+        ) {
+          fail(`${shiftKey} alarm KPIs miss the injected alarms: ${JSON.stringify(injected)}`);
+        }
+
         const goldenShift = Object.fromEntries(
           machines.map((id) => [id, golden.machines[id]?.byShift[shiftKey] ?? {}]),
         );
@@ -725,9 +933,37 @@ async function main(): Promise<boolean> {
         report.goldenShiftEqual = goldenDiffs.length === 0;
         if (goldenDiffs.length > 0) {
           fail(
-            `the live ground truth differs from the golden week's ${shiftKey} (truth = golden, MES = live):\n${formatDifferences(goldenDiffs)}`,
+            `the live ground truth differs from alarms-01's ${shiftKey} (truth = golden, MES = live):\n${formatDifferences(goldenDiffs)}`,
           );
         }
+        // Its OEE too: the injected breakdowns change availability (Phase 5 checks on alarms-01).
+        // The golden summary is read through the live answer's schema, so both hold the same fields.
+        const goldenOee = groundTruthSchema.shape.oee.parse(golden.oee);
+        const goldenOeeDiffs = [
+          ...machines.flatMap((id) =>
+            jsonDifferences(
+              goldenOee.machines[id]?.shifts[shiftKey] ?? null,
+              truth.oee.machines[id]?.shifts[shiftKey] ?? null,
+            ).map((d) => `${id}: ${d}`),
+          ),
+          ...workCenterIds.flatMap((id) =>
+            jsonDifferences(
+              goldenOee.workCenters[id]?.shifts[shiftKey] ?? null,
+              truth.oee.workCenters[id]?.shifts[shiftKey] ?? null,
+            ).map((d) => `${id}: ${d}`),
+          ),
+        ];
+        report.goldenOeeEqual = goldenOeeDiffs.length === 0;
+        if (goldenOeeDiffs.length > 0) {
+          fail(
+            `the live ground truth's ${shiftKey} OEE differs from alarms-01's:\n  ${goldenOeeDiffs.join('\n  ')}`,
+          );
+        }
+
+        // Shift A's report (#144, exit criterion 4): final with no input revision, its sections
+        // the OEE, the alarm KPIs and the ground truth.
+        report.shiftReport = await checkShiftReport(mes, truth, shiftKey, shift, machines);
+        for (const failure of report.shiftReport.failures) fail(`${shiftKey} report: ${failure}`);
 
         // Every stored piece inside one UTC hour and one shift bucket (the shared calendar).
         const pieces = await stack.sqlJson<Piece[]>(
@@ -775,15 +1011,44 @@ async function main(): Promise<boolean> {
             (text) => JSON.parse(text) as unknown,
             () => undefined,
           );
-          report.browser = { exitCode, report: browserReport, oee: oeeReport };
-          if (exitCode !== 0)
-            fail(`the live overview or OEE check failed (Playwright exit ${String(exitCode)})`);
+          const alarmsReport = await readFile(join(RESULTS, 'alarms-latency.json'), 'utf8').then(
+            (text) => JSON.parse(text) as unknown,
+            () => undefined,
+          );
+          report.browser = {
+            exitCode,
+            report: browserReport,
+            oee: oeeReport,
+            alarms: alarmsReport,
+          };
+          if (exitCode !== 0) {
+            fail(
+              `the live alarms, overview or OEE check failed (Playwright exit ${String(exitCode)})`,
+            );
+          }
         }
         phase('browser');
 
-        // 6. Exit criterion 4 through the UI (#123): shift A is final and the simulator paused, so
-        //    nothing but the recode can change the Pareto, and OEE must not change at all.
+        // 6. Through the UI, after the drain: alarm actions (#147), the downtime recode (#123) and
+        //    a handover note (#147). Shift A is final and the simulator paused, so nothing but these
+        //    writes can change anything, and neither the alarm KPIs nor OEE may change at all.
         if (withBrowser) {
+          const kpiTexts = () =>
+            Promise.all(
+              alarmScopes.flatMap((id) =>
+                (['hour', 'shift'] as const).map((bucket) =>
+                  mes.alarmKpiText(
+                    id === 'plant' ? 'plant' : 'position',
+                    id,
+                    bucket,
+                    shift.from,
+                    shift.to,
+                  ),
+                ),
+              ),
+            );
+          const kpiBefore = await kpiTexts();
+          const oeeBefore = await mes.shiftOeeText(shiftKey);
           browser = runBrowser('final', {
             RECONCILE_WEB_URL: webUrl,
             RECONCILE_RESULTS: RESULTS,
@@ -791,13 +1056,36 @@ async function main(): Promise<boolean> {
           });
           const exitCode = await browser;
           browser = undefined;
-          const codingReport = await readFile(join(RESULTS, 'downtime-coding.json'), 'utf8').then(
-            (text) => JSON.parse(text) as unknown,
-            () => undefined,
-          );
-          report.coding = { exitCode, report: codingReport };
-          if (exitCode !== 0)
-            fail(`the downtime coding check failed (Playwright exit ${String(exitCode)})`);
+          const read = (name: string) =>
+            readFile(join(RESULTS, name), 'utf8').then(
+              (text) => JSON.parse(text) as unknown,
+              () => undefined,
+            );
+          const kpiAfter = await kpiTexts();
+          const alarmKpiIdentical = JSON.stringify(kpiAfter) === JSON.stringify(kpiBefore);
+          const oeeIdentical = (await mes.shiftOeeText(shiftKey)) === oeeBefore;
+          const audits = await auditRefusals(stack);
+          report.coding = {
+            exitCode,
+            report: await read('downtime-coding.json'),
+            alarmActions: await read('alarm-actions.json'),
+            shiftReport: await read('shift-report.json'),
+            alarmKpiIdentical,
+            oeeIdentical,
+            auditRefusals: audits,
+          };
+          if (exitCode !== 0) {
+            fail(
+              `the alarm actions, downtime coding or handover note check failed (Playwright exit ${String(exitCode)})`,
+            );
+          }
+          if (!alarmKpiIdentical) fail(`${shiftKey} alarm KPIs changed through the UI writes`);
+          if (!oeeIdentical) fail(`${shiftKey} OEE changed through the UI writes`);
+          for (const [table, audit] of Object.entries(audits)) {
+            if (audit.rows === 0 || audit.update === 'accepted' || audit.delete === 'accepted') {
+              fail(`${table} is not append-only, or empty: ${JSON.stringify(audit)}`);
+            }
+          }
         }
         phase('coding');
       })(),
@@ -820,6 +1108,7 @@ async function main(): Promise<boolean> {
         console.error('could not read the service logs', error);
       }
     }
+    report.totalMs = Date.now() - started;
     await writeFile(join(RESULTS, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
     clearTimeout(deadlineTimer);
     await stack.destroy().catch((error: unknown) => {
@@ -858,9 +1147,203 @@ function alarmTruthShape(bucket: AlarmKpiBucketDto): Record<string, unknown> {
   };
 }
 
+/**
+ * Shift A's report (#144; exit criterion 4, #147): waits until it is final, then checks it is
+ * `final` with `revision.inputs = 0` and no incident; its OEE section is `GET /shifts/{date}/{shift}/oee`
+ * byte for byte; each alarm scope's KPIs are `GET /alarms/kpi`'s shift bucket and the ground
+ * truth's; production per machine equals the OEE inputs and the ground truth's cycles, finished
+ * parts PCK-01's good cycles; the downtime Pareto sums to the availability loss; and its instance
+ * has the calendar's start, end and breaks. Returns what it found, with the failures.
+ */
+async function checkShiftReport(
+  mes: MesClient,
+  truth: GroundTruth,
+  shiftKey: string,
+  shift: { from: number; to: number },
+  machines: readonly string[],
+): Promise<NonNullable<Report['shiftReport']>> {
+  const failures: string[] = [];
+  const from = Date.now();
+  let text = await mes.shiftReportText(shiftKey);
+  await until(
+    `${shiftKey} report final`,
+    async () => {
+      text = await mes.shiftReportText(shiftKey);
+      return shiftReportSchema.parse(JSON.parse(text)).final;
+    },
+    OEE_FINAL_MS,
+  ).catch((error: unknown) => {
+    failures.push(error instanceof Error ? error.message : String(error));
+  });
+  const waitedMs = Date.now() - from;
+  const raw = JSON.parse(text) as { oee: unknown; alarms: { scopes: { kpis: unknown }[] } };
+  const parsed = shiftReportSchema.parse(raw);
+  if (!parsed.final || parsed.status !== 'final') {
+    failures.push(`not final (status ${parsed.status})`);
+  }
+  if (parsed.revision.inputs !== 0 || parsed.incidents !== 0) {
+    failures.push(
+      `revision.inputs ${String(parsed.revision.inputs)}, incidents ${String(parsed.incidents)}`,
+    );
+  }
+  if (parsed.revision.contentAtFinal === null) failures.push('no contentAtFinal');
+
+  // OEE: the body of GET /shifts/{date}/{shift}/oee, byte for byte.
+  const oeeText = await mes.shiftOeeText(shiftKey);
+  const oeeSectionIdentical = JSON.stringify(raw.oee) === oeeText;
+  if (!oeeSectionIdentical) failures.push('the OEE section is not GET …/oee byte for byte');
+
+  // Alarms: per scope the shift bucket of GET /alarms/kpi (byte for byte) and the ground truth.
+  let alarmScopesCompared = 0;
+  for (const [n, scope] of parsed.alarms.scopes.entries()) {
+    const kind = scope.scope === 'plant' ? 'plant' : 'position';
+    const list = JSON.parse(
+      await mes.alarmKpiText(kind, scope.id, 'shift', shift.from, shift.to),
+    ) as { buckets: { key: string }[] };
+    const served = list.buckets.find((b) => b.key === shiftKey);
+    if (JSON.stringify(raw.alarms.scopes[n]?.kpis) !== JSON.stringify(served)) {
+      failures.push(`${scope.id}: the alarm section is not GET /alarms/kpi's shift bucket`);
+    }
+    const diffs = jsonDifferences(
+      truth.alarms.scopes[scope.id]?.shifts[shiftKey] ?? null,
+      scope.kpis ? alarmTruthShape(scope.kpis) : null,
+    );
+    if (diffs.length > 0) {
+      failures.push(
+        `${scope.id}: the alarm section differs from the ground truth: ${diffs.join('; ')}`,
+      );
+    }
+    if (scope.kpis) alarmScopesCompared++;
+  }
+  if (alarmScopesCompared !== 3) {
+    failures.push(`${String(alarmScopesCompared)} alarm scopes compared, not 3`);
+  }
+
+  // Production: per machine the OEE inputs and the ground truth's cycles.
+  const count = (cycles: readonly { result: string; count: number }[], result?: string) =>
+    cycles
+      .filter((c) => result === undefined || c.result === result)
+      .reduce((a, c) => a + c.count, 0);
+  let productionCompared = 0;
+  for (const id of machines) {
+    const row = parsed.production.machines.find((m) => m.equipment === id);
+    const inputs = parsed.oee.equipment.find((b) => b.id === id)?.inputs.cycles;
+    const truthCycles = truth.oee.machines[id]?.shifts[shiftKey]?.inputs.cycles;
+    if (!row || !inputs || !truthCycles) {
+      failures.push(`${id}: no production row, OEE inputs or truth cycles`);
+      continue;
+    }
+    const actual = [row.produced, row.good, row.scrap, row.rework];
+    for (const [what, cycles] of [
+      ['OEE inputs', inputs],
+      ['ground truth', truthCycles],
+    ] as const) {
+      const expected = [
+        count(cycles),
+        count(cycles, 'good'),
+        count(cycles, 'scrap'),
+        count(cycles, 'rework'),
+      ];
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+        failures.push(
+          `${id}: produced/good/scrap/rework ${actual.join('/')}, ${what} ${expected.join('/')}`,
+        );
+      }
+    }
+    productionCompared++;
+  }
+  if (productionCompared !== machines.length) {
+    failures.push(`${String(productionCompared)} machines' production compared`);
+  }
+  const finished = parsed.production.finished;
+  const pckGood = parsed.production.machines.find((m) => m.equipment === 'pck-01')?.good;
+  if (finished.equipment !== 'pck-01' || finished.good !== pckGood) {
+    failures.push(`finished parts ${JSON.stringify(finished)}, PCK-01 good ${String(pckGood)}`);
+  }
+  const scrap = parsed.production.machines.reduce((a, m) => a + m.scrap, 0);
+  if (parsed.production.scrap !== scrap) {
+    failures.push(`total scrap ${String(parsed.production.scrap)}, rows ${String(scrap)}`);
+  }
+
+  // Downtime: the Pareto by reason sums to the own plus external availability loss.
+  const paretoMs = parsed.downtime.reasons.reduce((a, r) => a + r.ms, 0);
+  const availabilityLossMs =
+    parsed.downtime.availability.own + parsed.downtime.availability.external;
+  if (paretoMs !== availabilityLossMs) {
+    failures.push(
+      `Pareto ${String(paretoMs)} ms, availability loss ${String(availabilityLossMs)} ms`,
+    );
+  }
+
+  // The instance: the calendar's start, end and breaks.
+  const record = await mes.shiftRecord(shiftKey);
+  const calendar = (await mes.shifts(shift.from, shift.to)).shifts.find((s) => s.key === shiftKey);
+  const calendarEqual =
+    calendar !== undefined &&
+    JSON.stringify([record.start, record.end, record.breaks]) ===
+      JSON.stringify([calendar.start, calendar.end, calendar.breaks]) &&
+    Date.parse(record.start) === shift.from &&
+    Date.parse(record.end) === shift.to &&
+    record.epoch === truth.epoch;
+  if (!calendarEqual) {
+    failures.push(
+      `instance ${JSON.stringify(record)} is not the calendar's ${JSON.stringify(calendar)}`,
+    );
+  }
+
+  return {
+    waitedMs,
+    final: parsed.final,
+    revision: parsed.revision,
+    incidents: parsed.incidents,
+    oeeSectionIdentical,
+    alarmScopesCompared,
+    productionCompared,
+    finished,
+    paretoMs,
+    availabilityLossMs,
+    instance: {
+      start: record.start,
+      end: record.end,
+      breaks: record.breaks.length,
+      calendarEqual,
+    },
+    failures,
+  };
+}
+
+/**
+ * The audit tables refuse UPDATE and DELETE (exit criterion 3): each statement must fail with the
+ * trigger's error, and the table must hold rows (the actions of the `final` project).
+ */
+async function auditRefusals(
+  stack: Stack,
+): Promise<Record<string, { rows: number; update: string; delete: string }>> {
+  const refusals: Record<string, { rows: number; update: string; delete: string }> = {};
+  for (const table of AUDIT_TABLES) {
+    const rows = await stack.sqlJson<number>(`SELECT count(*) FROM ${table}`);
+    const attempt = async (statement: string) =>
+      stack.sqlJson(statement).then(
+        () => 'accepted',
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          return /ERROR:\s*([^\n]*)/.exec(message)?.[1] ?? message.slice(0, 200);
+        },
+      );
+    refusals[table] = {
+      rows,
+      update: await attempt(`UPDATE ${table} SET actor = actor`),
+      delete: await attempt(`DELETE FROM ${table}`),
+    };
+  }
+  return refusals;
+}
+
 function summarize(report: Report): void {
   log('results');
-  console.log(`  phases (ms): ${JSON.stringify(report.phasesMs)}`);
+  console.log(
+    `  phases (ms): ${JSON.stringify(report.phasesMs)}, total ${String(report.totalMs)} ms`,
+  );
   if (report.shift) console.log(`  shift: ${JSON.stringify(report.shift)}`);
   if (report.silentWait) console.log(`  silent wait: ${JSON.stringify(report.silentWait)}`);
   if (report.drain) console.log(`  drain: ${JSON.stringify(report.drain)}`);
@@ -895,13 +1378,22 @@ function summarize(report: Report): void {
   }
   if (report.alarms) {
     console.log(
-      `  alarm KPIs final after ${String(report.alarms.waitedMs)} ms, ${String(report.alarms.compared)} buckets compared, golden equal: ${String(report.alarms.goldenEqual)}`,
+      `  alarm KPIs final after ${String(report.alarms.waitedMs)} ms, ${String(report.alarms.compared)} shift and ${String(report.alarms.hoursCompared)} hour buckets compared, golden equal: ${String(report.alarms.goldenEqual)}`,
     );
   }
   if (report.goldenShiftEqual !== undefined) {
     console.log(
-      `  live ground truth equals the golden week's shift: ${String(report.goldenShiftEqual)}`,
+      `  live ground truth equals alarms-01's shift: states ${String(report.goldenShiftEqual)}, OEE ${String(report.goldenOeeEqual)}`,
     );
+  }
+  if (report.injections) {
+    console.log(
+      `  injections: ${String(report.injections.posted)} posted, ${String(report.injections.applied.filter((i) => i.status === 'applied').length)} applied; prefix: ${report.injections.prefixEvidence}`,
+    );
+  }
+  if (report.shiftReport) {
+    const { failures, ...rest } = report.shiftReport;
+    console.log(`  shift report: ${JSON.stringify(rest)}, failures ${String(failures.length)}`);
   }
   if (report.pieces)
     console.log(

@@ -30,6 +30,7 @@ import {
   rateBand,
   rateBandText,
   scopeKey,
+  windowLabel,
 } from '../domain/alarms.ts';
 import { reasonName } from '../domain/downtime.ts';
 import {
@@ -825,6 +826,8 @@ function AlarmScopeCard({
   // The benchmarks are the MES's (#160): no band until they arrived.
   const config = useAlarmConfig();
   const band = bucket && config ? rateBand(bucket.averageRate, config) : undefined;
+  // The window as served (#160, #147): `10 min` by default, `window` until the answer arrived.
+  const per = windowLabel(config?.kpi.windowMs);
   const operator = scope.operator;
   return (
     <li className="report-section">
@@ -847,7 +850,7 @@ function AlarmScopeCard({
               ? `${String(bucket.raises)} (${String(bucket.byPriority.high)} / ${String(bucket.byPriority.medium)} / ${String(bucket.byPriority.low)})`
               : na}
           </Measure>
-          <Measure name="average-rate" label="Average per 10 min">
+          <Measure name="average-rate" label={`Average per ${per}`}>
             {bucket ? (
               <span title={bucket.averageRate.fraction}>
                 <span className="font-mono">{bucket.averageRate.decimal}</span>
@@ -864,7 +867,7 @@ function AlarmScopeCard({
               na
             )}
           </Measure>
-          <Measure name="peak10" label="Peak per 10 min">
+          <Measure name="peak10" label={`Peak per ${per}`}>
             {bucket ? bucket.peak10 : na}
           </Measure>
           <Measure name="flood-windows" label="Flood windows">

@@ -101,6 +101,10 @@ describe('shift report', () => {
     await waitFor(() => {
       expect(measure(plant, 'average-rate')).toContain('Acceptable (≤ 1 per 10 min)');
     });
+    // The labels name the served window (#147), 10 minutes here.
+    expect(
+      plant.querySelector('[data-measure="peak10"]')?.previousElementSibling?.textContent,
+    ).toBe('Peak per 10 min');
     expect(
       within(plant).getByTestId('report-bad-actor-plant-cnc-01-COOLANT-PRESSURE').dataset.raises,
     ).toBe('12');

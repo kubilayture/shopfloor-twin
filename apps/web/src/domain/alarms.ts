@@ -210,6 +210,15 @@ export function durationLabel(ms: number): string {
   return `${String(ms / 1000)} s`;
 }
 
+/**
+ * The KPI window as a label (#147, from the PR #164 review): `10 min` for the served `windowMs` of
+ * `GET /alarms/config` (#160), and `window` until it arrived, so no label claims a length the MES
+ * did not serve.
+ */
+export function windowLabel(windowMs: number | undefined): string {
+  return windowMs === undefined ? 'window' : durationLabel(windowMs);
+}
+
 /** The shelving presets of the plan ("API, push and web") before the limit is applied. */
 const PRESET_MS = [15 * MINUTE, HOUR, 4 * HOUR, 8 * HOUR] as const;
 

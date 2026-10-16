@@ -5,16 +5,25 @@
  */
 import { request as httpRequest } from 'node:http';
 import {
+  alarmDetailSchema,
+  alarmHistorySchema,
   alarmKpiListSchema,
+  alarmListSchema,
+  alarmPointAuditSchema,
+  alarmScopesSchema,
   currentShiftSchema,
   downtimeAuditSchema,
   downtimeListSchema,
   equipmentListSchema,
   oeeResultSchema,
+  operatorKpiListSchema,
   paretoSchema,
   plantSchema,
   reasonCodesSchema,
   shiftOeeSchema,
+  shiftListSchema,
+  shiftRecordSchema,
+  shiftReportSchema,
   shiftTotalsSchema,
 } from '@shopfloor/contracts/mes-api';
 import { z } from 'zod';
@@ -56,13 +65,52 @@ export const groundTruthSchema = z.object({
   oee: oeeTruthSchema,
   /** The alarm KPIs per scope (sim-summary/3, control API 1.3, #140), as JSON to compare. */
   alarms: z.object({
+    /** Every occurrence in raise order (#140): the raises the live alarm list is judged by (#147). */
+    occurrences: z.array(
+      z.object({
+        equipment: z.string(),
+        code: z.string(),
+        raisedAt: z.string(),
+        clearedAt: z.string().nullable(),
+        endReason: z.string().nullable(),
+      }),
+    ),
     scopes: z.record(
       z.string(),
-      z.object({ shifts: z.record(z.string(), z.record(z.string(), z.unknown())) }),
+      z.object({
+        shifts: z.record(z.string(), z.record(z.string(), z.unknown())),
+        /** Per UTC hour where something happened (#140). */
+        hours: z.record(z.string(), z.record(z.string(), z.unknown())),
+        /** Every flood episode of the scope so far (#140): the flood banner's truth (#147). */
+        floods: z.array(
+          z.object({ id: z.string(), startAt: z.string(), endAt: z.string().nullable() }),
+        ),
+      }),
     ),
   }),
 });
 export type GroundTruth = z.infer<typeof groundTruthSchema>;
+
+/** A failure injection (control API 1.3, #140): `POST /faults/failure/{machine}`. */
+export const injectionSchema = z.object({
+  id: z.number().int(),
+  machine: z.string(),
+  code: z.string(),
+  at: z.string(),
+  repairMs: z.number().int().optional(),
+  status: z.enum(['scheduled', 'held', 'applied']),
+  heldAt: z.string().optional(),
+  appliedAt: z.string().optional(),
+});
+export type Injection = z.infer<typeof injectionSchema>;
+
+/** One injection of a golden scenario's `scenario.json` (`injections`). */
+export interface ScenarioInjection {
+  readonly at: string;
+  readonly machine: string;
+  readonly code: string;
+  readonly repairMs?: number;
+}
 
 export const statusSchema = z.object({
   state: z.enum(['idle', 'running', 'paused', 'finished']),
@@ -109,6 +157,27 @@ export class SimulatorClient {
   pause(): Promise<Status> {
     return request(`${this.base}/api/v1/pause`, statusSchema, { method: 'POST' });
   }
+
+  /** Schedules a failure injection at simulation time `at` (control API 1.3, #140). */
+  inject({ machine, code, at, repairMs }: ScenarioInjection): Promise<Injection> {
+    return request(
+      `${this.base}/api/v1/faults/failure/${encodeURIComponent(machine)}`,
+      z.object({ injection: injectionSchema }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code, at, ...(repairMs === undefined ? {} : { repairMs }) }),
+      },
+    ).then(({ injection }) => injection);
+  }
+
+  async injections(): Promise<Injection[]> {
+    const { injections } = await request(
+      `${this.base}/api/v1/faults/injections`,
+      z.object({ injections: z.array(injectionSchema) }),
+    );
+    return injections;
+  }
 }
 
 export class MesClient {
@@ -153,6 +222,110 @@ export class MesClient {
       to: new Date(to).toISOString(),
     });
     return request(`${this.base}/api/v1/alarms/kpi?${query.toString()}`, alarmKpiListSchema);
+  }
+
+  /** Alarm KPIs of a scope per hour or shift bucket over [from, to), as raw text (#147). */
+  alarmKpiText(
+    scope: 'plant' | 'position',
+    id: string,
+    bucket: 'hour' | 'shift',
+    from: number | string,
+    to: number | string,
+  ): Promise<string> {
+    const query = new URLSearchParams({
+      scope,
+      ...(scope === 'plant' ? {} : { id }),
+      bucket,
+      from: new Date(from).toISOString(),
+      to: new Date(to).toISOString(),
+    });
+    return this.text(`/api/v1/alarms/kpi?${query.toString()}`);
+  }
+
+  /** MES-only operator measures of a scope (#143): acknowledgements, time to acknowledge. */
+  operatorKpi(
+    scope: 'plant' | 'position',
+    id: string,
+    bucket: 'hour' | 'shift' | 'range',
+    from: number | string,
+    to: number | string,
+  ) {
+    const query = new URLSearchParams({
+      scope,
+      ...(scope === 'plant' ? {} : { id }),
+      bucket,
+      from: new Date(from).toISOString(),
+      to: new Date(to).toISOString(),
+    });
+    return request(
+      `${this.base}/api/v1/alarms/operator-kpi?${query.toString()}`,
+      operatorKpiListSchema,
+    );
+  }
+
+  /** One view of the alarm list (#142): newest raise first, up to `limit`. */
+  alarms(view: 'active' | 'acknowledged' | 'shelved' | 'history', from?: string, to?: string) {
+    const query = new URLSearchParams({
+      view,
+      limit: '500',
+      ...(from === undefined ? {} : { from }),
+      ...(to === undefined ? {} : { to }),
+    });
+    return request(`${this.base}/api/v1/alarms?${query.toString()}`, alarmListSchema);
+  }
+
+  /** The plant and the operator positions with their equipment (#142). */
+  alarmScopes() {
+    return request(`${this.base}/api/v1/alarms/scopes`, alarmScopesSchema);
+  }
+
+  alarm(id: string) {
+    return request(`${this.base}/api/v1/alarms/${encodeURIComponent(id)}`, alarmDetailSchema);
+  }
+
+  alarmHistory(id: string) {
+    return request(
+      `${this.base}/api/v1/alarms/${encodeURIComponent(id)}/history`,
+      alarmHistorySchema,
+    );
+  }
+
+  pointAudit(equipment: string, code: string) {
+    return request(
+      `${this.base}/api/v1/alarm-points/${encodeURIComponent(equipment)}/${encodeURIComponent(code)}/audit`,
+      alarmPointAuditSchema,
+    );
+  }
+
+  /** The stored shift instance (#144) and the calendar's shifts over a range. */
+  shiftRecord(shiftKey: string) {
+    return request(`${this.base}/api/v1/shifts/${shiftKey}`, shiftRecordSchema);
+  }
+
+  shifts(from: number, to: number) {
+    const query = new URLSearchParams({
+      from: new Date(from).toISOString(),
+      to: new Date(to).toISOString(),
+    });
+    return request(`${this.base}/api/v1/shifts?${query.toString()}`, shiftListSchema);
+  }
+
+  /** The shift report (#144): parsed, and as raw text for byte-for-byte comparisons. */
+  shiftReport(shiftKey: string) {
+    return request(`${this.base}/api/v1/shifts/${shiftKey}/report`, shiftReportSchema);
+  }
+
+  shiftReportText(shiftKey: string): Promise<string> {
+    return this.text(`/api/v1/shifts/${shiftKey}/report`);
+  }
+
+  /** A GET answer as raw text (`path` from `/api/v1`), for byte-for-byte comparisons. */
+  async text(path: string): Promise<string> {
+    const url = `${this.base}${path}`;
+    const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`GET ${url}: ${String(response.status)} ${text}`);
+    return text;
   }
 
   /** The same answer as raw text, for a byte-for-byte comparison (#123). */

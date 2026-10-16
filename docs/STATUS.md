@@ -2,9 +2,11 @@
 
 ## Current phase: 06 – Alarms and shifts (in progress; Phase 5 closed 2026-10-16)
 
-## Exit criteria progress: Phase 6: 1 / 5 met (criterion 1: reference cases and coverage with #139, the golden reconciliation runs with #142); criterion 2's reconciliation passes with #142 for both scenarios, with the trailing buckets after the machines' last facts not final (deviation recorded in the phase log, for the owner)
+## Exit criteria progress: Phase 6: 1 / 5 met (criterion 1: reference cases and coverage with #139, the golden reconciliation runs with #142); criterion 2's reconciliation passes with #142 for both scenarios, with the trailing buckets after the machines' last facts not final (deviation recorded in the phase log, for the owner); criteria 3, 4 and 5 have local evidence from two passing `pnpm test:reconcile` runs with #147 (not merged; CI not run)
 
 ## Done since last update
+
+- #147 done (branch `test/147-e2e-alarms-shifts`): `pnpm test:reconcile` runs `alarms-01`'s shift A with its 14 injections posted through the control API 1.3 before the resume; shift A's alarm KPIs (plant and both positions, 3 shift and 4 hour buckets) final and equal to the live ground truth and `alarms-01`'s summary; shift A's report final with `revision.inputs = 0`, its OEE and alarm sections byte for byte the APIs', production equal to the ground truth. Playwright: every raise on `/alarms` within 2 s (max 293 ms), the flood banner, the KPI cards live (max 1,130 ms); after the drain acknowledge, bulk acknowledge, shelve and unshelve, comment, history in UI and API, `/alarms/kpi` byte-identical, operator measures 0 → 14 acknowledged, a handover note created and edited (`content` +2, `contentAtFinal` unchanged), refusals with problem types. Two consecutive local passes, 523 and 526 s. Also the PR #164 carry-overs (window labels from `windowMs`, `minShelveMs` in the MES). One earlier run hit two OEE dashboard violations (Phase 5 check; see Blockers).
 
 - #160 and #163 done (branch `feat/160-163-alarm-config-problem-types`): `GET /api/v1/alarms/config` serves `maxShelveMs`, the KPI thresholds and the benchmarks of `alarms.yaml`, and the web's shelve presets, flood threshold line, flood banner and rate bands follow it (no hard-coded `MAX_SHELVE_MS`, `FLOOD_THRESHOLD` or bands left). Write conflicts and refusals carry stable problem `type` URIs (`PROBLEM_TYPES` in contracts: handover closed and not open, note stale and limit, coding and shelf stale, the write guards); the note editor matches on `type`. Migration `0015` stores `content_at_final` with finality, served as `revision.contentAtFinal`; the "changed after final" banner uses it instead of comparing two clocks. ADR-0023 and ADR-0025 notes.
 - #146 done (branch `feat/146-web-shift-report`): web shift reports. `/shifts` (the last week's shifts, current first, with status and revision, live) and `/shifts/$date/$shift` (OEE, production, downtime, alarms with bad actors and operator figures, handover notes; Final/Provisional, revision `{inputs, content}`, `asOf`, `generatedAt`, a banner when changed after final; read again when the pushed instance moves; live OEE, production and alarm KPIs from `oee:<id>` and `alarm-kpi:<scope>` while it runs); an A4 print stylesheet with a **Print** button (charts as still images) and **Download JSON**; the handover note editor (create, edit with the starting version, stale drafts never sent, retract, history from the audit, handover-closed and limit messages). Shift instances and notes pushed on `shifts` are dropped on subscribe, release and reconnect.
@@ -91,13 +93,15 @@
 
 ## In progress
 
-- #160 alarm configuration from the API and #163 structured problem types with a served `contentAtFinal` (one branch and PR, in review)
+- #147 end to end (branch `test/147-e2e-alarms-shifts`, awaiting review)
 
 ## Next up
 
-- #146 web shift report and handover note editor, then #147 end to end (live injected faults, report reconciliation, Playwright), #159 (gateway outbox test robustness) and #148 (close Phase 6).
+- #148 (close Phase 6).
 
 ## Blockers and open questions for the owner
+
+- The OEE dashboard check (Phase 5, `oee-live.spec.ts`) now samples later in shift A, after the alarm check, and its max latency rose to 1.0–1.9 s (Phase 5: 1.1–1.3 s); one of three local runs had 2 violations on Cell M1's card. Decide whether to investigate before closing Phase 6 (phase log, #147).
 
 - Sign off Phase 5 (v1 success criterion 6); Claude closed it under the standing instruction without the owner's review.
 - Sign off Phase 4 (v1 success criterion 6); Claude closed it under the standing instruction without the owner's review.

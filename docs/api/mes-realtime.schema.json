@@ -4883,7 +4883,7 @@
                       "type": "integer",
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
-                      "description": "+1 per handover note create or edit, and per operator recode inside the shift once final (recoding never changes OEE, only the downtime section)"
+                      "description": "+1 per handover note create or edit; once final, +1 per operator recode inside the shift (recoding never changes OEE, only the downtime section) and per acknowledgement of an alarm raised in it (its time to acknowledge)"
                     }
                   },
                   "required": [

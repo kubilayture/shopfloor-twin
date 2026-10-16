@@ -22,6 +22,7 @@ import type {
   AlarmKpiBucket,
   AlarmKpiQuery,
   AlarmOccurrence,
+  AlarmPoint,
 } from './modules/alarms/index.ts';
 import type {
   CodingChange,
@@ -255,6 +256,27 @@ function fakes() {
       scopes: () => [{ scope: 'plant', id: 'plant', name: 'Plant', equipment: ['cnc-01'] }],
       kpis: (query) => Promise.resolve(kpis(query)),
       badActors: () => Promise.resolve({ epoch: E1, actors: [] as BadActor[] }),
+      operatorMeasures: (query) => {
+        const from = query.from.getTime();
+        const to = query.to.getTime();
+        return Promise.resolve({
+          epoch: E1,
+          buckets: [
+            {
+              key: shiftKeyAt(plant.shifts, from),
+              from,
+              to,
+              raises: 3,
+              shelvedRaises: 1,
+              annunciatedRaises: 2,
+              timeToAck: { count: 2, sumMs: 90_000, maxMs: 60_000 },
+              unacknowledgedAtEnd: 1,
+              shelvedMs: [{ equipment: 'cnc-01', code: 'COOLANT-PRESSURE', ms: 600_000 }],
+              provisional: false,
+            },
+          ],
+        });
+      },
       onChange: subscribe(listeners.alarms),
     },
     coding: { onChange: subscribe(listeners.coding) },
@@ -278,6 +300,20 @@ function fakes() {
         endedAt: new Date(raisedAt + 60_000),
       } as unknown as AlarmOccurrence;
       for (const l of listeners.alarms) l({ type: 'occurrence', event: 'cleared', occurrence });
+    },
+    /** An operator action on an occurrence raised at `raisedAt` (#143). */
+    operated: (raisedAt: number, event: 'acknowledged' | 'commented' | 'shelf') => {
+      const occurrence = {
+        epoch: E1,
+        raisedAt: new Date(raisedAt),
+        endedAt: null,
+      } as unknown as AlarmOccurrence;
+      for (const l of listeners.alarms) l({ type: 'occurrence', event, occurrence });
+    },
+    /** A point's shelf changed (#143). */
+    shelved: () => {
+      const point = { equipment: 'cnc-01', code: 'COOLANT-PRESSURE' } as unknown as AlarmPoint;
+      for (const l of listeners.alarms) l({ type: 'point', event: 'shelved', point });
     },
     coded: (from: number, to: number, kind: 'coded' | 'clipped') => {
       for (const l of listeners.coding) {
@@ -437,6 +473,38 @@ describe('report finality and the composite revision (ADR-0025)', () => {
       'created',
       'edited',
     ]);
+  });
+
+  it('counts an acknowledgement after final as content; shelves, comments and early acks not', async () => {
+    const { fake, shifts } = await setup('operator');
+    // Before final: an acknowledgement of a raise in shift A changes nothing stored.
+    fake.operated(at('05:00'), 'acknowledged');
+    fake.state.oeeFinal = true;
+    fake.state.alarmFinal = true;
+    await shifts.tick();
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({ inputs: 0, content: 0 });
+    // After final: an acknowledgement of a raise in A is one content step (its time to
+    // acknowledge changes); a raise in B (running), a comment, a shelf flag and a point's shelf
+    // (at the plant clock, after A) are none.
+    fake.operated(at('05:00'), 'acknowledged');
+    fake.operated(at('10:59'), 'acknowledged');
+    fake.operated(at('11:00'), 'acknowledged');
+    fake.operated(at('05:00'), 'commented');
+    fake.operated(at('05:00'), 'shelf');
+    fake.shelved();
+    await shifts.tick();
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({ inputs: 0, content: 2 });
+    expect((await shifts.instance('2026-10-12', 'B'))?.revision).toEqual({ inputs: 0, content: 0 });
+    // The figures are in the report, not an input of its finality.
+    const report = await shifts.report('2026-10-12', 'A');
+    expect(report?.alarms[0]?.operator).toMatchObject({
+      key: '2026-10-12/A',
+      shelvedRaises: 1,
+      annunciatedRaises: 2,
+      timeToAck: { count: 2, sumMs: 90_000, maxMs: 60_000 },
+      unacknowledgedAtEnd: 1,
+    });
+    expect(report?.instance.status).toBe('final');
   });
 
   it('composes the report: production, uncoded time, the longest records, notes with history', async () => {

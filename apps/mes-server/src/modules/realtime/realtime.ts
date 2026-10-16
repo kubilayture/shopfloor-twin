@@ -22,6 +22,7 @@ import {
   floodEpisodeDto,
   historyDto,
   occurrenceDto,
+  operatorBucketDto,
   pointDto,
   shelfDto,
   transitionDto,
@@ -1346,13 +1347,7 @@ export async function registerRealtime(
             from: iso(query.from),
             to: iso(query.to),
             epoch,
-            buckets: buckets.map((bucket) => ({
-              ...bucket,
-              from: iso(new Date(bucket.from)),
-              to: iso(new Date(bucket.to)),
-              timeToAck: { ...bucket.timeToAck },
-              shelvedMs: bucket.shelvedMs.map((point) => ({ ...point })),
-            })),
+            buckets: buckets.map(operatorBucketDto),
           };
         },
       );

@@ -954,6 +954,7 @@ Acknowledgement per occurrence (who, wall time, plant time, comment, request id)
 | Check | `occurrence_state_acknowledged_by_check` | `CHECK (((length(acknowledged_by) >= 1) AND (length(acknowledged_by) <= 100)))` |
 | Check | `occurrence_state_check` | `CHECK (((plant_at IS NULL) = (plant_epoch IS NULL)))` |
 | Check | `occurrence_state_comment_check` | `CHECK ((length(comment) <= 500))` |
+
 ## Schema shifts
 
 Owner: shifts. Shift instances as records per (plant epoch, shift key), with the shift report’s finality and composite revision, and the handover notes with their append-only audit (ADR-0025). The report is computed on read.

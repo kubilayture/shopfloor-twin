@@ -92,6 +92,7 @@ export type {
   ShiftOee,
   ShiftRecordDto,
   ShiftReportDto,
+  OperatorBucketDto,
 } from '@shopfloor/contracts';
 export { LIMITS };
 

@@ -14,6 +14,7 @@ import type {
   AlarmEvent,
   AlarmKpiBucket,
   Alarms,
+  OperatorBucket,
   ScopeInfo,
 } from '../alarms/index.ts';
 import {
@@ -57,7 +58,7 @@ export interface ShiftsSources {
     Oee,
     'shift' | 'paretoInputs' | 'reasonCodes' | 'config' | 'workCenters' | 'onChange'
   >;
-  readonly alarms: Pick<Alarms, 'kpis' | 'badActors' | 'scopes' | 'onChange'>;
+  readonly alarms: Pick<Alarms, 'kpis' | 'badActors' | 'scopes' | 'operatorMeasures' | 'onChange'>;
   /** Operator recodes raise `content` of a final report (optional in tests). */
   readonly coding?: Pick<DowntimeCoding, 'onChange'>;
 }
@@ -174,6 +175,12 @@ export interface ReportAlarmScope {
   /** The scope's KPIs over the shift bucket; null before the bucket has begun. */
   readonly kpis: AlarmKpiBucket | null;
   readonly badActors: readonly BadActor[];
+  /**
+   * The MES-only operator figures of the shift bucket (#143: shelved and annunciated raises, time to
+   * acknowledge, unacknowledged at the end, shelved time per point); not reconciled, and no input
+   * of the report's finality. Null before the bucket has begun.
+   */
+  readonly operator: OperatorBucket | null;
 }
 
 /** The shift report, computed on read (ADR-0025). */
@@ -501,14 +508,16 @@ export class Shifts {
       Promise.all(
         scopes.map(async (scope): Promise<ReportAlarmScope> => {
           const query = { scope: scope.scope, id: scope.id, from: start, to: end };
-          const [kpis, actors] = await Promise.all([
+          const [kpis, actors, operator] = await Promise.all([
             alarms.kpis({ ...query, bucket: 'shift', epoch: record.epoch }),
             alarms.badActors({ ...query, epoch: record.epoch, limit: REPORT_BAD_ACTORS }),
+            alarms.operatorMeasures({ ...query, bucket: 'shift', epoch: record.epoch }),
           ]);
           return {
             scope,
             kpis: kpis.find((b) => b.key === record.key) ?? null,
             badActors: actors.actors,
+            operator: operator.buckets.find((b) => b.key === record.key) ?? null,
           };
         }),
       ),
@@ -1129,7 +1138,20 @@ export class Shifts {
   }
 
   #onAlarm(change: AlarmEvent): void {
+    // A shelf (or its end) happens at the plant clock, after every ended shift: it can't change
+    // a final report's operator figures.
     if (change.type === 'point') return;
+    if (change.type === 'occurrence' && change.event === 'acknowledged') {
+      this.#onAcknowledged(change.occurrence);
+      return;
+    }
+    // Comments and shelf flags change no KPI and no figure of the report.
+    if (
+      change.type === 'occurrence' &&
+      (change.event === 'commented' || change.event === 'shelf')
+    ) {
+      return;
+    }
     if (change.type === 'finality') {
       this.#mark(change.epoch, -Infinity, Infinity, false);
       return;
@@ -1156,23 +1178,45 @@ export class Shifts {
           r.start.getTime() < to &&
           r.end.getTime() > from,
       );
-    for (const record of hit) {
-      this.#enqueue(async () => {
-        const row = await this.#db
-          .updateTable('shifts.shift_instance')
-          .set((eb) => ({
-            content_revision: eb('content_revision', '+', 1),
-            updated_at: new Date(),
-          }))
-          .where('epoch', '=', record.epoch)
-          .where('shift_key', '=', record.key)
-          .returningAll()
-          .executeTakeFirst();
-        if (row) this.#store(toRecord(row), 'revised');
-      }).catch((error: unknown) => {
-        this.#log.error({ err: error }, 'shifts: counting a recode failed');
-      });
+    for (const record of hit) this.#contentStep(record, 'a recode');
+  }
+
+  /**
+   * An acknowledgement after a report is final changes its operator figures (the time to
+   * acknowledge of a raise in the shift; ADR-0025): one `content` step per occurrence raised in
+   * the shift. Unacknowledged-at-end can't change (it is taken at the shift's end).
+   */
+  #onAcknowledged(occurrence: { epoch: number; raisedAt: Date }): void {
+    const at = occurrence.raisedAt.getTime();
+    for (const { record } of this.#tracked.values()) {
+      if (
+        record.epoch === occurrence.epoch &&
+        record.status === 'final' &&
+        record.start.getTime() <= at &&
+        at < record.end.getTime()
+      ) {
+        this.#contentStep(record, 'an acknowledgement');
+      }
     }
+  }
+
+  /** Raises `content` of an instance by one, off the caller's path (after its commit). */
+  #contentStep(record: ShiftRecord, what: string): void {
+    this.#enqueue(async () => {
+      const row = await this.#db
+        .updateTable('shifts.shift_instance')
+        .set((eb) => ({
+          content_revision: eb('content_revision', '+', 1),
+          updated_at: new Date(),
+        }))
+        .where('epoch', '=', record.epoch)
+        .where('shift_key', '=', record.key)
+        .returningAll()
+        .executeTakeFirst();
+      if (row) this.#store(toRecord(row), 'revised');
+    }).catch((error: unknown) => {
+      this.#log.error({ err: error }, `shifts: counting ${what} failed`);
+    });
   }
 
   #emit(change: ShiftChange): void {

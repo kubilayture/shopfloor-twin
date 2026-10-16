@@ -45,7 +45,7 @@ Chosen: 1b, 2b, 3c and 4b.
 - **OEE:** exactly the body of `GET /shifts/{date}/{shift}/oee` (one DTO function builds both);
 - **downtime:** the Pareto by reason of all work centers (it sums to the own and external availability loss), the ten longest records with the reasons in effect, the record count and the time still `UNCODED`;
 - **production:** per machine produced, good, scrap and rework from the OEE inputs; finished parts are the good cycles of the line's last machine (PCK-01); total scrap;
-- **alarms:** per position and the plant, the KPIs of the shift bucket (equal to `GET /alarms/kpi`: raises, rates, flood windows and episodes, standing and active at the end, chattering, fleeting) and the top 5 bad actors;
+- **alarms:** per position and the plant, the KPIs of the shift bucket (equal to `GET /alarms/kpi`: raises, rates, flood windows and episodes, standing and active at the end, chattering, fleeting), the top 5 bad actors, and the MES-only operator figures of the shift bucket from `Alarms.operatorMeasures` (#143, equal to `GET /alarms/operator-kpi`): shelved and annunciated raises, time to acknowledge (count, sum, longest), unacknowledged at the shift's end and shelved time per point. The ground truth knows no operator, so these are not reconciled, and they are no input of finality;
 - **notes:** every note with its history;
 - `generatedAt` (wall) and `asOf` (the epoch's plant clock), for a printout.
 
@@ -57,6 +57,7 @@ Chosen: 1b, 2b, 3c and 4b.
 
 - **`inputs`** starts at 0 when the report becomes final and rises by one for every revision step of an input after that. An input is one OEE hour of one machine (its `bucket_finality` revision, read through `Equipment.stateHourly`) or one alarm KPI hour of one scope (`alarms.kpi_revision`, through `Alarms.kpis`). The module keeps the revisions it has counted (`seen_inputs`) and adds Σ max(0, now − seen) per input. It is a counter, not a maximum: two changes in different inputs, or two changes of one hour, never collapse into one. A revision an input already had when the report became final is the baseline, not a step.
 - **`content`** rises by one for every handover note create or edit (in the note's transaction), and for every operator recode (`DowntimeCoding` change of kind `coded`) inside a shift whose report is final. A clip after a re-cut (`clipped`) is not a recode: the late fact behind it moves `inputs`.
+- **Operator writes after final (#143).** An acknowledgement of an occurrence raised in a final shift changes that shift's time to acknowledge, so it is one `content` step (per occurrence acknowledged; a bulk acknowledgement of three raises of the shift is three). Unacknowledged-at-end can't change: it is taken at the shift's end. A shelve, an unshelve or a shelf's expiry happens at the plant clock, after every ended shift, so it can't change a final report's shelved raises or shelved time and is no step; nor is a comment, which the report does not show. Before final, operator writes count nothing: the report is not final yet.
 - **OEE never changes through recoding** (ADR-0021: reasons move only the Pareto and the reason view). A recode changes the downtime section, which is why it counts in `content`, not `inputs`.
 
 The counters move in the background and on every report read:
@@ -90,4 +91,4 @@ The print view is the web page with a print stylesheet (#146). The API adds what
 - Bad: the report is eight reads (OEE, records, Pareto per work center, alarm KPIs and bad actors per scope, the input revisions); fine for a page, too heavy for a paced topic, hence 4b.
 - Bad: an alarm KPI hour without activity is not listed by `Alarms.kpis`, so its revision is not seen; a late fact that changes an hour makes it active, so in practice none is missed.
 - Bad: a report read may write (the counter catch-up), on the main pool.
-- Not done here (#143 adds the alarm writes in parallel): the MES-only alarm figures of the plan's report (unacknowledged at the end, shelved points, time to acknowledge) join the alarm section once acknowledgements exist.
+- Good: the MES-only operator figures of #143 sit beside the reconciled KPIs without touching finality; only an acknowledgement after final moves the report, as `content`.

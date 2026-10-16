@@ -9,7 +9,7 @@ import type {
   ShiftReport,
 } from '../shifts/index.ts';
 import type { OeeBucket } from '../oee/index.ts';
-import { alarmKpiDto, badActorDto } from './alarm-dto.ts';
+import { alarmKpiDto, badActorDto, operatorBucketDto } from './alarm-dto.ts';
 import { bucketDto, recordDto } from './oee-dto.ts';
 import type {
   HandoverAuditEntryDto,
@@ -132,6 +132,7 @@ export function shiftReportDto(report: ShiftReport, generatedAt: Date): ShiftRep
         name: s.scope.name,
         kpis: s.kpis && alarmKpiDto(s.kpis),
         badActors: s.badActors.map(badActorDto),
+        operator: s.operator && operatorBucketDto(s.operator),
       })),
     },
     notes: notesDto(report.notes),

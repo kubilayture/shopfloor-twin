@@ -1015,7 +1015,7 @@ export const shiftRecordSchema = z
           'Starts at 0 when the report becomes final; +1 per revision of an input after that (an OEE hour of a machine, an alarm KPI hour of a scope)',
         ),
         content: int.describe(
-          '+1 per handover note create or edit, and per operator recode inside the shift once final (recoding never changes OEE, only the downtime section)',
+          '+1 per handover note create or edit; once final, +1 per operator recode inside the shift (recoding never changes OEE, only the downtime section) and per acknowledgement of an alarm raised in it (its time to acknowledge)',
         ),
       })
       .describe('The composite revision (ADR-0025): both stored counters'),
@@ -1153,6 +1153,11 @@ export const shiftReportSchema = z
               .nullable()
               .describe('The KPIs of the shift bucket (equal to GET /alarms/kpi)'),
             badActors: z.array(badActorSchema).describe('The top 5 of the shift'),
+            operator: operatorBucketSchema
+              .nullable()
+              .describe(
+                'MES-only operator figures of the shift bucket (equal to GET /alarms/operator-kpi): shelved and annunciated raises, time to acknowledge, unacknowledged at the end, shelved time per point. Not reconciled with the ground truth, and no input of `final`; an acknowledgement after final raises `revision.content`',
+              ),
           }),
         )
         .describe('The plant and every operator position'),

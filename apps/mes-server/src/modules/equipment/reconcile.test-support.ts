@@ -871,6 +871,30 @@ async function expectShiftReports(
         truth.alarms.scopes[id]?.badActors.shifts[s.key]?.slice(0, REPORT_BAD_ACTORS),
       ]);
       compared += 2;
+      // The MES-only operator figures (#143) are not reconciled with the ground truth (it knows
+      // no operator): they equal GET /alarms/operator-kpi for the shift, and with no operator
+      // write every raise is annunciated, none acknowledged and nothing shelved.
+      const operator = await alarms.operatorMeasures({
+        scope: section.scope.scope,
+        id,
+        bucket: 'shift',
+        from: new Date(s.start),
+        to: new Date(s.end),
+        epoch: EPOCH,
+      });
+      expect([id, s.key, section.operator]).toEqual([
+        id,
+        s.key,
+        operator.buckets.find((b) => b.key === s.key) ?? null,
+      ]);
+      expect([
+        id,
+        s.key,
+        section.operator?.shelvedRaises,
+        section.operator?.annunciatedRaises,
+        section.operator?.timeToAck.count,
+        section.operator?.shelvedMs,
+      ]).toEqual([id, s.key, 0, section.kpis.kpis.raises, 0, []]);
     }
     // Final exactly when its inputs are; then no revision (nothing changed, nothing written).
     const inputsFinal =

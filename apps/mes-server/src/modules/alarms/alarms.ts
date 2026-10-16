@@ -24,6 +24,7 @@ import {
   type PreparedSet,
   type Priority,
 } from '@shopfloor/alarm-core';
+import { MES_API_LIMITS } from '@shopfloor/contracts/mes-api';
 import { NO_SHIFT, shiftSegments, type ShiftPattern } from '@shopfloor/shift-calendar';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
@@ -982,12 +983,12 @@ export class Alarms {
     await this.#knownPoint(equipment, code);
     if (
       !Number.isSafeInteger(request.durationMs) ||
-      request.durationMs < 60_000 ||
+      request.durationMs < MES_API_LIMITS.minShelveMs ||
       request.durationMs > this.#maxShelveMs
     ) {
       throw new AlarmWriteError(
         'invalid',
-        `durationMs must be 60000 to ${String(this.#maxShelveMs)} (maxShelveMs), not ${String(request.durationMs)}`,
+        `durationMs must be ${String(MES_API_LIMITS.minShelveMs)} to ${String(this.#maxShelveMs)} (maxShelveMs), not ${String(request.durationMs)}`,
       );
     }
     const shelf = await writeShelve(this.#db, equipment, code, {

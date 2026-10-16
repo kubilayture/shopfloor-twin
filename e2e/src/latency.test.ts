@@ -239,3 +239,97 @@ describe('OEE values within the limit (#123, Phase 5 exit criterion 5)', () => {
     });
   });
 });
+
+describe('values seen around their moment (#147)', () => {
+  const W = 5_000;
+  /** The API's values every 500 ms from 0 (the first one included), each a new value. */
+  const api: Change[] = [];
+  for (let i = 0; i <= 80; i++) api.push({ at: i * 500, state: `0.${String(5000 + i)}` });
+  const truth = new Map([['wc', api.slice(1)]]);
+  const timeline = new Map([['wc', api]]);
+  const runWide = new Map([['wc', new Set(api.map((c) => c.state))]]);
+  /** A page that takes the value the API held `lagMs` earlier, once a second. */
+  const lagging = (lagMs: number): Change[] => {
+    const page: Change[] = [{ at: 0, state: '0.5000' }];
+    for (let at = 1_000; at < 40_000; at += 1_000) {
+      const stale = api.filter((c) => c.at <= at - lagMs).at(-1);
+      if (stale && stale.state !== page.at(-1)?.state) page.push({ at, state: stale.state });
+    }
+    return page;
+  };
+  const judge = (page: Change[]) =>
+    judgeLatency(truth, new Map([['wc', page]]), 40_000, 2_000, {
+      seenWithin: { truth: timeline, windowMs: W },
+    });
+
+  it('counts a brief value whose string the polls saw only at another moment', () => {
+    // 0.8137 was held long before; at 594 ms the push carried it again for a moment the polls
+    // missed, and the next push only came at 2,300 ms.
+    const values: Change[] = [
+      { at: -20_000, state: '0.8137' },
+      { at: -19_000, state: '0.8140' },
+      { at: 0, state: '0.8145' },
+      { at: 1_000, state: '0.8168' },
+    ];
+    const page: Change[] = [
+      { at: -20_000, state: '0.8137' },
+      { at: -18_800, state: '0.8140' },
+      { at: 594, state: '0.8137' },
+      { at: 2_300, state: '0.8168' },
+    ];
+    const changes = new Map([['wc', values.slice(1)]]);
+    const shown = new Map([['wc', page]]);
+    // Seen anywhere in the run: taken for a stale value, the change at 0 is a violation.
+    const old = judgeLatency(changes, shown, 10_000, 2_000, {
+      observed: new Map([['wc', new Set(values.map((c) => c.state))]]),
+    });
+    expect(old.violations.map((v) => v.at)).toEqual([0]);
+    // Seen only around its moment: the brief value is unseen, and counts after the change.
+    const windowed = judgeLatency(changes, shown, 10_000, 2_000, {
+      seenWithin: { truth: new Map([['wc', values]]), windowMs: W },
+    });
+    expect(windowed.violations).toEqual([]);
+    expect(windowed.measured.find((m) => m.at === 0)?.latencyMs).toBe(594);
+  });
+
+  it('still finds violations on a page lagging 2 to 5 s', () => {
+    for (const lag of [2_500, 4_500]) {
+      const result = judge(lagging(lag));
+      // Its stale values were held within the window, so they are judged as stale.
+      expect(result.violations.length, String(lag)).toBeGreaterThan(result.measured.length / 2);
+    }
+    // An up-to-date page has none.
+    expect(judge(lagging(0)).violations).toEqual([]);
+  });
+
+  it('fails the snapshot agreement for a page lagging more than the window', () => {
+    const page = lagging(8_000);
+    const shown = new Map([['wc', page]]);
+    // Its values are older than the window: unseen, so the judgement alone passes most changes.
+    const result = judge(page);
+    expect(result.violations.length).toBeLessThan(result.measured.length / 4);
+    const agreement = snapshotAgreement(
+      page.slice(1).map((sample) => ({ at: sample.at + 50, values: { wc: sample.state } })),
+      timeline,
+      2_000,
+      500,
+    );
+    expect(
+      pageValueProblems(shown, runWide, agreement, { maxUnobserved: 0.05, minAgreement: 0.95 })
+        .problems,
+    ).toEqual([
+      `0 of ${String(page.length - 1)} snapshot values agree with the truth`,
+      'wc: no snapshot agrees',
+    ]);
+  });
+
+  it('still refuses a frozen page', () => {
+    const frozen = [{ at: 0, state: '0.5000' }];
+    const result = judge(frozen);
+    expect(result.violations).toHaveLength(result.measured.length);
+    expect(pageActivityProblems(result.measured, new Map([['wc', frozen]]))).toEqual([
+      `the page changed state 0 times for ${String(result.measured.length)} judged changes`,
+      'wc: the page never changed state, the truth did',
+    ]);
+  });
+});

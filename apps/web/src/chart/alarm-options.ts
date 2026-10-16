@@ -1,5 +1,6 @@
 import type { AlarmKpiBucketDto } from '@shopfloor/contracts/mes-api';
 import type { EChartsCoreOption } from 'echarts/core';
+import { windowLabel } from '../domain/alarms.ts';
 import { formatClockTime } from '../domain/time.ts';
 import { CHART_COLORS } from './oee-options.ts';
 
@@ -11,18 +12,20 @@ const axisText = { color: INK, fontSize: 12 };
 /**
  * Raises and the peak per window of each hour against the flood threshold line (more than
  * `floodThreshold` raises in one window is a flood; served by `GET /alarms/config`, #160, and
- * without a line until it arrived). Values are the API's integers; final hours are drawn darker
+ * without a line until it arrived). The peak series is named after the served `windowMs` (#147). Values are the API's integers; final hours are drawn darker
  * than provisional ones, and the table beside the chart says which is which.
  */
 export function alarmHourlyOption(
   hours: readonly AlarmKpiBucketDto[],
   floodThreshold: number | undefined,
+  windowMs?: number,
 ): EChartsCoreOption {
+  const peak = `Peak per ${windowLabel(windowMs)}`;
   const colour = (hour: AlarmKpiBucketDto) =>
     hour.final ? CHART_COLORS.final : CHART_COLORS.provisional;
   return {
     grid: { left: 40, right: 12, top: 36, bottom: 32 },
-    legend: { top: 0, textStyle: axisText, data: ['Raises', 'Peak per 10 min'] },
+    legend: { top: 0, textStyle: axisText, data: ['Raises', peak] },
     tooltip: { trigger: 'item' },
     xAxis: {
       type: 'category',
@@ -48,7 +51,7 @@ export function alarmHourlyOption(
       },
       {
         type: 'bar',
-        name: 'Peak per 10 min',
+        name: peak,
         barMaxWidth: 28,
         itemStyle: { color: CHART_COLORS.final },
         data: hours.map((hour) => ({ value: hour.peak10, itemStyle: { color: colour(hour) } })),

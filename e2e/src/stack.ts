@@ -82,13 +82,24 @@ export class Stack {
 
   /** Rows of a SQL query returning one JSON value, run in the `db` container. */
   async sqlJson<T>(query: string): Promise<T> {
+    const out = await this.sql(query);
+    return JSON.parse(out.trim() || 'null') as T;
+  }
+
+  /**
+   * Runs SQL with psql in the `db` container (`ON_ERROR_STOP`): resolves with its output, or
+   * rejects with an error whose message holds psql's (the server's `ERROR:` line).
+   */
+  async sql(query: string): Promise<string> {
     const user = this.#env.DB_USER ?? 'shopfloor';
     const db = this.#env.DB_NAME ?? 'shopfloor';
-    const out = await this.compose([
+    return this.compose([
       'exec',
       '-T',
       'db',
       'psql',
+      '-v',
+      'ON_ERROR_STOP=1',
       '-U',
       user,
       '-d',
@@ -96,7 +107,6 @@ export class Stack {
       '-Atc',
       query,
     ]);
-    return JSON.parse(out.trim() || 'null') as T;
   }
 
   /** Stops the project, deletes its volumes and the env file. */

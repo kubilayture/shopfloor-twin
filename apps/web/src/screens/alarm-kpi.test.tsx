@@ -241,6 +241,18 @@ describe('alarm KPI page', () => {
       expect(charts.options.length).toBeGreaterThan(0);
       expect(thresholdLine(charts.options.at(-1))).toEqual([6]);
     });
+    // The labels, the chart's title and its peak series name the served window (#147).
+    const label = (name: string) =>
+      plant.querySelector(`[data-measure="${name}"]`)?.previousElementSibling?.textContent;
+    expect([label('average-rate'), label('peak10')]).toEqual([
+      'Average per 1 min',
+      'Peak per 1 min',
+    ]);
+    expect(screen.getByTestId('kpi-hourly').textContent).toContain('Raises and peak per 1 min');
+    expect(within(screen.getByTestId('kpi-buckets')).getByText('Avg / 1 min')).toBeTruthy();
+    expect((charts.options.at(-1) as { series: { name: string }[] }).series[1]?.name).toBe(
+      'Peak per 1 min',
+    );
     expect(server.paths.filter((path) => path === '/api/v1/alarms/config')).toHaveLength(1);
   });
 

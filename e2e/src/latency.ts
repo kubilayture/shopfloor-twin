@@ -52,6 +52,34 @@ export interface JudgeOptions {
    * counts.
    */
   readonly observed?: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
+   * Narrows "seen" to the moment (#147): a page value counts as seen only when the truth held it
+   * within `windowMs` of the sample (the truth's values per key in time order, the first one
+   * included; a value holds from its `at` until the next one's). Replaces `observed` when given.
+   * With `observed` alone a transient value whose string the polls saw at another moment of the
+   * run (four-decimal OEE values repeat) is taken for a stale one and never counts. `windowMs`
+   * must be at least the snapshot-agreement window, so a page lagging less than that still sees
+   * its stale values judged as stale, and one lagging more fails the snapshot agreement.
+   */
+  readonly seenWithin?: {
+    readonly truth: ReadonlyMap<string, readonly Change[]>;
+    readonly windowMs: number;
+  };
+}
+
+/** Whether `values` (in time order) held `state` at some time in [at − window, at + window]. */
+export function heldWithin(
+  values: readonly Change[],
+  state: string,
+  at: number,
+  windowMs: number,
+): boolean {
+  return values.some(
+    (change, i) =>
+      change.state === state &&
+      change.at <= at + windowMs &&
+      (values[i + 1]?.at ?? Infinity) >= at - windowMs,
+  );
 }
 
 /**
@@ -72,6 +100,15 @@ export function judgeLatency(
   for (const [machine, changes] of truth) {
     const shown = page.get(machine) ?? [];
     const observed = options.observed?.get(machine);
+    const window = options.seenWithin;
+    const held = window?.truth.get(machine) ?? [];
+    /** Undefined: no notion of unseen values (every value must be a later truth state). */
+    const seen = (sample: Change): boolean | undefined =>
+      window
+        ? heldWithin(held, sample.state, sample.at, window.windowMs)
+        : observed === undefined
+          ? undefined
+          : observed.has(sample.state);
     changes.forEach((change, i) => {
       const deadline = change.at + limitMs;
       if (deadline > until) {
@@ -91,7 +128,7 @@ export function judgeLatency(
       const hit = moments.find((at) => {
         const sample = sampleAt(shown, at);
         if (sample === undefined) return false;
-        if (observed !== undefined && !observed.has(sample.state)) return sample.at > change.at;
+        if (seen(sample) === false) return sample.at > change.at;
         return later.some((c) => c.at <= at && c.state === sample.state);
       });
       const result: Measured = {

@@ -34,5 +34,11 @@ describe('alarm chart options', () => {
     const none = alarmHourlyOption(hours, undefined);
     expect((none.series as Series[])[1]?.markLine).toBeUndefined();
     expect((none.yAxis as { max: (extent: { max: number }) => number }).max({ max: 3 })).toBe(3);
+
+    // The peak series names the served window (#147), and just `window` before it arrived.
+    expect(peaks?.name).toBe('Peak per window');
+    const fiveMinutes = alarmHourlyOption(hours, 10, 300_000);
+    expect((fiveMinutes.series as Series[])[1]?.name).toBe('Peak per 5 min');
+    expect((fiveMinutes.legend as { data: string[] }).data).toEqual(['Raises', 'Peak per 5 min']);
   });
 });

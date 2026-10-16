@@ -49,6 +49,17 @@ export interface PoolLimits {
   readonly connectionTimeoutMs?: number;
 }
 
+/** The pg pool behind each database handle, for the pool gauges (#147). */
+const pools = new WeakMap<Kysely<Database>, pg.Pool>();
+
+/** Connections of a handle's pool: all, idle and queries waiting for one. */
+export function poolStats(
+  db: Kysely<Database>,
+): { total: number; idle: number; waiting: number } | undefined {
+  const pool = pools.get(db);
+  return pool && { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount };
+}
+
 export function createDatabase(
   url: string,
   maxConnections = 10,
@@ -68,5 +79,7 @@ export function createDatabase(
   // An idle connection that the server closes (a database restart) is dropped from the pool; the
   // next query reconnects or fails where it is handled. Unhandled, the event would end the process.
   pool.on('error', () => undefined);
-  return new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
+  const db = new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
+  pools.set(db, pool);
+  return db;
 }

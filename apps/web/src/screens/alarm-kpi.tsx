@@ -29,6 +29,7 @@ import {
   rateBand,
   rateBandText,
   scopeKey,
+  windowLabel,
 } from '../domain/alarms.ts';
 import { NOT_APPLICABLE, percentText, pickBucket } from '../domain/oee.ts';
 import { formatClockTime, formatPlantTime } from '../domain/time.ts';
@@ -158,6 +159,8 @@ function ScopeCard({
     pushed?.key === shiftKey ? pushed : undefined,
   );
   const na = <span>{NOT_APPLICABLE}</span>;
+  // The window as served (#160, #147): `10 min` by default, `window` until the answer arrived.
+  const per = windowLabel(useAlarmConfig()?.kpi.windowMs);
   return (
     <li>
       <article
@@ -191,10 +194,10 @@ function ScopeCard({
               na
             )}
           </Measure>
-          <Measure name="average-rate" label="Average per 10 min">
+          <Measure name="average-rate" label={`Average per ${per}`}>
             {bucket ? <RateText bucket={bucket} /> : na}
           </Measure>
-          <Measure name="peak10" label="Peak per 10 min">
+          <Measure name="peak10" label={`Peak per ${per}`}>
             {bucket ? bucket.peak10 : na}
           </Measure>
           <Measure name="flood-windows" label="Flood windows">
@@ -263,6 +266,7 @@ function BucketTable({
   });
   const live = useLiveAlarmKpi(key);
   const config = useAlarmConfig();
+  const per = windowLabel(config?.kpi.windowMs);
   const buckets = withPushed(rest.data?.buckets ?? [], live?.[bucket], range);
   return (
     <div className="flex flex-col gap-3">
@@ -272,10 +276,12 @@ function BucketTable({
       {bucket === 'hour' ? (
         <EChart
           testId="kpi-hourly"
-          title="Raises and peak per 10 minutes, by hour"
-          description="Bars per hour of raises and of the most raises in one 10-minute window, with the flood threshold as a dashed line; the table below lists every value."
+          title={`Raises and peak per ${per}, by hour`}
+          description={`Bars per hour of raises and of the most raises in one ${per} window, with the flood threshold as a dashed line; the table below lists every value.`}
           option={
-            buckets.length > 0 ? alarmHourlyOption(buckets, config?.kpi.floodThreshold) : null
+            buckets.length > 0
+              ? alarmHourlyOption(buckets, config?.kpi.floodThreshold, config?.kpi.windowMs)
+              : null
           }
         >
           {buckets.length === 0 && rest.data ? (
@@ -301,7 +307,7 @@ function BucketTable({
                 Raises
               </th>
               <th scope="col" className="px-2 py-1 text-right">
-                Avg / 10 min
+                Avg / {per}
               </th>
               <th scope="col" className="px-2 py-1 text-right">
                 Peak

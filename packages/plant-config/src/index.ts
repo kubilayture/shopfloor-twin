@@ -1,3 +1,5 @@
+export { checkAlarms, plantAlarms } from './alarms.ts';
+export type { AlarmsConfig } from './alarms.ts';
 export type { ConfigIssue } from './cross-check.ts';
 export { formatIssues, loadPlantConfig, validatePlantConfig } from './load.ts';
 export type { LoadResult } from './load.ts';

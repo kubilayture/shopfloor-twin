@@ -390,7 +390,7 @@ describe('OEE configuration (ADR-0021)', () => {
     expect(idealCycleMs(result.config)['VB-100']?.OP10).toBe(1005);
   });
 
-  it('keeps the simulation sections apart from the OEE section', async () => {
+  it('keeps the simulation sections apart from the OEE, reason and alarm sections', async () => {
     const result = await loadPlantConfig(DEFAULT_DIR);
     if (!result.ok) {
       throw new Error(formatIssues(result.issues));
@@ -399,7 +399,13 @@ describe('OEE configuration (ADR-0021)', () => {
     expect(Object.keys(sections).sort()).toEqual(Object.keys(SIMULATION_FILES).sort());
     expect(sections).not.toHaveProperty('oee');
     expect(sections).not.toHaveProperty('reasons');
-    expect(Object.keys(PLANT_FILES)).toEqual([...Object.keys(SIMULATION_FILES), 'oee', 'reasons']);
+    expect(sections).not.toHaveProperty('alarms');
+    expect(Object.keys(PLANT_FILES)).toEqual([
+      ...Object.keys(SIMULATION_FILES),
+      'oee',
+      'reasons',
+      'alarms',
+    ]);
   });
 });
 

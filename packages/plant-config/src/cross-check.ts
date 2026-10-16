@@ -1,3 +1,4 @@
+import { checkAlarms, plantAlarms } from './alarms.ts';
 import { checkReasons, plantCauses } from './reasons.ts';
 import type { PlantConfig } from './schema.ts';
 
@@ -266,6 +267,19 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
   // Reason codes and auto-classification rules (#119): known reasons, fallbacks, full coverage.
   for (const issue of checkReasons(config.reasons, plantCauses(config))) {
     report('reasons', issue.path, issue.message);
+  }
+
+  // Alarm definitions, positions and KPI thresholds (#139, ADR-0024).
+  const workCenters = new Map(
+    config.plant.areas.flatMap((area) =>
+      area.workCenters.map((workCenter) => [
+        workCenter.id,
+        workCenter.equipment.map((item) => item.id),
+      ]),
+    ),
+  );
+  for (const issue of checkAlarms(config.alarms, workCenters, plantAlarms(config))) {
+    report('alarms', issue.path, issue.message);
   }
 
   return issues;

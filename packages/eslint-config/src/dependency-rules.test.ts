@@ -33,6 +33,17 @@ describe('dependency rules (plan section 8)', () => {
       '@shopfloor/contracts',
     ],
     [
+      'a pure package imports a non-pure workspace package (ADR-0024)',
+      'packages/alarm-core/src/a.ts',
+      '@shopfloor/plant-config',
+    ],
+    [
+      'a pure package imports another pure package by subpath',
+      'packages/alarm-core/src/a.ts',
+      '@shopfloor/oee-core/src/fraction.ts',
+    ],
+    ['alarm-core imports a Node.js built-in', 'packages/alarm-core/src/a.ts', 'node:fs'],
+    [
       'an MES module imports another module internals',
       'apps/mes-server/src/modules/oee/calc.ts',
       '../equipment/intervals.ts',
@@ -51,6 +62,16 @@ describe('dependency rules (plan section 8)', () => {
     ['an app imports contracts', 'apps/simulator/src/a.ts', '@shopfloor/contracts'],
     ['an app imports its own files', 'apps/simulator/src/engine/a.ts', '../../config/x.ts'],
     ['a pure package imports its own files', 'packages/sim-core/src/a.ts', './queue.ts'],
+    [
+      'a pure package imports another pure package by name (ADR-0024)',
+      'packages/alarm-core/src/a.ts',
+      '@shopfloor/oee-core',
+    ],
+    [
+      'a pure package imports shift-calendar by name (ADR-0024)',
+      'packages/oee-core/src/a.ts',
+      '@shopfloor/shift-calendar',
+    ],
     ['a pure package test imports vitest', 'packages/sim-core/src/a.test.ts', 'vitest'],
     [
       'a pure package tool config imports vitest',

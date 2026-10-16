@@ -1,11 +1,13 @@
 # Status — updated 2026-10-16
 
-## Current phase: 06 – Alarms and shifts (planning; Phase 5 closed 2026-10-16)
+## Current phase: 06 – Alarms and shifts (in progress; Phase 5 closed 2026-10-16)
 
-## Exit criteria progress: Phase 6: 0 / 5 met (plan in review)
+## Exit criteria progress: Phase 6: 0 / 5 met (criterion 1's reference cases and coverage are in place with #139; it is met once the golden reconciliation runs)
 
 ## Done since last update
 
+- #139 done (branch `feat/139-alarm-core`): new pure package `@shopfloor/alarm-core` with the alarm KPIs per bucket (raises by priority, average rate per 10 minutes as an exact fraction, fixed-window peak and flood windows, sliding flood episodes clipped per bucket with peak so far and `open`, standing, chattering, fleeting, active time), shift composition from hours, bad actors and the revised hours of late facts (ADR-0024). 20 hand-calculated reference cases in `docs/alarm-kpi-reference-cases.md`, recomputed independently in Python and parsed by the tests; property tests; coverage 100 / 94. `config/plant/alarms.yaml` (thresholds, positions, nine definitions) loaded and cross-checked by `plant-config` against `alarmVocabulary` (contracts), outside the simulator's config hash (golden week byte-identical). Pure packages may now import other pure packages by name (ADR-0005 amended by ADR-0024).
+- #138 merged (PR #149): Phase 6 plan.
 - Phase 6 plan with issues #138–#148 under milestone "Phase 06 – Alarms and shifts"; revised after the review of PR #149 (injection only in `Running`, revisions over every affected hour, old-epoch anchors, lost clears via resync snapshots).
 - #124 merged (PR #137): Phase 5 closed, tagged `phase-05`.
 - **Phase 5 closed**: all 5 exit criteria met; tag `phase-05` after #124 merges (report: `docs/phases/phase-05-report.md`; learning notes: `docs/learning/phase-05.md`; data model: `docs/data-model.md`, confirmed current with both continuous aggregates and the new tables).
@@ -79,11 +81,11 @@
 
 ## In progress
 
-- #138 Phase 6 plan (in review)
+- #139 `alarm-core` and alarm definitions (in review)
 
 ## Next up
 
-- #139 `alarm-core`, then #140–#148 in the plan's order. Carry-overs are in the Phase 5 report: the audit trigger and role separation (Phases 7 and 9), the global write rate limit, retention with continuous aggregates, and `prom-client` (ADR-0012).
+- #140 (simulator injection and alarm ground truth) and #141 (ingest, gateway and master data for alarms), then #142–#148 in the plan's order. Carry-overs are in the Phase 5 report: the audit trigger and role separation (Phases 7 and 9), the global write rate limit, retention with continuous aggregates, and `prom-client` (ADR-0012).
 
 ## Blockers and open questions for the owner
 
@@ -99,6 +101,6 @@ Project board: https://github.com/users/kubilayture/projects/1
 
 - CI on `main`: green (`verify`, `end to end`, `stack smoke`, `reconcile`) on `92efe6a`, the merge of #136.
 - Tests: 988 (plus the `end to end` job: gateway, golden-week reconciliation of intervals, aggregates, records and 128 OEE buckets; and the `reconcile` job: live shift A, dashboard latency, UI coding).
-- Coverage (lines / branches): `sim-core` 99 / 98 (floor 95 / 90), `oee-core` 100 / 99 (floor 95 / 90), `plant-config` 99 / 93 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 91 / 78, `mes-server` 96 / 87 and web 96 / 86 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
+- Coverage (lines / branches): `sim-core` 99 / 98 (floor 95 / 90), `oee-core` 100 / 99 (floor 95 / 90), `alarm-core` 100 / 94 (floor 95 / 90), `plant-config` 99 / 93 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 91 / 78, `mes-server` 96 / 87 and web 96 / 86 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

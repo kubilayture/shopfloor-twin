@@ -27,3 +27,4 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0021](0021-oee-definitions-exact-arithmetic-and-micro-stops.md) | OEE definitions, exact arithmetic and the micro-stop threshold                          | accepted           |
 | [0022](0022-hourly-aggregates-refreshed-explicitly.md)           | Hourly continuous aggregates, refreshed explicitly by their owning modules              | accepted           |
 | [0023](0023-guarded-writes-before-identity.md)                   | Guarded, audited writes before identity                                                 | accepted           |
+| [0024](0024-alarm-kpis-definitions-and-pure-package-imports.md)  | Alarm KPI definitions, exact arithmetic and pure-package imports                        | accepted           |

@@ -1,0 +1,92 @@
+# Alarm definitions and KPI configuration (ADR-0024, Phase 6 plan). Not a simulation input: the
+# simulator's run header does not hash this file, so changing it never changes a golden event log.
+# The cross-check in plant-config refuses a configuration where an alarm the plant can raise
+# (alarmVocabulary in @shopfloor/contracts) has no definition here.
+
+# KPI thresholds, integers in ms or counts (ISA-18.2, EEMUA 191).
+kpi:
+  # A flood is more than this many raises in one window.
+  floodThreshold: 10
+  # The rate and flood window; it divides an hour, so windows align on the hour.
+  windowMs: 600000
+  # A raise is chattering when its point raised at least chatterCount times in chatterWindowMs.
+  chatterCount: 3
+  chatterWindowMs: 60000
+  # An occurrence that clears less than this after its raise is fleeting.
+  fleetingMs: 1000
+  # An occurrence active at a bucket's end and raised at least this long before it is standing.
+  standingMs: 86400000
+
+# The longest an operator can shelve a point: 8 hours, one shift.
+maxShelveMs: 28800000
+
+# Benchmarks, for colouring only (ISA-18.2, EEMUA 191): about one raise per 10 minutes is
+# acceptable and two is the most manageable; under 1 % of windows in flood; the top 10 points
+# under 5 % of the load; no chattering or fleeting alarms.
+benchmarks:
+  acceptablePer10Min: 1
+  manageablePer10Min: 2
+  floodWindowsPercent: 1
+  topTenSharePercent: 5
+
+# Operator positions: until operators log in (Phase 7), a position is a set of work centers.
+positions:
+  - { id: cell-m1, name: Cell M1, workCenters: [cell-m1] }
+  - { id: line-a1, name: Line A1, workCenters: [line-a1] }
+
+# One definition per (equipment, code). Priority comes from here; the wire severity is shown.
+definitions:
+  - equipment: cnc-01
+    code: SPINDLE-OVERLOAD
+    priority: high
+    text: Spindle overload on CNC-01
+    consequence: Tool or spindle damage; the machine is down.
+    response: Stop feeding parts, call maintenance, check the tool and the workpiece clamping.
+  - equipment: cnc-01
+    code: COOLANT-PRESSURE
+    priority: medium
+    text: Coolant pressure low on CNC-01
+    consequence: Overheated tool and poor surface; the machine is down.
+    response: Check the coolant level and filter, call maintenance.
+  - equipment: cnc-02
+    code: SPINDLE-OVERLOAD
+    priority: high
+    text: Spindle overload on CNC-02
+    consequence: Tool or spindle damage; the machine is down.
+    response: Stop feeding parts, call maintenance, check the tool and the workpiece clamping.
+  - equipment: cnc-02
+    code: COOLANT-PRESSURE
+    priority: medium
+    text: Coolant pressure low on CNC-02
+    consequence: Overheated tool and poor surface; the machine is down.
+    response: Check the coolant level and filter, call maintenance.
+  - equipment: wsh-01
+    code: HEATER-FAULT
+    priority: high
+    text: Bath heater fault on the washer
+    consequence: The bath cools and parts leave unclean; the washer is down.
+    response: Call maintenance; hold washed parts until the bath is back at temperature.
+  - equipment: asm-01
+    code: PRESS-FAULT
+    priority: medium
+    text: Press fault on the assembly station
+    consequence: Assembly stops; Line A1 starves downstream.
+    response: Call maintenance; check the last assembly for a correct press fit.
+  - equipment: lkt-01
+    code: FIXTURE-SEAL
+    priority: medium
+    text: Fixture seal failure on the leak tester
+    consequence: Leak tests are invalid; the tester is down.
+    response: Call maintenance to replace the seal; retest the parts since the last good test.
+  - equipment: lkt-01
+    code: CALIBRATION-DUE
+    priority: low
+    text: Leak tester calibration due
+    consequence: Measurements may drift if calibration is postponed.
+    response: Plan the calibration at the next opportunity.
+  - equipment: pck-01
+    code: PRINTER-FAULT
+    priority: medium
+    text: Label printer fault at pack and label
+    consequence: Finished parts can't be labelled; Line A1 blocks upstream.
+    response: Call maintenance; check the printer ribbon and labels.

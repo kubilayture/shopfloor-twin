@@ -1,4 +1,6 @@
 import {
+  CALIBRATION_ALARM_CODE,
+  CALIBRATION_ALARM_SEVERITY,
   CAUSES,
   FAILURE_ALARM_SEVERITY,
   changeoverCause,
@@ -112,9 +114,11 @@ type Unavailable = 'Off' | 'PlannedStop';
 const CALENDAR_WINDOW = 7 * 24 * HOUR;
 
 export const MAX_PROGRAM_QUANTITY = 100_000;
-export { FAILURE_ALARM_SEVERITY } from '@shopfloor/contracts';
-export const CALIBRATION_ALARM_CODE = 'CALIBRATION-DUE';
-export const CALIBRATION_ALARM_SEVERITY = 300;
+export {
+  CALIBRATION_ALARM_CODE,
+  CALIBRATION_ALARM_SEVERITY,
+  FAILURE_ALARM_SEVERITY,
+} from '@shopfloor/contracts';
 
 export type LoadProgramResult =
   | { ok: true; position: number }

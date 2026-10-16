@@ -12,6 +12,7 @@
     "test": "vitest run --coverage"
   },
   "dependencies": {
+    "@shopfloor/contracts": "workspace:*",
     "yaml": "catalog:",
     "zod": "catalog:"
   },

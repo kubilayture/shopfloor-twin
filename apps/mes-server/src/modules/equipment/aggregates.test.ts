@@ -12,7 +12,7 @@ import type { Database } from '../../db/database.ts';
 import { startDatabase } from '../../testing.ts';
 import { Ingest, type IngestNotice } from '../ingest/index.ts';
 import { MasterData } from '../master-data/index.ts';
-import { Equipment, type PiecesChanged } from './index.ts';
+import { Equipment, downtimeRules, type PiecesChanged } from './index.ts';
 import { PLANT_CONFIG, UnsFeed, freshDatabase, type Delivery } from './test-support.ts';
 
 const E1 = 1_760_000_000;
@@ -66,6 +66,7 @@ async function setup() {
       shiftPattern,
       provisionalStepMs: 0,
       refresh: MANUAL,
+      downtime: downtimeRules(plant),
     });
     await equipment.start();
     cleanup.push(() => equipment.stop());

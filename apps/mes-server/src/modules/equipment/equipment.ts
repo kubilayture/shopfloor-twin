@@ -1,4 +1,5 @@
-import { HOUR, type Millis } from '@shopfloor/oee-core';
+import { HOUR, availabilityLoss, type AvailabilityLoss, type Millis } from '@shopfloor/oee-core';
+import { UNCODED } from '@shopfloor/plant-config';
 import { shiftCuts, type ShiftPattern } from '@shopfloor/shift-calendar';
 import { sql, type Kysely, type QueryCreator, type Transaction } from 'kysely';
 import {
@@ -17,7 +18,15 @@ import type {
   StateFact,
   StoredSample,
 } from '../ingest/index.ts';
+import { deriveRecords, type DerivedRecord, type DowntimeRules } from './downtime.ts';
 import { clamp, cutPieces, monotonic, type Piece, type Point } from './pieces.ts';
+
+/** The downtime records replacing those of the intervals starting in [from, to) (#119). */
+interface RecordWindow {
+  readonly from: Millis | undefined;
+  readonly to: Millis | undefined;
+  readonly records: readonly DerivedRecord[];
+}
 
 /** What the equipment module needs from ingest (`Ingest` implements it). */
 export interface StateSource {
@@ -73,7 +82,45 @@ export interface EquipmentOptions {
    * and no hour is `final` in `stateHourly`.
    */
   readonly refresh?: RefreshOptions;
+  /** The micro-stop threshold and reason rules downtime records are derived with (#119). */
+  readonly downtime: DowntimeRules;
   readonly log?: EquipmentLog;
+}
+
+/**
+ * One downtime record (#119): an availability-loss interval in one scheduled shift bucket, with
+ * the reason the auto-classification rules give it.
+ */
+export interface DowntimeRecord {
+  readonly equipment: string;
+  readonly epoch: number;
+  /** The later of the interval's start and its shift bucket's start (the record's key). */
+  readonly start: Date;
+  /** Null while the interval is open and this is its last bucket. */
+  readonly end: Date | null;
+  readonly intervalStart: Date;
+  readonly shiftKey: string;
+  readonly state: string;
+  readonly cause: string | null;
+  /** Own (Stopped from the threshold on, Down, Setup, Idle) or external (Starved, Blocked). */
+  readonly loss: AvailabilityLoss;
+  /** A `master_data.reason_code` id; UNCODED when no rule matched. */
+  readonly autoReason: string;
+  /** Open, or some of its time may still change (#113). */
+  readonly provisional: boolean;
+}
+
+/** Which downtime records to read (#120). */
+export interface DowntimeQuery {
+  /** Records overlapping [from, to). */
+  readonly from: Date;
+  readonly to: Date;
+  /** One equipment, or all. */
+  readonly equipment?: string;
+  readonly epoch?: number;
+  /** UNCODED records first (the coding screen), then by start; otherwise by start only. */
+  readonly uncodedFirst?: boolean;
+  readonly limit?: number;
 }
 
 /** The latest known state of one equipment, in its newest device epoch. */
@@ -276,6 +323,7 @@ export class Equipment {
   readonly #source: StateSource;
   readonly #pattern: ShiftPattern;
   readonly #step: number;
+  readonly #downtime: DowntimeRules;
   readonly #log: EquipmentLog;
   readonly #tracks = new Map<string, Map<number, Track>>();
   readonly #watermarks = new Map<number, Millis>();
@@ -297,6 +345,7 @@ export class Equipment {
     this.#source = options.source;
     this.#pattern = options.shiftPattern;
     this.#step = options.provisionalStepMs ?? 60_000;
+    this.#downtime = options.downtime;
     this.#log = options.log ?? silent;
     const states =
       options.refresh &&
@@ -542,6 +591,39 @@ export class Equipment {
     });
   }
 
+  /**
+   * Downtime records overlapping [from, to) (#119, for #120's downtime list and Pareto), by start
+   * (and equipment, epoch); with `uncodedFirst`, the UNCODED ones before the rest.
+   */
+  async downtimeRecords(query: DowntimeQuery): Promise<DowntimeRecord[]> {
+    let select = this.#readDb
+      .selectFrom('equipment.downtime_record')
+      .selectAll()
+      .where('start_time', '<', query.to)
+      .where((eb) => eb.or([eb('end_time', 'is', null), eb('end_time', '>', query.from)]));
+    if (query.equipment !== undefined) select = select.where('equipment', '=', query.equipment);
+    if (query.epoch !== undefined) select = select.where('epoch', '=', query.epoch);
+    if (query.uncodedFirst === true) {
+      select = select.orderBy(sql`auto_reason = ${UNCODED}`, 'desc');
+    }
+    if (query.limit !== undefined) select = select.limit(query.limit);
+    const rows = await select.orderBy('start_time').orderBy('equipment').orderBy('epoch').execute();
+    return rows.map((row) => ({
+      equipment: row.equipment,
+      epoch: row.epoch,
+      start: row.start_time,
+      end: row.end_time,
+      intervalStart: row.interval_start,
+      shiftKey: row.shift_key,
+      state: row.state,
+      cause: row.cause,
+      // Stored records are availability loss by construction (a CHECK lists their states).
+      loss: availabilityLoss(row.state, Infinity, 0) ?? 'own',
+      autoReason: row.auto_reason,
+      provisional: row.provisional,
+    }));
+  }
+
   #enqueue<T>(work: () => Promise<T>): Promise<T> {
     const result = this.#queue.then(work);
     this.#queue = result.catch(() => undefined);
@@ -685,7 +767,14 @@ export class Equipment {
           { from: pred?.at, to: succ.at },
           pieces,
         );
-        await this.#replace(track, pred?.at, succ.at, pieces, { facts, lastSeq });
+        await this.#replace(
+          track,
+          pred?.at,
+          succ.at,
+          pieces,
+          { facts, lastSeq },
+          this.#records(pieces, pred?.at, succ.at, undefined),
+        );
         await this.#revise(track, revised);
       } else {
         const end = this.#end(track, last.at);
@@ -696,7 +785,14 @@ export class Equipment {
           { from: pred?.at },
           pieces,
         );
-        await this.#replace(track, pred?.at, undefined, pieces, { facts, lastSeq });
+        await this.#replace(
+          track,
+          pred?.at,
+          undefined,
+          pieces,
+          { facts, lastSeq },
+          this.#records(pieces, pred?.at, undefined, track.closed ? undefined : last.at),
+        );
         await this.#revise(track, revised);
         this.#tail(track, last, pieces, end);
       }
@@ -939,8 +1035,19 @@ export class Equipment {
     // Pieces never exceed an hour, and no provisional one ends before `promoteAt`.
     if (Number.isFinite(from)) promote = promote.where('start_time', '>=', new Date(from - HOUR));
     if (Number.isFinite(bound)) promote = promote.where('end_time', '<=', new Date(bound));
+    // Downtime records follow their pieces (#119): a closed record is final with its last piece.
+    let promoteRecords = this.#db
+      .updateTable('equipment.downtime_record')
+      .set({ provisional: false })
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch)
+      .where('provisional', '=', true)
+      .where('end_time', 'is not', null);
+    if (Number.isFinite(bound))
+      promoteRecords = promoteRecords.where('end_time', '<=', new Date(bound));
     let rest = this.#db
       .with('promoted', () => promote.returning('start_time'))
+      .with('promoted_records', () => promoteRecords.returning('start_time'))
       .selectFrom('equipment.equipment_state_interval')
       .select((eb) => [
         eb.fn.min<Date | null>('end_time').as('next'),
@@ -1225,10 +1332,11 @@ export class Equipment {
     if (!last) return;
     const end = this.#end(track, last.at);
     const from = all ? last.at : (track.tailStart ?? last.at);
-    const pieces = cutPieces([last], end, this.#pattern, this.#bound(track)).filter(
-      (piece) => piece.from >= from,
-    );
-    await this.#replace(track, from, undefined, pieces, track);
+    const whole = cutPieces([last], end, this.#pattern, this.#bound(track));
+    const pieces = whole.filter((piece) => piece.from >= from);
+    // The open interval's records need all of its pieces (its length, its buckets).
+    const records = this.#records(whole, last.at, undefined, track.closed ? undefined : last.at);
+    await this.#replace(track, from, undefined, pieces, track, records);
     this.#tail(track, last, pieces, end);
     this.#emit(track, from, undefined);
   }
@@ -1249,10 +1357,14 @@ export class Equipment {
     const revised = await this.#changedFinalHours(track, undefined, {}, pieces);
     // Every piece is replaced: the earliest provisional end is among the new ones.
     track.promoteAt = Infinity;
-    await this.#replace(track, undefined, undefined, pieces, {
-      facts: facts.length,
-      lastSeq: facts.at(-1)?.seq ?? null,
-    });
+    await this.#replace(
+      track,
+      undefined,
+      undefined,
+      pieces,
+      { facts: facts.length, lastSeq: facts.at(-1)?.seq ?? null },
+      this.#records(pieces, undefined, undefined, track.closed ? undefined : last?.at),
+    );
     await this.#revise(track, revised);
     track.last = last;
     if (last) this.#tail(track, last, pieces, end);
@@ -1299,14 +1411,15 @@ export class Equipment {
     to: Millis | undefined,
     pieces: readonly Piece[],
     source: { readonly facts: number; readonly lastSeq: number | null },
+    records: RecordWindow,
   ): Promise<void> {
     for (const piece of pieces) {
       if (piece.provisional && piece.to < track.promoteAt) track.promoteAt = piece.to;
     }
     // The hours of the new pieces; an upserted piece keeps its start, so its old hour too (#118).
     const touched: (Millis | undefined)[] = [pieces[0]?.from, pieces.at(-1)?.from];
-    if (pieces.length <= INSERT_CHUNK) {
-      const removed = await this.#replaceAtOnce(track, from, to, pieces, source);
+    if (pieces.length <= INSERT_CHUNK && records.records.length <= INSERT_CHUNK) {
+      const removed = await this.#replaceAtOnce(track, from, to, pieces, source, records);
       this.#piecesChanged(track, [...touched, ...removed]);
       return;
     }
@@ -1322,6 +1435,13 @@ export class Equipment {
         await trx
           .insertInto('equipment.equipment_state_interval')
           .values(pieces.slice(i, i + INSERT_CHUNK).map((piece) => this.#pieceRow(track, piece)))
+          .execute();
+      }
+      await this.#removedRecords(trx, track, { ...records, records: [] }).execute();
+      for (let i = 0; i < records.records.length; i += INSERT_CHUNK) {
+        await trx
+          .insertInto('equipment.downtime_record')
+          .values(records.records.slice(i, i + INSERT_CHUNK).map((r) => this.#recordRow(track, r)))
           .execute();
       }
       track.facts = source.facts;
@@ -1343,6 +1463,7 @@ export class Equipment {
     to: Millis | undefined,
     pieces: readonly Piece[],
     source: { readonly facts: number; readonly lastSeq: number | null },
+    records: RecordWindow,
   ): Promise<(Millis | undefined)[]> {
     const removed = (db: QueryCreator<Database>) => {
       let remove = db
@@ -1366,8 +1487,35 @@ export class Equipment {
     ];
     let row: { removed_from: Date | null; removed_to: Date | null } | undefined;
     const next = { ...track, facts: source.facts, lastSeq: source.lastSeq };
+    // Downtime records of the same intervals, in the same statement (#119): the range's other
+    // records are deleted, the new ones upserted by key.
+    const withRecords = this.#db
+      .with('removed_records', (db) => this.#removedRecords(db, track, records).returning('epoch'))
+      .with('stored_records', (db) =>
+        records.records.length === 0
+          ? db
+              .selectFrom('equipment.downtime_record')
+              .select('epoch')
+              .where(sql<boolean>`false`)
+          : db
+              .insertInto('equipment.downtime_record')
+              .values(records.records.map((record) => this.#recordRow(track, record)))
+              .onConflict((c) =>
+                c.columns(['equipment', 'epoch', 'start_time']).doUpdateSet((eb) => ({
+                  end_time: eb.ref('excluded.end_time'),
+                  interval_start: eb.ref('excluded.interval_start'),
+                  shift_key: eb.ref('excluded.shift_key'),
+                  state: eb.ref('excluded.state'),
+                  cause: eb.ref('excluded.cause'),
+                  auto_reason: eb.ref('excluded.auto_reason'),
+                  provisional: eb.ref('excluded.provisional'),
+                  recorded_at: eb.ref('excluded.recorded_at'),
+                })),
+              )
+              .returning('epoch'),
+      );
     if (pieces.length === 0) {
-      row = await this.#db
+      row = await withRecords
         .with('removed', removed)
         .insertInto('equipment.interval_source')
         .values(this.#sourceRow(next))
@@ -1375,7 +1523,7 @@ export class Equipment {
         .returning(range)
         .executeTakeFirst();
     } else {
-      row = await this.#db
+      row = await withRecords
         .with('removed', removed)
         .with('stored', (db) =>
           db
@@ -1423,6 +1571,52 @@ export class Equipment {
     };
   }
 
+  /** The downtime records of whole intervals' pieces, replacing those of [from, to) (#119). */
+  #records(
+    pieces: readonly Piece[],
+    from: Millis | undefined,
+    to: Millis | undefined,
+    openStart: Millis | undefined,
+  ): RecordWindow {
+    return { from, to, records: deriveRecords(pieces, this.#downtime, openStart) };
+  }
+
+  /** Deletes the records of the intervals starting in the window, except those it upserts. */
+  #removedRecords(db: QueryCreator<Database>, track: Track, window: RecordWindow) {
+    let remove = db
+      .deleteFrom('equipment.downtime_record')
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch);
+    if (window.from !== undefined) {
+      remove = remove.where('interval_start', '>=', new Date(window.from));
+    }
+    if (window.to !== undefined) remove = remove.where('interval_start', '<', new Date(window.to));
+    if (window.records.length > 0) {
+      remove = remove.where(
+        'start_time',
+        'not in',
+        window.records.map((record) => new Date(record.from)),
+      );
+    }
+    return remove;
+  }
+
+  #recordRow(track: Track, record: DerivedRecord) {
+    return {
+      equipment: track.equipment,
+      epoch: track.epoch,
+      start_time: new Date(record.from),
+      end_time: record.to === null ? null : new Date(record.to),
+      interval_start: new Date(record.intervalStart),
+      shift_key: record.shiftKey,
+      state: record.state,
+      cause: record.cause,
+      auto_reason: record.reason,
+      provisional: record.provisional,
+      recorded_at: new Date(),
+    };
+  }
+
   #sourceUpdate(track: Track) {
     return {
       state_facts: track.facts,
@@ -1432,6 +1626,7 @@ export class Equipment {
       closed_at: track.closedAt === undefined ? null : new Date(track.closedAt),
       clamped: track.clamped,
       updated_at: new Date(),
+      downtime_threshold_ms: this.#downtime.microStopThresholdMs,
     };
   }
 
@@ -1540,10 +1735,12 @@ export class Equipment {
         this.#tracks.set(equipment, byEpoch);
       }
       byEpoch.set(epoch, track);
+      // Records derived with another threshold (or before #119: null) are derived again.
       const unchanged =
         source?.state_facts === track.facts &&
         source.last_seq === track.lastSeq &&
-        source.anchor_arrival === (anchor?.arrival ?? null);
+        source.anchor_arrival === (anchor?.arrival ?? null) &&
+        source.downtime_threshold_ms === this.#downtime.microStopThresholdMs;
       // The open interval as stored must be the last piece, opened by the last fact (or anchor).
       // Nothing to store: no state fact and no anchor (an equipment seen only through cycles).
       if (unchanged && track.lastSeq === null && !anchor) continue;
@@ -1579,7 +1776,8 @@ export class Equipment {
       await this.#syncFlags(track);
       await this.#settle(track);
     }
-    this.#log.info({ tracks: pairs.size, rebuilt }, 'equipment intervals caught up');
+    const reclassified = await this.#reclassify();
+    this.#log.info({ tracks: pairs.size, rebuilt, reclassified }, 'equipment intervals caught up');
     // The aggregates (#118): refresh both up to the latest final hour, check the final hours' cycle
     // counts against `cycle_hourly` (caught up first), then catch `state_hourly` up in the
     // background, after every write of this catch-up.
@@ -1588,6 +1786,35 @@ export class Equipment {
     if (Number.isFinite(latestFinal)) this.#finalThrough(latestFinal + HOUR);
     await this.#checkCycleCounts();
     this.#states?.catchUp().catch(() => undefined);
+  }
+
+  /**
+   * Start-up: gives every stored downtime record the reason today's rules give it, so a changed
+   * `reasons.yaml` applies to the records stored before (#119). One query per distinct (state,
+   * cause) pair whose reason changed. Returns the number of records changed.
+   */
+  async #reclassify(): Promise<number> {
+    const pairs = await this.#db
+      .selectFrom('equipment.downtime_record')
+      .select(['state', 'cause', 'auto_reason'])
+      .distinct()
+      .execute();
+    let changed = 0;
+    for (const pair of pairs) {
+      const reason = this.#downtime.classify(pair.state, pair.cause);
+      if (reason === pair.auto_reason) continue;
+      const result = await this.#db
+        .updateTable('equipment.downtime_record')
+        .set({ auto_reason: reason })
+        .where('state', '=', pair.state)
+        .where((eb) =>
+          pair.cause === null ? eb('cause', 'is', null) : eb('cause', '=', pair.cause),
+        )
+        .where('auto_reason', '=', pair.auto_reason)
+        .executeTakeFirst();
+      changed += Number(result.numUpdatedRows);
+    }
+    return changed;
   }
 
   /**
@@ -1611,6 +1838,17 @@ export class Equipment {
     }
     const changed = await query.returning('start_time').execute();
     this.#piecesChanged(track, span(changed.map((row) => row.start_time.getTime())));
+    // Downtime records likewise: provisional while open or ending after the bound (#119).
+    const recordFlag = Number.isFinite(bound)
+      ? sql<boolean>`end_time IS NULL OR end_time > ${new Date(bound)}`
+      : sql<boolean>`end_time IS NULL OR ${sql.lit(bound < 0)}`;
+    await this.#db
+      .updateTable('equipment.downtime_record')
+      .set({ provisional: recordFlag })
+      .where('equipment', '=', track.equipment)
+      .where('epoch', '=', track.epoch)
+      .where(sql<boolean>`provisional IS DISTINCT FROM (${recordFlag})`)
+      .execute();
     track.promoteAt = -Infinity;
   }
 

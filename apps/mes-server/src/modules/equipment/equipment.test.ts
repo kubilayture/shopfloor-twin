@@ -7,7 +7,7 @@ import type { Database } from '../../db/database.ts';
 import { startDatabase } from '../../testing.ts';
 import { Ingest, type IngestOptions } from '../ingest/index.ts';
 import { MasterData } from '../master-data/index.ts';
-import { Equipment, type EquipmentChange, type EquipmentOptions } from './index.ts';
+import { Equipment, downtimeRules, type EquipmentChange, type EquipmentOptions } from './index.ts';
 import {
   PLANT_CONFIG,
   UnsFeed,
@@ -70,6 +70,7 @@ async function setup(
       source: ingest,
       shiftPattern,
       provisionalStepMs: 0,
+      downtime: downtimeRules(plant),
       ...options,
       ...more,
     });
@@ -458,6 +459,7 @@ describe('equipment state intervals (#96)', () => {
       db,
       source,
       shiftPattern: await masterData.shiftPattern(),
+      downtime: downtimeRules(plant),
       provisionalStepMs: 0,
     });
     await equipment.start();
@@ -481,6 +483,7 @@ describe('equipment state intervals (#96)', () => {
       db,
       source: ingest,
       shiftPattern: await masterData.shiftPattern(),
+      downtime: downtimeRules(plant),
     });
     await fresh.start();
     cleanup.push(() => fresh.stop());
@@ -693,6 +696,7 @@ describe('interval finality (#113)', () => {
       db,
       source: resumed,
       shiftPattern: await masterData.shiftPattern(),
+      downtime: downtimeRules(plant),
       provisionalStepMs: 0,
     });
     await equipment.start();

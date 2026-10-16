@@ -1,0 +1,92 @@
+# Downtime reason codes and automatic classification (#119, ADR-0021 "Automatic classification").
+# Not a simulation input: the simulator's run header does not hash this file, so changing it never
+# changes a golden event log.
+#
+# reasons: the reason tree, seeded into master_data.reason_code. An id is its path in the tree
+# (BREAKDOWN/SPINDLE-OVERLOAD); its parent is the path before the last "/" and must be listed
+# first. A reason names a cause only: whether a downtime is availability loss (own or external) or
+# a micro-stop follows from its state and length, never from its reason (plan "Loss category").
+#
+# rules: from a machine's (state, cause) to a reason, in order; the first match wins and no match
+# gives UNCODED. A cause pattern is a string (that cause exactly), null (no cause), {prefix: ...}
+# or {any: true}. Every loss state needs a rule for `cause: null`: an OPC UA resync or a Modbus
+# poll opens an interval without a cause in any state. plant-config refuses rules that name an
+# unknown reason and any cause of the plant model (docs/simulation-model.md "Causes") that would
+# stay UNCODED.
+
+reasons:
+  - { id: BREAKDOWN, name: Breakdown }
+  - { id: BREAKDOWN/SPINDLE-OVERLOAD, name: Spindle overload }
+  - { id: BREAKDOWN/COOLANT-PRESSURE, name: Coolant pressure low }
+  - { id: BREAKDOWN/HEATER-FAULT, name: Washer heater fault }
+  - { id: BREAKDOWN/PRESS-FAULT, name: Press fault }
+  - { id: BREAKDOWN/FIXTURE-SEAL, name: Leak-test fixture seal }
+  - { id: BREAKDOWN/PRINTER-FAULT, name: Label printer fault }
+  - { id: BREAKDOWN/UNSPECIFIED, name: 'Breakdown, cause not reported' }
+  - { id: MINOR-STOP, name: Minor stop }
+  - { id: MINOR-STOP/DOOR-INTERLOCK, name: Door interlock }
+  - { id: MINOR-STOP/CHIP-JAM, name: Chip jam }
+  - { id: MINOR-STOP/CONVEYOR-JAM, name: Conveyor jam }
+  - { id: MINOR-STOP/PART-MISFEED, name: Part misfeed }
+  - { id: MINOR-STOP/SCANNER-RETRY, name: Scanner retry }
+  - { id: MINOR-STOP/FIXTURE-CLAMP, name: Fixture clamp }
+  - { id: MINOR-STOP/LABEL-OUT, name: Labels out }
+  - { id: MINOR-STOP/UNSPECIFIED, name: 'Minor stop, cause not reported' }
+  - { id: SETUP, name: Setup }
+  - { id: SETUP/CHANGEOVER, name: Product changeover }
+  - { id: SETUP/TOOL-CHANGE, name: Tool change }
+  - { id: SETUP/UNSPECIFIED, name: 'Setup, cause not reported' }
+  - { id: ORGANISATION, name: Organisation }
+  - { id: ORGANISATION/NO-OPERATOR, name: No operator }
+  - { id: ORGANISATION/NO-SCHEDULE, name: Nothing scheduled }
+  - { id: ORGANISATION/UNSPECIFIED, name: 'Idle, cause not reported' }
+  - { id: MATERIAL, name: Material missing }
+  - { id: STARVED, name: Starved by the upstream station }
+  - { id: BLOCKED, name: Blocked by the downstream station }
+  - { id: PLANNED, name: Planned stop }
+  - { id: PLANNED/BREAK, name: Break }
+  - { id: PLANNED/CALIBRATION, name: Calibration }
+  - { id: PLANNED/SHIFT-END, name: Outside shift }
+  - { id: UNCODED, name: Not coded }
+
+rules:
+  # Breakdowns: one reason per failure code of failures.yaml.
+  - { state: Down, cause: SPINDLE-OVERLOAD, reason: BREAKDOWN/SPINDLE-OVERLOAD }
+  - { state: Down, cause: COOLANT-PRESSURE, reason: BREAKDOWN/COOLANT-PRESSURE }
+  - { state: Down, cause: HEATER-FAULT, reason: BREAKDOWN/HEATER-FAULT }
+  - { state: Down, cause: PRESS-FAULT, reason: BREAKDOWN/PRESS-FAULT }
+  - { state: Down, cause: FIXTURE-SEAL, reason: BREAKDOWN/FIXTURE-SEAL }
+  - { state: Down, cause: PRINTER-FAULT, reason: BREAKDOWN/PRINTER-FAULT }
+  - { state: Down, cause: null, reason: BREAKDOWN/UNSPECIFIED }
+  # Minor stops: one reason per stop cause; a stop becomes a downtime record only from the
+  # micro-stop threshold on (oee.yaml).
+  - { state: Stopped, cause: DOOR-INTERLOCK, reason: MINOR-STOP/DOOR-INTERLOCK }
+  - { state: Stopped, cause: CHIP-JAM, reason: MINOR-STOP/CHIP-JAM }
+  - { state: Stopped, cause: CONVEYOR-JAM, reason: MINOR-STOP/CONVEYOR-JAM }
+  - { state: Stopped, cause: PART-MISFEED, reason: MINOR-STOP/PART-MISFEED }
+  - { state: Stopped, cause: SCANNER-RETRY, reason: MINOR-STOP/SCANNER-RETRY }
+  - { state: Stopped, cause: FIXTURE-CLAMP, reason: MINOR-STOP/FIXTURE-CLAMP }
+  - { state: Stopped, cause: LABEL-OUT, reason: MINOR-STOP/LABEL-OUT }
+  - { state: Stopped, cause: null, reason: MINOR-STOP/UNSPECIFIED }
+  # Setups: `CHANGEOVER <from>→<to>` and the CNCs' tool change.
+  - { state: Setup, cause: { prefix: 'CHANGEOVER ' }, reason: SETUP/CHANGEOVER }
+  - { state: Setup, cause: TOOL-CHANGE, reason: SETUP/TOOL-CHANGE }
+  - { state: Setup, cause: null, reason: SETUP/UNSPECIFIED }
+  # Idle: no operator this shift, or the CNC's schedule is done.
+  - { state: Idle, cause: NO-OPERATOR, reason: ORGANISATION/NO-OPERATOR }
+  - { state: Idle, cause: SCHEDULE-COMPLETE, reason: ORGANISATION/NO-SCHEDULE }
+  - { state: Idle, cause: null, reason: ORGANISATION/UNSPECIFIED }
+  # Starved of a material (`MATERIAL:<id>`), or of parts by an empty buffer (no cause).
+  - { state: Starved, cause: { prefix: 'MATERIAL:' }, reason: MATERIAL }
+  - { state: Starved, cause: null, reason: STARVED }
+  # A full output buffer carries no cause.
+  - { state: Blocked, cause: { any: true }, reason: BLOCKED }
+  # Planned states are no availability loss and make no downtime record; their reasons name them
+  # in the loss view. The plant's only PlannedStop is the break, its only Maintenance the leak
+  # tester's calibration (ADR-0021), so a snapshot without a cause gets the same reason.
+  - { state: PlannedStop, cause: BREAK, reason: PLANNED/BREAK }
+  - { state: PlannedStop, cause: null, reason: PLANNED/BREAK }
+  - { state: Maintenance, cause: CALIBRATION, reason: PLANNED/CALIBRATION }
+  - { state: Maintenance, cause: null, reason: PLANNED/CALIBRATION }
+  - { state: Off, cause: SHIFT-END, reason: PLANNED/SHIFT-END }
+  - { state: Off, cause: null, reason: PLANNED/SHIFT-END }

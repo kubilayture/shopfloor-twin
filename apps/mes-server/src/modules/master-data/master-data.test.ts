@@ -107,6 +107,38 @@ describe('master-data (#94)', () => {
     await new MasterData(db).seed(config);
   });
 
+  it('seeds the reason tree; a reason the configuration drops stays, inactive (#119)', async () => {
+    const masterData = new MasterData(db);
+    const reasons = await masterData.reasonCodes();
+    expect(reasons.map((r) => r.id)).toEqual(config.reasons.reasons.map((r) => r.id));
+    expect(reasons.slice(0, 2)).toEqual([
+      { id: 'BREAKDOWN', parent: null, name: 'Breakdown', active: true },
+      {
+        id: 'BREAKDOWN/SPINDLE-OVERLOAD',
+        parent: 'BREAKDOWN',
+        name: 'Spindle overload',
+        active: true,
+      },
+    ]);
+    const fewer = structuredClone(config);
+    fewer.reasons.reasons = fewer.reasons.reasons.filter((r) => r.id !== 'MINOR-STOP/LABEL-OUT');
+    await masterData.seed(fewer);
+    expect((await masterData.reasonCodes()).map((r) => r.id)).not.toContain('MINOR-STOP/LABEL-OUT');
+    expect((await masterData.reasonCodes({ inactive: true })).at(-1)).toEqual({
+      id: 'MINOR-STOP/LABEL-OUT',
+      parent: 'MINOR-STOP',
+      name: 'Labels out',
+      active: false,
+    });
+    await masterData.seed(config);
+    expect(await masterData.reasonCodes()).toEqual(reasons);
+    // The table refuses a parent that is not the id's path prefix.
+    await expect(
+      sql`INSERT INTO master_data.reason_code (id, parent_id, name, position)
+          VALUES ('SETUP/X', 'BREAKDOWN', 'Wrong parent', 99)`.execute(db),
+    ).rejects.toThrow(/check constraint/);
+  });
+
   it('reports a missing seed clearly', async () => {
     await sql`DELETE FROM master_data.shift_pattern`.execute(db);
     await expect(new MasterData(db).shiftPattern()).rejects.toThrow(/not seeded/);

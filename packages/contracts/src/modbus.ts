@@ -2,6 +2,7 @@
  * WSH-01 Modbus TCP register map (docs/contracts/modbus-register-map.md). Holding registers only
  * (function code 3), 16-bit words, big-endian; 32- and 64-bit values put the high word first.
  */
+import { CAUSES } from './causes.ts';
 import { MACHINE_STATES, type MachineState } from './uns/payloads.ts';
 
 /** Severity of a machine's failure-code alarms (OPC UA and Modbus alike, 1–1000). */
@@ -39,7 +40,7 @@ export const ENTRY_TYPES = { state: 1, cycle: 2, alarm: 3 } as const;
 export const CYCLE_RESULTS = ['good', 'scrap', 'rework'] as const;
 
 /** Causes the plant model gives when a station is unavailable (not failure or minor-stop codes). */
-export const UNAVAILABLE_CAUSES = ['BREAK', 'SHIFT-END', 'NO-OPERATOR'] as const;
+export const UNAVAILABLE_CAUSES = [CAUSES.break, CAUSES.shiftEnd, CAUSES.noOperator] as const;
 
 export interface ModbusTables {
   /** Index 0 means "no cause". */

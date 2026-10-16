@@ -725,6 +725,9 @@ importers:
 
   packages/plant-config:
     dependencies:
+      '@shopfloor/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       yaml:
         specifier: 'catalog:'
         version: 2.9.1

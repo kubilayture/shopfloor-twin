@@ -104,6 +104,25 @@ Rules behind the table:
 
 Each machine accumulates the time spent in every state. At any moment, the durations of all states sum exactly to the time since the machine was created (plan section 4). Time is in integer milliseconds (ADR-0006), so the sum is exact. A property test generates random legal transition sequences and checks this.
 
+### Causes
+
+A state change carries an optional `cause`. Every cause comes from one vocabulary in `@shopfloor/contracts` (`packages/contracts/src/causes.ts`, #119). The simulator emits these strings, and the MES's auto-classification rules (`config/plant/reasons.yaml`, ADR-0021) match against them. The strings are part of the golden event log, so changing one changes `events.sha256`.
+
+| State         | Cause                    | Source                                                       |
+| ------------- | ------------------------ | ------------------------------------------------------------ |
+| `Down`        | a failure code           | `failures.yaml` (`failureModes[].code`)                      |
+| `Stopped`     | a minor-stop cause       | `failures.yaml` (`minorStops.causes`)                        |
+| `Setup`       | `TOOL-CHANGE`            | `CAUSES.toolChange`                                          |
+| `Setup`       | `CHANGEOVER <from>→<to>` | `changeoverCause`; `<from>` is `none` when nothing is loaded |
+| `Maintenance` | `CALIBRATION`            | `CAUSES.calibration`                                         |
+| `Idle`        | `SCHEDULE-COMPLETE`      | `CAUSES.scheduleComplete`                                    |
+| `Idle`        | `NO-OPERATOR`            | `CAUSES.noOperator`                                          |
+| `PlannedStop` | `BREAK`                  | `CAUSES.break`                                               |
+| `Off`         | `SHIFT-END`              | `CAUSES.shiftEnd`                                            |
+| `Starved`     | `MATERIAL:<material>`    | `materialCause`                                              |
+
+Some changes carry no cause: `Running`, a `Starved` caused by an empty buffer, `Blocked`, and a return to `Idle`, `PlannedStop` or `Off` after a repair or setup. Snapshots (an OPC UA resync, a Modbus poll) also start an interval without a cause. `causeVocabulary` lists every (state, cause) pair a configuration can produce, with each changeover pair and each material spelled out. The plant-config cross-check uses that list. A test also runs the golden week and checks two things: every emitted cause appears in the list, and no pair is classified as UNCODED. The Modbus cause table (`modbusTables`) is built from the same failure codes and minor-stop causes, plus `BREAK`, `SHIFT-END` and `NO-OPERATOR`.
+
 ## Material flow
 
 Source: `apps/simulator/src/plant/line.ts`. Failures, minor stops, shifts, operators and materials are added by later issues (#24–#27). This section describes the flow they build on.

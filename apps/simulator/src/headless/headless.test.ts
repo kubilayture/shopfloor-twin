@@ -125,15 +125,20 @@ describe('runHeadless (plan section 4, headless mode)', () => {
     expect(configHash(structuredClone(config))).toBe(configHash(config));
   });
 
-  it('hashes only the simulation sections: the OEE configuration does not change it (ADR-0021)', async () => {
+  it('hashes only the simulation sections: OEE and reason configuration do not change it (ADR-0021)', async () => {
     const changed = structuredClone(config);
     changed.oee.microStopThresholdMs = 1;
+    changed.reasons.rules.reverse();
+    changed.reasons.reasons.push({ id: 'EXTRA', name: 'Extra' });
     expect(configHash(changed)).toBe(configHash(config));
-    const simulationOnly = Object.fromEntries(Object.entries(config).filter(([k]) => k !== 'oee'));
+    const simulationOnly = Object.fromEntries(
+      Object.entries(config).filter(([k]) => k !== 'oee' && k !== 'reasons'),
+    );
     expect(createHash('sha256').update(stableStringify(simulationOnly)).digest('hex')).toBe(
       configHash(config),
     );
-    // The golden week runs on config/plant: its header hash is the one from before oee.yaml.
+    // The golden week runs on config/plant: its header hash is the one from before oee.yaml and
+    // reasons.yaml.
     const golden = JSON.parse(
       await readFile(resolve(import.meta.dirname, '../../golden/week-01/summary.json'), 'utf8'),
     ) as { run: { configSha256: string } };

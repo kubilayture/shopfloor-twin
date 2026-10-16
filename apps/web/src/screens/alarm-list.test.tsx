@@ -606,4 +606,112 @@ describe('alarm panel', () => {
     expect(await screen.findByText(/Could not load the alarm\./)).toBeTruthy();
     expect(screen.queryByTestId('alarm-panel')).toBeNull();
   });
+
+  it('starts every draft afresh when another alarm is opened', async () => {
+    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
+    const a = occurrence(1);
+    const b = occurrence(2);
+    const server = mes({ ...empty(), active: [a, b], points: [point()] });
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp(`/alarms?alarm=${encodeURIComponent(a.id)}`);
+    const panel = await screen.findByTestId('alarm-panel');
+    fireEvent.change(within(panel).getByTestId('comment-text'), { target: { value: 'for A' } });
+    fireEvent.change(within(panel).getByTestId('ack-comment'), { target: { value: 'ack A' } });
+    fireEvent.click(screen.getByTestId(`details-${b.id}`));
+    await waitFor(() => {
+      expect(screen.getByTestId('alarm-panel').dataset.alarm).toBe(b.id);
+    });
+    const next = screen.getByTestId('alarm-panel');
+    expect(within(next).getByTestId<HTMLTextAreaElement>('comment-text').value).toBe('');
+    expect(within(next).getByTestId<HTMLInputElement>('ack-comment').value).toBe('');
+    expect(server.calls.some((call) => call.method === 'POST')).toBe(false);
+  });
+});
+
+describe('alarm list after leaving it', () => {
+  it('drops pushed copies when the screen lets go, so changes made meanwhile show', async () => {
+    const a = occurrence(1);
+    const state = { ...empty(), active: [a] };
+    const server = mes(state);
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/alarms');
+    await app.open();
+    await screen.findByTestId(`alarm-row-${a.id}`);
+    const pushed = occurrence(2);
+    await app.push({ type: 'alarm', event: 'raised', occurrence: pushed });
+    expect(rowIds()).toEqual([pushed.id, a.id]);
+
+    // Away from the list (the topic is released); both are acknowledged elsewhere meanwhile, and
+    // no push arrives for them.
+    fireEvent.click(screen.getByTestId('nav-overview'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('alarm-list')).toBeNull();
+    });
+    // Both cleared and were acknowledged elsewhere meanwhile: closed, so in History, which the
+    // Active tab doesn't read; no push arrives for them.
+    const close = (item: AlarmOccurrenceDto): AlarmOccurrenceDto => ({
+      ...item,
+      state: 'closed',
+      active: false,
+      endedAt: '2026-10-15T05:30:00.000Z',
+      endReason: 'cleared',
+      acknowledged: ACK,
+    });
+    state.active = [];
+    state.history = [close(a), close(pushed)];
+    fireEvent.click(screen.getByTestId('nav-alarms'));
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-active').dataset.count).toBe('0');
+    });
+    expect(rowIds()).toEqual([]);
+  });
+
+  it('applies a pushed priority change and a late clear replacing a lost end', async () => {
+    const lost = occurrence(1, {
+      state: 'unacked-cleared',
+      active: false,
+      endedAt: '2026-10-15T05:30:00.000Z',
+      endReason: 'lost',
+    });
+    const server = mes({ ...empty(), active: [lost] });
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp(`/alarms?alarm=${encodeURIComponent(lost.id)}`);
+    await app.open();
+    const row = await screen.findByTestId(`alarm-row-${lost.id}`);
+    expect(row.dataset.priority).toBe('medium');
+    await app.push({ type: 'alarm', event: 'updated', occurrence: { ...lost, priority: 'high' } });
+    expect(screen.getByTestId(`alarm-row-${lost.id}`).dataset.priority).toBe('high');
+    const panel = screen.getByTestId('alarm-panel');
+    expect(panel.textContent).toContain('clear lost');
+    await app.push({
+      type: 'alarm',
+      event: 'updated',
+      occurrence: {
+        ...lost,
+        priority: 'high',
+        endedAt: '2026-10-15T05:20:00.000Z',
+        endReason: 'cleared',
+      },
+    });
+    expect(panel.textContent).toContain('cleared by the device');
+  });
+
+  it('clears the selection when the tab changes and offers no bulk action on Acknowledged', async () => {
+    const a = occurrence(1);
+    const server = mes({ ...empty(), active: [a] });
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/alarms');
+    fireEvent.click(await screen.findByTestId(`select-${a.id}`));
+    expect(screen.getByTestId('ack-selected').textContent).toContain('(1)');
+    fireEvent.click(screen.getByTestId('tab-acknowledged'));
+    await waitFor(() => {
+      expect(screen.getByTestId('alarm-list').dataset.view).toBe('acknowledged');
+    });
+    expect(screen.queryByTestId('ack-selected')).toBeNull();
+    fireEvent.click(screen.getByTestId('tab-active'));
+    await waitFor(() => {
+      expect(screen.getByTestId('ack-selected').textContent).toContain('(0)');
+    });
+    expect(screen.getByTestId<HTMLInputElement>(`select-${a.id}`).checked).toBe(false);
+  });
 });

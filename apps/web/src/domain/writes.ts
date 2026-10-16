@@ -1,3 +1,4 @@
+import { ZodError } from 'zod';
 import { ApiError } from '../api/client.ts';
 
 /** A failed write as a message for people (ADR-0023), by kind so tests and screens can tell. */
@@ -17,6 +18,14 @@ export interface WriteTexts {
 
 /** A failed write from the MES's problem details: 403, 405, 409, 415, 422, 429 and the rest. */
 export function writeFailure(error: unknown, texts: WriteTexts): WriteFailure {
+  if (error instanceof ZodError) {
+    // The body failed the shared request schema before it was sent: say which field, briefly.
+    const issues = error.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.path.join('.') || 'request'}: ${issue.message}`)
+      .join('; ');
+    return { kind: 'invalid', text: `${texts.not}: check the form (${issues}).` };
+  }
   if (!(error instanceof ApiError)) {
     return { kind: 'invalid', text: error instanceof Error ? error.message : 'Unknown error' };
   }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { ApiError } from '../api/client.ts';
 import { ACK, kpiBucket, occurrence, point, shelf } from '../test/alarm-fixtures.ts';
 import {
@@ -106,6 +107,27 @@ describe('live merge (monotonic upserts by id)', () => {
     expect(newerOccurrence(raised, relabelled)).toBe(relabelled);
     expect(newerOccurrence(acked, cleared)).toBe(cleared);
     expect(newerOccurrence(cleared, acked)).toBe(acked);
+  });
+
+  it('takes a priority change and a late clear that replaces a lost end', () => {
+    const lost = { ...cleared, endReason: 'lost' as const };
+    const realClear = {
+      ...lost,
+      endedAt: '2026-10-15T05:20:00.000Z',
+      endReason: 'cleared' as const,
+    };
+    expect(newerOccurrence(lost, realClear)).toBe(realClear);
+    const reprioritised = { ...realClear, priority: 'high' as const };
+    expect(newerOccurrence(realClear, reprioritised)).toBe(reprioritised);
+  });
+
+  it('explains a body the request schema refused, briefly', () => {
+    const parsed = z.object({ actor: z.string().min(1) }).safeParse({ actor: '' });
+    if (parsed.success) throw new Error('expected a refusal');
+    const failure = shelfFailure(parsed.error, 'shelve');
+    expect(failure.kind).toBe('invalid');
+    expect(failure.text).toMatch(/^Not shelved: check the form \(actor: /);
+    expect(failure.text).not.toContain('"code"');
   });
 
   it('merges a late REST answer under the live upsert (REST read before the push)', () => {

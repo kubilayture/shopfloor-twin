@@ -1,5 +1,4 @@
 import {
-  ALARMS_TOPIC,
   ALARM_VIEWS,
   MES_API_LIMITS,
   type AlarmOccurrenceDto,
@@ -27,6 +26,7 @@ import { PriorityBadge } from '../components/priority-badge.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import {
   ALARM_VIEW_LABELS,
+  FLOOD_THRESHOLD,
   SHELVE_PRESETS,
   ackFailure,
   acknowledgeable,
@@ -44,11 +44,11 @@ import {
 import { loadCodedBy, saveCodedBy } from '../domain/downtime.ts';
 import { formatClockSeconds, formatDuration, formatPlantTime } from '../domain/time.ts';
 import type { WriteFailure } from '../domain/writes.ts';
-import { upsertOccurrence, upsertPoint } from '../live/live-cache.ts';
+import { dropLiveOccurrences, upsertOccurrence, upsertPoint } from '../live/live-cache.ts';
 import {
   useLiveAlarmKpi,
   useLiveAlarms,
-  useLiveSubscription,
+  useAlarmsTopic,
   useLiveSubscriptions,
 } from '../live/live-context.tsx';
 
@@ -104,8 +104,8 @@ function FloodBanner({ id, name }: { readonly id: string; readonly name: string 
         <time dateTime={episode.startAt}>{formatClockSeconds(episode.startAt)}</time>
       </p>
       <p className="text-sm">
-        Up to {episode.peak} raises in 10 minutes (more than 10 is a flood), {episode.raises} since
-        the flood began. Deal with the highest priority first.
+        Up to {episode.peak} raises in 10 minutes (more than {FLOOD_THRESHOLD} is a flood),{' '}
+        {episode.raises} since the flood began. Deal with the highest priority first.
       </p>
     </div>
   );
@@ -771,7 +771,7 @@ export function AlarmList() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [message, setMessage] = useState<Message | undefined>(undefined);
   const selectAll = useRef<HTMLInputElement>(null);
-  useLiveSubscription(ALARMS_TOPIC);
+  useAlarmsTopic();
 
   const { clock } = usePlantClock();
   const equipment = useQuery({
@@ -875,6 +875,12 @@ export function AlarmList() {
   const ackMany = useMutation({
     mutationFn: (ids: string[]) => acknowledgeAlarms({ ids, actor: actor.trim() }),
     onSuccess: (result) => {
+      // The answer carries no occurrences: forget their pushed copies, so the lists read again
+      // below (and the pushes of the acknowledgements) decide what they show.
+      dropLiveOccurrences(
+        queryClient,
+        result.results.map((entry) => entry.id),
+      );
       afterAck();
       setSelected(new Set());
       const skipped = result.results.length - result.acknowledged;
@@ -978,6 +984,8 @@ export function AlarmList() {
           counts={counts}
           onChange={(next) => {
             setMessage(undefined);
+            // A selection belongs to the rows of one tab: never acknowledge what isn't shown.
+            setSelected(new Set());
             void navigate({ search: (previous) => ({ ...previous, view: next }) });
           }}
         />
@@ -991,7 +999,7 @@ export function AlarmList() {
           data-view={view}
           className="min-w-0 rounded-b-lg rounded-tr-lg border border-slate-300 bg-white"
         >
-          {view === 'active' || view === 'shelved' || view === 'acknowledged' ? (
+          {view === 'active' || view === 'shelved' ? (
             <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 p-2">
               <button
                 type="button"
@@ -1176,6 +1184,7 @@ export function AlarmList() {
         <div className="order-first min-w-0 lg:sticky lg:top-4 lg:order-none">
           {selectedOccurrence ? (
             <AlarmPanel
+              key={selectedOccurrence.id}
               occurrence={selectedOccurrence}
               point={set.points.get(
                 pointKey(selectedOccurrence.equipment, selectedOccurrence.code),

@@ -253,6 +253,34 @@ export function upsertOccurrence(queryClient: QueryClient, occurrence: AlarmOccu
   );
 }
 
+/**
+ * Forgets every pushed alarm and point. The `alarms` topic has no snapshot, so pushed copies are
+ * only current while the topic is held: a screen starts from an empty set and the REST reads when
+ * it subscribes, and drops the set when it lets go (`useAlarmsTopic`).
+ */
+export function resetLiveAlarms(queryClient: QueryClient): void {
+  if (queryClient.getQueryData(liveKeys.alarms) === undefined) return;
+  queryClient.setQueryData<LiveAlarms>(liveKeys.alarms, (live) => ({
+    ...NO_ALARMS,
+    seq: (live?.seq ?? 0) + 1,
+  }));
+}
+
+/** Forgets the pushed copies of some occurrences, so the next REST read (or push) decides. */
+export function dropLiveOccurrences(queryClient: QueryClient, ids: readonly string[]): void {
+  const live = queryClient.getQueryData<LiveAlarms>(liveKeys.alarms);
+  if (!live || !ids.some((id) => id in live.occurrences)) return;
+  const dropped = new Set(ids);
+  const occurrences = Object.fromEntries(
+    Object.entries(live.occurrences).filter(([id]) => !dropped.has(id)),
+  );
+  queryClient.setQueryData<LiveAlarms>(liveKeys.alarms, {
+    occurrences,
+    points: live.points,
+    seq: live.seq + 1,
+  });
+}
+
 /** A point the app learned from a shelve or unshelve answer, merged like a pushed one. */
 export function upsertPoint(queryClient: QueryClient, point: AlarmPointDto): void {
   queryClient.setQueryData<LiveAlarms>(liveKeys.alarms, (live) => mergePoint(live, point));
@@ -376,12 +404,7 @@ export function connectLiveToCache(client: LiveClient, queryClient: QueryClient)
       // Alarm upserts missed while the connection was lost may have changed fields the
       // monotonic rule can't order (a shelf, an end reason): start again from the REST reads
       // below and the pushes from now on (the `alarms` topic has no snapshot).
-      if (queryClient.getQueryData(liveKeys.alarms) !== undefined) {
-        queryClient.setQueryData<LiveAlarms>(liveKeys.alarms, (live) => ({
-          ...NO_ALARMS,
-          seq: (live?.seq ?? 0) + 1,
-        }));
-      }
+      resetLiveAlarms(queryClient);
       void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'live' });
     }
   });

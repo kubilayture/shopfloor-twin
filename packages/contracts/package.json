@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./mes-api": "./src/mes-api.ts"
+    "./mes-api": "./src/mes-api.ts",
+    "./erp-api": "./src/erp-api.ts"
   },
   "scripts": {
     "typecheck": "tsc",

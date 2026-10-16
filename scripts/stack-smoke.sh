@@ -83,6 +83,19 @@ states=$(as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t 'orbis/gebze/+/+/+/st
 [ "$states" = "asm-01 cnc-01 cnc-02 lkt-01 pck-01 wsh-01 " ] || fail "UNS states incomplete: $states"
 echo "ok: UNS has the current state of all six machines"
 
+# ERP mock (#171): ready, refuses the API without the bearer token, serves the order feed with it.
+# The token goes to curl on stdin, not on its command line.
+erp="http://127.0.0.1:${ERP_HTTP_PORT:-4600}"
+curl -sf "$erp/health/ready" >/dev/null || fail "ERP mock not ready"
+code=$(curl -s -o /dev/null -w '%{http_code}' "$erp/api/v1/orders")
+[ "$code" = 401 ] || fail "ERP mock answered without a token ($code)"
+feed=$(printf 'Authorization: Bearer %s\n' "$ERP_API_TOKEN" | curl -sf -H @- "$erp/api/v1/orders?limit=1") ||
+  fail "ERP mock refused its own token"
+case "$feed" in
+  *'"feedSeq":1'*) echo "ok: ERP mock ready, token required, order feed served" ;;
+  *) fail "ERP mock feed empty: $feed" ;;
+esac
+
 
 # MES and web (#99). `up --wait` above already waited for the MES to be ready (migrated, database
 # answering, subscribed to the UNS) and for nginx.

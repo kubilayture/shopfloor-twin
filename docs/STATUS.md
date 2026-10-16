@@ -1,8 +1,8 @@
 # Status — updated 2026-10-16
 
-## Current phase: 07 – Orders, ERP and execution (next, not planned yet; Phase 6 closed 2026-10-16)
+## Current phase: 07 – Orders, ERP and execution (in progress, wave A; planned 2026-10-16, Phase 6 closed 2026-10-16)
 
-## Exit criteria progress: Phase 6 closed with 5 / 5 met (criteria 2 and 5 with recorded deviations; evidence from local runs, GitHub Actions could not run); Phase 7 not planned yet
+## Exit criteria progress: Phase 6 closed with 5 / 5 met (criteria 2 and 5 with recorded deviations; evidence from local runs, GitHub Actions could not run); Phase 7: 0 / 6 met
 
 ## Done since last update
 
@@ -97,11 +97,11 @@
 
 ## In progress
 
-- #167 Phase 7 plan (in review)
+- #171 ERP mock (in review, branch `feat/171-erp-mock`): `apps/erp-mock`, `@shopfloor/contracts/erp-api`, `config/erp/orders.yaml`, Compose service `erp`, ADR-0028
 
 ## Next up
 
-- Wave A: #168 identity, #169 database roles and one audit log, #170 web login, #171 ERP mock; then wave B: #172–#178; #179 closes the phase.
+- Wave A: #168 identity, #169 database roles and one audit log, #170 web login; then wave B: #172–#178; #179 closes the phase.
 
 ## Blockers and open questions for the owner
 
@@ -120,6 +120,6 @@ Project board: https://github.com/users/kubilayture/projects/1
 
 - CI on `main`: not running. GitHub Actions jobs fail at the billing check (spending limit) on every run since `ed8783b` (the merge of #149); the last green CI on `main` is `cfed3a0`, the Phase 5 close. The workflow is unchanged. Merges since #150 are gated by local runs of every CI job; #165's final commit (merged as `12b9c9a`) passed `pnpm verify`, `pnpm test:e2e` and `pnpm test:reconcile` (3 of 3) locally; `pnpm test:golden` and the smoke ran on its previous commit (the fix commit changed e2e code only). Exceptions per PR are listed in the Phase 6 report.
 - Tests: 1,333 in `pnpm turbo run test --force` (Phase 5: 988), plus `pnpm test:e2e` (gateway; golden reconciliations of `week-01` and `alarms-01`: intervals, aggregates, records, OEE, 112 and 129 alarm comparisons, 255 and 102 shift report comparisons) and `pnpm test:reconcile` (live `alarms-01` shift A with 14 injections, OEE, alarm and dashboard latency, UI actions and notes).
-- Coverage (lines / branches): `sim-core` 99.4 / 98.3 (floor 95 / 90), `oee-core` 100 / 99.1 (floor 95 / 90), `alarm-core` 100 / 96.4 (floor 95 / 90), `shift-calendar` 100 / 91.4, `plant-config` 99.7 / 95.1 (floor 90 / 85), simulator 86.1 / 79.3, `edge-gateway` 92.2 / 78.5, `mes-server` 96.2 / 85.6 and web 96.2 / 87.0 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
+- Coverage (lines / branches): `sim-core` 99.4 / 98.3 (floor 95 / 90), `oee-core` 100 / 99.1 (floor 95 / 90), `alarm-core` 100 / 96.4 (floor 95 / 90), `shift-calendar` 100 / 91.4, `plant-config` 99.7 / 95.1 (floor 90 / 85), simulator 86.1 / 79.3, `edge-gateway` 92.2 / 78.5, `mes-server` 96.2 / 85.6, `erp-mock` 99.3 / 92.7 (#171) and web 96.2 / 87.0 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
 - Golden scenarios `week-01` and `alarms-01`: green locally (`pnpm test:golden`, `pnpm test:e2e`).
 - Open bugs: 0.

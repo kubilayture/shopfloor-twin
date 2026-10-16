@@ -39,6 +39,10 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `equipment.equipment_state_interval`
   - `equipment.interval_source`
   - `equipment.state_hourly` (view)
+- [`alarms`](#schema-alarms)
+  - `alarms.alarm_occurrence`
+  - `alarms.kpi_revision`
+  - `alarms.occurrence_source`
 - [`public`](#schema-public)
   - `public.schema_migrations`
 
@@ -759,6 +763,82 @@ SELECT equipment,
    FROM equipment.equipment_state_interval
   GROUP BY equipment, epoch, (time_bucket('01:00:00'::interval, start_time)), shift_key, state;
 ```
+
+## Schema alarms
+
+Owner: alarms. Alarm occurrences derived from the device’s raise and clear facts, anchors and resync snapshots (ADR-0010, ADR-0024), what they were derived from, and the revisions of final alarm KPI hours. KPIs are computed on read.
+
+### alarms.alarm_occurrence
+
+One alarm occurrence per device raise, keyed (equipment, epoch, raise seq), with its end (cleared, lost, superseded, epoch-ended); derived, never edited (#142).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `seq` | `bigint` | not null |  |
+| `code` | `text` | not null |  |
+| `severity` | `integer` | not null |  |
+| `priority` | `text` | not null |  |
+| `defined` | `boolean` | not null |  |
+| `source` | `text` | not null |  |
+| `raised_at` | `timestamp with time zone` | not null |  |
+| `ended_at` | `timestamp with time zone` | null |  |
+| `end_reason` | `text` | null |  |
+| `end_seq` | `bigint` | null |  |
+| `updated_at` | `timestamp with time zone` | not null | `now()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `alarm_occurrence_pkey` | `PRIMARY KEY (equipment, epoch, seq)` |
+| Check | `alarm_occurrence_check` | `CHECK (((ended_at IS NULL) = (end_reason IS NULL)))` |
+| Check | `alarm_occurrence_check1` | `CHECK (((ended_at IS NULL) OR (ended_at >= raised_at)))` |
+| Check | `alarm_occurrence_end_reason_check` | `CHECK ((end_reason = ANY (ARRAY['cleared'::text, 'lost'::text, 'superseded'::text, 'epoch-ended'::text])))` |
+| Check | `alarm_occurrence_priority_check` | `CHECK ((priority = ANY (ARRAY['high'::text, 'medium'::text, 'low'::text])))` |
+| Check | `alarm_occurrence_severity_check` | `CHECK (((severity >= 1) AND (severity <= 1000)))` |
+| Check | `alarm_occurrence_source_check` | `CHECK ((source = ANY (ARRAY['fact'::text, 'anchor'::text])))` |
+| Index | `alarm_occurrence_active` | `alarms.alarm_occurrence USING btree (equipment, epoch) WHERE (ended_at IS NULL)` |
+| Index | `alarm_occurrence_epoch_raised` | `alarms.alarm_occurrence USING btree (epoch, raised_at)` |
+| Index | `alarm_occurrence_raised` | `alarms.alarm_occurrence USING btree (raised_at DESC)` |
+
+### alarms.kpi_revision
+
+Per (scope, epoch, UTC hour): how often a final alarm KPI hour changed after it was final; no row means revision 0 (#142, ADR-0024).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `scope` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `hour` | `timestamp with time zone` | not null |  |
+| `revision` | `integer` | not null |  |
+| `revised_at` | `timestamp with time zone` | not null | `now()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `kpi_revision_pkey` | `PRIMARY KEY (scope, epoch, hour)` |
+| Check | `kpi_revision_hour_check` | `CHECK ((hour = date_trunc('hour'::text, hour, 'UTC'::text)))` |
+| Check | `kpi_revision_revision_check` | `CHECK ((revision > 0))` |
+
+### alarms.occurrence_source
+
+What the occurrences of each (equipment, epoch) were derived from (alarm fact count, anchors and snapshot used, epoch closing) and how far they were final, for catch-up (#142).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `facts` | `integer` | not null |  |
+| `anchors` | `jsonb` | not null | `'[]'::jsonb` |
+| `snapshot` | `jsonb` | null |  |
+| `closed` | `boolean` | not null | `false` |
+| `closed_at` | `timestamp with time zone` | null |  |
+| `final_through` | `timestamp with time zone` | null |  |
+| `updated_at` | `timestamp with time zone` | not null | `now()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `occurrence_source_pkey` | `PRIMARY KEY (equipment, epoch)` |
+| Check | `occurrence_source_facts_check` | `CHECK ((facts >= 0))` |
 
 ## Schema public
 

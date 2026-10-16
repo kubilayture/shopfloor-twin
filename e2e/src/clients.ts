@@ -5,6 +5,7 @@
  */
 import { request as httpRequest } from 'node:http';
 import {
+  alarmKpiListSchema,
   currentShiftSchema,
   downtimeAuditSchema,
   downtimeListSchema,
@@ -53,6 +54,13 @@ export const groundTruthSchema = z.object({
   current: z.record(z.string(), z.object({ state: z.string(), since: z.string() })),
   machines: z.record(z.string(), z.object({ stateMs, byShift: z.record(z.string(), stateMs) })),
   oee: oeeTruthSchema,
+  /** The alarm KPIs per scope (sim-summary/3, control API 1.3, #140), as JSON to compare. */
+  alarms: z.object({
+    scopes: z.record(
+      z.string(),
+      z.object({ shifts: z.record(z.string(), z.record(z.string(), z.unknown())) }),
+    ),
+  }),
 });
 export type GroundTruth = z.infer<typeof groundTruthSchema>;
 
@@ -133,6 +141,18 @@ export class MesClient {
   /** OEE of one shift for every machine and work center (#120). */
   shiftOee(shiftKey: string) {
     return request(`${this.base}/api/v1/shifts/${shiftKey}/oee`, shiftOeeSchema);
+  }
+
+  /** Alarm KPIs of the plant or a position per shift bucket over [from, to) (#142). */
+  alarmShifts(scope: 'plant' | 'position', id: string, from: number, to: number) {
+    const query = new URLSearchParams({
+      scope,
+      ...(scope === 'plant' ? {} : { id }),
+      bucket: 'shift',
+      from: new Date(from).toISOString(),
+      to: new Date(to).toISOString(),
+    });
+    return request(`${this.base}/api/v1/alarms/kpi?${query.toString()}`, alarmKpiListSchema);
   }
 
   /** The same answer as raw text, for a byte-for-byte comparison (#123). */

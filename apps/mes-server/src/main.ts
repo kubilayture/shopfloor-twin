@@ -5,6 +5,7 @@ import { createDatabase } from './db/database.ts';
 import { migrate } from './db/migrate.ts';
 import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
+import { Alarms } from './modules/alarms/index.ts';
 import { DowntimeCoding, Equipment, downtimeRules } from './modules/equipment/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
@@ -45,6 +46,7 @@ let equipment: Equipment | undefined;
 let oee: Oee | undefined;
 let downtime: DowntimeFeed | undefined;
 let coding: DowntimeCoding | undefined;
+let alarms: Alarms | undefined;
 
 const { app, registry, realtime } = await buildMesHttp({
   // Ready once migrated, the database answers and the UNS subscription is granted.
@@ -80,6 +82,7 @@ async function shutdown(signal: string): Promise<void> {
       coding?.stop();
       return Promise.resolve();
     },
+    async () => alarms?.stop(),
     async () => equipment?.stop(),
     () => db.destroy(),
     () => readDb.destroy(),
@@ -131,6 +134,19 @@ try {
     log: log.child({ module: 'equipment' }),
   });
   await equipment.start();
+  // Alarm occurrences (#142) follow ingest after equipment, which closes a newer epoch first; the
+  // KPIs are computed on read through the API's pool.
+  alarms = new Alarms({
+    db,
+    readDb,
+    ingest,
+    equipment,
+    masterData,
+    shiftPattern: await masterData.shiftPattern(),
+    config: plant.config.alarms.kpi,
+    log: log.child({ module: 'alarms' }),
+  });
+  await alarms.start();
   // OEE is computed on read (#120): it reads the other modules through the API's pool.
   const apiMasterData = new MasterData(readDb);
   oee = new Oee({
@@ -171,6 +187,7 @@ try {
       code: (key, request) => codingModule.code(key, request),
       audit: (key) => codingModule.audit(key, readDb),
     },
+    alarms,
   });
   log.info({ writes: env.MES_WRITES }, 'downtime coding writes');
   await ingest.start();

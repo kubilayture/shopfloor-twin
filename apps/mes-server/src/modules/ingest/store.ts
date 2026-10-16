@@ -93,6 +93,10 @@ export interface AlarmFact {
   /** The wire severity, 1–1000. */
   readonly severity: number;
   readonly quality: 'good' | 'uncertain' | 'bad';
+  /** When the gateway received it from the device (#142: the occurrence's history). */
+  readonly receivedAt: Date;
+  /** The device protocol it came through (`opcua`, `modbus`). */
+  readonly protocol: string;
 }
 
 /**
@@ -997,6 +1001,8 @@ function factNotices(input: FactInput, settledSeq: number | null): IngestNotice[
               transition: (input.message as Alarm).value.transition,
               severity: (input.message as Alarm).value.severity,
               quality: message.quality,
+              receivedAt: new Date(message.receivedAt),
+              protocol: message.source.protocol,
             },
             settledSeq,
           },

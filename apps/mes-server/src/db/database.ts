@@ -1,5 +1,6 @@
 import { Kysely, PostgresDialect, type Generated } from 'kysely';
 import pg from 'pg';
+import type { AlarmsTables } from '../modules/alarms/index.ts';
 import type { EquipmentTables } from '../modules/equipment/index.ts';
 import type { IngestTables } from '../modules/ingest/index.ts';
 import type { MasterDataTables } from '../modules/master-data/index.ts';
@@ -16,7 +17,11 @@ export interface PublicTables {
 }
 
 /** The database as Kysely sees it; each module's tables join this type as the module arrives. */
-export type Database = PublicTables & MasterDataTables & IngestTables & EquipmentTables;
+export type Database = PublicTables &
+  MasterDataTables &
+  IngestTables &
+  EquipmentTables &
+  AlarmsTables;
 
 /**
  * BIGINT columns (epochs, sequence numbers, ids, counts) are read as numbers, not strings: every

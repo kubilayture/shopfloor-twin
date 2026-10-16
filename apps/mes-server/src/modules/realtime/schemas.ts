@@ -4,7 +4,18 @@ import { z } from 'zod';
 // Responses and WebSocket messages are shared with `web` through `contracts` (ADR-0020); the
 // request schemas, with their transforms to parsed values, are the server's own.
 export {
+  ALARMS_TOPIC,
+  ALARM_VIEWS,
   DOWNTIME_TOPIC,
+  alarmDetailSchema,
+  alarmHistorySchema,
+  alarmKpiBucketSchema,
+  alarmKpiListSchema,
+  alarmListSchema,
+  alarmOccurrenceSchema,
+  alarmScopesSchema,
+  badActorListSchema,
+  floodListSchema,
   STATES_TOPIC,
   clientMessageSchema,
   codingRequestSchema,
@@ -35,7 +46,12 @@ export {
   shiftTotalsSchema,
 } from '@shopfloor/contracts';
 export type {
+  AlarmHistory,
+  AlarmKpiBucketDto,
+  AlarmOccurrenceDto,
+  BadActorDto,
   ClientMessage,
+  FloodEpisodeDto,
   CodingResult,
   CurrentStateDto,
   DowntimeRecordDto,
@@ -200,3 +216,116 @@ export const downtimeParams = z.strictObject({
     )
     .describe('A downtime record id: `{equipment}~{epoch}~{startMs}`'),
 });
+
+// ---- Alarms (#142, ADR-0024) ----
+
+const alarmScopeParam = z
+  .enum(['plant', 'position', 'equipment'])
+  .describe('The plant, an operator position (a set of work centers) or one equipment');
+const priorityParam = z.enum(['high', 'medium', 'low']);
+
+/** An occurrence id: `{equipment}~{epoch}~{seq}`. */
+export const alarmParams = z.strictObject({
+  id: z
+    .string()
+    .regex(
+      /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\d{1,15}~\d{1,15}$/,
+      'expected {equipment}~{epoch}~{seq}',
+    )
+    .describe('An occurrence id: `{equipment}~{epoch}~{seq}` (the raise’s device seq)'),
+});
+
+/** Both ends of a range, or neither; at most `maxMs` long. */
+const optionalRange =
+  (maxMs: number) => (query: { from?: unknown; to?: unknown }, ctx: z.core.$RefinementCtx) => {
+    if ((query.from === undefined) !== (query.to === undefined)) {
+      ctx.addIssue({ code: 'custom', message: '`from` and `to` go together' });
+      return;
+    }
+    if (query.from !== undefined) range(maxMs)({ from: query.from, to: query.to }, ctx);
+  };
+
+export const alarmListQuery = z
+  .strictObject({
+    view: z
+      .enum(['active', 'history'])
+      .optional()
+      .transform((value) => value ?? 'active')
+      .describe(
+        'active: not ended (default); history: ended (cleared, lost, superseded, epoch-ended), needs a range',
+      ),
+    position: identifier.optional().describe('Only the equipment of this operator position'),
+    equipment: identifier.optional().describe('Only this equipment'),
+    priority: priorityParam.optional(),
+    from: queryTime.optional().describe('Raised at or after (ISO 8601)'),
+    to: queryTime.optional().describe('Raised before (ISO 8601); at most 7 days after `from`'),
+    limit: decimal(1, LIMITS.alarmPageMax)
+      .optional()
+      .transform((value) => value ?? LIMITS.alarmPage)
+      .describe('Occurrences per page (1 to 500, default 100)'),
+    cursor: z
+      .string()
+      .regex(/^\d{1,15}~[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\d{1,15}~\d{1,15}$/, 'expected `next`')
+      .optional()
+      .describe('`next` of the previous page'),
+  })
+  .superRefine((query, ctx) => {
+    if (query.view === 'history' && query.from === undefined) {
+      ctx.addIssue({ code: 'custom', message: 'the history needs `from` and `to`' });
+    }
+    optionalRange(LIMITS.alarmRangeMs)(query, ctx);
+  });
+
+const scopeId = (query: { scope: string; id?: string | undefined }, ctx: z.core.$RefinementCtx) => {
+  if (query.scope !== 'plant' && query.id === undefined) {
+    ctx.addIssue({ code: 'custom', message: '`id` names the position or equipment' });
+  }
+};
+
+export const alarmKpiQuery = z
+  .strictObject({
+    scope: alarmScopeParam,
+    id: identifier.optional().describe('Position or equipment id (not for the plant)'),
+    bucket: z
+      .enum(['hour', 'shift'])
+      .describe('UTC hours, or shift buckets (shifts whole, no-shift stretches clipped)'),
+    from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
+    to: queryTime.describe(
+      'End of the range (exclusive), ISO 8601; at most 7 days after `from` for hours, 31 for shifts',
+    ),
+    epoch: epochParam.optional(),
+  })
+  .superRefine((query, ctx) => {
+    scopeId(query, ctx);
+    range(query.bucket === 'hour' ? LIMITS.alarmHourRangeMs : LIMITS.oeeShiftRangeMs)(query, ctx);
+  });
+
+export const alarmRangeQuery = z
+  .strictObject({
+    scope: alarmScopeParam,
+    id: identifier.optional().describe('Position or equipment id (not for the plant)'),
+    from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
+    to: queryTime.describe('End of the range (exclusive), ISO 8601; at most 31 days after `from`'),
+    epoch: epochParam.optional(),
+  })
+  .superRefine((query, ctx) => {
+    scopeId(query, ctx);
+    range(LIMITS.oeeShiftRangeMs)(query, ctx);
+  });
+
+export const badActorsQuery = z
+  .strictObject({
+    scope: alarmScopeParam,
+    id: identifier.optional().describe('Position or equipment id (not for the plant)'),
+    from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
+    to: queryTime.describe('End of the range (exclusive), ISO 8601; at most 31 days after `from`'),
+    epoch: epochParam.optional(),
+    limit: decimal(1, LIMITS.badActorsMax)
+      .optional()
+      .transform((value) => value ?? LIMITS.badActors)
+      .describe('Points to return (1 to 50, default 10)'),
+  })
+  .superRefine((query, ctx) => {
+    scopeId(query, ctx);
+    range(LIMITS.oeeShiftRangeMs)(query, ctx);
+  });

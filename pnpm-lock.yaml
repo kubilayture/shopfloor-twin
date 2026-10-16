@@ -389,6 +389,9 @@ importers:
       '@fastify/websocket':
         specifier: 'catalog:'
         version: 11.3.4
+      '@shopfloor/alarm-core':
+        specifier: workspace:*
+        version: link:../../packages/alarm-core
       '@shopfloor/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

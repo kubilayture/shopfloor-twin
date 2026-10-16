@@ -174,6 +174,8 @@ describe('ingest: alarm facts (#141)', () => {
           transition: 'active',
           severity: 800,
           quality: 'good',
+          receivedAt: new Date('2026-10-15T10:00:00.000Z'),
+          protocol: 'opcua',
         },
         settledSeq: 1,
       },

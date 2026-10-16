@@ -5,7 +5,9 @@
  * go through ingest's store path into TimescaleDB. Time per state, per machine and shift bucket,
  * must equal the ground truth to the millisecond; so must the hourly aggregates (#118), per machine
  * and hour, against the ground truth's OEE inputs (`oee.machines.*.hours`, sim-summary/2), and the
- * OEE of every machine and work center in every shift bucket (#120, `oee.*.shifts`), exactly.
+ * OEE of every machine and work center in every shift bucket (#120, `oee.*.shifts`), exactly; and
+ * every alarm occurrence and every alarm KPI per position and plant, per hour and shift bucket,
+ * with flood episodes and bad actors (#142, `alarms`, sim-summary/3).
  */
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -28,10 +30,11 @@ import {
 } from '../../db/aggregates.test-support.ts';
 import type { Database } from '../../db/database.ts';
 import { startDatabase } from '../../testing.ts';
+import { Alarms, type AlarmKpiBucket, type AlarmScope } from '../alarms/index.ts';
 import { Ingest } from '../ingest/index.ts';
 import { MasterData } from '../master-data/index.ts';
 import { Oee, pareto, shiftBuckets, type OeeBucket } from '../oee/index.ts';
-import { resultDto } from '../realtime/index.ts';
+import { alarmKpiDto, badActorDto, floodEpisodeDto, resultDto } from '../realtime/index.ts';
 import { Equipment, downtimeRules } from './index.ts';
 import {
   PLANT_CONFIG,
@@ -45,7 +48,8 @@ import {
 
 const REPO = resolve(import.meta.dirname, '../../../../..');
 const HEADLESS = join(REPO, 'apps/simulator/src/headless/cli.ts');
-const GOLDEN = join(REPO, 'apps/simulator/golden/week-01');
+const GOLDENS = join(REPO, 'apps/simulator/golden');
+const GOLDEN = join(GOLDENS, 'week-01');
 const EPOCH = 1_760_000_000;
 
 interface SimEvent {
@@ -89,7 +93,25 @@ interface TruthShift {
   readonly result: unknown;
 }
 
+/** The alarm section of the ground truth (#140, sim-summary/3). */
+interface AlarmTruth {
+  readonly occurrences: readonly unknown[];
+  readonly scopes: Record<
+    string,
+    {
+      readonly hours: Record<string, unknown>;
+      readonly shifts: Record<string, unknown>;
+      readonly floods: readonly unknown[];
+      readonly badActors: {
+        readonly run: readonly unknown[];
+        readonly shifts: Record<string, readonly unknown[]>;
+      };
+    }
+  >;
+}
+
 interface GroundTruth {
+  readonly alarms: AlarmTruth;
   readonly machines: Record<string, { stateMs: StateMs; byShift: Record<string, StateMs> }>;
   readonly oee: {
     readonly machines: Record<
@@ -127,18 +149,18 @@ afterAll(async () => {
   await container.stop();
 });
 
-/** Runs the headless simulator (its CLI, as a process) and reads its event log and summary. */
-async function headless(seed: number, start: string, days: number): Promise<Run> {
+/**
+ * Runs the headless simulator (its CLI, as a process) and reads its event log and summary: a
+ * golden scenario by name (with its injections), or a seed and span.
+ */
+async function headless(span: Scenario): Promise<Run> {
   const out = await mkdtemp(join(tmpdir(), 'headless-'));
   runs.push(out);
   await promisify(execFile)(process.execPath, [
     HEADLESS,
-    '--seed',
-    String(seed),
-    '--start',
-    start,
-    '--days',
-    String(days),
+    ...(span.scenario === undefined
+      ? ['--seed', String(span.seed), '--start', span.start, '--days', String(span.days)]
+      : ['--scenario', span.scenario]),
     '--out',
     out,
   ]);
@@ -222,6 +244,7 @@ async function mes(): Promise<{
   equipment: Equipment;
   ingest: Ingest;
   masterData: MasterData;
+  alarms: Alarms;
   send: (deliveries: readonly Delivery[]) => Promise<void>;
 }> {
   const db = await freshDatabase(serverUrl, 'reconcile');
@@ -247,11 +270,22 @@ async function mes(): Promise<{
     downtime: downtimeRules(plant),
   });
   await equipment.start();
+  // Alarm occurrences follow ingest after the equipment module (#142), as in main.ts.
+  const alarms = new Alarms({
+    db,
+    ingest,
+    equipment,
+    masterData,
+    shiftPattern: plant.shifts,
+    config: plant.alarms.kpi,
+  });
+  await alarms.start();
   return {
     db,
     equipment,
     ingest,
     masterData,
+    alarms,
     send: async (deliveries) => {
       for (const d of deliveries) await ingest.deliver(d.topic, d.payload);
     },
@@ -363,6 +397,9 @@ async function expectOee(
   masterData: MasterData,
   run: Run,
 ): Promise<number> {
+  // A run that ends with machines running (alarms-01) leaves its last shift provisional: no fact
+  // after it tells that nothing more happened before its end (ADR-0018).
+  const settledEnd = Math.min(...[...lastFacts(run).values()]);
   const oee = new Oee({
     equipment,
     ingest,
@@ -412,7 +449,7 @@ async function expectOee(
       comparisons++;
     }
     for (const b of [...machines, ...workCenters]) {
-      if (scheduled) {
+      if (scheduled && bucket.end <= settledEnd) {
         expect([b.id, bucket.key, b.final, b.provisionalMs, b.revision, b.incidents]).toEqual([
           b.id,
           bucket.key,
@@ -421,7 +458,7 @@ async function expectOee(
           0,
           0,
         ]);
-      } else {
+      } else if (!scheduled) {
         expect([b.result.availability, b.result.oee]).toEqual([null, null]);
       }
     }
@@ -507,6 +544,137 @@ async function expectOee(
   expect(expected).toBeGreaterThan(0);
   expect(comparisons).toBe(expected);
   return comparisons;
+}
+
+/** The time of each machine's last device fact (state, cycle or alarm). */
+function lastFacts(run: Run): Map<string, number> {
+  const last = new Map<string, number>();
+  for (const event of run.events) {
+    if (event.machineId && ['state', 'cycle-complete', 'alarm'].includes(event.type)) {
+      last.set(event.machineId, Date.parse(event.at));
+    }
+  }
+  return last;
+}
+
+const floorHour = (at: number): number => Math.floor(at / HOUR) * HOUR;
+const ceilHour = (at: number): number => Math.ceil(at / HOUR) * HOUR;
+
+/** A KPI bucket in the ground truth's shape (`AlarmKpisJson`): the MES's own fields left out. */
+function truthShape(bucket: AlarmKpiBucket): unknown {
+  const dto = alarmKpiDto(bucket);
+  return {
+    from: dto.from,
+    to: dto.to,
+    raises: dto.raises,
+    byPriority: dto.byPriority,
+    averageRate: dto.averageRate,
+    windows: dto.windows,
+    peak10: dto.peak10,
+    floodWindows: dto.floodWindows,
+    floods: dto.floods,
+    floodMs: dto.floodMs,
+    activeAtEnd: dto.activeAtEnd,
+    standing: dto.standing.map(({ equipment, code, raisedAt }) => ({ equipment, code, raisedAt })),
+    chatteringRaises: dto.chatteringRaises,
+    chatteringPoints: dto.chatteringPoints,
+    fleeting: dto.fleeting,
+    fleetingUndecided: dto.fleetingUndecided,
+    activeMs: dto.activeMs,
+    provisional: dto.provisional,
+  };
+}
+
+/**
+ * Alarms (#142, Phase 6 exit criterion 2): every occurrence equals the ground truth (equipment,
+ * code, priority, severity, raise and clear to the ms, end reason, in raise order); for the plant
+ * and every position, every hour and shift bucket's KPIs, the flood episodes and the bad actors of
+ * the run and of every shift bucket equal it exactly. Every bucket has revision 0 and no incident,
+ * and is final once each machine of its scope reported past its end plus fleetingMs (a machine's
+ * last fact bounds what is final: the weekend after the last shift, or the end of a run that
+ * stops mid-shift). Returns the comparisons and the buckets not final.
+ */
+async function expectAlarms(
+  alarms: Alarms,
+  run: Run,
+): Promise<{ compared: number; final: number; open: string[] }> {
+  const truth = run.truth.alarms;
+  const all = [
+    ...(await alarms.list({ view: 'active', limit: 100_000 })),
+    ...(await alarms.list({ view: 'history', limit: 100_000 })),
+  ].sort(
+    (a, b) =>
+      a.raisedAt.getTime() - b.raisedAt.getTime() ||
+      (a.equipment < b.equipment ? -1 : a.equipment > b.equipment ? 1 : 0) ||
+      a.seq - b.seq,
+  );
+  expect(
+    all.map((o) => ({
+      equipment: o.equipment,
+      code: o.code,
+      priority: o.priority,
+      severity: o.severity,
+      raisedAt: o.raisedAt.toISOString(),
+      clearedAt: o.endedAt?.toISOString() ?? null,
+      endReason: o.endReason,
+    })),
+  ).toEqual(truth.occurrences);
+  let compared = all.length;
+  let final = 0;
+  const open: string[] = [];
+  const last = lastFacts(run);
+  const from = new Date(run.start);
+  const to = new Date(run.end);
+  const runRange = { from: floorHour(run.start), to: ceilHour(run.end) };
+  for (const [id, expected] of Object.entries(truth.scopes)) {
+    const scope: AlarmScope = id === 'plant' ? 'plant' : 'position';
+    const members = alarms.scope(scope, id)?.equipment ?? [];
+    expect(members.length).toBeGreaterThan(0);
+    const settled = Math.min(...members.map((m) => last.get(m) ?? -Infinity));
+    const query = { scope, id, from, to, epoch: EPOCH };
+    const hours = await alarms.kpis({ ...query, bucket: 'hour' });
+    const shifts = await alarms.kpis({ ...query, bucket: 'shift' });
+    expect(Object.fromEntries(hours.map((b) => [b.key, truthShape(b)]))).toEqual(expected.hours);
+    expect(Object.fromEntries(shifts.map((b) => [b.key, truthShape(b)]))).toEqual(expected.shifts);
+    compared += hours.length + shifts.length;
+    for (const b of [...hours, ...shifts]) {
+      expect([id, b.key, b.revision, b.incidents]).toEqual([id, b.key, 0, 0]);
+      const end = b.kpis.to;
+      expect([id, b.key, b.final]).toEqual([
+        id,
+        b.key,
+        end + plant.alarms.kpi.fleetingMs <= settled,
+      ]);
+      if (b.final) final++;
+      else open.push(`${id} ${b.key}`);
+    }
+    const floods = await alarms.floods(query);
+    expect(floods.episodes.map(floodEpisodeDto)).toEqual(expected.floods);
+    const run10 = await alarms.badActors({
+      ...query,
+      from: new Date(runRange.from),
+      to: new Date(runRange.to),
+      limit: 10,
+    });
+    expect(run10.actors.map(badActorDto)).toEqual(expected.badActors.run);
+    compared += 2;
+    for (const shift of shifts) {
+      const actors = await alarms.badActors({
+        ...query,
+        from: new Date(shift.kpis.from),
+        to: new Date(shift.kpis.to),
+        limit: 10,
+      });
+      expect([id, shift.key, actors.actors.map(badActorDto)]).toEqual([
+        id,
+        shift.key,
+        expected.badActors.shifts[shift.key],
+      ]);
+      compared++;
+    }
+    expect(Object.keys(expected.badActors.shifts).sort()).toEqual(shifts.map((s) => s.key).sort());
+  }
+  return { compared, final, open };
 }
 
 /** Time per state, per machine and shift bucket, from the stored intervals. */
@@ -596,6 +764,17 @@ async function expectFinality(equipment: Equipment, db: Kysely<Database>, run: R
   return provisional;
 }
 
+/** Every stored alarm occurrence without the wall-clock column, in key order. */
+const storedOccurrences = (db: Kysely<Database>) =>
+  db
+    .selectFrom('alarms.alarm_occurrence')
+    .select(['equipment', 'epoch', 'seq', 'code', 'severity', 'priority', 'defined', 'source'])
+    .select(['raised_at', 'ended_at', 'end_reason', 'end_seq'])
+    .orderBy('equipment')
+    .orderBy('epoch')
+    .orderBy('seq')
+    .execute();
+
 /** Every stored downtime record without the wall-clock column, in key order. */
 const storedRecords = (db: Kysely<Database>) =>
   db
@@ -614,6 +793,7 @@ const storedRecords = (db: Kysely<Database>) =>
  * UNCODED, all closed and final. Returns the counts for the log.
  */
 async function expectRecords(db: Kysely<Database>, run: Run) {
+  const last = lastFacts(run);
   const segments = shiftSegments(plant.shifts, run.start, run.end);
   const expectedKeys: string[] = [];
   const byMachine = new Map<string, { at: number; state: string }[]>();
@@ -642,7 +822,14 @@ async function expectRecords(db: Kysely<Database>, run: Run) {
     expectedKeys.sort(),
   );
   expect(stored.filter((r) => r.auto_reason === UNCODED)).toEqual([]);
-  expect(stored.filter((r) => r.provisional || r.end_time === null)).toEqual([]);
+  // Closed and final, but for an interval still open when its machine last reported (alarms-01).
+  expect(
+    stored.filter(
+      (r) =>
+        (r.provisional || r.end_time === null) &&
+        (r.end_time?.getTime() ?? Infinity) <= (last.get(r.equipment) ?? Infinity),
+    ),
+  ).toEqual([]);
   return { lossIntervals, records: stored.length };
 }
 
@@ -661,12 +848,47 @@ export interface Scenario {
   readonly days: number;
   /** The golden scenario this run must reproduce exactly (its summary.json), if any. */
   readonly golden?: string;
+  /** Run as this golden scenario by name (`--scenario`, with its injections). */
+  readonly scenario?: string;
+  /** OEE buckets the ground truth has (machines and work centers × shift buckets), if pinned. */
+  readonly oeeBuckets?: number;
+  /** Alarm comparisons (occurrences, KPI buckets, floods and bad actors), if pinned. */
+  readonly alarmComparisons?: number;
+  /** Whether every machine reports at the run's end (the golden week ends with a shutdown). */
+  readonly settledToEnd?: boolean;
+}
+
+/** A golden scenario of apps/simulator/golden by name. */
+export async function golden(
+  name: string,
+  pinned: Pick<Scenario, 'oeeBuckets' | 'alarmComparisons' | 'settledToEnd'> = {},
+): Promise<Scenario> {
+  const dir = join(GOLDENS, name);
+  const scenario = JSON.parse(await readFile(join(dir, 'scenario.json'), 'utf8')) as Scenario;
+  return {
+    seed: scenario.seed,
+    start: scenario.start,
+    days: scenario.days,
+    golden: dir,
+    scenario: name,
+    ...pinned,
+  };
 }
 
 /** The golden week's scenario (apps/simulator/golden/week-01). */
 export async function goldenWeek(): Promise<Scenario> {
   const scenario = JSON.parse(await readFile(join(GOLDEN, 'scenario.json'), 'utf8')) as Scenario;
-  return { seed: scenario.seed, start: scenario.start, days: scenario.days, golden: GOLDEN };
+  return {
+    seed: scenario.seed,
+    start: scenario.start,
+    days: scenario.days,
+    golden: GOLDEN,
+    oeeBuckets: 128,
+    // 2 occurrences; plant and both positions: their hours, 16 shift buckets, floods, run and
+    // shift bad actors.
+    alarmComparisons: 112,
+    settledToEnd: true,
+  };
 }
 
 /**
@@ -677,21 +899,23 @@ export async function goldenWeek(): Promise<Scenario> {
 export function reconciliationSuite(title: string, scenario: () => Promise<Scenario>): void {
   describe(title, () => {
     let run: Run;
+    let span: Scenario;
     let reference: Kysely<Database>;
 
     it(
       'in order: time per state, per machine and shift, equals the ground truth to the ms',
       async () => {
-        const span = await scenario();
-        run = await headless(span.seed, span.start, span.days);
+        span = await scenario();
+        run = await headless(span);
         if (span.golden) {
           // The very run the golden snapshot pins.
           expect(run.summaryText).toBe(await readFile(join(span.golden, 'summary.json'), 'utf8'));
         }
         const { facts, anchors, end } = unsMessages(run);
-        const { db, equipment, ingest, masterData, send } = await mes();
+        const { db, equipment, ingest, masterData, alarms, send } = await mes();
         reference = db;
         await send([...anchors, ...facts, end]);
+        await alarms.flush();
         expect(equipment.watermark(EPOCH)).toEqual(new Date(run.end));
         expect(await totals(equipment, db)).toEqual(expected(run.truth));
         expect(await expectInsideBuckets(db, run)).toBeGreaterThan(facts.length / 2);
@@ -699,14 +923,26 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         // only the weekend's no-shift bucket, after its last fact, is still provisional.
         const provisional = await expectFinality(equipment, db, run);
         expect(provisional.length).toBeGreaterThan(0);
-        expect(provisional.filter((bucket) => !bucket.includes(' no-shift '))).toEqual([]);
+        if (span.settledToEnd === true) {
+          expect(provisional.filter((bucket) => !bucket.includes(' no-shift '))).toEqual([]);
+        }
         expect(await expectAggregates(equipment, ingest, db, run)).toBe(6);
         const compared = await expectOee(equipment, ingest, masterData, run);
-        if (span.golden) expect(compared).toBe(128); // 6 machines and 2 work centers × 16 buckets
+        // week-01: 6 machines and 2 work centers × 16 buckets.
+        if (span.oeeBuckets !== undefined) expect(compared).toBe(span.oeeBuckets);
         console.log(`${title}: in order, ${String(compared)} OEE buckets equal the ground truth`);
         const downtime = await expectRecords(db, run);
         expect(downtime.records).toBeGreaterThanOrEqual(downtime.lossIntervals);
         expect(downtime.lossIntervals).toBeGreaterThan(0);
+        const alarmed = await expectAlarms(alarms, run);
+        if (span.alarmComparisons !== undefined) {
+          expect(alarmed.compared).toBe(span.alarmComparisons);
+        }
+        expect(alarmed.final).toBeGreaterThan(0);
+        console.log(
+          `${title}: in order, ${String(alarmed.compared)} alarm comparisons equal the ground truth; ${String(alarmed.final)} KPI buckets final, not final (no fact after them): ${alarmed.open.join(', ') || 'none'}`,
+        );
+        await alarms.stop();
         await equipment.stop();
         await ingest.stop();
       },
@@ -720,10 +956,11 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const next = random(2026);
         const copies = facts.filter(() => next() < 0.1);
         const mixed = shuffle([...anchors, ...facts, ...copies], next);
-        const { db, equipment, ingest, masterData, send } = await mes();
+        const { db, equipment, ingest, masterData, alarms, send } = await mes();
         // Telemetry flows all along; the last sample, after every fact, ends the observation.
         await send([...mixed, end, ...mixed.slice(0, 500)]);
         await equipment.flush();
+        await alarms.flush();
         expect(await storedPieces(db)).toEqual(await storedPieces(reference));
         expect(await storedRecords(db)).toEqual(await storedRecords(reference));
         expect(await totals(equipment, db)).toEqual(expected(run.truth));
@@ -734,6 +971,15 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const compared = await expectOee(equipment, ingest, masterData, run);
         expect(compared).toBeGreaterThan(0);
         console.log(`${title}: shuffled, ${String(compared)} OEE buckets equal the ground truth`);
+        expect(await storedOccurrences(db)).toEqual(await storedOccurrences(reference));
+        const alarmed = await expectAlarms(alarms, run);
+        if (span.alarmComparisons !== undefined) {
+          expect(alarmed.compared).toBe(span.alarmComparisons);
+        }
+        console.log(
+          `${title}: shuffled, ${String(alarmed.compared)} alarm comparisons equal the ground truth`,
+        );
+        await alarms.stop();
         await equipment.stop();
         await ingest.stop();
       },

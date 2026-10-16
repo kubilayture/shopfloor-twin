@@ -713,6 +713,7 @@ export class Ingest {
     let query = this.#options.db
       .selectFrom('ingest.equipment_event')
       .select(['equipment', 'epoch', 'seq', 'source_time', 'quality', 'payload'])
+      .select(['received_at', 'source_protocol'])
       .where('equipment', '=', equipment)
       .where('epoch', '=', epoch)
       .where('event_type', '=', 'alarm');
@@ -733,6 +734,8 @@ export class Ingest {
         transition: value.transition,
         severity: value.severity,
         quality: row.quality,
+        receivedAt: row.received_at,
+        protocol: row.source_protocol,
       };
     });
   }

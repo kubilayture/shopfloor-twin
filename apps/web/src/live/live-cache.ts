@@ -200,6 +200,9 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
         queryClient.setQueryData<LiveStates>(liveKeys.states, (live) =>
           mergeStates(live, message.clock, message.states),
         );
+      } else if ('floods' in message) {
+        // Alarm KPI topics (#142) have no screen yet (#145).
+        return;
       } else if ('hour' in message) {
         applyOee(queryClient, message.topic, message.hour, message.shift);
       } else if ('samples' in message && message.samples.length > 0) {
@@ -231,6 +234,10 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       queryClient.setQueryData<LiveDowntime>(liveKeys.downtime, (live) =>
         mergeDowntime(live, message.record, message.event === 'removed'),
       );
+      return;
+    case 'alarm':
+    case 'alarm-kpi':
+      // Alarm occurrences and KPIs (#142) have no screen yet (#145).
       return;
     case 'subscribed':
     case 'unsubscribed':

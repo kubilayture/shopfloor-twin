@@ -270,7 +270,9 @@ describe('WebSocket push (#97)', () => {
     const socket = connect();
     socket.emit('message', Buffer.from('not json'), false);
     socket.emit('message', Buffer.from('{}'), true);
+    // A hub without the alarms module (#142) knows the topic but can't serve it.
     socket.request({ type: 'subscribe', topic: 'alarms' });
+    socket.request({ type: 'subscribe', topic: 'alarm-kpi:somewhere' });
     socket.request({ type: 'subscribe', topic: 'states', metric: 'x' });
     socket.request({ type: 'subscribe', topic: 'telemetry:nope' });
     socket.request({ type: 'subscribe', topic: 'telemetry:wsh-01' });
@@ -279,6 +281,7 @@ describe('WebSocket push (#97)', () => {
       [
         'invalid-message',
         'invalid-message',
+        'unknown-topic',
         'invalid-message',
         'invalid-message',
         'unknown-equipment',

@@ -121,8 +121,11 @@ export class Outbox implements Publisher, ResultPublisher, CursorStore {
       'SELECT id, topic, payload, retain FROM outbox WHERE id > ? ORDER BY id LIMIT ?',
     );
     this.#delete = db.prepare('DELETE FROM outbox WHERE id = ?');
+    // Command results (`cmd-res`, #173) are never evicted: they are few, and a lost answer leaves
+    // a command unsettled for the MES.
     this.#trim = db.prepare(
-      'DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE id > ? ORDER BY id LIMIT ?)',
+      'DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE id > ? ' +
+        "AND topic NOT LIKE '%/cmd-res/%' ORDER BY id LIMIT ?)",
     );
     this.#saveCursor = db.prepare(
       'INSERT INTO cursors (machine, epoch, seq) VALUES (?, ?, ?) ' +

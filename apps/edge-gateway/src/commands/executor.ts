@@ -20,7 +20,7 @@ import {
   loadOrderArguments,
   type CallOutcome,
 } from './load-order.ts';
-import type { CommandStore, InboxEntry } from './store.ts';
+import { RESULT_RETENTION_MS, type CommandStore, type InboxEntry } from './store.ts';
 
 /** The OPC UA side of one CNC, as the collector offers it (#173). */
 export interface CommandMachine {
@@ -28,6 +28,8 @@ export interface CommandMachine {
   /** The device epoch while the session is ready (connected, subscribed, resync done). */
   readonly deviceEpoch: number | undefined;
   readVariable(path: string, deadlineMs: number): Promise<DataValue>;
+  /** The device's own wall clock: `Server_ServerStatus_CurrentTime` (ns=0;i=2258). */
+  readServerTime(deadlineMs: number): Promise<DataValue>;
   callMethod(
     path: string,
     inputArguments: VariantOptions[],
@@ -62,6 +64,11 @@ export interface CommandExecutorOptions {
   readonly onResult?: (value: CommandResultValue, equipment: string) => void;
   /** A delivery that is not a valid `load-order` command: acknowledged and dropped. */
   readonly onInvalid?: (entry: InboxEntry, error: string) => void;
+  /**
+   * A settle call the device answered as a new acceptance: the device's clock was not past the
+   * command's `ExpiresAt` although the gateway's and the device's clocks said so (clock skew).
+   */
+  readonly onSettleAcceptance?: (value: CommandResultValue, equipment: string) => void;
   readonly onError?: (error: unknown) => void;
 }
 
@@ -101,6 +108,9 @@ export class CommandExecutor {
   readonly #running = new Set<string>();
   readonly #locks = new Map<string, Promise<unknown>>();
   readonly #settling = new Set<Promise<void>>();
+  readonly #drains = new Set<Promise<void>>();
+  #pruneTimer: ReturnType<typeof setInterval> | undefined;
+  #settleAcceptances = 0;
   readonly #stop = new AbortController();
   #calls = 0;
   readonly #results = new Map<CommandResultKind, number>();
@@ -113,6 +123,11 @@ export class CommandExecutor {
   /** `LoadOrder` calls made (settle calls included). */
   get calls(): number {
     return this.#calls;
+  }
+
+  /** Settle calls answered as a new acceptance (clock skew between gateway and device). */
+  get settleAcceptances(): number {
+    return this.#settleAcceptances;
   }
 
   /** Results published, by kind. */
@@ -129,7 +144,21 @@ export class CommandExecutor {
 
   /** Picks up what a previous run left in the inbox (call once, before new deliveries). */
   start(): void {
+    this.#prune();
+    this.#pruneTimer = setInterval(() => {
+      this.#prune();
+    }, 3_600_000);
+    this.#pruneTimer.unref();
     for (const entry of this.#options.store.pending()) this.submit(entry);
+  }
+
+  /** Old answers go: kept only far longer than any command's resends (`RESULT_RETENTION_MS`). */
+  #prune(): void {
+    try {
+      this.#options.store.prune(this.#now() - RESULT_RETENTION_MS);
+    } catch (error) {
+      this.#options.onError?.(error);
+    }
   }
 
   /** A recorded delivery (its PUBACK is on its way). */
@@ -140,14 +169,18 @@ export class CommandExecutor {
     this.#queues.set(entry.equipment, queue);
     if (!this.#running.has(entry.equipment)) {
       this.#running.add(entry.equipment);
-      void this.#drain(entry.equipment);
+      const drain = this.#drain(entry.equipment);
+      this.#drains.add(drain);
+      void drain.finally(() => this.#drains.delete(drain));
     }
   }
 
   /** Stops waiting and calling; what is unanswered stays in the inbox for the next start. */
   async stop(): Promise<void> {
     this.#stop.abort();
-    await Promise.allSettled([...this.#settling]);
+    clearInterval(this.#pruneTimer);
+    // Every running delivery and settle ends before the caller closes the stores.
+    await Promise.allSettled([...this.#drains, ...this.#settling]);
   }
 
   /** A method, not a getter: it changes while a loop awaits, which narrowing can't see. */
@@ -223,9 +256,10 @@ export class CommandExecutor {
   /** A stored definitive answer for this delivery, published again without calling. */
   async #answerFromTable(delivery: Delivery): Promise<boolean> {
     const { command, job } = delivery;
+    const { commandId, deviceEpoch } = command.value;
     const stored =
-      this.#options.store.result(command.value.commandId) ??
-      this.#options.store.expired(command.value.commandId, command.expiresAt);
+      this.#options.store.result(commandId, deviceEpoch) ??
+      this.#options.store.expired(commandId, deviceEpoch, command.expiresAt);
     // Another job under the same id goes to the device, which answers `command-conflict`.
     if (stored?.job !== job) return false;
     await this.#finish(delivery, { ...stored.value, expiresAt: command.expiresAt }, false);
@@ -257,8 +291,11 @@ export class CommandExecutor {
   }
 
   /**
-   * After `expiresAt` + the allowance: read `Sequence`, then one call. Repeated until definitive,
+   * After `expiresAt` + the allowance, by the gateway's clock and by the device's own
+   * (`Server_ServerStatus_CurrentTime`): read `Sequence`, then one call. Repeated until definitive,
    * publishing `unknown` meanwhile (again only when `seqAfterExpiry` was read for the first time).
+   * Because the device refuses every dedup miss once its clock is past `ExpiresAt`, every accepted
+   * fact of the command has a sequence number at most `seqAfterExpiry`.
    */
   async #settle(delivery: Delivery, machine: CommandMachine): Promise<void> {
     const allowance = this.#options.clockAllowanceMs ?? 1_000;
@@ -281,6 +318,11 @@ export class CommandExecutor {
           if (epoch !== delivery.command.value.deviceEpoch) {
             return { outcome: this.#epochEnded(delivery), seqAfterExpiry: null };
           }
+          const deviceNow = await this.#readServerTime(machine);
+          if (deviceNow === undefined) return unknown('device time not readable');
+          if (deviceNow < delivery.expiresAt + allowance) {
+            return unknown('the device clock is not past expiresAt + the allowance yet');
+          }
           const sequence = await this.#readNumber(machine, OPCUA_VARIABLES.sequence);
           if (sequence === undefined) return unknown('sequence not readable');
           const called = await this.#call(delivery, machine, (result) =>
@@ -290,6 +332,11 @@ export class CommandExecutor {
         },
       );
       if (outcome.kind === 'final') {
+        if (outcome.value.result === 'accepted') {
+          // Kept as the device's word (safer than unknown): the job exists, with its seq.
+          this.#settleAcceptances++;
+          this.#options.onSettleAcceptance?.(outcome.value, delivery.equipment);
+        }
         await this.#finish(delivery, outcome.value);
         return;
       }
@@ -337,6 +384,16 @@ export class CommandExecutor {
         reason: error instanceof Error ? error.message : String(error),
         statusCode: null,
       };
+    }
+  }
+
+  async #readServerTime(machine: CommandMachine): Promise<number | undefined> {
+    try {
+      const value = await machine.readServerTime(this.#options.callDeadlineMs);
+      const time: unknown = value.value.value;
+      return value.statusCode.isGood() && time instanceof Date ? time.getTime() : undefined;
+    } catch {
+      return undefined;
     }
   }
 

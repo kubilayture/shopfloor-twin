@@ -45,10 +45,20 @@ export function answeredFields(command: LoadOrderCommand, statusCode: string | n
   };
 }
 
-/** What identifies a job: a stored answer is reused only for the same job on the same machine. */
+/**
+ * What identifies a job: a stored answer is reused only for the same job on the same machine in
+ * the same device epoch (the device's dedup table ends with its run).
+ */
 export function jobKey(equipment: string, command: LoadOrderCommand): string {
   const v = command.value;
-  return JSON.stringify([equipment, v.orderId, v.product, v.quantity, Date.parse(v.notBefore)]);
+  return JSON.stringify([
+    equipment,
+    v.deviceEpoch,
+    v.orderId,
+    v.product,
+    v.quantity,
+    Date.parse(v.notBefore),
+  ]);
 }
 
 const BY_ARGUMENT: Partial<Record<(typeof LOAD_ORDER_INPUTS)[number], CommandRejection>> = {

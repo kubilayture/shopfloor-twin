@@ -105,7 +105,9 @@ const seqAfterExpiry = z
   .max(Number.MAX_SAFE_INTEGER)
   .nullable()
   .describe(
-    'ShopFloor.Sequence read after expiresAt + 1 s, before the settle call; null when not read',
+    'ShopFloor.Sequence read after expiresAt + 1 s (gateway and device clocks), before the settle ' +
+      'call; null when not read. Every accepted fact of the command has seq <= seqAfterExpiry, so ' +
+      'a re-dispatch may follow once the final-through is >= seqAfterExpiry with none of them',
   );
 
 export const commandResultSchema = z

@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LOAD_ORDER_INPUTS, type LoadOrderCommand } from '@shopfloor/contracts';
@@ -167,7 +168,7 @@ describe('command store (#173)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('keeps definitive answers by command id, expired by command id and expiresAt, never unknown', () => {
+  it('keeps definitive answers by command id and device epoch, expired also by expiresAt, never unknown', () => {
     const file = join(dir, 'store.db');
     const store = new CommandStore(file);
     const base = {
@@ -182,9 +183,12 @@ describe('command store (#173)', () => {
       expiresAt: '2026-10-16T12:01:00.000Z',
       seqAfterExpiry: 3,
     });
-    expect(store.result('PO-1~OP10~1')).toBeUndefined();
-    expect(store.expired('PO-1~OP10~1', '2026-10-16T12:01:00.000Z')?.value.result).toBe('expired');
-    expect(store.expired('PO-1~OP10~1', '2026-10-16T12:02:00.000Z')).toBeUndefined();
+    expect(store.result('PO-1~OP10~1', 1)).toBeUndefined();
+    expect(store.expired('PO-1~OP10~1', 1, '2026-10-16T12:01:00.000Z')?.value.result).toBe(
+      'expired',
+    );
+    expect(store.expired('PO-1~OP10~1', 1, '2026-10-16T12:02:00.000Z')).toBeUndefined();
+    expect(store.expired('PO-1~OP10~1', 2, '2026-10-16T12:01:00.000Z')).toBeUndefined();
     expect(() => {
       store.saveResult('job', {
         ...base,
@@ -196,7 +200,19 @@ describe('command store (#173)', () => {
     }).toThrow(/never stored/);
     store.saveResult('job', { ...base, result: 'rejected', expiresAt: 'x', code: 'queue-full' });
     store.saveResult('job', { ...base, result: 'rejected', expiresAt: 'y', code: 'wrong-mode' });
-    expect(store.result('PO-1~OP10~1')?.value).toMatchObject({ code: 'queue-full' }); // first wins
+    expect(store.result('PO-1~OP10~1', 1)?.value).toMatchObject({ code: 'queue-full' }); // first wins
+    // Another device epoch is another run: its answer is kept apart (review of PR #184).
+    expect(store.result('PO-1~OP10~1', 2)).toBeUndefined();
+    store.saveResult(
+      'job2',
+      { ...base, deviceEpoch: 2, result: 'rejected', expiresAt: 'z', code: 'wrong-mode' },
+      Date.now() + 60_000,
+    );
+    expect(store.result('PO-1~OP10~1', 2)?.value).toMatchObject({ code: 'wrong-mode' });
+    // Pruned by age: the answers stored before the cut go, the later one stays.
+    expect(store.prune(Date.now() + 30_000)).toBeGreaterThanOrEqual(2);
+    expect(store.result('PO-1~OP10~1', 1)).toBeUndefined();
+    expect(store.result('PO-1~OP10~1', 2)).toBeDefined();
     const entry = store.record('cnc-01', 't', '{}', 5);
     store.close();
     store.close();
@@ -205,5 +221,18 @@ describe('command store (#173)', () => {
     reopened.done(entry.id);
     expect(reopened.pending()).toEqual([]);
     reopened.close();
+  });
+
+  it('drops a result table from before the device epoch was part of its key', () => {
+    const file = join(dir, 'legacy.db');
+    const legacy = new DatabaseSync(file);
+    legacy.exec(
+      'CREATE TABLE command_result (command_id TEXT, expires_at TEXT, job TEXT, value TEXT, stored_at INTEGER, PRIMARY KEY (command_id, expires_at))',
+    );
+    legacy.exec("INSERT INTO command_result VALUES ('PO-1~OP10~1', '', 'job', '{}', 1)");
+    legacy.close();
+    const store = new CommandStore(file);
+    expect(store.result('PO-1~OP10~1', 1)).toBeUndefined();
+    store.close();
   });
 });

@@ -297,6 +297,17 @@ export class OpcuaCollector {
     );
   }
 
+  /** The server's own wall clock, `Server_ServerStatus_CurrentTime` (ns=0;i=2258), within `deadlineMs`. */
+  async readServerTime(deadlineMs: number): Promise<DataValue> {
+    const session = this.#session;
+    if (!session || !this.connected) throw new Error(`${this.machineId}: session not ready`);
+    return withDeadline(
+      session.read({ nodeId: resolveNodeId('ns=0;i=2258'), attributeId: AttributeIds.Value }),
+      deadlineMs,
+      `${this.machineId}: read the server time`,
+    );
+  }
+
   /** Calls a method of this machine's `ShopFloor` object, within `deadlineMs` (#173). */
   async callMethod(
     path: string,

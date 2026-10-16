@@ -193,6 +193,22 @@ describe('store-and-forward outbox (#78, ADR-0014)', () => {
     expect(transport.sent).toHaveLength(100);
   });
 
+  it('never evicts command results when it is full (#173)', async () => {
+    const transport = new FakeTransport();
+    const { outbox, drops } = open(file(), transport, { maxMessages: 100 });
+    const result = (seq: number) => ({
+      ...message(seq),
+      topic: 'orbis/gebze/machining/cell-m1/cnc-01/cmd-res/load-order',
+    });
+    await Promise.all(Array.from({ length: 5 }, (_, i) => outbox.publish(result(1_001 + i))));
+    await Promise.all(Array.from({ length: 130 }, (_, i) => outbox.publish(message(i + 1))));
+    expect(outbox.depth).toBe(100);
+    expect(drops.reduce((sum, [n]) => sum + n, 0)).toBe(35);
+    transport.up();
+    await until(() => outbox.depth === 0);
+    expect(transport.sent.slice(0, 6)).toEqual([1_001, 1_002, 1_003, 1_004, 1_005, 36]);
+  });
+
   it('pauses after a transient error while connected instead of spinning, and loses nothing', async () => {
     const transport = new FakeTransport();
     const { outbox } = open(file(), transport, { retryMs: 50 });

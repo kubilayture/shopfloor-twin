@@ -17,6 +17,8 @@ export interface GatewayHttpOptions {
   readonly commands?: () => {
     readonly received: number;
     readonly calls: number;
+    /** Settle calls answered as a new acceptance (clock skew). */
+    readonly settleAcceptances?: number;
     readonly results: ReadonlyMap<string, number>;
     readonly queued: number;
     readonly settling: number;
@@ -100,6 +102,14 @@ export function buildGatewayHttp({
       registers: [registry],
       collect() {
         this.set(commands().calls);
+      },
+    });
+    new Gauge({
+      name: 'gateway_command_settle_acceptances',
+      help: 'Settle calls after expiresAt that the device answered as a new acceptance (clock skew)',
+      registers: [registry],
+      collect() {
+        this.set(commands().settleAcceptances ?? 0);
       },
     });
     new Gauge({

@@ -123,6 +123,12 @@ const executor = new CommandExecutor({
   onInvalid: (entry, error) => {
     log.error({ topic: entry.topic, error }, 'invalid command dropped');
   },
+  onSettleAcceptance: (value, equipment) => {
+    log.warn(
+      { equipment, result: value },
+      'settle call accepted the job after expiresAt: clock skew between gateway and device',
+    );
+  },
   onError: (error) => {
     log.error({ err: error }, 'command error');
   },
@@ -184,6 +190,7 @@ const http = buildGatewayHttp({
   commands: () => ({
     received: commandLink.received,
     calls: executor.calls,
+    settleAcceptances: executor.settleAcceptances,
     results: executor.results,
     ...executor.pending,
   }),

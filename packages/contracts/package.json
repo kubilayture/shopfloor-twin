@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./mes-api": "./src/mes-api.ts",
+    "./identity": "./src/identity.ts",
     "./erp-api": "./src/erp-api.ts"
   },
   "scripts": {

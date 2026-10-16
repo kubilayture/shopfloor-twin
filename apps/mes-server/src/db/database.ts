@@ -2,6 +2,7 @@ import { Kysely, PostgresDialect, type Generated } from 'kysely';
 import pg from 'pg';
 import type { AlarmsTables } from '../modules/alarms/index.ts';
 import type { EquipmentTables } from '../modules/equipment/index.ts';
+import type { IdentityTables } from '../modules/identity/index.ts';
 import type { IngestTables } from '../modules/ingest/index.ts';
 import type { MasterDataTables } from '../modules/master-data/index.ts';
 import type { ShiftsTables } from '../modules/shifts/index.ts';
@@ -23,7 +24,8 @@ export type Database = PublicTables &
   IngestTables &
   EquipmentTables &
   AlarmsTables &
-  ShiftsTables;
+  ShiftsTables &
+  IdentityTables;
 
 /**
  * BIGINT columns (epochs, sequence numbers, ids, counts) are read as numbers, not strings: every

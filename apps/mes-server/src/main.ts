@@ -8,6 +8,7 @@ import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
 import { Alarms } from './modules/alarms/index.ts';
 import { DowntimeCoding, Equipment, downtimeRules } from './modules/equipment/index.ts';
+import { Identity, type IdentityLog } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 import { DowntimeFeed, Oee } from './modules/oee/index.ts';
@@ -41,7 +42,24 @@ const readDb = createDatabase(env.DATABASE_URL, env.API_DB_POOL_SIZE, {
 // The hourly aggregates refresh on their own connections, outside a transaction and without the
 // API's statement timeout, never on ingest's acknowledgement path (ADR-0022).
 const aggregateDb = createDatabase(env.DATABASE_URL, 2);
+// Logins, sessions and users on their own small pool (#168): a burst of logins or the session
+// lookup of every request never takes a connection ingest's acknowledgement path waits for.
+const identityDb = createDatabase(env.DATABASE_URL, 2);
 const state = { migrated: false, stopping: false };
+// The identity module answers the API from the start (503 until `start()` after the migrations);
+// its log is the app's, which exists only once the HTTP server is built.
+const identityLog: IdentityLog = {
+  info: (object, message) => {
+    app.log.child({ module: 'identity' }).info(object, message);
+  },
+  warn: (object, message) => {
+    app.log.child({ module: 'identity' }).warn(object, message);
+  },
+  error: (object, message) => {
+    app.log.child({ module: 'identity' }).error(object, message);
+  },
+};
+const identity = new Identity({ db: identityDb, log: identityLog });
 
 let ingest: Ingest | undefined;
 let equipment: Equipment | undefined;
@@ -64,6 +82,9 @@ const { app, registry, realtime } = await buildMesHttp({
   allowedHosts: list(env.HTTP_ALLOWED_HOSTS),
   allowedOrigins: list(env.HTTP_ALLOWED_ORIGINS),
   writes: env.MES_WRITES === 'on',
+  identity,
+  auth: env.MES_AUTH === 'on',
+  cookieSecure: env.MES_COOKIE_SECURE === 'on',
 });
 const log = app.log;
 // Connections of each pool, and queries waiting for one (#147: the API's 4 connections serve the
@@ -72,6 +93,7 @@ const pools = [
   ['main', db],
   ['api', readDb],
   ['aggregate', aggregateDb],
+  ['identity', identityDb],
 ] as const;
 for (const field of ['total', 'idle', 'waiting'] as const) {
   new Gauge({
@@ -106,6 +128,11 @@ async function shutdown(signal: string): Promise<void> {
     },
     async () => alarms?.stop(),
     async () => equipment?.stop(),
+    () => {
+      identity.stop();
+      return Promise.resolve();
+    },
+    () => identityDb.destroy(),
     () => db.destroy(),
     () => readDb.destroy(),
     () => aggregateDb.destroy(),
@@ -132,6 +159,16 @@ try {
   await masterData.seed(plant.config);
   state.migrated = true;
   log.info({ applied: result.applied, alreadyApplied: result.skipped }, 'database migrated');
+  // Users and sessions (#168): the bootstrap admin, if asked for and none exists.
+  await identity.start({ bootstrapAdminPassword: env.MES_BOOTSTRAP_ADMIN_PASSWORD });
+  if (env.MES_AUTH === 'off') {
+    log.warn(
+      'MES_AUTH=off: the API and the WebSocket serve requests without a session (ADR-0026); ' +
+        'only the session routes need one',
+    );
+  } else {
+    log.info('MES_AUTH=on: every route but the login needs a session');
+  }
   ingest = new Ingest({
     db,
     readDb,
@@ -233,9 +270,11 @@ try {
   if (state.stopping) await new Promise(() => undefined); // shutdown() owns the exit
   log.fatal({ err: error }, 'start-up failed');
   await app.close();
+  identity.stop();
   await db.destroy();
   await readDb.destroy();
   await aggregateDb.destroy();
+  await identityDb.destroy();
   process.exit(1);
 }
 log.info('mes-server started; ready once subscribed to the UNS');

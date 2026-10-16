@@ -1,7 +1,11 @@
-import { skipToken, useQuery } from '@tanstack/react-query';
+import { ALARMS_TOPIC } from '@shopfloor/contracts/mes-api';
+import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, use, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import {
   liveKeys,
+  resetLiveAlarms,
+  type LiveAlarmKpi,
+  type LiveAlarms,
   type LiveDowntime,
   type LiveOee,
   type LiveStates,
@@ -43,6 +47,27 @@ export function useLiveSubscription(topic: string | undefined, metric?: string):
   }, [client, topic, metric]);
 }
 
+/**
+ * Holds the `alarms` topic for the alarm list. The topic has no snapshot, so pushed copies kept
+ * from an earlier visit may be stale (changes made while nobody was subscribed never arrive):
+ * the pushed set is emptied and the REST lists read again before subscribing, and emptied again
+ * when the screen lets go.
+ */
+export function useAlarmsTopic(): void {
+  const client = useLiveClient();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    resetLiveAlarms(queryClient);
+    void queryClient.invalidateQueries({ queryKey: ['alarms'] });
+    void queryClient.invalidateQueries({ queryKey: ['alarm-points'] });
+    const release = client.subscribe(ALARMS_TOPIC);
+    return () => {
+      release();
+      resetLiveAlarms(queryClient);
+    };
+  }, [client, queryClient]);
+}
+
 /** Holds several topics' subscriptions while the component is mounted. */
 export function useLiveSubscriptions(topics: readonly string[]): void {
   const client = useLiveClient();
@@ -69,6 +94,16 @@ export function useLiveOee(id: string): LiveOee | undefined {
 /** Pushed downtime records (subscribe to `downtime` with `useLiveSubscription`). */
 export function useLiveDowntime(): LiveDowntime | undefined {
   return useQuery<LiveDowntime>({ queryKey: liveKeys.downtime, queryFn: skipToken }).data;
+}
+
+/** Pushed alarm occurrences and points (subscribe to `alarms` with `useLiveSubscription`). */
+export function useLiveAlarms(): LiveAlarms | undefined {
+  return useQuery<LiveAlarms>({ queryKey: liveKeys.alarms, queryFn: skipToken }).data;
+}
+
+/** Pushed alarm KPIs of `alarm-kpi:<scope>` (`plant`, `position:<id>`, `equipment:<id>`). */
+export function useLiveAlarmKpi(scope: string): LiveAlarmKpi | undefined {
+  return useQuery<LiveAlarmKpi>({ queryKey: liveKeys.alarmKpi(scope), queryFn: skipToken }).data;
 }
 
 export function useLiveTelemetry(equipment: string): LiveTelemetry | undefined {

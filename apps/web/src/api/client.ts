@@ -1,6 +1,24 @@
 import {
   MES_API_LIMITS,
+  acknowledgeRequestSchema,
+  acknowledgeResultSchema,
+  alarmDetailSchema,
+  alarmHistorySchema,
+  alarmKpiListSchema,
+  alarmListSchema,
+  alarmPointListSchema,
+  alarmScopesSchema,
+  badActorListSchema,
+  bulkAcknowledgeRequestSchema,
+  bulkAcknowledgeResultSchema,
   codingResultSchema,
+  commentRequestSchema,
+  commentResultSchema,
+  floodListSchema,
+  operatorKpiListSchema,
+  shelfResultSchema,
+  shelveRequestSchema,
+  unshelveRequestSchema,
   currentShiftSchema,
   downtimeAuditSchema,
   downtimeListSchema,
@@ -16,8 +34,26 @@ import {
   seriesSchema,
   shiftListSchema,
   shiftOeeSchema,
+  type AcknowledgeRequest,
+  type AcknowledgeResult,
+  type AlarmDetail,
+  type AlarmHistory,
+  type AlarmKpiList,
+  type AlarmList,
+  type AlarmPointList,
+  type AlarmScopes,
+  type BadActorList,
+  type BulkAcknowledgeRequest,
+  type BulkAcknowledgeResult,
   type CodingRequest,
   type CodingResult,
+  type CommentRequest,
+  type CommentResult,
+  type FloodList,
+  type OperatorKpiList,
+  type ShelfResult,
+  type ShelveRequest,
+  type UnshelveRequest,
   type CurrentShift,
   type DowntimeAudit,
   type DowntimeList,
@@ -286,4 +322,146 @@ export function getDowntimeAudit(id: string, signal?: AbortSignal): Promise<Down
 /** Replaces a record's codings (#121); 409 when `version` is no longer the coding set's. */
 export function putCoding(id: string, body: CodingRequest): Promise<CodingResult> {
   return sendJson('PUT', `/downtime/${segment(id)}/coding`, body, codingResultSchema);
+}
+
+// ---- Alarms (#142, #143, #145) ----
+
+export type AlarmViewName = AlarmList['view'];
+
+/**
+ * One page of an alarm view (`GET /alarms?view=`) of at most `alarmPageMax` occurrences; `history`
+ * needs a range (at most 7 days).
+ */
+export function getAlarms(
+  query: { readonly view: AlarmViewName; readonly from?: number; readonly to?: number },
+  signal?: AbortSignal,
+): Promise<AlarmList> {
+  const params = new URLSearchParams({
+    view: query.view,
+    limit: String(MES_API_LIMITS.alarmPageMax),
+  });
+  if (query.from !== undefined) params.set('from', iso(query.from));
+  if (query.to !== undefined) params.set('to', iso(query.to));
+  return getJson(`/alarms?${params.toString()}`, alarmListSchema, signal);
+}
+
+export function getAlarm(id: string, signal?: AbortSignal): Promise<AlarmDetail> {
+  return getJson(`/alarms/${segment(id)}`, alarmDetailSchema, signal);
+}
+
+export function getAlarmHistory(id: string, signal?: AbortSignal): Promise<AlarmHistory> {
+  return getJson(`/alarms/${segment(id)}/history`, alarmHistorySchema, signal);
+}
+
+export function getAlarmPoints(signal?: AbortSignal): Promise<AlarmPointList> {
+  return getJson('/alarm-points', alarmPointListSchema, signal);
+}
+
+export function getAlarmScopes(signal?: AbortSignal): Promise<AlarmScopes> {
+  return getJson('/alarms/scopes', alarmScopesSchema, signal);
+}
+
+/** A KPI scope as the API names it: the plant, or a position or an equipment with its id. */
+export interface AlarmScopeRef {
+  readonly scope: 'plant' | 'position' | 'equipment';
+  readonly id: string;
+}
+
+interface ScopeRange extends AlarmScopeRef {
+  readonly from: number;
+  readonly to: number;
+}
+
+function scopeQuery(query: ScopeRange): URLSearchParams {
+  const params = new URLSearchParams({ scope: query.scope });
+  if (query.scope !== 'plant') params.set('id', query.id);
+  params.set('from', iso(query.from));
+  params.set('to', iso(query.to));
+  return params;
+}
+
+export function getAlarmKpi(
+  query: ScopeRange & { readonly bucket: 'hour' | 'shift' },
+  signal?: AbortSignal,
+): Promise<AlarmKpiList> {
+  const params = scopeQuery(query);
+  params.set('bucket', query.bucket);
+  return getJson(`/alarms/kpi?${params.toString()}`, alarmKpiListSchema, signal);
+}
+
+export function getOperatorKpi(
+  query: ScopeRange & { readonly bucket: 'hour' | 'shift' | 'range' },
+  signal?: AbortSignal,
+): Promise<OperatorKpiList> {
+  const params = scopeQuery(query);
+  params.set('bucket', query.bucket);
+  return getJson(`/alarms/operator-kpi?${params.toString()}`, operatorKpiListSchema, signal);
+}
+
+export function getFloods(query: ScopeRange, signal?: AbortSignal): Promise<FloodList> {
+  return getJson(`/alarms/floods?${scopeQuery(query).toString()}`, floodListSchema, signal);
+}
+
+export function getBadActors(query: ScopeRange, signal?: AbortSignal): Promise<BadActorList> {
+  const params = scopeQuery(query);
+  params.set('limit', String(MES_API_LIMITS.badActors));
+  return getJson(`/alarms/bad-actors?${params.toString()}`, badActorListSchema, signal);
+}
+
+/** Acknowledges one occurrence (monotonic: no version; `changed: false` if it already was). */
+export function acknowledgeAlarm(id: string, body: AcknowledgeRequest): Promise<AcknowledgeResult> {
+  return sendJson(
+    'POST',
+    `/alarms/${segment(id)}/ack`,
+    acknowledgeRequestSchema.parse(body),
+    acknowledgeResultSchema,
+  );
+}
+
+/** Acknowledges up to 100 occurrences in one transaction (an unknown id is 404: nothing changes). */
+export function acknowledgeAlarms(body: BulkAcknowledgeRequest): Promise<BulkAcknowledgeResult> {
+  return sendJson(
+    'POST',
+    '/alarms/ack',
+    bulkAcknowledgeRequestSchema.parse(body),
+    bulkAcknowledgeResultSchema,
+  );
+}
+
+/** Adds a comment to an occurrence (append-only: no version). */
+export function commentAlarm(id: string, body: CommentRequest): Promise<CommentResult> {
+  return sendJson(
+    'POST',
+    `/alarms/${segment(id)}/comments`,
+    commentRequestSchema.parse(body),
+    commentResultSchema,
+  );
+}
+
+/** Shelves a point for a time of plant time; 409 when `version` is no longer the shelf's. */
+export function shelvePoint(
+  equipment: string,
+  code: string,
+  body: ShelveRequest,
+): Promise<ShelfResult> {
+  return sendJson(
+    'POST',
+    `/alarm-points/${segment(equipment)}/${segment(code)}/shelve`,
+    shelveRequestSchema.parse(body),
+    shelfResultSchema,
+  );
+}
+
+/** Unshelves a point; 409 when `version` is no longer the shelf's, 422 when it isn't shelved. */
+export function unshelvePoint(
+  equipment: string,
+  code: string,
+  body: UnshelveRequest,
+): Promise<ShelfResult> {
+  return sendJson(
+    'POST',
+    `/alarm-points/${segment(equipment)}/${segment(code)}/unshelve`,
+    unshelveRequestSchema.parse(body),
+    shelfResultSchema,
+  );
 }

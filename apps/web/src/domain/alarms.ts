@@ -1,0 +1,325 @@
+import type {
+  AlarmKpiBucketDto,
+  AlarmOccurrenceDto,
+  AlarmPointDto,
+  AlarmShelfDto,
+  OperatorBucketDto,
+  Ratio,
+} from '@shopfloor/contracts/mes-api';
+import { fraction } from '@shopfloor/oee-core';
+import type { AlarmScopeRef, AlarmViewName } from '../api/client.ts';
+import type { LiveAlarms } from '../live/live-cache.ts';
+import { minutesText, NOT_APPLICABLE, parseFraction, type BucketFlag } from './oee.ts';
+import { writeFailure, type WriteFailure } from './writes.ts';
+
+/**
+ * Alarm lists and KPIs (#145, ADR-0024). The MES owns every value: the screen partitions the
+ * occurrences by the API's `state` and the point's shelf, and shows the KPIs' integers, fractions
+ * and four-decimal strings as sent. Anything derived (a mean, a benchmark comparison) is exact
+ * BigInt arithmetic.
+ */
+
+export type AlarmView = AlarmViewName;
+export type Priority = AlarmOccurrenceDto['priority'];
+
+export const ALARM_VIEW_LABELS: Readonly<Record<AlarmView, string>> = {
+  active: 'Active',
+  acknowledged: 'Acknowledged',
+  shelved: 'Shelved',
+  history: 'History',
+};
+
+export const PRIORITY_LABELS: Readonly<Record<Priority, string>> = {
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+};
+
+/** An alarm point's key: `equipment/code`, as the KPIs name chattering points. */
+export const pointKey = (equipment: string, code: string): string => `${equipment}/${code}`;
+
+// ---- The live merge (monotonic upserts by id) ----
+
+const STATE_RANK: Readonly<Record<AlarmOccurrenceDto['state'], number>> = {
+  'unacked-active': 0,
+  'acked-active': 1,
+  'unacked-cleared': 1,
+  closed: 2,
+};
+
+/**
+ * Whether copy `a` of an occurrence is behind copy `b`: `b` has taken a step that never goes
+ * back and `a` has not. The steps are acknowledged (ISA-18.2: monotonic, #143), ended, final, more
+ * comments (append-only) and a later state (closed after anything else).
+ */
+export function isBehind(a: AlarmOccurrenceDto, b: AlarmOccurrenceDto): boolean {
+  return (
+    (b.acknowledged !== null && a.acknowledged === null) ||
+    (b.endedAt !== null && a.endedAt === null) ||
+    (b.final && !a.final) ||
+    b.comments > a.comments ||
+    STATE_RANK[b.state] > STATE_RANK[a.state]
+  );
+}
+
+/**
+ * The copy to keep of one occurrence id: `incoming` (a push, or the later read), unless `known` is
+ * strictly ahead of it (ahead in a step and behind in none). The MES pushes an occurrence's
+ * messages in commit order, each with its whole state, so a later push is never older; the rule
+ * guards a REST answer read before a push but arriving after it, and a write's answer arriving
+ * after the push of a later change. Two copies each ahead in a different step (a stale answer
+ * racing a push) can't be ordered: the incoming one is kept, and the next push or read settles it.
+ */
+export function newerOccurrence(
+  known: AlarmOccurrenceDto,
+  incoming: AlarmOccurrenceDto,
+): AlarmOccurrenceDto {
+  return isBehind(incoming, known) && !isBehind(known, incoming) ? known : incoming;
+}
+
+/** The copy to keep of one point: the higher shelf `version` (ties: `incoming`). */
+export function newerPoint(known: AlarmPointDto, incoming: AlarmPointDto): AlarmPointDto {
+  return incoming.shelf.version >= known.shelf.version ? incoming : known;
+}
+
+/** The newer of two shelves of one point, by version. */
+export function newerShelf(
+  a: AlarmShelfDto | undefined,
+  b: AlarmShelfDto | undefined,
+): AlarmShelfDto | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return b.version > a.version ? b : a;
+}
+
+/** Shown occurrences and points: the REST reads with the pushed upserts applied. */
+export interface AlarmSet {
+  readonly occurrences: readonly AlarmOccurrenceDto[];
+  readonly points: ReadonlyMap<string, AlarmPointDto>;
+}
+
+/** The REST lists and points merged with the live upserts (`newerOccurrence`, `newerPoint`). */
+export function mergeAlarms(
+  rest: readonly (readonly AlarmOccurrenceDto[])[],
+  restPoints: readonly AlarmPointDto[],
+  live: LiveAlarms | undefined,
+): AlarmSet {
+  const byId = new Map<string, AlarmOccurrenceDto>();
+  for (const list of rest) {
+    for (const occurrence of list) {
+      const known = byId.get(occurrence.id);
+      byId.set(occurrence.id, known ? newerOccurrence(known, occurrence) : occurrence);
+    }
+  }
+  for (const occurrence of Object.values(live?.occurrences ?? {})) {
+    const known = byId.get(occurrence.id);
+    byId.set(occurrence.id, known ? newerOccurrence(known, occurrence) : occurrence);
+  }
+  const points = new Map<string, AlarmPointDto>();
+  for (const point of restPoints) points.set(pointKey(point.equipment, point.code), point);
+  for (const [key, point] of Object.entries(live?.points ?? {})) {
+    const known = points.get(key);
+    points.set(key, known ? newerPoint(known, point) : point);
+  }
+  return { occurrences: [...byId.values()], points };
+}
+
+/** Whether the occurrence's point is shelved: the point's shelf (versioned) when known. */
+export function isShelved(
+  occurrence: AlarmOccurrenceDto,
+  points: ReadonlyMap<string, AlarmPointDto>,
+): boolean {
+  const point = points.get(pointKey(occurrence.equipment, occurrence.code));
+  return point ? point.shelf.shelved : occurrence.shelved;
+}
+
+/**
+ * The view an occurrence belongs to, as `GET /alarms?view=` partitions them (ADR-0024): closed in
+ * history; else shelved when its point is; else acknowledged while active; else active (not
+ * acknowledged, also once cleared: a clear does not acknowledge).
+ */
+export function viewOf(occurrence: AlarmOccurrenceDto, shelved: boolean): AlarmView {
+  if (occurrence.state === 'closed') return 'history';
+  if (shelved) return 'shelved';
+  if (occurrence.state === 'acked-active') return 'acknowledged';
+  return 'active';
+}
+
+/** Newest raise first (as the API lists them), then by id for a stable order. */
+export function compareOccurrences(a: AlarmOccurrenceDto, b: AlarmOccurrenceDto): number {
+  return Date.parse(b.raisedAt) - Date.parse(a.raisedAt) || (a.id < b.id ? 1 : -1);
+}
+
+/** The merged occurrences per view, each newest first. */
+export function partition(set: AlarmSet): Record<AlarmView, AlarmOccurrenceDto[]> {
+  const views: Record<AlarmView, AlarmOccurrenceDto[]> = {
+    active: [],
+    acknowledged: [],
+    shelved: [],
+    history: [],
+  };
+  for (const occurrence of set.occurrences) {
+    views[viewOf(occurrence, isShelved(occurrence, set.points))].push(occurrence);
+  }
+  for (const list of Object.values(views)) list.sort(compareOccurrences);
+  return views;
+}
+
+/** Not acknowledged and not closed: an acknowledgement would change it. */
+export const acknowledgeable = (occurrence: AlarmOccurrenceDto): boolean =>
+  occurrence.acknowledged === null && occurrence.state !== 'closed';
+
+export function stateText(occurrence: AlarmOccurrenceDto): string {
+  switch (occurrence.state) {
+    case 'unacked-active':
+      return 'Active, unacknowledged';
+    case 'acked-active':
+      return 'Active, acknowledged';
+    case 'unacked-cleared':
+      return 'Cleared, unacknowledged';
+    case 'closed':
+      return 'Closed';
+  }
+}
+
+export function endReasonText(reason: AlarmOccurrenceDto['endReason']): string {
+  switch (reason) {
+    case 'cleared':
+      return 'cleared by the device';
+    case 'lost':
+      return 'clear lost, closed by a resync';
+    case 'superseded':
+      return 'superseded by the next raise';
+    case 'epoch-ended':
+      return 'ended with its simulator run';
+    case null:
+      return 'still active';
+  }
+}
+
+// ---- Writes ----
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+/**
+ * The longest shelf: `maxShelveMs` of alarms.yaml (default 8 hours, one shift). The API does not
+ * publish it; the MES refuses a longer one with 422, which the screen explains.
+ */
+export const MAX_SHELVE_MS = 8 * HOUR;
+
+/** Shelving presets (plan "API, push and web"), none above `MAX_SHELVE_MS`. */
+export const SHELVE_PRESETS = [
+  { ms: 15 * MINUTE, label: '15 min' },
+  { ms: HOUR, label: '1 h' },
+  { ms: 4 * HOUR, label: '4 h' },
+  { ms: 8 * HOUR, label: '8 h' },
+].filter((preset) => preset.ms <= MAX_SHELVE_MS);
+
+export function ackFailure(error: unknown): WriteFailure {
+  return writeFailure(error, {
+    not: 'Not acknowledged',
+    what: 'this acknowledgement',
+    conflict: 'the alarm changed meanwhile; it was read again.',
+  });
+}
+
+export function commentFailure(error: unknown): WriteFailure {
+  return writeFailure(error, {
+    not: 'Comment not saved',
+    what: 'this comment',
+    conflict: 'the alarm changed meanwhile; it was read again.',
+  });
+}
+
+export function shelfFailure(error: unknown, action: 'shelve' | 'unshelve'): WriteFailure {
+  return writeFailure(error, {
+    not: action === 'shelve' ? 'Not shelved' : 'Not unshelved',
+    what: action === 'shelve' ? 'this shelf' : 'this unshelve',
+    conflict:
+      "the point's shelf changed since it was read (someone else shelved or unshelved it, or its time ran out). It was read again; check it and try again.",
+  });
+}
+
+// ---- KPIs ----
+
+/** A scope's key in topics and search parameters: `plant`, `position:<id>`, `equipment:<id>`. */
+export const scopeKey = (ref: AlarmScopeRef): string =>
+  ref.scope === 'plant' ? 'plant' : `${ref.scope}:${ref.id}`;
+
+/** `scopeKey` back to a scope, or undefined for anything else. */
+export function parseScopeKey(key: string | undefined): AlarmScopeRef | undefined {
+  if (key === 'plant') return { scope: 'plant', id: 'plant' };
+  const match = /^(position|equipment):([A-Za-z0-9][A-Za-z0-9_-]{0,63})$/.exec(key ?? '');
+  if (!match) return undefined;
+  return { scope: match[1] as 'position' | 'equipment', id: match[2] ?? '' };
+}
+
+/**
+ * `floodThreshold` of alarms.yaml (default 10: more than 10 raises in 10 minutes is a flood). Not
+ * published by the API; used only to draw the threshold line on the hourly chart.
+ */
+export const FLOOD_THRESHOLD = 10;
+
+export type RateBand = 'acceptable' | 'manageable' | 'over';
+
+/**
+ * The average rate per 10 minutes against the ISA-18.2 / EEMUA 191 benchmarks of alarms.yaml (about
+ * one is acceptable, two the most manageable), compared exactly on the API's fraction.
+ */
+export function rateBand(rate: Ratio): RateBand {
+  const value = parseFraction(rate.fraction);
+  if (value.num <= value.den) return 'acceptable';
+  if (value.num <= 2n * value.den) return 'manageable';
+  return 'over';
+}
+
+export const RATE_BAND_TEXT: Readonly<Record<RateBand, string>> = {
+  acceptable: 'Acceptable (≤ 1 per 10 min)',
+  manageable: 'Manageable (≤ 2 per 10 min)',
+  over: 'Over the benchmark (> 2 per 10 min)',
+};
+
+/** Final, provisional, revision and incidents of an alarm KPI bucket, as text. */
+export function alarmBucketFlags(bucket: AlarmKpiBucketDto): BucketFlag[] {
+  const flags: BucketFlag[] = [];
+  if (bucket.final) {
+    flags.push({ key: 'final', text: 'Final', title: 'Nothing that can still arrive changes it' });
+  } else {
+    flags.push({
+      key: 'provisional',
+      text:
+        bucket.fleetingUndecided > 0
+          ? `Provisional (${String(bucket.fleetingUndecided)} fleeting undecided)`
+          : 'Provisional',
+      title: bucket.provisional
+        ? 'Not over at the plant clock, or a raise may still turn out fleeting'
+        : 'Over, but its equipment is not yet final through its end',
+    });
+  }
+  if (bucket.revision > 0) {
+    flags.push({
+      key: 'revision',
+      text: `Revision ${String(bucket.revision)}`,
+      title: 'Changed after it was final (late data)',
+    });
+  }
+  if (bucket.incidents > 0) {
+    flags.push({
+      key: 'incidents',
+      text: `${String(bucket.incidents)} incident${bucket.incidents === 1 ? '' : 's'}`,
+      title: 'Sequence gaps reported over its hours',
+    });
+  }
+  return flags;
+}
+
+/** Exact milliseconds as minutes (`12.5 min`); null is `n/a`. */
+export const msText = (ms: number | null | undefined): string =>
+  ms === null || ms === undefined ? NOT_APPLICABLE : minutesText(ms);
+
+/** The mean time to acknowledge, `sumMs / count` exactly, as minutes; `n/a` without any. */
+export function meanTimeToAck(timeToAck: OperatorBucketDto['timeToAck']): string {
+  if (timeToAck.count === 0) return NOT_APPLICABLE;
+  return minutesText(fraction(BigInt(timeToAck.sumMs), BigInt(timeToAck.count)));
+}

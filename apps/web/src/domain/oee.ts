@@ -185,12 +185,12 @@ export function bucketFlags(bucket: OeeBucketDto): BucketFlag[] {
  * The bucket to show for one key. The MES pushes the whole bucket after any change (at most a
  * second apart) while the plant clock is in it, so a pushed bucket replaces the REST one, unless
  * the REST answer is further along: final where the push is not (the bucket became final after
- * the clock left it), or a higher revision.
+ * the clock left it), or a higher revision. Alarm KPI buckets (#145) follow the same rule.
  */
-export function pickBucket(
-  rest: OeeBucketDto | undefined,
-  pushed: OeeBucketDto | undefined,
-): OeeBucketDto | undefined {
+export function pickBucket<B extends { readonly final: boolean; readonly revision: number }>(
+  rest: B | undefined,
+  pushed: B | undefined,
+): B | undefined {
   if (!pushed) return rest;
   if (!rest) return pushed;
   if (rest.final && !pushed.final) return rest;

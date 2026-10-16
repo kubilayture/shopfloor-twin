@@ -5,7 +5,7 @@ import {
   type DowntimeRecordDto,
   type ReasonCodes,
 } from '@shopfloor/contracts/mes-api';
-import { ApiError } from '../api/client.ts';
+import { writeFailure, type WriteFailure } from './writes.ts';
 import { isNewerRecord, type LiveDowntime } from '../live/live-cache.ts';
 import { PLANT_TIME_ZONE } from './time.ts';
 
@@ -260,54 +260,16 @@ export function codingBody(draft: Draft, version: number): CodingRequest {
   return body;
 }
 
-export interface WriteFailure {
-  readonly kind: 'conflict' | 'refused' | 'invalid' | 'busy' | 'unavailable';
-  readonly text: string;
-}
+export type { WriteFailure };
 
 /** A failed coding write as a message for people, from the MES's problem details (ADR-0023). */
 export function codingFailure(error: unknown): WriteFailure {
-  if (!(error instanceof ApiError)) {
-    return { kind: 'invalid', text: error instanceof Error ? error.message : 'Unknown error' };
-  }
-  const detail = error.problem?.detail ?? error.message;
-  switch (error.status) {
-    case 409:
-      return {
-        kind: 'conflict',
-        text: 'Not saved: the codings of this machine changed since the record was read (another coding of the same machine, or a re-cut). The record was reloaded; check it and code again.',
-      };
-    case 403:
-      return {
-        kind: 'refused',
-        text: `Not saved: the MES refused the write (403, ${detail}). Open the app through its own address; writes are accepted only from the MES's own origin.`,
-      };
-    case 405:
-      return { kind: 'refused', text: 'Not saved: writes are turned off on this MES (405).' };
-    case 415:
-      return {
-        kind: 'refused',
-        text: `Not saved: the MES accepts only JSON (415, ${detail}).`,
-      };
-    case 429:
-      return {
-        kind: 'busy',
-        text: `Not saved: too many writes right now (429). Try again in ${String(error.retryAfter ?? 1)} s.`,
-      };
-    case 422:
-      return {
-        kind: 'invalid',
-        text: `Not saved: the MES cannot apply this coding (422, ${detail}).`,
-      };
-    case 400:
-    case 404:
-    case 413:
-      return { kind: 'invalid', text: `Not saved (${String(error.status)}): ${detail}` };
-    case 0:
-      return { kind: 'unavailable', text: 'Not saved: the MES cannot be reached.' };
-    default:
-      return { kind: 'unavailable', text: `Not saved (${String(error.status)}): ${detail}` };
-  }
+  return writeFailure(error, {
+    not: 'Not saved',
+    what: 'this coding',
+    conflict:
+      'the codings of this machine changed since the record was read (another coding of the same machine, or a re-cut). The record was reloaded; check it and code again.',
+  });
 }
 
 const CODED_BY_KEY = 'shopfloor.codedBy';

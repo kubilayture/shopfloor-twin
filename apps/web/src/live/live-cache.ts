@@ -1,11 +1,16 @@
 import type {
+  AlarmKpiBucketDto,
+  AlarmOccurrenceDto,
+  AlarmPointDto,
   Clock,
   CurrentStateDto,
   DowntimeRecordDto,
+  FloodEpisodeDto,
   OeeBucketDto,
   ServerMessage,
 } from '@shopfloor/contracts/mes-api';
 import type { QueryClient } from '@tanstack/react-query';
+import { newerOccurrence, newerPoint, pointKey } from '../domain/alarms.ts';
 import { appendSample, type LiveSample } from '../domain/series.ts';
 import { isNewer, isNewerClock } from '../domain/states.ts';
 import type { LiveClient } from './live-client.ts';
@@ -51,6 +56,26 @@ export interface LiveDowntime {
   readonly seq: number;
 }
 
+/**
+ * Pushed alarm occurrences by id and alarm points by `equipment/code` (upserts, #145), since the
+ * last (re)connect, and a counter that moves with every message.
+ */
+export interface LiveAlarms {
+  readonly occurrences: Readonly<Record<string, AlarmOccurrenceDto>>;
+  readonly points: Readonly<Record<string, AlarmPointDto>>;
+  readonly seq: number;
+}
+
+/**
+ * The pushed alarm KPIs of one scope (`alarm-kpi:<scope>`): the hour and shift buckets the plant
+ * clock is in, as last pushed, and the flood episodes still in flood.
+ */
+export interface LiveAlarmKpi {
+  readonly hour: AlarmKpiBucketDto | null;
+  readonly shift: AlarmKpiBucketDto | null;
+  readonly floods: readonly FloodEpisodeDto[];
+}
+
 export const liveKeys = {
   all: ['live'] as const,
   states: ['live', 'states'] as const,
@@ -58,10 +83,16 @@ export const liveKeys = {
   telemetry: (equipment: string) => ['live', 'telemetry', equipment] as const,
   oee: (id: string) => ['live', 'oee', id] as const,
   downtime: ['live', 'downtime'] as const,
+  alarms: ['live', 'alarms'] as const,
+  /** `plant`, `position:<id>` or `equipment:<id>`: the topic without `alarm-kpi:`. */
+  alarmKpi: (scope: string) => ['live', 'alarm-kpi', scope] as const,
 };
 
 /** Pushed downtime records kept (the newest by start); a shift has a few hundred at most. */
 export const LIVE_DOWNTIME_LIMIT = 5_000;
+
+/** Pushed alarm occurrences kept (the newest by raise); a flood is a few dozen a minute. */
+export const LIVE_ALARM_LIMIT = 5_000;
 
 export const TELEMETRY_GC_MS = 60_000;
 
@@ -177,6 +208,102 @@ export function upsertRecord(queryClient: QueryClient, record: DowntimeRecordDto
   );
 }
 
+const NO_ALARMS: LiveAlarms = { occurrences: {}, points: {}, seq: 0 };
+
+/**
+ * An occurrence upsert by id under the monotonic rule (`newerOccurrence`): a copy that lacks a
+ * step the known one has taken (acknowledged, ended, closed, final, a comment) never replaces it.
+ */
+function mergeOccurrence(live: LiveAlarms | undefined, occurrence: AlarmOccurrenceDto): LiveAlarms {
+  const base = live ?? NO_ALARMS;
+  const known = base.occurrences[occurrence.id];
+  const kept = known ? newerOccurrence(known, occurrence) : occurrence;
+  if (kept === known) return { ...base, seq: base.seq + 1 };
+  let occurrences: Record<string, AlarmOccurrenceDto> = {
+    ...base.occurrences,
+    [occurrence.id]: kept,
+  };
+  if (Object.keys(occurrences).length > LIVE_ALARM_LIMIT) {
+    const newest = Object.values(occurrences)
+      .sort((a, b) => Date.parse(b.raisedAt) - Date.parse(a.raisedAt))
+      .slice(0, LIVE_ALARM_LIMIT);
+    occurrences = Object.fromEntries(newest.map((item) => [item.id, item]));
+  }
+  return { occurrences, points: base.points, seq: base.seq + 1 };
+}
+
+/** A point upsert: the higher shelf `version` wins (the MES raises it with every change). */
+function mergePoint(live: LiveAlarms | undefined, point: AlarmPointDto): LiveAlarms {
+  const base = live ?? NO_ALARMS;
+  const key = pointKey(point.equipment, point.code);
+  const known = base.points[key];
+  const kept = known ? newerPoint(known, point) : point;
+  if (kept === known) return { ...base, seq: base.seq + 1 };
+  return {
+    occurrences: base.occurrences,
+    points: { ...base.points, [key]: kept },
+    seq: base.seq + 1,
+  };
+}
+
+/** An occurrence the app learned otherwise (a write's answer), merged like a pushed upsert. */
+export function upsertOccurrence(queryClient: QueryClient, occurrence: AlarmOccurrenceDto): void {
+  queryClient.setQueryData<LiveAlarms>(liveKeys.alarms, (live) =>
+    mergeOccurrence(live, occurrence),
+  );
+}
+
+/**
+ * Forgets every pushed alarm and point. The `alarms` topic has no snapshot, so pushed copies are
+ * only current while the topic is held: a screen starts from an empty set and the REST reads when
+ * it subscribes, and drops the set when it lets go (`useAlarmsTopic`).
+ */
+export function resetLiveAlarms(queryClient: QueryClient): void {
+  if (queryClient.getQueryData(liveKeys.alarms) === undefined) return;
+  queryClient.setQueryData<LiveAlarms>(liveKeys.alarms, (live) => ({
+    ...NO_ALARMS,
+    seq: (live?.seq ?? 0) + 1,
+  }));
+}
+
+/** Forgets the pushed copies of some occurrences, so the next REST read (or push) decides. */
+export function dropLiveOccurrences(queryClient: QueryClient, ids: readonly string[]): void {
+  const live = queryClient.getQueryData<LiveAlarms>(liveKeys.alarms);
+  if (!live || !ids.some((id) => id in live.occurrences)) return;
+  const dropped = new Set(ids);
+  const occurrences = Object.fromEntries(
+    Object.entries(live.occurrences).filter(([id]) => !dropped.has(id)),
+  );
+  queryClient.setQueryData<LiveAlarms>(liveKeys.alarms, {
+    occurrences,
+    points: live.points,
+    seq: live.seq + 1,
+  });
+}
+
+/** A point the app learned from a shelve or unshelve answer, merged like a pushed one. */
+export function upsertPoint(queryClient: QueryClient, point: AlarmPointDto): void {
+  queryClient.setQueryData<LiveAlarms>(liveKeys.alarms, (live) => mergePoint(live, point));
+}
+
+/** REST reads of the alarm KPI page; a clock moving into a new hour or shift makes them stale. */
+const ALARM_KPI_READS = [['alarm-kpi']] as const;
+
+const kpiMovedOn = (
+  known: AlarmKpiBucketDto | null | undefined,
+  next: AlarmKpiBucketDto | null,
+): boolean => known !== null && known !== undefined && next !== null && next.key !== known.key;
+
+/** A pushed alarm KPI triple replaces what the topic held, as for OEE (`applyOee`). */
+function applyAlarmKpi(queryClient: QueryClient, topic: string, value: LiveAlarmKpi): void {
+  const key = liveKeys.alarmKpi(topic.slice('alarm-kpi:'.length));
+  const known = queryClient.getQueryData<LiveAlarmKpi>(key);
+  queryClient.setQueryData<LiveAlarmKpi>(key, value);
+  if (kpiMovedOn(known?.hour, value.hour) || kpiMovedOn(known?.shift, value.shift)) {
+    for (const queryKey of ALARM_KPI_READS) void queryClient.invalidateQueries({ queryKey });
+  }
+}
+
 /**
  * Options of the `['live', …]` queries. Pushed data changes many times a second: structural
  * sharing would compare whole sample buffers on every message (and, as buffers are appended in
@@ -201,8 +328,11 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
           mergeStates(live, message.clock, message.states),
         );
       } else if ('floods' in message) {
-        // Alarm KPI topics (#142) have no screen yet (#145).
-        return;
+        applyAlarmKpi(queryClient, message.topic, {
+          hour: message.hour,
+          shift: message.shift,
+          floods: message.floods,
+        });
       } else if ('hour' in message) {
         applyOee(queryClient, message.topic, message.hour, message.shift);
       } else if ('samples' in message && message.samples.length > 0) {
@@ -236,9 +366,17 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       );
       return;
     case 'alarm':
-    case 'alarm-kpi':
+      upsertOccurrence(queryClient, message.occurrence);
+      return;
     case 'alarm-point':
-      // Alarm occurrences, shelves (#143) and KPIs (#142) have no screen yet (#145).
+      upsertPoint(queryClient, message.point);
+      return;
+    case 'alarm-kpi':
+      applyAlarmKpi(queryClient, message.topic, {
+        hour: message.hour,
+        shift: message.shift,
+        floods: message.floods,
+      });
       return;
     case 'shift':
     case 'handover-note':
@@ -263,6 +401,10 @@ export function connectLiveToCache(client: LiveClient, queryClient: QueryClient)
     if (client.status === 'reconnecting') wasLost = true;
     else if (client.status === 'open' && wasLost) {
       wasLost = false;
+      // Alarm upserts missed while the connection was lost may have changed fields the
+      // monotonic rule can't order (a shelf, an end reason): start again from the REST reads
+      // below and the pushes from now on (the `alarms` topic has no snapshot).
+      resetLiveAlarms(queryClient);
       void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'live' });
     }
   });

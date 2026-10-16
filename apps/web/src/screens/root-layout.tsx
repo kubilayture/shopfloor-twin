@@ -11,6 +11,8 @@ const NAV = [
   { id: 'overview', to: '/', label: 'Overview' },
   { id: 'oee', to: '/oee', label: 'OEE' },
   { id: 'downtime', to: '/downtime', label: 'Downtime coding' },
+  { id: 'alarms', to: '/alarms', label: 'Alarms' },
+  { id: 'alarm-kpi', to: '/alarms/kpi', label: 'Alarm KPIs' },
 ] as const;
 
 function PlantClock() {

@@ -29,7 +29,9 @@ export {
 export type {
   Actor,
   AuditActor,
+  AuditCondition,
   AuditEntry,
+  AuditQuery,
   IdentityErrorKind,
   IdentityLog,
   IdentityOptions,

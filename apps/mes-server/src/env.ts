@@ -109,7 +109,11 @@ export function parseEnv(source: Readonly<Record<string, string | undefined>>): 
 export const migrateEnvSchema = z.object({
   DATABASE_URL: envSchema.shape.DATABASE_URL,
   MIGRATIONS_DIR: envSchema.shape.MIGRATIONS_DIR,
-  DB_APP_PASSWORD: z.string().min(1).optional(),
+  // Printable ASCII: migrate sends only its SCRAM verifier, made without SASLprep.
+  DB_APP_PASSWORD: z
+    .string()
+    .regex(/^[\x20-\x7e]+$/, 'expected printable ASCII')
+    .optional(),
 });
 
 export type MigrateEnv = z.output<typeof migrateEnvSchema>;

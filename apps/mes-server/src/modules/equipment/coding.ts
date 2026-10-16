@@ -574,28 +574,43 @@ export class DowntimeCoding {
       .executeTakeFirst();
     if (!record) throw new CodingError('not-found', `no downtime record ${recordId(key)}`);
     const id = recordId(key);
-    const entries = (
-      await Identity.auditEntries(db, AUDIT_ENTITY, [auditEntityId(key.equipment, key.epoch)])
-    ).flatMap((entry) => {
-      const parsed = fromAuditRow(entry);
-      return parsed ? [parsed] : [];
-    });
+    const entity = [auditEntityId(key.equipment, key.epoch)];
+    const parse = (rows: readonly StoredAuditEntry[]): AuditEntry[] =>
+      rows.flatMap((row) => {
+        const parsed = fromAuditRow(row);
+        return parsed ? [parsed] : [];
+      });
+    // The time the record's writes covered (a coding may reach beyond the record after a re-cut).
+    const writes = parse(
+      await Identity.auditEntries(db, AUDIT_ENTITY, entity, {
+        anyOf: [{ equals: { key: 'recordId', value: id } }],
+      }),
+    );
     let from = record.start_time.getTime();
     let to = record.end_time?.getTime() ?? LATEST;
-    for (const write of entries.filter((entry) => entry.recordId === id)) {
+    for (const write of writes) {
       for (const coding of [...write.before, ...write.after]) {
         from = Math.min(from, Date.parse(coding.from));
         to = Math.max(to, Date.parse(coding.to));
       }
     }
-    // Newest first (by id): the writes to the record and every entry over its time.
-    return entries
-      .filter(
-        (entry) =>
-          entry.recordId === id ||
-          (entry.from.getTime() < to && (entry.to === null || entry.to.getTime() > from)),
-      )
-      .slice(0, 500);
+    // Newest first: the writes to the record and every entry over its time, filtered in SQL.
+    return parse(
+      await Identity.auditEntries(db, AUDIT_ENTITY, entity, {
+        anyOf: [
+          { equals: { key: 'recordId', value: id } },
+          {
+            overlaps: {
+              fromKey: 'from',
+              toKey: 'to',
+              from: new Date(from),
+              to: new Date(Math.min(to, LATEST)),
+            },
+          },
+        ],
+        limit: 500,
+      }),
+    );
   }
 
   #note(equipment: string, epoch: number, from: Millis, to: Millis): void {

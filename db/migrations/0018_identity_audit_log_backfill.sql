@@ -1,8 +1,11 @@
--- identity (Phase 7, #169, ADR-0027): one audit log. Every row of the three module audits is copied
--- into identity.audit_log (`legacy`, the names as typed, never a user id), the counts are checked,
--- and the two audits that identity.audit_log replaces are frozen. alarms.alarm_transition stays the
--- alarm module's transition log (system expiry and epoch ends are not user actions); from now on
--- an operator's transition is written to both.
+-- identity (Phase 7, #169, ADR-0027): one audit log. Every row of the three module audits that the
+-- MES would write to identity.audit_log today is copied into it (`legacy`, the names as typed, never
+-- a user id): all coding and note rows, and the alarm operator transitions, not the module's own
+-- `expire` and `epoch-ended` (they stay only in alarms.alarm_transition, the alarm module's
+-- transition log, as they do from now on). The counts are checked, and the two audits that
+-- identity.audit_log replaces are frozen. From now on an operator's transition is written to both.
+-- The rows are copied per module audit in the order of their ids, so a history keeps its order;
+-- the entries' ids are identity.audit_log's from here on.
 --
 -- How each module audit maps (the modules read their history back from identity.audit_log the same
 -- way):
@@ -67,6 +70,7 @@ FROM (
     2,
     t.id
   FROM alarms.alarm_transition t
+  WHERE t.action NOT IN ('expire', 'epoch-ended')
   UNION ALL
   SELECT
     h.at,
@@ -83,9 +87,10 @@ FROM (
     h.id
   FROM shifts.handover_audit h
 ) AS legacy
-ORDER BY legacy.at, legacy.source, legacy.source_id;
+ORDER BY legacy.source, legacy.source_id;
 
--- Every row arrived: the counts per module audit must match, or the migration rolls back.
+-- Every row arrived: the counts per module audit must match (the alarm operator transitions only),
+-- or the migration rolls back.
 -- (BEGIN shares its line with DECLARE: the runner refuses a line that starts with BEGIN.)
 DO $$ DECLARE copied bigint; expected bigint; BEGIN
   SELECT count(*) INTO copied FROM identity.audit_log WHERE legacy AND action LIKE 'downtime.%';
@@ -94,7 +99,8 @@ DO $$ DECLARE copied bigint; expected bigint; BEGIN
     RAISE EXCEPTION 'downtime audit backfill: % of % rows', copied, expected;
   END IF;
   SELECT count(*) INTO copied FROM identity.audit_log WHERE legacy AND action LIKE 'alarm.%';
-  SELECT count(*) INTO expected FROM alarms.alarm_transition;
+  SELECT count(*) INTO expected FROM alarms.alarm_transition
+    WHERE action NOT IN ('expire', 'epoch-ended');
   IF copied <> expected THEN
     RAISE EXCEPTION 'alarm transition backfill: % of % rows', copied, expected;
   END IF;

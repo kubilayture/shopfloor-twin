@@ -1,7 +1,6 @@
 import { sql, type Kysely } from 'kysely';
 import { MES_SCHEMAS } from './columns.ts';
 import type { Database } from './database.ts';
-import { DB_ROLES } from './roles.ts';
 
 /** A table privilege as PostgreSQL names it. */
 export type TablePrivilege =
@@ -104,8 +103,6 @@ export interface Grant {
   readonly privilege: string;
 }
 
-const ROLES = [DB_ROLES.app, DB_ROLES.aggregates] as const;
-
 /** Every declared grant as a sorted list. */
 export function declaredGrants(): Grant[] {
   const grants: Grant[] = [];
@@ -131,28 +128,42 @@ const sortGrants = (grants: Grant[]): Grant[] =>
   );
 
 /**
- * The grants to `mes_app` and `mes_cagg` the database has, from the ACLs of the MES schemas and of
- * their tables and views (the aggregates included), without an owner's own rights. TimescaleDB's `_timescaledb_internal` (chunks
- * and materialisation tables, which inherit and whose names aren't stable) is not a MES schema.
+ * Every grant the database has on the MES's objects, to any role, PUBLIC included (grantee 0), from
+ * the ACLs of the module schemas, of the tables, views, sequences and aggregates in them and in
+ * `public` (outside extensions), and of the module schemas' functions where their ACL is not the
+ * default; an owner's own rights are left out. TimescaleDB's `_timescaledb_internal` (chunks and
+ * materialisation tables, which inherit and whose names aren't stable) is not compared here.
  */
 export async function actualGrants(db: Kysely<Database>): Promise<Grant[]> {
   const schemas = [...MES_SCHEMAS];
-  const roles = [...ROLES];
+  const modules = schemas.filter((schema) => schema !== 'public');
   const result = await sql<Grant>`
-    SELECT r.rolname AS role, n.nspname AS object, acl.privilege_type AS privilege
+    SELECT coalesce(r.rolname, 'PUBLIC') AS role, n.nspname AS object,
+      acl.privilege_type AS privilege
     FROM pg_namespace n
     CROSS JOIN LATERAL aclexplode(n.nspacl) AS acl
-    JOIN pg_roles r ON r.oid = acl.grantee
-    WHERE n.nspname IN (${sql.join(schemas)}) AND r.rolname IN (${sql.join(roles)})
-      AND acl.grantee <> n.nspowner
+    LEFT JOIN pg_roles r ON r.oid = acl.grantee
+    WHERE n.nspname IN (${sql.join(modules)}) AND acl.grantee <> n.nspowner
     UNION ALL
-    SELECT r.rolname, n.nspname || '.' || c.relname, acl.privilege_type
+    SELECT coalesce(r.rolname, 'PUBLIC'), n.nspname || '.' || c.relname, acl.privilege_type
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     CROSS JOIN LATERAL aclexplode(c.relacl) AS acl
-    JOIN pg_roles r ON r.oid = acl.grantee
-    WHERE n.nspname IN (${sql.join(schemas)}) AND c.relkind IN ('r', 'p', 'v', 'm')
-      AND r.rolname IN (${sql.join(roles)}) AND acl.grantee <> c.relowner`.execute(db);
+    LEFT JOIN pg_roles r ON r.oid = acl.grantee
+    WHERE n.nspname IN (${sql.join(schemas)}) AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
+      AND acl.grantee <> c.relowner
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_depend d
+        WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'
+      )
+    UNION ALL
+    SELECT coalesce(r.rolname, 'PUBLIC'), p.oid::regprocedure::text, acl.privilege_type
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    CROSS JOIN LATERAL aclexplode(p.proacl) AS acl
+    LEFT JOIN pg_roles r ON r.oid = acl.grantee
+    WHERE n.nspname IN (${sql.join(modules)}) AND p.proacl IS NOT NULL
+      AND acl.grantee <> p.proowner`.execute(db);
   return sortGrants(result.rows);
 }
 

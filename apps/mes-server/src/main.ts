@@ -185,6 +185,8 @@ async function migrated(): Promise<void> {
 await app.listen({ host: env.HTTP_HOST, port: env.HTTP_PORT });
 try {
   await migrated();
+  // Stopped while waiting: shutdown() owns the exit (#185 review, L7).
+  if (state.stopping) await new Promise(() => undefined);
   const masterData = new MasterData(db);
   await masterData.seed(plant.config);
   state.migrated = true;

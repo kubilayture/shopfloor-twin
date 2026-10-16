@@ -126,6 +126,28 @@ export interface AuditEntry {
   readonly plantAt?: Date | undefined;
 }
 
+/** A condition on an audit row's `after` (`Identity.auditEntries`). */
+export type AuditCondition =
+  /** `after.<key>` equals the value. */
+  | { readonly equals: { readonly key: string; readonly value: string } }
+  /**
+   * `[after.<fromKey>, after.<toKey>)` (ISO times; a null end: open) overlaps `[from, to)`.
+   */
+  | {
+      readonly overlaps: {
+        readonly fromKey: string;
+        readonly toKey: string;
+        readonly from: Date;
+        readonly to: Date;
+      };
+    };
+
+/** Which rows `Identity.auditEntries` reads: any of the conditions (all rows without), at most `limit`. */
+export interface AuditQuery {
+  readonly anyOf?: readonly AuditCondition[];
+  readonly limit?: number;
+}
+
 /** An audit row as stored (`Identity.auditEntries`). */
 export interface StoredAuditEntry {
   readonly id: number;
@@ -383,15 +405,43 @@ export class Identity {
     db: Kysely<Database> | Transaction<Database>,
     entityType: string,
     entityIds: readonly string[],
+    query: AuditQuery = {},
   ): Promise<StoredAuditEntry[]> {
     if (entityIds.length === 0) return [];
-    const rows = await db
+    let select = db
       .selectFrom('identity.audit_log')
       .selectAll()
       .where('entity_type', '=', entityType)
-      .where('entity_id', 'in', [...entityIds])
-      .orderBy('id', 'desc')
-      .execute();
+      .where('entity_id', 'in', [...entityIds]);
+    const anyOf = query.anyOf;
+    if (anyOf !== undefined) {
+      if (anyOf.length === 0) return [];
+      // In SQL, so the limit applies to the matching rows only (#185 review, M2).
+      select = select.where((eb) =>
+        eb.or(
+          anyOf.map((condition) => {
+            if ('equals' in condition) {
+              return eb(
+                sql<string>`after ->> ${condition.equals.key}`,
+                '=',
+                condition.equals.value,
+              );
+            }
+            const { fromKey, toKey, from, to } = condition.overlaps;
+            return eb.and([
+              eb(sql<Date>`(after ->> ${fromKey})::timestamptz`, '<', to),
+              eb.or([
+                eb(sql<string>`after ->> ${toKey}`, 'is', null),
+                eb(sql<Date>`(after ->> ${toKey})::timestamptz`, '>', from),
+              ]),
+            ]);
+          }),
+        ),
+      );
+    }
+    let ordered = select.orderBy('id', 'desc');
+    if (query.limit !== undefined) ordered = ordered.limit(query.limit);
+    const rows = await ordered.execute();
     return rows.map((row) => ({
       id: row.id,
       at: row.at,

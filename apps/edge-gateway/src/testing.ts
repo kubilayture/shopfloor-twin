@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-export { TEST_PASSWORDS, startBroker } from '@shopfloor/test-kit/broker';
+export { TEST_PASSWORDS, freePort, startBroker } from '@shopfloor/test-kit/broker';
 
 export interface RunningSimulator {
   readonly control: string;

@@ -25,6 +25,9 @@ registerModules([
   CanvasRenderer,
 ]);
 
+/** The print image's pixels per CSS pixel of the chart on screen. */
+const PRINT_PIXEL_RATIO = 3;
+
 const reducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -63,7 +66,14 @@ export function EChartsView({
       const image = snapshot.current;
       if (!image) return;
       instance.setOption({ animation: false });
-      image.src = instance.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
+      // `pixelRatio` multiplies the chart's on-screen CSS width (a 462 px chart gives 924 px),
+      // not the paper's: the chart is laid out at the width it has on screen. Three times keeps
+      // a chart from a narrow window sharp when the image is stretched to the A4 text width.
+      image.src = instance.getDataURL({
+        type: 'png',
+        pixelRatio: PRINT_PIXEL_RATIO,
+        backgroundColor: '#ffffff',
+      });
       instance.setOption({ animation: !reducedMotion() });
     };
     window.addEventListener('beforeprint', takeSnapshot);

@@ -32,6 +32,17 @@ export interface ShiftState {
   notesAnswer?: () => Response;
 }
 
+export const PREVIOUS_REPORT: ShiftReportDto = report({
+  key: PREVIOUS_SHIFT.key,
+  date: PREVIOUS_SHIFT.date,
+  shift: PREVIOUS_SHIFT.shift,
+  start: PREVIOUS_SHIFT.start,
+  end: PREVIOUS_SHIFT.end,
+  status: 'final',
+  final: true,
+  finalAt: '2026-10-16T05:00:00.000Z',
+});
+
 export type Write = (method: string, path: string, body: unknown) => Response;
 
 export function shiftState(overrides: Partial<ShiftState> = {}): ShiftState {
@@ -92,6 +103,13 @@ export function shiftMes(state: ShiftState, write: Write = () => json({})) {
         return Promise.resolve(
           state.notesAnswer?.() ??
             json({ shiftKey: state.report.key, epoch: state.report.epoch, notes: withHistory() }),
+        );
+      // The shift before (`PREVIOUS_SHIFT`): an ended, final report without notes.
+      case '/api/v1/shifts/2026-10-14/C/report':
+        return Promise.resolve(json(PREVIOUS_REPORT));
+      case '/api/v1/shifts/2026-10-14/C/notes':
+        return Promise.resolve(
+          json({ shiftKey: PREVIOUS_SHIFT.key, epoch: PREVIOUS_REPORT.epoch, notes: [] }),
         );
       default: {
         const audit = /^\/api\/v1\/shifts\/2026-10-15\/A\/notes\/(\d+)\/audit$/.exec(path);

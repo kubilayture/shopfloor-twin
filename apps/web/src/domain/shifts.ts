@@ -1,5 +1,6 @@
 import type { NOTE_CATEGORIES } from '@shopfloor/contracts/mes-api';
 import {
+  HANDOVER_PROBLEM,
   MES_API_LIMITS,
   type AlarmKpiBucketDto,
   type HandoverAuditEntryDto,
@@ -108,6 +109,7 @@ export function liveOee(
   const usable =
     pushed?.bucket === 'shift' &&
     pushed.key === report.key &&
+    pushed.members.length > 0 &&
     pushed.members.every((member) => member.epoch === report.epoch)
       ? pushed
       : undefined;
@@ -248,24 +250,32 @@ export const draftOf = (note: HandoverNoteDto): NoteDraft => ({
 export const isStaleDraft = (draft: NoteDraft, note: HandoverNoteDto): boolean =>
   note.version !== draft.version;
 
-export type NoteFailureKind = WriteFailure['kind'] | 'stale' | 'closed' | 'limit';
+export type NoteFailureKind = WriteFailure['kind'] | 'stale' | 'closed' | 'not-open' | 'limit';
 
 export interface NoteFailure {
   readonly kind: NoteFailureKind;
   readonly text: string;
 }
 
-const CLOSED = /^handover (closed|not open)/;
 const LIMIT = /at most \d+ notes/;
 
-/** A failed note write as a message for people: stale, handover closed, limit, or the rest. */
+/**
+ * A failed note write as a message for people: stale, handover closed or not open yet (the
+ * MES's `detail` prefixes, `HANDOVER_PROBLEM`), the note limit, or the rest.
+ */
 export function noteFailure(error: unknown): NoteFailure {
   if (error instanceof ApiError) {
     const detail = error.problem?.detail ?? '';
-    if (error.status === 409 && CLOSED.test(detail)) {
+    if (error.status === 409 && detail.startsWith(HANDOVER_PROBLEM.closed)) {
       return {
         kind: 'closed',
         text: `Not saved: the handover window is closed (${detail}). Notes can be written from the shift's start until the end of the following shift, in plant time.`,
+      };
+    }
+    if (error.status === 409 && detail.startsWith(HANDOVER_PROBLEM.notOpen)) {
+      return {
+        kind: 'not-open',
+        text: `Not saved: the handover window is not open yet (${detail}). Notes can be written once the shift has begun, in plant time.`,
       };
     }
     if (error.status === 409) {

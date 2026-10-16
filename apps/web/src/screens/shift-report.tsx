@@ -1,14 +1,15 @@
-import type {
-  AlarmKpiBucketDto,
-  EquipmentDto,
-  OeeBucketDto,
-  Ratio,
-  ReasonCodes,
-  ShiftReportDto,
+import {
+  DOWNTIME_TOPIC,
+  type AlarmKpiBucketDto,
+  type EquipmentDto,
+  type OeeBucketDto,
+  type Ratio,
+  type ReasonCodes,
+  type ShiftReportDto,
 } from '@shopfloor/contracts/mes-api';
 import { skipToken, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
-import { useEffect, useId, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import {
   getReasonCodes,
   getShiftReport,
@@ -52,7 +53,12 @@ import {
 } from '../domain/shifts.ts';
 import { formatPlantTime } from '../domain/time.ts';
 import { liveKeys, type LiveAlarmKpi, type LiveOee } from '../live/live-cache.ts';
-import { useLiveShifts, useLiveSubscriptions, useShiftsTopic } from '../live/live-context.tsx';
+import {
+  useLiveDowntime,
+  useLiveShifts,
+  useLiveSubscriptions,
+  useShiftsTopic,
+} from '../live/live-context.tsx';
 import { HandoverNotes } from './handover-notes.tsx';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -60,6 +66,34 @@ const SHIFT = /^[A-Za-z0-9_-]{1,16}$/;
 
 /** `plant` → `plant`, `position:cell-m1` → `position-cell-m1` (test ids). */
 const testKey = (key: string): string => key.replace(':', '-');
+
+/** How often an ended report is read again at most while downtime pushes arrive. */
+const ENDED_REREAD_MS = 5_000;
+
+/** Reads `queryKey` again after `trigger` changes (not on mount), at most every `ENDED_REREAD_MS`. */
+function useThrottledReread(trigger: unknown, queryKey: readonly unknown[], enabled: boolean) {
+  const queryClient = useQueryClient();
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const first = useRef(true);
+  const key = JSON.stringify(queryKey);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    if (!enabled || trigger === undefined || timer.current !== undefined) return;
+    timer.current = setTimeout(() => {
+      timer.current = undefined;
+      void queryClient.invalidateQueries({ queryKey: JSON.parse(key) as unknown[] });
+    }, ENDED_REREAD_MS);
+  }, [trigger, key, enabled, queryClient]);
+  useEffect(
+    () => () => {
+      clearTimeout(timer.current);
+    },
+    [],
+  );
+}
 
 const tableBox =
   'relative mt-1 min-w-0 overflow-x-auto rounded-lg border border-slate-300 bg-white print:overflow-visible print:border-0';
@@ -291,6 +325,12 @@ function ReportHeader({
           <span className="text-sm text-slate-700" data-testid="report-live-note">
             Live: OEE, production and alarm KPIs follow the plant; downtime, bad actors and operator
             figures are as of the time above.
+          </span>
+        ) : null}
+        {report.status === 'ended' ? (
+          <span className="text-sm text-slate-700" data-testid="report-ended-note">
+            Ended, not final yet: the values are as of the time above. The report is read again when
+            a downtime record changes and when it becomes final.
           </span>
         ) : null}
       </div>
@@ -966,6 +1006,11 @@ function ReportBody({
   const bucketOf = (id: string) => liveOee(restMachine.get(id), pushedOee.get(id)?.shift, report);
   const centerOf = (id: string) => liveOee(restCenter.get(id), pushedOee.get(id)?.shift, report);
   const reportKey = queryKeys.shiftReport(report.key, shift.epoch);
+  // Ended but not final: late facts still close or re-cut downtime records, which have their
+  // own push (`downtime`) but none in the report; read it again on them, at most every 5 s.
+  const ended = report.status === 'ended';
+  useLiveSubscriptions(ended ? [DOWNTIME_TOPIC] : []);
+  useThrottledReread(useLiveDowntime()?.seq, reportKey, ended);
 
   return (
     <>
@@ -1028,6 +1073,7 @@ export function ShiftReport() {
           selection={selection}
           onChange={(next) => {
             const [date = '', name = ''] = next.split('/');
+            if (!DATE.test(date) || !SHIFT.test(name)) return;
             void navigate({
               to: '/shifts/$date/$shift',
               params: { date, shift: name },
@@ -1065,7 +1111,8 @@ export function ShiftReport() {
           data-revision-content={String(data.revision.content)}
           className="shift-report"
         >
-          <ReportBody report={data} shift={shift} />
+          {/* Keyed by the instance: no draft or open editor carries over to another shift. */}
+          <ReportBody key={`${String(data.epoch)}~${data.key}`} report={data} shift={shift} />
         </div>
       ) : null}
     </section>

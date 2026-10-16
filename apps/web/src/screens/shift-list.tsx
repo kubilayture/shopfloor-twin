@@ -16,12 +16,22 @@ import {
 } from '../domain/shifts.ts';
 import { useLiveShifts, useShiftsTopic } from '../live/live-context.tsx';
 
-/** The stored instance (newest epoch) over the pushed one when that is newer. */
-function shown(
+/**
+ * The instance of a shift key to show: the newest epoch's, as the API defaults to. The read one
+ * (404 when the plant clock had not entered the shift then) or the pushed one of the highest
+ * epoch for the key, which a `created` push brings; within one epoch the newer by the push rule.
+ */
+function shownInstance(
+  key: string,
   rest: ShiftRecordDto | undefined,
   pushed: Readonly<Record<string, ShiftRecordDto>> | undefined,
 ): ShiftRecordDto | undefined {
-  if (!rest) return undefined;
+  let newest: ShiftRecordDto | undefined;
+  for (const record of Object.values(pushed ?? {})) {
+    if (record.key === key && (!newest || record.epoch > newest.epoch)) newest = record;
+  }
+  if (!rest) return newest;
+  if (newest && newest.epoch > rest.epoch) return newest;
   const live = pushed?.[instanceKey(rest.epoch, rest.key)];
   return live && isNewerShift(live, rest) ? live : rest;
 }
@@ -136,7 +146,7 @@ export function ShiftList() {
             <ShiftRow
               key={shift.key}
               shift={shift}
-              record={shown(query?.data, pushed)}
+              record={shownInstance(shift.key, query?.data, pushed)}
               missing={missing}
               error={query?.error}
               current={shift.key === currentKey}

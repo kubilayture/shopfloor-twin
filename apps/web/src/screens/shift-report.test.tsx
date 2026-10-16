@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { kpiBucket } from '../test/alarm-fixtures.ts';
 import { EPOCH, problem } from '../test/fixtures.ts';
-import { SHIFT_KEY, bucket, result } from '../test/oee-fixtures.ts';
+import { PREVIOUS_SHIFT, SHIFT_KEY, bucket, record, result } from '../test/oee-fixtures.ts';
 import { renderApp } from '../test/render-app.tsx';
 import { auditEntry, note, report, shiftRecord } from '../test/shift-fixtures.ts';
 import { memoryStorage, shiftMes, shiftState } from '../test/shift-mes.ts';
@@ -286,6 +286,69 @@ describe('shift report', () => {
 
     await renderApp('/shifts/2026-13/A!');
     expect((await screen.findByTestId('report-invalid')).textContent).toContain('not a shift key');
+  });
+
+  it('turns a row without a record into the pushed instance of the newest epoch', async () => {
+    vi.stubGlobal('fetch', shiftMes(shiftState()).fetch);
+    const app = await renderApp('/shifts');
+    await app.open();
+    const row = () => screen.getByTestId('shift-row-2026-10-14-C');
+    await waitFor(() => {
+      expect(row().dataset.status).toBe('none');
+    });
+    const created = (epoch: number) =>
+      shiftRecord({
+        key: PREVIOUS_SHIFT.key,
+        date: PREVIOUS_SHIFT.date,
+        shift: PREVIOUS_SHIFT.shift,
+        start: PREVIOUS_SHIFT.start,
+        end: PREVIOUS_SHIFT.end,
+        epoch,
+        status: epoch === EPOCH ? 'ended' : 'running',
+      });
+    await app.push(
+      { type: 'shift', event: 'created', shift: created(EPOCH + 1) },
+      { type: 'shift', event: 'status', shift: created(EPOCH) },
+    );
+    // The newest epoch's, as the API defaults to, not the last one pushed.
+    expect(row().dataset.status).toBe('running');
+  });
+
+  it('says an ended report is as of its time and reads it again on downtime pushes', async () => {
+    const state = shiftState({ report: report({ status: 'ended' }) });
+    const server = shiftMes(state);
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp(PATH);
+    await app.open();
+    expect((await screen.findByTestId('report-ended-note')).textContent).toContain(
+      'as of the time above',
+    );
+    expect(screen.queryByTestId('report-live-note')).toBeNull();
+    await waitFor(() => {
+      expect(subscribed(app)).toContain('downtime');
+    });
+    const reads = () => server.calls.filter((call) => call.path.includes('/A/report')).length;
+    const before = reads();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      state.report = report({
+        status: 'ended',
+        downtime: { ...report().downtime, uncodedMs: 0 },
+      });
+      await app.push(
+        { type: 'downtime', event: 'recoded', record: record() },
+        { type: 'downtime', event: 'closed', record: record({ id: 'cnc-01~1~2' }) },
+      );
+      expect(reads()).toBe(before);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await waitFor(() => {
+        expect(screen.getByTestId('report-uncoded').dataset.ms).toBe('0');
+      });
+      // Two pushes, one read: at most one every 5 s.
+      expect(reads()).toBe(before + 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('lists the shifts, current first, with their status, live', async () => {

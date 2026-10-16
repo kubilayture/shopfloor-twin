@@ -233,6 +233,45 @@ describe('handover note editor', () => {
     expect(screen.getByTestId<HTMLButtonElement>('add-note').disabled).toBe(true);
   });
 
+  it('starts every draft afresh on another shift, also one read before (M1)', async () => {
+    storage.setItem('shopfloor.codedBy', 'Mehmet');
+    const state = shiftState({ notes: [note(1)] });
+    const server = shiftMes(state);
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp(PATH);
+    const shown = () => screen.getByTestId('shift-report').dataset.key;
+    await screen.findByTestId('note-1');
+    const pick = (key: string) => {
+      fireEvent.change(screen.getByTestId('shift-select'), { target: { value: key } });
+    };
+    // Shift C of the day before is read once, so it is cached when the draft is switched to it.
+    await screen.findByRole('option', { name: /shift C/ });
+    pick('2026-10-14/C');
+    await waitFor(() => {
+      expect(shown()).toBe('2026-10-14/C');
+    });
+    pick('2026-10-15/A');
+    await waitFor(() => {
+      expect(shown()).toBe('2026-10-15/A');
+    });
+    type(
+      within(screen.getByTestId('new-note')).getByTestId('note-text-input'),
+      'About shift A only',
+    );
+    fireEvent.click(await screen.findByTestId('edit-note-1'));
+    type(within(screen.getByTestId('note-editor-1')).getByTestId('note-text-input'), 'Edit of A');
+    pick('2026-10-14/C');
+    await waitFor(() => {
+      expect(shown()).toBe('2026-10-14/C');
+    });
+    const form = screen.getByTestId('new-note');
+    expect(within(form).getByTestId<HTMLTextAreaElement>('note-text-input').value).toBe('');
+    expect(screen.queryByTestId('note-editor-1')).toBeNull();
+    fireEvent.click(within(form).getByTestId('add-note'));
+    expect(within(form).getByTestId('new-note-message').dataset.kind).toBe('invalid');
+    expect(server.calls.filter((call) => call.method !== 'GET')).toEqual([]);
+  });
+
   it('says when the notes cannot be read', async () => {
     const state = shiftState({
       notesAnswer: () => problem(503, 'Service Unavailable', 'shifts are not available', '/x'),

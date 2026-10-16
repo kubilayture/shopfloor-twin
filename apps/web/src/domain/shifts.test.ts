@@ -1,3 +1,4 @@
+import { HANDOVER_PROBLEM } from '@shopfloor/contracts/mes-api';
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../api/client.ts';
 import { kpiBucket } from '../test/alarm-fixtures.ts';
@@ -69,6 +70,8 @@ describe('live numbers', () => {
     expect(liveOee(rest, bucket('cnc-01', { key: '2026-10-15/B' }), ref).live).toBe(false);
     const older = bucket('cnc-01', { members: [{ equipment: 'cnc-01', epoch: EPOCH - 1 }] });
     expect(liveOee(rest, older, ref).live).toBe(false);
+    // A bucket without members says nothing about its epoch: not shown as this one's.
+    expect(liveOee(rest, bucket('cnc-01', { members: [] }), ref).live).toBe(false);
     const final = bucket('cnc-01', { final: true });
     expect(liveOee(final, pushed, ref)).toEqual({ bucket: final, live: false });
     // A machine the report had no data for yet.
@@ -152,9 +155,16 @@ describe('handover notes', () => {
     );
     expect(closed.kind).toBe('closed');
     expect(closed.text).toContain('handover window is closed');
-    expect(
-      noteFailure(problem(409, 'handover not open: shift 2026-10-15/A has not begun')).kind,
-    ).toBe('closed');
+    const notOpen = noteFailure(
+      problem(409, 'handover not open: shift 2026-10-15/A has not begun'),
+    );
+    expect(notOpen.kind).toBe('not-open');
+    expect(notOpen.text).toContain('not open yet');
+    // The prefixes the MES writes (shared with it; its tests assert them too).
+    expect(HANDOVER_PROBLEM).toEqual({ closed: 'handover closed', notOpen: 'handover not open' });
+    expect(noteFailure(problem(409, `${HANDOVER_PROBLEM.closed}: no plant clock`)).kind).toBe(
+      'closed',
+    );
     const limit = noteFailure(problem(422, 'at most 200 notes per shift'));
     expect(limit.kind).toBe('limit');
     expect(limit.text).toContain('200 notes');

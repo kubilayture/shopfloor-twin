@@ -85,6 +85,8 @@ function topicInfo(topic: string): TopicInfo | string {
       case 'telemetry':
         return { type: 'equipment', equipment, name, expected: 'uns.telemetry/1' };
       case 'events':
+        // Job facts (`events/job`, UNS contract 1.3) are published by the gateway from #173 but
+        // ingested only from #174 (ADR-0017 note there); until then they are refused here.
         return name === 'cycle-complete'
           ? { type: 'equipment', equipment, name, expected: 'uns.events.cycle-complete/1' }
           : `no event topic "${name}" (only events/cycle-complete)`;
@@ -243,6 +245,7 @@ export function classify(topic: string, text: string, retained: boolean): Classi
       };
     case 'uns.alarm-snapshot/1':
       return { kind: 'alarm-snapshot', equipment, message };
+    case 'uns.events.job/1':
     case 'uns.sys.status/1':
     case 'uns.sys.incident/1':
       throw new Error('unreachable: checked against the topic above');

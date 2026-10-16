@@ -2,14 +2,23 @@ import { readFile } from 'node:fs/promises';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { Deduplicator, type Identified } from './dedup.ts';
+import {
+  UNS_COMMAND_SCHEMAS,
+  loadOrderCommandId,
+  parseUnsCommandMessage,
+  type UnsCommandMessage,
+} from './commands.ts';
 import { generateJsonSchemas } from './json-schema.ts';
 import { UNS_SCHEMAS, parseUnsMessage, type UnsMessage } from './payloads.ts';
 import {
   alarmSnapshotTopic,
   alarmTopic,
+  commandResultTopic,
+  commandTopic,
   cycleTopic,
   isRetained,
   isSysRetained,
+  jobTopic,
   parseEquipmentTopic,
   stateTopic,
   sysTopic,
@@ -53,6 +62,17 @@ const SAMPLES: Record<keyof typeof UNS_SCHEMAS, UnsMessage> = {
       measurement: null,
     },
   },
+  'uns.events.job/1': {
+    ...base,
+    schema: 'uns.events.job/1',
+    value: {
+      transition: 'accepted',
+      commandId: 'PO-1001~OP10~1',
+      orderId: 'PO-1001',
+      product: 'VB-100',
+      quantity: 12,
+    },
+  },
   'uns.alarms/1': {
     ...base,
     schema: 'uns.alarms/1',
@@ -91,6 +111,9 @@ describe('UNS topics (plan section 5)', () => {
       cycleTopic(CNC01),
       alarmTopic(CNC01, 'SPINDLE-OVERLOAD'),
       alarmSnapshotTopic(CNC01),
+      jobTopic(CNC01),
+      commandTopic(CNC01, 'load-order'),
+      commandResultTopic(CNC01, 'load-order'),
     ];
     expect(topics).toEqual([
       'orbis/gebze/machining/cell-m1/cnc-01/state/current',
@@ -98,6 +121,9 @@ describe('UNS topics (plan section 5)', () => {
       'orbis/gebze/machining/cell-m1/cnc-01/events/cycle-complete',
       'orbis/gebze/machining/cell-m1/cnc-01/alarms/spindle-overload',
       'orbis/gebze/machining/cell-m1/cnc-01/alarms/_snapshot',
+      'orbis/gebze/machining/cell-m1/cnc-01/events/job',
+      'orbis/gebze/machining/cell-m1/cnc-01/cmd/load-order',
+      'orbis/gebze/machining/cell-m1/cnc-01/cmd-res/load-order',
     ]);
     expect(topics.map((t) => parseEquipmentTopic(t)?.topicClass)).toEqual([
       'state',
@@ -105,6 +131,9 @@ describe('UNS topics (plan section 5)', () => {
       'events',
       'alarms',
       'alarms',
+      'events',
+      'cmd',
+      'cmd-res',
     ]);
     expect(parseEquipmentTopic(alarmSnapshotTopic(CNC01))?.name).toBe('_snapshot');
   });
@@ -131,8 +160,10 @@ describe('UNS topics (plan section 5)', () => {
 
   it('retains state, telemetry and alarms, but not events or incidents', () => {
     expect(
-      ['state', 'telemetry', 'alarms', 'events', 'cmd'].map((c) => isRetained(c as never)),
-    ).toEqual([true, true, true, false, false]);
+      ['state', 'telemetry', 'alarms', 'events', 'cmd', 'cmd-res'].map((c) =>
+        isRetained(c as never),
+      ),
+    ).toEqual([true, true, true, false, false, false]);
     expect([isSysRetained('status'), isSysRetained('incidents')]).toEqual([true, false]);
   });
 });
@@ -231,10 +262,120 @@ describe('UNS payloads (envelope, plan section 5; ADR-0015)', () => {
 
   it('keeps the committed JSON Schema in step with the Zod schemas', async () => {
     const generated = generateJsonSchemas();
-    expect(generated.size).toBe(Object.keys(UNS_SCHEMAS).length);
+    expect(generated.size).toBe(
+      Object.keys(UNS_SCHEMAS).length + Object.keys(UNS_COMMAND_SCHEMAS).length,
+    );
     for (const [file, content] of generated) {
       expect(await readFile(file, 'utf8'), file).toBe(content);
     }
+  });
+});
+
+const COMMAND: UnsCommandMessage = {
+  schema: 'uns.cmd.load-order/1',
+  scope: 'topic',
+  epoch: 1_791_900_000,
+  seq: 3,
+  source: { id: 'mes-server', protocol: 'internal' },
+  issuedAt: '2026-10-16T12:00:00.000Z',
+  expiresAt: '2026-10-16T12:01:00.000Z',
+  value: {
+    commandId: loadOrderCommandId('PO-1001', 2),
+    orderId: 'PO-1001',
+    operation: 'OP10',
+    product: 'VB-100',
+    quantity: 12,
+    notBefore: '2026-10-12T03:00:00.000Z',
+    deviceEpoch: 1_791_800_000,
+  },
+};
+
+const answered = {
+  commandId: 'PO-1001~OP10~2',
+  orderId: 'PO-1001',
+  deviceEpoch: 1_791_800_000,
+  expiresAt: '2026-10-16T12:01:00.000Z',
+  statusCode: 'Good',
+} as const;
+
+const RESULT = (value: Record<string, unknown>): Record<string, unknown> => ({
+  schema: 'uns.cmd-res/1',
+  scope: 'topic',
+  epoch: 1_791_850_000,
+  seq: 9,
+  source: { id: 'cnc-01', protocol: 'opcua' },
+  respondedAt: '2026-10-16T12:00:00.250Z',
+  value: { ...answered, ...value },
+});
+
+describe('UNS commands and results (contract 1.3, ADR-0029)', () => {
+  it('accepts a load-order command with the MES command id', () => {
+    expect(COMMAND.value).toMatchObject({ commandId: 'PO-1001~OP10~2' });
+    expect(parseUnsCommandMessage(COMMAND)).toEqual({ ok: true, message: COMMAND });
+  });
+
+  it.each([
+    [
+      'accepted',
+      { result: 'accepted', position: 1, acceptedSeq: 41, acceptedAt: '2026-10-12T03:00:00.000Z' },
+    ],
+    [
+      'duplicate',
+      { result: 'duplicate', position: 2, acceptedSeq: 40, acceptedAt: '2026-10-12T03:00:00.000Z' },
+    ],
+    ['rejected', { result: 'rejected', code: 'invalid-product', statusCode: 'BadInvalidArgument' }],
+    ['expired', { result: 'expired', seqAfterExpiry: 57, statusCode: 'BadInvalidState' }],
+    [
+      'unknown',
+      { result: 'unknown', seqAfterExpiry: null, statusCode: null, reason: 'call deadline passed' },
+    ],
+  ])('accepts a %s result', (_label, value) => {
+    const message = RESULT(value);
+    expect(parseUnsCommandMessage(message)).toEqual({ ok: true, message });
+  });
+
+  it.each([
+    ['an unknown schema', { ...COMMAND, schema: 'uns.cmd.load-program/1' }, /unknown schema/],
+    [
+      'a command id of another order',
+      { ...COMMAND, value: { ...COMMAND.value, commandId: 'PO-9~OP10~1' } },
+      /commandId/,
+    ],
+    [
+      'a command id without a dispatch number',
+      { ...COMMAND, value: { ...COMMAND.value, commandId: 'PO-1001~OP10~0' } },
+      /commandId/,
+    ],
+    [
+      'an operation other than OP10',
+      { ...COMMAND, value: { ...COMMAND.value, operation: 'OP20' } },
+      /operation/,
+    ],
+    ['a quantity of 0', { ...COMMAND, value: { ...COMMAND.value, quantity: 0 } }, /quantity/],
+    ['a local expiry', { ...COMMAND, expiresAt: '2026-10-16T15:01:00+03:00' }, /expiresAt/],
+    [
+      'an order id with surrounding spaces',
+      { ...COMMAND, value: { ...COMMAND.value, orderId: ' PO-1001' } },
+      /orderId/,
+    ],
+    ['an accepted result without its acceptance', RESULT({ result: 'accepted' }), /acceptedSeq/],
+    ['a rejection without a code', RESULT({ result: 'rejected' }), /code/],
+    ['an unknown rejection code', RESULT({ result: 'rejected', code: 'busy' }), /code/],
+    ['a result the gateway never sends', RESULT({ result: 'failed' }), /result/],
+    [
+      'an extra field',
+      { ...RESULT({ result: 'expired', seqAfterExpiry: null }), extra: 1 },
+      /extra/,
+    ],
+  ])('rejects %s', (_label, input, pattern) => {
+    const result = parseUnsCommandMessage(input);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(pattern);
+  });
+
+  it('keeps commands out of the fact schemas: a fact parser refuses them', () => {
+    expect(parseUnsMessage(COMMAND).ok).toBe(false);
+    expect(parseUnsCommandMessage(SAMPLES['uns.events.job/1']).ok).toBe(false);
   });
 });
 

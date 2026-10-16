@@ -6,6 +6,7 @@ import {
   type EquipmentTopic,
   type UnsClass,
 } from '../uns-topic.ts';
+import type { UnsCommand } from './commands.ts';
 
 /** Classes whose last message the broker keeps for new subscribers (plan section 5). */
 export const RETAINED_CLASSES: ReadonlySet<UnsClass> = new Set([
@@ -56,6 +57,18 @@ export const cycleTopic = (at: EquipmentPath): string =>
 
 export const alarmTopic = (at: EquipmentPath, code: string): string =>
   equipmentTopic({ ...at, topicClass: 'alarms', name: unsName(code) });
+
+/** Job facts of a CNC (`uns.events.job/1`, not retained; contract 1.3, #173). */
+export const jobTopic = (at: EquipmentPath): string =>
+  equipmentTopic({ ...at, topicClass: 'events', name: 'job' });
+
+/** A command to one equipment (`cmd/{command}`, not retained; contract 1.3, #173). */
+export const commandTopic = (at: EquipmentPath, command: UnsCommand): string =>
+  equipmentTopic({ ...at, topicClass: 'cmd', name: command });
+
+/** The gateway's answers to that command (`cmd-res/{command}`, not retained). */
+export const commandResultTopic = (at: EquipmentPath, command: UnsCommand): string =>
+  equipmentTopic({ ...at, topicClass: 'cmd-res', name: command });
 
 /** The gateway's alarm snapshot of one equipment (`uns.alarm-snapshot/1`, retained, #141). */
 export const alarmSnapshotTopic = (at: EquipmentPath): string =>

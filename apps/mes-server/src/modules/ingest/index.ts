@@ -20,21 +20,41 @@
  *   a sweep that recorded gaps of a device stream.
  * - `Ingest.deliver(topic, payload, retained)`: the store path without a broker (tests, replays).
  *
+ * For OEE (#118, ADR-0022):
+ * - `cycle` notices (a stored cycle, with product and result) and `epoch` notices (the first fact
+ *   of a device stream's new epoch, with its time).
+ * - `Ingest.cycleHourly(from, to, { equipment?, epoch? })`: rows of `ingest.cycle_hourly`.
+ * - `Ingest.cyclesRefreshed(hour)` / `cycleAggregate()`: whether an hour of `cycle_hourly` is
+ *   materialised as it is now; an hour is final for OEE when it is and `Equipment.stateHourly`
+ *   reports it `final`.
+ * - `Ingest.refreshCyclesThrough(end)`: buckets are final up to `end` (the equipment module's latest
+ *   final hour); `refreshAggregates()` runs a pending refresh now.
+ * - `Ingest.cycleCounts(...)`, `hourlyCycleTotals()`: cycle counts per hour, from the facts and from
+ *   the aggregate, for the equipment module's per-hour cycle counts.
+ *
  * For the API (#97):
  * - `Ingest.telemetryMetrics(equipment)`: metrics with unit and latest sample.
  * - `Ingest.telemetrySeries(equipment, metrics, from, to, bucketMs)`: decimated series.
  * - `sample` notices of telemetry carry `telemetry` (metric, value, unit) for push.
  */
 export { INGEST_TOPICS, Ingest } from './ingest.ts';
-export type { FactSummary, IngestLog, IngestOptions, IngestOutcome } from './ingest.ts';
+export type {
+  CycleCount,
+  CycleHour,
+  FactSummary,
+  IngestLog,
+  IngestOptions,
+  IngestOutcome,
+} from './ingest.ts';
 export type {
   GapIncident,
   IngestNotice,
   SettledState,
   StateAnchor,
   StateFact,
+  StoredCycle,
   StoredSample,
 } from './store.ts';
 export type { TelemetryBucket, TelemetryMetric, TelemetrySeries } from './telemetry.ts';
 export { INGEST_COLUMNS } from './tables.ts';
-export type { IngestTables, RejectReason } from './tables.ts';
+export type { CycleHourlyView, IngestTables, RejectReason } from './tables.ts';

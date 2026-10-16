@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #118 done (branch `feat/118-aggregates`): hourly continuous aggregates `equipment.state_hourly` and `ingest.cycle_hourly`, refreshed explicitly by their owning modules (ADR-0022); `piecesChanged`, `cycle` and `epoch` notices; cycle counts kept with the final hours and checked at start-up; golden week equal to the raw rows and to the ground truth's hourly OEE inputs for every machine and hour.
 - #117 done (branch `feat/117-ground-truth-oee`): the simulator's ground truth computes OEE with `oee-core`: per machine the inputs per shift bucket and UTC hour, `bucketOee` per shift bucket and `workCenterOee` for Cell M1 and Line A1; summary `sim-summary/2`, control API 1.2. Golden `summary.json` regenerated (OEE section added, every earlier field byte-identical); `events.sha256` unchanged.
 - #126 done: first changeover with nothing loaded reads `CHANGEOVER none→…`; golden week byte-identical (the path is unreachable with a validated schedule), `events.sha256` unchanged as the baseline for #117.
 - #115 merged (PR #125): Phase 5 plan.

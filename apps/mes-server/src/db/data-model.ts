@@ -35,8 +35,8 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
 ];
 
 /**
- * One short line per table. The migrations' SQL comments hold the detail; a table missing here (or
- * a stale entry) fails generation, so every new table gets a description.
+ * One short line per table and view. The migrations' SQL comments hold the detail; a table or view
+ * missing here (or a stale entry) fails generation, so every new one gets a description.
  */
 const TABLES: Readonly<Record<string, string>> = {
   'master_data.site': 'The site and its enterprise (ISA-95 levels 4 and 3).',
@@ -64,6 +64,10 @@ const TABLES: Readonly<Record<string, string>> = {
     'Per (equipment, epoch, UTC hour): when the hour became final, its revision (raised by each change after that) and the gap incidents over it.',
   'equipment.interval_source':
     'What the stored intervals of each (equipment, epoch) were computed from, so start-up catch-up can recompute what differs.',
+  'equipment.state_hourly':
+    'Time per state (and its provisional part) per (equipment, epoch, UTC hour, shift bucket), from the pieces: an input of OEE (#118, ADR-0022).',
+  'ingest.cycle_hourly':
+    'Completed cycles per (equipment, epoch, UTC hour, product, result), from the cycle facts: an input of OEE (#118, ADR-0022).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 
@@ -94,6 +98,19 @@ interface ConstraintRow {
 interface IndexRow {
   table: string;
   name: string;
+  definition: string;
+}
+interface ViewRow {
+  schema: string;
+  name: string;
+  definition: string;
+}
+interface AggregateRow {
+  view: string;
+  hypertable: string;
+  materialized_only: boolean;
+  bucket_width: string | null;
+  /** The aggregate's own query (the view itself is a union with its materialisation). */
   definition: string;
 }
 interface DimensionRow {
@@ -139,7 +156,7 @@ export async function generateDataModel(db: Kysely<Database>): Promise<string> {
       JOIN pg_class c ON c.oid = a.attrelid
       JOIN pg_namespace n ON n.oid = c.relnamespace
       LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-      WHERE n.nspname IN (${sql.join(schemas)}) AND c.relkind IN ('r', 'p')
+      WHERE n.nspname IN (${sql.join(schemas)}) AND c.relkind IN ('r', 'p', 'v')
         AND a.attnum > 0 AND NOT a.attisdropped
       ORDER BY 1, a.attnum`.execute(db)
   ).rows;
@@ -179,10 +196,32 @@ export async function generateDataModel(db: Kysely<Database>): Promise<string> {
         dimension_type::text AS dimension_type, time_interval::text AS time_interval,
         num_partitions
       FROM timescaledb_information.dimensions
+      WHERE hypertable_schema IN (${sql.join(schemas)})
       ORDER BY 1, dimension_number`.execute(db)
   ).rows;
+  const views = (
+    await sql<ViewRow>`
+      SELECT n.nspname AS schema, c.relname AS name, pg_get_viewdef(c.oid, true) AS definition
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname IN (${sql.join(schemas)}) AND c.relkind = 'v'
+      ORDER BY n.nspname, c.relname`.execute(db)
+  ).rows;
+  // TimescaleDB's own (materialisation) objects live in `_timescaledb_internal` and stay out.
+  const aggregates = (
+    await sql<AggregateRow>`
+      SELECT a.view_schema || '.' || a.view_name AS view,
+        a.hypertable_schema || '.' || a.hypertable_name AS hypertable,
+        a.materialized_only, b.bucket_width::text AS bucket_width, a.view_definition AS definition
+      FROM timescaledb_information.continuous_aggregates a
+      JOIN _timescaledb_catalog.continuous_agg c
+        ON c.user_view_schema = a.view_schema AND c.user_view_name = a.view_name
+      LEFT JOIN _timescaledb_catalog.continuous_aggs_bucket_function b
+        ON b.mat_hypertable_id = c.mat_hypertable_id
+      WHERE a.view_schema IN (${sql.join(schemas)})
+      ORDER BY 1`.execute(db)
+  ).rows;
 
-  const names = tables.map((t) => `${t.schema}.${t.name}`);
+  const names = [...tables, ...views].map((t) => `${t.schema}.${t.name}`);
   const undescribed = names.filter((name) => !(name in TABLES));
   const stale = Object.keys(TABLES).filter((name) => !names.includes(name));
   if (undescribed.length > 0 || stale.length > 0) {
@@ -201,7 +240,7 @@ export async function generateDataModel(db: Kysely<Database>): Promise<string> {
     '',
     'The MES database after all migrations in `db/migrations`, read from the database itself (`pg_catalog` and `timescaledb_information`). Regenerate with `pnpm --filter @shopfloor/mes-server data-model`; a test in `apps/mes-server/src/db/db.test.ts` fails when this file is out of date.',
     '',
-    'Each schema belongs to exactly one module of `mes-server` (ADR-0016). Modules read each other only through their interfaces, so there are no foreign keys between schemas: a column named `equipment` holds a `master_data.equipment.id` by convention, and `ingest.state_anchor.arrival` is referenced from `equipment.interval_source.anchor_arrival` the same way, as are `ingest.data_quality_incident` ids from `equipment.bucket_finality.incident_ids`. Times are simulation time unless a column says otherwise (`received_at`, `ingested_at`, `recorded_at`, `updated_at`, `final_at`, `revised_at` and `applied_at` are wall time).',
+    'Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do its views. Modules read each other only through their interfaces, so there are no foreign keys between schemas: a column named `equipment` holds a `master_data.equipment.id` by convention, and `ingest.state_anchor.arrival` is referenced from `equipment.interval_source.anchor_arrival` the same way, as are `ingest.data_quality_incident` ids from `equipment.bucket_finality.incident_ids`. Times are simulation time unless a column says otherwise (`received_at`, `ingested_at`, `recorded_at`, `updated_at`, `final_at`, `revised_at` and `applied_at` are wall time).',
     '',
     '## Contents',
     '',
@@ -210,6 +249,9 @@ export async function generateDataModel(db: Kysely<Database>): Promise<string> {
     out.push(`- [\`${schema.name}\`](#schema-${schema.name})`);
     for (const table of tables.filter((t) => t.schema === schema.name)) {
       out.push(`  - \`${schema.name}.${table.name}\``);
+    }
+    for (const view of views.filter((v) => v.schema === schema.name)) {
+      out.push(`  - \`${schema.name}.${view.name}\` (view)`);
     }
   }
   out.push(
@@ -227,6 +269,20 @@ export async function generateDataModel(db: Kysely<Database>): Promise<string> {
   out.push(
     '',
     'A unique key or primary key on a hypertable must include its partitioning column (a TimescaleDB rule), which is why the fact tables are unique on `(…, seq, source_time)`.',
+    '',
+    '## Continuous aggregates',
+    '',
+    '| View | Over | Bucket | Real-time |',
+    '| --- | --- | --- | --- |',
+  );
+  for (const a of aggregates) {
+    out.push(
+      `| ${code(a.view)} | ${code(a.hypertable)} | ${a.bucket_width ?? ''} | ${a.materialized_only ? 'no (`materialized_only = true`)' : 'yes (`materialized_only = false`)'} |`,
+    );
+  }
+  out.push(
+    '',
+    'Real-time: rows below the aggregate’s watermark come from its materialisation, rows above it from the table. There are no refresh policies: the owning module refreshes explicitly (ADR-0022).',
     '',
   );
 
@@ -315,6 +371,21 @@ export async function generateDataModel(db: Kysely<Database>): Promise<string> {
         }
       }
       out.push('');
+    }
+    for (const view of views.filter((v) => v.schema === schema.name)) {
+      const full = `${view.schema}.${view.name}`;
+      const aggregate = aggregates.find((a) => a.view === full);
+      out.push(`### ${full}`, '', TABLES[full] ?? '', '');
+      out.push(
+        aggregate
+          ? `TimescaleDB continuous aggregate over \`${aggregate.hypertable}\`, in buckets of ${aggregate.bucket_width ?? '?'}, ${aggregate.materialized_only ? 'materialised rows only' : 'real-time'} (\`materialized_only = ${String(aggregate.materialized_only)}\`).`
+          : 'View.',
+      );
+      out.push('', '| Column | Type |', '| --- | --- |');
+      for (const column of byTable(columns, full)) {
+        out.push(`| ${code(column.name)} | ${code(column.type)} |`);
+      }
+      out.push('', '```sql', (aggregate?.definition ?? view.definition).trim(), '```', '');
     }
   }
   return `${out.join('\n').trimEnd()}\n`;

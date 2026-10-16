@@ -11,6 +11,16 @@
  * - `Equipment.watermarks()`: each device epoch's watermark, newest first (the plant clock).
  * - `Equipment.shiftTotals(shiftKey, { equipment?, epoch? })`: time per state in a shift bucket.
  * - `Equipment.onChange(listener)`: after stored intervals or a current state changed (push).
+ *
+ * For OEE (#118, ADR-0022):
+ * - `Equipment.stateHourly(from, to, { equipment?, epoch?, shiftKey? })`: rows of
+ *   `equipment.state_hourly`, each with its hour's `final` (a `bucket_finality` row and the
+ *   aggregate refreshed through it) and `revision`. Final for OEE also needs
+ *   `Ingest.cyclesRefreshed(hour)`.
+ * - `Equipment.onPiecesChanged(listener)`: after any write to the pieces, with the hours touched.
+ * - `Equipment.stateAggregate()`: how far `state_hourly` is refreshed; `refreshAggregates()` runs
+ *   a pending refresh now. The module refreshes `state_hourly` itself and tells ingest how far
+ *   buckets are final, so `cycle_hourly` follows (`Ingest.refreshCyclesThrough`).
  */
 export { Equipment } from './equipment.ts';
 export type {
@@ -18,7 +28,9 @@ export type {
   EquipmentChange,
   EquipmentLog,
   EquipmentOptions,
+  PiecesChanged,
   ShiftTotal,
+  StateHour,
   StateSource,
   StoredInterval,
 } from './equipment.ts';

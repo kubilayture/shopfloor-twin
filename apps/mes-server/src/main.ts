@@ -34,6 +34,9 @@ const readDb = createDatabase(env.DATABASE_URL, env.API_DB_POOL_SIZE, {
   statementTimeoutMs: env.API_STATEMENT_TIMEOUT_MS,
   connectionTimeoutMs: env.API_STATEMENT_TIMEOUT_MS,
 });
+// The hourly aggregates refresh on their own connections, outside a transaction and without the
+// API's statement timeout, never on ingest's acknowledgement path (ADR-0022).
+const aggregateDb = createDatabase(env.DATABASE_URL, 2);
 const state = { migrated: false, stopping: false };
 
 let ingest: Ingest | undefined;
@@ -69,6 +72,7 @@ async function shutdown(signal: string): Promise<void> {
     async () => equipment?.stop(),
     () => db.destroy(),
     () => readDb.destroy(),
+    () => aggregateDb.destroy(),
   ]) {
     await close().catch((error: unknown) => {
       log.error(error);
@@ -101,6 +105,7 @@ try {
     clientId: env.MQTT_CLIENT_ID,
     sessionExpirySeconds: env.MQTT_SESSION_EXPIRY_S,
     gapGraceMs: env.INGEST_GAP_GRACE_MS,
+    refresh: { db: aggregateDb },
     registry,
     log: log.child({ module: 'ingest' }),
   });
@@ -110,6 +115,7 @@ try {
     readDb,
     source: ingest,
     shiftPattern: await masterData.shiftPattern(),
+    refresh: { db: aggregateDb },
     log: log.child({ module: 'equipment' }),
   });
   await equipment.start();
@@ -122,6 +128,7 @@ try {
   await app.close();
   await db.destroy();
   await readDb.destroy();
+  await aggregateDb.destroy();
   process.exit(1);
 }
 log.info('mes-server started; ready once subscribed to the UNS');

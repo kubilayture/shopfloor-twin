@@ -182,6 +182,22 @@ describe('migrations (ADR-0016)', () => {
     await sql`CREATE TABLE ingest.undescribed (id INT)`.execute(db);
     await expect(generateDataModel(db)).rejects.toThrow(/describe ingest\.undescribed/);
   });
+
+  it('documents the continuous aggregates, and refuses a view without a description (#118)', async () => {
+    const db = await freshDatabase('m_data_model_views');
+    await migrate(db, MIGRATIONS);
+    const generated = await generateDataModel(db);
+    expect(generated).toContain(
+      '| `equipment.state_hourly` | `equipment.equipment_state_interval` | 01:00:00 | yes (`materialized_only = false`) |',
+    );
+    expect(generated).toContain(
+      '| `ingest.cycle_hourly` | `ingest.equipment_event` | 01:00:00 | yes (`materialized_only = false`) |',
+    );
+    // A materialisation hypertable is TimescaleDB's own, never listed.
+    expect(generated).not.toMatch(/_materialized_hypertable/);
+    await sql`CREATE VIEW equipment.undescribed AS SELECT 1 AS one`.execute(db);
+    await expect(generateDataModel(db)).rejects.toThrow(/describe equipment\.undescribed/);
+  });
 });
 
 describe('MES server basics (#93)', () => {

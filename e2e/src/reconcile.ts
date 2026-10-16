@@ -39,6 +39,11 @@
  * OEE does not) and writes a handover note (browser/final/shift-report.spec.ts); the alarm KPIs and
  * OEE stay byte-identical across all of it, and the audit tables refuse UPDATE and DELETE.
  *
+ * Identity (#170, MES_AUTH=on): the env file carries a generated MES_BOOTSTRAP_ADMIN_PASSWORD; once
+ * the MES is ready, the bootstrap admin changes it and creates the run's supervisor
+ * (`reconcile-supervisor`, generated password) through the API. Every API read of the run sends
+ * its session cookie, and the Playwright checks log in as it through `/login`.
+ *
  * Usage: pnpm test:reconcile. Results (report.json, compose.log on failure, Playwright traces) go
  * to e2e/results/. Environment: RECONCILE_PROJECT (Compose project, default shopfloor-reconcile),
  * RECONCILE_TAG (image tag, default reconcile; give parallel runs their own),

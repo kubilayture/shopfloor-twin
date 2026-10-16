@@ -12,8 +12,8 @@ export type { DowntimeSearch, OeeSearch } from './routes/oee.ts';
 export type { DetailSearch } from './routes/plant.ts';
 export type { ShiftReportSearch } from './routes/shifts.ts';
 
-// Code-based routes (ADR-0020), one file per area under routes/ since #170: fifteen screens passed
-// the ADR's "revisit past a dozen", and a generated route tree still isn't needed.
+// Code-based routes (ADR-0020), one file per area under routes/ since #170: eleven routes now,
+// fifteen with Phase 7's screens (past the "revisit past a dozen"); a generated tree isn't needed.
 const routeTree = rootRoute.addChildren([
   ...plantRoutes,
   ...oeeRoutes,

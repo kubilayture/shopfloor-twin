@@ -35,6 +35,18 @@ export const MES_API_LIMITS = {
   /** The global write rate (all clients together): tokens per second and the burst. */
   writesPerSecond: 10,
   writeBurst: 20,
+  /** Alarm list (#142): occurrences per page, by default and at most. */
+  alarmPage: 100,
+  alarmPageMax: 500,
+  /** Longest range of the alarm history, by raise time. */
+  alarmRangeMs: 7 * 24 * 3_600_000,
+  /** Longest range of `GET /alarms/kpi` with hour buckets (shift buckets: `oeeShiftRangeMs`). */
+  alarmHourRangeMs: 7 * 24 * 3_600_000,
+  /** Bad actors per request, by default and at most. */
+  badActors: 10,
+  badActorsMax: 50,
+  /** Alarm KPI topics (`alarm-kpi:<scope>`) one WebSocket client may follow. */
+  alarmKpiTopics: 16,
 } as const;
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -515,6 +527,218 @@ export const paretoSchema = z.object({
     .describe('Micro-stops (performance loss) in scheduled buckets by cause, largest first'),
 });
 
+// ---- Alarms (#142, ADR-0024) ----
+
+const priority = z.enum(['high', 'medium', 'low']);
+const alarmScope = z.enum(['plant', 'position', 'equipment']);
+const alarmBucketKind = z.enum(['hour', 'shift']);
+export const ALARM_VIEWS = ['active', 'history'] as const;
+const alarmView = z.enum(ALARM_VIEWS);
+
+export const alarmOccurrenceSchema = z
+  .object({
+    id: z
+      .string()
+      .describe('`{equipment}~{epoch}~{seq}`: stable under reordering, rebuilds and restarts'),
+    equipment: z.string(),
+    epoch: int.describe('The device epoch (run)'),
+    seq: int.describe('The device sequence number of the raise'),
+    code: z.string(),
+    priority: priority.describe(
+      "From the point's definition, or from the severity for a code without one",
+    ),
+    defined: z.boolean().describe('False for a code without a definition in alarms.yaml'),
+    text: z.string().nullable().describe("The definition's operator text"),
+    severity: int.describe('The wire severity of the raise, 1 to 1000'),
+    source: z
+      .enum(['fact', 'anchor'])
+      .describe('The raise fact, or a retained alarm delivery whose fact is not stored'),
+    raisedAt: time,
+    endedAt: time.nullable().describe('When it stopped being active; null while active'),
+    endReason: z
+      .enum(['cleared', 'lost', 'superseded', 'epoch-ended'])
+      .nullable()
+      .describe(
+        'cleared: the device clear; lost: a resync snapshot showed it inactive (the clear was lost); superseded: the next raise of the point (a lost clear); epoch-ended: a newer run',
+      ),
+    endSeq: int
+      .nullable()
+      .describe("The clear's seq, the snapshot's asOfSeq or the superseding raise's seq"),
+    active: z.boolean(),
+    final: z
+      .boolean()
+      .describe('Its raise and its end (or that it is still open) can no longer change'),
+  })
+  .describe('One alarm occurrence: one per device raise (ADR-0024)');
+
+export const alarmListSchema = z.object({
+  view: alarmView,
+  from: time.nullable(),
+  to: time.nullable(),
+  next: z
+    .string()
+    .nullable()
+    .describe('Pass as `cursor` for the following page; null on the last page'),
+  alarms: z.array(alarmOccurrenceSchema).describe('By raise time, newest first'),
+});
+
+export const alarmDetailSchema = z.object({
+  occurrence: alarmOccurrenceSchema,
+  definition: z
+    .object({
+      text: z.string(),
+      consequence: z.string().nullable(),
+      response: z.string().nullable(),
+    })
+    .nullable(),
+});
+
+export const alarmHistorySchema = z.object({
+  id: z.string(),
+  entries: z
+    .array(
+      z.object({
+        source: z
+          .enum(['fact', 'anchor', 'snapshot', 'mes'])
+          .describe('A device fact, a retained delivery, a resync snapshot or the MES itself'),
+        transition: z.enum(['raised', 'cleared', 'lost', 'superseded', 'epoch-ended']),
+        at: time.describe('Simulation (device) time'),
+        seq: int.nullable(),
+        receivedAt: time.nullable().describe('When the gateway received the fact'),
+        protocol: z.string().nullable(),
+      }),
+    )
+    .describe('By time; operator transitions join with #143'),
+});
+
+const bucketFloodSchema = z.object({
+  id: z.string().describe('`{startAt ms}~{equipment}~{code}` of the starting raise, per scope'),
+  startAt: time,
+  floodMs: ms.describe('Flood time inside the bucket'),
+  peak: int.describe("The highest count from the episode's start to the bucket's end"),
+  open: z.boolean().describe("Still in flood at the bucket's end"),
+  ended: z
+    .object({ endAt: time, peak: int, raises: int })
+    .nullable()
+    .describe('The final attributes, in the bucket where the episode ends'),
+});
+
+export const alarmKpiBucketSchema = z
+  .object({
+    scope: alarmScope,
+    id: z.string(),
+    bucket: alarmBucketKind,
+    key: z
+      .string()
+      .describe(
+        'The hour start (ISO 8601 UTC) or the shift key (`2026-10-12/A`, `no-shift/{start}`)',
+      ),
+    epoch: int,
+    from: time,
+    to: time,
+    raises: int,
+    byPriority: z.object({ high: int, medium: int, low: int }),
+    averageRate: ratioSchema.describe('Raises per window (10 minutes) over the whole bucket'),
+    windows: int.describe('Fixed windows aligned on the hour'),
+    peak10: int.describe('The most raises in one fixed window'),
+    floodWindows: int.describe('Fixed windows with more than floodThreshold raises'),
+    floods: z.array(bucketFloodSchema).describe('Sliding flood episodes in flood in the bucket'),
+    floodMs: ms,
+    activeAtEnd: int,
+    standing: z
+      .array(z.object({ id: z.string(), equipment: z.string(), code: z.string(), raisedAt: time }))
+      .describe("Active at the bucket's end and raised at least standingMs before it"),
+    chatteringRaises: int,
+    chatteringPoints: z.array(z.string()).describe('`equipment/code`, sorted'),
+    fleeting: int,
+    fleetingUndecided: int,
+    activeMs: ms,
+    provisional: z
+      .boolean()
+      .describe('Not over at the plant clock, or a raise may still turn out fleeting'),
+    final: z
+      .boolean()
+      .describe(
+        'Nothing that can still arrive changes it: every equipment of the scope is final through its end plus fleetingMs',
+      ),
+    revision: int.describe('How often one of its hours changed after it was final (the highest)'),
+    incidents: int.describe('Distinct sequence-gap incidents of its equipment over it'),
+  })
+  .describe('Alarm KPIs of one scope over one hour or shift bucket (ADR-0024)');
+
+export const alarmKpiListSchema = z.object({
+  scope: alarmScope,
+  id: z.string(),
+  bucket: alarmBucketKind,
+  from: time,
+  to: time,
+  buckets: z
+    .array(alarmKpiBucketSchema)
+    .describe('Hours where something happened and the hour in progress; every shift bucket begun'),
+});
+
+export const floodEpisodeSchema = z.object({
+  id: z.string(),
+  startAt: time,
+  equipment: z.string().describe("The starting raise's equipment"),
+  code: z.string(),
+  endAt: time.nullable().describe('Null while in flood'),
+  peak: int,
+  raises: int.describe('Raises from the starting raise until the end, so far'),
+});
+
+export const floodListSchema = z.object({
+  scope: alarmScope,
+  id: z.string(),
+  from: time,
+  to: time,
+  epoch: int.nullable(),
+  episodes: z.array(floodEpisodeSchema).describe('In flood at some instant of the range, by start'),
+});
+
+export const badActorSchema = z.object({
+  equipment: z.string(),
+  code: z.string(),
+  raises: int,
+  share: ratioSchema.describe("Of the scope's raises in the range"),
+  activeMs: ms,
+  chatteringRaises: int,
+});
+
+export const badActorListSchema = z.object({
+  scope: alarmScope,
+  id: z.string(),
+  from: time,
+  to: time,
+  epoch: int.nullable(),
+  actors: z
+    .array(badActorSchema)
+    .describe('By raises, then active time descending, then equipment and code'),
+});
+
+export const alarmScopesSchema = z.object({
+  scopes: z.array(
+    z.object({
+      scope: alarmScope,
+      id: z.string(),
+      name: z.string(),
+      equipment: z.array(z.string()),
+    }),
+  ),
+});
+
+export type AlarmOccurrenceDto = z.infer<typeof alarmOccurrenceSchema>;
+export type AlarmList = z.infer<typeof alarmListSchema>;
+export type AlarmDetail = z.infer<typeof alarmDetailSchema>;
+export type AlarmHistory = z.infer<typeof alarmHistorySchema>;
+export type AlarmKpiBucketDto = z.infer<typeof alarmKpiBucketSchema>;
+export type AlarmKpiList = z.infer<typeof alarmKpiListSchema>;
+export type FloodEpisodeDto = z.infer<typeof floodEpisodeSchema>;
+export type FloodList = z.infer<typeof floodListSchema>;
+export type BadActorDto = z.infer<typeof badActorSchema>;
+export type BadActorList = z.infer<typeof badActorListSchema>;
+export type AlarmScopes = z.infer<typeof alarmScopesSchema>;
+
 export type Problem = z.infer<typeof problemSchema>;
 export type CurrentStateDto = z.infer<typeof currentStateSchema>;
 export type EquipmentDto = z.infer<typeof equipmentSchema>;
@@ -548,6 +772,7 @@ export type DowntimeAudit = z.infer<typeof downtimeAuditSchema>;
 
 export const STATES_TOPIC = 'states';
 export const DOWNTIME_TOPIC = 'downtime';
+export const ALARMS_TOPIC = 'alarms';
 const telemetryTopic = z
   .string()
   .regex(/^telemetry:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)
@@ -556,11 +781,17 @@ const oeeTopic = z
   .string()
   .regex(/^oee:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)
   .describe('oee:<equipment or work center>');
+const alarmKpiTopic = z
+  .string()
+  .regex(/^alarm-kpi:(plant|(position|equipment):[A-Za-z0-9][A-Za-z0-9_-]{0,63})$/)
+  .describe('alarm-kpi:plant, alarm-kpi:position:<id> or alarm-kpi:equipment:<id>');
 const topic = z.union([
   z.literal(STATES_TOPIC),
   z.literal(DOWNTIME_TOPIC),
+  z.literal(ALARMS_TOPIC),
   telemetryTopic,
   oeeTopic,
+  alarmKpiTopic,
 ]);
 
 export const clientMessageSchema = z
@@ -619,6 +850,17 @@ export const serverMessageSchema = z
         .nullable()
         .describe('The shift bucket the plant clock is in; null without data'),
     }),
+    z.object({
+      type: z.literal('snapshot'),
+      topic: alarmKpiTopic,
+      hour: alarmKpiBucketSchema
+        .nullable()
+        .describe('The hour the plant clock is in; null without a clock'),
+      shift: alarmKpiBucketSchema
+        .nullable()
+        .describe('The shift bucket the plant clock is in; null without a clock'),
+      floods: z.array(floodEpisodeSchema).describe('Flood episodes still in flood'),
+    }),
     z.object({ type: z.literal('state'), equipment: z.string(), current: currentStateSchema }),
     z.object({
       type: z.literal('oee'),
@@ -632,6 +874,20 @@ export const serverMessageSchema = z
         .enum(['created', 'closed', 'recoded', 'updated', 'removed'])
         .describe('What happened to the record since the last message about it'),
       record: downtimeRecordSchema,
+    }),
+    z.object({
+      type: z.literal('alarm'),
+      event: z
+        .enum(['raised', 'cleared', 'updated'])
+        .describe('What happened to the occurrence since the last message about it'),
+      occurrence: alarmOccurrenceSchema,
+    }),
+    z.object({
+      type: z.literal('alarm-kpi'),
+      topic: alarmKpiTopic,
+      hour: alarmKpiBucketSchema.nullable(),
+      shift: alarmKpiBucketSchema.nullable(),
+      floods: z.array(floodEpisodeSchema),
     }),
     z.object({ type: z.literal('telemetry'), ...telemetrySample.shape }),
     z.object({ type: z.literal('clock'), ...clockSchema.shape }),

@@ -10,6 +10,7 @@ import {
   type Equipment,
   type StoredInterval,
 } from '../equipment/index.ts';
+import type { Alarms, AlarmScope } from '../alarms/index.ts';
 import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
 import {
@@ -20,11 +21,30 @@ import {
   type Oee,
   type OeeScope,
 } from '../oee/index.ts';
+import {
+  alarmKpiDto,
+  badActorDto,
+  floodEpisodeDto,
+  historyDto,
+  occurrenceDto,
+} from './alarm-dto.ts';
 import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
 import { PushHub, currentStateDto, type PushOptions } from './push.ts';
 import { HttpProblem, PROBLEM_TYPE, getRoute, jsonSchema, problem, writeRoute } from './routes.ts';
 import {
   LIMITS,
+  alarmDetailSchema,
+  alarmHistorySchema,
+  alarmKpiListSchema,
+  alarmKpiQuery,
+  alarmListQuery,
+  alarmListSchema,
+  alarmParams,
+  alarmRangeQuery,
+  alarmScopesSchema,
+  badActorListSchema,
+  badActorsQuery,
+  floodListSchema,
   codingRequestSchema,
   codingResultSchema,
   currentShiftSchema,
@@ -96,6 +116,21 @@ export interface ApiSources {
   readonly downtime?: Pick<DowntimeFeed, 'subscribe'>;
   /** Operator coding writes and their audit (#121). */
   readonly coding: Pick<DowntimeCoding, 'code' | 'audit'>;
+  /** Alarm occurrences and KPIs (#142); the alarm routes answer 503 without it. */
+  readonly alarms?: Pick<
+    Alarms,
+    | 'list'
+    | 'occurrence'
+    | 'history'
+    | 'kpis'
+    | 'floods'
+    | 'badActors'
+    | 'scopes'
+    | 'scope'
+    | 'definition'
+    | 'current'
+    | 'onChange'
+  >;
 }
 
 export interface RealtimeOptions {
@@ -193,6 +228,12 @@ function isBusy(error: unknown): boolean {
 }
 
 const iso = (date: Date): string => date.toISOString();
+
+/** `{raisedAtMs}~{occurrence id}` (the alarm list's `next`). */
+function parseCursor(cursor: string): { raisedAt: Date; id: string } {
+  const split = cursor.indexOf('~');
+  return { raisedAt: new Date(Number(cursor.slice(0, split))), id: cursor.slice(split + 1) };
+}
 
 /**
  * Merges the stored hour and shift pieces of each interval back, clipped to [from, to).
@@ -935,6 +976,219 @@ export async function registerRealtime(
         },
       );
 
+      // ---- Alarms (#142, ADR-0024) ----
+
+      const alarmsOf = () => {
+        const found = ready().sources.alarms;
+        if (!found) throw new HttpProblem(503, 'alarms are not available');
+        return found;
+      };
+      const alarmScope = (scope: AlarmScope, id: string | undefined): string => {
+        const name = scope === 'plant' ? 'plant' : (id ?? '');
+        if (!alarmsOf().scope(scope, name)) throw new HttpProblem(404, `no ${scope} ${name}`);
+        return name;
+      };
+
+      getRoute(
+        api,
+        {
+          url: '/alarms',
+          summary: 'Alarm occurrences: active, or the history of a range, newest first',
+          description:
+            'One occurrence per device raise (ADR-0024), id `{equipment}~{epoch}~{seq}`. ' +
+            '`active`: not ended; `history`: ended (cleared by the device, lost by a resync ' +
+            'snapshot, superseded by the next raise, or ended by a newer epoch), by raise time in ' +
+            'a range of at most 7 days. Pages by `cursor` (`next`). Acknowledge and shelve come ' +
+            'with #143.',
+          tags: ['alarms'],
+          query: alarmListQuery,
+          response: alarmListSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ query }) => {
+          const alarms = alarmsOf();
+          if (query.equipment !== undefined) known(query.equipment);
+          if (query.position !== undefined) alarmScope('position', query.position);
+          const after = query.cursor === undefined ? undefined : parseCursor(query.cursor);
+          const found = await alarms.list({
+            view: query.view,
+            position: query.position,
+            equipment: query.equipment,
+            priority: query.priority,
+            from: query.from,
+            to: query.to,
+            limit: query.limit + 1,
+            after,
+          });
+          const page = found.slice(0, query.limit);
+          const last = page.at(-1);
+          return {
+            view: query.view,
+            from: query.from ? iso(query.from) : null,
+            to: query.to ? iso(query.to) : null,
+            next:
+              found.length > query.limit && last
+                ? `${String(last.raisedAt.getTime())}~${last.id}`
+                : null,
+            alarms: page.map(occurrenceDto),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/alarms/scopes',
+          summary: 'The scopes of alarm KPIs: the plant, the operator positions, the equipment',
+          tags: ['alarms'],
+          query: noQuery,
+          response: alarmScopesSchema,
+          errors: [400, 503],
+        },
+        () => ({
+          scopes: alarmsOf()
+            .scopes()
+            .map((scope) => ({ ...scope, equipment: [...scope.equipment] })),
+        }),
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/alarms/kpi',
+          summary: 'Alarm KPIs of the plant, a position or an equipment per hour or shift bucket',
+          description:
+            'Computed on read with alarm-core (ADR-0024), in exact integers and fractions: raises ' +
+            'by priority, average and peak per 10 minutes, flood windows and sliding flood ' +
+            'episodes, standing, active at the end, chattering, fleeting, active time. Hours are ' +
+            'listed when something happened in them, and the hour in progress; shift buckets are ' +
+            'every shift instance and `no-shift/{start}` stretch (clipped to the range) begun by ' +
+            'the plant clock. `final` once every equipment of the scope is final through the ' +
+            "bucket's end plus fleetingMs; `revision` counts changes after that.",
+          tags: ['alarms'],
+          query: alarmKpiQuery,
+          response: alarmKpiListSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ query }) => {
+          const id = alarmScope(query.scope, query.id);
+          const buckets = await alarmsOf().kpis({ ...query, id });
+          return {
+            scope: query.scope,
+            id,
+            bucket: query.bucket,
+            from: iso(query.from),
+            to: iso(query.to),
+            buckets: buckets.map(alarmKpiDto),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/alarms/floods',
+          summary: 'Sliding flood episodes of a scope in a range',
+          description:
+            'An episode starts at the raise that makes the count in the last 10 minutes exceed ' +
+            'the flood threshold and ends when the count is back at it (ADR-0024); its id is ' +
+            '`{startAt ms}~{equipment}~{code}` of the starting raise, unique in its scope.',
+          tags: ['alarms'],
+          query: alarmRangeQuery,
+          response: floodListSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ query }) => {
+          const id = alarmScope(query.scope, query.id);
+          const { epoch, episodes } = await alarmsOf().floods({ ...query, id });
+          return {
+            scope: query.scope,
+            id,
+            from: iso(query.from),
+            to: iso(query.to),
+            epoch,
+            episodes: episodes.map(floodEpisodeDto),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/alarms/bad-actors',
+          summary: 'The alarm points of a scope with the most raises in a range',
+          description:
+            'Ranked by raises, then active time descending, then equipment and code; each with ' +
+            "its share of the scope's raises (exact), active time and chattering raises.",
+          tags: ['alarms'],
+          query: badActorsQuery,
+          response: badActorListSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ query }) => {
+          const id = alarmScope(query.scope, query.id);
+          const { epoch, actors } = await alarmsOf().badActors({ ...query, id });
+          return {
+            scope: query.scope,
+            id,
+            from: iso(query.from),
+            to: iso(query.to),
+            epoch,
+            actors: actors.map(badActorDto),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/alarms/:id',
+          summary: 'One alarm occurrence with its definition',
+          tags: ['alarms'],
+          params: alarmParams,
+          query: noQuery,
+          response: alarmDetailSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ params }) => {
+          const alarms = alarmsOf();
+          const occurrence = await alarms.occurrence(params.id);
+          if (!occurrence) throw new HttpProblem(404, `no alarm ${params.id}`);
+          const definition = alarms.definition(occurrence.equipment, occurrence.code);
+          return {
+            occurrence: occurrenceDto(occurrence),
+            definition: definition
+              ? {
+                  text: definition.text,
+                  consequence: definition.consequence,
+                  response: definition.response,
+                }
+              : null,
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/alarms/:id/history',
+          summary: 'The device raise and end of an occurrence, by time',
+          description:
+            "From ingest's stored facts (seq, sourceTime, receivedAt, protocol), or the retained " +
+            'delivery or resync snapshot they came from; operator transitions join with #143.',
+          tags: ['alarms'],
+          params: alarmParams,
+          query: noQuery,
+          response: alarmHistorySchema,
+          errors: [400, 404, 503],
+        },
+        async ({ params }) => {
+          const entries = await alarmsOf().history(params.id);
+          if (!entries) throw new HttpProblem(404, `no alarm ${params.id}`);
+          return historyDto(params.id, entries);
+        },
+      );
+
       getRoute(
         api,
         {
@@ -962,7 +1216,7 @@ export async function registerRealtime(
           websocket: true,
           schema: {
             summary:
-              'WebSocket push of states, telemetry, OEE and downtime (protocol: docs/api/realtime.md)',
+              'WebSocket push of states, telemetry, OEE, downtime and alarms (protocol: docs/api/realtime.md)',
             tags: ['push'],
             hide: true,
           },
@@ -1000,6 +1254,23 @@ export async function registerRealtime(
           ]),
         ]),
         ...(sources.downtime ? { downtime: sources.downtime } : {}),
+        ...(sources.alarms
+          ? {
+              alarms: sources.alarms,
+              alarmKpiTopics: new Map(
+                sources.alarms
+                  .scopes()
+                  .map(
+                    (
+                      scope,
+                    ): [string, { scope: AlarmScope; id: string; members: readonly string[] }] => [
+                      scope.scope === 'plant' ? 'plant' : `${scope.scope}:${scope.id}`,
+                      { scope: scope.scope, id: scope.id, members: scope.equipment },
+                    ],
+                  ),
+              ),
+            }
+          : {}),
       });
     },
   };

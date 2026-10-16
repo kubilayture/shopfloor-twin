@@ -62,7 +62,8 @@ export async function buildMesHttp({
         description:
           'API of the MES (Phases 4 and 5): equipment with current state, state ' +
           'intervals, telemetry series, shift totals, the plant clock, OEE per hour and shift, ' +
-          'shift instances, reason codes, downtime records and the loss Pareto; one write, ' +
+          'shift instances, reason codes, downtime records and the loss Pareto; alarm ' +
+          'occurrences and alarm KPIs per hour and shift (Phase 6); one write, ' +
           'downtime coding (#121), with its audit. No authentication yet (Phase 7): writes are ' +
           'guarded (ADR-0023: Origin of this host, Sec-Fetch-Site, application/json, 16 KiB, a ' +
           'global rate limit, MES_WRITES=off answers 405) and audited as unauthenticated; ' +
@@ -75,6 +76,10 @@ export async function buildMesHttp({
         { name: 'shifts', description: 'Shift instances, time per state and OEE in a shift' },
         { name: 'oee', description: 'OEE per equipment and work center, per hour and shift' },
         { name: 'downtime', description: 'Reason codes, downtime records and the loss Pareto' },
+        {
+          name: 'alarms',
+          description: 'Alarm occurrences with their history, alarm KPIs, floods and bad actors',
+        },
         { name: 'plant', description: 'Site and plant clock' },
         { name: 'operations', description: 'Health and metrics' },
       ],

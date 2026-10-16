@@ -28,6 +28,12 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
       'State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE; the downtime records derived from them (ADR-0021); and the operator codings of downtime with their append-only audit (ADR-0023).',
   },
   {
+    name: 'alarms',
+    owner: 'alarms',
+    about:
+      'Alarm occurrences derived from the device’s raise and clear facts, anchors and resync snapshots (ADR-0010, ADR-0024), what they were derived from, and the revisions of final alarm KPI hours. KPIs are computed on read.',
+  },
+  {
     name: 'public',
     owner: 'the migration runner',
     about: 'Bookkeeping of the migration runner (ADR-0016).',
@@ -88,6 +94,12 @@ const TABLES: Readonly<Record<string, string>> = {
     'Time per state (and its provisional part) per (equipment, epoch, UTC hour, shift bucket), from the pieces: an input of OEE (#118, ADR-0022).',
   'ingest.cycle_hourly':
     'Completed cycles per (equipment, epoch, UTC hour, product, result), from the cycle facts: an input of OEE (#118, ADR-0022).',
+  'alarms.alarm_occurrence':
+    'One alarm occurrence per device raise, keyed (equipment, epoch, raise seq), with its end (cleared, lost, superseded, epoch-ended); derived, never edited (#142).',
+  'alarms.occurrence_source':
+    'What the occurrences of each (equipment, epoch) were derived from (alarm fact count, anchors and snapshot used, epoch closing) and how far they were final, for catch-up (#142).',
+  'alarms.kpi_revision':
+    'Per (scope, epoch, UTC hour): how often a final alarm KPI hour changed after it was final; no row means revision 0 (#142, ADR-0024).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

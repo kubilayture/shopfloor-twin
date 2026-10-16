@@ -711,6 +711,20 @@ export class Equipment {
     return watermark === undefined ? undefined : new Date(watermark);
   }
 
+  /**
+   * Where a newer epoch closed (equipment, epoch) (#142, the alarms module's `epoch-ended`):
+   * `closed: false` while it is open or unknown here, else the closing time recorded with it
+   * (`interval_source.closed_at`), undefined when the epoch had no watermark yet.
+   */
+  epochEnd(equipment: string, epoch: number): { closed: boolean; closedAt: Date | undefined } {
+    const track = this.#tracks.get(equipment)?.get(epoch);
+    if (!track?.closed) return { closed: false, closedAt: undefined };
+    return {
+      closed: true,
+      closedAt: track.closedAt === undefined ? undefined : new Date(track.closedAt),
+    };
+  }
+
   /** Every device epoch's watermark, the newest epoch first (the plant clock, #97). */
   watermarks(): { readonly epoch: number; readonly watermark: Date }[] {
     return [...this.#watermarks]

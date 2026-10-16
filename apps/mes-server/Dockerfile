@@ -13,6 +13,7 @@ WORKDIR /app
 FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/mes-server/package.json apps/mes-server/
+COPY packages/alarm-core/package.json packages/alarm-core/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/oee-core/package.json packages/oee-core/
 COPY packages/plant-config/package.json packages/plant-config/
@@ -29,6 +30,7 @@ WORKDIR /app
 COPY --from=deps /app ./
 COPY db/migrations db/migrations
 COPY config/plant config/plant
+COPY packages/alarm-core/src packages/alarm-core/src
 COPY packages/contracts/src packages/contracts/src
 COPY packages/oee-core/src packages/oee-core/src
 COPY packages/plant-config/src packages/plant-config/src

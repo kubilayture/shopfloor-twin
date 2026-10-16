@@ -9,6 +9,7 @@
  * - `Equipment.intervals(equipment, from, to, { epoch?, limit? })`: stored pieces overlapping a
  *   range.
  * - `Equipment.watermarks()`: each device epoch's watermark, newest first (the plant clock).
+ * - `Equipment.epochEnd(equipment, epoch)`: whether a newer epoch closed it, and when (#142).
  * - `Equipment.shiftTotals(shiftKey, { equipment?, epoch? })`: time per state in a shift bucket.
  * - `Equipment.onChange(listener)`: after stored intervals or a current state changed (push).
  *

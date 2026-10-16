@@ -1,9 +1,18 @@
+import type { FloodEpisode } from '@shopfloor/alarm-core';
 import { Counter, Gauge, type Registry } from 'prom-client';
+import type {
+  AlarmChange,
+  AlarmFinalityChange,
+  AlarmKpiBucket,
+  AlarmScope,
+} from '../alarms/index.ts';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
 import type { DowntimeChange, OeeBucket, OeeChange, OeeScope } from '../oee/index.ts';
+import { alarmKpiDto, floodEpisodeDto, occurrenceDto } from './alarm-dto.ts';
 import { bucketDto, recordDto } from './oee-dto.ts';
 import {
+  ALARMS_TOPIC,
   DOWNTIME_TOPIC,
   LIMITS,
   STATES_TOPIC,
@@ -55,6 +64,23 @@ export interface PushSources {
   readonly downtime?: {
     subscribe(listener: (change: DowntimeChange) => void): () => void;
   };
+  /** Alarm occurrences and KPIs (#142). */
+  readonly alarms?: {
+    current(
+      scope: AlarmScope,
+      id: string,
+    ): Promise<{
+      hour: AlarmKpiBucket | null;
+      shift: AlarmKpiBucket | null;
+      floods: FloodEpisode[];
+    }>;
+    onChange(listener: (change: AlarmChange | AlarmFinalityChange) => void): () => void;
+  };
+  /** What `alarm-kpi:<key>` may name (`plant`, `position:<id>`, `equipment:<id>`). */
+  readonly alarmKpiTopics?: ReadonlyMap<
+    string,
+    { readonly scope: AlarmScope; readonly id: string; readonly members: readonly string[] }
+  >;
 }
 
 export interface PushOptions {
@@ -70,7 +96,7 @@ export interface PushOptions {
   readonly retryMs?: number;
   /** At most one OEE delta per topic this often (1 s, plan "API, push and web"). */
   readonly oeeMs?: number;
-  /** OEE topics per client (16). */
+  /** OEE topics per client (16); alarm KPI topics count separately against the same limit. */
   readonly maxOeeTopics?: number;
   readonly maxClients?: number;
   /** Telemetry subscriptions per client, counted per metric (a whole equipment counts one). */
@@ -87,8 +113,10 @@ interface Client {
   states: boolean;
   /** Following `downtime`. */
   downtime: boolean;
-  /** The ids of the `oee:<id>` topics followed. */
-  readonly oee: Set<string>;
+  /** Following `alarms` (#142). */
+  alarms: boolean;
+  /** The paced topics followed: `oee:<id>` and `alarm-kpi:<scope>`. */
+  readonly paced: Set<string>;
   /** Per equipment: the metrics subscribed, or null for all. */
   readonly telemetry: Map<string, Set<string> | null>;
   /** Deltas not yet sent, by key: a newer delta of the same key replaces the older one. */
@@ -102,11 +130,19 @@ interface Client {
 
 const MAX_HOLDS = 4;
 
-/** One `oee:<id>` topic with subscribers: what it last pushed and whether it must be computed. */
-interface OeeTopicState {
-  readonly id: string;
-  readonly scope: OeeScope;
+/**
+ * One paced topic with subscribers (`oee:<id>`, `alarm-kpi:<scope>`): what it last pushed and
+ * whether it must be computed. At most one delta per `oeeMs`.
+ */
+interface PacedTopic {
+  /** The topic's name, e.g. `oee:cnc-01` or `alarm-kpi:plant`. */
+  readonly name: string;
+  readonly kind: 'oee' | 'alarm-kpi';
   readonly members: ReadonlySet<string>;
+  /** The snapshot and the delta message, and their content as JSON (compared for deltas). */
+  readonly compute: () => Promise<{ snapshot: ServerMessage; delta: ServerMessage; json: string }>;
+  /** The plant clock it was last computed at (alarm KPIs grow with the clock). */
+  clock: string | undefined;
   /** Its inputs changed since the last computation. */
   dirty: boolean;
   inFlight: boolean;
@@ -162,7 +198,7 @@ export class PushHub {
   #flushScheduled = false;
   #retry: NodeJS.Timeout | undefined;
   #lastClock: string | undefined;
-  readonly #oeeTopics = new Map<string, OeeTopicState>();
+  readonly #paced = new Map<string, PacedTopic>();
 
   constructor(options: PushOptions = {}) {
     this.#options = {
@@ -228,6 +264,23 @@ export class PushHub {
         }),
       );
     }
+    if (sources.alarms) {
+      this.#detach.push(
+        sources.alarms.onChange((change) => {
+          this.#onAlarm(change);
+        }),
+      );
+      if (!sources.oee) {
+        this.#timers.push(
+          setInterval(
+            () => {
+              this.#oeeTick();
+            },
+            Math.max(10, Math.floor(this.#options.oeeMs / 4)),
+          ).unref(),
+        );
+      }
+    }
   }
 
   /** Stops following and disconnects every client. */
@@ -237,7 +290,7 @@ export class PushHub {
     clearTimeout(this.#retry);
     for (const client of this.#clients) client.socket.terminate();
     this.#clients.clear();
-    this.#oeeTopics.clear();
+    this.#paced.clear();
   }
 
   connect(socket: PushSocket): void {
@@ -250,7 +303,8 @@ export class PushHub {
       alive: true,
       states: false,
       downtime: false,
-      oee: new Set(),
+      alarms: false,
+      paced: new Set(),
       telemetry: new Map(),
       pending: new Map(),
       holds: new Map(),
@@ -266,7 +320,7 @@ export class PushHub {
     });
     socket.on('close', () => {
       this.#clients.delete(client);
-      this.#leaveOee(client);
+      this.#leavePaced(client);
     });
   }
 
@@ -329,6 +383,14 @@ export class PushHub {
       this.#oeeRequest(client, sources, request);
       return;
     }
+    if (request.topic === ALARMS_TOPIC) {
+      this.#alarmsRequest(client, sources, request);
+      return;
+    }
+    if (request.topic.startsWith('alarm-kpi:')) {
+      this.#alarmKpiRequest(client, sources, request);
+      return;
+    }
     if (request.topic === STATES_TOPIC) {
       if (request.type === 'subscribe') {
         this.#subscribeStates(client, sources);
@@ -377,36 +439,106 @@ export class PushHub {
   #oeeRequest(client: Client, sources: PushSources, request: ClientMessage): void {
     const id = request.topic.slice('oee:'.length);
     const known = sources.oeeTopics?.get(id);
-    if (!sources.oee || !known) {
+    const oee = sources.oee;
+    if (!oee || !known) {
       this.#send(client, {
         type: 'error',
-        code: sources.oee ? 'unknown-equipment' : 'unknown-topic',
-        detail: sources.oee ? `no equipment or work center ${id}` : 'OEE push is not available',
+        code: oee ? 'unknown-equipment' : 'unknown-topic',
+        detail: oee ? `no equipment or work center ${id}` : 'OEE push is not available',
       });
       return;
     }
-    if (request.type === 'unsubscribe') {
-      client.oee.delete(id);
-      this.#oeeTopics.get(id)?.awaiting.delete(client);
-      this.#dropPending(client, request.topic);
-      this.#send(client, { type: 'unsubscribed', topic: request.topic, metric: null });
+    const name = request.topic;
+    this.#pacedRequest(client, request, 'oee', known.members, async () => {
+      const current = await oee.current(known.scope, id);
+      const hour = current.hour && bucketDto(current.hour);
+      const shift = current.shift && bucketDto(current.shift);
+      return {
+        snapshot: { type: 'snapshot', topic: name, hour, shift },
+        delta: { type: 'oee', topic: name, hour, shift },
+        json: JSON.stringify({ hour, shift }),
+      };
+    });
+  }
+
+  #alarmsRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    if (!sources.alarms) {
+      this.#send(client, {
+        type: 'error',
+        code: 'unknown-topic',
+        detail: 'alarm push is not available',
+      });
       return;
     }
-    if (!client.oee.has(id) && client.oee.size >= this.#options.maxOeeTopics) {
+    client.alarms = request.type === 'subscribe';
+    if (!client.alarms) this.#dropPending(client, 'alarm:');
+    this.#send(client, {
+      type: request.type === 'subscribe' ? 'subscribed' : 'unsubscribed',
+      topic: ALARMS_TOPIC,
+      metric: null,
+    });
+  }
+
+  #alarmKpiRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    const key = request.topic.slice('alarm-kpi:'.length);
+    const known = sources.alarmKpiTopics?.get(key);
+    const alarms = sources.alarms;
+    if (!alarms || !known) {
+      this.#send(client, {
+        type: 'error',
+        code: alarms ? 'unknown-equipment' : 'unknown-topic',
+        detail: alarms ? `no alarm scope ${key}` : 'alarm push is not available',
+      });
+      return;
+    }
+    const name = request.topic;
+    this.#pacedRequest(client, request, 'alarm-kpi', known.members, async () => {
+      const current = await alarms.current(known.scope, known.id);
+      const hour = current.hour && alarmKpiDto(current.hour);
+      const shift = current.shift && alarmKpiDto(current.shift);
+      const floods = current.floods.map(floodEpisodeDto);
+      return {
+        snapshot: { type: 'snapshot', topic: name, hour, shift, floods },
+        delta: { type: 'alarm-kpi', topic: name, hour, shift, floods },
+        json: JSON.stringify({ hour, shift, floods }),
+      };
+    });
+  }
+
+  /** Subscribes or unsubscribes a paced topic; a subscriber gets a snapshot, then deltas. */
+  #pacedRequest(
+    client: Client,
+    request: ClientMessage,
+    kind: PacedTopic['kind'],
+    members: readonly string[],
+    compute: PacedTopic['compute'],
+  ): void {
+    const name = request.topic;
+    if (request.type === 'unsubscribe') {
+      client.paced.delete(name);
+      this.#paced.get(name)?.awaiting.delete(client);
+      this.#dropPending(client, name);
+      this.#send(client, { type: 'unsubscribed', topic: name, metric: null });
+      return;
+    }
+    const followed = [...client.paced].filter((topic) => topic.startsWith(`${kind}:`)).length;
+    if (!client.paced.has(name) && followed >= this.#options.maxOeeTopics) {
       this.#send(client, {
         type: 'error',
         code: 'too-many-subscriptions',
-        detail: `at most ${String(this.#options.maxOeeTopics)} OEE topics`,
+        detail: `at most ${String(this.#options.maxOeeTopics)} ${kind === 'oee' ? 'OEE' : 'alarm KPI'} topics`,
       });
       return;
     }
-    client.oee.add(id);
-    let topic = this.#oeeTopics.get(id);
+    client.paced.add(name);
+    let topic = this.#paced.get(name);
     if (!topic) {
       topic = {
-        id,
-        scope: known.scope,
-        members: new Set(known.members),
+        name,
+        kind,
+        members: new Set(members),
+        compute,
+        clock: undefined,
         dirty: true,
         inFlight: false,
         computedAt: 0,
@@ -414,59 +546,81 @@ export class PushHub {
         last: undefined,
         awaiting: new Set(),
       };
-      this.#oeeTopics.set(id, topic);
+      this.#paced.set(name, topic);
     }
-    this.#send(client, { type: 'subscribed', topic: request.topic, metric: null });
+    this.#send(client, { type: 'subscribed', topic: name, metric: null });
     // The snapshot is newer than a delta waiting; the next computation brings it.
-    this.#dropPending(client, request.topic);
+    this.#dropPending(client, name);
     topic.awaiting.add(client);
-    this.#computeOee(topic);
+    this.#computePaced(topic);
   }
 
   #onOeeChange(change: OeeChange): void {
-    for (const topic of this.#oeeTopics.values()) {
-      if (topic.members.has(change.equipment)) topic.dirty = true;
+    for (const topic of this.#paced.values()) {
+      if (topic.kind === 'oee' && topic.members.has(change.equipment)) topic.dirty = true;
     }
   }
 
-  /** Computes the dirty topics whose last computation is at least `oeeMs` old (off ingest's path). */
+  /** An occurrence upsert goes to `alarms` followers (keyed by id); KPI topics turn dirty. */
+  #onAlarm(change: AlarmChange | AlarmFinalityChange): void {
+    const equipment = change.type === 'occurrence' ? change.occurrence.equipment : change.equipment;
+    for (const topic of this.#paced.values()) {
+      if (topic.kind === 'alarm-kpi' && topic.members.has(equipment)) topic.dirty = true;
+    }
+    if (change.type !== 'occurrence') return;
+    let data: string | undefined;
+    const key = `alarm:${change.occurrence.id}`;
+    for (const client of this.#clients) {
+      if (!client.alarms) continue;
+      data ??= message({
+        type: 'alarm',
+        event: change.event,
+        occurrence: occurrenceDto(change.occurrence),
+      });
+      this.#enqueue(client, key, data);
+    }
+  }
+
+  /**
+   * Computes the dirty topics whose last computation is at least `oeeMs` old (off ingest's path).
+   * Alarm KPIs also change while the plant clock moves (active time, the hour in progress).
+   */
   #oeeTick(): void {
     const now = Date.now();
-    for (const topic of this.#oeeTopics.values()) {
+    const clock = this.#sources?.equipment.watermarks()[0];
+    const clockKey = clock && `${String(clock.epoch)}|${String(clock.watermark.getTime())}`;
+    for (const topic of this.#paced.values()) {
+      if (topic.kind === 'alarm-kpi' && topic.clock !== clockKey) topic.dirty = true;
       if (
         topic.awaiting.size > 0 ||
         (topic.dirty && now - topic.computedAt >= this.#options.oeeMs)
       ) {
-        this.#computeOee(topic);
+        topic.clock = clockKey;
+        this.#computePaced(topic);
       }
     }
   }
 
-  #computeOee(topic: OeeTopicState): void {
-    const oee = this.#sources?.oee;
-    if (!oee || topic.inFlight) return;
+  #computePaced(topic: PacedTopic): void {
+    if (!this.#sources || topic.inFlight) return;
     // A snapshot for a new subscriber may come early; deltas to the others keep their pace.
     const now = Date.now();
     const deltaDue = now - topic.deltaAt >= this.#options.oeeMs;
     topic.inFlight = true;
     topic.dirty = false;
     topic.computedAt = now;
-    oee
-      .current(topic.scope, topic.id)
+    topic
+      .compute()
       .then(
-        (current) => {
-          const hour = current.hour && bucketDto(current.hour);
-          const shift = current.shift && bucketDto(current.shift);
-          const json = JSON.stringify({ hour, shift });
-          const name = `oee:${topic.id}`;
+        ({ snapshot, delta: update, json }) => {
           let delta: string | undefined;
           for (const client of this.#clients) {
-            if (!client.oee.has(topic.id)) continue;
+            if (!client.paced.has(topic.name)) continue;
             if (topic.awaiting.has(client)) {
-              this.#send(client, { type: 'snapshot', topic: name, hour, shift });
+              this.#send(client, snapshot);
             } else if (json !== topic.last && deltaDue) {
-              delta ??= message({ type: 'oee', topic: name, hour, shift });
-              this.#enqueue(client, name, delta);
+              delta ??= message(update);
+              this.#enqueue(client, topic.name, delta);
             }
           }
           topic.awaiting.clear();
@@ -482,23 +636,23 @@ export class PushHub {
       )
       .finally(() => {
         topic.inFlight = false;
-        this.#pruneOee();
+        this.#prunePaced();
       });
   }
 
   /** Drops the topics nobody follows any more. */
-  #pruneOee(): void {
-    for (const [id, topic] of this.#oeeTopics) {
-      if (![...this.#clients].some((client) => client.oee.has(id)) && !topic.inFlight) {
-        this.#oeeTopics.delete(id);
+  #prunePaced(): void {
+    for (const [name, topic] of this.#paced) {
+      if (![...this.#clients].some((client) => client.paced.has(name)) && !topic.inFlight) {
+        this.#paced.delete(name);
       }
     }
   }
 
-  #leaveOee(client: Client): void {
-    for (const id of client.oee) this.#oeeTopics.get(id)?.awaiting.delete(client);
-    client.oee.clear();
-    this.#pruneOee();
+  #leavePaced(client: Client): void {
+    for (const name of client.paced) this.#paced.get(name)?.awaiting.delete(client);
+    client.paced.clear();
+    this.#prunePaced();
   }
 
   #onDowntime(change: DowntimeChange): void {
@@ -758,7 +912,7 @@ export class PushHub {
     // A close frame would queue behind the backlog the client isn't reading.
     client.socket.terminate();
     this.#clients.delete(client);
-    this.#leaveOee(client);
+    this.#leavePaced(client);
     this.#metrics?.dropped.inc({ reason });
   }
 

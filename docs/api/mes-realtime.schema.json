@@ -24,6 +24,10 @@
                 },
                 {
                   "type": "string",
+                  "const": "alarms"
+                },
+                {
+                  "type": "string",
                   "pattern": "^telemetry:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
                   "description": "telemetry:<equipment>"
                 },
@@ -31,6 +35,11 @@
                   "type": "string",
                   "pattern": "^oee:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
                   "description": "oee:<equipment or work center>"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^alarm-kpi:(plant|(position|equipment):[A-Za-z0-9][A-Za-z0-9_-]{0,63})$",
+                  "description": "alarm-kpi:plant, alarm-kpi:position:<id> or alarm-kpi:equipment:<id>"
                 }
               ]
             },
@@ -65,6 +74,10 @@
                 },
                 {
                   "type": "string",
+                  "const": "alarms"
+                },
+                {
+                  "type": "string",
                   "pattern": "^telemetry:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
                   "description": "telemetry:<equipment>"
                 },
@@ -72,6 +85,11 @@
                   "type": "string",
                   "pattern": "^oee:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
                   "description": "oee:<equipment or work center>"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^alarm-kpi:(plant|(position|equipment):[A-Za-z0-9][A-Za-z0-9_-]{0,63})$",
+                  "description": "alarm-kpi:plant, alarm-kpi:position:<id> or alarm-kpi:equipment:<id>"
                 }
               ]
             },
@@ -1469,6 +1487,714 @@
             "topic",
             "hour",
             "shift"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "snapshot"
+            },
+            "topic": {
+              "type": "string",
+              "pattern": "^alarm-kpi:(plant|(position|equipment):[A-Za-z0-9][A-Za-z0-9_-]{0,63})$",
+              "description": "alarm-kpi:plant, alarm-kpi:position:<id> or alarm-kpi:equipment:<id>"
+            },
+            "hour": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "plant",
+                        "position",
+                        "equipment"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "enum": [
+                        "hour",
+                        "shift"
+                      ]
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "The hour start (ISO 8601 UTC) or the shift key (`2026-10-12/A`, `no-shift/{start}`)"
+                    },
+                    "epoch": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "from": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "to": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "raises": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "byPriority": {
+                      "type": "object",
+                      "properties": {
+                        "high": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "medium": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "low": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "high",
+                        "medium",
+                        "low"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "averageRate": {
+                      "type": "object",
+                      "properties": {
+                        "fraction": {
+                          "type": "string",
+                          "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                        },
+                        "decimal": {
+                          "type": "string",
+                          "description": "Rounded half-up to four decimals, integer arithmetic only"
+                        }
+                      },
+                      "required": [
+                        "fraction",
+                        "decimal"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Raises per window (10 minutes) over the whole bucket"
+                    },
+                    "windows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Fixed windows aligned on the hour"
+                    },
+                    "peak10": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The most raises in one fixed window"
+                    },
+                    "floodWindows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Fixed windows with more than floodThreshold raises"
+                    },
+                    "floods": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "`{startAt ms}~{equipment}~{code}` of the starting raise, per scope"
+                          },
+                          "startAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "floodMs": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Flood time inside the bucket"
+                          },
+                          "peak": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The highest count from the episode's start to the bucket's end"
+                          },
+                          "open": {
+                            "type": "boolean",
+                            "description": "Still in flood at the bucket's end"
+                          },
+                          "ended": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "endAt": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  "peak": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "raises": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "endAt",
+                                  "peak",
+                                  "raises"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The final attributes, in the bucket where the episode ends"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "startAt",
+                          "floodMs",
+                          "peak",
+                          "open",
+                          "ended"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Sliding flood episodes in flood in the bucket"
+                    },
+                    "floodMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Milliseconds of simulation time"
+                    },
+                    "activeAtEnd": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "standing": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "equipment": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "raisedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "equipment",
+                          "code",
+                          "raisedAt"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Active at the bucket's end and raised at least standingMs before it"
+                    },
+                    "chatteringRaises": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "chatteringPoints": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "`equipment/code`, sorted"
+                    },
+                    "fleeting": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "fleetingUndecided": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "activeMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Milliseconds of simulation time"
+                    },
+                    "provisional": {
+                      "type": "boolean",
+                      "description": "Not over at the plant clock, or a raise may still turn out fleeting"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Nothing that can still arrive changes it: every equipment of the scope is final through its end plus fleetingMs"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How often one of its hours changed after it was final (the highest)"
+                    },
+                    "incidents": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Distinct sequence-gap incidents of its equipment over it"
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "id",
+                    "bucket",
+                    "key",
+                    "epoch",
+                    "from",
+                    "to",
+                    "raises",
+                    "byPriority",
+                    "averageRate",
+                    "windows",
+                    "peak10",
+                    "floodWindows",
+                    "floods",
+                    "floodMs",
+                    "activeAtEnd",
+                    "standing",
+                    "chatteringRaises",
+                    "chatteringPoints",
+                    "fleeting",
+                    "fleetingUndecided",
+                    "activeMs",
+                    "provisional",
+                    "final",
+                    "revision",
+                    "incidents"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Alarm KPIs of one scope over one hour or shift bucket (ADR-0024)"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The hour the plant clock is in; null without a clock"
+            },
+            "shift": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "plant",
+                        "position",
+                        "equipment"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "enum": [
+                        "hour",
+                        "shift"
+                      ]
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "The hour start (ISO 8601 UTC) or the shift key (`2026-10-12/A`, `no-shift/{start}`)"
+                    },
+                    "epoch": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "from": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "to": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "raises": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "byPriority": {
+                      "type": "object",
+                      "properties": {
+                        "high": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "medium": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "low": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "high",
+                        "medium",
+                        "low"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "averageRate": {
+                      "type": "object",
+                      "properties": {
+                        "fraction": {
+                          "type": "string",
+                          "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                        },
+                        "decimal": {
+                          "type": "string",
+                          "description": "Rounded half-up to four decimals, integer arithmetic only"
+                        }
+                      },
+                      "required": [
+                        "fraction",
+                        "decimal"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Raises per window (10 minutes) over the whole bucket"
+                    },
+                    "windows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Fixed windows aligned on the hour"
+                    },
+                    "peak10": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The most raises in one fixed window"
+                    },
+                    "floodWindows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Fixed windows with more than floodThreshold raises"
+                    },
+                    "floods": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "`{startAt ms}~{equipment}~{code}` of the starting raise, per scope"
+                          },
+                          "startAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "floodMs": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Flood time inside the bucket"
+                          },
+                          "peak": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The highest count from the episode's start to the bucket's end"
+                          },
+                          "open": {
+                            "type": "boolean",
+                            "description": "Still in flood at the bucket's end"
+                          },
+                          "ended": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "endAt": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  "peak": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "raises": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "endAt",
+                                  "peak",
+                                  "raises"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The final attributes, in the bucket where the episode ends"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "startAt",
+                          "floodMs",
+                          "peak",
+                          "open",
+                          "ended"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Sliding flood episodes in flood in the bucket"
+                    },
+                    "floodMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Milliseconds of simulation time"
+                    },
+                    "activeAtEnd": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "standing": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "equipment": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "raisedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "equipment",
+                          "code",
+                          "raisedAt"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Active at the bucket's end and raised at least standingMs before it"
+                    },
+                    "chatteringRaises": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "chatteringPoints": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "`equipment/code`, sorted"
+                    },
+                    "fleeting": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "fleetingUndecided": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "activeMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Milliseconds of simulation time"
+                    },
+                    "provisional": {
+                      "type": "boolean",
+                      "description": "Not over at the plant clock, or a raise may still turn out fleeting"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Nothing that can still arrive changes it: every equipment of the scope is final through its end plus fleetingMs"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How often one of its hours changed after it was final (the highest)"
+                    },
+                    "incidents": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Distinct sequence-gap incidents of its equipment over it"
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "id",
+                    "bucket",
+                    "key",
+                    "epoch",
+                    "from",
+                    "to",
+                    "raises",
+                    "byPriority",
+                    "averageRate",
+                    "windows",
+                    "peak10",
+                    "floodWindows",
+                    "floods",
+                    "floodMs",
+                    "activeAtEnd",
+                    "standing",
+                    "chatteringRaises",
+                    "chatteringPoints",
+                    "fleeting",
+                    "fleetingUndecided",
+                    "activeMs",
+                    "provisional",
+                    "final",
+                    "revision",
+                    "incidents"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Alarm KPIs of one scope over one hour or shift bucket (ADR-0024)"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The shift bucket the plant clock is in; null without a clock"
+            },
+            "floods": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "startAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  "equipment": {
+                    "type": "string",
+                    "description": "The starting raise's equipment"
+                  },
+                  "code": {
+                    "type": "string"
+                  },
+                  "endAt": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Null while in flood"
+                  },
+                  "peak": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "raises": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991,
+                    "description": "Raises from the starting raise until the end, so far"
+                  }
+                },
+                "required": [
+                  "id",
+                  "startAt",
+                  "equipment",
+                  "code",
+                  "endAt",
+                  "peak",
+                  "raises"
+                ],
+                "additionalProperties": false
+              },
+              "description": "Flood episodes still in flood"
+            }
+          },
+          "required": [
+            "type",
+            "topic",
+            "hour",
+            "shift",
+            "floods"
           ],
           "additionalProperties": false
         },
@@ -2919,6 +3645,871 @@
             "type",
             "event",
             "record"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "alarm"
+            },
+            "event": {
+              "type": "string",
+              "enum": [
+                "raised",
+                "cleared",
+                "updated"
+              ],
+              "description": "What happened to the occurrence since the last message about it"
+            },
+            "occurrence": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "`{equipment}~{epoch}~{seq}`: stable under reordering, rebuilds and restarts"
+                },
+                "equipment": {
+                  "type": "string"
+                },
+                "epoch": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "description": "The device epoch (run)"
+                },
+                "seq": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "description": "The device sequence number of the raise"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "string",
+                  "enum": [
+                    "high",
+                    "medium",
+                    "low"
+                  ],
+                  "description": "From the point's definition, or from the severity for a code without one"
+                },
+                "defined": {
+                  "type": "boolean",
+                  "description": "False for a code without a definition in alarms.yaml"
+                },
+                "text": {
+                  "description": "The definition's operator text",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "severity": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "description": "The wire severity of the raise, 1 to 1000"
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "fact",
+                    "anchor"
+                  ],
+                  "description": "The raise fact, or a retained alarm delivery whose fact is not stored"
+                },
+                "raisedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "endedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "When it stopped being active; null while active"
+                },
+                "endReason": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "cleared",
+                        "lost",
+                        "superseded",
+                        "epoch-ended"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "cleared: the device clear; lost: a resync snapshot showed it inactive (the clear was lost); superseded: the next raise of the point (a lost clear); epoch-ended: a newer run"
+                },
+                "endSeq": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The clear's seq, the snapshot's asOfSeq or the superseding raise's seq"
+                },
+                "active": {
+                  "type": "boolean"
+                },
+                "final": {
+                  "type": "boolean",
+                  "description": "Its raise and its end (or that it is still open) can no longer change"
+                }
+              },
+              "required": [
+                "id",
+                "equipment",
+                "epoch",
+                "seq",
+                "code",
+                "priority",
+                "defined",
+                "text",
+                "severity",
+                "source",
+                "raisedAt",
+                "endedAt",
+                "endReason",
+                "endSeq",
+                "active",
+                "final"
+              ],
+              "additionalProperties": false,
+              "description": "One alarm occurrence: one per device raise (ADR-0024)"
+            }
+          },
+          "required": [
+            "type",
+            "event",
+            "occurrence"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "alarm-kpi"
+            },
+            "topic": {
+              "type": "string",
+              "pattern": "^alarm-kpi:(plant|(position|equipment):[A-Za-z0-9][A-Za-z0-9_-]{0,63})$",
+              "description": "alarm-kpi:plant, alarm-kpi:position:<id> or alarm-kpi:equipment:<id>"
+            },
+            "hour": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "plant",
+                        "position",
+                        "equipment"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "enum": [
+                        "hour",
+                        "shift"
+                      ]
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "The hour start (ISO 8601 UTC) or the shift key (`2026-10-12/A`, `no-shift/{start}`)"
+                    },
+                    "epoch": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "from": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "to": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "raises": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "byPriority": {
+                      "type": "object",
+                      "properties": {
+                        "high": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "medium": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "low": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "high",
+                        "medium",
+                        "low"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "averageRate": {
+                      "type": "object",
+                      "properties": {
+                        "fraction": {
+                          "type": "string",
+                          "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                        },
+                        "decimal": {
+                          "type": "string",
+                          "description": "Rounded half-up to four decimals, integer arithmetic only"
+                        }
+                      },
+                      "required": [
+                        "fraction",
+                        "decimal"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Raises per window (10 minutes) over the whole bucket"
+                    },
+                    "windows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Fixed windows aligned on the hour"
+                    },
+                    "peak10": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The most raises in one fixed window"
+                    },
+                    "floodWindows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Fixed windows with more than floodThreshold raises"
+                    },
+                    "floods": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "`{startAt ms}~{equipment}~{code}` of the starting raise, per scope"
+                          },
+                          "startAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "floodMs": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Flood time inside the bucket"
+                          },
+                          "peak": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The highest count from the episode's start to the bucket's end"
+                          },
+                          "open": {
+                            "type": "boolean",
+                            "description": "Still in flood at the bucket's end"
+                          },
+                          "ended": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "endAt": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  "peak": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "raises": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "endAt",
+                                  "peak",
+                                  "raises"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The final attributes, in the bucket where the episode ends"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "startAt",
+                          "floodMs",
+                          "peak",
+                          "open",
+                          "ended"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Sliding flood episodes in flood in the bucket"
+                    },
+                    "floodMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Milliseconds of simulation time"
+                    },
+                    "activeAtEnd": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "standing": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "equipment": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "raisedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "equipment",
+                          "code",
+                          "raisedAt"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Active at the bucket's end and raised at least standingMs before it"
+                    },
+                    "chatteringRaises": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "chatteringPoints": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "`equipment/code`, sorted"
+                    },
+                    "fleeting": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "fleetingUndecided": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "activeMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Milliseconds of simulation time"
+                    },
+                    "provisional": {
+                      "type": "boolean",
+                      "description": "Not over at the plant clock, or a raise may still turn out fleeting"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Nothing that can still arrive changes it: every equipment of the scope is final through its end plus fleetingMs"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How often one of its hours changed after it was final (the highest)"
+                    },
+                    "incidents": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Distinct sequence-gap incidents of its equipment over it"
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "id",
+                    "bucket",
+                    "key",
+                    "epoch",
+                    "from",
+                    "to",
+                    "raises",
+                    "byPriority",
+                    "averageRate",
+                    "windows",
+                    "peak10",
+                    "floodWindows",
+                    "floods",
+                    "floodMs",
+                    "activeAtEnd",
+                    "standing",
+                    "chatteringRaises",
+                    "chatteringPoints",
+                    "fleeting",
+                    "fleetingUndecided",
+                    "activeMs",
+                    "provisional",
+                    "final",
+                    "revision",
+                    "incidents"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Alarm KPIs of one scope over one hour or shift bucket (ADR-0024)"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "shift": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "plant",
+                        "position",
+                        "equipment"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "enum": [
+                        "hour",
+                        "shift"
+                      ]
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "The hour start (ISO 8601 UTC) or the shift key (`2026-10-12/A`, `no-shift/{start}`)"
+                    },
+                    "epoch": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "from": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "to": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "raises": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "byPriority": {
+                      "type": "object",
+                      "properties": {
+                        "high": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "medium": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "low": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "high",
+                        "medium",
+                        "low"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "averageRate": {
+                      "type": "object",
+                      "properties": {
+                        "fraction": {
+                          "type": "string",
+                          "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                        },
+                        "decimal": {
+                          "type": "string",
+                          "description": "Rounded half-up to four decimals, integer arithmetic only"
+                        }
+                      },
+                      "required": [
+                        "fraction",
+                        "decimal"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Raises per window (10 minutes) over the whole bucket"
+                    },
+                    "windows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Fixed windows aligned on the hour"
+                    },
+                    "peak10": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The most raises in one fixed window"
+                    },
+                    "floodWindows": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Fixed windows with more than floodThreshold raises"
+                    },
+                    "floods": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "`{startAt ms}~{equipment}~{code}` of the starting raise, per scope"
+                          },
+                          "startAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "floodMs": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Flood time inside the bucket"
+                          },
+                          "peak": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The highest count from the episode's start to the bucket's end"
+                          },
+                          "open": {
+                            "type": "boolean",
+                            "description": "Still in flood at the bucket's end"
+                          },
+                          "ended": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "endAt": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  "peak": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "raises": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "endAt",
+                                  "peak",
+                                  "raises"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The final attributes, in the bucket where the episode ends"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "startAt",
+                          "floodMs",
+                          "peak",
+                          "open",
+                          "ended"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Sliding flood episodes in flood in the bucket"
+                    },
+                    "floodMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Milliseconds of simulation time"
+                    },
+                    "activeAtEnd": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "standing": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "equipment": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "raisedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "equipment",
+                          "code",
+                          "raisedAt"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Active at the bucket's end and raised at least standingMs before it"
+                    },
+                    "chatteringRaises": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "chatteringPoints": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "`equipment/code`, sorted"
+                    },
+                    "fleeting": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "fleetingUndecided": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "activeMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Milliseconds of simulation time"
+                    },
+                    "provisional": {
+                      "type": "boolean",
+                      "description": "Not over at the plant clock, or a raise may still turn out fleeting"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Nothing that can still arrive changes it: every equipment of the scope is final through its end plus fleetingMs"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How often one of its hours changed after it was final (the highest)"
+                    },
+                    "incidents": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Distinct sequence-gap incidents of its equipment over it"
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "id",
+                    "bucket",
+                    "key",
+                    "epoch",
+                    "from",
+                    "to",
+                    "raises",
+                    "byPriority",
+                    "averageRate",
+                    "windows",
+                    "peak10",
+                    "floodWindows",
+                    "floods",
+                    "floodMs",
+                    "activeAtEnd",
+                    "standing",
+                    "chatteringRaises",
+                    "chatteringPoints",
+                    "fleeting",
+                    "fleetingUndecided",
+                    "activeMs",
+                    "provisional",
+                    "final",
+                    "revision",
+                    "incidents"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Alarm KPIs of one scope over one hour or shift bucket (ADR-0024)"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "floods": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "startAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  "equipment": {
+                    "type": "string",
+                    "description": "The starting raise's equipment"
+                  },
+                  "code": {
+                    "type": "string"
+                  },
+                  "endAt": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Null while in flood"
+                  },
+                  "peak": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "raises": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991,
+                    "description": "Raises from the starting raise until the end, so far"
+                  }
+                },
+                "required": [
+                  "id",
+                  "startAt",
+                  "equipment",
+                  "code",
+                  "endAt",
+                  "peak",
+                  "raises"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "type",
+            "topic",
+            "hour",
+            "shift",
+            "floods"
           ],
           "additionalProperties": false
         },

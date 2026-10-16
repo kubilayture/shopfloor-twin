@@ -16,6 +16,7 @@
   "dependencies": {
     "@fastify/swagger": "catalog:",
     "@fastify/websocket": "catalog:",
+    "@shopfloor/alarm-core": "workspace:*",
     "@shopfloor/contracts": "workspace:*",
     "@shopfloor/oee-core": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",

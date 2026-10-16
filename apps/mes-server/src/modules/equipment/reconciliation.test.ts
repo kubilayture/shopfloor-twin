@@ -4,5 +4,10 @@ import { reconciliationSuite } from './reconcile.test-support.ts';
 // shift C, which ends on Saturday, then the weekend's no-shift bucket. The whole golden week runs
 // in the end-to-end job (reconciliation-week.e2e.test.ts).
 reconciliationSuite('reconciliation with the headless ground truth: Friday night (#96)', () =>
-  Promise.resolve({ seed: 20261012, start: '2026-10-16T14:00:00+03:00', days: 18 / 24 }),
+  Promise.resolve({
+    seed: 20261012,
+    start: '2026-10-16T14:00:00+03:00',
+    days: 18 / 24,
+    settledToEnd: true,
+  }),
 );

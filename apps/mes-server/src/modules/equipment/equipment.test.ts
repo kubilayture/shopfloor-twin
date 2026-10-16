@@ -597,6 +597,29 @@ describe('interval finality (#113)', () => {
     expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 1, 1]]);
   });
 
+  it('does not revise an hour whose stop is filled within the grace period (#120)', async () => {
+    const { db, start, send } = await setup();
+    const equipment = await start();
+    const stopAt = at('10:59') + 30_000;
+    // A stop at 10:59:30 and a cycle at 11:00:10 (10:00 final); seq 4 (Running at 11:00:20)
+    // is late, seq 5 (Running at 11:10) early.
+    await send(
+      feed.state('cnc-a', E1, 1, at('10:10'), 'Running'),
+      feed.state('cnc-a', E1, 2, stopAt, 'Stopped', 'jam'),
+      feed.cycle('cnc-a', E1, 3, at('11:00') + 10_000),
+      feed.state('cnc-a', E1, 5, at('11:10'), 'Running'),
+      feed.cycle('cnc-b', E1, 1, at('11:30')),
+    );
+    const stops = await equipment.stopPieces(new Date(at('10:00')), new Date(at('11:00')));
+    expect(stops.map((p) => [p.wholeMs / 1_000, p.open])).toEqual([[40, true]]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
+    // The fill within the grace period: the stop was never settled as long, so no revision.
+    await send(feed.state('cnc-a', E1, 4, at('11:00') + 20_000, 'Running'));
+    const after = await equipment.stopPieces(new Date(at('10:00')), new Date(at('11:00')));
+    expect(after.map((p) => [p.wholeMs / 1_000, p.open])).toEqual([[50, false]]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
+  });
+
   it('holds finality at a gap, releases it with the incident, and revises on a late fill', async () => {
     const clock = { now: Date.parse('2026-10-15T10:00:00Z') };
     const { db, ingest, start, send } = await setup(

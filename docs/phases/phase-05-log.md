@@ -67,3 +67,4 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - **One epoch per work center** without `epoch`: the newest any of its machines has data in (OEE, push and Pareto).
   - **Golden counts asserted:** the compared buckets equal the ground truth's (machines × shifts + work centers × shifts), 128 for the golden week.
   - Downtime push events are documented as upserts by record id; `stopPieces` looks the next interval up with a lateral join and the last piece only for the last interval.
+  - Re-review: "settled" was judged against "final through" after the late fact had already moved it, so a fill within the grace period revised an hour that was never final with the old class. The stored class now counts as settled only against "final through" before the fact; a test covers an in-grace fill (no revision) beside the incident path (revision 1).

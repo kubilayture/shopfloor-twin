@@ -995,6 +995,9 @@ export class Equipment {
 
   async #onState(track: Track, fact: StateFact, settledSeq: number | null): Promise<void> {
     this.#raise(track.epoch, fact.sourceTime.getTime());
+    // How far the stored intervals were settled before this fact: only a stop class settled
+    // then can have been final, and so revised (#120 review).
+    const priorBound = this.#bound(track);
     if (await this.#learn(track, settledSeq, { seq: fact.seq, at: fact.sourceTime.getTime() })) {
       // This fact is one the track is about to count: the rest must be known already.
       await this.#verifyFacts(track, 1, false);
@@ -1002,7 +1005,7 @@ export class Equipment {
     // A track whose last handling failed is recomputed, never patched from a stale state.
     const window = this.#dirty.has(track) ? undefined : await this.#window(track, fact);
     if (!window) {
-      await this.#rebuild(track);
+      await this.#rebuild(track, priorBound);
     } else {
       const { points: span, index, facts } = window;
       const first = span[0];
@@ -1023,6 +1026,7 @@ export class Equipment {
           changedFrom,
           { from: pred?.at, to: succ.at },
           pieces,
+          priorBound,
         );
         await this.#replace(
           track,
@@ -1041,6 +1045,7 @@ export class Equipment {
           changedFrom,
           { from: pred?.at },
           pieces,
+          priorBound,
         );
         await this.#replace(
           track,
@@ -1474,6 +1479,7 @@ export class Equipment {
     from: Millis | undefined,
     window: { readonly from?: Millis | undefined; readonly to?: Millis | undefined },
     pieces: readonly Piece[],
+    settledBound: Millis = this.#bound(track),
   ): Promise<Millis[]> {
     const { to } = window;
     const opening = pieces[0];
@@ -1542,10 +1548,10 @@ export class Equipment {
     const threshold = this.#downtime.microStopThresholdMs;
     // Only a settled class can be revised: a stop that was still open, or whose end lay past
     // "final through", was provisional, so its OEE bucket was not final either.
-    const bound = this.#bound(track);
+    // `settledBound`: "final through" before the fact being handled moved it.
     const settled = new Set(
       [...storedEnds]
-        .filter(([start, end]) => end <= bound && (track.closed || start !== track.last?.at))
+        .filter(([start, end]) => end <= settledBound && (track.closed || start !== track.last?.at))
         .map(([start]) => start),
     );
     const stopClass = (state: string, start: Millis, ends: ReadonlyMap<Millis, Millis>) =>
@@ -1663,7 +1669,7 @@ export class Equipment {
   }
 
   /** Recomputes all intervals of (equipment, epoch) from ingest's tables. */
-  async #rebuild(track: Track): Promise<void> {
+  async #rebuild(track: Track, settledBound: Millis = this.#bound(track)): Promise<void> {
     const [facts, anchor] = await Promise.all([
       this.#source.stateFacts(track.equipment, track.epoch),
       this.#source.anchor(track.equipment, track.epoch),
@@ -1675,7 +1681,7 @@ export class Equipment {
     const end = last ? this.#end(track, last.at) : -Infinity;
     const pieces = last ? cutPieces(points, end, this.#pattern, this.#bound(track)) : [];
     track.clamped = clamped;
-    const revised = await this.#changedFinalHours(track, undefined, {}, pieces);
+    const revised = await this.#changedFinalHours(track, undefined, {}, pieces, settledBound);
     // Every piece is replaced: the earliest provisional end is among the new ones.
     track.promoteAt = Infinity;
     await this.#replace(

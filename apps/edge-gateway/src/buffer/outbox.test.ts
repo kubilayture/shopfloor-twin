@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { TopicSequences } from '../identity.ts';
 import { MqttLink, NotConnectedError } from '../mqtt-link.ts';
 import type { UnsPublication } from '../publisher.ts';
-import { TEST_PASSWORDS, startBroker } from '../testing.ts';
+import { TEST_PASSWORDS, freePort, startBroker } from '../testing.ts';
 import { Outbox, type Transport } from './outbox.ts';
 
 const dirs: string[] = [];
@@ -26,10 +26,32 @@ function file(): string {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
+/** Waits for a condition; the error names what it waited for, so a failure says which step hung. */
+async function until(
+  condition: () => boolean,
+  timeoutMs = 10_000,
+  what = 'the condition',
+): Promise<void> {
   for (const deadline = Date.now() + timeoutMs; !condition();) {
-    if (Date.now() > deadline) throw new Error('timed out waiting');
+    if (Date.now() > deadline) {
+      throw new Error(`timed out after ${String(timeoutMs)} ms waiting for ${what}`);
+    }
     await wait(10);
+  }
+}
+
+/** Awaits one step with its own time limit; the error names the step that hung. */
+async function within<T>(what: string, timeoutMs: number, step: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`timed out after ${String(timeoutMs)} ms: ${what}`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([step, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -224,11 +246,14 @@ describe('store-and-forward outbox (#78, ADR-0014)', () => {
 
 describe('store-and-forward with the real broker (#78)', () => {
   it('delivers everything stored during a broker outage after the broker comes back', async () => {
-    const PORT = 18_831;
-    // A fixed host port, so the gateway finds the restarted broker where it left it.
-    const brokerAt = async () => (await startBroker({ hostPort: PORT })).container;
+    // A host port chosen at runtime (no clash with a parallel run), then kept across the restart,
+    // so the gateway finds the restarted broker where it left it. `startBroker` retries the start
+    // while the port of the stopped container is not released yet.
+    const PORT = await freePort();
+    const brokerAt = async (what: string) =>
+      (await within(what, 60_000, startBroker({ hostPort: PORT }))).container;
     const url = `mqtt://127.0.0.1:${String(PORT)}`;
-    let broker = await brokerAt();
+    let broker = await brokerAt(`starting the broker on port ${String(PORT)}`);
     const link = new MqttLink({
       url,
       username: 'gw-01',
@@ -257,7 +282,7 @@ describe('store-and-forward with the real broker (#78)', () => {
     };
     const { outbox } = open(file(), transport);
     link.start();
-    await until(() => link.connected);
+    await until(() => link.connected, 15_000, 'the gateway link to connect to the first broker');
     const received: number[] = [];
     const subscribe = async () => {
       const mes = await mqtt.connectAsync(url, {
@@ -272,28 +297,34 @@ describe('store-and-forward with the real broker (#78)', () => {
       await mes.subscribeAsync(message(1).topic, { qos: 1 });
       return mes;
     };
-    let mes = await subscribe();
-    for (let i = 1; i <= 50; i++) await outbox.publish(message(i));
-    await until(() => received.length >= 50);
+    let mes = await within('subscribing to the first broker', 15_000, subscribe());
+    await within(
+      'publishing messages 1–50',
+      15_000,
+      (async () => {
+        for (let i = 1; i <= 50; i++) await outbox.publish(message(i));
+      })(),
+    );
+    await until(() => received.length >= 50, 15_000, 'messages 1–50 at the subscriber');
 
     // Messages 51–100 are on their way when the broker dies: in flight across the outage.
     for (let i = 51; i <= 100; i++) void outbox.publish(message(i));
     // A graceful stop: a broker killed outright also loses what it had acknowledged but not yet
     // passed on, which is the broker's durability, not the gateway's.
-    await broker.stop(); // outage
+    await within('stopping the first broker', 30_000, broker.stop()); // outage
     firstBroker = false;
-    await mes.endAsync(true);
-    await until(() => !link.connected);
+    await within('closing the first subscriber', 5_000, mes.endAsync(true));
+    await until(() => !link.connected, 15_000, 'the gateway link to notice the outage');
     for (let i = 101; i <= 300; i++) void outbox.publish(message(i));
-    await until(() => outbox.depth >= 200);
+    await until(() => outbox.depth >= 200, 10_000, 'messages 101–300 stored in the outbox');
 
-    broker = await brokerAt();
-    mes = await subscribe();
-    await until(() => outbox.depth === 0, 30_000);
-    await until(() => received.includes(300), 10_000);
-    await mes.endAsync(true);
-    await link.close();
-    await broker.stop();
+    broker = await brokerAt(`restarting the broker on port ${String(PORT)}`);
+    mes = await within('subscribing to the restarted broker', 15_000, subscribe());
+    await until(() => outbox.depth === 0, 30_000, 'the outbox to drain after the restart');
+    await until(() => received.includes(300), 10_000, 'message 300 at the subscriber');
+    await within('closing the second subscriber', 5_000, mes.endAsync(true));
+    await within('closing the gateway link', 5_000, link.close());
+    await within('stopping the restarted broker', 30_000, broker.stop());
 
     // The gateway's contract: every message reached a subscriber, or the broker acknowledged it
     // before its outage (what a stopped broker had not passed on yet is the broker's durability).
@@ -305,5 +336,6 @@ describe('store-and-forward with the real broker (#78)', () => {
     // Everything published during the outage was delivered after it, in order.
     const afterOutage = received.filter((seq) => seq > 100);
     expect([...new Set(afterOutage)]).toEqual(Array.from({ length: 200 }, (_, i) => 101 + i));
-  }, 180_000);
+    // Above the sum of the step limits, so a hang fails with the name of its step.
+  }, 360_000);
 });

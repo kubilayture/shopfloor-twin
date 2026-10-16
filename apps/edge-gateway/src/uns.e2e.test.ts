@@ -14,6 +14,7 @@ import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   TEST_PASSWORDS,
+  freePort,
   startBroker,
   startGateway,
   startSimulator,
@@ -22,10 +23,13 @@ import {
   type SimEvent,
 } from './testing.ts';
 
-// Ports clear of the Compose stack and of the other test files.
+// Simulator ports clear of the Compose stack and of the other test files (the OPC UA servers take
+// a block of consecutive ports, so these stay fixed).
 const SIM = { opcuaOffset: 3300, modbusPort: 8320, controlPort: 8100 };
-const BROKER_PORT = 18_841;
-const GATEWAY_HTTP = 4_990;
+// The broker and gateway HTTP ports are chosen at runtime, so a parallel run cannot clash; the
+// broker keeps its port across restarts (`startBroker` retries until the port is released).
+const BROKER_PORT = await freePort();
+const GATEWAY_HTTP = await freePort();
 const MACHINES = ['cnc-01', 'cnc-02', 'wsh-01', 'asm-01', 'lkt-01', 'pck-01'] as const;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));

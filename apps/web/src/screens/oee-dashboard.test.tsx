@@ -148,6 +148,47 @@ describe('OEE dashboard', () => {
     expect(screen.getByTestId('oee-card-line-a1').dataset.oee).toBe('n/a');
   });
 
+  it('shows pushed values only for the buckets the clock is in, and rereads the rest', async () => {
+    const reads: string[] = [];
+    const base = api();
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) => {
+      reads.push(new URL(requestUrl(input), 'http://localhost').pathname);
+      return base(input);
+    });
+    const app = await renderApp('/oee');
+    await app.open();
+    await screen.findByTestId('hour-2026-10-15T04:00:00.000Z');
+    const pushed = (hourStart: string, shift = bucket('cell-m1')) =>
+      app.push({
+        type: 'oee',
+        topic: 'oee:cell-m1',
+        hour: hourBucket('cell-m1', hourStart, {
+          result: result({ oee: { fraction: '1/2', decimal: '0.5000' } }),
+        }),
+        shift: { ...shift, result: result({ oee: { fraction: '7/10', decimal: '0.7000' } }) },
+      });
+    await pushed('2026-10-15T05:00:00.000Z');
+    expect(screen.getByTestId('hour-2026-10-15T05:00:00.000Z').textContent).toContain('0.5000');
+    const hourlyReads = () => reads.filter((path) => path === '/api/v1/oee').length;
+    const before = hourlyReads();
+
+    // The clock moves on: 05:00 is no longer pushed (REST has no such hour here), REST is read.
+    await pushed('2026-10-15T06:00:00.000Z');
+    expect(screen.queryByTestId('hour-2026-10-15T05:00:00.000Z')).toBeNull();
+    expect(screen.getByTestId('hour-2026-10-15T06:00:00.000Z')).toBeTruthy();
+    await waitFor(() => {
+      expect(hourlyReads()).toBeGreaterThan(before);
+    });
+
+    // A new shift: the selected shift's card falls back to its REST value.
+    expect(screen.getByTestId('oee-card-cell-m1').dataset.oee).toBe('0.7000');
+    await pushed('2026-10-15T11:00:00.000Z', bucket('cell-m1', { key: '2026-10-15/B' }));
+    expect(screen.getByTestId('oee-card-cell-m1').dataset.oee).toBe('0.6300');
+    await waitFor(() => {
+      expect(reads.filter((path) => path === '/api/v1/shifts/2026-10-15/A/oee').length).toBe(2);
+    });
+  });
+
   it('switches to an earlier shift and to a machine', async () => {
     const fetched: string[] = [];
     const base = api({

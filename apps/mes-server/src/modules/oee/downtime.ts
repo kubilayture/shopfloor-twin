@@ -6,6 +6,7 @@
 import { HOUR, type AvailabilityLoss, type Millis } from '@shopfloor/oee-core';
 import { NO_SHIFT } from '@shopfloor/shift-calendar';
 import type {
+  CodingChange,
   DowntimeCoding,
   DowntimeLoss,
   DowntimeRecord,
@@ -120,9 +121,9 @@ export interface DowntimeFeedOptions {
 const LOOKBACK_MS = 25 * HOUR;
 
 /**
- * What operator coding changed about a record: its codings (#121). Not the set's version, which
- * moves with every write to any record of the same (equipment, epoch): clients that write read
- * the version again or retry on 409.
+ * What operator coding changed about a record: its codings (#121), which make it `recoded`. The
+ * set's version alone (a write to another record of the same equipment and epoch) makes it
+ * `updated` (#122), so a client always holds the version it must write with.
  */
 const codingOf = (record: DowntimeRecord): string =>
   JSON.stringify(
@@ -137,6 +138,7 @@ const sameRecord = (a: DowntimeRecord, b: DowntimeRecord): boolean =>
   a.shiftKey === b.shiftKey &&
   a.autoReason === b.autoReason &&
   a.provisional === b.provisional &&
+  a.codingVersion === b.codingVersion &&
   codingOf(a) === codingOf(b);
 
 /**
@@ -200,7 +202,7 @@ export class DowntimeFeed {
       this.#changed(change);
     });
     const codings = this.#options.codings?.onChange((change) => {
-      this.#changed(change);
+      this.#changed(this.#withCodingSet(change));
     });
     this.#detach = () => {
       pieces();
@@ -219,6 +221,23 @@ export class DowntimeFeed {
     } catch (error) {
       this.#options.onError?.(error);
     }
+  }
+
+  /**
+   * A coding change moves the version of its (equipment, epoch)'s coding set, which every record
+   * of that machine and epoch carries: the pass reads all the known ones, so those whose version
+   * moved go out as `updated` (clients write with the version they hold, ADR-0023).
+   */
+  #withCodingSet(change: CodingChange): Pick<PiecesChanged, 'equipment' | 'from' | 'to'> {
+    let from = change.from.getTime();
+    let to = change.to.getTime();
+    for (const record of this.#known.values()) {
+      if (record.equipment !== change.equipment || record.epoch !== change.epoch) continue;
+      const start = record.start.getTime();
+      from = Math.min(from, start);
+      to = Math.max(to, record.end?.getTime() ?? start + 1);
+    }
+    return { equipment: change.equipment, from: new Date(from), to: new Date(to) };
   }
 
   #changed(change: Pick<PiecesChanged, 'equipment' | 'from' | 'to'>): void {

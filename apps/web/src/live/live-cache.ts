@@ -31,13 +31,12 @@ export interface LiveMetric {
 export type LiveTelemetry = Readonly<Record<string, LiveMetric>>;
 
 /**
- * Pushed OEE buckets of one topic (`oee:<id>`), by bucket key. The MES pushes the whole bucket
- * the plant clock is in (hour and shift), so the newest message for a key replaces the older; a
- * bucket the clock has left stays as last pushed until the bounds below drop it.
+ * The pushed OEE of one topic (`oee:<id>`): the whole hour and shift buckets the plant clock is
+ * in, as last pushed (null without data). Older buckets are not kept: REST serves them.
  */
 export interface LiveOee {
-  readonly hours: Readonly<Record<string, OeeBucketDto>>;
-  readonly shifts: Readonly<Record<string, OeeBucketDto>>;
+  readonly hour: OeeBucketDto | null;
+  readonly shift: OeeBucketDto | null;
 }
 
 /** A pushed downtime record; `removed` when the MES said it no longer exists. */
@@ -61,9 +60,6 @@ export const liveKeys = {
   downtime: ['live', 'downtime'] as const,
 };
 
-/** Pushed buckets kept per OEE topic: a day of hours and a few shifts. */
-export const LIVE_OEE_HOURS = 48;
-export const LIVE_OEE_SHIFTS = 6;
 /** Pushed downtime records kept (the newest by start); a shift has a few hundred at most. */
 export const LIVE_DOWNTIME_LIMIT = 5_000;
 
@@ -109,28 +105,37 @@ function mergeSamples(
   return next;
 }
 
-function bounded(
-  buckets: Record<string, OeeBucketDto>,
-  limit: number,
-): Record<string, OeeBucketDto> {
-  const keys = Object.keys(buckets);
-  if (keys.length <= limit) return buckets;
-  const newest = Object.values(buckets)
-    .sort((a, b) => Date.parse(b.start) - Date.parse(a.start))
-    .slice(0, limit);
-  return Object.fromEntries(newest.map((bucket) => [bucket.key, bucket]));
-}
+/**
+ * REST reads that a clock moving into a new hour or shift makes stale (prefixes of
+ * `queryKeys` in api/queries.ts, which imports this module): the hourly OEE, and with a new shift
+ * also the shift's OEE and the shifts (current one and list).
+ */
+const HOUR_READS = [['oee']] as const;
+const SHIFT_READS = [['oee'], ['shift-oee'], ['shifts']] as const;
 
-function mergeOee(
-  live: LiveOee | undefined,
+const movedOn = (known: OeeBucketDto | null | undefined, next: OeeBucketDto | null): boolean =>
+  known !== null && known !== undefined && next !== null && next.key !== known.key;
+
+/**
+ * A pushed OEE pair replaces what the topic held: only the buckets the plant clock is in are
+ * kept, so a bucket the clock has left is read from REST again (its last push may be older than
+ * what REST answers now, e.g. not yet final).
+ */
+function applyOee(
+  queryClient: QueryClient,
+  topic: string,
   hour: OeeBucketDto | null,
   shift: OeeBucketDto | null,
-): LiveOee {
-  const base = live ?? { hours: {}, shifts: {} };
-  return {
-    hours: hour ? bounded({ ...base.hours, [hour.key]: hour }, LIVE_OEE_HOURS) : base.hours,
-    shifts: shift ? bounded({ ...base.shifts, [shift.key]: shift }, LIVE_OEE_SHIFTS) : base.shifts,
-  };
+): void {
+  const key = liveKeys.oee(topic.slice('oee:'.length));
+  const known = queryClient.getQueryData<LiveOee>(key);
+  queryClient.setQueryData<LiveOee>(key, { hour, shift });
+  const reads = movedOn(known?.shift, shift)
+    ? SHIFT_READS
+    : movedOn(known?.hour, hour)
+      ? HOUR_READS
+      : [];
+  for (const queryKey of reads) void queryClient.invalidateQueries({ queryKey });
 }
 
 /**
@@ -196,10 +201,7 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
           mergeStates(live, message.clock, message.states),
         );
       } else if ('hour' in message) {
-        const id = message.topic.slice('oee:'.length);
-        queryClient.setQueryData<LiveOee>(liveKeys.oee(id), (live) =>
-          mergeOee(live, message.hour, message.shift),
-        );
+        applyOee(queryClient, message.topic, message.hour, message.shift);
       } else if ('samples' in message && message.samples.length > 0) {
         const equipment = message.topic.slice('telemetry:'.length);
         queryClient.setQueryData<LiveTelemetry>(liveKeys.telemetry(equipment), (telemetry) =>
@@ -222,13 +224,9 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
         mergeSamples(telemetry, [message]),
       );
       return;
-    case 'oee': {
-      const id = message.topic.slice('oee:'.length);
-      queryClient.setQueryData<LiveOee>(liveKeys.oee(id), (live) =>
-        mergeOee(live, message.hour, message.shift),
-      );
+    case 'oee':
+      applyOee(queryClient, message.topic, message.hour, message.shift);
       return;
-    }
     case 'downtime':
       queryClient.setQueryData<LiveDowntime>(liveKeys.downtime, (live) =>
         mergeDowntime(live, message.record, message.event === 'removed'),

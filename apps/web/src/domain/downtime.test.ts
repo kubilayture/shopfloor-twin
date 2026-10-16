@@ -125,6 +125,9 @@ describe('the coding form', () => {
       'Segment 2 overlaps the one before.',
       'Segment 2: choose an active reason (not "Not coded").',
     ]);
+    // The limit counts the comment as sent: trimmed.
+    const padded = { from: START, to: END, reason: 'SETUP', comment: ` ${'y'.repeat(500)} ` };
+    expect(validateDraft(draft([padded]), record(), options)).toEqual([]);
     const many = Array.from({ length: 33 }, (_unused, index) => ({
       from: START + index,
       to: START + index + 1,

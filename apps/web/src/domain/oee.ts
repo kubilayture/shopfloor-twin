@@ -48,6 +48,13 @@ export function minutesText(ms: Fraction | number): string {
   return `${toDecimal(multiply(value, MINUTE), 1)} min`;
 }
 
+const SECOND = fraction(1n, 1_000n);
+
+/** Exact ms as seconds with three decimals (exact for whole ms, rounded half-up otherwise). */
+export function secondsText(ms: Fraction): string {
+  return `${toDecimal(multiply(ms, SECOND), 3)} s`;
+}
+
 export type WaterfallKind = 'total' | 'loss' | 'gain';
 
 export interface WaterfallStep {

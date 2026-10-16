@@ -1,5 +1,6 @@
 import {
   DOWNTIME_TOPIC,
+  MES_API_LIMITS,
   type DowntimeList,
   type DowntimeRecordDto,
   type ReasonCodes,
@@ -33,6 +34,9 @@ import {
   saveCodedBy,
   splitSegments,
   validateDraft,
+  writeVersion,
+  draftBase,
+  type DraftBase,
   type DraftSegment,
   type ReasonOption,
   type WriteFailure,
@@ -154,6 +158,8 @@ function SegmentEditor({
           {index > 0 ? (
             <button
               type="button"
+              data-testid="join-segment"
+              data-segment={index}
               className={`${buttonClass} mt-2`}
               onClick={() => {
                 onChange(joinSegment(segments, index));
@@ -187,7 +193,7 @@ function CommentInput({
         id={id}
         data-testid="segment-comment"
         value={value}
-        maxLength={500}
+        maxLength={MES_API_LIMITS.codingComment}
         onChange={(event) => {
           onChange(event.target.value);
         }}
@@ -323,27 +329,32 @@ function CodingForm({
 }) {
   const queryClient = useQueryClient();
   const [segments, setSegments] = useState<DraftSegment[]>(() => initialSegments(record));
+  // What the draft started from: a newer record with the same codings only moves the version
+  // (adopted); one with other codings makes the draft stale, and it is never sent as it is.
+  const [base, setBase] = useState<DraftBase>(() => draftBase(record));
   const [codedBy, setCodedBy] = useState(loadCodedBy);
   const [errors, setErrors] = useState<string[]>([]);
   const [message, setMessage] = useState<Message | undefined>(undefined);
   const codedById = useId();
+  const version = writeVersion(base, record);
 
-  // The options (and so this function) are renewed every render: `version` is the latest read.
+  const restart = (from: DowntimeRecordDto) => {
+    setSegments(initialSegments(from));
+    setBase(draftBase(from));
+  };
+
   const save = useMutation({
-    mutationFn: (clear: boolean) =>
-      putCoding(
-        record.id,
-        codingBody({ segments: clear ? [] : segments, codedBy }, record.version),
-      ),
+    mutationFn: ({ clear, at }: { clear: boolean; at: number }) =>
+      putCoding(record.id, codingBody({ segments: clear ? [] : segments, codedBy }, at)),
     onSuccess: (result) => {
       saveCodedBy(codedBy);
       upsertRecord(queryClient, result.record);
-      setSegments(initialSegments(result.record));
+      restart(result.record);
       setMessage({ kind: 'saved', text: `Saved (version ${String(result.version)}).` });
       void queryClient.invalidateQueries({ queryKey: queryKeys.audit(record.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.paretoAll });
-      // The version belongs to the machine's coding set: its other records moved on too, and
-      // the MES pushes no event for them (docs/api/realtime.md), so read the list again.
+      // The machine's other records moved to the new version too; the MES pushes them as
+      // `updated`, and the list is read again in case this tab missed a push.
       void queryClient.invalidateQueries({ queryKey: queryKeys.downtimeAll });
     },
     onError: async (error) => {
@@ -355,7 +366,7 @@ function CodingForm({
           .getQueryData<DowntimeList>(shiftQueryKey)
           ?.records.find((candidate) => candidate.id === record.id);
         if (fresh) upsertRecord(queryClient, fresh);
-        setSegments(initialSegments(fresh ?? record));
+        restart(fresh ?? record);
         void queryClient.invalidateQueries({ queryKey: queryKeys.audit(record.id) });
       }
     },
@@ -363,10 +374,14 @@ function CodingForm({
 
   const submit = (clear: boolean) => {
     setMessage(undefined);
+    if (version === undefined) {
+      setErrors(['Reload the draft first: the codings of this record changed meanwhile.']);
+      return;
+    }
     const problems = validateDraft({ segments: clear ? [] : segments, codedBy }, record, options);
     setErrors(problems);
     if (problems.length > 0) return;
-    save.mutate(clear);
+    save.mutate({ clear, at: version });
   };
 
   return (
@@ -394,7 +409,7 @@ function CodingForm({
           id={codedById}
           data-testid="coded-by"
           value={codedBy}
-          maxLength={100}
+          maxLength={MES_API_LIMITS.codedBy}
           autoComplete="name"
           onChange={(event) => {
             setCodedBy(event.target.value);
@@ -405,6 +420,31 @@ function CodingForm({
           Recorded as typed, not authenticated (until login comes). Remembered on this browser.
         </p>
       </div>
+      {version === undefined ? (
+        <div
+          role="alert"
+          data-testid="draft-conflict"
+          data-kind="conflict"
+          className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
+        >
+          <p>
+            The codings of this record changed while you were editing (another coding was saved).
+            Your draft is not sent; reload it to start from the current codings.
+          </p>
+          <button
+            type="button"
+            data-testid="reload-draft"
+            className={`${buttonClass} mt-2`}
+            onClick={() => {
+              restart(record);
+              setErrors([]);
+              setMessage(undefined);
+            }}
+          >
+            Reload the draft
+          </button>
+        </div>
+      ) : null}
       {errors.length > 0 ? (
         <ul role="alert" data-testid="coding-errors" className="text-sm text-red-900">
           {errors.map((error) => (
@@ -440,7 +480,7 @@ function CodingForm({
           data-testid="reset-coding"
           className={buttonClass}
           onClick={() => {
-            setSegments(initialSegments(record));
+            restart(record);
             setErrors([]);
             setMessage(undefined);
           }}
@@ -490,6 +530,12 @@ function RecordPanel({
       aria-labelledby="record-title"
       data-testid="coding-panel"
       data-record={record.id}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          onClose();
+        }
+      }}
       className="min-w-0 rounded-lg border border-slate-300 bg-white p-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto"
     >
       <div className="flex items-start justify-between gap-2">
@@ -497,7 +543,7 @@ function RecordPanel({
           {machineName}: {record.state}
           {record.cause ? ` (${record.cause})` : ''}
         </h2>
-        <button type="button" className={buttonClass} onClick={onClose}>
+        <button type="button" data-testid="close-coding" className={buttonClass} onClick={onClose}>
           Close
         </button>
       </div>
@@ -635,6 +681,7 @@ export function DowntimeCoding() {
           </label>
           <select
             id={machineFilterId}
+            data-testid="machine-filter"
             value={machine}
             onChange={(event) => {
               setMachine(event.target.value);
@@ -757,6 +804,7 @@ export function DowntimeCoding() {
                   <td className="px-2 py-1">
                     <button
                       type="button"
+                      data-testid={`code-${record.id}`}
                       className={buttonClass}
                       aria-label={`Code ${machineName(record.equipment)} at ${formatClockSeconds(record.start)}`}
                       onClick={() => {
@@ -792,7 +840,16 @@ export function DowntimeCoding() {
               machineName={machineName(selected.equipment)}
               shiftQueryKey={listKey}
               onClose={() => {
-                void navigate({ search: (previous) => ({ ...previous, record: undefined }) });
+                const id = selected.id;
+                void navigate({ search: (previous) => ({ ...previous, record: undefined }) }).then(
+                  () => {
+                    // Back to the row's Code button (ids are validated: no quote can occur).
+                    const button = document.querySelector<HTMLElement>(
+                      `[data-testid="code-${id}"]`,
+                    );
+                    (button ?? document.getElementById('downtime-title'))?.focus();
+                  },
+                );
               }}
             />
           ) : (

@@ -298,6 +298,107 @@ describe('downtime coding', () => {
     expect(message.textContent).toMatch(expected);
   });
 
+  it('never sends a stale draft after someone else recoded the record mid-edit', async () => {
+    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
+    const server = mes(
+      () => json({ record: { ...UNCODED, version: 6 }, version: 6 }),
+      () => [UNCODED],
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/downtime');
+    await app.open();
+    const panel = await openRecord();
+    fireEvent.change(within(panel).getByTestId('reason-picker'), { target: { value: 'SETUP' } });
+
+    // A write to another record of the machine only moves the version: adopted silently.
+    await app.push({ type: 'downtime', event: 'updated', record: { ...UNCODED, version: 4 } });
+    expect(within(panel).queryByTestId('draft-conflict')).toBeNull();
+
+    // B codes this record meanwhile: A's draft is stale.
+    const byB = {
+      ...UNCODED,
+      version: 5,
+      uncoded: false,
+      reason: 'BREAKDOWN/SPINDLE-OVERLOAD',
+      codings: [
+        {
+          from: UNCODED.start,
+          to: UNCODED.end ?? UNCODED.start,
+          reason: 'BREAKDOWN/SPINDLE-OVERLOAD',
+          comment: '',
+          codedBy: 'B',
+          codedAt: '2026-10-16T08:00:00.000Z',
+          version: 5,
+        },
+      ],
+    };
+    await app.push({ type: 'downtime', event: 'recoded', record: byB });
+    const conflict = within(panel).getByTestId('draft-conflict');
+    expect(conflict.dataset.kind).toBe('conflict');
+    fireEvent.click(within(panel).getByTestId('save-coding'));
+    expect(within(panel).getByTestId('coding-errors').textContent).toContain('Reload the draft');
+    expect(server.calls.some((call) => call.method === 'PUT')).toBe(false);
+
+    // Reloading starts from B's coding; a save then sends B's version.
+    fireEvent.click(within(conflict).getByTestId('reload-draft'));
+    expect(within(panel).queryByTestId('draft-conflict')).toBeNull();
+    expect(within(panel).getByTestId<HTMLSelectElement>('reason-picker').value).toBe(
+      'BREAKDOWN/SPINDLE-OVERLOAD',
+    );
+    fireEvent.click(within(panel).getByTestId('save-coding'));
+    await waitFor(() => {
+      expect(server.calls.find((call) => call.method === 'PUT')?.body).toMatchObject({
+        version: 5,
+        segments: [{ reason: 'BREAKDOWN/SPINDLE-OVERLOAD' }],
+      });
+    });
+  });
+
+  it('adopts a moved version for an unchanged record and sends it', async () => {
+    localStorage.setItem('shopfloor.codedBy', 'Ayşe');
+    const server = mes(
+      () => json({ record: { ...UNCODED, version: 9 }, version: 9 }),
+      () => [UNCODED],
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/downtime');
+    await app.open();
+    const panel = await openRecord();
+    fireEvent.change(within(panel).getByTestId('reason-picker'), { target: { value: 'SETUP' } });
+    await app.push({ type: 'downtime', event: 'updated', record: { ...UNCODED, version: 8 } });
+    fireEvent.click(within(panel).getByTestId('save-coding'));
+    await waitFor(() => {
+      expect(server.calls.find((call) => call.method === 'PUT')?.body).toMatchObject({
+        version: 8,
+      });
+    });
+  });
+
+  it('closes with Escape or Close and returns focus to the row', async () => {
+    const server = mes(
+      () => json({}),
+      () => [UNCODED, CODED],
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/downtime');
+    const panel = await openRecord();
+    fireEvent.keyDown(within(panel).getByTestId('coded-by'), { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('coding-panel')).toBeNull();
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId(`code-${UNCODED.id}`));
+    });
+
+    fireEvent.click(screen.getByTestId(`code-${CODED.id}`));
+    fireEvent.click(await screen.findByTestId('close-coding'));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId(`code-${CODED.id}`));
+    });
+    fireEvent.change(screen.getByTestId('machine-filter'), { target: { value: 'wsh-01' } });
+    expect(screen.queryByTestId(`downtime-row-${UNCODED.id}`)).toBeNull();
+  });
+
   it('applies pushed records: new ones join, recoded ones change, removed ones go', async () => {
     const server = mes(
       () => json({}),

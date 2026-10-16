@@ -7,6 +7,7 @@ import {
   percentText,
   pickBucket,
   ratioText,
+  secondsText,
   waterfall,
 } from './oee.ts';
 import { fraction } from '@shopfloor/oee-core';
@@ -31,6 +32,11 @@ describe('ratio text', () => {
     expect(minutesText(fraction(3_000n, 1n))).toBe('0.1 min');
     expect(minutesText(parseFraction('14/3'))).toBe('0.0 min');
     expect(() => parseFraction('1.5')).toThrow(RangeError);
+  });
+
+  it('formats exact ms as seconds for the waterfall tooltips', () => {
+    expect(secondsText(parseFraction('820000/3'))).toBe('273.333 s');
+    expect(secondsText(fraction(1_234n))).toBe('1.234 s');
   });
 });
 

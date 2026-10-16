@@ -625,6 +625,13 @@ describe('coding downtime records (#121)', () => {
         version: codingResultSchema.parse(response.json()).version,
       },
     });
+    // The machine's other record of that epoch carries the set's new version too: `updated`.
+    const sibling = await until(
+      (m) => m.type === 'downtime' && m.event === 'updated' && m.record.id === STOP_ID,
+    );
+    expect(sibling).toMatchObject({
+      record: { version: codingResultSchema.parse(response.json()).version },
+    });
     // OEE did not change, so its topic sends nothing.
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(messages.filter((m) => m.type === 'oee')).toEqual([]);

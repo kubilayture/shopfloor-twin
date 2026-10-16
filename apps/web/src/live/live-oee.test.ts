@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { socketFactory } from '../test/fake-socket.ts';
 import { bucket, hourBucket, record } from '../test/oee-fixtures.ts';
 import {
-  LIVE_OEE_HOURS,
   applyMessage,
   liveKeys,
   setLiveQueryDefaults,
@@ -42,25 +41,40 @@ describe('OEE pushes in the cache', () => {
     });
     applyMessage(queryClient, { type: 'oee', topic: 'oee:cnc-01', hour: null, shift: null });
     const live = oee(queryClient, 'cell-m1');
-    expect(live?.hours['2026-10-15T06:00:00.000Z']?.provisionalMs).toBe(5);
-    expect(live?.shifts['2026-10-15/A']?.final).toBe(true);
-    expect(oee(queryClient, 'cnc-01')).toEqual({ hours: {}, shifts: {} });
+    expect(live?.hour?.provisionalMs).toBe(5);
+    expect(live?.shift?.final).toBe(true);
+    expect(oee(queryClient, 'cnc-01')).toEqual({ hour: null, shift: null });
   });
 
-  it('keeps a bounded number of hours, the newest', () => {
+  it('keeps only the buckets the clock is in and rereads REST when it moves on', () => {
     const queryClient = liveQueryClient();
-    for (let index = 0; index < LIVE_OEE_HOURS + 5; index += 1) {
-      const start = new Date(Date.parse('2026-10-10T00:00:00.000Z') + index * 3_600_000);
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const push = (hourStart: string, shift = bucket('cell-m1')) => {
       applyMessage(queryClient, {
         type: 'oee',
         topic: 'oee:cell-m1',
-        hour: hourBucket('cell-m1', start.toISOString()),
-        shift: null,
+        hour: hourBucket('cell-m1', hourStart),
+        shift,
       });
-    }
-    const hours = Object.keys(oee(queryClient, 'cell-m1')?.hours ?? {});
-    expect(hours).toHaveLength(LIVE_OEE_HOURS);
-    expect(hours).not.toContain('2026-10-10T00:00:00.000Z');
+    };
+    push('2026-10-15T06:00:00.000Z');
+    push('2026-10-15T06:00:00.000Z');
+    expect(invalidate).not.toHaveBeenCalled();
+
+    // A new hour: the old one is dropped and the hourly REST reads are refetched.
+    push('2026-10-15T07:00:00.000Z');
+    expect(oee(queryClient, 'cell-m1')?.hour?.key).toBe('2026-10-15T07:00:00.000Z');
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([['oee']]);
+
+    // A new shift: also the shift's OEE and the shifts.
+    invalidate.mockClear();
+    push('2026-10-15T11:00:00.000Z', bucket('cell-m1', { key: '2026-10-15/B' }));
+    expect(oee(queryClient, 'cell-m1')?.shift?.key).toBe('2026-10-15/B');
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+      ['oee'],
+      ['shift-oee'],
+      ['shifts'],
+    ]);
   });
 });
 
@@ -105,6 +119,34 @@ describe('LiveClient with OEE and downtime topics', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('starts the busy backoff anew once a subscription is confirmed', () => {
+    const factory = socketFactory();
+    const client = new LiveClient({
+      url: 'ws://x',
+      createSocket: factory.create,
+      random: () => 0.5,
+    });
+    client.start();
+    factory.last.open();
+    client.subscribe('oee:cell-m1');
+    const subscribes = () =>
+      factory.last.sent.filter((message) => message.topic === 'oee:line-a1').length;
+    const busy = () => {
+      factory.last.receive({ type: 'error', code: 'busy', detail: 'snapshots' });
+    };
+    busy();
+    vi.advanceTimersByTime(1_000);
+    busy();
+    vi.advanceTimersByTime(2_000);
+    // Without a reset the next retry would wait 4 s.
+    factory.last.receive({ type: 'subscribed', topic: 'oee:cell-m1', metric: null });
+    client.subscribe('oee:line-a1');
+    expect(subscribes()).toBe(1);
+    busy();
+    vi.advanceTimersByTime(1_000);
+    expect(subscribes()).toBe(2);
   });
 
   it('subscribes to oee:<id> and downtime and asks again after a reconnect', () => {

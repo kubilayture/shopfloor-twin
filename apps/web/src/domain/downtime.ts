@@ -102,6 +102,32 @@ export function initialSegments(record: DowntimeRecordDto): DraftSegment[] {
   return segments;
 }
 
+/** A record's operator codings as one comparable value (what a draft is built from). */
+export const codingsKey = (record: DowntimeRecordDto): string =>
+  JSON.stringify(record.codings.map((c) => [c.from, c.to, c.reason, c.comment, c.codedBy]));
+
+/** What a coding draft started from: the version read and the codings it was built from. */
+export interface DraftBase {
+  readonly version: number;
+  readonly codings: string;
+}
+
+export const draftBase = (record: DowntimeRecordDto): DraftBase => ({
+  version: record.version,
+  codings: codingsKey(record),
+});
+
+/**
+ * The version to write a draft with. While the record's codings are those the draft started
+ * from, a newer version (a write to another record of the machine) is adopted. Once they
+ * changed (someone coded this record meanwhile), undefined: the draft is stale and must be
+ * reloaded, never sent with the newer version, which would silently replace that coding.
+ */
+export function writeVersion(base: DraftBase, record: DowntimeRecordDto): number | undefined {
+  if (codingsKey(record) !== base.codings) return undefined;
+  return Math.max(base.version, record.version);
+}
+
 /** Splits the segment that contains `at` into two (both keep its reason and comment). */
 export function splitSegments(segments: readonly DraftSegment[], at: number): DraftSegment[] {
   return segments.flatMap((segment) =>
@@ -204,7 +230,7 @@ export function validateDraft(
       const reason = reasons.find((option) => option.id === segment.reason);
       if (!reason?.codable) errors.push(`${name}: choose an active reason (not "Not coded").`);
     }
-    if (segment.comment.length > MES_API_LIMITS.codingComment) {
+    if (segment.comment.trim().length > MES_API_LIMITS.codingComment) {
       errors.push(
         `${name}: the comment may have at most ${String(MES_API_LIMITS.codingComment)} characters.`,
       );

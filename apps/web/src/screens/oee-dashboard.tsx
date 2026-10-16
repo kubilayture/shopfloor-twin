@@ -23,6 +23,7 @@ import {
   percentText,
   pickBucket,
   ratioText,
+  secondsText,
   stepSign,
   waterfall,
 } from '../domain/oee.ts';
@@ -53,14 +54,14 @@ function names(list: readonly EquipmentDto[]): Names {
   return { equipment, workCenters };
 }
 
-/** The pushed shift bucket for this key over the REST one (`pickBucket`). */
+/** The pushed shift bucket over the REST one, when the clock is in this shift (`pickBucket`). */
 function useShiftBucket(
   id: string,
   rest: OeeBucketDto | undefined,
   shiftKey: string,
 ): OeeBucketDto | undefined {
-  const pushed = useLiveOee(id)?.shifts[shiftKey];
-  return pickBucket(rest, pushed);
+  const pushed = useLiveOee(id)?.shift;
+  return pickBucket(rest, pushed?.key === shiftKey ? pushed : undefined);
 }
 
 function Flags({ bucket }: { readonly bucket: OeeBucketDto }) {
@@ -294,13 +295,14 @@ function HourlyChart({
     queryFn: ({ signal }) => getOee({ scope, id, bucket: 'hour', from: start, to: end }, signal),
     refetchInterval: live ? LIVE_REFRESH_MS : false,
   });
-  const pushed = useLiveOee(id)?.hours;
+  // Only the hour the clock is in is pushed; earlier hours come from REST, read again when the
+  // clock moves into a new hour (live-cache).
+  const pushed = useLiveOee(id)?.hour;
   const byKey = new Map((hours.data?.buckets ?? []).map((bucket) => [bucket.key, bucket]));
-  for (const bucket of Object.values(pushed ?? {})) {
-    const at = Date.parse(bucket.start);
-    if (at < start || at >= end) continue;
-    const shown = pickBucket(byKey.get(bucket.key), bucket);
-    if (shown) byKey.set(bucket.key, shown);
+  if (pushed) {
+    const at = Date.parse(pushed.start);
+    const shown = at >= start && at < end ? pickBucket(byKey.get(pushed.key), pushed) : undefined;
+    if (shown) byKey.set(shown.key, shown);
   }
   const rows = [...byKey.values()].sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
   return (
@@ -399,13 +401,21 @@ function WaterfallChart({ bucket }: { readonly bucket: OeeBucketDto | undefined 
                   <th scope="row" className="py-0.5 text-left font-[inherit]">
                     {step.label}
                   </th>
-                  <td className="text-right tabular-nums">
+                  <td
+                    className="text-right tabular-nums"
+                    title={`${stepSign(step)}${secondsText(step.ms)} exactly`}
+                    data-seconds={secondsText(step.ms)}
+                  >
                     {stepSign(step)} {minutesText(step.ms)}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          <p className="mt-1 text-xs text-slate-700">
+            Minutes are rounded to 0.1 (half-up); the exact time of each step is in its tooltip. The
+            steps add up exactly.
+          </p>
         </>
       ) : null}
     </EChart>

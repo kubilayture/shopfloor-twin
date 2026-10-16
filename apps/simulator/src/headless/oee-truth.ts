@@ -19,7 +19,7 @@ import {
   type StopPiece,
 } from '@shopfloor/oee-core';
 import { idealCycleMs, type PlantConfig } from '@shopfloor/plant-config';
-import { NO_SHIFT, shiftKeyAt } from '@shopfloor/shift-calendar';
+import { NO_SHIFT, hourStart, shiftKeyAt } from '@shopfloor/shift-calendar';
 import type { SimTime } from '@shopfloor/sim-core';
 import { isoTime } from './serialize.ts';
 import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
@@ -30,8 +30,6 @@ export const zeroStates = (): StateMs =>
   Object.fromEntries(MACHINE_STATES.map((s) => [s, 0])) as StateMs;
 
 const HOUR = 3_600_000;
-
-const hourStart = (time: SimTime): SimTime => time - (((time % HOUR) + HOUR) % HOUR);
 
 /** A ratio as an exact reduced fraction and rounded half-up to four decimals. */
 export interface RatioJson {

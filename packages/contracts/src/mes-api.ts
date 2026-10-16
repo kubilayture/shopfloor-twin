@@ -57,6 +57,10 @@ export const MES_API_LIMITS = {
   minShelveMs: 60_000,
   /** Entries of one alarm point's audit. */
   alarmAudit: 500,
+  /** Handover notes (#144): characters of a note's text and of its author; notes per shift. */
+  noteText: 4_000,
+  noteAuthor: 100,
+  notesPerShift: 200,
 } as const;
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -984,6 +988,191 @@ export const operatorKpiListSchema = z.object({
 
 export type OperatorBucketDto = z.infer<typeof operatorBucketSchema>;
 export type OperatorKpiList = z.infer<typeof operatorKpiListSchema>;
+
+// ---- Shifts: instances, report and handover notes (#144, ADR-0025) ----
+
+const shiftStatus = z
+  .enum(['running', 'ended', 'final'])
+  .describe(
+    'running: the plant clock is inside it; ended: past its end (or a newer epoch began); final: the report’s inputs are final (never goes back)',
+  );
+
+export const shiftRecordSchema = z
+  .object({
+    key: z.string().describe('`date/shift`'),
+    date: z.string(),
+    shift: z.string(),
+    epoch: int.describe('The plant epoch (the simulator run every device shares, ADR-0015)'),
+    start: time,
+    end: time,
+    breaks: z.array(z.object({ start: time, end: time })),
+    status: shiftStatus,
+    final: z.boolean().describe('The report is final (status final)'),
+    finalAt: time.nullable().describe('Wall time the report became final'),
+    revision: z
+      .object({
+        inputs: int.describe(
+          'Starts at 0 when the report becomes final; +1 per revision of an input after that (an OEE hour of a machine, an alarm KPI hour of a scope)',
+        ),
+        content: int.describe(
+          '+1 per handover note create or edit, and per operator recode inside the shift once final (recoding never changes OEE, only the downtime section)',
+        ),
+      })
+      .describe('The composite revision (ADR-0025): both stored counters'),
+  })
+  .describe('One shift instance: a scheduled shift the plant clock entered, per plant epoch');
+
+export const NOTE_CATEGORIES = ['safety', 'quality', 'equipment', 'material', 'general'] as const;
+const noteCategory = z.enum(NOTE_CATEGORIES);
+
+const noteContentSchema = z.object({
+  category: noteCategory,
+  text: z.string(),
+  retracted: z.boolean(),
+});
+
+export const handoverNoteSchema = z
+  .object({
+    id: int,
+    epoch: int,
+    shiftKey: z.string(),
+    category: noteCategory,
+    text: z.string(),
+    retracted: z.boolean().describe('A wrong note is retracted, never deleted'),
+    createdBy: z.string().describe('As typed: not authenticated (until Phase 7)'),
+    author: z.string().describe('Who wrote the current version, as typed'),
+    version: int.describe('1 when created, +1 per edit: send it with an edit (409 when stale)'),
+    createdAt: time.describe('Wall time'),
+    createdPlantAt: time.describe('Plant time (the epoch’s clock)'),
+    updatedAt: time.describe('Wall time of the latest version'),
+    updatedPlantAt: time,
+  })
+  .describe('A handover note of one shift instance (#144)');
+
+export const handoverAuditEntrySchema = z.object({
+  id: int,
+  noteId: int,
+  action: z.enum(['created', 'edited']),
+  before: noteContentSchema.nullable().describe('Null for a create'),
+  after: noteContentSchema,
+  actor: z.string().describe('The author as typed'),
+  authenticated: z.boolean().describe('Always false until identity (Phase 7)'),
+  at: time.describe('Wall time'),
+  plantAt: time.describe('Plant time'),
+  requestId: z.string().nullable(),
+  version: int.describe("The note's version after the change"),
+});
+
+const noteWithHistorySchema = z.object({
+  note: handoverNoteSchema,
+  history: z.array(handoverAuditEntrySchema).describe('Every version, newest first'),
+});
+
+export const handoverNotesSchema = z.object({
+  shiftKey: z.string(),
+  epoch: int,
+  notes: z.array(noteWithHistorySchema).describe('By creation'),
+});
+
+export const noteCreateSchema = z
+  .strictObject({
+    author: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MES_API_LIMITS.noteAuthor)
+      .describe('Who writes, as typed: recorded as unauthenticated'),
+    text: z.string().trim().min(1).max(MES_API_LIMITS.noteText),
+    category: noteCategory,
+  })
+  .describe('A new handover note');
+
+export const noteEditSchema = z
+  .strictObject({
+    author: noteCreateSchema.shape.author,
+    text: noteCreateSchema.shape.text,
+    category: noteCategory,
+    retracted: z.boolean().describe('Retract (or restore) the note; it stays in the history'),
+    version: int.min(1).describe("The note's `version` as read: 409 when it moved on"),
+  })
+  .describe('A new version of a handover note');
+
+export const noteResultSchema = z.object({
+  note: handoverNoteSchema,
+  shift: shiftRecordSchema.describe('The instance after the write (its content revision rose)'),
+});
+
+export const handoverAuditSchema = z.object({
+  note: int,
+  entries: z.array(handoverAuditEntrySchema).describe('Newest first'),
+});
+
+export const shiftReportSchema = z
+  .object({
+    ...shiftRecordSchema.shape,
+    incidents: int.describe('The most sequence-gap incidents of one of its OEE or alarm buckets'),
+    asOf: time.nullable().describe('The plant clock of the epoch when the report was computed'),
+    generatedAt: time.describe('Wall time the report was computed (for the printout)'),
+    oee: shiftOeeSchema.describe('Exactly the body of GET /shifts/{date}/{shift}/oee'),
+    downtime: z.object({
+      availability: z.object({ own: ms, external: ms }).describe('Equal to the OEE losses'),
+      reasons: paretoSchema.shape.reasons,
+      microStops: paretoSchema.shape.microStops,
+      records: int.describe('Downtime records of the shift'),
+      uncodedMs: ms.describe('Time still UNCODED'),
+      longest: z
+        .array(downtimeRecordSchema)
+        .describe('The ten longest records with the reasons in effect, longest first'),
+    }),
+    production: z.object({
+      machines: z
+        .array(
+          z.object({
+            equipment: z.string(),
+            produced: int,
+            good: int,
+            scrap: int,
+            rework: int,
+            cycles: z.array(cycleCountSchema),
+          }),
+        )
+        .describe('From the OEE inputs, in line order'),
+      finished: z
+        .object({ equipment: z.string().nullable(), good: int })
+        .describe('Finished parts: good cycles of the line’s last machine'),
+      scrap: int.describe('Scrap cycles of every machine'),
+    }),
+    alarms: z.object({
+      scopes: z
+        .array(
+          z.object({
+            scope: alarmScope,
+            id: z.string(),
+            name: z.string(),
+            kpis: alarmKpiBucketSchema
+              .nullable()
+              .describe('The KPIs of the shift bucket (equal to GET /alarms/kpi)'),
+            badActors: z.array(badActorSchema).describe('The top 5 of the shift'),
+          }),
+        )
+        .describe('The plant and every operator position'),
+    }),
+    notes: z.array(noteWithHistorySchema),
+  })
+  .describe(
+    'The shift report (ADR-0025), computed on read: final when its inputs are, with the composite revision',
+  );
+
+export type ShiftRecordDto = z.infer<typeof shiftRecordSchema>;
+export type HandoverNoteDto = z.infer<typeof handoverNoteSchema>;
+export type HandoverAuditEntryDto = z.infer<typeof handoverAuditEntrySchema>;
+export type HandoverNotes = z.infer<typeof handoverNotesSchema>;
+export type NoteCreate = z.input<typeof noteCreateSchema>;
+export type NoteEdit = z.input<typeof noteEditSchema>;
+export type NoteResult = z.infer<typeof noteResultSchema>;
+export type HandoverAudit = z.infer<typeof handoverAuditSchema>;
+export type ShiftReportDto = z.infer<typeof shiftReportSchema>;
+
 export type AlarmOccurrenceDto = z.infer<typeof alarmOccurrenceSchema>;
 export type AlarmShelfDto = z.infer<typeof alarmShelfSchema>;
 export type AlarmCommentDto = z.infer<typeof alarmCommentSchema>;
@@ -1045,6 +1234,7 @@ export type DowntimeAudit = z.infer<typeof downtimeAuditSchema>;
 export const STATES_TOPIC = 'states';
 export const DOWNTIME_TOPIC = 'downtime';
 export const ALARMS_TOPIC = 'alarms';
+export const SHIFTS_TOPIC = 'shifts';
 const telemetryTopic = z
   .string()
   .regex(/^telemetry:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)
@@ -1061,6 +1251,7 @@ const topic = z.union([
   z.literal(STATES_TOPIC),
   z.literal(DOWNTIME_TOPIC),
   z.literal(ALARMS_TOPIC),
+  z.literal(SHIFTS_TOPIC),
   telemetryTopic,
   oeeTopic,
   alarmKpiTopic,
@@ -1169,6 +1360,18 @@ export const serverMessageSchema = z
       hour: alarmKpiBucketSchema.nullable(),
       shift: alarmKpiBucketSchema.nullable(),
       floods: z.array(floodEpisodeSchema),
+    }),
+    z.object({
+      type: z.literal('shift'),
+      event: z
+        .enum(['created', 'status', 'revised'])
+        .describe('The plant clock entered it, its status moved, or its revision rose'),
+      shift: shiftRecordSchema,
+    }),
+    z.object({
+      type: z.literal('handover-note'),
+      event: z.enum(['created', 'edited']),
+      note: handoverNoteSchema,
     }),
     z.object({ type: z.literal('telemetry'), ...telemetrySample.shape }),
     z.object({ type: z.literal('clock'), ...clockSchema.shape }),

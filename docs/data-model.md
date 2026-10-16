@@ -46,6 +46,10 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `alarms.kpi_revision`
   - `alarms.occurrence_source`
   - `alarms.occurrence_state`
+- [`shifts`](#schema-shifts)
+  - `shifts.handover_audit`
+  - `shifts.handover_note`
+  - `shifts.shift_instance`
 - [`public`](#schema-public)
   - `public.schema_migrations`
 
@@ -127,6 +131,27 @@ erDiagram
     bigint epoch PK
   }
   downtime_coding_set ||--o{ downtime_coding : "equipment, epoch"
+```
+
+Schema shifts:
+
+```mermaid
+erDiagram
+  handover_audit {
+    bigint id PK
+    bigint note_id FK
+  }
+  handover_note {
+    bigint id PK
+    bigint epoch FK
+    text shift_key FK
+  }
+  shift_instance {
+    bigint epoch PK
+    text shift_key PK
+  }
+  handover_note ||--o{ handover_audit : "note_id"
+  shift_instance ||--o{ handover_note : "epoch, shift_key"
 ```
 
 The other schemas have no foreign keys; their references are by value, as described above.
@@ -929,6 +954,101 @@ Acknowledgement per occurrence (who, wall time, plant time, comment, request id)
 | Check | `occurrence_state_acknowledged_by_check` | `CHECK (((length(acknowledged_by) >= 1) AND (length(acknowledged_by) <= 100)))` |
 | Check | `occurrence_state_check` | `CHECK (((plant_at IS NULL) = (plant_epoch IS NULL)))` |
 | Check | `occurrence_state_comment_check` | `CHECK ((length(comment) <= 500))` |
+## Schema shifts
+
+Owner: shifts. Shift instances as records per (plant epoch, shift key), with the shift report’s finality and composite revision, and the handover notes with their append-only audit (ADR-0025). The report is computed on read.
+
+### shifts.handover_audit
+
+Append-only audit of every note create and edit: before, after, actor (unauthenticated), wall and plant time, request id and version; a trigger refuses UPDATE, DELETE and TRUNCATE (#144, ADR-0023).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `note_id` | `bigint` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `shift_key` | `text` | not null |  |
+| `action` | `text` | not null |  |
+| `before` | `jsonb` | null |  |
+| `after` | `jsonb` | not null |  |
+| `actor` | `text` | not null |  |
+| `authenticated` | `boolean` | not null | `false` |
+| `at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `plant_at` | `timestamp with time zone` | not null |  |
+| `request_id` | `text` | null |  |
+| `version` | `bigint` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `handover_audit_pkey` | `PRIMARY KEY (id)` |
+| Foreign key | `handover_audit_note_id_fkey` | `FOREIGN KEY (note_id) REFERENCES shifts.handover_note(id)` |
+| Check | `handover_audit_action_check` | `CHECK ((action = ANY (ARRAY['created'::text, 'edited'::text])))` |
+| Check | `handover_audit_check` | `CHECK (((action = 'created'::text) = (before IS NULL)))` |
+| Index | `handover_audit_note` | `shifts.handover_audit USING btree (note_id, id)` |
+
+### shifts.handover_note
+
+Handover notes of a shift instance: the current version (category, text, retracted, author, version); never deleted, a trigger refuses DELETE and TRUNCATE (#144).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `epoch` | `bigint` | not null |  |
+| `shift_key` | `text` | not null |  |
+| `category` | `text` | not null |  |
+| `text` | `text` | not null |  |
+| `created_by` | `text` | not null |  |
+| `author` | `text` | not null |  |
+| `retracted` | `boolean` | not null | `false` |
+| `version` | `bigint` | not null | `1` |
+| `created_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `created_plant_at` | `timestamp with time zone` | not null |  |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `updated_plant_at` | `timestamp with time zone` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `handover_note_pkey` | `PRIMARY KEY (id)` |
+| Foreign key | `handover_note_epoch_shift_key_fkey` | `FOREIGN KEY (epoch, shift_key) REFERENCES shifts.shift_instance(epoch, shift_key)` |
+| Check | `handover_note_author_check` | `CHECK (((length(author) >= 1) AND (length(author) <= 100)))` |
+| Check | `handover_note_category_check` | `CHECK ((category = ANY (ARRAY['safety'::text, 'quality'::text, 'equipment'::text, 'material'::text, 'general'::text])))` |
+| Check | `handover_note_created_by_check` | `CHECK (((length(created_by) >= 1) AND (length(created_by) <= 100)))` |
+| Check | `handover_note_text_check` | `CHECK (((length(text) >= 1) AND (length(text) <= 4000)))` |
+| Check | `handover_note_version_check` | `CHECK ((version >= 1))` |
+| Index | `handover_note_instance` | `shifts.handover_note USING btree (epoch, shift_key, id)` |
+
+### shifts.shift_instance
+
+One scheduled shift the plant clock entered, per (plant epoch, shift key): calendar start, end and breaks, status (running, ended, final), when the report became final and its composite revision {inputs, content} as stored counters (#144, ADR-0025).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `epoch` | `bigint` | not null |  |
+| `shift_key` | `text` | not null |  |
+| `shift_date` | `text` | not null |  |
+| `shift_id` | `text` | not null |  |
+| `start_time` | `timestamp with time zone` | not null |  |
+| `end_time` | `timestamp with time zone` | not null |  |
+| `breaks` | `jsonb` | not null |  |
+| `status` | `text` | not null |  |
+| `final_at` | `timestamp with time zone` | null |  |
+| `final_inputs` | `jsonb` | null |  |
+| `seen_inputs` | `jsonb` | null |  |
+| `inputs_revision` | `bigint` | not null | `0` |
+| `content_revision` | `bigint` | not null | `0` |
+| `created_at` | `timestamp with time zone` | not null | `now()` |
+| `updated_at` | `timestamp with time zone` | not null | `now()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `shift_instance_pkey` | `PRIMARY KEY (epoch, shift_key)` |
+| Check | `shift_instance_check` | `CHECK ((end_time > start_time))` |
+| Check | `shift_instance_check1` | `CHECK (((status = 'final'::text) = (final_at IS NOT NULL)))` |
+| Check | `shift_instance_check2` | `CHECK (((inputs_revision >= 0) AND (content_revision >= 0)))` |
+| Check | `shift_instance_shift_date_check` | `CHECK ((shift_date ~ '^\d{4}-\d{2}-\d{2}$'::text))` |
+| Check | `shift_instance_status_check` | `CHECK ((status = ANY (ARRAY['running'::text, 'ended'::text, 'final'::text])))` |
+| Index | `shift_instance_key` | `shifts.shift_instance USING btree (shift_key, epoch DESC)` |
+| Index | `shift_instance_range` | `shifts.shift_instance USING btree (epoch, start_time)` |
 
 ## Schema public
 

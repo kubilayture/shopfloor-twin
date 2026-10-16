@@ -10,6 +10,7 @@ import { DowntimeCoding, Equipment, downtimeRules } from './modules/equipment/in
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 import { DowntimeFeed, Oee } from './modules/oee/index.ts';
+import { Shifts } from './modules/shifts/index.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -47,6 +48,7 @@ let oee: Oee | undefined;
 let downtime: DowntimeFeed | undefined;
 let coding: DowntimeCoding | undefined;
 let alarms: Alarms | undefined;
+let shifts: Shifts | undefined;
 
 const { app, registry, realtime } = await buildMesHttp({
   // Ready once migrated, the database answers and the UNS subscription is granted.
@@ -76,6 +78,7 @@ async function shutdown(signal: string): Promise<void> {
   for (const close of [
     () => app.close(),
     async () => ingest?.stop(),
+    async () => shifts?.stop(),
     () => {
       oee?.stop();
       downtime?.stop();
@@ -177,6 +180,19 @@ try {
       oeeLog.warn({ err: error }, 'downtime feed: reading records failed; retrying');
     },
   });
+  // Shift instances, the shift report and handover notes (#144): after the modules they read.
+  const shiftsModule = new Shifts({
+    db,
+    readDb,
+    equipment,
+    oee,
+    alarms,
+    coding: codingModule,
+    shiftPattern: await masterData.shiftPattern(),
+    log: log.child({ module: 'shifts' }),
+  });
+  shifts = shiftsModule;
+  await shiftsModule.start();
   // The API and push follow the modules from here; until then they answer 503.
   await realtime.attach({
     masterData: apiMasterData,
@@ -189,8 +205,9 @@ try {
       audit: (key) => codingModule.audit(key, readDb),
     },
     alarms,
+    shifts: shiftsModule,
   });
-  log.info({ writes: env.MES_WRITES }, 'operator writes (downtime coding, alarms)');
+  log.info({ writes: env.MES_WRITES }, 'operator writes (downtime coding, alarms, handover notes)');
   await ingest.start();
 } catch (error) {
   if (state.stopping) await new Promise(() => undefined); // shutdown() owns the exit

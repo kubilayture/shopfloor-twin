@@ -174,3 +174,15 @@ export function shiftSegments(shifts: ShiftPattern, from: Millis, to: Millis): S
   segments.push({ from: start, to, key });
   return segments;
 }
+
+export {
+  HOUR,
+  hourEnd,
+  hourStart,
+  nextShift,
+  noShiftKey,
+  shiftBuckets,
+  shiftInstance,
+  shiftInstances,
+} from './instances.ts';
+export type { ScheduledShift, ShiftBucket } from './instances.ts';

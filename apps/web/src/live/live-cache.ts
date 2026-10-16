@@ -240,6 +240,10 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
     case 'alarm-point':
       // Alarm occurrences, shelves (#143) and KPIs (#142) have no screen yet (#145).
       return;
+    case 'shift':
+    case 'handover-note':
+      // Shift instances and handover notes (#144) have no screen yet (#146).
+      return;
     case 'subscribed':
     case 'unsubscribed':
     case 'error':

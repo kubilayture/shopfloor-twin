@@ -21,6 +21,13 @@ export {
   historyDto,
   occurrenceDto,
 } from './alarm-dto.ts';
+export {
+  handoverAuditDto,
+  handoverNoteDto,
+  shiftOeeDto,
+  shiftRecordDto,
+  shiftReportDto,
+} from './shift-dto.ts';
 export { PushHub } from './push.ts';
 export type { PushOptions, PushSocket, PushSources } from './push.ts';
 export { LIMITS, clientMessageSchema, serverMessageSchema } from './schemas.ts';

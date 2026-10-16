@@ -57,6 +57,14 @@ export {
   shiftListSchema,
   shiftOeeSchema,
   shiftTotalsSchema,
+  SHIFTS_TOPIC,
+  handoverAuditSchema,
+  handoverNotesSchema,
+  noteCreateSchema,
+  noteEditSchema,
+  noteResultSchema,
+  shiftRecordSchema,
+  shiftReportSchema,
 } from '@shopfloor/contracts';
 export type {
   AlarmCommentDto,
@@ -79,6 +87,11 @@ export type {
   Ratio,
   ServerMessage,
   ShiftInstanceDto,
+  HandoverAuditEntryDto,
+  HandoverNoteDto,
+  ShiftOee,
+  ShiftRecordDto,
+  ShiftReportDto,
 } from '@shopfloor/contracts';
 export { LIMITS };
 
@@ -380,3 +393,24 @@ export const operatorKpiQuery = z
     scopeId(query, ctx);
     range(query.bucket === 'hour' ? LIMITS.alarmHourRangeMs : LIMITS.oeeShiftRangeMs)(query, ctx);
   });
+
+// ---- Shifts: instances, report and handover notes (#144, ADR-0025) ----
+
+export const shiftInstanceQuery = z.strictObject({
+  epoch: z
+    .string()
+    .regex(/^\d{1,15}$/, 'expected a decimal integer')
+    .transform(Number)
+    .pipe(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER))
+    .optional()
+    .describe('Plant epoch (run); default: the newest that has this shift'),
+});
+
+export const noteParams = shiftParams.extend({
+  noteId: z
+    .string()
+    .regex(/^\d{1,15}$/, 'expected a note id')
+    .transform(Number)
+    .pipe(z.number().int().min(1).max(Number.MAX_SAFE_INTEGER))
+    .describe('A handover note id'),
+});

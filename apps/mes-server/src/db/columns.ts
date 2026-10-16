@@ -3,6 +3,7 @@ import { ALARMS_COLUMNS } from '../modules/alarms/index.ts';
 import { EQUIPMENT_COLUMNS } from '../modules/equipment/index.ts';
 import { INGEST_COLUMNS } from '../modules/ingest/index.ts';
 import { MASTER_DATA_COLUMNS } from '../modules/master-data/index.ts';
+import { SHIFTS_COLUMNS } from '../modules/shifts/index.ts';
 import type { Database } from './database.ts';
 
 /**
@@ -15,7 +16,14 @@ export type ColumnSpec = {
 };
 
 /** Schemas the MES owns: every table in them must be declared. */
-export const MES_SCHEMAS = ['public', 'master_data', 'ingest', 'equipment', 'alarms'] as const;
+export const MES_SCHEMAS = [
+  'public',
+  'master_data',
+  'ingest',
+  'equipment',
+  'alarms',
+  'shifts',
+] as const;
 
 /** Tables and views that exist in the MES schemas, excluding TimescaleDB's own. */
 export async function actualTables(db: Kysely<Database>): Promise<string[]> {
@@ -52,4 +60,5 @@ export const DECLARED_COLUMNS: ColumnSpec = {
   ...INGEST_COLUMNS,
   ...EQUIPMENT_COLUMNS,
   ...ALARMS_COLUMNS,
+  ...SHIFTS_COLUMNS,
 };

@@ -34,6 +34,12 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
       'Alarm occurrences derived from the device’s raise and clear facts, anchors and resync snapshots (ADR-0010, ADR-0024), what they were derived from, and the revisions of final alarm KPI hours; the operator’s acknowledgements, point shelves and the append-only audit of every MES transition (ADR-0023). KPIs are computed on read and never read the operator’s tables.',
   },
   {
+    name: 'shifts',
+    owner: 'shifts',
+    about:
+      'Shift instances as records per (plant epoch, shift key), with the shift report’s finality and composite revision, and the handover notes with their append-only audit (ADR-0025). The report is computed on read.',
+  },
+  {
     name: 'public',
     owner: 'the migration runner',
     about: 'Bookkeeping of the migration runner (ADR-0016).',
@@ -106,6 +112,12 @@ const TABLES: Readonly<Record<string, string>> = {
     'The shelf of each alarm point (equipment, code) ever shelved: who, why, the plant time it ends at (`until`, at most maxShelveMs) and its version, the optimistic-concurrency token of shelve and unshelve (#143).',
   'alarms.alarm_transition':
     'Append-only audit of every MES transition of an alarm (ack, comment, shelve, unshelve, expire, epoch-ended) with before, after, actor, `authenticated`, wall time, plant time and request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#143, ADR-0023).',
+  'shifts.shift_instance':
+    'One scheduled shift the plant clock entered, per (plant epoch, shift key): calendar start, end and breaks, status (running, ended, final), when the report became final and its composite revision {inputs, content} as stored counters (#144, ADR-0025).',
+  'shifts.handover_note':
+    'Handover notes of a shift instance: the current version (category, text, retracted, author, version); never deleted, a trigger refuses DELETE and TRUNCATE (#144).',
+  'shifts.handover_audit':
+    'Append-only audit of every note create and edit: before, after, actor (unauthenticated), wall and plant time, request id and version; a trigger refuses UPDATE, DELETE and TRUNCATE (#144, ADR-0023).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

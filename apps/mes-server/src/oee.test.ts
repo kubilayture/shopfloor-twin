@@ -1,4 +1,5 @@
 import { idealCycleMs, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
+import { shiftInstance } from '@shopfloor/shift-calendar';
 import type { Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -18,7 +19,6 @@ import {
   Oee,
   downtimeId,
   pareto,
-  shiftInstance,
   type DowntimeChange,
   type OeeBucket,
   type OeeChange,

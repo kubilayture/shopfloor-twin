@@ -13,6 +13,14 @@ export interface GatewayHttpOptions {
     readonly connected: boolean;
     readonly facts: number;
   }[];
+  /** The command path (#173): deliveries, calls, results by kind, waiting and settling. */
+  readonly commands?: () => {
+    readonly received: number;
+    readonly calls: number;
+    readonly results: ReadonlyMap<string, number>;
+    readonly queued: number;
+    readonly settling: number;
+  };
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
 }
 
@@ -21,6 +29,7 @@ export function buildGatewayHttp({
   published,
   machines = () => [],
   buffer = () => ({ depth: 0, dropped: 0 }),
+  commands,
   logger = false,
 }: GatewayHttpOptions): FastifyInstance {
   const app = Fastify({ logger });
@@ -76,6 +85,47 @@ export function buildGatewayHttp({
       this.set(buffer().dropped);
     },
   });
+  if (commands) {
+    new Gauge({
+      name: 'gateway_command_deliveries',
+      help: 'Command deliveries recorded since start (redeliveries and resends included)',
+      registers: [registry],
+      collect() {
+        this.set(commands().received);
+      },
+    });
+    new Gauge({
+      name: 'gateway_command_calls',
+      help: 'LoadOrder calls made since start (retries and settle calls included)',
+      registers: [registry],
+      collect() {
+        this.set(commands().calls);
+      },
+    });
+    new Gauge({
+      name: 'gateway_command_results',
+      help: 'Command results published since start, by result',
+      labelNames: ['result'],
+      registers: [registry],
+      collect() {
+        const results = commands().results;
+        for (const result of ['accepted', 'duplicate', 'rejected', 'expired', 'unknown']) {
+          this.set({ result }, results.get(result) ?? 0);
+        }
+      },
+    });
+    new Gauge({
+      name: 'gateway_command_pending',
+      help: 'Command deliveries waiting or in progress (queued) and outcomes being settled',
+      labelNames: ['stage'],
+      registers: [registry],
+      collect() {
+        const c = commands();
+        this.set({ stage: 'queued' }, c.queued);
+        this.set({ stage: 'settling' }, c.settling);
+      },
+    });
+  }
   app.get('/health/live', { logLevel: 'warn' }, () => ({ status: 'ok' }));
   app.get('/health/ready', { logLevel: 'warn' }, (_request, reply) =>
     ready() ? { status: 'ok' } : reply.code(503).send({ status: 'unavailable' }),

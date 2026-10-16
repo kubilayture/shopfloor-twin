@@ -1,7 +1,8 @@
 import { isSysRetained, sysTopic, type Status } from '@shopfloor/contracts';
 import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 import type { TopicSequences } from './identity.ts';
-import type { Publisher, UnsPublication } from './publisher.ts';
+import type { Transport } from './buffer/outbox.ts';
+import type { AnyPublication } from './publisher.ts';
 
 export interface MqttLinkOptions {
   readonly url: string;
@@ -30,7 +31,7 @@ export class NotConnectedError extends Error {
  * straight to the broker (never through the store-and-forward buffer), with the last will
  * "offline" refreshed before every (re)connect so it carries a fresh sequence number.
  */
-export class MqttLink implements Publisher {
+export class MqttLink implements Transport {
   readonly statusTopic: string;
   readonly #options: MqttLinkOptions;
   readonly #now: () => number;
@@ -94,7 +95,7 @@ export class MqttLink implements Publisher {
    * once with `NotConnectedError` while disconnected. MQTT.js would otherwise keep the message in
    * memory until a reconnect: unbounded, lost on a crash, and duplicated by the disk buffer (#78).
    */
-  async publish({ topic, message, retain }: UnsPublication): Promise<void> {
+  async publish({ topic, message, retain }: AnyPublication): Promise<void> {
     if (!this.#client.connected) {
       throw new NotConnectedError();
     }

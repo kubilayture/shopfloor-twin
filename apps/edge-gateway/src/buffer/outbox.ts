@@ -2,10 +2,11 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import type { CursorStore } from '../modbus/poller.ts';
-import type { Publisher, UnsPublication } from '../publisher.ts';
+import type { AnyPublication, Publisher, ResultPublisher } from '../publisher.ts';
 
 /** The broker side of the outbox: in practice the gateway's `MqttLink`. */
-export interface Transport extends Publisher {
+export interface Transport {
+  publish(publication: AnyPublication): Promise<void>;
   readonly connected: boolean;
   onConnect(listener: () => void): void;
 }
@@ -31,7 +32,7 @@ export interface OutboxOptions {
 }
 
 interface Waiting {
-  readonly publication: UnsPublication;
+  readonly publication: AnyPublication;
   readonly resolve: () => void;
   readonly reject: (error: unknown) => void;
 }
@@ -66,7 +67,7 @@ const isRefusal = (error: unknown): boolean =>
  * The outbox also keeps the Modbus poller's cursor, written in the same transaction as the
  * messages it produced, so a restart neither repeats nor skips washer facts.
  */
-export class Outbox implements Publisher, CursorStore {
+export class Outbox implements Publisher, ResultPublisher, CursorStore {
   readonly #options: OutboxOptions;
   readonly #db: DatabaseSync;
   readonly #insert: StatementSync;
@@ -161,7 +162,7 @@ export class Outbox implements Publisher, CursorStore {
   }
 
   /** Resolves once the message is durably stored; delivery follows whenever the broker is up. */
-  publish(publication: UnsPublication): Promise<void> {
+  publish(publication: AnyPublication): Promise<void> {
     if (this.#closed) {
       return Promise.reject(new Error('outbox closed'));
     }
@@ -294,7 +295,7 @@ export class Outbox implements Publisher, CursorStore {
     transport
       .publish({
         topic: row.topic,
-        message: JSON.parse(row.payload) as UnsPublication['message'],
+        message: JSON.parse(row.payload) as never,
         retain: row.retain === 1,
       })
       .then(

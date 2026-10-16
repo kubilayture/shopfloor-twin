@@ -8,6 +8,7 @@ import {
   alarmSnapshotTopic,
   alarmTopic,
   cycleTopic,
+  jobTopic,
   opcuaAlarmPath,
   opcuaEndpoint,
   opcuaEventTypeId,
@@ -19,6 +20,7 @@ import {
   type AlarmSnapshot,
   type CycleComplete,
   type EquipmentPath,
+  type JobEvent,
   type MachineState,
   type StateCurrent,
   type Telemetry,
@@ -29,12 +31,14 @@ import {
   TimestampsToReturn,
   constructEventFilter,
   resolveNodeId,
+  type CallMethodResult,
   type ClientSession,
   type OPCUACertificateManager,
   type ClientSubscription,
   type DataValue,
   type NodeId,
   type Variant,
+  type VariantOptions,
 } from 'node-opcua';
 import type { TopicSequences } from '../identity.ts';
 import type { IncidentReporter } from '../incidents.ts';
@@ -74,16 +78,49 @@ export interface OpcuaCollectorOptions {
   readonly certificateManager?: OPCUACertificateManager;
 }
 
-/** Event fields, in select-clause order. */
+/**
+ * Event fields, in select-clause order, each once: job facts (#173) share `Product` with cycles
+ * and `Transition` with alarms, and add theirs at the end.
+ */
 const FIELDS = [
-  ...OPCUA_EVENT_FIELDS.common,
-  ...OPCUA_EVENT_FIELDS.stateChange,
-  ...OPCUA_EVENT_FIELDS.cycleComplete,
-  ...OPCUA_EVENT_FIELDS.alarm,
-] as const;
+  ...new Set([
+    ...OPCUA_EVENT_FIELDS.common,
+    ...OPCUA_EVENT_FIELDS.stateChange,
+    ...OPCUA_EVENT_FIELDS.cycleComplete,
+    ...OPCUA_EVENT_FIELDS.alarm,
+    ...OPCUA_EVENT_FIELDS.job,
+  ]),
+];
 const STANDARD_FIELDS = ['EventType', 'Time', 'Severity'] as const;
 
-type Field = (typeof FIELDS)[number] | (typeof STANDARD_FIELDS)[number];
+type Field =
+  | (typeof OPCUA_EVENT_FIELDS)[keyof typeof OPCUA_EVENT_FIELDS][number]
+  | (typeof STANDARD_FIELDS)[number];
+
+/** Thrown when an OPC UA request took longer than the caller's deadline (its outcome is unknown). */
+export class DeadlineError extends Error {
+  constructor(what: string, ms: number) {
+    super(`${what}: no answer within ${String(ms)} ms`);
+    this.name = 'DeadlineError';
+  }
+}
+
+/**
+ * Waits for a request at most `ms`. node-opcua's own transaction timeout is independent and much
+ * longer; the request itself is not cancelled, and a late answer is ignored (plan, B2).
+ */
+export function withDeadline<T>(request: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new DeadlineError(what, ms));
+    }, ms);
+  });
+  request.catch(() => undefined); // a late failure must not surface as an unhandled rejection
+  return Promise.race([request, deadline]).finally(() => {
+    clearTimeout(timer);
+  });
+}
 
 const TELEMETRY = {
   'spindle-load': { variable: OPCUA_VARIABLES.spindleLoad, kinds: ['machine-tool'] },
@@ -155,6 +192,7 @@ export interface LostRange {
  */
 export class OpcuaCollector {
   readonly machineId: string;
+  readonly kind: OpcuaMachine['kind'];
   readonly endpoint: string;
   readonly #options: OpcuaCollectorOptions;
   readonly #now: () => number;
@@ -183,6 +221,7 @@ export class OpcuaCollector {
     this.#options = options;
     this.#now = options.now ?? Date.now;
     this.machineId = options.machine.id;
+    this.kind = options.machine.kind;
     this.endpoint = opcuaEndpoint(options.host, options.machine.port + (options.portOffset ?? 0));
     this.#client = OPCUAClient.create({
       // One name for every machine's client: they share one client certificate, whose subject
@@ -234,6 +273,47 @@ export class OpcuaCollector {
   /** True once the epoch is known and the subscription delivers; false while reconnecting. */
   get connected(): boolean {
     return this.#ready && !this.#closed;
+  }
+
+  /**
+   * The device epoch read by the resync of the current connection: defined while `connected`
+   * (the session is ready for commands, #173), undefined otherwise.
+   */
+  get deviceEpoch(): number | undefined {
+    return this.connected ? this.#epoch : undefined;
+  }
+
+  /** Reads one `ShopFloor` variable of this machine, within `deadlineMs`. */
+  async readVariable(path: string, deadlineMs: number): Promise<DataValue> {
+    const session = this.#session;
+    if (!session || !this.connected) throw new Error(`${this.machineId}: session not ready`);
+    return withDeadline(
+      session.read({
+        nodeId: this.#nodeId(opcuaNodeId(this.machineId, path)),
+        attributeId: AttributeIds.Value,
+      }),
+      deadlineMs,
+      `${this.machineId}: read ${path}`,
+    );
+  }
+
+  /** Calls a method of this machine's `ShopFloor` object, within `deadlineMs` (#173). */
+  async callMethod(
+    path: string,
+    inputArguments: VariantOptions[],
+    deadlineMs: number,
+  ): Promise<CallMethodResult> {
+    const session = this.#session;
+    if (!session || !this.connected) throw new Error(`${this.machineId}: session not ready`);
+    return withDeadline(
+      session.call({
+        objectId: this.#nodeId(opcuaNodeId(this.machineId, 'ShopFloor')),
+        methodId: this.#nodeId(opcuaNodeId(this.machineId, path)),
+        inputArguments,
+      }),
+      deadlineMs,
+      `${this.machineId}: call ${path}`,
+    );
   }
 
   /** Creates the client certificate if it doesn't exist yet. Call it for one collector at a time. */
@@ -592,11 +672,22 @@ export class OpcuaCollector {
         this.#send({ topic: alarmTopic(this.#options.path, code), message, retain: true });
         break;
       }
-      case 'job':
-        // Orders-mode job facts (#172, simulator only so far): their select clause and their
-        // `events/job` topic come with the command path (#173). Until then a job event's sequence
-        // number is seen (dedup, highest) but not published.
+      case 'job': {
+        // Orders-mode job facts (#172): `events/job`, UNS contract 1.3 (#173).
+        const message: JobEvent = {
+          ...common,
+          schema: 'uns.events.job/1',
+          value: {
+            transition: text('Transition') as JobEvent['value']['transition'],
+            commandId: text('CommandId'),
+            orderId: text('OrderId'),
+            product: text('Product'),
+            quantity: Number(field('Quantity')),
+          },
+        };
+        this.#send({ topic: jobTopic(this.#options.path), message, retain: false });
         break;
+      }
     }
   }
 

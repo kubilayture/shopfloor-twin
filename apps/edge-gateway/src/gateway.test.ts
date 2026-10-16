@@ -261,4 +261,28 @@ describe('broker session and _sys status (#75)', () => {
     expect(metrics).toMatch(/^gateway_mqtt_connected 1$/m);
     expect(metrics).toMatch(/^gateway_published_messages 0$/m);
   });
+
+  it('serves the command path metrics (#173)', async () => {
+    const http = buildGatewayHttp({
+      ready: () => true,
+      published: () => 0,
+      commands: () => ({
+        received: 5,
+        calls: 4,
+        results: new Map([
+          ['accepted', 2],
+          ['unknown', 1],
+        ]),
+        queued: 1,
+        settling: 1,
+      }),
+    });
+    cleanup.push(() => http.close());
+    const metrics = (await http.inject({ url: '/metrics' })).body;
+    expect(metrics).toMatch(/^gateway_command_deliveries 5$/m);
+    expect(metrics).toMatch(/^gateway_command_calls 4$/m);
+    expect(metrics).toMatch(/^gateway_command_results\{result="accepted"\} 2$/m);
+    expect(metrics).toMatch(/^gateway_command_results\{result="expired"\} 0$/m);
+    expect(metrics).toMatch(/^gateway_command_pending\{stage="settling"\} 1$/m);
+  });
 });

@@ -147,6 +147,8 @@ function describeFact(message: UnsMessage): string {
       return `cycle ${message.value.product} ${String(message.value.partId)} ${message.value.result}`;
     case 'uns.alarms/1':
       return `alarm ${message.value.code} ${message.value.transition}`;
+    case 'uns.events.job/1':
+      return `job ${message.value.commandId} ${message.value.transition}`;
     case 'uns.telemetry/1':
     case 'uns.alarm-snapshot/1':
     case 'uns.sys.status/1':

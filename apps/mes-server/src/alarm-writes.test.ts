@@ -1,3 +1,4 @@
+import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import type { FastifyInstance } from 'fastify';
 import { sql, type Kysely } from 'kysely';
@@ -496,7 +497,10 @@ describe('shelving alarm points (#143)', () => {
     // A stale version is 409 and changes nothing.
     const stale = await post(app, unshelvePath, { actor: 'Bora', version: 0 });
     expect(stale.statusCode).toBe(409);
-    expect(problemSchema.parse(stale.json()).detail).toMatch(/version is 1, not 0/);
+    expect(problemSchema.parse(stale.json())).toMatchObject({
+      type: PROBLEM_TYPES.shelfStale,
+      detail: expect.stringMatching(/version is 1, not 0/) as unknown,
+    });
     expect(
       (await post(app, shelvePath, { actor: 'B', reason: 'r', durationMs: MINUTE, version: 0 }))
         .statusCode,

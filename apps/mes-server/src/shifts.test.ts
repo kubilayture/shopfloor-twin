@@ -8,7 +8,7 @@
  */
 import { EventEmitter } from 'node:events';
 import { kpisOfBucket, prepare, type BadActor } from '@shopfloor/alarm-core';
-import { HANDOVER_PROBLEM } from '@shopfloor/contracts/mes-api';
+import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { oeeFromTotals, sumTotals } from '@shopfloor/oee-core';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import { shiftKeyAt } from '@shopfloor/shift-calendar';
@@ -420,7 +420,11 @@ describe('report finality and the composite revision (ADR-0025)', () => {
     fake.state.oeeRevisions.set(new Date(at('05:00')).toISOString(), 1);
     fake.oeeChanged(at('05:00'));
     await shifts.tick();
-    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({ inputs: 1, content: 0 });
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({
+      inputs: 1,
+      content: 0,
+      contentAtFinal: 0,
+    });
     // Two inputs at once (an OEE hour and an alarm hour) count two, never one.
     fake.state.oeeRevisions.set(new Date(at('06:00')).toISOString(), 1);
     fake.state.alarmRevisions.set(new Date(at('06:00')).toISOString(), 1);
@@ -431,13 +435,17 @@ describe('report finality and the composite revision (ADR-0025)', () => {
     fake.state.oeeRevisions.set(new Date(at('05:00')).toISOString(), 3);
     // Not told: the report's own read brings the counter up to date.
     const read = await report();
-    expect(read.instance.revision).toEqual({ inputs: 5, content: 0 });
+    expect(read.instance.revision).toEqual({ inputs: 5, content: 0, contentAtFinal: 0 });
     expect(read.instance.status).toBe('final');
     // Final never goes back, and nothing new counts nothing.
     fake.state.oeeFinal = false;
     fake.oeeChanged(at('05:00'));
     await shifts.tick();
-    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({ inputs: 5, content: 0 });
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({
+      inputs: 5,
+      content: 0,
+      contentAtFinal: 0,
+    });
     expect((await shifts.instance('2026-10-12', 'A'))?.status).toBe('final');
   });
 
@@ -458,15 +466,27 @@ describe('report finality and the composite revision (ADR-0025)', () => {
       retracted: false,
       version: 1,
     });
-    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({ inputs: 0, content: 2 });
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({
+      inputs: 0,
+      content: 2,
+      contentAtFinal: 0,
+    });
     // An operator recode inside the final shift A: +1; a clip after a re-cut: none; a recode in
     // the running shift B: none (its report is not final).
     fake.coded(at('05:00'), at('05:30'), 'coded');
     fake.coded(at('05:00'), at('05:30'), 'clipped');
     fake.coded(at('11:30'), at('11:40'), 'coded');
     await shifts.tick();
-    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({ inputs: 0, content: 3 });
-    expect((await shifts.instance('2026-10-12', 'B'))?.revision).toEqual({ inputs: 0, content: 0 });
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({
+      inputs: 0,
+      content: 3,
+      contentAtFinal: 0,
+    });
+    expect((await shifts.instance('2026-10-12', 'B'))?.revision).toEqual({
+      inputs: 0,
+      content: 0,
+      contentAtFinal: null,
+    });
     expect(
       changes.filter((c) => c.type === 'instance' && c.event === 'revised').length,
     ).toBeGreaterThanOrEqual(3);
@@ -483,7 +503,11 @@ describe('report finality and the composite revision (ADR-0025)', () => {
     fake.state.oeeFinal = true;
     fake.state.alarmFinal = true;
     await shifts.tick();
-    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({ inputs: 0, content: 0 });
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({
+      inputs: 0,
+      content: 0,
+      contentAtFinal: 0,
+    });
     // After final: an acknowledgement of a raise in A is one content step (its time to
     // acknowledge changes); a raise in B (running), a comment, a shelf flag and a point's shelf
     // (at the plant clock, after A) are none.
@@ -494,8 +518,16 @@ describe('report finality and the composite revision (ADR-0025)', () => {
     fake.operated(at('05:00'), 'shelf');
     fake.shelved();
     await shifts.tick();
-    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({ inputs: 0, content: 2 });
-    expect((await shifts.instance('2026-10-12', 'B'))?.revision).toEqual({ inputs: 0, content: 0 });
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({
+      inputs: 0,
+      content: 2,
+      contentAtFinal: 0,
+    });
+    expect((await shifts.instance('2026-10-12', 'B'))?.revision).toEqual({
+      inputs: 0,
+      content: 0,
+      contentAtFinal: null,
+    });
     // The figures are in the report, not an input of its finality.
     const report = await shifts.report('2026-10-12', 'A');
     expect(report?.alarms[0]?.operator).toMatchObject({
@@ -506,6 +538,53 @@ describe('report finality and the composite revision (ADR-0025)', () => {
       unacknowledgedAtEnd: 1,
     });
     expect(report?.instance.status).toBe('final');
+  });
+
+  it('stores content at the moment of final and serves it as contentAtFinal (#163)', async () => {
+    const { db, fake, shifts } = await setup('content_at_final');
+    // Two note writes before final: part of the content the report becomes final with.
+    const note = await shifts.createNote(E1, '2026-10-12/A', {
+      author: 'Ayşe',
+      text: 'Before final',
+      category: 'general',
+    });
+    const edit = (version: number, text: string) =>
+      shifts.editNote(E1, '2026-10-12/A', note.id, {
+        author: 'Ayşe',
+        text,
+        category: 'general',
+        retracted: false,
+        version,
+      });
+    await edit(1, 'Before final, edited');
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({
+      inputs: 0,
+      content: 2,
+      contentAtFinal: null,
+    });
+    fake.state.oeeFinal = true;
+    fake.state.alarmFinal = true;
+    await shifts.tick();
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision).toEqual({
+      inputs: 0,
+      content: 2,
+      contentAtFinal: 2,
+    });
+    // After final, whatever the clocks say: a note edit and a recode are two changes after final.
+    await edit(2, 'After final');
+    fake.coded(at('05:00'), at('05:30'), 'coded');
+    await shifts.tick();
+    const read = await shifts.report('2026-10-12', 'A');
+    expect(read?.instance.revision).toEqual({ inputs: 0, content: 4, contentAtFinal: 2 });
+    // Stored, not computed on read.
+    expect(
+      await db
+        .selectFrom('shifts.shift_instance')
+        .select(['content_revision', 'content_at_final'])
+        .where('epoch', '=', E1)
+        .where('shift_key', '=', '2026-10-12/A')
+        .executeTakeFirst(),
+    ).toEqual({ content_revision: 4, content_at_final: 2 });
   });
 
   it('composes the report: production, uncoded time, the longest records, notes with history', async () => {
@@ -721,8 +800,8 @@ describe('evaluation load, read order, concurrency and epochs (#144 review)', ()
     expect(pushed.at(-1)?.inputs).toBe(2);
     const kept: ShiftRecord | undefined = reads[0]?.instance;
     if (!kept) throw new Error('no report');
-    const older = { ...kept, revision: { inputs: 1, content: 0 } };
-    const newer = { ...kept, revision: { inputs: 2, content: 0 } };
+    const older = { ...kept, revision: { inputs: 1, content: 0, contentAtFinal: 0 } };
+    const newer = { ...kept, revision: { inputs: 2, content: 0, contentAtFinal: 0 } };
     expect([isNewer(older, newer), isNewer(newer, older), isNewer(newer, newer)]).toEqual([
       false,
       true,
@@ -744,9 +823,8 @@ describe('evaluation load, read order, concurrency and epochs (#144 review)', ()
       .createNote(E1, '2026-10-12/B', { author: 'a', text: 'late', category: 'general' })
       .catch((error: unknown) => error);
     expect(closed).toBeInstanceOf(ShiftError);
-    expect((closed as ShiftError).message.startsWith(`${HANDOVER_PROBLEM.closed}: epoch`)).toBe(
-      true,
-    );
+    expect((closed as ShiftError).type).toBe(PROBLEM_TYPES.handoverClosed);
+    expect((closed as ShiftError).message.startsWith('handover closed: epoch')).toBe(true);
     await shifts.createNote(E2, '2026-10-12/B', { author: 'a', text: 'E2', category: 'general' });
     expect((await shifts.notes(E1, '2026-10-12/B', false)).map((n) => n.note.text)).toEqual(['E1']);
     expect((await shifts.notes(E2, '2026-10-12/B', false)).map((n) => n.note.text)).toEqual(['E2']);
@@ -765,10 +843,11 @@ describe('evaluation load, read order, concurrency and epochs (#144 review)', ()
     const refused = await shifts
       .createNote(E1, '2026-10-12/A', { author: 'a', text: 'one more', category: 'general' })
       .catch((error: unknown) => error);
-    expect([(refused as ShiftError).kind, (refused as ShiftError).message]).toEqual([
-      'invalid',
-      'at most 200 notes per shift',
-    ]);
+    expect([
+      (refused as ShiftError).kind,
+      (refused as ShiftError).message,
+      (refused as ShiftError).type,
+    ]).toEqual(['invalid', 'at most 200 notes per shift', PROBLEM_TYPES.noteLimit]);
     expect((await shifts.instance('2026-10-12', 'A'))?.revision.content).toBe(MAX_NOTES);
   });
 
@@ -857,7 +936,7 @@ describe('the shifts API and push (#144)', () => {
     expect(created.statusCode).toBe(200);
     expect(created.headers['x-request-id']).toBeTruthy();
     const body = noteResultSchema.parse(created.json());
-    expect(body.shift.revision).toEqual({ inputs: 0, content: 1 });
+    expect(body.shift.revision).toEqual({ inputs: 0, content: 1, contentAtFinal: null });
     const edit = (version: number) =>
       app.inject({
         method: 'PUT',
@@ -874,7 +953,10 @@ describe('the shifts API and push (#144)', () => {
     expect((await edit(1)).statusCode).toBe(200);
     const stale = await edit(1);
     expect(stale.statusCode).toBe(409);
-    expect(problemSchema.parse(stale.json()).detail).toMatch(/version is 2/);
+    expect(problemSchema.parse(stale.json())).toMatchObject({
+      type: PROBLEM_TYPES.noteStale,
+      detail: expect.stringMatching(/version is 2/) as unknown,
+    });
     const elsewhere = await app.inject({
       method: 'PUT',
       url: `/api/v1/shifts/2026-10-12/B/notes/${String(body.note.id)}`,
@@ -920,10 +1002,19 @@ describe('the shifts API and push (#144)', () => {
       }),
     ]);
     expect(refused.map((r) => r.statusCode)).toEqual([403, 403, 415, 403]);
+    // Each refusal has its stable problem type (#163).
+    expect(refused.map((r) => problemSchema.parse(r.json()).type)).toEqual([
+      PROBLEM_TYPES.writeOrigin,
+      PROBLEM_TYPES.writeOrigin,
+      PROBLEM_TYPES.writeNotJson,
+      PROBLEM_TYPES.writeOrigin,
+    ]);
     const off = await front(false);
-    expect(
-      (await off.inject({ method: 'POST', url, headers: JSON_WRITE, payload })).statusCode,
-    ).toBe(405);
+    const turnedOff = await off.inject({ method: 'POST', url, headers: JSON_WRITE, payload });
+    expect([turnedOff.statusCode, problemSchema.parse(turnedOff.json()).type]).toEqual([
+      405,
+      PROBLEM_TYPES.writesOff,
+    ]);
     // Nothing refused was written.
     expect((await shifts.notes(E1, '2026-10-12/A', false)).length).toBe(1);
 
@@ -931,9 +1022,22 @@ describe('the shifts API and push (#144)', () => {
     fake.state.clock = at('19:00');
     const closed = await app.inject({ method: 'POST', url, headers: JSON_WRITE, payload });
     expect(closed.statusCode).toBe(409);
-    expect(
-      problemSchema.parse(closed.json()).detail.startsWith(`${HANDOVER_PROBLEM.closed}: `),
-    ).toBe(true);
+    const closedProblem = problemSchema.parse(closed.json());
+    expect(closedProblem.type).toBe(PROBLEM_TYPES.handoverClosed);
+    expect(closedProblem.detail.startsWith('handover closed: ')).toBe(true);
+    // A read refused by the Host check is typed too; a missing route stays about:blank.
+    const foreignHost = await app.inject({
+      method: 'GET',
+      url: '/api/v1/shifts/2026-10-12/A',
+      headers: { host: 'evil.example' },
+    });
+    expect([foreignHost.statusCode, problemSchema.parse(foreignHost.json()).type]).toEqual([
+      403,
+      PROBLEM_TYPES.hostNotAllowed,
+    ]);
+    expect(problemSchema.parse((await get('/shifts/2026-10-12/Z')).json()).type).toBe(
+      'about:blank',
+    );
 
     const notes = handoverNotesSchema.parse((await get('/shifts/2026-10-12/A/notes')).json());
     expect(notes.notes.map((n) => [n.note.version, n.history.length])).toEqual([[2, 2]]);
@@ -1007,7 +1111,7 @@ describe('the shifts API and push (#144)', () => {
       breaks: [],
       status: 'final' as const,
       finalAt: new Date(),
-      revision: { inputs: 0, content: 1 },
+      revision: { inputs: 0, content: 1, contentAtFinal: 0 },
     };
     for (const listener of listeners)
       listener({ type: 'instance', event: 'revised', instance: record });

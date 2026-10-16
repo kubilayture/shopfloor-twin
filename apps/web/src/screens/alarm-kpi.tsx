@@ -15,19 +15,19 @@ import {
   listEquipment,
   type AlarmScopeRef,
 } from '../api/client.ts';
-import { queryKeys, usePlantClock } from '../api/queries.ts';
+import { queryKeys, useAlarmConfig, usePlantClock } from '../api/queries.ts';
 import { alarmHourlyOption } from '../chart/alarm-options.ts';
 import { EChart } from '../chart/echart.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { ShiftPicker, useShiftSelection } from '../components/shift-picker.tsx';
 import {
-  RATE_BAND_TEXT,
   alarmBucketFlags,
   meanTimeToAck,
   msText,
   parseScopeKey,
   rateBand,
+  rateBandText,
   scopeKey,
 } from '../domain/alarms.ts';
 import { NOT_APPLICABLE, percentText, pickBucket } from '../domain/oee.ts';
@@ -92,22 +92,26 @@ function Flags({ bucket }: { readonly bucket: AlarmKpiBucketDto }) {
 }
 
 function RateText({ bucket }: { readonly bucket: AlarmKpiBucketDto }) {
-  const band = rateBand(bucket.averageRate);
+  // The benchmarks are the MES's (#160): no band until they arrived.
+  const config = useAlarmConfig();
+  const band = config ? rateBand(bucket.averageRate, config) : undefined;
   return (
     <span title={bucket.averageRate.fraction}>
       <span className="font-mono tabular-nums">{bucket.averageRate.decimal}</span>{' '}
-      <span
-        data-band={band}
-        className={`rounded px-1 text-xs font-medium ${
-          band === 'acceptable'
-            ? 'bg-emerald-50 text-emerald-900'
-            : band === 'manageable'
-              ? 'bg-amber-100 text-amber-950'
-              : 'bg-red-700 text-white'
-        }`}
-      >
-        {RATE_BAND_TEXT[band]}
-      </span>
+      {config && band ? (
+        <span
+          data-band={band}
+          className={`rounded px-1 text-xs font-medium ${
+            band === 'acceptable'
+              ? 'bg-emerald-50 text-emerald-900'
+              : band === 'manageable'
+                ? 'bg-amber-100 text-amber-950'
+                : 'bg-red-700 text-white'
+          }`}
+        >
+          {rateBandText(band, config)}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -258,6 +262,7 @@ function BucketTable({
       getAlarmKpi({ ...scope, bucket, from: range.from, to: range.to }, signal),
   });
   const live = useLiveAlarmKpi(key);
+  const config = useAlarmConfig();
   const buckets = withPushed(rest.data?.buckets ?? [], live?.[bucket], range);
   return (
     <div className="flex flex-col gap-3">
@@ -269,7 +274,9 @@ function BucketTable({
           testId="kpi-hourly"
           title="Raises and peak per 10 minutes, by hour"
           description="Bars per hour of raises and of the most raises in one 10-minute window, with the flood threshold as a dashed line; the table below lists every value."
-          option={buckets.length > 0 ? alarmHourlyOption(buckets) : null}
+          option={
+            buckets.length > 0 ? alarmHourlyOption(buckets, config?.kpi.floodThreshold) : null
+          }
         >
           {buckets.length === 0 && rest.data ? (
             <p className="text-sm">No hour with alarms in this shift.</p>

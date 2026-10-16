@@ -1,4 +1,4 @@
-import { HANDOVER_PROBLEM } from '@shopfloor/contracts/mes-api';
+import { PROBLEM_TYPES, type ProblemType } from '@shopfloor/contracts/mes-api';
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../api/client.ts';
 import { kpiBucket } from '../test/alarm-fixtures.ts';
@@ -17,9 +17,13 @@ import {
   production,
 } from './shifts.ts';
 
-const problem = (status: number, detail: string) =>
+const problem = (
+  status: number,
+  detail: string,
+  type: ProblemType | 'about:blank' = 'about:blank',
+) =>
   new ApiError(`x: ${detail}`, status, {
-    type: 'about:blank',
+    type,
     title: 'x',
     status,
     detail,
@@ -28,34 +32,46 @@ const problem = (status: number, detail: string) =>
 
 describe('shift instances', () => {
   it('orders instances as the MES pushes them: every part at least as high, one higher', () => {
-    const base = shiftRecord({ status: 'ended', revision: { inputs: 1, content: 2 } });
+    const base = shiftRecord({
+      status: 'ended',
+      revision: { inputs: 1, content: 2, contentAtFinal: null },
+    });
     expect(isNewerShift({ ...base, status: 'final' }, base)).toBe(true);
-    expect(isNewerShift({ ...base, revision: { inputs: 1, content: 3 } }, base)).toBe(true);
+    expect(
+      isNewerShift({ ...base, revision: { inputs: 1, content: 3, contentAtFinal: null } }, base),
+    ).toBe(true);
     expect(isNewerShift(base, base)).toBe(false);
     expect(isNewerShift({ ...base, status: 'running' }, base)).toBe(false);
     // Higher in one counter, lower in another: never replaces the known copy.
     expect(
-      isNewerShift({ ...base, status: 'final', revision: { inputs: 0, content: 5 } }, base),
+      isNewerShift(
+        { ...base, status: 'final', revision: { inputs: 0, content: 5, contentAtFinal: 5 } },
+        base,
+      ),
     ).toBe(false);
   });
 
-  it('counts the changes after final: inputs, and content less the note writes before', () => {
+  it('counts the changes after final from the served contentAtFinal, comparing no clocks', () => {
     expect(changesAfterFinal(report())).toBeUndefined();
-    const before = note(1, { updatedAt: '2026-10-16T08:00:00.000Z' });
-    const after = note(1, { version: 2, updatedAt: '2026-10-16T10:00:00.000Z' });
+    // The audit dates both writes after finalAt (another clock than the MES's); the counters
+    // say one was part of the content at final (#163), so only one is a change after final.
+    const first = note(1, { updatedAt: '2026-10-16T09:00:00.001Z' });
+    const second = note(1, { version: 2, updatedAt: '2026-10-16T10:00:00.000Z' });
     const final = report({
       status: 'final',
       final: true,
       finalAt: '2026-10-16T09:00:00.000Z',
-      revision: { inputs: 2, content: 3 },
-      notes: [{ note: after, history: [auditEntry(after), auditEntry(before)] }],
+      revision: { inputs: 2, content: 3, contentAtFinal: 1 },
+      notes: [{ note: second, history: [auditEntry(second), auditEntry(first)] }],
     });
-    // Content 3: one note write before final, so two after (the edit and, e.g., a recode).
     expect(changesAfterFinal(final)).toEqual({ inputs: 2, content: 2 });
-    expect(changesAfterFinal({ ...final, revision: { inputs: 0, content: 1 } })).toEqual({
-      inputs: 0,
-      content: 0,
-    });
+    expect(
+      changesAfterFinal({ ...final, revision: { inputs: 0, content: 1, contentAtFinal: 1 } }),
+    ).toEqual({ inputs: 0, content: 0 });
+    // Not final, or no counter yet: nothing to say.
+    expect(
+      changesAfterFinal({ ...final, revision: { inputs: 0, content: 1, contentAtFinal: null } }),
+    ).toBeUndefined();
   });
 });
 
@@ -145,27 +161,41 @@ describe('handover notes', () => {
     expect(isStaleDraft(draft, note(1, { version: 3 }))).toBe(true);
   });
 
-  it('tells a stale version, a closed handover and the note limit apart', () => {
-    expect(noteFailure(problem(409, 'note 1 changed: version is 3, not 2')).kind).toBe('stale');
+  it('tells a stale version, a closed handover and the note limit apart by problem type', () => {
+    expect(
+      noteFailure(problem(409, 'note 1 changed: version is 3, not 2', PROBLEM_TYPES.noteStale))
+        .kind,
+    ).toBe('stale');
     const closed = noteFailure(
       problem(
         409,
         'handover closed: notes of 2026-10-15/A can be written until 2026-10-15T19:00:00.000Z (plant time)',
+        PROBLEM_TYPES.handoverClosed,
       ),
     );
     expect(closed.kind).toBe('closed');
     expect(closed.text).toContain('handover window is closed');
     const notOpen = noteFailure(
-      problem(409, 'handover not open: shift 2026-10-15/A has not begun'),
+      problem(
+        409,
+        'handover not open: shift 2026-10-15/A has not begun',
+        PROBLEM_TYPES.handoverNotOpen,
+      ),
     );
     expect(notOpen.kind).toBe('not-open');
     expect(notOpen.text).toContain('not open yet');
-    // The prefixes the MES writes (shared with it; its tests assert them too).
-    expect(HANDOVER_PROBLEM).toEqual({ closed: 'handover closed', notOpen: 'handover not open' });
-    expect(noteFailure(problem(409, `${HANDOVER_PROBLEM.closed}: no plant clock`)).kind).toBe(
+    // The type decides, never the detail's prose (#163).
+    expect(noteFailure(problem(409, 'any wording', PROBLEM_TYPES.handoverClosed)).kind).toBe(
       'closed',
     );
-    const limit = noteFailure(problem(422, 'at most 200 notes per shift'));
+    expect(noteFailure(problem(409, 'handover closed: but untyped')).kind).toBe('conflict');
+    expect(PROBLEM_TYPES).toMatchObject({
+      handoverClosed: 'urn:shopfloor:handover-closed',
+      handoverNotOpen: 'urn:shopfloor:handover-not-open',
+      noteStale: 'urn:shopfloor:note-stale',
+      noteLimit: 'urn:shopfloor:note-limit',
+    });
+    const limit = noteFailure(problem(422, 'at most 200 notes per shift', PROBLEM_TYPES.noteLimit));
     expect(limit.kind).toBe('limit');
     expect(limit.text).toContain('200 notes');
     expect(noteFailure(problem(403, 'origin')).kind).toBe('refused');

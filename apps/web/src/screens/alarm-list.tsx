@@ -20,24 +20,24 @@ import {
   shelvePoint,
   unshelvePoint,
 } from '../api/client.ts';
-import { queryKeys, usePlantClock } from '../api/queries.ts';
+import { queryKeys, useAlarmConfig, usePlantClock } from '../api/queries.ts';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { PriorityBadge } from '../components/priority-badge.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import {
   ALARM_VIEW_LABELS,
-  FLOOD_THRESHOLD,
-  SHELVE_PRESETS,
   ackFailure,
   acknowledgeable,
   commentFailure,
   endReasonText,
+  floodText,
   mergeAlarms,
   newerOccurrence,
   newerShelf,
   partition,
   pointKey,
   shelfFailure,
+  shelvePresets,
   stateText,
   type AlarmView,
 } from '../domain/alarms.ts';
@@ -91,6 +91,7 @@ function MessageLine({ message, testId }: { readonly message: Message; readonly 
 /** One position's flood banner, shown while `alarm-kpi:position:<id>` reports an open episode. */
 function FloodBanner({ id, name }: { readonly id: string; readonly name: string }) {
   const floods = useLiveAlarmKpi(`position:${id}`)?.floods ?? [];
+  const config = useAlarmConfig();
   const episode = floods[0];
   if (!episode) return null;
   return (
@@ -103,9 +104,11 @@ function FloodBanner({ id, name }: { readonly id: string; readonly name: string 
         <span aria-hidden="true">⚠ </span>Alarm flood in {name} since{' '}
         <time dateTime={episode.startAt}>{formatClockSeconds(episode.startAt)}</time>
       </p>
-      <p className="text-sm">
-        Up to {episode.peak} raises in 10 minutes (more than {FLOOD_THRESHOLD} is a flood),{' '}
-        {episode.raises} since the flood began. Deal with the highest priority first.
+      <p className="text-sm" data-testid={`flood-text-${id}`}>
+        {config
+          ? `${floodText(episode.peak, config.kpi)}, ${String(episode.raises)} since the flood began.`
+          : `${String(episode.raises)} raises since the flood began.`}{' '}
+        Deal with the highest priority first.
       </p>
     </div>
   );
@@ -131,7 +134,16 @@ function ShelfSection({
   const reasonId = useId();
   const durationId = useId();
   const [reason, setReason] = useState('');
-  const [duration, setDuration] = useState(String(SHELVE_PRESETS[0]?.ms ?? 900_000));
+  // Presets capped at the MES's real limit (#160); none until the configuration arrived.
+  const config = useAlarmConfig();
+  const presets = config ? shelvePresets(config) : [];
+  const [picked, setDuration] = useState<string | undefined>(undefined);
+  const duration =
+    picked !== undefined && presets.some((preset) => String(preset.ms) === picked)
+      ? picked
+      : presets[0] === undefined
+        ? undefined
+        : String(presets[0].ms);
   // The version a shelve draft started from (captured at its first edit): a shelf that moved on
   // since (pushed) is not overwritten unseen; the operator reloads it first, as a coding draft
   // does. Without a draft (unshelve) the newest known version is sent; the MES answers 409 if it
@@ -157,7 +169,7 @@ function ShelfSection({
         ? shelvePoint(occurrence.equipment, occurrence.code, {
             actor: actor.trim(),
             reason: reason.trim(),
-            durationMs: Number(duration),
+            durationMs: Number(duration ?? 0),
             version,
           })
         : unshelvePoint(occurrence.equipment, occurrence.code, { actor: actor.trim(), version }),
@@ -199,6 +211,10 @@ function ShelfSection({
     }
     if (version === undefined) {
       onWrite({ kind: 'unavailable', text: 'The shelf is not loaded yet; try again.' });
+      return;
+    }
+    if (action === 'shelve' && duration === undefined) {
+      onWrite({ kind: 'unavailable', text: 'The shelving limit is not loaded yet; try again.' });
       return;
     }
     if (action === 'shelve' && reason.trim() === '') {
@@ -305,14 +321,15 @@ function ShelfSection({
             <select
               id={durationId}
               data-testid="shelve-duration"
-              value={duration}
+              value={duration ?? ''}
+              disabled={presets.length === 0}
               onChange={(event) => {
                 startDraft();
                 setDuration(event.target.value);
               }}
               className={inputClass}
             >
-              {SHELVE_PRESETS.map((preset) => (
+              {presets.map((preset) => (
                 <option key={preset.ms} value={String(preset.ms)}>
                   {preset.label}
                 </option>

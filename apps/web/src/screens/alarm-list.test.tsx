@@ -1,9 +1,10 @@
-import type { AlarmOccurrenceDto, AlarmPointDto } from '@shopfloor/contracts/mes-api';
+import type { AlarmConfig, AlarmOccurrenceDto, AlarmPointDto } from '@shopfloor/contracts/mes-api';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ACK,
   SCOPES,
+  alarmConfig,
   episode,
   hourKpi,
   kpiBucket,
@@ -31,6 +32,8 @@ interface State {
   shelved: AlarmOccurrenceDto[];
   history: AlarmOccurrenceDto[];
   points: AlarmPointDto[];
+  /** `GET /alarms/config` (#160); default alarms.yaml's. */
+  config?: AlarmConfig;
 }
 
 /** The MES as the alarm screen sees it; `post` answers every write. */
@@ -46,6 +49,9 @@ function mes(state: State, post: Post = () => json({})) {
     if (path === '/api/v1/equipment') return Promise.resolve(json({ equipment: EQUIPMENT }));
     if (path === '/api/v1/plant') return Promise.resolve(json(PLANT));
     if (path === '/api/v1/alarms/scopes') return Promise.resolve(json(SCOPES));
+    if (path === '/api/v1/alarms/config') {
+      return Promise.resolve(json(state.config ?? alarmConfig()));
+    }
     if (path === '/api/v1/alarm-points') return Promise.resolve(json({ points: state.points }));
     if (path === '/api/v1/alarms') {
       const view = (url.searchParams.get('view') ?? 'active') as keyof State;
@@ -390,6 +396,11 @@ describe('alarm list', () => {
     expect(banner.dataset.episode).toBe(episode().id);
     expect(within(banner).getByRole('alert').textContent).toContain('Alarm flood in Cell M1');
     expect(banner.textContent).toContain('13 since the flood began');
+    await waitFor(() => {
+      expect(screen.getByTestId('flood-text-cell-m1').textContent).toContain(
+        'Up to 13 raises in 10 min (more than 10 is a flood)',
+      );
+    });
     expect(screen.queryByTestId('flood-banner-line-a1')).toBeNull();
     await app.push({
       type: 'alarm-kpi',
@@ -545,6 +556,50 @@ describe('alarm panel', () => {
       expect(within(section).getByTestId('shelf-state').dataset.shelved).toBe('true');
     });
     expect(screen.queryByTestId(`alarm-row-${a.id}`)).toBeNull();
+  });
+
+  it('caps the shelving presets at the served maxShelveMs (#160)', async () => {
+    const a = occurrence(1);
+    const server = mes({
+      ...empty(),
+      active: [a],
+      points: [point({ shelf: shelf({ version: 1 }) })],
+      config: alarmConfig({ maxShelveMs: 2 * 3_600_000 }),
+    });
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp(`/alarms?alarm=${encodeURIComponent(a.id)}`);
+    const section = await screen.findByTestId('shelf-section');
+    await waitFor(() => {
+      const select = within(section).getByTestId<HTMLSelectElement>('shelve-duration');
+      expect([...select.options].map((option) => [option.value, option.textContent])).toEqual([
+        ['900000', '15 min'],
+        ['3600000', '1 h'],
+        ['7200000', '2 h'],
+      ]);
+    });
+  });
+
+  it('explains a flood with the served threshold and window (#160)', async () => {
+    const server = mes({
+      ...empty(),
+      config: alarmConfig({ kpi: { floodThreshold: 8, windowMs: 300_000 } }),
+    });
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/alarms');
+    await app.open();
+    await screen.findByTestId('alarm-list-empty');
+    await app.push({
+      type: 'snapshot',
+      topic: 'alarm-kpi:position:cell-m1',
+      hour: hourKpi('2026-10-15T05:00:00.000Z'),
+      shift: kpiBucket(),
+      floods: [episode({ raises: 9, peak: 9 })],
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('flood-text-cell-m1').textContent).toContain(
+        'Up to 9 raises in 5 min (more than 8 is a flood)',
+      );
+    });
   });
 
   it('never sends a shelve draft over a shelf that moved on, and unshelves', async () => {

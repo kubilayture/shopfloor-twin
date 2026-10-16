@@ -3,6 +3,7 @@ import type {
   HandoverNoteDto,
   ShiftReportDto,
 } from '@shopfloor/contracts/mes-api';
+import { alarmConfig } from './alarm-fixtures.ts';
 import { EQUIPMENT, PLANT, json, problem } from './fixtures.ts';
 import {
   CURRENT_SHIFT,
@@ -41,6 +42,7 @@ export const PREVIOUS_REPORT: ShiftReportDto = report({
   status: 'final',
   final: true,
   finalAt: '2026-10-16T05:00:00.000Z',
+  revision: { inputs: 0, content: 0, contentAtFinal: 0 },
 });
 
 export type Write = (method: string, path: string, body: unknown) => Response;
@@ -71,6 +73,8 @@ export function shiftMes(state: ShiftState, write: Write = () => json({})) {
         return Promise.resolve(json(PLANT));
       case '/api/v1/reason-codes':
         return Promise.resolve(json(REASONS));
+      case '/api/v1/alarms/config':
+        return Promise.resolve(json(alarmConfig()));
       case '/api/v1/shifts/current':
         return Promise.resolve(json(CURRENT_SHIFT));
       case '/api/v1/shifts':

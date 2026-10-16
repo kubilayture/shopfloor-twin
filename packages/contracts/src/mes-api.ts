@@ -64,15 +64,36 @@ export const MES_API_LIMITS = {
 } as const;
 
 /**
- * How the `detail` of a handover note's 409 starts when the handover window refuses the write
- * (#144, #146): `closed` after the window (or for an older epoch, or without a plant clock),
- * `notOpen` before the shift began. Any other 409 on a note is a stale version. Shared until the
- * problems carry structured types.
+ * Stable problem+json `type` URIs (RFC 9457) of the answers a client tells apart (#163, ADR-0023):
+ * the write conflicts and refusals. A client matches on `type`, never on the `detail` prose;
+ * every other problem is `about:blank` (its status says it all).
  */
-export const HANDOVER_PROBLEM = {
-  closed: 'handover closed',
-  notOpen: 'handover not open',
+export const PROBLEM_TYPES = {
+  /** 409: the handover window of the shift is closed (plant time, a newer epoch, no clock). */
+  handoverClosed: 'urn:shopfloor:handover-closed',
+  /** 409: the shift has not begun (plant time), so its handover is not open yet. */
+  handoverNotOpen: 'urn:shopfloor:handover-not-open',
+  /** 409: the note's `version` sent is not its current one. */
+  noteStale: 'urn:shopfloor:note-stale',
+  /** 422: the shift instance already holds `notesPerShift` notes. */
+  noteLimit: 'urn:shopfloor:note-limit',
+  /** 409: the coding set's `version` sent is not its current one. */
+  codingStale: 'urn:shopfloor:coding-stale',
+  /** 409: the alarm point shelf's `version` sent is not its current one. */
+  shelfStale: 'urn:shopfloor:shelf-stale',
+  /** 403: the `Host` header is not in `HTTP_ALLOWED_HOSTS` (reads and writes). */
+  hostNotAllowed: 'urn:shopfloor:host-not-allowed',
+  /** 403: a write without an `Origin`, from another origin, or with `Sec-Fetch-Site` not same-origin. */
+  writeOrigin: 'urn:shopfloor:write-origin',
+  /** 405: writes are turned off (`MES_WRITES=off`). */
+  writesOff: 'urn:shopfloor:writes-off',
+  /** 415: a write that is not application/json. */
+  writeNotJson: 'urn:shopfloor:write-not-json',
+  /** 429: the global write rate limit; retry after `Retry-After` seconds. */
+  writeRate: 'urn:shopfloor:write-rate',
 } as const;
+
+export type ProblemType = (typeof PROBLEM_TYPES)[keyof typeof PROBLEM_TYPES];
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 /** A reason code id: its path in the tree, e.g. BREAKDOWN/SPINDLE-OVERLOAD. */
@@ -90,7 +111,11 @@ const int = z.number().int();
 
 export const problemSchema = z
   .object({
-    type: z.string().describe('Always about:blank: the status says it all'),
+    type: z
+      .string()
+      .describe(
+        `about:blank (the status says it all), or a stable URI a client tells apart: ${Object.values(PROBLEM_TYPES).join(', ')}`,
+      ),
     title: z.string(),
     status: int,
     detail: z.string(),
@@ -835,6 +860,51 @@ export const alarmScopesSchema = z.object({
   ),
 });
 
+const positiveInt = int.min(1);
+
+export const alarmConfigSchema = z
+  .object({
+    maxShelveMs: positiveInt.describe(
+      'The longest shelf, in plant time (a longer one is 422); the shortest is `minShelveMs`',
+    ),
+    minShelveMs: positiveInt.describe('The shortest shelf (MES_API_LIMITS.minShelveMs)'),
+    kpi: z
+      .object({
+        floodThreshold: positiveInt.describe('A flood is more than this many raises in one window'),
+        windowMs: positiveInt.describe(
+          'The window of the rate and flood measures (`averageRate` is per window); it divides an hour',
+        ),
+        chatterCount: positiveInt.describe(
+          'A raise is chattering when its point raised at least this often in `chatterWindowMs`',
+        ),
+        chatterWindowMs: positiveInt,
+        fleetingMs: positiveInt.describe(
+          'An occurrence that clears less than this after its raise is fleeting',
+        ),
+        standingMs: positiveInt.describe(
+          'An occurrence active at a bucket’s end and raised at least this long before it is standing',
+        ),
+      })
+      .describe('The KPI thresholds alarm-core computes with (ISA-18.2, EEMUA 191)'),
+    benchmarks: z
+      .object({
+        acceptablePer10Min: positiveInt.describe('Average raises per 10 minutes still acceptable'),
+        manageablePer10Min: positiveInt.describe(
+          'Average raises per 10 minutes at most manageable (≥ acceptablePer10Min)',
+        ),
+        floodWindowsPercent: int
+          .min(0)
+          .max(100)
+          .describe('Windows in flood, at most this percentage'),
+        topTenSharePercent: int
+          .min(0)
+          .max(100)
+          .describe('The top 10 points’ share of the raises, at most this percentage'),
+      })
+      .describe('Benchmarks for colouring only; no KPI depends on them'),
+  })
+  .describe('The alarm configuration of config/plant/alarms.yaml that a client shows (#160)');
+
 export const alarmPointSchema = z
   .object({
     equipment: z.string(),
@@ -1032,6 +1102,11 @@ export const shiftRecordSchema = z
         content: int.describe(
           '+1 per handover note create or edit; once final, +1 per operator recode inside the shift (recoding never changes OEE, only the downtime section) and per acknowledgement of an alarm raised in it (its time to acknowledge)',
         ),
+        contentAtFinal: int
+          .nullable()
+          .describe(
+            '`content` at the moment the report became final, stored with `finalAt` under the row lock (#163); null until final. `content - contentAtFinal` is how often the content changed after final',
+          ),
       })
       .describe('The composite revision (ADR-0025): both stored counters'),
   })
@@ -1219,6 +1294,7 @@ export type FloodList = z.infer<typeof floodListSchema>;
 export type BadActorDto = z.infer<typeof badActorSchema>;
 export type BadActorList = z.infer<typeof badActorListSchema>;
 export type AlarmScopes = z.infer<typeof alarmScopesSchema>;
+export type AlarmConfig = z.infer<typeof alarmConfigSchema>;
 
 export type Problem = z.infer<typeof problemSchema>;
 export type CurrentStateDto = z.infer<typeof currentStateSchema>;

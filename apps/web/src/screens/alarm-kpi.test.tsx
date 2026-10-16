@@ -1,18 +1,40 @@
-import type { AlarmKpiBucketDto } from '@shopfloor/contracts/mes-api';
+import type { AlarmConfig, AlarmKpiBucketDto } from '@shopfloor/contracts/mes-api';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SCOPES, episode, hourKpi, kpiBucket, operatorBucket } from '../test/alarm-fixtures.ts';
+import {
+  SCOPES,
+  alarmConfig,
+  episode,
+  hourKpi,
+  kpiBucket,
+  operatorBucket,
+} from '../test/alarm-fixtures.ts';
 import { EQUIPMENT, PLANT, json, problem } from '../test/fixtures.ts';
 import { CURRENT_SHIFT, SHIFT, SHIFT_END, SHIFT_START, requestUrl } from '../test/oee-fixtures.ts';
 import { renderApp } from '../test/render-app.tsx';
 
-vi.mock('../chart/echarts-view.tsx', () => ({ EChartsView: () => null }));
+/** The chart options drawn (jsdom has no canvas): the threshold line is checked on them. */
+const charts = vi.hoisted(() => ({ options: [] as unknown[] }));
+vi.mock('../chart/echarts-view.tsx', () => ({
+  EChartsView: ({ option }: { option: unknown }) => {
+    charts.options.push(option);
+    return null;
+  },
+}));
+
+interface Series {
+  readonly markLine?: { readonly data: readonly { readonly yAxis: number }[] };
+}
+const thresholdLine = (option: unknown) =>
+  ((option as { series: Series[] }).series[1]?.markLine?.data ?? []).map((d) => d.yAxis);
 
 interface Options {
   /** Shift buckets per scope key (`plant`, `position:cell-m1`); missing: none. */
   readonly shift?: Readonly<Record<string, AlarmKpiBucketDto[]>>;
   readonly hours?: AlarmKpiBucketDto[];
   readonly operator?: Response;
+  /** `GET /alarms/config` (#160); default alarms.yaml's. */
+  readonly config?: AlarmConfig;
 }
 
 function mes(options: Options) {
@@ -39,6 +61,8 @@ function mes(options: Options) {
         return Promise.resolve(json({ from: SHIFT_START, to: SHIFT_END, shifts: [SHIFT] }));
       case '/api/v1/alarms/scopes':
         return Promise.resolve(json(SCOPES));
+      case '/api/v1/alarms/config':
+        return Promise.resolve(json(options.config ?? alarmConfig()));
       case '/api/v1/alarms/kpi': {
         const bucket = url.searchParams.get('bucket');
         const buckets = bucket === 'hour' ? (options.hours ?? []) : (options.shift?.[key] ?? []);
@@ -86,6 +110,7 @@ function mes(options: Options) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  charts.options.length = 0;
 });
 
 const measure = (card: HTMLElement, name: string) =>
@@ -109,7 +134,9 @@ describe('alarm KPI page', () => {
     expect(plant.dataset.revision).toBe('1');
     expect(measure(plant, 'raises')).toBe('14 (2 / 11 / 1)');
     expect(measure(plant, 'average-rate')).toContain('0.2917');
-    expect(measure(plant, 'average-rate')).toContain('Acceptable');
+    await waitFor(() => {
+      expect(measure(plant, 'average-rate')).toContain('Acceptable (≤ 1 per 10 min)');
+    });
     expect(measure(plant, 'peak10')).toBe('12');
     expect(measure(plant, 'flood-windows')).toBe('1 of 48');
     expect(measure(plant, 'flood-episodes')).toBe('1 (4.0 min)');
@@ -189,6 +216,32 @@ describe('alarm KPI page', () => {
       expect(screen.getByTestId('kpi-buckets').dataset.bucket).toBe('shift');
     });
     expect(screen.queryByTestId('kpi-hourly')).toBeNull();
+  });
+
+  it('bands the rate and draws the threshold with the configuration the MES serves (#160)', async () => {
+    // A 1-minute window: 7/24 raises per window are 70/24 per 10 minutes, over 2; with a
+    // manageable benchmark of 3 they are manageable. Threshold 6 instead of 10.
+    const config = alarmConfig({
+      kpi: { windowMs: 60_000, floodThreshold: 6 },
+      benchmarks: { manageablePer10Min: 3 },
+    });
+    const server = mes({
+      config,
+      shift: { plant: [kpiBucket()] },
+      hours: [hourKpi('2026-10-15T05:00:00.000Z', { raises: 12, peak10: 8 })],
+    });
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/alarms/kpi?focus=plant');
+    const plant = await screen.findByTestId('kpi-card-plant');
+    await waitFor(() => {
+      expect(measure(plant, 'average-rate')).toContain('Manageable (≤ 3 per 10 min)');
+    });
+    expect(plant.querySelector('[data-band]')?.getAttribute('data-band')).toBe('manageable');
+    await waitFor(() => {
+      expect(charts.options.length).toBeGreaterThan(0);
+      expect(thresholdLine(charts.options.at(-1))).toEqual([6]);
+    });
+    expect(server.paths.filter((path) => path === '/api/v1/alarms/config')).toHaveLength(1);
   });
 
   it('shows n/a for a mean time to acknowledge without acknowledgements', async () => {

@@ -23,6 +23,7 @@ import {
   alarmHistorySchema,
   alarmKpiListSchema,
   alarmListSchema,
+  alarmConfigSchema,
   alarmScopesSchema,
   badActorListSchema,
   floodListSchema,
@@ -118,6 +119,9 @@ async function setup(): Promise<Mes> {
       masterData,
       shiftPattern: plant.shifts,
       config: plant.alarms.kpi,
+      // As main.ts wires alarms.yaml.
+      maxShelveMs: plant.alarms.maxShelveMs,
+      benchmarks: plant.alarms.benchmarks,
     });
     await alarms.start();
     cleanup.push(() => alarms.stop());
@@ -788,6 +792,36 @@ describe('alarm API and push (#142)', () => {
       ['position', 'cell-m1'],
       ['position', 'line-a1'],
     ]);
+    // The alarm configuration (#160): exactly config/plant/alarms.yaml, as plant-config loads it.
+    const config = alarmConfigSchema.parse((await get('/alarms/config')).body);
+    expect(config).toEqual({
+      maxShelveMs: plant.alarms.maxShelveMs,
+      minShelveMs: 60_000,
+      kpi: plant.alarms.kpi,
+      benchmarks: plant.alarms.benchmarks,
+    });
+    expect([config.maxShelveMs, config.kpi.floodThreshold, config.kpi.windowMs]).toEqual([
+      28_800_000, 10, 600_000,
+    ]);
+  });
+
+  it('serves a changed alarms.yaml, not defaults (#160)', () => {
+    const changed = {
+      maxShelveMs: 2 * 3_600_000,
+      kpi: { ...plant.alarms.kpi, floodThreshold: 7, windowMs: 300_000, standingMs: 3_600_000 },
+      benchmarks: { ...plant.alarms.benchmarks, acceptablePer10Min: 2, manageablePer10Min: 4 },
+    };
+    const alarms = new Alarms({
+      db: undefined as unknown as Kysely<Database>,
+      ingest: undefined as unknown as Ingest,
+      equipment: undefined as unknown as Equipment,
+      masterData: undefined as unknown as MasterData,
+      shiftPattern: plant.shifts,
+      config: changed.kpi,
+      maxShelveMs: changed.maxShelveMs,
+      benchmarks: changed.benchmarks,
+    });
+    expect(alarms.settings()).toEqual(changed);
   });
 
   it('pushes occurrence upserts on `alarms` and paced KPI deltas on `alarm-kpi:<scope>`', async () => {

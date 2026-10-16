@@ -114,7 +114,24 @@ export interface AlarmsOptions extends AlarmSources {
   readonly config: AlarmKpiConfig;
   /** `alarms.yaml` → `maxShelveMs`: the longest shelf, in plant time (default 8 hours). */
   readonly maxShelveMs?: number;
+  /** `alarms.yaml` → `benchmarks`: for colouring only (default the file's values). */
+  readonly benchmarks?: AlarmBenchmarks;
   readonly log?: AlarmsLog;
+}
+
+/** `alarms.yaml` → `benchmarks` (ISA-18.2, EEMUA 191): a client colours with them; no KPI uses them. */
+export interface AlarmBenchmarks {
+  readonly acceptablePer10Min: number;
+  readonly manageablePer10Min: number;
+  readonly floodWindowsPercent: number;
+  readonly topTenSharePercent: number;
+}
+
+/** The alarm configuration a client shows (#160): served by `GET /alarms/config`. */
+export interface AlarmSettings {
+  readonly maxShelveMs: number;
+  readonly kpi: AlarmKpiConfig;
+  readonly benchmarks: AlarmBenchmarks;
 }
 
 /** One occurrence as the API reads it. */
@@ -331,6 +348,13 @@ const silent: AlarmsLog = { info: () => undefined, error: () => undefined };
 
 /** alarms.yaml's default `maxShelveMs`: one shift. */
 const DEFAULT_MAX_SHELVE_MS = 8 * HOUR;
+/** alarms.yaml's default benchmarks. */
+const DEFAULT_BENCHMARKS: AlarmBenchmarks = {
+  acceptablePer10Min: 1,
+  manageablePer10Min: 2,
+  floodWindowsPercent: 1,
+  topTenSharePercent: 5,
+};
 /** Occurrences of a point pushed after its shelf changed, at most. */
 const SHELF_PUSH_LIMIT = 500;
 
@@ -395,6 +419,7 @@ export class Alarms {
   #queue: Promise<unknown> = Promise.resolve();
   #unsubscribe: (() => void) | undefined;
   readonly #maxShelveMs: number;
+  readonly #benchmarks: AlarmBenchmarks;
   /**
    * The shelved points (#143) by `equipment/code`, as last written: when the plant clock may end
    * them (`#endShelves` checks the table itself). A newer version replaces an older one only.
@@ -413,6 +438,7 @@ export class Alarms {
     this.#pattern = options.shiftPattern;
     this.#config = options.config;
     this.#maxShelveMs = options.maxShelveMs ?? DEFAULT_MAX_SHELVE_MS;
+    this.#benchmarks = options.benchmarks ?? DEFAULT_BENCHMARKS;
     this.#log = options.log ?? silent;
   }
 
@@ -422,6 +448,15 @@ export class Alarms {
 
   get config(): AlarmKpiConfig {
     return this.#config;
+  }
+
+  /** The shelving limit, the KPI thresholds and the benchmarks, as configured (#160). */
+  settings(): AlarmSettings {
+    return {
+      maxShelveMs: this.#maxShelveMs,
+      kpi: { ...this.#config },
+      benchmarks: { ...this.#benchmarks },
+    };
   }
 
   get shiftPattern(): ShiftPattern {

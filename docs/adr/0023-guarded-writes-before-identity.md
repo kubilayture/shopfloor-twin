@@ -64,3 +64,25 @@ The answer to a write carries `X-Request-Id` (a UUID per request, Fastify's requ
 ## Note: alarm writes (#143)
 
 The alarm writes (acknowledge, bulk acknowledge, comment, shelve, unshelve) pass the same guards, unchanged and in the same order, and use only `POST`, which nginx already passes. A bulk acknowledgement of up to 100 occurrences is one request and so one token of the global rate limit. Acknowledgement is monotonic and needs no version; a shelf has its own version per alarm point (not per equipment and epoch), raised also by the MES's own expiry. Their audit, `alarms.alarm_transition`, follows `downtime_audit`'s pattern (a trigger refuses UPDATE, DELETE and TRUNCATE; actor free text, `authenticated: false`, wall time, request id), and `alarms.occurrence_state` is insert-only by the same kind of trigger. Both move to `identity`'s audit log with the downtime audit in Phase 7.
+
+## Note: problem types (#163)
+
+Until #163 every problem answer was `type: about:blank`, and the web told the handover 409s apart by the prose prefix of `detail` (`handover closed`, `handover not open`, shared as `HANDOVER_PROBLEM`). Prose is not a contract: a reworded message would silently turn a closed window into a "stale version" on the screen. The answers a client must tell apart now carry stable `type` URIs, defined once in `@shopfloor/contracts` (`PROBLEM_TYPES`) and listed in the `Problem` schema of the OpenAPI document:
+
+| Status | `type`                            | When                                                                                 |
+| ------ | --------------------------------- | ------------------------------------------------------------------------------------ |
+| 409    | `urn:shopfloor:handover-closed`   | a note write after the handover window, for an older epoch, or without a plant clock |
+| 409    | `urn:shopfloor:handover-not-open` | a note write before its shift began                                                  |
+| 409    | `urn:shopfloor:note-stale`        | a note edit with a `version` that moved on                                           |
+| 422    | `urn:shopfloor:note-limit`        | the 201st note of a shift instance                                                   |
+| 409    | `urn:shopfloor:coding-stale`      | a coding write with a coding set `version` that moved on                             |
+| 409    | `urn:shopfloor:shelf-stale`       | a shelve or unshelve with a shelf `version` that moved on                            |
+| 403    | `urn:shopfloor:host-not-allowed`  | guard 1, the `Host` check (reads too)                                                |
+| 403    | `urn:shopfloor:write-origin`      | guards 3 to 5: no `Origin`, a foreign one, `Sec-Fetch-Site` not same-origin          |
+| 405    | `urn:shopfloor:writes-off`        | guard 2, `MES_WRITES=off`                                                            |
+| 415    | `urn:shopfloor:write-not-json`    | guard 6                                                                              |
+| 429    | `urn:shopfloor:write-rate`        | guard 7, with `Retry-After`                                                          |
+
+Decision on the scope: the four handover types were asked for; the other write conflicts and the guard refusals got types too, because it cost one argument per place that already builds the problem (the module errors `CodingError`, `AlarmWriteError` and `ShiftError` carry an optional `type`, `HttpProblem` passes it on, the guard refusals name theirs) and keeps every write refusal on one rule. Everything else stays `about:blank`: 400 (validation), 404, 413, a read refused for its `Origin`, 422s other than the note limit (a coding outside its record, a shelf beyond `maxShelveMs`, an unshelve of a point not shelved), 503 and 500, where the status says enough or the client only shows `detail`. `urn:` names identify and are not meant to be dereferenced; RFC 9457 allows that, and there is no documentation host to point at.
+
+The `detail` texts are unchanged (`handover closed: …`, `note 1 changed: version is 2, not 1`), so logs and people read the same; `HANDOVER_PROBLEM` is gone from contracts, since no client matches on prose any more. The web's note editor matches on `type` only; its other write screens keep mapping by status (`writeFailure`), which already distinguishes them, and a 409 or 422 without a known type falls back to that general mapping. A new client should match on `type` first, then status.

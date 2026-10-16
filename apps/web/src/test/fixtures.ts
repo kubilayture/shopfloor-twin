@@ -56,13 +56,15 @@ type Handler = (url: URL) => Response | Promise<Response>;
 export const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
+/** A problem+json answer; `type` is about:blank unless a stable one is given (#163). */
 export const problem = (
   status: number,
   title: string,
   detail: string,
   instance: string,
+  type = 'about:blank',
 ): Response =>
-  new Response(JSON.stringify({ type: 'about:blank', title, status, detail, instance }), {
+  new Response(JSON.stringify({ type, title, status, detail, instance }), {
     status,
     headers: { 'content-type': 'application/problem+json' },
   });

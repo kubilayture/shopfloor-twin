@@ -4,6 +4,7 @@
  * re-cuts the intervals and rebuilds the records. Every write and every clip is audited in the
  * append-only `equipment.downtime_audit`.
  */
+import { PROBLEM_TYPES, type ProblemType } from '@shopfloor/contracts/mes-api';
 import type { Millis } from '@shopfloor/oee-core';
 import { UNCODED } from '@shopfloor/plant-config';
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -88,10 +89,13 @@ export type CodingErrorKind = 'not-found' | 'conflict' | 'invalid';
 /** A refused write: the API answers 404, 409 or 422. */
 export class CodingError extends Error {
   readonly kind: CodingErrorKind;
+  /** The problem type a client tells apart (#163); `about:blank` without one. */
+  readonly type: ProblemType | undefined;
 
-  constructor(kind: CodingErrorKind, message: string) {
+  constructor(kind: CodingErrorKind, message: string, type?: ProblemType) {
     super(message);
     this.kind = kind;
+    this.type = type;
   }
 }
 
@@ -420,6 +424,7 @@ export class DowntimeCoding {
         throw new CodingError(
           'conflict',
           `the codings of ${key.equipment} (epoch ${String(key.epoch)}) changed: version is ${String(version ?? 0)}, not ${String(request.version)}`,
+          PROBLEM_TYPES.codingStale,
         );
       }
       const next = version + 1;

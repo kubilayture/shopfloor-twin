@@ -40,6 +40,8 @@ export interface ShiftInstanceTable {
   seen_inputs: JSONColumnType<InputRevisions | null, string | null | undefined, string | null>;
   inputs_revision: ColumnType<number, number | undefined, number>;
   content_revision: ColumnType<number, number | undefined, number>;
+  /** `content_revision` when the report became final (#163, migration 0015); null until then. */
+  content_at_final: ColumnType<number | null, number | null | undefined, number | null>;
   created_at: DefaultTimestamp;
   updated_at: DefaultTimestamp;
 }
@@ -101,6 +103,7 @@ export const SHIFTS_COLUMNS = {
     'content_revision',
     'created_at',
     'updated_at',
+    'content_at_final',
   ],
   'shifts.handover_note': [
     'id',

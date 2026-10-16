@@ -17,11 +17,13 @@
  *   `comments(id)`, `pointAudit()`, and `operatorMeasures(...)` (shelved and annunciated raises,
  *   time to acknowledge, unacknowledged at the end, shelved time: MES only, apart from the
  *   KPIs). None of them changes a KPI.
- * - `Alarms.scopes()`, `scope(kind, id)`, `definition(equipment, code)`.
+ * - `Alarms.scopes()`, `scope(kind, id)`, `definition(equipment, code)`; `settings()`: the
+ *   shelving limit, KPI thresholds and benchmarks of alarms.yaml (#160).
  * - `deriveOccurrences(...)`: the pure pairing of facts, anchors, snapshot and epoch end.
  */
 export { Alarms, occurrenceId, parseOccurrenceId } from './alarms.ts';
 export type {
+  AlarmBenchmarks,
   AlarmBucketKind,
   AlarmChange,
   AlarmEvent,
@@ -38,6 +40,7 @@ export type {
   AlarmSources,
   AlarmsLog,
   AlarmsOptions,
+  AlarmSettings,
   ScopeInfo,
 } from './alarms.ts';
 export { alarmHourBuckets, alarmShiftBuckets, noShiftKey } from './buckets.ts';

@@ -148,6 +148,7 @@ try {
     shiftPattern: await masterData.shiftPattern(),
     config: plant.config.alarms.kpi,
     maxShelveMs: plant.config.alarms.maxShelveMs,
+    benchmarks: plant.config.alarms.benchmarks,
     log: log.child({ module: 'alarms' }),
   });
   await alarms.start();

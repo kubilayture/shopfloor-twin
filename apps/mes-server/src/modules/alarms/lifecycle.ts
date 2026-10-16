@@ -5,6 +5,7 @@
  * `alarm_occurrence` or any KPI: every raise counts, shelved or acknowledged or not.
  */
 import type { Priority } from '@shopfloor/alarm-core';
+import { PROBLEM_TYPES, type ProblemType } from '@shopfloor/contracts/mes-api';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
 import type { EndReason, TransitionAction } from './tables.ts';
@@ -23,10 +24,13 @@ export type AlarmWriteErrorKind = 'not-found' | 'conflict' | 'invalid';
 /** A refused alarm write: the API answers 404, 409 or 422. */
 export class AlarmWriteError extends Error {
   readonly kind: AlarmWriteErrorKind;
+  /** The problem type a client tells apart (#163); `about:blank` without one. */
+  readonly type: ProblemType | undefined;
 
-  constructor(kind: AlarmWriteErrorKind, message: string) {
+  constructor(kind: AlarmWriteErrorKind, message: string, type?: ProblemType) {
     super(message);
     this.kind = kind;
+    this.type = type;
   }
 }
 
@@ -600,6 +604,7 @@ const conflict = (equipment: string, code: string, version: number, sent: number
   new AlarmWriteError(
     'conflict',
     `the shelf of ${equipment}/${code} changed: version is ${String(version)}, not ${String(sent)}`,
+    PROBLEM_TYPES.shelfStale,
   );
 
 /**

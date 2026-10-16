@@ -1,7 +1,7 @@
 import type { NOTE_CATEGORIES } from '@shopfloor/contracts/mes-api';
 import {
-  HANDOVER_PROBLEM,
   MES_API_LIMITS,
+  PROBLEM_TYPES,
   type AlarmKpiBucketDto,
   type HandoverAuditEntryDto,
   type HandoverNoteDto,
@@ -72,26 +72,20 @@ export interface ChangesAfterFinal {
   /** Input revision steps since final (`revision.inputs`). */
   readonly inputs: number;
   /**
-   * Content steps since final: `revision.content` less the note writes before `finalAt` (each
-   * note write is one content step, before final too; recodes and acknowledgements count only
-   * after final, ADR-0025).
+   * Content steps since final: `revision.content - revision.contentAtFinal`, both counters the MES
+   * stored (#163). No clock is compared: the MES took `contentAtFinal` under the row lock a note
+   * write takes too, so a write is on exactly one side of final.
    */
   readonly content: number;
 }
 
 /** How a final report changed since it became final; undefined while it is not final. */
 export function changesAfterFinal(
-  report: Pick<ShiftReportDto, 'final' | 'finalAt' | 'revision' | 'notes'>,
+  report: Pick<ShiftReportDto, 'final' | 'revision'>,
 ): ChangesAfterFinal | undefined {
-  if (!report.final || report.finalAt === null) return undefined;
-  const finalAt = Date.parse(report.finalAt);
-  const before = report.notes
-    .flatMap((entry) => entry.history)
-    .filter((entry) => Date.parse(entry.at) < finalAt).length;
-  return {
-    inputs: report.revision.inputs,
-    content: Math.max(0, report.revision.content - before),
-  };
+  const { inputs, content, contentAtFinal } = report.revision;
+  if (!report.final || contentAtFinal === null) return undefined;
+  return { inputs, content: Math.max(0, content - contentAtFinal) };
 }
 
 // ---- Live numbers (`oee:<id>`, `alarm-kpi:<scope>`) ----
@@ -257,34 +251,34 @@ export interface NoteFailure {
   readonly text: string;
 }
 
-const LIMIT = /at most \d+ notes/;
-
 /**
- * A failed note write as a message for people: stale, handover closed or not open yet (the
- * MES's `detail` prefixes, `HANDOVER_PROBLEM`), the note limit, or the rest.
+ * A failed note write as a message for people, told apart by the problem `type` the MES sends
+ * (#163, `PROBLEM_TYPES`), never by its `detail` prose: handover closed or not open yet, a stale
+ * version, the note limit; the rest (and a 409 or 422 without a known type) as any write's.
  */
 export function noteFailure(error: unknown): NoteFailure {
   if (error instanceof ApiError) {
     const detail = error.problem?.detail ?? '';
-    if (error.status === 409 && detail.startsWith(HANDOVER_PROBLEM.closed)) {
+    const type = error.problem?.type;
+    if (type === PROBLEM_TYPES.handoverClosed) {
       return {
         kind: 'closed',
         text: `Not saved: the handover window is closed (${detail}). Notes can be written from the shift's start until the end of the following shift, in plant time.`,
       };
     }
-    if (error.status === 409 && detail.startsWith(HANDOVER_PROBLEM.notOpen)) {
+    if (type === PROBLEM_TYPES.handoverNotOpen) {
       return {
         kind: 'not-open',
         text: `Not saved: the handover window is not open yet (${detail}). Notes can be written once the shift has begun, in plant time.`,
       };
     }
-    if (error.status === 409) {
+    if (type === PROBLEM_TYPES.noteStale) {
       return {
         kind: 'stale',
         text: 'Not saved: someone else changed this note since you started editing. Your draft was not sent and is kept below; reload the note to see their version, then edit again.',
       };
     }
-    if (error.status === 422 && LIMIT.test(detail)) {
+    if (type === PROBLEM_TYPES.noteLimit) {
       return {
         kind: 'limit',
         text: `Not saved: this shift already has ${String(NOTE_LIMIT)} notes, the most allowed. Edit an existing note instead.`,

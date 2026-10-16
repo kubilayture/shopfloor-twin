@@ -908,7 +908,10 @@ async function expectShiftReports(
         })
       ).every((r) => r.shiftKey !== s.key || !r.provisional);
     expect([s.key, report.instance.status === 'final']).toEqual([s.key, inputsFinal]);
-    expect([s.key, report.instance.revision]).toEqual([s.key, { inputs: 0, content: 0 }]);
+    expect([s.key, report.instance.revision]).toEqual([
+      s.key,
+      { inputs: 0, content: 0, contentAtFinal: inputsFinal ? 0 : null },
+    ]);
     expect(report.instance.status).not.toBe('running');
     if (inputsFinal) final++;
     compared += 5 + report.production.machines.length;

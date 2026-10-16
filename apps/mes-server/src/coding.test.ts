@@ -3,6 +3,7 @@
  * splits and optimistic concurrency, clipping and orphaning after a re-cut, the append-only
  * audit, the Pareto changing while OEE does not, the `recoded` push, and `MES_WRITES=off`.
  */
+import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { idealCycleMs, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import type { FastifyInstance } from 'fastify';
 import { sql, type Kysely } from 'kysely';
@@ -316,7 +317,10 @@ describe('write guards (ADR-0023)', () => {
         limited,
       );
       statuses.push(response.statusCode);
-      if (response.statusCode === 429) expect(response.headers['retry-after']).toBe('1');
+      if (response.statusCode === 429) {
+        expect(response.headers['retry-after']).toBe('1');
+        expect(problemSchema.parse(response.json()).type).toBe(PROBLEM_TYPES.writeRate);
+      }
     }
     expect(statuses).toEqual([200, 200, 429]);
     // Reads are not limited.
@@ -410,6 +414,7 @@ describe('coding downtime records (#121)', () => {
     });
     expect(stale.statusCode).toBe(409);
     expect(problemSchema.parse(stale.json()).detail).toMatch(/version is \d+, not \d+/);
+    expect(problemSchema.parse(stale.json()).type).toBe(PROBLEM_TYPES.codingStale);
 
     // A split: two codings cover the whole stop; the larger names the record.
     const split = codingResultSchema.parse(

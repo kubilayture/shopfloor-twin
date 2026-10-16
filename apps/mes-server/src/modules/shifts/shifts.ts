@@ -6,7 +6,7 @@
  */
 import type { BadActor } from '@shopfloor/alarm-core';
 import type { CycleCount, Millis } from '@shopfloor/oee-core';
-import { HANDOVER_PROBLEM } from '@shopfloor/contracts/mes-api';
+import { PROBLEM_TYPES, type ProblemType } from '@shopfloor/contracts/mes-api';
 import { UNCODED } from '@shopfloor/plant-config';
 import { nextShift, shiftInstances, type ShiftPattern } from '@shopfloor/shift-calendar';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
@@ -88,6 +88,11 @@ export interface ReportRevision {
   readonly inputs: number;
   /** +1 per handover note create or edit, and per operator recode inside a final shift. */
   readonly content: number;
+  /**
+   * `content` at the moment the report became final, stored with `finalAt` under the row lock
+   * (#163); null until final. Changes after final: `content - contentAtFinal`.
+   */
+  readonly contentAtFinal: number | null;
 }
 
 /** One stored shift instance. */
@@ -154,10 +159,16 @@ export type ShiftErrorKind = 'not-found' | 'conflict' | 'invalid';
 /** A refused request: the API answers 404, 409 or 422. */
 export class ShiftError extends Error {
   readonly kind: ShiftErrorKind;
+  /**
+   * The problem type a client tells apart (#163): handover closed or not open, a stale note, the
+   * note limit; `about:blank` without one.
+   */
+  readonly type: ProblemType | undefined;
 
-  constructor(kind: ShiftErrorKind, message: string) {
+  constructor(kind: ShiftErrorKind, message: string, type?: ProblemType) {
     super(message);
     this.kind = kind;
+    this.type = type;
   }
 }
 
@@ -236,6 +247,7 @@ const toRecord = (row: {
   final_at: Date | null;
   inputs_revision: number;
   content_revision: number;
+  content_at_final: number | null;
 }): ShiftRecord => ({
   epoch: row.epoch,
   key: row.shift_key,
@@ -246,7 +258,11 @@ const toRecord = (row: {
   breaks: row.breaks.map((b) => ({ start: new Date(b.start), end: new Date(b.end) })),
   status: row.status,
   finalAt: row.final_at,
-  revision: { inputs: row.inputs_revision, content: row.content_revision },
+  revision: {
+    inputs: row.inputs_revision,
+    content: row.content_revision,
+    contentAtFinal: row.content_at_final,
+  },
 });
 
 const toNote = (row: NoteRow): HandoverNote => ({
@@ -564,11 +580,18 @@ export class Shifts {
     const { stored, seen } = await this.#observe(record, { final, revisions });
     // `inputs` as of the revisions read above: the stored count less the steps counted beyond
     // them (by this read's own catch-up nothing, by a concurrent read or the tick perhaps some).
+    const content = Math.min(stored.revision.content, record.revision.content);
     const instance: ShiftRecord = {
       ...stored,
       revision: {
         inputs: Math.max(0, stored.revision.inputs - revisionSteps(revisions, seen)),
-        content: Math.min(stored.revision.content, record.revision.content),
+        content,
+        // Never above the `content` served: a note written between the early read and the
+        // finality is in the notes read, and was there before final.
+        contentAtFinal:
+          stored.revision.contentAtFinal === null
+            ? null
+            : Math.min(stored.revision.contentAtFinal, content),
       },
     };
     return {
@@ -645,7 +668,11 @@ export class Shifts {
         .where('shift_key', '=', key)
         .executeTakeFirstOrThrow();
       if (Number(count.n) >= MAX_NOTES) {
-        throw new ShiftError('invalid', `at most ${String(MAX_NOTES)} notes per shift`);
+        throw new ShiftError(
+          'invalid',
+          `at most ${String(MAX_NOTES)} notes per shift`,
+          PROBLEM_TYPES.noteLimit,
+        );
       }
       const row = await trx
         .insertInto('shifts.handover_note')
@@ -691,6 +718,7 @@ export class Shifts {
         throw new ShiftError(
           'conflict',
           `note ${String(id)} changed: version is ${String(row.version)}, not ${String(edit.version)}`,
+          PROBLEM_TYPES.noteStale,
         );
       }
       const before = toNote(row);
@@ -954,6 +982,8 @@ export class Shifts {
             final_inputs: json,
             seen_inputs: json,
             inputs_revision: 0,
+            // Under the row lock a note write also takes: no content step falls between them.
+            content_at_final: row.content_revision,
             updated_at: new Date(),
           })
           .where('epoch', '=', record.epoch)
@@ -1005,24 +1035,31 @@ export class Shifts {
     if (newest !== undefined && newest > epoch) {
       throw new ShiftError(
         'conflict',
-        `${HANDOVER_PROBLEM.closed}: epoch ${String(epoch)} ended (epoch ${String(newest)} is newer)`,
+        `handover closed: epoch ${String(epoch)} ended (epoch ${String(newest)} is newer)`,
+        PROBLEM_TYPES.handoverClosed,
       );
     }
     const plantAt = this.#sources.equipment.watermark(epoch);
     if (plantAt === undefined) {
       throw new ShiftError(
         'conflict',
-        `${HANDOVER_PROBLEM.closed}: no plant clock for epoch ${String(epoch)}`,
+        `handover closed: no plant clock for epoch ${String(epoch)}`,
+        PROBLEM_TYPES.handoverClosed,
       );
     }
     const window = handoverWindow(this.#pattern, record);
     if (plantAt.getTime() < window.from) {
-      throw new ShiftError('conflict', `${HANDOVER_PROBLEM.notOpen}: shift ${key} has not begun`);
+      throw new ShiftError(
+        'conflict',
+        `handover not open: shift ${key} has not begun`,
+        PROBLEM_TYPES.handoverNotOpen,
+      );
     }
     if (plantAt.getTime() >= window.to) {
       throw new ShiftError(
         'conflict',
-        `${HANDOVER_PROBLEM.closed}: notes of ${key} can be written until ${new Date(window.to).toISOString()} (plant time)`,
+        `handover closed: notes of ${key} can be written until ${new Date(window.to).toISOString()} (plant time)`,
+        PROBLEM_TYPES.handoverClosed,
       );
     }
     return { record, plantAt };

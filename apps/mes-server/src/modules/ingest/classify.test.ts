@@ -3,7 +3,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { classify } from './classify.ts';
 import { failureKind } from './ingest.ts';
-import { add, contains, holes, missing, union, type Range } from './ranges.ts';
+import { add, contains, holes, missing, settledThrough, union, type Range } from './ranges.ts';
 
 const AT = { area: 'machining', workCenter: 'cell-m1', equipment: 'cnc-01' } as const;
 const base = {
@@ -135,6 +135,25 @@ describe('sequence ranges', () => {
       [6, 6],
       [8, 9],
     ]);
+  });
+
+  it('settle up to the first open hole; a reported hole holds nothing back (#113)', () => {
+    expect(settledThrough([], [])).toBeNull();
+    expect(settledThrough([[1, 4]], [])).toBe(4);
+    // A stream first seen at 3: 1 and 2 may still come, until written off as history.
+    expect(settledThrough([[3, 4]], [])).toBeNull();
+    expect(settledThrough([[3, 4]], [[1, 2]])).toBe(4);
+    // A new epoch's sentinel 0: nothing settled until 1 arrives or the hole is reported.
+    expect(settledThrough(add([[0, 0]], 3), [])).toBe(0);
+    const seen = model([1, 2, 6, 7, 10]);
+    expect(settledThrough(seen, [])).toBe(2);
+    expect(settledThrough(seen, [[3, 5]])).toBe(7);
+    expect(
+      settledThrough(seen, [
+        [3, 5],
+        [8, 9],
+      ]),
+    ).toBe(10);
   });
 });
 

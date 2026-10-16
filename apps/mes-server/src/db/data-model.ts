@@ -59,7 +59,9 @@ const TABLES: Readonly<Record<string, string>> = {
   'ingest.rejected_message':
     'Messages that failed validation, came with a stale epoch or could not be stored: never dropped silently.',
   'equipment.equipment_state_interval':
-    'State intervals cut into pieces inside one UTC hour and one shift bucket; the open interval is stored up to the plant watermark, flagged provisional.',
+    'State intervals cut into pieces inside one UTC hour and one shift bucket; the open interval is stored up to the plant watermark. A piece is provisional while it ends after the time its machine’s own facts have settled (#113).',
+  'equipment.bucket_finality':
+    'Per (equipment, epoch, UTC hour): when the hour became final, its revision (raised by each change after that) and the gap incidents over it.',
   'equipment.interval_source':
     'What the stored intervals of each (equipment, epoch) were computed from, so start-up catch-up can recompute what differs.',
   'public.schema_migrations': 'Applied migrations and their checksums.',
@@ -199,7 +201,7 @@ export async function generateDataModel(db: Kysely<Database>): Promise<string> {
     '',
     'The MES database after all migrations in `db/migrations`, read from the database itself (`pg_catalog` and `timescaledb_information`). Regenerate with `pnpm --filter @shopfloor/mes-server data-model`; a test in `apps/mes-server/src/db/db.test.ts` fails when this file is out of date.',
     '',
-    'Each schema belongs to exactly one module of `mes-server` (ADR-0016). Modules read each other only through their interfaces, so there are no foreign keys between schemas: a column named `equipment` holds a `master_data.equipment.id` by convention, and `ingest.state_anchor.arrival` is referenced from `equipment.interval_source.anchor_arrival` the same way. Times are simulation time unless a column says otherwise (`received_at`, `ingested_at`, `recorded_at`, `updated_at` and `applied_at` are wall time).',
+    'Each schema belongs to exactly one module of `mes-server` (ADR-0016). Modules read each other only through their interfaces, so there are no foreign keys between schemas: a column named `equipment` holds a `master_data.equipment.id` by convention, and `ingest.state_anchor.arrival` is referenced from `equipment.interval_source.anchor_arrival` the same way, as are `ingest.data_quality_incident` ids from `equipment.bucket_finality.incident_ids`. Times are simulation time unless a column says otherwise (`received_at`, `ingested_at`, `recorded_at`, `updated_at`, `final_at`, `revised_at` and `applied_at` are wall time).',
     '',
     '## Contents',
     '',

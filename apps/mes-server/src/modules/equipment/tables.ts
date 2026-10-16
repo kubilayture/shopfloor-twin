@@ -32,9 +32,22 @@ export interface IntervalSourceTable {
   updated_at: DefaultTimestamp;
 }
 
+/** Per (equipment, epoch, UTC hour): when it became final and how often it changed since (#113). */
+export interface BucketFinalityTable {
+  equipment: string;
+  epoch: number;
+  hour: Timestamp;
+  final_at: DefaultTimestamp;
+  revision: ColumnType<number, number | undefined, number>;
+  revised_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** ingest.data_quality_incident ids (BIGINT[], read as numbers). */
+  incident_ids: ColumnType<number[], number[] | undefined, number[]>;
+}
+
 export interface EquipmentTables {
   'equipment.equipment_state_interval': EquipmentStateIntervalTable;
   'equipment.interval_source': IntervalSourceTable;
+  'equipment.bucket_finality': BucketFinalityTable;
 }
 
 export const EQUIPMENT_COLUMNS = {
@@ -62,5 +75,14 @@ export const EQUIPMENT_COLUMNS = {
     'closed_at',
     'clamped',
     'updated_at',
+  ],
+  'equipment.bucket_finality': [
+    'equipment',
+    'epoch',
+    'hour',
+    'final_at',
+    'revision',
+    'revised_at',
+    'incident_ids',
   ],
 } as const;

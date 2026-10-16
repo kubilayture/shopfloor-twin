@@ -246,6 +246,14 @@ describe('ingest (#95)', () => {
       [id, 'spindle-load', 41.5, '%', 1],
     ]);
     expect(notices.map((n) => n.type)).toEqual(['state', 'state', 'sample', 'sample', 'sample']);
+    // Device facts tell how far their stream is settled (#113); telemetry doesn't.
+    expect(notices.map((n) => ('settledSeq' in n ? n.settledSeq : 'none'))).toEqual([
+      1,
+      2,
+      3,
+      4,
+      'none',
+    ]);
     expect(await ingest.stateFacts(id, EPOCH)).toMatchObject([
       { seq: 1, state: 'Running' },
       { seq: 2, state: 'Down', cause: 'SPINDLE-FAULT' },
@@ -278,17 +286,48 @@ describe('ingest (#95)', () => {
   it('records a gap as an incident after the grace period; late facts fill and close it, also after a restart', async () => {
     const { db, equipment, clock, start } = await setup();
     let ingest = await start();
+    const notices: IngestNotice[] = [];
+    ingest.onStored((notice) => {
+      notices.push(notice);
+    });
     const at = equipment('cnc');
     const stream = `device:${at.equipment}`;
     for (const seq of [1, 2, 6])
       await publish(stateTopic(at), stateEvent(at.equipment, EPOCH, seq));
     await waitFor(() => ingest.count('stored') === 3, 'three facts');
+    // The open gap holds the stream's settled part at 2 (#113).
+    expect(await ingest.settled(at.equipment, EPOCH)).toMatchObject({
+      settledSeq: 2,
+      incidents: [],
+    });
     expect(await ingest.sweep()).toBe(0);
     clock.now += GRACE_MS - 1;
     expect(await ingest.sweep()).toBe(0);
     clock.now += 1;
     expect(await ingest.sweep()).toBe(1);
     expect(await ingest.sweep()).toBe(0); // recorded once
+    // Reported, the gap holds nothing back; listeners hear of it, and of where the gap lies.
+    expect(notices.at(-1)).toEqual({
+      type: 'gaps',
+      equipment: at.equipment,
+      epoch: EPOCH,
+      settledSeq: 6,
+    });
+    expect(await ingest.settled(at.equipment, EPOCH)).toMatchObject({
+      settledSeq: 6,
+      settledTime: new Date(sourceTime(6)),
+      incidents: [
+        {
+          seqFrom: 3,
+          seqTo: 5,
+          after: new Date(sourceTime(2)),
+          before: new Date(sourceTime(6)),
+        },
+      ],
+    });
+    // Only the facts above `afterSeq` are read for the time.
+    expect((await ingest.settled(at.equipment, EPOCH, 6)).settledTime).toBeNull();
+    expect(await ingest.settled(at.equipment, EPOCH + 1)).toMatchObject({ settledSeq: null });
     expect(await incidents(db)).toEqual([
       {
         origin: 'mes',

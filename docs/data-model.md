@@ -4,7 +4,7 @@
 
 The MES database after all migrations in `db/migrations`, read from the database itself (`pg_catalog` and `timescaledb_information`). Regenerate with `pnpm --filter @shopfloor/mes-server data-model`; a test in `apps/mes-server/src/db/db.test.ts` fails when this file is out of date.
 
-Each schema belongs to exactly one module of `mes-server` (ADR-0016). Modules read each other only through their interfaces, so there are no foreign keys between schemas: a column named `equipment` holds a `master_data.equipment.id` by convention, and `ingest.state_anchor.arrival` is referenced from `equipment.interval_source.anchor_arrival` the same way. Times are simulation time unless a column says otherwise (`received_at`, `ingested_at`, `recorded_at`, `updated_at` and `applied_at` are wall time).
+Each schema belongs to exactly one module of `mes-server` (ADR-0016). Modules read each other only through their interfaces, so there are no foreign keys between schemas: a column named `equipment` holds a `master_data.equipment.id` by convention, and `ingest.state_anchor.arrival` is referenced from `equipment.interval_source.anchor_arrival` the same way, as are `ingest.data_quality_incident` ids from `equipment.bucket_finality.incident_ids`. Times are simulation time unless a column says otherwise (`received_at`, `ingested_at`, `recorded_at`, `updated_at`, `final_at`, `revised_at` and `applied_at` are wall time).
 
 ## Contents
 
@@ -24,6 +24,7 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016). Modules re
   - `ingest.state_anchor`
   - `ingest.telemetry_sample`
 - [`equipment`](#schema-equipment)
+  - `equipment.bucket_finality`
   - `equipment.equipment_state_interval`
   - `equipment.interval_source`
 - [`public`](#schema-public)
@@ -347,9 +348,29 @@ TimescaleDB hypertable, partitioned by `source_time` in chunks of 7 days.
 
 Owner: equipment. State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE.
 
+### equipment.bucket_finality
+
+Per (equipment, epoch, UTC hour): when the hour became final, its revision (raised by each change after that) and the gap incidents over it.
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `hour` | `timestamp with time zone` | not null |  |
+| `final_at` | `timestamp with time zone` | not null | `now()` |
+| `revision` | `integer` | not null | `0` |
+| `revised_at` | `timestamp with time zone` | null |  |
+| `incident_ids` | `bigint[]` | not null | `'{}'::bigint[]` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `bucket_finality_pkey` | `PRIMARY KEY (equipment, epoch, hour)` |
+| Check | `bucket_finality_hour_check` | `CHECK ((hour = date_trunc('hour'::text, hour, 'UTC'::text)))` |
+| Check | `bucket_finality_revision_check` | `CHECK ((revision >= 0))` |
+
 ### equipment.equipment_state_interval
 
-State intervals cut into pieces inside one UTC hour and one shift bucket; the open interval is stored up to the plant watermark, flagged provisional.
+State intervals cut into pieces inside one UTC hour and one shift bucket; the open interval is stored up to the plant watermark. A piece is provisional while it ends after the time its machine’s own facts have settled (#113).
 
 TimescaleDB hypertable, partitioned by `start_time` in chunks of 7 days.
 

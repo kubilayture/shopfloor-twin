@@ -5,17 +5,22 @@
  * database and the broker, the MES ready, the simulator idle (`SIM_AUTOSTART=false`) and the
  * gateway connected with every machine's start-up state anchored in the MES, the web app; then
  * resumes the simulator at 60× from 06:00, the start of shift A. While the shift runs, Playwright
- * checks the live overview (browser/overview.spec.ts). After shift end plus a margin the simulator
- * is paused, the MES drains, and its time per state for shift A must equal the simulator's live
- * ground truth to the millisecond, every stored piece must lie inside one UTC hour and one shift
- * bucket, and no data may have been lost (no gap incidents).
+ * checks the live overview (browser/overview.spec.ts). After shift end plus a margin, the run goes
+ * on until every machine has sent a fact after the shift end (#113: a machine Down, in Setup or in
+ * Maintenance across the shift end, or one without telemetry, keeps its last shift bucket
+ * provisional until then), with a bounded wait that the report records. Then the simulator is
+ * paused, the MES drains, and shift A must be final (`provisionalMs = 0`, `revision = 0`,
+ * `incidents = 0` for every machine), its time per state must equal the simulator's live ground
+ * truth to the millisecond, every stored piece must lie inside one UTC hour and one shift bucket,
+ * and no data may have been lost (no gap incidents).
  *
  * Usage: pnpm test:reconcile. Results (report.json, compose.log on failure, Playwright traces) go
  * to e2e/results/. Environment: RECONCILE_PROJECT (Compose project, default shopfloor-reconcile),
  * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_BROWSER=0 (no Playwright),
  * OVERVIEW_SAMPLE_MS (how long the browser samples, default 90000; must stay below about 470 s,
  * the shift's wall time after the browser starts), RECONCILE_DEADLINE_MS (overall limit, default
- * 25 minutes). SIGINT and SIGTERM remove the stack and the env file before exiting.
+ * 25 minutes), RECONCILE_SILENT_WAIT_MS (how long past the margin, in simulated time, the run may go
+ * on for a silent machine's next fact; default 2 hours, 2 wall minutes at 60×). SIGINT and SIGTERM remove the stack and the env file before exiting.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -42,6 +47,12 @@ const RESULTS = join(REPO, 'e2e/results');
 const GOLDEN = join(REPO, 'apps/simulator/golden/week-01');
 /** Incident types that mean lost data: none may occur with the plan's start order. */
 const LOSS_INCIDENTS = new Set(['sequence-gap', 'ring-overrun', 'buffer-overflow']);
+
+/** How long (simulated) the run may go on past the margin until every machine sent a fact. */
+const SILENT_WAIT_MS = Number(process.env.RECONCILE_SILENT_WAIT_MS ?? 2 * 3_600_000);
+
+/** Wall time without the simulation clock moving after which the run fails at once. */
+const STALL_MS = 30_000;
 
 /** Overall limit of a run, below the CI job's timeout (30 minutes). */
 const DEADLINE_MS = Number(process.env.RECONCILE_DEADLINE_MS ?? 25 * 60_000);
@@ -104,10 +115,26 @@ interface Report {
     effectiveSpeed: number;
     lagMs: { samples: number; max: number; p95: number; mean: number };
   };
+  /**
+   * The run past the margin until every machine had sent a fact after the shift end: wall and
+   * simulated time waited, and per machine how long after the shift end its first fact came.
+   */
+  silentWait?: {
+    wallMs: number;
+    simulatedMs: number;
+    firstFactAfterEndMs: Record<string, number>;
+  };
   drain?: { wallMs: number; watermark: string; simTime: string };
   machines?: Record<
     string,
-    { truthMs: StateMs; equal: boolean; provisionalMs: number; totalMs: number }
+    {
+      truthMs: StateMs;
+      equal: boolean;
+      provisionalMs: number;
+      revision: number;
+      incidents: number;
+      totalMs: number;
+    }
   >;
   goldenShiftEqual?: boolean;
   pieces?: { count: number; violations: string[] };
@@ -264,27 +291,71 @@ async function main(): Promise<boolean> {
         const lags: number[] = [];
         let lastProgress = 0;
         const nominalWallMs = (stopAt - start) / SPEED;
+        // Per machine, how long after the shift end its first fact came (as the MES stored it).
+        const shiftEnd = new Date(shift.to).toISOString();
+        const factsAfterEnd = () =>
+          stack.sqlJson<Record<string, number>>(
+            `SELECT coalesce(json_object_agg(equipment, ms), '{}') FROM (
+               SELECT equipment,
+                 (extract(epoch FROM min(source_time) - '${shiftEnd}'::timestamptz) * 1000)::bigint AS ms
+               FROM ingest.equipment_event
+               WHERE epoch = ${String(initial.epoch)} AND source_time >= '${shiftEnd}'
+               GROUP BY equipment) AS t`,
+          );
+        let waitFrom: { wall: number; sim: number } | undefined;
+        // The simulation must keep moving while the run waits for silent machines.
+        let lastMove = { wall: Date.now(), sim: start };
+        let afterEnd: Record<string, number> = {};
         for (;;) {
           const status = await sim.status();
           lags.push(status.lagMs);
           const simNow = Date.parse(status.simTime);
           if (status.state !== 'running')
             throw new Error(`simulator ${status.state} during the shift`);
-          if (simNow >= stopAt) break;
-          const elapsed = Date.now() - resumedAt;
-          if (elapsed - lastProgress >= 60_000) {
-            lastProgress = elapsed;
-            log(`simulation at ${status.simTime}, lag ${String(status.lagMs)} ms`);
-          }
-          if (elapsed > 2 * nominalWallMs) {
+          if (simNow > lastMove.sim) lastMove = { wall: Date.now(), sim: simNow };
+          if (Date.now() - lastMove.wall > STALL_MS) {
             throw new Error(
-              `the shift takes too long: ${status.simTime} after ${String(elapsed)} ms`,
+              `simulation time stalled at ${status.simTime} for ${String(STALL_MS)} ms of wall time`,
             );
+          }
+          if (simNow >= stopAt) {
+            // #113: each machine's last shift bucket is final only after its next fact.
+            waitFrom ??= { wall: Date.now(), sim: simNow };
+            afterEnd = await factsAfterEnd();
+            const silent = machines.filter((id) => afterEnd[id] === undefined);
+            if (silent.length === 0) break;
+            // Its own wall budget too: twice its nominal wall time, plus a minute.
+            const waitedMs = Date.now() - waitFrom.wall;
+            if (
+              simNow >= stopAt + SILENT_WAIT_MS ||
+              waitedMs > (2 * SILENT_WAIT_MS) / SPEED + 60_000
+            ) {
+              throw new Error(
+                `no fact after the shift end within ${String(SILENT_WAIT_MS)} ms of simulated time (or its wall budget): ${silent.join(', ')}`,
+              );
+            }
+          } else {
+            const elapsed = Date.now() - resumedAt;
+            if (elapsed - lastProgress >= 60_000) {
+              lastProgress = elapsed;
+              log(`simulation at ${status.simTime}, lag ${String(status.lagMs)} ms`);
+            }
+            if (elapsed > 2 * nominalWallMs) {
+              throw new Error(
+                `the shift takes too long: ${status.simTime} after ${String(elapsed)} ms`,
+              );
+            }
           }
           await sleep(1_000);
         }
         const paused = await sim.pause();
         const pausedAt = Date.now();
+        report.silentWait = {
+          wallMs: pausedAt - waitFrom.wall,
+          simulatedMs: Date.parse(paused.simTime) - waitFrom.sim,
+          firstFactAfterEndMs: afterEnd,
+        };
+        log(`every machine sent a fact after the shift end: ${JSON.stringify(report.silentWait)}`);
         const simulatedMs = Date.parse(paused.simTime) - start;
         report.shift = {
           wallMs: pausedAt - resumedAt,
@@ -301,7 +372,8 @@ async function main(): Promise<boolean> {
         log(`paused at ${paused.simTime}: ${JSON.stringify(report.shift)}`);
 
         // 4. Drain: the MES has every fact (each machine's current state equals the simulator's), its
-        //    watermark is past shift end and the gateway's buffer is empty; then the totals are stable.
+        //    watermark is past shift end and the gateway's buffer is empty. Shift A is then final:
+        //    no "totals stable" wait any more (#113), the totals are read once.
         const truth: GroundTruth = await sim.groundTruth();
         let watermark = '';
         await until(
@@ -327,18 +399,7 @@ async function main(): Promise<boolean> {
           },
           120_000,
         );
-        let totals = await mes.shiftTotals(shiftKey);
-        await until(
-          'shift totals stable',
-          async () => {
-            await sleep(2_000);
-            const again = await mes.shiftTotals(shiftKey);
-            const stable = JSON.stringify(again) === JSON.stringify(totals);
-            totals = again;
-            return stable;
-          },
-          60_000,
-        );
+        const totals = await mes.shiftTotals(shiftKey);
         report.drain = { wallMs: Date.now() - pausedAt, watermark, simTime: truth.simTime };
         phase('drain');
 
@@ -358,6 +419,8 @@ async function main(): Promise<boolean> {
                 truthMs,
                 equal: diffs.every((d) => d.machine !== id),
                 provisionalMs: recorded.provisionalMs[id] ?? 0,
+                revision: recorded.revision[id] ?? 0,
+                incidents: recorded.incidents[id] ?? 0,
                 totalMs: Object.values(truthMs).reduce((a, b) => a + b, 0),
               },
             ];
@@ -376,6 +439,12 @@ async function main(): Promise<boolean> {
         for (const [id, machine] of Object.entries(report.machines)) {
           if (machine.totalMs !== shift.to - shift.from)
             fail(`${id}: ground truth covers ${String(machine.totalMs)} ms`);
+          // #113: the completed shift is final, unchanged since, and had no gap.
+          if (machine.provisionalMs !== 0 || machine.revision !== 0 || machine.incidents !== 0) {
+            fail(
+              `${id}: ${shiftKey} not final (provisionalMs ${String(machine.provisionalMs)}, revision ${String(machine.revision)}, incidents ${String(machine.incidents)})`,
+            );
+          }
         }
 
         // The live run reproduces the headless golden week's shift A: pacing never changes the run.
@@ -474,6 +543,7 @@ function summarize(report: Report): void {
   log('results');
   console.log(`  phases (ms): ${JSON.stringify(report.phasesMs)}`);
   if (report.shift) console.log(`  shift: ${JSON.stringify(report.shift)}`);
+  if (report.silentWait) console.log(`  silent wait: ${JSON.stringify(report.silentWait)}`);
   if (report.drain) console.log(`  drain: ${JSON.stringify(report.drain)}`);
   for (const [id, m] of Object.entries(report.machines ?? {})) {
     const states = Object.entries(m.truthMs)
@@ -481,7 +551,7 @@ function summarize(report: Report): void {
       .map(([state, ms]) => `${state} ${String(ms)}`)
       .join(', ');
     console.log(
-      `  ${id}: ${m.equal ? 'equal' : 'DIFFERENT'} (${states}; provisional ${String(m.provisionalMs)})`,
+      `  ${id}: ${m.equal ? 'equal' : 'DIFFERENT'} (${states}; provisional ${String(m.provisionalMs)}, revision ${String(m.revision)}, incidents ${String(m.incidents)})`,
     );
   }
   if (report.goldenShiftEqual !== undefined) {

@@ -8,6 +8,7 @@ import {
   IngestStore,
   toAnchor,
   type IngestNotice,
+  type SettledState,
   type StateAnchor,
   type StateFact,
 } from './store.ts';
@@ -130,6 +131,7 @@ export class Ingest {
   readonly #incidents: Counter<'origin'> | undefined;
   readonly #errors: Counter | undefined;
   readonly #suspensions: Counter | undefined;
+  readonly #history: Counter | undefined;
   #client: MqttClient | undefined;
   #subscribed = false;
   #stopping = false;
@@ -163,6 +165,11 @@ export class Ingest {
       this.#errors = new Counter({
         name: 'mes_ingest_store_errors_total',
         help: 'Failed attempts to store a delivery (retried, or recorded as unstorable)',
+        registers,
+      });
+      this.#history = new Counter({
+        name: 'mes_ingest_history_written_off_total',
+        help: 'Streams first seen above seq 1 whose lower numbers were written off as history after the gap grace period (not an incident)',
         registers,
       });
       this.#suspensions = new Counter({
@@ -320,12 +327,22 @@ export class Ingest {
 
   /**
    * Records sequence holes older than the grace period as incidents. Runs in the message queue,
-   * so it never interleaves with a message's transaction. Returns the incidents recorded.
+   * so it never interleaves with a message's transaction; listeners hear of each device stream
+   * whose gaps were recorded (`gaps`, #113) in that queue too. Returns the incidents recorded.
    */
   async sweep(): Promise<number> {
-    const recorded = await this.#enqueue(() =>
-      this.#store.sweep(this.#now(), this.#options.gapGraceMs ?? 30_000),
-    );
+    const recorded = await this.#enqueue(async () => {
+      const result = await this.#store.sweep(this.#now(), this.#options.gapGraceMs ?? 30_000);
+      for (const history of result.history) {
+        this.#history?.inc();
+        this.#log.warn(
+          history,
+          'numbers below a stream’s first one written off as history (no incident)',
+        );
+      }
+      for (const notice of result.notices) await this.#notify(notice);
+      return result.recorded;
+    });
     if (recorded > 0) {
       this.#incidents?.inc({ origin: 'mes' }, recorded);
       this.#log.warn({ incidents: recorded }, 'sequence gaps recorded as incidents');
@@ -472,6 +489,16 @@ export class Ingest {
       lastStateSeq: row.last_state_seq,
       latestSourceTime: row.latest,
     }));
+  }
+
+  /**
+   * How far one equipment's device stream is settled in a device epoch (#113): the highest `seq`
+   * with no open gap at or below it (a gap reported as an incident counts as closed), the latest
+   * fact time up to it (only facts above `afterSeq` are read, when given), and the epoch's gap
+   * incidents. For the equipment module's interval finality.
+   */
+  async settled(equipment: string, epoch: number, afterSeq?: number): Promise<SettledState> {
+    return this.#store.settled(equipment, epoch, afterSeq);
   }
 
   /** The anchor of every (equipment, device epoch) that has one (see `anchor`). */

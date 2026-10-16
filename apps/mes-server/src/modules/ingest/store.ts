@@ -10,7 +10,16 @@ import {
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
 import type { Classified, StateEvent } from './classify.ts';
-import { add, contains, holes, missing, overlaps, union, type Range } from './ranges.ts';
+import {
+  add,
+  contains,
+  holes,
+  missing,
+  overlaps,
+  settledThrough,
+  union,
+  type Range,
+} from './ranges.ts';
 import type { RejectReason, StateAnchorTable } from './tables.ts';
 
 /** Durable dedup and gap state of one stream (`ingest.source_cursor`). */
@@ -65,11 +74,48 @@ export interface StoredSample {
   readonly telemetry?: { readonly metric: string; readonly value: number; readonly unit: string };
 }
 
-/** What a committed message adds, for listeners (sent after commit). */
+/**
+ * What a committed message adds, for listeners (sent after commit). Device facts (state, cycle,
+ * alarm) carry `settledSeq`: the highest `seq` of their device stream's epoch with no open gap at
+ * or below it, a gap already reported as an incident counting as closed (#113). `gaps` says that
+ * reported gaps moved it without a new fact.
+ */
 export type IngestNotice =
-  | { readonly type: 'state'; readonly fact: StateFact }
+  | { readonly type: 'state'; readonly fact: StateFact; readonly settledSeq: number | null }
   | { readonly type: 'anchor'; readonly anchor: StateAnchor }
-  | { readonly type: 'sample'; readonly sample: StoredSample };
+  | {
+      readonly type: 'sample';
+      readonly sample: StoredSample;
+      /** Device facts only (cycles and alarms); absent for telemetry. */
+      readonly settledSeq?: number | null;
+    }
+  | {
+      readonly type: 'gaps';
+      readonly equipment: string;
+      readonly epoch: number;
+      readonly settledSeq: number | null;
+    };
+
+/** One `sequence-gap` incident of a device stream, placed in time by the facts around it (#113). */
+export interface GapIncident {
+  readonly id: number;
+  readonly seqFrom: number;
+  readonly seqTo: number;
+  /** `sourceTime` of the fact just before the gap by `seq`; null when none is stored. */
+  readonly after: Date | null;
+  /** `sourceTime` of the fact just after the gap by `seq`; null when none is stored. */
+  readonly before: Date | null;
+}
+
+/** What the equipment module needs to know which pieces may still change (#113). */
+export interface SettledState {
+  /** Highest `seq` with no open gap at or below it; null when the stream is not in this epoch. */
+  readonly settledSeq: number | null;
+  /** The latest `sourceTime` of a device fact with `seq` up to `settledSeq` (above `afterSeq`). */
+  readonly settledTime: Date | null;
+  /** The epoch's `sequence-gap` incidents, open or closed. */
+  readonly incidents: readonly GapIncident[];
+}
 
 export type FactOutcome =
   | { readonly status: 'stored'; readonly notices: readonly IngestNotice[] }
@@ -272,6 +318,16 @@ export class IngestStore {
         )
         .execute();
       const notices: IngestNotice[] = [];
+      if (cursor && epoch > cursor.epoch && stream.startsWith('device:')) {
+        // The old epoch's open gaps became incidents (`epoch-ended`): a closed epoch's final
+        // hours carry them too (#113).
+        notices.push({
+          type: 'gaps',
+          equipment: stream.slice('device:'.length),
+          epoch: cursor.epoch,
+          settledSeq: null,
+        });
+      }
       if (input.kind === 'event') {
         // The next device fact tells which device epoch a waiting snapshot (one without
         // deviceEpoch, from an older gateway) belongs to.
@@ -291,6 +347,7 @@ export class IngestStore {
       return { inserted, next, notices };
     });
     this.#cursors.set(stream, result.next);
+    const settledSeq = settledThrough(result.next.seen, result.next.reported);
     // Already in the table, unknown to the cursor: a commit that failed on the way back but was
     // applied (ADR-0017). Its notices were never sent, so they go out now, with the anchor that
     // commit may have attributed to this epoch (listeners treat a known anchor as a no-op).
@@ -299,21 +356,43 @@ export class IngestStore {
         input.kind === 'event' ? await this.#firstAnchor(input.equipment, epoch) : undefined;
       return {
         status: 'duplicate',
-        notices: [...(anchor ? [{ type: 'anchor' as const, anchor }] : []), ...factNotices(input)],
+        notices: [
+          ...(anchor ? [{ type: 'anchor' as const, anchor }] : []),
+          ...factNotices(input, settledSeq),
+        ],
       };
     }
-    return { status: 'stored', notices: [...result.notices, ...factNotices(input)] };
+    return { status: 'stored', notices: [...result.notices, ...factNotices(input, settledSeq)] };
   }
 
   /**
    * Records every hole that has stayed open for `graceMs` as a `sequence-gap` incident and writes
-   * it off in the cursor (a late message still fills it). Returns the incidents recorded.
+   * it off in the cursor (a late message still fills it); the numbers below a stream's first one
+   * are written off the same way, without an incident. Returns the incidents recorded, and a
+   * `gaps` notice per device stream whose settled part moved.
    */
-  async sweep(now: number, graceMs: number): Promise<number> {
+  async sweep(
+    now: number,
+    graceMs: number,
+  ): Promise<{
+    recorded: number;
+    notices: IngestNotice[];
+    /** Numbers below a stream's first one, written off as history (no incident). */
+    history: { stream: string; epoch: number; from: number; to: number }[];
+  }> {
     let recorded = 0;
+    const written: { stream: string; epoch: number; from: number; to: number }[] = [];
+    const notices: IngestNotice[] = [];
     for (const [stream, cursor] of this.#cursors) {
       if (!tracksGaps(stream)) continue;
-      const open = holes(union(cursor.seen, cursor.reported));
+      const merged = union(cursor.seen, cursor.reported);
+      const open = holes(merged);
+      // A stream seen for the first time started above 1: the numbers below are history, not a
+      // gap, but they may still be in flight (a reordered replay). They hold finality back for
+      // the grace period too, then are written off without an incident (#113).
+      const floor = merged[0]?.[0] ?? 1;
+      const history: Range | undefined = floor > 1 ? [1, floor - 1] : undefined;
+      if (history) open.unshift(history);
       const known = this.#pending.get(stream);
       const previous = known?.epoch === cursor.epoch ? known.holes : [];
       const tracked = open.map((range) => ({
@@ -333,8 +412,9 @@ export class IngestStore {
         (acc, h) => add(acc, h.range[0], h.range[1]),
         [...cursor.reported],
       );
+      const gaps = due.filter((hole) => hole.range !== history);
       await this.#db.transaction().execute(async (trx) => {
-        for (const { range } of due) {
+        for (const { range } of gaps) {
           await this.#gapIncident(trx, stream, cursor.epoch, range, new Date(now), {
             message: `${String(range[1] - range[0] + 1)} message(s) ${String(range[0])}-${String(range[1])} missing after ${String(graceMs)} ms`,
           });
@@ -346,9 +426,88 @@ export class IngestStore {
           .execute();
       });
       this.#cursors.set(stream, { ...cursor, reported });
-      recorded += due.length;
+      recorded += gaps.length;
+      if (history && due.some((hole) => hole.range === history)) {
+        written.push({ stream, epoch: cursor.epoch, from: history[0], to: history[1] });
+      }
+      if (stream.startsWith('device:')) {
+        notices.push({
+          type: 'gaps',
+          equipment: stream.slice('device:'.length),
+          epoch: cursor.epoch,
+          settledSeq: settledThrough(cursor.seen, reported),
+        });
+      }
     }
-    return recorded;
+    return { recorded, notices, history: written };
+  }
+
+  /**
+   * The settled part of one equipment's device stream in a device epoch (#113): the highest `seq`
+   * with no open gap at or below it, the latest fact time up to it (only facts above `afterSeq`,
+   * when given, are read), and the epoch's gap incidents with the times around them. Read from the
+   * tables, so it holds before `load` and in any process.
+   */
+  async settled(equipment: string, epoch: number, afterSeq?: number): Promise<SettledState> {
+    const stream = `device:${equipment}`;
+    const cursor = await this.#db
+      .selectFrom('ingest.source_cursor')
+      .select(['epoch', 'seen', 'reported'])
+      .where('stream', '=', stream)
+      .executeTakeFirst();
+    const settledSeq =
+      cursor?.epoch === epoch ? settledThrough(cursor.seen, cursor.reported) : null;
+    const events = () =>
+      this.#db
+        .selectFrom('ingest.equipment_event')
+        .where('equipment', '=', equipment)
+        .where('epoch', '=', epoch);
+    let settledTime: Date | null = null;
+    if (settledSeq !== null) {
+      let query = events()
+        .select((eb) => eb.fn.max<Date | null>('source_time').as('t'))
+        .where('seq', '<=', settledSeq);
+      if (afterSeq !== undefined) query = query.where('seq', '>', afterSeq);
+      settledTime = (await query.executeTakeFirstOrThrow()).t;
+    }
+    // The fact just before and just after the gap by seq; either may be missing (null).
+    const time = sql<Date | null>`source_time`.as('t');
+    const rows = await this.#db
+      .selectFrom('ingest.data_quality_incident')
+      .select(['id', 'seq_from', 'seq_to'])
+      .select((eb) => [
+        events()
+          .select(time)
+          .where('seq', '<', eb.ref('seq_from'))
+          .orderBy('seq', 'desc')
+          .limit(1)
+          .$asScalar()
+          .as('after'),
+        events()
+          .select(time)
+          .where('seq', '>', eb.ref('seq_to'))
+          .orderBy('seq')
+          .limit(1)
+          .$asScalar()
+          .as('before'),
+      ])
+      .where('origin', '=', 'mes')
+      .where('type', '=', 'sequence-gap')
+      .where('stream', '=', stream)
+      .where('epoch', '=', epoch)
+      .orderBy('seq_from')
+      .execute();
+    return {
+      settledSeq,
+      settledTime,
+      incidents: rows.map((row) => ({
+        id: row.id,
+        seqFrom: row.seq_from,
+        seqTo: row.seq_to,
+        after: row.after,
+        before: row.before,
+      })),
+    };
   }
 
   async #firstAnchor(equipment: string, deviceEpoch: number): Promise<StateAnchor | undefined> {
@@ -520,7 +679,7 @@ export class IngestStore {
   }
 }
 
-function factNotices(input: FactInput): IngestNotice[] {
+function factNotices(input: FactInput, settledSeq: number | null): IngestNotice[] {
   const { message } = input;
   const sourceTime = new Date(message.sourceTime);
   if (input.kind === 'incident') return [];
@@ -538,12 +697,14 @@ function factNotices(input: FactInput): IngestNotice[] {
           cause: state.cause,
           quality: message.quality,
         },
+        settledSeq,
       },
     ];
   }
   return [
     {
       type: 'sample',
+      ...(input.kind === 'telemetry' ? {} : { settledSeq }),
       sample: {
         equipment: input.equipment,
         kind: input.kind === 'telemetry' ? 'telemetry' : (input.eventType as 'cycle' | 'alarm'),

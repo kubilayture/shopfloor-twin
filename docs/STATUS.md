@@ -69,13 +69,11 @@
 
 ## In progress
 
-- None
-- #115 Phase 5 plan (in review)
-- #117 simulator ground-truth OEE (branch `feat/117-ground-truth-oee`, in review).
+- #113 interval finality per piece (in review): `equipment.bucket_finality`, `revision` and `incidents` in shift totals, the live reconciliation requires shift A final (ADR-0018 amended).
 
 ## Next up
 
-- #113 interval finality per piece, then #118–#124 in the plan's order.
+- #118 aggregates and #119 reason codes, then #120–#124 in the plan's order.
 
 ## Blockers and open questions for the owner
 

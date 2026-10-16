@@ -91,7 +91,11 @@ export const intervalSchema = z.object({
   end: time.describe('End, clipped to the requested range'),
   state: z.string(),
   cause: z.string().nullable(),
-  provisional: z.boolean().describe('The open interval: its end moves with the watermark'),
+  provisional: z
+    .boolean()
+    .describe(
+      'May still change: the piece ends after the last time settled by the machine’s own facts (the open interval, or one behind an open sequence gap); false once its epoch is closed',
+    ),
   intervalStart: time.describe('Where the whole interval starts (may be before `from`)'),
   startSeq: int.nullable().describe('The fact that opened it; null for an anchor'),
 });
@@ -159,7 +163,15 @@ export const shiftTotalsSchema = z.object({
       epoch: int,
       state: z.string(),
       ms: int,
-      provisionalMs: int.describe('The part of `ms` in the open interval'),
+      provisionalMs: int.describe(
+        'The part of `ms` that may still change: pieces ending after the last time settled by the machine’s own facts (no open sequence gap below), in an epoch not yet closed. 0 for a completed bucket',
+      ),
+      revision: int.describe(
+        'How often the bucket changed after it was final (a late fill after a gap incident, or a late fact of a closed epoch); 0 while unchanged. The same for every state of an (equipment, epoch)',
+      ),
+      incidents: int.describe(
+        'Sequence-gap incidents of the machine’s device stream over the bucket’s final hours; the same for every state of an (equipment, epoch)',
+      ),
     }),
   ),
 });

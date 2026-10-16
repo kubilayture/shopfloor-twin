@@ -1,10 +1,11 @@
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import type { Kysely } from 'kysely';
+import { Registry } from 'prom-client';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Database } from '../../db/database.ts';
 import { startDatabase } from '../../testing.ts';
-import { Ingest } from '../ingest/index.ts';
+import { Ingest, type IngestOptions } from '../ingest/index.ts';
 import { MasterData } from '../master-data/index.ts';
 import { Equipment, type EquipmentChange, type EquipmentOptions } from './index.ts';
 import {
@@ -46,14 +47,23 @@ const at = (time: string, day = 12): number =>
 
 const feed = new UnsFeed(new Map());
 
-async function setup(options: Partial<EquipmentOptions> = {}) {
+async function setup(
+  options: Partial<EquipmentOptions> = {},
+  ingestOptions: Partial<IngestOptions> = {},
+) {
   const db = await freshDatabase(serverUrl, 'equipment');
   cleanup.push(() => db.destroy());
   const masterData = new MasterData(db);
   await masterData.seed(plant);
   const shiftPattern = await masterData.shiftPattern();
   // Never started: deliveries go through `deliver`, the store path without a broker.
-  const ingest = new Ingest({ db, url: 'mqtt://127.0.0.1:1', username: 'mes', password: 'unused' });
+  const ingest = new Ingest({
+    db,
+    url: 'mqtt://127.0.0.1:1',
+    username: 'mes',
+    password: 'unused',
+    ...ingestOptions,
+  });
   const start = async (more: Partial<EquipmentOptions> = {}): Promise<Equipment> => {
     const equipment = new Equipment({
       db,
@@ -140,8 +150,24 @@ describe('equipment state intervals (#96)', () => {
       ['12:10', 'Down'],
     ]);
     expect(await equipment.shiftTotals('2026-10-12/B', { equipment: 'cnc-a' })).toEqual([
-      { equipment: 'cnc-a', epoch: E1, state: 'Down', ms: 5 * 60_000, provisionalMs: 5 * 60_000 },
-      { equipment: 'cnc-a', epoch: E1, state: 'Running', ms: 70 * 60_000, provisionalMs: 0 },
+      {
+        equipment: 'cnc-a',
+        epoch: E1,
+        state: 'Down',
+        ms: 5 * 60_000,
+        provisionalMs: 5 * 60_000,
+        revision: 0,
+        incidents: 0,
+      },
+      {
+        equipment: 'cnc-a',
+        epoch: E1,
+        state: 'Running',
+        ms: 70 * 60_000,
+        provisionalMs: 0,
+        revision: 0,
+        incidents: 0,
+      },
     ]);
   });
 
@@ -214,27 +240,27 @@ describe('equipment state intervals (#96)', () => {
     ]);
     // A later snapshot of the same epoch is the current state, not a new start.
     await send(feed.snapshot('cnc-a', E1, at('03:12'), 'Down'));
-    await send(feed.state('cnc-a', E1, 5, at('03:20'), 'Running'));
+    await send(feed.state('cnc-a', E1, 1, at('03:20'), 'Running'));
     expect(await pieces(db, 'cnc-a')).toEqual([
       ['E1', '03:00', '03:20', 'Idle', '2026-10-12/A', 'final', null],
     ]);
     // An anchor arriving after a later fact still opens the first interval…
     await send(
-      feed.state('cnc-c', E1, 3, at('04:00'), 'Running'),
+      feed.state('cnc-c', E1, 1, at('04:00'), 'Running'),
       feed.snapshot('cnc-c', E1, at('03:30'), 'Idle'),
     );
     // …but not one that is later than the first fact: facts drive intervals.
     await send(
-      feed.state('cnc-d', E1, 3, at('04:00'), 'Running'),
+      feed.state('cnc-d', E1, 1, at('04:00'), 'Running'),
       feed.snapshot('cnc-d', E1, at('04:30'), 'Idle'),
       feed.cycle('cnc-b', E1, 2, at('05:00')),
     );
     expect(await pieces(db, 'cnc-c')).toEqual([
       ['E1', '03:30', '04:00', 'Idle', '2026-10-12/A', 'final', null],
-      ['E1', '04:00', '05:00', 'Running', '2026-10-12/A', 'provisional', 3],
+      ['E1', '04:00', '05:00', 'Running', '2026-10-12/A', 'provisional', 1],
     ]);
     expect(await pieces(db, 'cnc-d')).toEqual([
-      ['E1', '04:00', '05:00', 'Running', '2026-10-12/A', 'provisional', 3],
+      ['E1', '04:00', '05:00', 'Running', '2026-10-12/A', 'provisional', 1],
     ]);
   });
 
@@ -422,6 +448,7 @@ describe('equipment state intervals (#96)', () => {
       anchor: ingest.anchor.bind(ingest),
       anchors: ingest.anchors.bind(ingest),
       factSummary: ingest.factSummary.bind(ingest),
+      settled: ingest.settled.bind(ingest),
     };
     const masterData = new MasterData(db);
     const equipment = new Equipment({
@@ -457,5 +484,321 @@ describe('equipment state intervals (#96)', () => {
     expect(await storedPieces(db)).toEqual(stored);
     expect(stored.some((p) => p.start_seq === 39)).toBe(true);
     expect(stored.some((p) => p.start_seq === 50)).toBe(false); // zero length after the clamp
+  });
+});
+
+/** Final hours of one equipment: [epoch, hour, revision, incidents]. */
+async function finalHours(db: Kysely<Database>, equipment: string) {
+  const rows = await db
+    .selectFrom('equipment.bucket_finality')
+    .selectAll()
+    .where('equipment', '=', equipment)
+    .orderBy('epoch')
+    .orderBy('hour')
+    .execute();
+  return rows.map((row) => [
+    row.epoch === E2 ? 'E2' : 'E1',
+    hhmm(row.hour),
+    row.revision,
+    row.incident_ids.length,
+  ]);
+}
+
+/** Shift totals of one equipment, as [state, ms, provisionalMs, revision, incidents]. */
+async function totalsOf(equipment: Equipment, shiftKey: string, id: string, epoch = E1) {
+  return (await equipment.shiftTotals(shiftKey, { equipment: id, epoch })).map((t) => [
+    t.state,
+    t.ms / 60_000,
+    t.provisionalMs / 60_000,
+    t.revision,
+    t.incidents,
+  ]);
+}
+
+const SHIFT_A = '2026-10-12/A'; // 03:00 to 11:00 UTC
+const SHIFT_B = '2026-10-12/B'; // 11:00 to 19:00 UTC
+
+describe('interval finality (#113)', () => {
+  it('makes pieces final as the equipment’s own facts arrive, and records final hours', async () => {
+    const { db, start, send } = await setup();
+    const equipment = await start();
+    await send(
+      feed.state('cnc-a', E1, 1, at('10:10'), 'Running'),
+      feed.cycle('cnc-a', E1, 2, at('10:40')),
+      // Another machine moves the watermark, not cnc-a's finality.
+      feed.cycle('cnc-b', E1, 1, at('11:20')),
+    );
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:10', '11:00', 'Running', SHIFT_A, 'provisional', 1],
+      ['E1', '11:00', '11:20', 'Running', SHIFT_B, 'provisional', 1],
+    ]);
+    expect(await totalsOf(equipment, SHIFT_A, 'cnc-a')).toEqual([['Running', 50, 50, 0, 0]]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([]);
+    // cnc-a's next cycle, after the shift end, settles everything up to it.
+    await send(feed.cycle('cnc-a', E1, 3, at('11:05')));
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:10', '11:00', 'Running', SHIFT_A, 'final', 1],
+      ['E1', '11:00', '11:20', 'Running', SHIFT_B, 'provisional', 1],
+    ]);
+    expect(await totalsOf(equipment, SHIFT_A, 'cnc-a')).toEqual([['Running', 50, 0, 0, 0]]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
+    // A state change keeps the settled pieces final and the open one provisional.
+    await send(
+      feed.state('cnc-a', E1, 4, at('11:30'), 'Idle'),
+      feed.cycle('cnc-b', E1, 2, at('12:10')),
+    );
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:10', '11:00', 'Running', SHIFT_A, 'final', 1],
+      ['E1', '11:00', '11:30', 'Running', SHIFT_B, 'final', 1],
+      ['E1', '11:30', '12:00', 'Idle', SHIFT_B, 'provisional', 4],
+      ['E1', '12:00', '12:10', 'Idle', SHIFT_B, 'provisional', 4],
+    ]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
+  });
+
+  it('holds finality at a gap, releases it with the incident, and revises on a late fill', async () => {
+    const clock = { now: Date.parse('2026-10-15T10:00:00Z') };
+    const { db, ingest, start, send } = await setup(
+      {},
+      { gapGraceMs: 30_000, sweepIntervalMs: 0, now: () => clock.now },
+    );
+    let equipment = await start();
+    // Seq 2 (a Down) and 3 (a cycle) are late.
+    await send(
+      feed.state('cnc-a', E1, 1, at('10:10'), 'Running'),
+      feed.cycle('cnc-a', E1, 4, at('10:55')),
+      feed.state('cnc-a', E1, 5, at('11:10'), 'Idle'),
+      feed.cycle('cnc-b', E1, 1, at('11:30')),
+    );
+    // Even the closed interval can still change: all of it is provisional.
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:10', '11:00', 'Running', SHIFT_A, 'provisional', 1],
+      ['E1', '11:00', '11:10', 'Running', SHIFT_B, 'provisional', 1],
+      ['E1', '11:10', '11:30', 'Idle', SHIFT_B, 'provisional', 5],
+    ]);
+    expect(await totalsOf(equipment, SHIFT_A, 'cnc-a')).toEqual([['Running', 50, 50, 0, 0]]);
+    expect(await ingest.sweep()).toBe(0);
+    clock.now += 30_000;
+    expect(await ingest.sweep()).toBe(1); // the gap is an incident now
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:10', '11:00', 'Running', SHIFT_A, 'final', 1],
+      ['E1', '11:00', '11:10', 'Running', SHIFT_B, 'final', 1],
+      ['E1', '11:10', '11:30', 'Idle', SHIFT_B, 'provisional', 5],
+    ]);
+    expect(await totalsOf(equipment, SHIFT_A, 'cnc-a')).toEqual([['Running', 50, 0, 0, 1]]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 1]]);
+
+    // The late fill (ADR-0017 still stores it) changes a final hour: its revision goes up.
+    await send(feed.state('cnc-a', E1, 2, at('10:30'), 'Down', 'X'));
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:10', '10:30', 'Running', SHIFT_A, 'final', 1],
+      ['E1', '10:30', '11:00', 'Down', SHIFT_A, 'final', 2],
+      ['E1', '11:00', '11:10', 'Down', SHIFT_B, 'final', 2],
+      ['E1', '11:10', '11:30', 'Idle', SHIFT_B, 'provisional', 5],
+    ]);
+    expect(await totalsOf(equipment, SHIFT_A, 'cnc-a')).toEqual([
+      ['Down', 30, 0, 1, 1],
+      ['Running', 20, 0, 1, 1],
+    ]);
+    // A late cycle changes the hour's count, so it revises it too.
+    await send(feed.cycle('cnc-a', E1, 3, at('10:45')));
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 2, 1]]);
+    const [incident] = await db.selectFrom('ingest.data_quality_incident').selectAll().execute();
+    expect(incident).toMatchObject({ seq_from: 2, seq_to: 3, resolution: 'filled' });
+    const revised = await finalHours(db, 'cnc-a');
+    const before = await storedPieces(db);
+
+    // A restart keeps the revisions, the incidents and the flags.
+    await equipment.stop();
+    equipment = await start();
+    expect(await finalHours(db, 'cnc-a')).toEqual(revised);
+    expect(await storedPieces(db)).toEqual(before);
+    expect(await totalsOf(equipment, SHIFT_A, 'cnc-a')).toEqual([
+      ['Down', 30, 0, 2, 1],
+      ['Running', 20, 0, 2, 1],
+    ]);
+    // A further fact carries on from the remembered finality.
+    await send(feed.cycle('cnc-a', E1, 6, at('12:05')));
+    expect(await finalHours(db, 'cnc-a')).toEqual([
+      ['E1', '10:00', 2, 1],
+      ['E1', '11:00', 0, 0],
+    ]);
+
+    // Pieces stored before #113 (flags of the old rule, no final hours): a restart brings both
+    // in line with the current rule.
+    const settled = await storedPieces(db);
+    await equipment.stop();
+    await db.updateTable('equipment.equipment_state_interval').set({ provisional: true }).execute();
+    await db.deleteFrom('equipment.bucket_finality').execute();
+    await start();
+    expect(await storedPieces(db)).toEqual(settled);
+    expect(await finalHours(db, 'cnc-a')).toEqual([
+      ['E1', '10:00', 0, 1],
+      ['E1', '11:00', 0, 0],
+    ]);
+  });
+
+  it('settles a stream first seen above 1 once its history is written off, without an incident', async () => {
+    const clock = { now: Date.parse('2026-10-15T10:00:00Z') };
+    const registry = new Registry();
+    const warnings: object[] = [];
+    const log = {
+      info: () => undefined,
+      warn: (o: object) => warnings.push(o),
+      error: () => undefined,
+    };
+    const { db, ingest, start, send } = await setup(
+      {},
+      { gapGraceMs: 30_000, sweepIntervalMs: 0, now: () => clock.now, registry, log },
+    );
+    await start();
+    // The MES joins a running stream at 5: 1 to 4 may still be in flight (a reordered replay).
+    await send(
+      feed.state('cnc-a', E1, 5, at('10:10'), 'Running'),
+      feed.cycle('cnc-a', E1, 6, at('11:05')),
+      feed.cycle('cnc-b', E1, 1, at('11:20')),
+    );
+    expect((await pieces(db, 'cnc-a'))[0]?.[5]).toBe('provisional');
+    expect(await ingest.sweep()).toBe(0); // seen open from now on
+    clock.now += 30_000;
+    expect(await ingest.sweep()).toBe(0); // history, not a gap: no incident
+    // …but visible: a warning and a metric per stream written off.
+    expect(warnings).toContainEqual(
+      expect.objectContaining({ stream: 'device:cnc-a', from: 1, to: 4 }),
+    );
+    expect(await registry.metrics()).toMatch(/^mes_ingest_history_written_off_total 1$/m);
+    expect(await db.selectFrom('ingest.data_quality_incident').selectAll().execute()).toEqual([]);
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:10', '11:00', 'Running', SHIFT_A, 'final', 5],
+      ['E1', '11:00', '11:20', 'Running', SHIFT_B, 'provisional', 5],
+    ]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
+  });
+
+  it('recomputes before finality when a jump passes a state fact it never heard of', async () => {
+    const { db, send } = await setup();
+    const masterData = new MasterData(db);
+    await send(feed.state('cnc-a', E1, 1, at('10:00'), 'Running'));
+    // A second ingest process: like a resumed session, it loads its cursors from the table.
+    const resumed = new Ingest({
+      db,
+      url: 'mqtt://127.0.0.1:1',
+      username: 'mes',
+      password: 'unused',
+    });
+    const equipment = new Equipment({
+      db,
+      source: resumed,
+      shiftPattern: await masterData.shiftPattern(),
+      provisionalStepMs: 0,
+    });
+    await equipment.start();
+    cleanup.push(() => equipment.stop());
+    // Seq 2's commit was applied but reported failed; the session was suspended, the cursors
+    // reloaded, and its redelivery is a duplicate: no notice ever tells of it (ADR-0017).
+    const missed = feed.state('cnc-a', E1, 2, at('10:20'), 'Down', 'X');
+    await db
+      .insertInto('ingest.equipment_event')
+      .values({
+        equipment: 'cnc-a',
+        epoch: E1,
+        seq: 2,
+        source_time: new Date(at('10:20')),
+        event_type: 'state',
+        topic: missed.topic,
+        state: 'Down',
+        cause: 'X',
+        quality: 'good',
+        source_protocol: 'opcua',
+        received_at: new Date(),
+        payload: missed.payload,
+      })
+      .execute();
+    await db
+      .updateTable('ingest.source_cursor')
+      .set({ seen: JSON.stringify([[1, 2]]) })
+      .where('stream', '=', 'device:cnc-a')
+      .execute();
+    await resumed.deliver(missed.topic, missed.payload); // the duplicate redelivery
+    expect(resumed.count('duplicate')).toBe(1);
+    // The next fact moves the settled part past seq 2: the module notices the missing fact.
+    const next = feed.cycle('cnc-a', E1, 3, at('10:40'));
+    await resumed.deliver(next.topic, next.payload);
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:00', '10:20', 'Running', SHIFT_A, 'final', 1],
+      ['E1', '10:20', '10:40', 'Down', SHIFT_A, 'final', 2],
+    ]);
+    expect(equipment.currentState('cnc-a')).toMatchObject({ state: 'Down', seq: 2 });
+  });
+
+  it('gives a closed epoch’s final hours the gaps that its end turned into incidents', async () => {
+    const { db, start, send } = await setup();
+    await start();
+    // Seq 2 is missing, not reported yet; the new run's telemetry closes the epoch first.
+    await send(
+      feed.state('cnc-a', E1, 1, at('10:10'), 'Running'),
+      feed.state('cnc-a', E1, 3, at('10:30'), 'Idle'),
+      feed.cycle('cnc-b', E1, 1, at('10:50')),
+      feed.telemetry('cnc-a', at('08:00'), E2),
+    );
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
+    // The new run's first fact ends the old epoch in ingest: its gap becomes an incident.
+    await send(feed.state('cnc-a', E2, 1, at('08:05'), 'Idle'));
+    const incidents = await db.selectFrom('ingest.data_quality_incident').selectAll().execute();
+    expect(incidents).toMatchObject([{ seq_from: 2, seq_to: 2, resolution: 'epoch-ended' }]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 1]]);
+  });
+
+  it('makes a closed epoch final everywhere; its late facts raise the revision', async () => {
+    const { db, start, send } = await setup();
+    const equipment = await start();
+    await send(
+      feed.state('cnc-a', E1, 1, at('10:10'), 'Running'),
+      feed.cycle('cnc-a', E1, 2, at('10:20')),
+      feed.cycle('cnc-b', E1, 1, at('10:50')),
+    );
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:10', '10:50', 'Running', SHIFT_A, 'provisional', 1],
+    ]);
+    // The new run's telemetry closes the old epoch: final, every hour recorded.
+    await send(feed.telemetry('cnc-a', at('08:00'), E2));
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:10', '10:50', 'Running', SHIFT_A, 'final', 1],
+    ]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
+    expect(await totalsOf(equipment, SHIFT_A, 'cnc-a')).toEqual([['Running', 40, 0, 0, 0]]);
+    // Late facts of the old run (in flight when it closed) are still stored, and revise.
+    await send(feed.state('cnc-a', E1, 3, at('10:30'), 'Idle'));
+    await send(feed.cycle('cnc-a', E1, 4, at('10:40')));
+    expect(await pieces(db, 'cnc-a')).toEqual([
+      ['E1', '10:10', '10:30', 'Running', SHIFT_A, 'final', 1],
+      ['E1', '10:30', '10:50', 'Idle', SHIFT_A, 'final', 3],
+    ]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 2, 0]]);
+    expect(await totalsOf(equipment, SHIFT_A, 'cnc-a')).toEqual([
+      ['Idle', 20, 0, 2, 0],
+      ['Running', 20, 0, 2, 0],
+    ]);
+  });
+
+  it('keeps a silent machine provisional across a shift end until its next fact', async () => {
+    const { db, start, send } = await setup();
+    const equipment = await start();
+    // Down at 13:30 local; the repair ends after the A/B handover (14:00 local, 11:00 UTC).
+    await send(
+      feed.state('cnc-a', E1, 1, at('10:30'), 'Down', 'SPINDLE-FAULT'),
+      feed.cycle('cnc-b', E1, 1, at('11:15')),
+      // Telemetry of the run is no fact of cnc-a: it says nothing about cnc-a's state.
+      feed.telemetry('cnc-a', at('11:40'), E1),
+    );
+    expect(await totalsOf(equipment, SHIFT_A, 'cnc-a')).toEqual([['Down', 30, 30, 0, 0]]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([]);
+    await send(feed.state('cnc-a', E1, 2, at('11:20'), 'Idle'));
+    expect(await totalsOf(equipment, SHIFT_A, 'cnc-a')).toEqual([['Down', 30, 0, 0, 0]]);
+    expect(await totalsOf(equipment, SHIFT_B, 'cnc-a')).toEqual([
+      ['Down', 20, 0, 0, 0],
+      ['Idle', 20, 20, 0, 0],
+    ]);
+    expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 0, 0]]);
   });
 });

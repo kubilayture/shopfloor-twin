@@ -14,6 +14,10 @@
  * - `Ingest.stateFactWindow(equipment, epoch, seq)`: a fact with its neighbours by `seq`.
  * - `Ingest.stateFactCount`, `Ingest.latestStateTime`: for windows of reordered facts.
  * - `Ingest.factSummary()`: per (equipment, epoch), fact counts and the latest time (catch-up).
+ * - `Ingest.settled(equipment, epoch, afterSeq?)`: the gap state of a device stream, for interval
+ *   finality (#113): the highest `seq` with no open gap below it, the latest fact time up to it,
+ *   and the epoch's gap incidents. Device fact notices carry `settledSeq`; a `gaps` notice follows
+ *   a sweep that recorded gaps of a device stream.
  * - `Ingest.deliver(topic, payload, retained)`: the store path without a broker (tests, replays).
  *
  * For the API (#97):
@@ -23,7 +27,14 @@
  */
 export { INGEST_TOPICS, Ingest } from './ingest.ts';
 export type { FactSummary, IngestLog, IngestOptions, IngestOutcome } from './ingest.ts';
-export type { IngestNotice, StateAnchor, StateFact, StoredSample } from './store.ts';
+export type {
+  GapIncident,
+  IngestNotice,
+  SettledState,
+  StateAnchor,
+  StateFact,
+  StoredSample,
+} from './store.ts';
 export type { TelemetryBucket, TelemetryMetric, TelemetrySeries } from './telemetry.ts';
 export { INGEST_COLUMNS } from './tables.ts';
 export type { IngestTables, RejectReason } from './tables.ts';

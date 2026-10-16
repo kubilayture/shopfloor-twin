@@ -2,6 +2,8 @@ import { skipToken, useQuery } from '@tanstack/react-query';
 import { createContext, use, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import {
   liveKeys,
+  type LiveAlarmKpi,
+  type LiveAlarms,
   type LiveDowntime,
   type LiveOee,
   type LiveStates,
@@ -69,6 +71,16 @@ export function useLiveOee(id: string): LiveOee | undefined {
 /** Pushed downtime records (subscribe to `downtime` with `useLiveSubscription`). */
 export function useLiveDowntime(): LiveDowntime | undefined {
   return useQuery<LiveDowntime>({ queryKey: liveKeys.downtime, queryFn: skipToken }).data;
+}
+
+/** Pushed alarm occurrences and points (subscribe to `alarms` with `useLiveSubscription`). */
+export function useLiveAlarms(): LiveAlarms | undefined {
+  return useQuery<LiveAlarms>({ queryKey: liveKeys.alarms, queryFn: skipToken }).data;
+}
+
+/** Pushed alarm KPIs of `alarm-kpi:<scope>` (`plant`, `position:<id>`, `equipment:<id>`). */
+export function useLiveAlarmKpi(scope: string): LiveAlarmKpi | undefined {
+  return useQuery<LiveAlarmKpi>({ queryKey: liveKeys.alarmKpi(scope), queryFn: skipToken }).data;
 }
 
 export function useLiveTelemetry(equipment: string): LiveTelemetry | undefined {

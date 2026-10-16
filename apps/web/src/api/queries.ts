@@ -24,6 +24,23 @@ export const queryKeys = {
   downtime: (shiftKey: string) => ['downtime', shiftKey] as const,
   downtimeAll: ['downtime'] as const,
   audit: (id: string) => ['downtime-audit', id] as const,
+  // Alarms (#145): the lists, one occurrence, points and scopes.
+  alarmsAll: ['alarms'] as const,
+  alarms: (view: string, to = '') => ['alarms', view, to] as const,
+  alarm: (id: string) => ['alarm', id] as const,
+  alarmHistory: (id: string) => ['alarm-history', id] as const,
+  alarmPoints: ['alarm-points'] as const,
+  alarmScopes: ['alarm-scopes'] as const,
+  /** Every read of the alarm KPI page starts with this (one prefix to read again). */
+  alarmKpiAll: ['alarm-kpi'] as const,
+  alarmKpi: (scope: string, bucket: string, from: number, to: number) =>
+    ['alarm-kpi', 'kpi', scope, bucket, from, to] as const,
+  alarmFloods: (scope: string, from: number, to: number) =>
+    ['alarm-kpi', 'floods', scope, from, to] as const,
+  badActors: (scope: string, from: number, to: number) =>
+    ['alarm-kpi', 'bad-actors', scope, from, to] as const,
+  operatorKpi: (scope: string, from: number, to: number) =>
+    ['alarm-kpi', 'operator', scope, from, to] as const,
 };
 
 /** Retries network and server errors a few times, never a refused request (4xx). */

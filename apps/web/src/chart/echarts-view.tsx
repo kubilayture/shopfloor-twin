@@ -1,5 +1,10 @@
 import { BarChart } from 'echarts/charts';
-import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components';
+import {
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  TooltipComponent,
+} from 'echarts/components';
 import {
   init,
   use as registerModules,
@@ -9,9 +14,16 @@ import {
 import { CanvasRenderer } from 'echarts/renderers';
 import { useEffect, useRef } from 'react';
 
-// Tree-shaken (plan "API, push and web"): bar charts on a canvas with a grid, a legend and a
-// canvas-drawn tooltip only.
-registerModules([BarChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+// Tree-shaken (plan "API, push and web"): bar charts on a canvas with a grid, a legend, a mark
+// line (the alarm flood threshold, #145) and a canvas-drawn tooltip only.
+registerModules([
+  BarChart,
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  TooltipComponent,
+  CanvasRenderer,
+]);
 
 const reducedMotion = (): boolean =>
   typeof window.matchMedia === 'function' &&

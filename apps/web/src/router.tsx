@@ -4,14 +4,18 @@ import {
   createRouter,
   type RouterHistory,
 } from '@tanstack/react-router';
+import { ALARM_VIEWS } from '@shopfloor/contracts/mes-api';
+import type { AlarmViewName } from './api/client.ts';
 import { isRangeKey, type RangeKey } from './domain/time.ts';
+import { AlarmKpi } from './screens/alarm-kpi.tsx';
+import { AlarmList } from './screens/alarm-list.tsx';
 import { DowntimeCoding } from './screens/downtime-coding.tsx';
 import { MachineDetail } from './screens/machine-detail.tsx';
 import { OeeDashboard } from './screens/oee-dashboard.tsx';
 import { Overview } from './screens/overview.tsx';
 import { NotFound, RootLayout } from './screens/root-layout.tsx';
 
-// Code-based routes (ADR-0020): four screens don't need a generated route tree.
+// Code-based routes (ADR-0020): six screens don't need a generated route tree.
 const rootRoute = createRootRoute({ component: RootLayout, notFoundComponent: NotFound });
 
 const overviewRoute = createRoute({
@@ -74,7 +78,55 @@ const downtimeRoute = createRoute({
   component: DowntimeCoding,
 });
 
-const routeTree = rootRoute.addChildren([overviewRoute, detailRoute, oeeRoute, downtimeRoute]);
+const OCCURRENCE_ID = RECORD_ID;
+const SCOPE_KEY = /^(plant|(position|equipment):[A-Za-z0-9][A-Za-z0-9_-]{0,63})$/;
+
+export interface AlarmSearch {
+  /** The list shown; `active` when absent. */
+  readonly view?: AlarmViewName | undefined;
+  /** The occurrence whose panel is open (`{equipment}~{epoch}~{seq}`). */
+  readonly alarm?: string | undefined;
+}
+
+const alarmsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/alarms',
+  validateSearch: (search: Record<string, unknown>): AlarmSearch => ({
+    view: (ALARM_VIEWS as readonly unknown[]).includes(search.view)
+      ? (search.view as AlarmViewName)
+      : undefined,
+    alarm: matching(search.alarm, OCCURRENCE_ID),
+  }),
+  component: AlarmList,
+});
+
+export interface AlarmKpiSearch {
+  readonly shift?: string | undefined;
+  /** `plant`, `position:<id>` or `equipment:<id>`: the scope of the details. */
+  readonly focus?: string | undefined;
+  readonly bucket?: 'hour' | 'shift' | undefined;
+}
+
+const alarmKpiRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/alarms/kpi',
+  validateSearch: (search: Record<string, unknown>): AlarmKpiSearch => ({
+    shift: matching(search.shift, SHIFT_KEY),
+    focus: matching(search.focus, SCOPE_KEY),
+    bucket: search.bucket === 'hour' || search.bucket === 'shift' ? search.bucket : undefined,
+  }),
+  component: AlarmKpi,
+});
+
+// Six routes still fit one file (ADR-0020's revisit threshold is a dozen).
+const routeTree = rootRoute.addChildren([
+  overviewRoute,
+  detailRoute,
+  oeeRoute,
+  downtimeRoute,
+  alarmsRoute,
+  alarmKpiRoute,
+]);
 
 export function createAppRouter(history?: RouterHistory) {
   return createRouter({ routeTree, ...(history ? { history } : {}), defaultPreload: 'intent' });

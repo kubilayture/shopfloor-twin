@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Phase 5 closed: report and learning notes; all 5 exit criteria met; `docs/data-model.md` confirmed current; tag `phase-05` (#124).
 - End to end: live OEE reconciliation and dashboard checks in `pnpm test:reconcile` (#123; Phase 5 exit criteria 3, 4 and 5).
   - **Live OEE (criterion 3).** Shift A's OEE must list exactly the plant's six machines and two work centers on both sides, the work centers must be final too (`provisionalMs`, `revision`, `incidents` 0), and the run asserts that 8 buckets were compared (`oee.compared` in `report.json`).
   - **Dashboard live (criterion 5).** `e2e/browser/oee-live.spec.ts` opens `/oee` during the shift and judges each change of the API's four-decimal OEE (`GET /shifts/{date}/{shift}/oee`, polled every 100 ms) on both cards and all six machine rows with `latency.ts`'s rule (the value or a later one within 2 s), extended for values the polls never saw (`observed`, bounded by `pageValueProblems`: at most 5 % unseen values and 95 % snapshot agreement); snapshots every 2 s must equal what the API held around them. `oee-latency.json` in the results.

@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ApiError } from '../api/client.ts';
-import { ACK, kpiBucket, occurrence, point, shelf } from '../test/alarm-fixtures.ts';
+import { ACK, alarmConfig, kpiBucket, occurrence, point, shelf } from '../test/alarm-fixtures.ts';
 import {
-  MAX_SHELVE_MS,
-  SHELVE_PRESETS,
   acknowledgeable,
   alarmBucketFlags,
   endReasonText,
@@ -17,7 +15,11 @@ import {
   newerShelf,
   parseScopeKey,
   partition,
+  durationLabel,
+  floodText,
   rateBand,
+  rateBandText,
+  shelvePresets,
   scopeKey,
   shelfFailure,
   stateText,
@@ -175,9 +177,21 @@ describe('alarm text', () => {
     expect(acknowledgeable(occurrence(1, { state: 'closed' }))).toBe(false);
   });
 
-  it('offers no shelving preset beyond maxShelveMs', () => {
-    expect(SHELVE_PRESETS.map((preset) => preset.label)).toEqual(['15 min', '1 h', '4 h', '8 h']);
-    expect(SHELVE_PRESETS.every((preset) => preset.ms <= MAX_SHELVE_MS)).toBe(true);
+  it('caps the shelving presets at the served maxShelveMs, and offers the limit itself', () => {
+    const labels = (maxShelveMs: number) =>
+      shelvePresets(alarmConfig({ maxShelveMs })).map((preset) => preset.label);
+    expect(labels(8 * 3_600_000)).toEqual(['15 min', '1 h', '4 h', '8 h']);
+    expect(labels(2 * 3_600_000)).toEqual(['15 min', '1 h', '2 h']);
+    expect(labels(12 * 3_600_000)).toEqual(['15 min', '1 h', '4 h', '8 h', '12 h']);
+    expect(labels(10 * 60_000)).toEqual(['10 min']);
+    expect(shelvePresets(alarmConfig({ maxShelveMs: 90 * 60_000 })).map((p) => p.ms)).toEqual([
+      900_000, 3_600_000, 5_400_000,
+    ]);
+    expect([durationLabel(3_600_000), durationLabel(90_000), durationLabel(1_500)]).toEqual([
+      '1 h',
+      '90 s',
+      '1.5 s',
+    ]);
   });
 
   it('explains a shelf conflict and the other refusals', () => {
@@ -196,12 +210,31 @@ describe('alarm text', () => {
 });
 
 describe('alarm KPIs', () => {
-  it('compares the average rate with the benchmarks exactly', () => {
-    expect(rateBand({ fraction: '1/1', decimal: '1.0000' })).toBe('acceptable');
-    expect(rateBand({ fraction: '1000001/1000000', decimal: '1.0000' })).toBe('manageable');
-    expect(rateBand({ fraction: '2/1', decimal: '2.0000' })).toBe('manageable');
-    expect(rateBand({ fraction: '49/24', decimal: '2.0417' })).toBe('over');
-    expect(rateBand({ fraction: '0/1', decimal: '0.0000' })).toBe('acceptable');
+  it('compares the average rate with the served benchmarks exactly', () => {
+    const config = alarmConfig();
+    expect(rateBand({ fraction: '1/1', decimal: '1.0000' }, config)).toBe('acceptable');
+    expect(rateBand({ fraction: '1000001/1000000', decimal: '1.0000' }, config)).toBe('manageable');
+    expect(rateBand({ fraction: '2/1', decimal: '2.0000' }, config)).toBe('manageable');
+    expect(rateBand({ fraction: '49/24', decimal: '2.0417' }, config)).toBe('over');
+    expect(rateBand({ fraction: '0/1', decimal: '0.0000' }, config)).toBe('acceptable');
+    expect(rateBandText('over', config)).toBe('Over the benchmark (> 2 per 10 min)');
+  });
+
+  it('follows changed benchmarks and a window other than 10 minutes (#160)', () => {
+    const wider = alarmConfig({ benchmarks: { acceptablePer10Min: 2, manageablePer10Min: 4 } });
+    expect(rateBand({ fraction: '2/1', decimal: '2.0000' }, wider)).toBe('acceptable');
+    expect(rateBand({ fraction: '3/1', decimal: '3.0000' }, wider)).toBe('manageable');
+    expect(rateBandText('acceptable', wider)).toBe('Acceptable (≤ 2 per 10 min)');
+    expect(rateBandText('manageable', wider)).toBe('Manageable (≤ 4 per 10 min)');
+    // A 5-minute window: 1 per window is 2 per 10 minutes.
+    const five = alarmConfig({ kpi: { windowMs: 300_000 } });
+    expect(rateBand({ fraction: '1/2', decimal: '0.5000' }, five)).toBe('acceptable');
+    expect(rateBand({ fraction: '1/1', decimal: '1.0000' }, five)).toBe('manageable');
+    expect(rateBand({ fraction: '11/10', decimal: '1.1000' }, five)).toBe('over');
+    expect(floodText(14, five.kpi)).toBe('Up to 14 raises in 5 min (more than 10 is a flood)');
+    expect(floodText(9, alarmConfig({ kpi: { floodThreshold: 8 } }).kpi)).toBe(
+      'Up to 9 raises in 10 min (more than 8 is a flood)',
+    );
   });
 
   it('flags final, provisional, revision and incidents as text', () => {

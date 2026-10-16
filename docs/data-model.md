@@ -1020,7 +1020,7 @@ Handover notes of a shift instance: the current version (category, text, retract
 
 ### shifts.shift_instance
 
-One scheduled shift the plant clock entered, per (plant epoch, shift key): calendar start, end and breaks, status (running, ended, final), when the report became final and its composite revision {inputs, content} as stored counters (#144, ADR-0025).
+One scheduled shift the plant clock entered, per (plant epoch, shift key): calendar start, end and breaks, status (running, ended, final), when the report became final and its composite revision {inputs, content} as stored counters, with `content` at the moment it became final (#144, #163, ADR-0025).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |
@@ -1039,6 +1039,7 @@ One scheduled shift the plant clock entered, per (plant epoch, shift key): calen
 | `content_revision` | `bigint` | not null | `0` |
 | `created_at` | `timestamp with time zone` | not null | `now()` |
 | `updated_at` | `timestamp with time zone` | not null | `now()` |
+| `content_at_final` | `bigint` | null |  |
 
 | Kind | Name | Definition |
 | --- | --- | --- |
@@ -1046,6 +1047,7 @@ One scheduled shift the plant clock entered, per (plant epoch, shift key): calen
 | Check | `shift_instance_check` | `CHECK ((end_time > start_time))` |
 | Check | `shift_instance_check1` | `CHECK (((status = 'final'::text) = (final_at IS NOT NULL)))` |
 | Check | `shift_instance_check2` | `CHECK (((inputs_revision >= 0) AND (content_revision >= 0)))` |
+| Check | `shift_instance_content_at_final_check` | `CHECK ((((status = 'final'::text) = (content_at_final IS NOT NULL)) AND ((content_at_final IS NULL) OR ((content_at_final >= 0) AND (content_at_final <= content_revision)))))` |
 | Check | `shift_instance_shift_date_check` | `CHECK ((shift_date ~ '^\d{4}-\d{2}-\d{2}$'::text))` |
 | Check | `shift_instance_status_check` | `CHECK ((status = ANY (ARRAY['running'::text, 'ended'::text, 'final'::text])))` |
 | Index | `shift_instance_key` | `shifts.shift_instance USING btree (shift_key, epoch DESC)` |

@@ -1,9 +1,9 @@
-import type { Clock, Plant } from '@shopfloor/contracts/mes-api';
+import type { AlarmConfig, Clock, Plant } from '@shopfloor/contracts/mes-api';
 import { useQuery, type QueryClient } from '@tanstack/react-query';
 import { isNewerClock } from '../domain/states.ts';
 import { liveKeys, type LiveStates } from '../live/live-cache.ts';
 import { useLiveStates } from '../live/live-context.tsx';
-import { ApiError, getPlant } from './client.ts';
+import { ApiError, getAlarmConfig, getPlant } from './client.ts';
 import type { RangeKey } from '../domain/time.ts';
 
 export const queryKeys = {
@@ -31,6 +31,7 @@ export const queryKeys = {
   alarmHistory: (id: string) => ['alarm-history', id] as const,
   alarmPoints: ['alarm-points'] as const,
   alarmScopes: ['alarm-scopes'] as const,
+  alarmConfig: ['alarm-config'] as const,
   /** Every read of the alarm KPI page starts with this (one prefix to read again). */
   alarmKpiAll: ['alarm-kpi'] as const,
   alarmKpi: (scope: string, bucket: string, from: number, to: number) =>
@@ -88,4 +89,17 @@ export function usePlantClock(): PlantClock {
     known: plant.data !== undefined || Boolean(live?.clock),
     site: plant.data?.site,
   };
+}
+
+/**
+ * The alarm configuration the MES serves (#160): shelving limit, flood threshold and window,
+ * benchmarks. Fixed while the MES runs, so it is read once; undefined until it arrived (screens
+ * leave out what depends on it rather than guess).
+ */
+export function useAlarmConfig(): AlarmConfig | undefined {
+  return useQuery({
+    queryKey: queryKeys.alarmConfig,
+    queryFn: ({ signal }) => getAlarmConfig(signal),
+    staleTime: Infinity,
+  }).data;
 }

@@ -4884,11 +4884,25 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
                       "description": "+1 per handover note create or edit; once final, +1 per operator recode inside the shift (recoding never changes OEE, only the downtime section) and per acknowledgement of an alarm raised in it (its time to acknowledge)"
+                    },
+                    "contentAtFinal": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "`content` at the moment the report became final, stored with `finalAt` under the row lock (#163); null until final. `content - contentAtFinal` is how often the content changed after final"
                     }
                   },
                   "required": [
                     "inputs",
-                    "content"
+                    "content",
+                    "contentAtFinal"
                   ],
                   "additionalProperties": false,
                   "description": "The composite revision (ADR-0025): both stored counters"

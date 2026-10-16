@@ -1,5 +1,6 @@
 import websocket from '@fastify/websocket';
 import type { IncomingHttpHeaders } from 'node:http';
+import { PROBLEM_TYPES, type ProblemType } from '@shopfloor/contracts/mes-api';
 import { NO_SHIFT, shiftInstance, shiftInstances } from '@shopfloor/shift-calendar';
 import type { FastifyInstance } from 'fastify';
 import type { Registry } from 'prom-client';
@@ -64,6 +65,7 @@ import {
   alarmListSchema,
   alarmParams,
   alarmRangeQuery,
+  alarmConfigSchema,
   alarmScopesSchema,
   badActorListSchema,
   badActorsQuery,
@@ -159,6 +161,7 @@ export interface ApiSources {
     | 'badActors'
     | 'scopes'
     | 'scope'
+    | 'settings'
     | 'definition'
     | 'current'
     | 'onChange'
@@ -396,31 +399,41 @@ export async function registerRealtime(
   // other page can send a JSON write either.
   const writeRefusal = (
     headers: IncomingHttpHeaders,
-  ): { status: number; detail: string; headers?: Record<string, string> } | undefined => {
+  ):
+    | { status: number; detail: string; type: ProblemType; headers?: Record<string, string> }
+    | undefined => {
     if (!writes) {
       return {
         status: 405,
         detail: 'writes are turned off (MES_WRITES=off)',
+        type: PROBLEM_TYPES.writesOff,
         headers: { allow: 'GET, HEAD' },
       };
     }
+    const forbidden = (detail: string) =>
+      ({ status: 403, detail, type: PROBLEM_TYPES.writeOrigin }) as const;
     const origin = headers.origin;
-    if (origin === undefined) return { status: 403, detail: 'a write needs an Origin header' };
+    if (origin === undefined) return forbidden('a write needs an Origin header');
     if (!allowedOrigins.has(origin) && !sameOrigin(origin, headers.host)) {
-      return { status: 403, detail: 'origin not allowed (HTTP_ALLOWED_ORIGINS)' };
+      return forbidden('origin not allowed (HTTP_ALLOWED_ORIGINS)');
     }
     const site = headers['sec-fetch-site'];
     if (site !== undefined && site !== 'same-origin') {
-      return { status: 403, detail: `Sec-Fetch-Site ${site} not allowed for a write` };
+      return forbidden(`Sec-Fetch-Site ${site} not allowed for a write`);
     }
     if (!isJson(headers['content-type'])) {
-      return { status: 415, detail: 'a write must be application/json' };
+      return {
+        status: 415,
+        detail: 'a write must be application/json',
+        type: PROBLEM_TYPES.writeNotJson,
+      };
     }
     const wait = limiter.take();
     if (wait !== undefined) {
       return {
         status: 429,
         detail: 'too many writes; try again',
+        type: PROBLEM_TYPES.writeRate,
         headers: { 'retry-after': String(wait) },
       };
     }
@@ -429,16 +442,21 @@ export async function registerRealtime(
   // A page on another site must not read plant data: by DNS rebinding (its own name resolving to
   // the MES, caught by the Host check) or by opening a WebSocket (not covered by CORS, caught by
   // the Origin check). A request without Origin is not from a browser page.
-  const refusal = (headers: IncomingHttpHeaders): string | undefined => {
+  const refusal = (
+    headers: IncomingHttpHeaders,
+  ): { detail: string; type?: ProblemType } | undefined => {
     const host = hostName(headers.host ?? '');
     if (!allowedHosts.has('*') && !allowedHosts.has(host)) {
-      return 'host not allowed (HTTP_ALLOWED_HOSTS)';
+      return {
+        detail: 'host not allowed (HTTP_ALLOWED_HOSTS)',
+        type: PROBLEM_TYPES.hostNotAllowed,
+      };
     }
     const origin = headers.origin;
     if (origin === undefined || allowedOrigins.has(origin) || sameOrigin(origin, headers.host)) {
       return undefined;
     }
-    return 'origin not allowed (HTTP_ALLOWED_ORIGINS)';
+    return { detail: 'origin not allowed (HTTP_ALLOWED_ORIGINS)' };
   };
 
   app.addSchema({ $id: 'Problem', ...jsonSchema(problemSchema, 'output') });
@@ -449,7 +467,7 @@ export async function registerRealtime(
       verifyClient: (info, done) => {
         const refused = refusal(info.req.headers);
         if (refused === undefined) done(true);
-        else done(false, 403, refused);
+        else done(false, 403, refused.detail);
       },
     },
     // A client that stopped reading would hold up shutdown for ws's 30 s close timeout.
@@ -475,7 +493,7 @@ export async function registerRealtime(
           await reply
             .code(403)
             .type(PROBLEM_TYPE)
-            .send(problem(403, refused, request.url));
+            .send(problem(403, refused.detail, request.url, refused.type));
           return;
         }
         if (read) return;
@@ -487,7 +505,7 @@ export async function registerRealtime(
             .code(write.status)
             .headers(write.headers ?? {})
             .type(PROBLEM_TYPE)
-            .send(problem(write.status, write.detail, request.url));
+            .send(problem(write.status, write.detail, request.url, write.type));
         }
       });
       api.setErrorHandler((error: { statusCode?: number; message: string }, request, reply) => {
@@ -508,7 +526,14 @@ export async function registerRealtime(
         return reply
           .code(status)
           .type(PROBLEM_TYPE)
-          .send(problem(status, detail, request.url));
+          .send(
+            problem(
+              status,
+              detail,
+              request.url,
+              !busy && error instanceof HttpProblem ? error.type : undefined,
+            ),
+          );
       });
       api.setNotFoundHandler((request, reply) =>
         reply
@@ -921,7 +946,7 @@ export async function registerRealtime(
       };
       const codingProblem = (error: unknown): unknown =>
         error instanceof CodingError
-          ? new HttpProblem(CODING_STATUS[error.kind], error.message)
+          ? new HttpProblem(CODING_STATUS[error.kind], error.message, error.type)
           : error;
 
       writeRoute(
@@ -1045,7 +1070,7 @@ export async function registerRealtime(
       };
       const shiftProblem = (error: unknown): unknown =>
         error instanceof ShiftError
-          ? new HttpProblem(SHIFT_STATUS[error.kind], error.message)
+          ? new HttpProblem(SHIFT_STATUS[error.kind], error.message, error.type)
           : error;
       const WRITE_ERRORS = [400, 403, 404, 405, 409, 413, 415, 422, 429, 503] as const;
 
@@ -1291,6 +1316,33 @@ export async function registerRealtime(
       getRoute(
         api,
         {
+          url: '/alarms/config',
+          summary:
+            'The alarm configuration a client shows: shelving limit, KPI thresholds, benchmarks',
+          description:
+            'From config/plant/alarms.yaml (#160): `maxShelveMs` (a longer shelf is 422) and the ' +
+            'shortest shelf, the KPI thresholds alarm-core computes with (flood threshold and window, ' +
+            'chattering, fleeting, standing) and the rate benchmarks (for colouring only). Fixed ' +
+            'while the MES runs.',
+          tags: ['alarms'],
+          query: noQuery,
+          response: alarmConfigSchema,
+          errors: [400, 503],
+        },
+        () => {
+          const settings = alarmsOf().settings();
+          return {
+            maxShelveMs: settings.maxShelveMs,
+            minShelveMs: LIMITS.minShelveMs,
+            kpi: { ...settings.kpi },
+            benchmarks: { ...settings.benchmarks },
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
           url: '/alarms/kpi',
           summary: 'Alarm KPIs of the plant, a position or an equipment per hour or shift bucket',
           description:
@@ -1469,7 +1521,7 @@ export async function registerRealtime(
 
       const alarmWriteProblem = (error: unknown): unknown =>
         error instanceof AlarmWriteError
-          ? new HttpProblem(ALARM_WRITE_STATUS[error.kind], error.message)
+          ? new HttpProblem(ALARM_WRITE_STATUS[error.kind], error.message, error.type)
           : error;
       const guarded =
         'Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when ' +

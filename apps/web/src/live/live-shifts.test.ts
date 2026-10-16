@@ -29,7 +29,7 @@ describe('live shifts', () => {
     applyMessage(client, {
       type: 'shift',
       event: 'revised',
-      shift: shiftRecord({ revision: { inputs: 0, content: 1 } }),
+      shift: shiftRecord({ revision: { inputs: 0, content: 1, contentAtFinal: null } }),
     });
     expect(shifts(client)?.instances[key]?.status).toBe('final');
     expect(shifts(client)?.seq).toBe(3);

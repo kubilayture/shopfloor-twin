@@ -17,18 +17,18 @@ import {
   shiftReportUrl,
   type ShiftRef,
 } from '../api/client.ts';
-import { queryKeys } from '../api/queries.ts';
+import { queryKeys, useAlarmConfig } from '../api/queries.ts';
 import { EChart } from '../chart/echart.tsx';
 import { paretoOption } from '../chart/oee-options.ts';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { ShiftPicker, shiftLabel, useShiftSelection } from '../components/shift-picker.tsx';
 import {
-  RATE_BAND_TEXT,
   alarmBucketFlags,
   meanTimeToAck,
   msText,
   rateBand,
+  rateBandText,
   scopeKey,
 } from '../domain/alarms.ts';
 import { reasonName } from '../domain/downtime.ts';
@@ -822,7 +822,9 @@ function AlarmScopeCard({
   const key = testKey(scopeKey(scope));
   const titleId = useId();
   const na = NOT_APPLICABLE;
-  const band = bucket ? rateBand(bucket.averageRate) : undefined;
+  // The benchmarks are the MES's (#160): no band until they arrived.
+  const config = useAlarmConfig();
+  const band = bucket && config ? rateBand(bucket.averageRate, config) : undefined;
   const operator = scope.operator;
   return (
     <li className="report-section">
@@ -846,12 +848,17 @@ function AlarmScopeCard({
               : na}
           </Measure>
           <Measure name="average-rate" label="Average per 10 min">
-            {bucket && band ? (
+            {bucket ? (
               <span title={bucket.averageRate.fraction}>
-                <span className="font-mono">{bucket.averageRate.decimal}</span>{' '}
-                <span data-band={band} className="text-xs">
-                  {RATE_BAND_TEXT[band]}
-                </span>
+                <span className="font-mono">{bucket.averageRate.decimal}</span>
+                {config && band ? (
+                  <>
+                    {' '}
+                    <span data-band={band} className="text-xs">
+                      {rateBandText(band, config)}
+                    </span>
+                  </>
+                ) : null}
               </span>
             ) : (
               na

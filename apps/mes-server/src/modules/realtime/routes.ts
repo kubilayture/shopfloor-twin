@@ -1,22 +1,25 @@
 import { STATUS_CODES } from 'node:http';
 import type { FastifyInstance } from 'fastify';
+import type { ProblemType } from '@shopfloor/contracts/mes-api';
 import { z } from 'zod';
 
-/** An error answer of the API: RFC 9457 problem details. */
+/** An error answer of the API: RFC 9457 problem details, `about:blank` unless typed (#163). */
 export class HttpProblem extends Error {
   readonly status: number;
+  readonly type: ProblemType | undefined;
 
-  constructor(status: number, detail: string) {
+  constructor(status: number, detail: string, type?: ProblemType) {
     super(detail);
     this.status = status;
+    this.type = type;
   }
 }
 
 export const PROBLEM_TYPE = 'application/problem+json';
 
-export function problem(status: number, detail: string, url: string) {
+export function problem(status: number, detail: string, url: string, type?: ProblemType) {
   return {
-    type: 'about:blank',
+    type: type ?? 'about:blank',
     title: STATUS_CODES[status] ?? 'Error',
     status,
     detail,
@@ -26,14 +29,14 @@ export function problem(status: number, detail: string, url: string) {
 
 const ERROR_TEXT: Readonly<Record<number, string>> = {
   400: 'Invalid path, query parameters or body',
-  403: 'Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin)',
+  403: 'Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin); type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin',
   404: 'Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route',
-  405: 'Writes are turned off (MES_WRITES=off)',
-  409: 'The version sent is not the current one (coding set, alarm shelf, handover note): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch)',
+  405: 'Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off',
+  409: 'The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open)',
   413: 'Body larger than 16 KiB',
-  415: 'Content-Type is not application/json',
-  422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift)',
-  429: 'Too many writes (one global limit): retry after Retry-After seconds',
+  415: 'Content-Type is not application/json; type urn:shopfloor:write-not-json',
+  422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit)',
+  429: 'Too many writes (one global limit): retry after Retry-After seconds; type urn:shopfloor:write-rate',
   503: 'The MES is starting',
 };
 

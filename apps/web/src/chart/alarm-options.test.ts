@@ -11,10 +11,11 @@ interface Series {
 
 describe('alarm chart options', () => {
   it('draws raises and peaks per hour from the API integers with the flood threshold', () => {
-    const option = alarmHourlyOption([
+    const hours = [
       hourKpi('2026-10-15T03:00:00.000Z', { raises: 3, peak10: 2, final: true }),
       hourKpi('2026-10-15T04:00:00.000Z', { raises: 14, peak10: 12 }),
-    ]);
+    ];
+    const option = alarmHourlyOption(hours, 10);
     const [raises, peaks] = option.series as Series[];
     expect(raises?.data).toEqual([3, 14]);
     expect(peaks?.data).toEqual([
@@ -26,5 +27,12 @@ describe('alarm chart options', () => {
     const max = (option.yAxis as { max: (extent: { max: number }) => number }).max;
     expect(max({ max: 3 })).toBe(12);
     expect(max({ max: 40 })).toBe(40);
+
+    // The line follows the served threshold (#160), and there is none before it arrived.
+    const seven = alarmHourlyOption(hours, 7).series as Series[];
+    expect(seven[1]?.markLine?.data).toEqual([{ yAxis: 7 }]);
+    const none = alarmHourlyOption(hours, undefined);
+    expect((none.series as Series[])[1]?.markLine).toBeUndefined();
+    expect((none.yAxis as { max: (extent: { max: number }) => number }).max({ max: 3 })).toBe(3);
   });
 });

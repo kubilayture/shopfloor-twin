@@ -7,6 +7,7 @@ import {
   alarmKpiListSchema,
   alarmListSchema,
   alarmPointListSchema,
+  alarmConfigSchema,
   alarmScopesSchema,
   badActorListSchema,
   bulkAcknowledgeRequestSchema,
@@ -55,6 +56,7 @@ import {
   type AlarmKpiList,
   type AlarmList,
   type AlarmPointList,
+  type AlarmConfig,
   type AlarmScopes,
   type BadActorList,
   type BulkAcknowledgeRequest,
@@ -373,6 +375,11 @@ export function getAlarmPoints(signal?: AbortSignal): Promise<AlarmPointList> {
 
 export function getAlarmScopes(signal?: AbortSignal): Promise<AlarmScopes> {
   return getJson('/alarms/scopes', alarmScopesSchema, signal);
+}
+
+/** The shelving limit, KPI thresholds and benchmarks of alarms.yaml (#160). */
+export function getAlarmConfig(signal?: AbortSignal): Promise<AlarmConfig> {
+  return getJson('/alarms/config', alarmConfigSchema, signal);
 }
 
 /** A KPI scope as the API names it: the plant, or a position or an equipment with its id. */

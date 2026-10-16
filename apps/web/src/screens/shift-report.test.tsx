@@ -97,6 +97,10 @@ describe('shift report', () => {
     expect(plant.dataset.raises).toBe('14');
     expect(measure(plant, 'raises')).toBe('14 (2 / 11 / 1)');
     expect(measure(plant, 'average-rate')).toContain('0.2917');
+    // Banded with the benchmarks the MES serves (#160).
+    await waitFor(() => {
+      expect(measure(plant, 'average-rate')).toContain('Acceptable (≤ 1 per 10 min)');
+    });
     expect(
       within(plant).getByTestId('report-bad-actor-plant-cnc-01-COOLANT-PRESSURE').dataset.raises,
     ).toBe('12');
@@ -111,17 +115,19 @@ describe('shift report', () => {
   });
 
   it('shows a final report and a banner when it changed after final', async () => {
+    // Both note writes are audited after finalAt (the database's clock, not the MES's), but the
+    // MES stored content 1 at final (#163): one change after final, not two.
     const edited = note(1, { version: 2, updatedAt: '2026-10-16T10:00:00.000Z' });
     const state = shiftState({
       report: report({
         status: 'final',
         final: true,
         finalAt: '2026-10-16T09:00:00.000Z',
-        revision: { inputs: 1, content: 2 },
+        revision: { inputs: 1, content: 2, contentAtFinal: 1 },
       }),
       notes: [edited],
       history: {
-        1: [auditEntry(edited), auditEntry(note(1, { updatedAt: '2026-10-16T08:00:00.000Z' }))],
+        1: [auditEntry(edited), auditEntry(note(1, { updatedAt: '2026-10-16T09:00:00.001Z' }))],
       },
     });
     vi.stubGlobal('fetch', shiftMes(state).fetch);
@@ -134,7 +140,7 @@ describe('shift report', () => {
     expect(screen.getByTestId('report-finality').textContent).toContain('Final');
     const banner = screen.getByTestId('report-revised');
     expect(banner.dataset.inputs).toBe('1');
-    // Content 2 less the note's create before final: one change after final.
+    // Content 2 less the content at final: one change after final.
     expect(banner.dataset.content).toBe('1');
     expect(banner.textContent).toContain('changed after it became final');
     expect(screen.queryByTestId('report-live-note')).toBeNull();
@@ -192,6 +198,7 @@ describe('shift report', () => {
       status: 'final',
       final: true,
       finalAt: '2026-10-16T09:00:00.000Z',
+      revision: { inputs: 0, content: 0, contentAtFinal: 0 },
       oee: { ...report().oee, equipment: [bucket('cnc-01', { final: true }, 'equipment')] },
     });
     await app.push({

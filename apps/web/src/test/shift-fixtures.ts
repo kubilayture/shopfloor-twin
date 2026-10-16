@@ -20,7 +20,7 @@ export function shiftRecord(overrides: Partial<ShiftRecordDto> = {}): ShiftRecor
     status: 'running',
     final: false,
     finalAt: null,
-    revision: { inputs: 0, content: 0 },
+    revision: { inputs: 0, content: 0, contentAtFinal: null },
     ...overrides,
   };
 }

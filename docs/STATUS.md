@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #160 and #163 done (branch `feat/160-163-alarm-config-problem-types`): `GET /api/v1/alarms/config` serves `maxShelveMs`, the KPI thresholds and the benchmarks of `alarms.yaml`, and the web's shelve presets, flood threshold line, flood banner and rate bands follow it (no hard-coded `MAX_SHELVE_MS`, `FLOOD_THRESHOLD` or bands left). Write conflicts and refusals carry stable problem `type` URIs (`PROBLEM_TYPES` in contracts: handover closed and not open, note stale and limit, coding and shelf stale, the write guards); the note editor matches on `type`. Migration `0015` stores `content_at_final` with finality, served as `revision.contentAtFinal`; the "changed after final" banner uses it instead of comparing two clocks. ADR-0023 and ADR-0025 notes.
 - #146 done (branch `feat/146-web-shift-report`): web shift reports. `/shifts` (the last week's shifts, current first, with status and revision, live) and `/shifts/$date/$shift` (OEE, production, downtime, alarms with bad actors and operator figures, handover notes; Final/Provisional, revision `{inputs, content}`, `asOf`, `generatedAt`, a banner when changed after final; read again when the pushed instance moves; live OEE, production and alarm KPIs from `oee:<id>` and `alarm-kpi:<scope>` while it runs); an A4 print stylesheet with a **Print** button (charts as still images) and **Download JSON**; the handover note editor (create, edit with the starting version, stale drafts never sent, retract, history from the audit, handover-closed and limit messages). Shift instances and notes pushed on `shifts` are dropped on subscribe, release and reconnect.
 - #159 done (branch `test/159-outbox-outage`): the gateway outbox broker-outage test picks a free host port at runtime and keeps it across the broker restart, labels every wait step with its own time limit, and retries the restart (`startBroker` with a fixed `hostPort`, 5 attempts) while the port is not released; delivery assertions unchanged, 5 runs in a row passed. The UNS end-to-end test's broker and gateway HTTP ports are chosen at runtime too; the simulator's fixed ports in the gateway tests (`collector`, `poller`, UNS e2e) and the simulator's Modbus test (5320) stay, each file on its own range.
 - #156 done (branch `fix/156-operator-measures`): operator measures follow-ups from the #143 review. The occurrence query is bounded by the earliest bucket start (results identical, by a property test and a PostgreSQL equivalence test against the unbounded computation; no new index); an unshelve after a new epoch began, before the shelf was ended, is booked to the shelf's own epoch, as are system ends; late acknowledgements in non-provisional buckets and the scope of `unacknowledgedAtEnd` are documented (ADR-0024, ADR-0025 note, OpenAPI descriptions, runbook).
@@ -90,11 +91,11 @@
 
 ## In progress
 
-- #145 web alarm list and alarm KPI pages (in review)
+- #160 alarm configuration from the API and #163 structured problem types with a served `contentAtFinal` (one branch and PR, in review)
 
 ## Next up
 
-- #146 web shift report and handover note editor, then #147 end to end (live injected faults, report reconciliation, Playwright), #159 (gateway outbox test robustness), #160 (alarm config from the API) and #148 (close Phase 6).
+- #146 web shift report and handover note editor, then #147 end to end (live injected faults, report reconciliation, Playwright), #159 (gateway outbox test robustness) and #148 (close Phase 6).
 
 ## Blockers and open questions for the owner
 

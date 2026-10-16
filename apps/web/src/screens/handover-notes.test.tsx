@@ -1,3 +1,4 @@
+import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { json, problem } from '../test/fixtures.ts';
@@ -40,7 +41,10 @@ describe('handover note editor', () => {
       expect(method).toBe('POST');
       expect(path).toBe('/api/v1/shifts/2026-10-15/A/notes');
       expect(body).toEqual({ author: 'Mehmet', text, category: 'material' });
-      return json({ note: created, shift: shiftRecord({ revision: { inputs: 0, content: 1 } }) });
+      return json({
+        note: created,
+        shift: shiftRecord({ revision: { inputs: 0, content: 1, contentAtFinal: null } }),
+      });
     };
     const server = shiftMes(state, write);
     vi.stubGlobal('fetch', server.fetch);
@@ -105,7 +109,10 @@ describe('handover note editor', () => {
       });
       state.notes = [edited];
       state.history = { 1: [auditEntry(edited), auditEntry(first)] };
-      return json({ note: edited, shift: shiftRecord({ revision: { inputs: 0, content: 2 } }) });
+      return json({
+        note: edited,
+        shift: shiftRecord({ revision: { inputs: 0, content: 2, contentAtFinal: null } }),
+      });
     };
     vi.stubGlobal('fetch', shiftMes(state, write).fetch);
     await renderApp(PATH);
@@ -174,7 +181,13 @@ describe('handover note editor', () => {
     const write: Write = () => {
       // Someone else's edit landed first, and its push has not reached this tab.
       state.notes = [note(1, { version: 2, text: 'Their edit', author: 'Zeynep' })];
-      return problem(409, 'Conflict', 'note 1 changed: version is 2, not 1', '/x');
+      return problem(
+        409,
+        'Conflict',
+        'note 1 changed: version is 2, not 1',
+        '/x',
+        PROBLEM_TYPES.noteStale,
+      );
     };
     const server = shiftMes(state, write);
     vi.stubGlobal('fetch', server.fetch);
@@ -203,6 +216,7 @@ describe('handover note editor', () => {
       'Conflict',
       'handover closed: notes of 2026-10-15/A can be written until 2026-10-15T19:00:00.000Z (plant time)',
       '/x',
+      PROBLEM_TYPES.handoverClosed,
     );
     vi.stubGlobal('fetch', shiftMes(state, () => answer).fetch);
     await renderApp(PATH);
@@ -214,7 +228,13 @@ describe('handover note editor', () => {
     expect(closed.textContent).toContain('handover window is closed');
     expect(closed.getAttribute('role')).toBe('alert');
 
-    answer = problem(422, 'Unprocessable Entity', 'at most 200 notes per shift', '/x');
+    answer = problem(
+      422,
+      'Unprocessable Entity',
+      'at most 200 notes per shift',
+      '/x',
+      PROBLEM_TYPES.noteLimit,
+    );
     fireEvent.click(within(form).getByTestId('add-note'));
     await waitFor(() => {
       expect(within(form).getByTestId('new-note-message').dataset.kind).toBe('limit');

@@ -113,7 +113,7 @@ const TABLES: Readonly<Record<string, string>> = {
   'alarms.alarm_transition':
     'Append-only audit of every MES transition of an alarm (ack, comment, shelve, unshelve, expire, epoch-ended) with before, after, actor, `authenticated`, wall time, plant time and request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#143, ADR-0023).',
   'shifts.shift_instance':
-    'One scheduled shift the plant clock entered, per (plant epoch, shift key): calendar start, end and breaks, status (running, ended, final), when the report became final and its composite revision {inputs, content} as stored counters (#144, ADR-0025).',
+    'One scheduled shift the plant clock entered, per (plant epoch, shift key): calendar start, end and breaks, status (running, ended, final), when the report became final and its composite revision {inputs, content} as stored counters, with `content` at the moment it became final (#144, #163, ADR-0025).',
   'shifts.handover_note':
     'Handover notes of a shift instance: the current version (category, text, retracted, author, version); never deleted, a trigger refuses DELETE and TRUNCATE (#144).',
   'shifts.handover_audit':

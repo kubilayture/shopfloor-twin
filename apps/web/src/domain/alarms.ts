@@ -1,4 +1,5 @@
 import type {
+  AlarmConfig,
   AlarmKpiBucketDto,
   AlarmOccurrenceDto,
   AlarmPointDto,
@@ -202,19 +203,34 @@ export function endReasonText(reason: AlarmOccurrenceDto['endReason']): string {
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
-/**
- * The longest shelf: `maxShelveMs` of alarms.yaml (default 8 hours, one shift). The API does not
- * publish it; the MES refuses a longer one with 422, which the screen explains.
- */
-export const MAX_SHELVE_MS = 8 * HOUR;
+/** Whole hours, else whole minutes, else seconds: `8 h`, `90 min`, `45 s`. */
+export function durationLabel(ms: number): string {
+  if (ms % HOUR === 0) return `${String(ms / HOUR)} h`;
+  if (ms % MINUTE === 0) return `${String(ms / MINUTE)} min`;
+  return `${String(ms / 1000)} s`;
+}
 
-/** Shelving presets (plan "API, push and web"), none above `MAX_SHELVE_MS`. */
-export const SHELVE_PRESETS = [
-  { ms: 15 * MINUTE, label: '15 min' },
-  { ms: HOUR, label: '1 h' },
-  { ms: 4 * HOUR, label: '4 h' },
-  { ms: 8 * HOUR, label: '8 h' },
-].filter((preset) => preset.ms <= MAX_SHELVE_MS);
+/** The shelving presets of the plan ("API, push and web") before the limit is applied. */
+const PRESET_MS = [15 * MINUTE, HOUR, 4 * HOUR, 8 * HOUR] as const;
+
+export interface ShelvePreset {
+  readonly ms: number;
+  readonly label: string;
+}
+
+/**
+ * Shelving presets capped at the MES's real limit (`GET /alarms/config`, alarms.yaml's
+ * `maxShelveMs`, #160): the plan's presets from `minShelveMs` up to the limit, and the limit itself
+ * when it is not one of them, so the longest allowed shelf can always be picked and none is
+ * refused with 422.
+ */
+export function shelvePresets(
+  config: Pick<AlarmConfig, 'maxShelveMs' | 'minShelveMs'>,
+): ShelvePreset[] {
+  const ms: number[] = PRESET_MS.filter((p) => p >= config.minShelveMs && p <= config.maxShelveMs);
+  if (!ms.includes(config.maxShelveMs)) ms.push(config.maxShelveMs);
+  return ms.map((value) => ({ ms: value, label: durationLabel(value) }));
+}
 
 export function ackFailure(error: unknown): WriteFailure {
   return writeFailure(error, {
@@ -256,29 +272,50 @@ export function parseScopeKey(key: string | undefined): AlarmScopeRef | undefine
 }
 
 /**
- * `floodThreshold` of alarms.yaml (default 10: more than 10 raises in 10 minutes is a flood). Not
- * published by the API; used only to draw the threshold line on the hourly chart.
+ * The flood banner's explanation, from the served `floodThreshold` and `windowMs` (#160): `Up to 14
+ * raises in 10 min (more than 10 is a flood)`.
  */
-export const FLOOD_THRESHOLD = 10;
+export function floodText(
+  peak: number,
+  kpi: Pick<AlarmConfig['kpi'], 'floodThreshold' | 'windowMs'>,
+): string {
+  return `Up to ${String(peak)} raises in ${durationLabel(kpi.windowMs)} (more than ${String(kpi.floodThreshold)} is a flood)`;
+}
 
 export type RateBand = 'acceptable' | 'manageable' | 'over';
 
+const TEN_MINUTES = 10n * BigInt(MINUTE);
+
 /**
- * The average rate per 10 minutes against the ISA-18.2 / EEMUA 191 benchmarks of alarms.yaml (about
- * one is acceptable, two the most manageable), compared exactly on the API's fraction.
+ * The average rate against the ISA-18.2 / EEMUA 191 benchmarks served by the MES (alarms.yaml's
+ * `benchmarks`, per 10 minutes, #160). `averageRate` is per KPI window (`windowMs`), so it is
+ * scaled to 10 minutes first; compared exactly on the API's fraction.
  */
-export function rateBand(rate: Ratio): RateBand {
+export function rateBand(
+  rate: Ratio,
+  config: Pick<AlarmConfig, 'benchmarks'> & { readonly kpi: Pick<AlarmConfig['kpi'], 'windowMs'> },
+): RateBand {
   const value = parseFraction(rate.fraction);
-  if (value.num <= value.den) return 'acceptable';
-  if (value.num <= 2n * value.den) return 'manageable';
+  // rate per window × 10 min / window ≤ benchmark  ⇔  num × 10 min ≤ benchmark × den × window
+  const scaled = value.num * TEN_MINUTES;
+  const per = value.den * BigInt(config.kpi.windowMs);
+  if (scaled <= BigInt(config.benchmarks.acceptablePer10Min) * per) return 'acceptable';
+  if (scaled <= BigInt(config.benchmarks.manageablePer10Min) * per) return 'manageable';
   return 'over';
 }
 
-export const RATE_BAND_TEXT: Readonly<Record<RateBand, string>> = {
-  acceptable: 'Acceptable (≤ 1 per 10 min)',
-  manageable: 'Manageable (≤ 2 per 10 min)',
-  over: 'Over the benchmark (> 2 per 10 min)',
-};
+/** A rate band as text, with the served benchmarks (#160). */
+export function rateBandText(band: RateBand, config: Pick<AlarmConfig, 'benchmarks'>): string {
+  const { acceptablePer10Min: acceptable, manageablePer10Min: manageable } = config.benchmarks;
+  switch (band) {
+    case 'acceptable':
+      return `Acceptable (≤ ${String(acceptable)} per 10 min)`;
+    case 'manageable':
+      return `Manageable (≤ ${String(manageable)} per 10 min)`;
+    case 'over':
+      return `Over the benchmark (> ${String(manageable)} per 10 min)`;
+  }
+}
 
 /** Final, provisional, revision and incidents of an alarm KPI bucket, as text. */
 export function alarmBucketFlags(bucket: AlarmKpiBucketDto): BucketFlag[] {

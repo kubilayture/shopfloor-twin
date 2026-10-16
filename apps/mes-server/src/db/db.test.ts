@@ -23,9 +23,13 @@ function database(): Kysely<Database> {
   return db;
 }
 
+let admin: Kysely<Database> | undefined;
+
 /** A fresh database on the same server, so tests don't share migration state. */
 async function freshDatabase(name: string): Promise<Kysely<Database>> {
-  await sql.raw(`CREATE DATABASE ${name}`).execute(database());
+  // One pool creates them all: the server allows only so many connections.
+  admin ??= database();
+  await sql.raw(`CREATE DATABASE ${name}`).execute(admin);
   const db = createDatabase(url.replace(/\/shopfloor$/, `/${name}`), 3);
   databases.push(db);
   return db;
@@ -137,6 +141,63 @@ describe('migrations (ADR-0016)', () => {
         await writeFile(join(dir, name), `\uFEFF${text.replace(/\n/g, '\r\n')}`);
       }
       expect((await migrate(db, dir)).applied).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('backfills content_at_final of reports already final from the note audit (0015, #163)', async () => {
+    const db = await freshDatabase('m_content_at_final');
+    const dir = await copyOfMigrations();
+    const file = '0015_shifts_content_at_final.sql';
+    try {
+      const text = await readFile(join(dir, file), 'utf8');
+      await rm(join(dir, file));
+      await migrate(db, dir);
+      const instance = (key: string, status: string, finalAt: string | null, content: number) =>
+        sql`INSERT INTO shifts.shift_instance (epoch, shift_key, shift_date, shift_id, start_time,
+              end_time, breaks, status, final_at, content_revision)
+            VALUES (1, ${key}, '2026-10-12', ${key.slice(-1)}, '2026-10-12T03:00Z',
+              '2026-10-12T11:00Z', '[]', ${status}, ${finalAt}, ${content})`.execute(db);
+      // A: final at 12:00 with two note writes before and one after (content 3, a recode too: 4).
+      await instance('2026-10-12/A', 'final', '2026-10-12T12:00Z', 4);
+      // B: not final.
+      await instance('2026-10-12/B', 'ended', null, 1);
+      const note = await sql<{ id: number }>`
+        INSERT INTO shifts.handover_note (epoch, shift_key, category, text, created_by, author,
+          created_plant_at, updated_plant_at)
+        VALUES (1, '2026-10-12/A', 'general', 'x', 'a', 'a', '2026-10-12T11:00Z',
+          '2026-10-12T11:00Z')
+        RETURNING id`.execute(db);
+      const id = note.rows[0]?.id ?? 0;
+      for (const [at, version] of [
+        ['2026-10-12T11:10Z', 1],
+        ['2026-10-12T11:20Z', 2],
+        ['2026-10-12T12:10Z', 3],
+      ] as const) {
+        await sql`INSERT INTO shifts.handover_audit (note_id, epoch, shift_key, action, before,
+            after, actor, at, plant_at, version)
+          VALUES (${id}, 1, '2026-10-12/A', ${version === 1 ? 'created' : 'edited'},
+            ${version === 1 ? null : '{}'}, '{}', 'a', ${at}, '2026-10-12T11:00Z', ${version})`.execute(
+          db,
+        );
+      }
+      await writeFile(join(dir, file), text);
+      expect((await migrate(db, dir)).applied).toEqual([file]);
+      const rows = await db
+        .selectFrom('shifts.shift_instance')
+        .select(['shift_key', 'content_revision', 'content_at_final'])
+        .orderBy('shift_key')
+        .execute();
+      expect(rows).toEqual([
+        { shift_key: '2026-10-12/A', content_revision: 4, content_at_final: 2 },
+        { shift_key: '2026-10-12/B', content_revision: 1, content_at_final: null },
+      ]);
+      // Final and content_at_final go together.
+      await expect(
+        sql`UPDATE shifts.shift_instance SET content_at_final = NULL
+            WHERE shift_key = '2026-10-12/A'`.execute(db),
+      ).rejects.toThrow(/content_at_final/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

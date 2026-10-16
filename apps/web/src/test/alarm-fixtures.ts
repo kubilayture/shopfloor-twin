@@ -1,4 +1,5 @@
 import type {
+  AlarmConfig,
   AlarmKpiBucketDto,
   AlarmOccurrenceDto,
   AlarmPointDto,
@@ -9,6 +10,36 @@ import type {
 } from '@shopfloor/contracts/mes-api';
 import { EPOCH } from './fixtures.ts';
 import { SHIFT_END, SHIFT_KEY, SHIFT_START } from './oee-fixtures.ts';
+
+/** `GET /alarms/config` as config/plant/alarms.yaml has it (#160), with overrides. */
+export function alarmConfig(
+  overrides: {
+    readonly maxShelveMs?: number;
+    readonly kpi?: Partial<AlarmConfig['kpi']>;
+    readonly benchmarks?: Partial<AlarmConfig['benchmarks']>;
+  } = {},
+): AlarmConfig {
+  return {
+    maxShelveMs: overrides.maxShelveMs ?? 28_800_000,
+    minShelveMs: 60_000,
+    kpi: {
+      floodThreshold: 10,
+      windowMs: 600_000,
+      chatterCount: 3,
+      chatterWindowMs: 60_000,
+      fleetingMs: 1_000,
+      standingMs: 86_400_000,
+      ...overrides.kpi,
+    },
+    benchmarks: {
+      acceptablePer10Min: 1,
+      manageablePer10Min: 2,
+      floodWindowsPercent: 1,
+      topTenSharePercent: 5,
+      ...overrides.benchmarks,
+    },
+  };
+}
 
 export function shelf(overrides: Partial<AlarmShelfDto> = {}): AlarmShelfDto {
   return {

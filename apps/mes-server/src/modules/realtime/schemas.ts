@@ -26,6 +26,7 @@ export {
   alarmKpiListSchema,
   alarmListSchema,
   alarmOccurrenceSchema,
+  alarmConfigSchema,
   alarmScopesSchema,
   badActorListSchema,
   floodListSchema,

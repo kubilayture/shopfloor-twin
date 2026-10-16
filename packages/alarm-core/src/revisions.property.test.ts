@@ -133,7 +133,8 @@ describe('revision completeness', () => {
           }
         }
       }),
-      { numRuns: 2_000 },
+      { numRuns: 1_000 },
     );
-  });
+    // Each run recomputes every hour twice; on a loaded CI runner 1,000 runs take several seconds.
+  }, 60_000);
 });

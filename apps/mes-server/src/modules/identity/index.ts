@@ -12,8 +12,8 @@
  * - `onSessionsEnded(listener)`: sessions ended before expiring (sockets close with 4401).
  * - `Identity.audit(trx, ...entries)`: rows of `identity.audit_log` inside the caller's transaction,
  *   the one way every module writes its audit (#169); `Identity.auditEntries(db, type, ids)` reads
- *   an entity's rows back for its history endpoint. `WriteBy` (a session's user, or a typed name
- *   with `MES_AUTH=off`) with `nameOf`, `isAuthenticated` and `auditActor`.
+ *   an entity's rows back for its history endpoint. `WriteBy` (a session's user; a typed name
+ *   only in module tests since #170) with `nameOf`, `isAuthenticated` and `auditActor`.
  */
 export {
   IDENTITY_LIMITS,

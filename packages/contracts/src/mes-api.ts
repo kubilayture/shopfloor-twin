@@ -37,9 +37,8 @@ export const MES_API_LIMITS = {
   writeBodyBytes: 16 * 1024,
   /** Segments in one coding write. */
   codingSegments: 32,
-  /** Characters of a coding's comment and of `codedBy`. */
+  /** Characters of a coding's comment. */
   codingComment: 500,
-  codedBy: 100,
   /** The global write rate (all clients together): tokens per second and the burst. */
   writesPerSecond: 10,
   writeBurst: 20,
@@ -65,17 +64,15 @@ export const MES_API_LIMITS = {
   alarmKpiTopics: 16,
   /** Alarm writes (#143): occurrences in one bulk acknowledgement. */
   alarmAckBulk: 100,
-  /** Characters of an alarm write's `actor`, a comment (and an acknowledgement's), a shelf reason. */
-  alarmActor: 100,
+  /** Characters of a comment (and an acknowledgement's) and of a shelf reason. */
   alarmComment: 500,
   shelveReason: 200,
   /** The shortest shelf; the longest is `maxShelveMs` of alarms.yaml. */
   minShelveMs: 60_000,
   /** Entries of one alarm point's audit. */
   alarmAudit: 500,
-  /** Handover notes (#144): characters of a note's text and of its author; notes per shift. */
+  /** Handover notes (#144): characters of a note's text; notes per shift. */
   noteText: 4_000,
-  noteAuthor: 100,
   notesPerShift: 200,
 } as const;
 
@@ -463,7 +460,7 @@ export const codingSchema = z
     comment: z.string(),
     codedBy: z
       .string()
-      .describe('The user name from the session, or (MES_AUTH=off) the name as typed'),
+      .describe('The user name from the session; the name as typed in rows written before #170'),
     codedAt: time.describe('Wall time of the write'),
     version: int.describe("The coding set's version it was written at"),
   })
@@ -537,15 +534,6 @@ export const codingRequestSchema = z
       .max(MES_API_LIMITS.codingSegments)
       .describe(
         'Non-overlapping ranges inside the record; empty clears its codings. A split is two',
-      ),
-    codedBy: z
-      .string()
-      .trim()
-      .min(1)
-      .max(MES_API_LIMITS.codedBy)
-      .optional()
-      .describe(
-        'Who codes, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored',
       ),
     version: int.min(0).describe("The record's `version` as read: 409 when the set moved on"),
   })
@@ -630,19 +618,12 @@ export const ALARM_STATES = [
   'closed',
 ] as const;
 const alarmState = z.enum(ALARM_STATES);
-const alarmActor = z
-  .string()
-  .trim()
-  .min(1)
-  .max(MES_API_LIMITS.alarmActor)
-  .optional()
-  .describe(
-    'Who acts, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored',
-  );
 const occurrenceIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\d{1,15}~\d{1,15}$/;
 
 export const acknowledgementSchema = z.object({
-  by: z.string().describe('The user name from the session, or (MES_AUTH=off) the name as typed'),
+  by: z
+    .string()
+    .describe('The user name from the session; the name as typed in rows written before #170'),
   at: time.describe('Wall time'),
   plantAt: time.nullable().describe('The plant clock at that moment; null without one'),
   comment: z.string(),
@@ -651,7 +632,9 @@ export const acknowledgementSchema = z.object({
 export const alarmCommentSchema = z.object({
   id: int,
   text: z.string(),
-  actor: z.string().describe('The user name from the session, or (MES_AUTH=off) as typed'),
+  actor: z
+    .string()
+    .describe('The user name from the session; as typed in rows written before #170'),
   authenticated: z.boolean().describe('True when the actor came from a session (#169)'),
   at: time.describe('Wall time'),
   plantAt: time.nullable().describe('The plant clock at that moment'),
@@ -770,8 +753,14 @@ export const alarmHistorySchema = z.object({
         seq: int.nullable(),
         receivedAt: time.nullable().describe('When the gateway received the fact'),
         protocol: z.string().nullable(),
-        actor: z.string().nullable().describe("Audit entries: as typed, or 'system'"),
-        authenticated: z.boolean().nullable().describe('Audit entries: always false (Phase 7)'),
+        actor: z
+          .string()
+          .nullable()
+          .describe("Audit entries: the user name (as typed before #170), or 'system'"),
+        authenticated: z
+          .boolean()
+          .nullable()
+          .describe('Audit entries: true when the actor came from a session (#169)'),
         recordedAt: time.nullable().describe('Audit entries: wall time'),
         requestId: z.string().nullable().describe('Audit entries: the X-Request-Id of the write'),
         auditId: int.nullable(),
@@ -977,7 +966,6 @@ const occurrenceIdBody = z
 
 export const acknowledgeRequestSchema = z
   .strictObject({
-    actor: alarmActor,
     comment: z.string().max(MES_API_LIMITS.alarmComment).optional(),
   })
   .describe('Acknowledges one occurrence (monotonic: no version)');
@@ -989,7 +977,6 @@ export const bulkAcknowledgeRequestSchema = z
       .min(1)
       .max(MES_API_LIMITS.alarmAckBulk)
       .describe('Occurrence ids (at most 100); an unknown one is 404 and nothing changes'),
-    actor: alarmActor,
     comment: z.string().max(MES_API_LIMITS.alarmComment).optional(),
   })
   .describe('Acknowledges up to 100 occurrences in one transaction');
@@ -1008,7 +995,6 @@ export const bulkAcknowledgeResultSchema = z.object({
 
 export const commentRequestSchema = z
   .strictObject({
-    actor: alarmActor,
     text: z.string().trim().min(1).max(MES_API_LIMITS.alarmComment),
   })
   .describe('Adds a comment to an occurrence (append-only: no version)');
@@ -1020,7 +1006,6 @@ export const commentResultSchema = z.object({
 
 export const shelveRequestSchema = z
   .strictObject({
-    actor: alarmActor,
     reason: z.string().trim().min(1).max(MES_API_LIMITS.shelveReason),
     durationMs: int
       .min(MES_API_LIMITS.minShelveMs)
@@ -1032,7 +1017,6 @@ export const shelveRequestSchema = z
 
 export const unshelveRequestSchema = z
   .strictObject({
-    actor: alarmActor,
     version: int.min(0).describe("The shelf's `version` as read: 409 when it moved on"),
   })
   .describe('Unshelves an alarm point');
@@ -1171,8 +1155,10 @@ export const handoverNoteSchema = z
     category: noteCategory,
     text: z.string(),
     retracted: z.boolean().describe('A wrong note is retracted, never deleted'),
-    createdBy: z.string().describe('The user name, or (MES_AUTH=off) the name as typed'),
-    author: z.string().describe('Who wrote the current version: user name, or as typed'),
+    createdBy: z.string().describe('The user name; the name as typed in notes written before #170'),
+    author: z
+      .string()
+      .describe('Who wrote the current version: the user name (as typed before #170)'),
     version: int.describe('1 when created, +1 per edit: send it with an edit (409 when stale)'),
     createdAt: time.describe('Wall time'),
     createdPlantAt: time.describe('Plant time (the epoch’s clock)'),
@@ -1187,7 +1173,7 @@ export const handoverAuditEntrySchema = z.object({
   action: z.enum(['created', 'edited']),
   before: noteContentSchema.nullable().describe('Null for a create'),
   after: noteContentSchema,
-  actor: z.string().describe('The author: the user name, or (MES_AUTH=off) as typed'),
+  actor: z.string().describe('The author: the user name; as typed in rows written before #170'),
   authenticated: z.boolean().describe('True when the actor came from a session (#169)'),
   at: time.describe('Wall time'),
   plantAt: time.describe('Plant time'),
@@ -1208,15 +1194,6 @@ export const handoverNotesSchema = z.object({
 
 export const noteCreateSchema = z
   .strictObject({
-    author: z
-      .string()
-      .trim()
-      .min(1)
-      .max(MES_API_LIMITS.noteAuthor)
-      .optional()
-      .describe(
-        'Who writes, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored',
-      ),
     text: z.string().trim().min(1).max(MES_API_LIMITS.noteText),
     category: noteCategory,
   })
@@ -1224,7 +1201,6 @@ export const noteCreateSchema = z
 
 export const noteEditSchema = z
   .strictObject({
-    author: noteCreateSchema.shape.author,
     text: noteCreateSchema.shape.text,
     category: noteCategory,
     retracted: z.boolean().describe('Retract (or restore) the note; it stays in the history'),

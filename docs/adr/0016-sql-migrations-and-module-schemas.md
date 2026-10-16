@@ -1,6 +1,6 @@
 # ADR-0016: Plain SQL migrations, one PostgreSQL schema per MES module
 
-- Status: accepted
+- Status: accepted; amended 2026-10-17 by #169 (a separate migrate step as the owner role), below
 - Date: 2026-10-15
 - Deciders: Claude (#93), from the Phase 4 plan; recorded for the owner under the standing instruction of 2026-10-15
 
@@ -34,3 +34,11 @@ Option 1 puts SQL inside TypeScript strings and hides TimescaleDB DDL (hypertabl
 - Good: a changed migration or a version mismatch stops the start instead of corrupting data.
 - Bad: no down-migrations. Rolling back means a new forward migration, the usual practice for production databases anyway.
 - Bad: types are maintained by hand, and the drift checks catch missing or extra tables and columns, not column types.
+
+## Amendment (#169): a separate migrate step, migrations as the owner role
+
+Phase 7 separates the database roles (ADR-0027). What changes here:
+
+- **Not automatic any more.** The MES no longer migrates at start-up. The `migrate` step (`pnpm --filter @shopfloor/mes-server migrate`, the Compose service `migrate` of the same image) connects as the bootstrap superuser, creates or updates the roles, and applies the pending migrations; the MES starts after it, connects as `mes_app`, and is not ready while the database's history differs from its own migrations (pending, unknown or changed files, `migrationStatus`). The other rules stay: checksums, a refused start on a changed or unknown migration (now `migrate` refuses, and the MES stays not ready), one runner at a time by the advisory lock, one transaction per file, `-- migrate:no-transaction`.
+- **Migrations run as `mes_owner`.** Each file runs under `SET LOCAL ROLE mes_owner` (a no-transaction file under `SET ROLE … RESET ROLE`), so what it creates belongs to the owner role; the history row is written as the superuser in the same transaction. A file that needs the superuser resets the role itself (only `0017`, which takes over the objects of an older database). The runner creates TimescaleDB itself (only a superuser may) and gives `mes_owner` `CREATE` on the database.
+- **Grants beside columns.** Each migration grants `mes_app` what its objects need, and `DECLARED_GRANTS` (`apps/mes-server/src/db/grants.ts`, typed from `Database` like `DECLARED_COLUMNS`) lists them per role and object; a test compares it with the database. `public.schema_migrations` belongs to `mes_owner` too, and the MES may only read it.

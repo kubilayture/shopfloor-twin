@@ -30,5 +30,6 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0024](0024-alarm-kpis-definitions-and-pure-package-imports.md)    | Alarm KPI definitions, exact arithmetic and pure-package imports                        | accepted           |
 | [0025](0025-shift-instances-report-finality-and-handover-notes.md) | Shift instances, report finality, composite revision and handover notes                 | accepted           |
 | [0026](0026-identity-sessions-roles-and-auth-switch.md)            | Identity: local users with roles, cookie sessions, scrypt and an enforcement switch     | accepted           |
+| [0027](0027-database-roles-and-one-audit-log.md)                   | Database roles, a separate migrate step and one audit log                               | accepted           |
 | [0028](0028-erp-mock-rest-feed-and-idempotent-messages.md)         | ERP mock: a REST change feed pulled by the MES, idempotent messages in SQLite           | accepted           |
 | [0030](0030-order-driven-simulator-loadorder-and-job-facts.md)     | Order-driven simulator: production mode `orders`, idempotent `LoadOrder` and job facts  | accepted           |

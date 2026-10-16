@@ -97,3 +97,7 @@ Identity arrives as ADR-0026. What changes for writes, and what stays:
 - **`MES_WRITES=off` exempts the login, logout and password change** (the other guards still apply), so a read-only MES with `MES_AUTH=on` still lets people log in.
 - **The actor**: in #168 the writes still take `codedBy`, `actor` and `author` as typed and audit them as unauthenticated. #169 takes the user from the session when `MES_AUTH=on`, writes `identity.audit_log`, and moves the three module audits there; #170 removes the free-text fields.
 - **Separate database roles** (the "Bad" consequence above, the MES owning its audit tables) follow in #169 (ADR-0027).
+
+## Note: database roles and one audit log (#169)
+
+The promise above is kept (ADR-0027): the MES connects as `mes_app`, which owns no table, so it can no longer disable an audit trigger, truncate an audit or change the schema (42501), and the append-only triggers still refuse everyone else. Writes take their actor from the session with `MES_AUTH=on` (the typed field is ignored) and from the typed field with `off` (then required, 422 without it); every write is audited in `identity.audit_log` in its own transaction, and the downtime and note audits are frozen legacy, copied into it.

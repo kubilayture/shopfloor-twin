@@ -1,5 +1,6 @@
-# MES server: ingest, state intervals, REST API and WebSocket push (port 4700). It migrates the
-# database at start-up and reports ready afterwards (ADR-0016).
+# MES server: ingest, state intervals, REST API and WebSocket push (port 4700). It connects as
+# mes_app and reports ready once the database is migrated; the same image runs the `migrate` step
+# (`node apps/mes-server/src/db/cli.ts`, ADR-0016 amended, ADR-0027).
 # Build from the repository root: docker build -f apps/mes-server/Dockerfile .
 # Node.js runs the TypeScript sources directly (ADR-0003), so there is no build step.
 # The workspace packages copied below must match the server's dependencies:

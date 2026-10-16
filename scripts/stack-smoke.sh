@@ -18,6 +18,44 @@ timescale=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -Atc \
 [ -n "$timescale" ] || fail "timescaledb extension missing"
 echo "ok: timescaledb $timescale"
 
+# Database roles (#169, ADR-0027). The MES connects as mes_app (over TCP with DB_APP_PASSWORD,
+# like the MES): it owns nothing, so changing an object or rewriting the audit trail is refused
+# with 42501, also after SET ROLE mes_cagg; as mes_cagg it may refresh an aggregate.
+as_app() {
+  docker compose exec -T -e PGPASSWORD="$DB_APP_PASSWORD" db \
+    psql -h 127.0.0.1 -U mes_app -d "$DB_NAME" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -At "$@" 2>&1
+}
+[ "$(as_app -c 'select current_user')" = mes_app ] || fail "mes_app cannot log in"
+sessions=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -Atc \
+  "select count(*) from pg_stat_activity where usename = 'mes_app'")
+[ "$sessions" -gt 0 ] || fail "the MES is not connected as mes_app"
+for statement in \
+  'ALTER TABLE identity.audit_log DISABLE TRIGGER audit_log_no_update_delete' \
+  'TRUNCATE identity.audit_log' \
+  'UPDATE identity.audit_log SET username = username' \
+  'DELETE FROM identity.audit_log' \
+  'UPDATE alarms.alarm_transition SET actor = actor' \
+  'DELETE FROM alarms.occurrence_state' \
+  'DELETE FROM shifts.handover_note' \
+  'CREATE TABLE identity.smoke (x int)'; do
+  for role in mes_app mes_cagg; do
+    out=$(as_app -c "BEGIN; SET LOCAL ROLE $role; $statement; ROLLBACK;" || true)
+    case "$out" in
+      *'ERROR:  42501'*) ;;
+      *) fail "as $role, not refused with 42501: $statement ($out)" ;;
+    esac
+  done
+done
+out=$(as_app -c "CALL refresh_continuous_aggregate('ingest.cycle_hourly', '1970-01-01', '1970-01-02')" || true)
+case "$out" in
+  *'must be owner'*) ;;
+  *) fail "mes_app refreshed an aggregate without SET ROLE: $out" ;;
+esac
+as_app -c 'SET ROLE mes_cagg' \
+  -c "CALL refresh_continuous_aggregate('ingest.cycle_hourly', '1970-01-01', '1970-01-02')" \
+  >/dev/null || fail "mes_app could not refresh an aggregate as mes_cagg"
+echo "ok: database roles (MES as mes_app; audit trail and DDL refused, also as mes_cagg; refresh as mes_cagg)"
+
 if docker compose exec -T broker mosquitto_pub -h localhost -t smoke/anon -m x 2>/dev/null; then
   fail "broker accepted an anonymous client"
 fi

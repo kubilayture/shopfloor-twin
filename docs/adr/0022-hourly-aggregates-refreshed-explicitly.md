@@ -1,6 +1,6 @@
 # ADR-0022: Hourly continuous aggregates, refreshed explicitly by their owning modules
 
-- Status: accepted
+- Status: accepted; amended 2026-10-17 by #169 (the refresh as the aggregates' owner role), below
 - Date: 2026-10-16
 - Deciders: Claude (#118), within the Phase 5 plan ("Storage and aggregation"); recorded for the owner under the standing instruction of 2026-10-15
 
@@ -53,3 +53,13 @@ Coordinator (a) would create an `oee` module whose only job is plumbing before #
 - Bad: a write that bypasses the modules (SQL by hand) is not reported; it is materialised by the next start-up's catch-up. The runbook says so.
 - Bad: the first start after migration 0006 materialises everything: the catch-up refresh of `cycle_hourly` scans all of `ingest.equipment_event` (about 30,000 facts a simulated week) and is awaited at start-up, before ingest subscribes, because equipment's cycle-count check needs it; `state_hourly`'s catch-up runs in the background. Later starts re-materialise only what was invalidated.
 - Bad: the start-up check reads every final hour's count (rows grow with history, about 1,000 a simulated week); cheap now, and boundable later by checking only hours since the last start.
+
+## Amendment (#169): the refresh under `SET ROLE mes_cagg`
+
+The MES connects as `mes_app`, which owns nothing (ADR-0027), and TimescaleDB lets only an aggregate's owner refresh it, never from a function, a procedure or a transaction (probed on 2.30.2-pg18). So:
+
+- **Ownership.** Both aggregates belong to `mes_cagg` (migration `0017`: moved from the creator as the superuser, the materialisation hypertable and internal views following; `mes_app`'s `SELECT` granted as `mes_cagg`). `mes_cagg` reads the two sources (`equipment.equipment_state_interval`, `ingest.equipment_event`), without which a refresh fails, and has `USAGE` but no `CREATE` on their schemas.
+- **The refresh.** `AggregateRefresher` runs `SET ROLE mes_cagg`, `CALL refresh_continuous_aggregate(…)` and `RESET ROLE` as three statements on one connection of its pool (still outside a transaction; the reset in a `finally`, so the connection goes back to the pool as `mes_app`). `mes_app` is a member of `mes_cagg` `WITH INHERIT FALSE, SET TRUE`: without `SET ROLE` it has none of `mes_cagg`'s rights, and a refresh is refused (`must be owner of continuous aggregate`), which a test shows next to one that succeeds and moves `cagg_watermark()`.
+- **The watermark** is read as `mes_app` (its `SELECT` on the aggregate is enough), as before.
+- **Still no policies:** a policy would need a `LOGIN` owner and a background worker.
+- **Accepted cost** (corrected in the review of PR #185): after `SET ROLE mes_cagg` the MES can do what the aggregates' owner may: drop or alter them, flip `materialized_only`, grant on them, and `UPDATE` or `DELETE` rows of their materialisation hypertables. An incremental refresh does not repair such an edit, because TimescaleDB re-materialises only ranges the raw table invalidated; the recovery is a forced full refresh, `CALL refresh_continuous_aggregate('<aggregate>', NULL, NULL, force => true)`, or dropping and recreating the aggregate (runbook). The raw tables, which it can only read, stay intact.

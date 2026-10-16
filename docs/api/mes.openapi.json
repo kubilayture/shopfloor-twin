@@ -3943,7 +3943,7 @@
                                 },
                                 "codedBy": {
                                   "type": "string",
-                                  "description": "As typed by the operator: not authenticated (until Phase 7)"
+                                  "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
                                 },
                                 "codedAt": {
                                   "type": "string",
@@ -4356,7 +4356,7 @@
         "tags": [
           "downtime"
         ],
-        "description": "Each segment is a time range [from, to) inside the record with an active reason (not UNCODED); segments must not overlap; an empty list clears the codings. Time without a coding keeps the auto reason. `version` is the record’s `version` as read: it belongs to the coding set of the (equipment, epoch), and a mismatch is 409. `codedBy` is free text, recorded as unauthenticated. Audited; reasons never change OEE, only the Pareto and the reason view. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `downtime:code` (MES_AUTH=on; ADR-0026).",
+        "description": "Each segment is a time range [from, to) inside the record with an active reason (not UNCODED); segments must not overlap; an empty list clears the codings. Time without a coding keeps the auto reason. `version` is the record’s `version` as read: it belongs to the coding set of the (equipment, epoch), and a mismatch is 409. The actor is the session’s user; with MES_AUTH=off the typed `codedBy` (unauthenticated). Audited; reasons never change OEE, only the Pareto and the reason view. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `downtime:code` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -4402,10 +4402,10 @@
                     "description": "Non-overlapping ranges inside the record; empty clears its codings. A split is two"
                   },
                   "codedBy": {
+                    "description": "Who codes, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored",
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100,
-                    "description": "Who codes, as typed: recorded as unauthenticated"
+                    "maxLength": 100
                   },
                   "version": {
                     "type": "integer",
@@ -4416,7 +4416,6 @@
                 },
                 "required": [
                   "segments",
-                  "codedBy",
                   "version"
                 ],
                 "additionalProperties": false,
@@ -4578,7 +4577,7 @@
                               },
                               "codedBy": {
                                 "type": "string",
-                                "description": "As typed by the operator: not authenticated (until Phase 7)"
+                                "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
                               },
                               "codedAt": {
                                 "type": "string",
@@ -4935,11 +4934,11 @@
                           },
                           "actor": {
                             "type": "string",
-                            "description": "`codedBy` as typed, or 'system' for a clip"
+                            "description": "The user name, the name as typed, or 'system' for a clip"
                           },
                           "authenticated": {
                             "type": "boolean",
-                            "description": "Always false until identity (Phase 7)"
+                            "description": "True when the actor came from a session (#169)"
                           },
                           "at": {
                             "type": "string",
@@ -6838,7 +6837,7 @@
                                     },
                                     "codedBy": {
                                       "type": "string",
-                                      "description": "As typed by the operator: not authenticated (until Phase 7)"
+                                      "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
                                     },
                                     "codedAt": {
                                       "type": "string",
@@ -7609,11 +7608,11 @@
                               },
                               "createdBy": {
                                 "type": "string",
-                                "description": "As typed: not authenticated (until Phase 7)"
+                                "description": "The user name, or (MES_AUTH=off) the name as typed"
                               },
                               "author": {
                                 "type": "string",
-                                "description": "Who wrote the current version, as typed"
+                                "description": "Who wrote the current version: user name, or as typed"
                               },
                               "version": {
                                 "type": "integer",
@@ -7749,11 +7748,11 @@
                                 },
                                 "actor": {
                                   "type": "string",
-                                  "description": "The author as typed"
+                                  "description": "The author: the user name, or (MES_AUTH=off) as typed"
                                 },
                                 "authenticated": {
                                   "type": "boolean",
-                                  "description": "Always false until identity (Phase 7)"
+                                  "description": "True when the actor came from a session (#169)"
                                 },
                                 "at": {
                                   "type": "string",
@@ -7981,11 +7980,11 @@
                               },
                               "createdBy": {
                                 "type": "string",
-                                "description": "As typed: not authenticated (until Phase 7)"
+                                "description": "The user name, or (MES_AUTH=off) the name as typed"
                               },
                               "author": {
                                 "type": "string",
-                                "description": "Who wrote the current version, as typed"
+                                "description": "Who wrote the current version: user name, or as typed"
                               },
                               "version": {
                                 "type": "integer",
@@ -8121,11 +8120,11 @@
                                 },
                                 "actor": {
                                   "type": "string",
-                                  "description": "The author as typed"
+                                  "description": "The author: the user name, or (MES_AUTH=off) as typed"
                                 },
                                 "authenticated": {
                                   "type": "boolean",
-                                  "description": "Always false until identity (Phase 7)"
+                                  "description": "True when the actor came from a session (#169)"
                                 },
                                 "at": {
                                   "type": "string",
@@ -8246,7 +8245,7 @@
         "tags": [
           "shifts"
         ],
-        "description": "From the shift’s start until the end of the following shift (plant time); afterwards 409 (handover closed). `author` is free text, recorded as unauthenticated; audited. Raises the report’s `revision.content`. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `note:write` (MES_AUTH=on; ADR-0026).",
+        "description": "From the shift’s start until the end of the following shift (plant time); afterwards 409 (handover closed). The author is the session’s user; with MES_AUTH=off the typed `author` (unauthenticated); audited. Raises the report’s `revision.content`. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `note:write` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -8255,10 +8254,10 @@
                 "type": "object",
                 "properties": {
                   "author": {
+                    "description": "Who writes, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored",
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100,
-                    "description": "Who writes, as typed: recorded as unauthenticated"
+                    "maxLength": 100
                   },
                   "text": {
                     "type": "string",
@@ -8277,7 +8276,6 @@
                   }
                 },
                 "required": [
-                  "author",
                   "text",
                   "category"
                 ],
@@ -8362,11 +8360,11 @@
                         },
                         "createdBy": {
                           "type": "string",
-                          "description": "As typed: not authenticated (until Phase 7)"
+                          "description": "The user name, or (MES_AUTH=off) the name as typed"
                         },
                         "author": {
                           "type": "string",
-                          "description": "Who wrote the current version, as typed"
+                          "description": "Who wrote the current version: user name, or as typed"
                         },
                         "version": {
                           "type": "integer",
@@ -8686,10 +8684,10 @@
                 "type": "object",
                 "properties": {
                   "author": {
+                    "description": "Who writes, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored",
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100,
-                    "description": "Who writes, as typed: recorded as unauthenticated"
+                    "maxLength": 100
                   },
                   "text": {
                     "type": "string",
@@ -8718,7 +8716,6 @@
                   }
                 },
                 "required": [
-                  "author",
                   "text",
                   "category",
                   "retracted",
@@ -8805,11 +8802,11 @@
                         },
                         "createdBy": {
                           "type": "string",
-                          "description": "As typed: not authenticated (until Phase 7)"
+                          "description": "The user name, or (MES_AUTH=off) the name as typed"
                         },
                         "author": {
                           "type": "string",
-                          "description": "Who wrote the current version, as typed"
+                          "description": "Who wrote the current version: user name, or as typed"
                         },
                         "version": {
                           "type": "integer",
@@ -9252,11 +9249,11 @@
                           },
                           "actor": {
                             "type": "string",
-                            "description": "The author as typed"
+                            "description": "The author: the user name, or (MES_AUTH=off) as typed"
                           },
                           "authenticated": {
                             "type": "boolean",
-                            "description": "Always false until identity (Phase 7)"
+                            "description": "True when the actor came from a session (#169)"
                           },
                           "at": {
                             "type": "string",
@@ -9643,7 +9640,7 @@
                                 "properties": {
                                   "by": {
                                     "type": "string",
-                                    "description": "As typed: unauthenticated"
+                                    "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
                                   },
                                   "at": {
                                     "type": "string",
@@ -11503,7 +11500,7 @@
                               "properties": {
                                 "by": {
                                   "type": "string",
-                                  "description": "As typed: unauthenticated"
+                                  "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
                                 },
                                 "at": {
                                   "type": "string",
@@ -11728,11 +11725,11 @@
                           },
                           "actor": {
                             "type": "string",
-                            "description": "As typed: unauthenticated"
+                            "description": "The user name from the session, or (MES_AUTH=off) as typed"
                           },
                           "authenticated": {
                             "type": "boolean",
-                            "description": "Always false until identity (Phase 7)"
+                            "description": "True when the actor came from a session (#169)"
                           },
                           "at": {
                             "type": "string",
@@ -12085,7 +12082,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Monotonic, so no version: one INSERT … ON CONFLICT DO NOTHING; an id acknowledged already (also concurrently) is `changed: false` and gets no audit entry. An unknown id is 404 and nothing changes. Counts as one write for the rate limit. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:ack` (MES_AUTH=on; ADR-0026).",
+        "description": "Monotonic, so no version: one INSERT … ON CONFLICT DO NOTHING; an id acknowledged already (also concurrently) is `changed: false` and gets no audit entry. An unknown id is 404 and nothing changes. Counts as one write for the rate limit. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). The actor is the session’s user; with MES_AUTH=off the typed `actor` (unauthenticated). Audited in alarms.alarm_transition and identity.audit_log with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:ack` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -12104,10 +12101,10 @@
                     "description": "Occurrence ids (at most 100); an unknown one is 404 and nothing changes"
                   },
                   "actor": {
+                    "description": "Who acts, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored",
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100,
-                    "description": "Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)"
+                    "maxLength": 100
                   },
                   "comment": {
                     "type": "string",
@@ -12115,8 +12112,7 @@
                   }
                 },
                 "required": [
-                  "ids",
-                  "actor"
+                  "ids"
                 ],
                 "additionalProperties": false,
                 "description": "Acknowledges up to 100 occurrences in one transaction"
@@ -12238,6 +12234,16 @@
               }
             }
           },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
@@ -12267,7 +12273,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Monotonic, so no version; acknowledged already: 200 with `changed: false` and no audit entry. A clear does not acknowledge: a cleared occurrence stays in the active list until acknowledged. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:ack` (MES_AUTH=on; ADR-0026).",
+        "description": "Monotonic, so no version; acknowledged already: 200 with `changed: false` and no audit entry. A clear does not acknowledge: a cleared occurrence stays in the active list until acknowledged. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). The actor is the session’s user; with MES_AUTH=off the typed `actor` (unauthenticated). Audited in alarms.alarm_transition and identity.audit_log with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:ack` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -12276,19 +12282,16 @@
                 "type": "object",
                 "properties": {
                   "actor": {
+                    "description": "Who acts, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored",
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100,
-                    "description": "Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)"
+                    "maxLength": 100
                   },
                   "comment": {
                     "type": "string",
                     "maxLength": 500
                   }
                 },
-                "required": [
-                  "actor"
-                ],
                 "additionalProperties": false,
                 "description": "Acknowledges one occurrence (monotonic: no version)"
               }
@@ -12446,7 +12449,7 @@
                               "properties": {
                                 "by": {
                                   "type": "string",
-                                  "description": "As typed: unauthenticated"
+                                  "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
                                 },
                                 "at": {
                                   "type": "string",
@@ -12604,6 +12607,16 @@
               }
             }
           },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
@@ -12633,7 +12646,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Append-only (1 to 500 characters), so no version. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:comment` (MES_AUTH=on; ADR-0026).",
+        "description": "Append-only (1 to 500 characters), so no version. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). The actor is the session’s user; with MES_AUTH=off the typed `actor` (unauthenticated). Audited in alarms.alarm_transition and identity.audit_log with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:comment` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -12642,10 +12655,10 @@
                 "type": "object",
                 "properties": {
                   "actor": {
+                    "description": "Who acts, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored",
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100,
-                    "description": "Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)"
+                    "maxLength": 100
                   },
                   "text": {
                     "type": "string",
@@ -12654,7 +12667,6 @@
                   }
                 },
                 "required": [
-                  "actor",
                   "text"
                 ],
                 "additionalProperties": false,
@@ -12696,11 +12708,11 @@
                         },
                         "actor": {
                           "type": "string",
-                          "description": "As typed: unauthenticated"
+                          "description": "The user name from the session, or (MES_AUTH=off) as typed"
                         },
                         "authenticated": {
                           "type": "boolean",
-                          "description": "Always false until identity (Phase 7)"
+                          "description": "True when the actor came from a session (#169)"
                         },
                         "at": {
                           "type": "string",
@@ -12870,7 +12882,7 @@
                               "properties": {
                                 "by": {
                                   "type": "string",
-                                  "description": "As typed: unauthenticated"
+                                  "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
                                 },
                                 "at": {
                                   "type": "string",
@@ -13016,6 +13028,16 @@
           },
           "415": {
             "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13327,7 +13349,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "ISA-18.2 shelves a point, not an occurrence: its occurrences leave the active list and keep their states; KPIs count every raise anyway. `durationMs` runs in plant time, 1 minute to maxShelveMs (alarms.yaml, 8 hours; longer is 422): `until` = the plant clock now + duration; once the plant clock passes it, the MES unshelves the point itself (audited `expire`, actor system), and a newer epoch ends the shelf (`epoch-ended`). Shelving a shelved point replaces its shelf. `version` is the shelf’s as read (0 for a point never shelved): a mismatch is 409. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:shelve` (MES_AUTH=on; ADR-0026).",
+        "description": "ISA-18.2 shelves a point, not an occurrence: its occurrences leave the active list and keep their states; KPIs count every raise anyway. `durationMs` runs in plant time, 1 minute to maxShelveMs (alarms.yaml, 8 hours; longer is 422): `until` = the plant clock now + duration; once the plant clock passes it, the MES unshelves the point itself (audited `expire`, actor system), and a newer epoch ends the shelf (`epoch-ended`). Shelving a shelved point replaces its shelf. `version` is the shelf’s as read (0 for a point never shelved): a mismatch is 409. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). The actor is the session’s user; with MES_AUTH=off the typed `actor` (unauthenticated). Audited in alarms.alarm_transition and identity.audit_log with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:shelve` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -13336,10 +13358,10 @@
                 "type": "object",
                 "properties": {
                   "actor": {
+                    "description": "Who acts, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored",
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100,
-                    "description": "Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)"
+                    "maxLength": 100
                   },
                   "reason": {
                     "type": "string",
@@ -13360,7 +13382,6 @@
                   }
                 },
                 "required": [
-                  "actor",
                   "reason",
                   "durationMs",
                   "version"
@@ -13687,7 +13708,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "`version` is the shelf’s as read: a mismatch is 409; a point not shelved is 422. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:shelve` (MES_AUTH=on; ADR-0026).",
+        "description": "`version` is the shelf’s as read: a mismatch is 409; a point not shelved is 422. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). The actor is the session’s user; with MES_AUTH=off the typed `actor` (unauthenticated). Audited in alarms.alarm_transition and identity.audit_log with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:shelve` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -13696,10 +13717,10 @@
                 "type": "object",
                 "properties": {
                   "actor": {
+                    "description": "Who acts, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored",
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100,
-                    "description": "Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)"
+                    "maxLength": 100
                   },
                   "version": {
                     "type": "integer",
@@ -13709,7 +13730,6 @@
                   }
                 },
                 "required": [
-                  "actor",
                   "version"
                 ],
                 "additionalProperties": false,
@@ -14136,11 +14156,11 @@
                           },
                           "actor": {
                             "type": "string",
-                            "description": "As typed, or 'system' for expire and epoch-ended"
+                            "description": "The user name, the name as typed, or 'system' (expire, epoch-ended)"
                           },
                           "authenticated": {
                             "type": "boolean",
-                            "description": "Always false until identity (Phase 7)"
+                            "description": "True when the actor came from a session (#169)"
                           },
                           "at": {
                             "type": "string",

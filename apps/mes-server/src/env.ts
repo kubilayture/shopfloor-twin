@@ -100,3 +100,47 @@ export function parseEnv(source: Readonly<Record<string, string | undefined>>): 
     }),
   };
 }
+
+/**
+ * The `migrate` step's environment (#169, ADR-0027): it connects as the bootstrap superuser
+ * (`DATABASE_URL`, password in `PGPASSWORD`), creates the roles and sets `mes_app`'s password from
+ * `DB_APP_PASSWORD` when given (Compose requires it). Nothing of the MES's own settings.
+ */
+export const migrateEnvSchema = z.object({
+  DATABASE_URL: envSchema.shape.DATABASE_URL,
+  MIGRATIONS_DIR: envSchema.shape.MIGRATIONS_DIR,
+  // Printable ASCII: migrate sends only its SCRAM verifier, made without SASLprep.
+  DB_APP_PASSWORD: z
+    .string()
+    .regex(/^[\x20-\x7e]+$/, 'expected printable ASCII')
+    .optional(),
+});
+
+export type MigrateEnv = z.output<typeof migrateEnvSchema>;
+
+/** Validates the `migrate` step's environment; secrets are never echoed. */
+export function parseMigrateEnv(
+  source: Readonly<Record<string, string | undefined>>,
+):
+  | { readonly ok: true; readonly env: MigrateEnv }
+  | { readonly ok: false; readonly issues: readonly string[] } {
+  const known = Object.fromEntries(
+    Object.keys(migrateEnvSchema.shape).flatMap((key) => {
+      const value = source[key];
+      return value === undefined || value === '' ? [] : [[key, value]];
+    }),
+  );
+  const result = migrateEnvSchema.safeParse(known);
+  if (result.success) return { ok: true, env: result.data };
+  return {
+    ok: false,
+    issues: result.error.issues.map((issue) => {
+      const key = String(issue.path[0]);
+      const shown =
+        HIDDEN.has(key) || key.includes('PASSWORD')
+          ? '(hidden)'
+          : JSON.stringify(known[key] ?? null);
+      return `${issue.path.join('.')}: ${issue.message} (got ${shown})`;
+    }),
+  };
+}

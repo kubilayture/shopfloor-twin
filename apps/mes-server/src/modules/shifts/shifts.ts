@@ -11,6 +11,7 @@ import { UNCODED } from '@shopfloor/plant-config';
 import { nextShift, shiftInstances, type ShiftPattern } from '@shopfloor/shift-calendar';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
+import { Identity, auditActor, isAuthenticated, nameOf, type WriteBy } from '../identity/index.ts';
 import type {
   AlarmEvent,
   AlarmKpiBucket,
@@ -110,6 +111,9 @@ export interface ShiftRecord {
   readonly revision: ReportRevision;
 }
 
+/** The audit entity of handover notes in `identity.audit_log` (#169). */
+export const NOTE_ENTITY = 'handover-note';
+
 export interface HandoverNote {
   readonly id: number;
   readonly epoch: number;
@@ -117,7 +121,7 @@ export interface HandoverNote {
   readonly category: NoteCategory;
   readonly text: string;
   readonly retracted: boolean;
-  /** Who wrote it first, and who wrote the current version (free text, unauthenticated). */
+  /** Who wrote it first, and who wrote the current version (user names, or names as typed). */
   readonly createdBy: string;
   readonly author: string;
   readonly version: number;
@@ -142,7 +146,8 @@ export interface HandoverAuditEntry {
 }
 
 export interface NoteRequest {
-  readonly author: string;
+  /** The session's user, or (`MES_AUTH=off`, until #170) the name as typed (unauthenticated). */
+  readonly author: WriteBy;
   readonly text: string;
   readonly category: NoteCategory;
   readonly requestId?: string;
@@ -681,15 +686,15 @@ export class Shifts {
           shift_key: key,
           category: request.category,
           text: request.text,
-          created_by: request.author,
-          author: request.author,
+          created_by: nameOf(request.author),
+          author: nameOf(request.author),
           created_plant_at: plantAt,
           updated_plant_at: plantAt,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
       const created = toNote(row);
-      await this.#writeAudit(trx, created, 'created', null, request.requestId, plantAt);
+      await this.#writeAudit(trx, created, request.author, null, request.requestId, plantAt);
       await this.#raiseContent(trx, record);
       return created;
     });
@@ -728,7 +733,7 @@ export class Shifts {
           category: edit.category,
           text: edit.text,
           retracted: edit.retracted,
-          author: edit.author,
+          author: nameOf(edit.author),
           version: row.version + 1,
           updated_at: sql<Date>`clock_timestamp()`,
           updated_plant_at: plantAt,
@@ -737,7 +742,7 @@ export class Shifts {
         .returningAll()
         .executeTakeFirstOrThrow();
       const after = toNote(updated);
-      await this.#writeAudit(trx, after, 'edited', content(before), edit.requestId, plantAt);
+      await this.#writeAudit(trx, after, edit.author, content(before), edit.requestId, plantAt);
       await this.#raiseContent(trx, record);
       return after;
     });
@@ -1077,51 +1082,51 @@ export class Shifts {
       .execute();
   }
 
+  /**
+   * The note's audit row in `identity.audit_log` (#169; entity `handover-note`, the note id),
+   * in the write's transaction: `after` is the content with the note's version.
+   */
   async #writeAudit(
     trx: Transaction<Database>,
     note: HandoverNote,
-    action: 'created' | 'edited',
+    by: WriteBy,
     before: NoteContent | null,
     requestId: string | undefined,
     plantAt: Date,
   ): Promise<void> {
-    await trx
-      .insertInto('shifts.handover_audit')
-      .values({
-        note_id: note.id,
-        epoch: note.epoch,
-        shift_key: note.shiftKey,
-        action,
-        before: before === null ? null : JSON.stringify(before),
-        after: JSON.stringify(content(note)),
-        actor: note.author,
-        plant_at: plantAt,
-        request_id: requestId ?? null,
-        version: note.version,
-      })
-      .execute();
+    await Identity.audit(trx, {
+      actor: auditActor(by),
+      authenticated: isAuthenticated(by),
+      action: before === null ? 'note.create' : 'note.edit',
+      entityType: NOTE_ENTITY,
+      entityId: String(note.id),
+      before: before ?? undefined,
+      after: { ...content(note), version: note.version },
+      requestId,
+      plantAt,
+    });
   }
 
+  /** The audit of some notes, newest first: `identity.audit_log`, legacy rows included. */
   async #audit(ids: readonly number[]): Promise<HandoverAuditEntry[]> {
-    const rows = await this.#readDb
-      .selectFrom('shifts.handover_audit')
-      .selectAll()
-      .where('note_id', 'in', ids)
-      .orderBy('id', 'desc')
-      .execute();
-    return rows.map((row) => ({
-      id: row.id,
-      noteId: row.note_id,
-      action: row.action,
-      before: row.before,
-      after: row.after,
-      actor: row.actor,
-      authenticated: row.authenticated,
-      at: row.at,
-      plantAt: row.plant_at,
-      requestId: row.request_id,
-      version: row.version,
-    }));
+    const rows = await Identity.auditEntries(this.#readDb, NOTE_ENTITY, ids.map(String));
+    return rows.map((row) => {
+      const { version, ...after } = row.after as NoteContent & { version: number };
+      return {
+        id: row.id,
+        noteId: Number(row.entityId),
+        action: row.action === 'note.create' ? 'created' : 'edited',
+        before: row.before as NoteContent | null,
+        after,
+        actor: row.username,
+        authenticated: row.authenticated,
+        at: row.at,
+        // Every note write has a plant time (#144); the legacy rows carry theirs.
+        plantAt: row.plantAt ?? row.at,
+        requestId: row.requestId,
+        version,
+      };
+    });
   }
 
   async #emitInstance(epoch: number, key: string, event: 'revised'): Promise<void> {

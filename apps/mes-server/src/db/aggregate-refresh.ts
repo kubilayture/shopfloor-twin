@@ -1,6 +1,7 @@
 import { HOUR, type Millis } from '@shopfloor/oee-core';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from './database.ts';
+import { DB_ROLES } from './roles.ts';
 
 /** The hourly continuous aggregates (migration 0006), each refreshed by the module that owns it. */
 export type HourlyAggregate = 'equipment.state_hourly' | 'ingest.cycle_hourly';
@@ -297,11 +298,22 @@ export class AggregateRefresher {
     this.#threshold = Math.max(this.#threshold, end);
     const began = performance.now();
     try {
-      await sql
-        .raw(
-          `CALL refresh_continuous_aggregate('${this.#view}', ${start === null ? 'NULL' : `'${iso(start)}'::timestamptz`}, '${iso(end)}'::timestamptz)`,
-        )
-        .execute(this.#db);
+      // Only the aggregate's owner may refresh it, and nothing can wrap the CALL (a function, a
+      // procedure, a transaction): so the MES's role, a member of `mes_cagg` without inheriting
+      // its rights, assumes it for the CALL on one connection, each step its own statement
+      // outside a transaction (#169, ADR-0022 amendment, ADR-0027).
+      await this.#db.connection().execute(async (connection) => {
+        await sql.raw(`SET ROLE ${DB_ROLES.aggregates}`).execute(connection);
+        try {
+          await sql
+            .raw(
+              `CALL refresh_continuous_aggregate('${this.#view}', ${start === null ? 'NULL' : `'${iso(start)}'::timestamptz`}, '${iso(end)}'::timestamptz)`,
+            )
+            .execute(connection);
+        } finally {
+          await sql`RESET ROLE`.execute(connection);
+        }
+      });
     } catch (error) {
       // Retried with the next refresh.
       for (const hour of taken) this.#dirty.add(hour);

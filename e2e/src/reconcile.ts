@@ -41,6 +41,7 @@
  *
  * Usage: pnpm test:reconcile. Results (report.json, compose.log on failure, Playwright traces) go
  * to e2e/results/. Environment: RECONCILE_PROJECT (Compose project, default shopfloor-reconcile),
+ * RECONCILE_TAG (image tag, default reconcile; give parallel runs their own),
  * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_BROWSER=0 (no Playwright),
  * OVERVIEW_SAMPLE_MS and OEE_SAMPLE_MS (how long each live check samples, default 90000 each; the
  * `live` files run in name order: the OEE dashboard first, from the shift's start as in Phase 5,
@@ -96,8 +97,15 @@ const PREFIX_TEST =
 const ALARMS_SAMPLE_PAST_MS = 3 * 60_000;
 /** The OEE check stops sampling this long (simulated) before the first injection: 15 s at 60×. */
 const OEE_BEFORE_INJECTION_MS = 15 * 60_000;
-/** The audit tables that must refuse UPDATE and DELETE (append-only by trigger). */
-const AUDIT_TABLES = ['alarms.alarm_transition', 'shifts.handover_audit'] as const;
+/**
+ * The audit tables that must refuse UPDATE and DELETE (append-only by trigger), with a column to
+ * set: the alarm module's transition log and, since #169, the one audit log the note writes go to
+ * (shifts.handover_audit is frozen legacy and stays empty on a fresh stack).
+ */
+const AUDIT_TABLES = {
+  'alarms.alarm_transition': 'actor',
+  'identity.audit_log': 'username',
+} as const;
 /** Incident types that mean lost data: none may occur with the plan's start order. */
 const LOSS_INCIDENTS = new Set(['sequence-gap', 'ring-overrun', 'buffer-overflow']);
 
@@ -362,8 +370,9 @@ async function main(): Promise<boolean> {
       SIM_START: scenario.start,
       SIM_SPEED: String(SPEED),
       SIM_AUTOSTART: 'false',
-      // Its own image tags: the run never replaces the dev stack's images.
-      IMAGE_TAG: 'reconcile',
+      // Its own image tags: the run never replaces the dev stack's images, and RECONCILE_TAG
+      // keeps parallel runs (other worktrees) from building over each other's.
+      IMAGE_TAG: process.env.RECONCILE_TAG ?? 'reconcile',
     },
   });
   let browser: Promise<number> | undefined;
@@ -1341,7 +1350,7 @@ async function checkShiftReport(
   };
 }
 
-/** The append-only triggers' message (migrations 0013, 0014). */
+/** The append-only triggers' message (migrations 0013, 0016). */
 const APPEND_ONLY = /append-only \((UPDATE|DELETE) refused\)/;
 
 /**
@@ -1355,7 +1364,7 @@ async function auditRefusals(
   stack: Stack,
 ): Promise<NonNullable<NonNullable<Report['coding']>['auditRefusals']>> {
   const refusals: NonNullable<NonNullable<Report['coding']>['auditRefusals']> = {};
-  for (const table of AUDIT_TABLES) {
+  for (const [table, column] of Object.entries(AUDIT_TABLES)) {
     const rows = await stack.sqlJson<number>(`SELECT count(*) FROM ${table}`);
     const attempt = async (operation: 'UPDATE' | 'DELETE', statement: string) =>
       stack.sql(`BEGIN; ${statement}; ROLLBACK;`).then(
@@ -1368,7 +1377,7 @@ async function auditRefusals(
       );
     refusals[table] = {
       rows,
-      update: await attempt('UPDATE', `UPDATE ${table} SET actor = actor`),
+      update: await attempt('UPDATE', `UPDATE ${table} SET ${column} = ${column}`),
       delete: await attempt('DELETE', `DELETE FROM ${table}`),
     };
   }

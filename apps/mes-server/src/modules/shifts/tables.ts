@@ -63,7 +63,10 @@ export interface HandoverNoteTable {
   updated_plant_at: Timestamp;
 }
 
-/** Every create and edit of a note, append-only (#144). */
+/**
+ * Every create and edit of a note until #169, append-only; frozen since (migration 0018): the
+ * notes' audit is `identity.audit_log`.
+ */
 export interface HandoverAuditTable {
   id: Generated<number>;
   note_id: number;
@@ -80,10 +83,27 @@ export interface HandoverAuditTable {
   version: number;
 }
 
+/** Who is signed on at a work center during a shift instance (#169; written from #177). */
+export interface CrewAssignmentTable {
+  id: Generated<number>;
+  user_id: number;
+  username: string;
+  work_center: string;
+  epoch: number;
+  shift_key: string;
+  session_id: string | null;
+  from_at: Timestamp;
+  from_plant_at: Timestamp;
+  to_at: Date | null;
+  to_plant_at: Date | null;
+  end_reason: 'sign-off' | 'session-ended' | 'shift-ended' | null;
+}
+
 export interface ShiftsTables {
   'shifts.shift_instance': ShiftInstanceTable;
   'shifts.handover_note': HandoverNoteTable;
   'shifts.handover_audit': HandoverAuditTable;
+  'shifts.crew_assignment': CrewAssignmentTable;
 }
 
 export const SHIFTS_COLUMNS = {
@@ -134,5 +154,19 @@ export const SHIFTS_COLUMNS = {
     'plant_at',
     'request_id',
     'version',
+  ],
+  'shifts.crew_assignment': [
+    'id',
+    'user_id',
+    'username',
+    'work_center',
+    'epoch',
+    'shift_key',
+    'session_id',
+    'from_at',
+    'from_plant_at',
+    'to_at',
+    'to_plant_at',
+    'end_reason',
   ],
 } as const;

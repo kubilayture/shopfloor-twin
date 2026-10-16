@@ -80,6 +80,28 @@ export interface Principal {
 /** Who acts in an audited change: a principal, or the system (bootstrap, the CLI). */
 export type Actor = Pick<Principal, 'userId' | 'username' | 'roles'> | { readonly system: string };
 
+/** A session's user, as a module write records it (#169). */
+export type SessionUser = Pick<Principal, 'userId' | 'username' | 'roles'>;
+
+/**
+ * Who a module write is by (#169): the session's user, or (only with `MES_AUTH=off`, until #170
+ * removes the request fields) a name as typed, recorded as unauthenticated.
+ */
+export type WriteBy = SessionUser | string;
+
+/** The name a write records: the user name, or the name as typed. */
+export const nameOf = (by: WriteBy): string => (typeof by === 'string' ? by : by.username);
+
+/** Whether a write's actor came from a session. */
+export const isAuthenticated = (by: WriteBy): boolean => typeof by !== 'string';
+
+/** The audit's actor of a write: a typed name is recorded as such, never as a user. */
+export const auditActor = (by: WriteBy): AuditActor =>
+  typeof by === 'string' ? { typed: by } : by;
+
+/** An audit row's actor: an `Actor`, or a name typed without a session (`MES_AUTH=off`). */
+export type AuditActor = Actor | { readonly typed: string };
+
 export interface User {
   readonly id: number;
   readonly username: string;
@@ -91,9 +113,9 @@ export interface User {
   readonly updatedAt: Date;
 }
 
-/** One audit row (#168; other modules write theirs through `audit` from #169). */
+/** One audit row (#168; other modules write theirs through `Identity.audit` from #169). */
 export interface AuditEntry {
-  readonly actor: Actor;
+  readonly actor: AuditActor;
   readonly authenticated: boolean;
   readonly action: string;
   readonly entityType: string;
@@ -102,6 +124,48 @@ export interface AuditEntry {
   readonly after?: unknown;
   readonly requestId?: string | undefined;
   readonly plantAt?: Date | undefined;
+}
+
+/** A condition on an audit row's `after` (`Identity.auditEntries`). */
+export type AuditCondition =
+  /** `after.<key>` equals the value. */
+  | { readonly equals: { readonly key: string; readonly value: string } }
+  /**
+   * `[after.<fromKey>, after.<toKey>)` (ISO times; a null end: open) overlaps `[from, to)`.
+   */
+  | {
+      readonly overlaps: {
+        readonly fromKey: string;
+        readonly toKey: string;
+        readonly from: Date;
+        readonly to: Date;
+      };
+    };
+
+/** Which rows `Identity.auditEntries` reads: any of the conditions (all rows without), at most `limit`. */
+export interface AuditQuery {
+  readonly anyOf?: readonly AuditCondition[];
+  readonly limit?: number;
+}
+
+/** An audit row as stored (`Identity.auditEntries`). */
+export interface StoredAuditEntry {
+  readonly id: number;
+  /** Wall time. */
+  readonly at: Date;
+  readonly plantAt: Date | null;
+  readonly userId: number | null;
+  readonly username: string;
+  readonly roles: readonly string[];
+  readonly authenticated: boolean;
+  readonly action: string;
+  readonly entityType: string;
+  readonly entityId: string;
+  readonly before: unknown;
+  readonly after: unknown;
+  readonly requestId: string | null;
+  /** Copied from a module audit by migration 0018 (#169). */
+  readonly legacy: boolean;
 }
 
 export interface IdentityLog {
@@ -295,23 +359,105 @@ export class Identity {
 
   /** Appends one audit row inside the caller's transaction (or on its own). */
   async audit(db: Kysely<Database> | Transaction<Database>, entry: AuditEntry): Promise<void> {
-    const actor = entry.actor;
+    await Identity.audit(db, entry);
+  }
+
+  /**
+   * Appends audit rows inside the caller's transaction (#169): the one way every module writes
+   * `identity.audit_log`, so the write commits or rolls back with the change it records.
+   */
+  static async audit(
+    db: Kysely<Database> | Transaction<Database>,
+    ...entries: readonly AuditEntry[]
+  ): Promise<void> {
+    if (entries.length === 0) return;
     await db
       .insertInto('identity.audit_log')
-      .values({
-        plant_at: entry.plantAt ?? null,
-        user_id: 'system' in actor ? null : actor.userId,
-        username: 'system' in actor ? actor.system : actor.username,
-        roles: 'system' in actor ? [] : [...actor.roles],
-        authenticated: entry.authenticated,
-        action: entry.action,
-        entity_type: entry.entityType,
-        entity_id: entry.entityId,
-        before: entry.before === undefined ? null : JSON.stringify(entry.before),
-        after: entry.after === undefined ? null : JSON.stringify(entry.after),
-        request_id: entry.requestId ?? null,
-      })
+      .values(
+        entries.map((entry) => {
+          const actor = entry.actor;
+          const user = 'userId' in actor ? actor : undefined;
+          const name =
+            'userId' in actor ? actor.username : 'system' in actor ? actor.system : actor.typed;
+          return {
+            plant_at: entry.plantAt ?? null,
+            user_id: user?.userId ?? null,
+            username: name,
+            roles: user ? [...user.roles] : [],
+            authenticated: entry.authenticated,
+            action: entry.action,
+            entity_type: entry.entityType,
+            entity_id: entry.entityId,
+            before: entry.before === undefined ? null : JSON.stringify(entry.before),
+            after: entry.after === undefined ? null : JSON.stringify(entry.after),
+            request_id: entry.requestId ?? null,
+          };
+        }),
+      )
       .execute();
+  }
+
+  /**
+   * The audit rows of some entities of one type, newest first (#169): what the other modules'
+   * history endpoints read, legacy rows (copied from the module audits by migration 0018) included.
+   */
+  static async auditEntries(
+    db: Kysely<Database> | Transaction<Database>,
+    entityType: string,
+    entityIds: readonly string[],
+    query: AuditQuery = {},
+  ): Promise<StoredAuditEntry[]> {
+    if (entityIds.length === 0) return [];
+    let select = db
+      .selectFrom('identity.audit_log')
+      .selectAll()
+      .where('entity_type', '=', entityType)
+      .where('entity_id', 'in', [...entityIds]);
+    const anyOf = query.anyOf;
+    if (anyOf !== undefined) {
+      if (anyOf.length === 0) return [];
+      // In SQL, so the limit applies to the matching rows only (#185 review, M2).
+      select = select.where((eb) =>
+        eb.or(
+          anyOf.map((condition) => {
+            if ('equals' in condition) {
+              return eb(
+                sql<string>`after ->> ${condition.equals.key}`,
+                '=',
+                condition.equals.value,
+              );
+            }
+            const { fromKey, toKey, from, to } = condition.overlaps;
+            return eb.and([
+              eb(sql<Date>`(after ->> ${fromKey})::timestamptz`, '<', to),
+              eb.or([
+                eb(sql<string>`after ->> ${toKey}`, 'is', null),
+                eb(sql<Date>`(after ->> ${toKey})::timestamptz`, '>', from),
+              ]),
+            ]);
+          }),
+        ),
+      );
+    }
+    let ordered = select.orderBy('id', 'desc');
+    if (query.limit !== undefined) ordered = ordered.limit(query.limit);
+    const rows = await ordered.execute();
+    return rows.map((row) => ({
+      id: row.id,
+      at: row.at,
+      plantAt: row.plant_at,
+      userId: row.user_id,
+      username: row.username,
+      roles: row.roles,
+      authenticated: row.authenticated,
+      action: row.action,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      before: row.before,
+      after: row.after,
+      requestId: row.request_id,
+      legacy: row.legacy,
+    }));
   }
 
   #emit(ended: SessionsEnded): void {

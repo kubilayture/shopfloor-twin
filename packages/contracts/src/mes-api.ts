@@ -461,7 +461,9 @@ export const codingSchema = z
     to: time,
     reason: z.string().describe('A reason code id'),
     comment: z.string(),
-    codedBy: z.string().describe('As typed by the operator: not authenticated (until Phase 7)'),
+    codedBy: z
+      .string()
+      .describe('The user name from the session, or (MES_AUTH=off) the name as typed'),
     codedAt: time.describe('Wall time of the write'),
     version: int.describe("The coding set's version it was written at"),
   })
@@ -541,7 +543,10 @@ export const codingRequestSchema = z
       .trim()
       .min(1)
       .max(MES_API_LIMITS.codedBy)
-      .describe('Who codes, as typed: recorded as unauthenticated'),
+      .optional()
+      .describe(
+        'Who codes, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored',
+      ),
     version: int.min(0).describe("The record's `version` as read: 409 when the set moved on"),
   })
   .describe('Replaces the codings of one downtime record');
@@ -578,8 +583,8 @@ export const downtimeAuditSchema = z.object({
           .describe('A write, a write with no segments, or a clip after a re-cut'),
         before: z.array(auditCodingSchema),
         after: z.array(auditCodingSchema),
-        actor: z.string().describe("`codedBy` as typed, or 'system' for a clip"),
-        authenticated: z.boolean().describe('Always false until identity (Phase 7)'),
+        actor: z.string().describe("The user name, the name as typed, or 'system' for a clip"),
+        authenticated: z.boolean().describe('True when the actor came from a session (#169)'),
         at: time.describe('Wall time'),
         requestId: z.string().nullable(),
         version: int.describe("The coding set's version after the change"),
@@ -630,11 +635,14 @@ const alarmActor = z
   .trim()
   .min(1)
   .max(MES_API_LIMITS.alarmActor)
-  .describe('Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)');
+  .optional()
+  .describe(
+    'Who acts, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored',
+  );
 const occurrenceIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\d{1,15}~\d{1,15}$/;
 
 export const acknowledgementSchema = z.object({
-  by: z.string().describe('As typed: unauthenticated'),
+  by: z.string().describe('The user name from the session, or (MES_AUTH=off) the name as typed'),
   at: time.describe('Wall time'),
   plantAt: time.nullable().describe('The plant clock at that moment; null without one'),
   comment: z.string(),
@@ -643,8 +651,8 @@ export const acknowledgementSchema = z.object({
 export const alarmCommentSchema = z.object({
   id: int,
   text: z.string(),
-  actor: z.string().describe('As typed: unauthenticated'),
-  authenticated: z.boolean().describe('Always false until identity (Phase 7)'),
+  actor: z.string().describe('The user name from the session, or (MES_AUTH=off) as typed'),
+  authenticated: z.boolean().describe('True when the actor came from a session (#169)'),
   at: time.describe('Wall time'),
   plantAt: time.nullable().describe('The plant clock at that moment'),
   requestId: z.string().nullable(),
@@ -1043,8 +1051,8 @@ export const alarmTransitionSchema = z.object({
     ),
   before: z.record(z.string(), z.unknown()).nullable(),
   after: z.record(z.string(), z.unknown()).nullable(),
-  actor: z.string().describe("As typed, or 'system' for expire and epoch-ended"),
-  authenticated: z.boolean().describe('Always false until identity (Phase 7)'),
+  actor: z.string().describe("The user name, the name as typed, or 'system' (expire, epoch-ended)"),
+  authenticated: z.boolean().describe('True when the actor came from a session (#169)'),
   at: time.describe('Wall time'),
   plantAt: time.nullable().describe('The plant clock at the transition (expire: the `until`)'),
   plantEpoch: int.nullable(),
@@ -1163,8 +1171,8 @@ export const handoverNoteSchema = z
     category: noteCategory,
     text: z.string(),
     retracted: z.boolean().describe('A wrong note is retracted, never deleted'),
-    createdBy: z.string().describe('As typed: not authenticated (until Phase 7)'),
-    author: z.string().describe('Who wrote the current version, as typed'),
+    createdBy: z.string().describe('The user name, or (MES_AUTH=off) the name as typed'),
+    author: z.string().describe('Who wrote the current version: user name, or as typed'),
     version: int.describe('1 when created, +1 per edit: send it with an edit (409 when stale)'),
     createdAt: time.describe('Wall time'),
     createdPlantAt: time.describe('Plant time (the epoch’s clock)'),
@@ -1179,8 +1187,8 @@ export const handoverAuditEntrySchema = z.object({
   action: z.enum(['created', 'edited']),
   before: noteContentSchema.nullable().describe('Null for a create'),
   after: noteContentSchema,
-  actor: z.string().describe('The author as typed'),
-  authenticated: z.boolean().describe('Always false until identity (Phase 7)'),
+  actor: z.string().describe('The author: the user name, or (MES_AUTH=off) as typed'),
+  authenticated: z.boolean().describe('True when the actor came from a session (#169)'),
   at: time.describe('Wall time'),
   plantAt: time.describe('Plant time'),
   requestId: z.string().nullable(),
@@ -1205,7 +1213,10 @@ export const noteCreateSchema = z
       .trim()
       .min(1)
       .max(MES_API_LIMITS.noteAuthor)
-      .describe('Who writes, as typed: recorded as unauthenticated'),
+      .optional()
+      .describe(
+        'Who writes, as typed, recorded as unauthenticated: only with MES_AUTH=off (until #170): with a session the user is taken from it and this is ignored',
+      ),
     text: z.string().trim().min(1).max(MES_API_LIMITS.noteText),
     category: noteCategory,
   })

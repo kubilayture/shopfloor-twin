@@ -11,8 +11,10 @@ import {
   ERP_PROBLEM_TYPES,
   ERP_ORDER_NUMBER,
   MESSAGE_KINDS,
+  confirmationKey,
   confirmationRequestSchema,
   erpOrderInputSchema,
+  statusKey,
   idempotencyKeySchema,
   statusMessageRequestSchema,
   type ConfirmationRequest,
@@ -22,7 +24,7 @@ import {
 import type { z } from 'zod';
 import type { Erp } from './erp.ts';
 import type { Logger } from './log.ts';
-import type { ErpStore } from './store.ts';
+import { DuplicateConfirmationError, type ErpStore } from './store.ts';
 
 export interface ErpServerOptions {
   readonly erp: Erp;
@@ -69,7 +71,15 @@ interface Route {
   readonly methods: Readonly<Record<string, Handler>>;
 }
 
-const POST_OUTCOMES = ['created', 'replayed', 'conflict', 'invalid', 'unknown-order'] as const;
+const POST_OUTCOMES = [
+  'created',
+  'replayed',
+  'conflict',
+  'invalid',
+  'key-mismatch',
+  'unknown-order',
+  'no-final',
+] as const;
 type PostOutcome = (typeof POST_OUTCOMES)[number];
 
 const digest = (value: string): Buffer => createHash('sha256').update(value, 'utf8').digest();
@@ -183,6 +193,21 @@ export function createErpServer(options: ErpServerOptions): Server {
         count(kind, 'invalid');
         throw error;
       }
+      // The key is built from the body, so one (order, operation, number) or (order, revision,
+      // status) has exactly one key: a second message for it can't hide under another key.
+      const confirmation = 'operation' in body ? body : undefined;
+      const expected =
+        confirmation !== undefined
+          ? confirmationKey(body.orderNumber, confirmation.operation, confirmation.confirmation)
+          : statusKey(body.orderNumber, body.revision, (body as StatusMessageRequest).status);
+      if (key.data !== expected) {
+        count(kind, 'key-mismatch');
+        throw new HttpError(
+          422,
+          `Idempotency-Key ${key.data} is not the key of this ${kind}: expected ${expected}`,
+          ERP_PROBLEM_TYPES.keyMismatch,
+        );
+      }
       // From here on everything is synchronous (node:sqlite), so no other request interleaves
       // between the key lookup and the insert.
       const prior = store.lookup(kind, key.data, body);
@@ -203,7 +228,30 @@ export function createErpServer(options: ErpServerOptions): Server {
         count(kind, 'unknown-order');
         throw new HttpError(422, unknown, ERP_PROBLEM_TYPES.unknownOrder);
       }
-      const receipt = store.insert(kind, key.data, body.orderNumber, body, now());
+      const identity =
+        confirmation === undefined
+          ? undefined
+          : { operation: confirmation.operation, confirmation: confirmation.confirmation };
+      if (
+        identity !== undefined &&
+        identity.confirmation > 1 &&
+        !store.hasConfirmation(body.orderNumber, { ...identity, confirmation: 1 })
+      ) {
+        count(kind, 'no-final');
+        throw new HttpError(
+          422,
+          `correction ${String(identity.confirmation)} of ${body.orderNumber} ${identity.operation} has no final confirmation before it`,
+          ERP_PROBLEM_TYPES.correctionWithoutFinal,
+        );
+      }
+      let receipt;
+      try {
+        receipt = store.insert(kind, key.data, body.orderNumber, body, now(), identity);
+      } catch (error) {
+        if (!(error instanceof DuplicateConfirmationError)) throw error;
+        count(kind, 'conflict');
+        throw new HttpError(409, error.message, ERP_PROBLEM_TYPES.duplicateConfirmation);
+      }
       count(kind, 'created');
       log.info(
         { key: key.data, kind, orderNumber: body.orderNumber, receivedSeq: receipt.receivedSeq },
@@ -233,7 +281,16 @@ export function createErpServer(options: ErpServerOptions): Server {
             ERP_API_LIMITS.feedPageMax,
           );
           if (limit === 0) throw new HttpError(400, 'limit must be at least 1');
-          return Promise.resolve({ status: 200, body: erp.feedPage(after, limit) });
+          const page = erp.feedPage(after, limit);
+          if (page === undefined) {
+            throw new HttpError(
+              409,
+              `after=${String(after)} is beyond this feed's last entry ${String(erp.feedLength)}: ` +
+                `the cursor belongs to another feed (this one is ${erp.feedId})`,
+              ERP_PROBLEM_TYPES.cursorAhead,
+            );
+          }
+          return Promise.resolve({ status: 200, body: page });
         },
         POST: async (request) => {
           if (!options.admin) {

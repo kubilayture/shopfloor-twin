@@ -13,8 +13,9 @@ const text = z.string().trim().min(1);
 export const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
 
 export const envSchema = z.object({
-  // Not trimmed: the token is compared byte for byte.
-  ERP_API_TOKEN: z.string().min(1),
+  // Compared byte for byte, so not trimmed; whitespace is refused rather than kept, because a
+  // bearer token can't carry it (RFC 6750) and a stray space in .env would never match.
+  ERP_API_TOKEN: z.string().regex(/^\S+$/, 'non-empty, without whitespace'),
   ERP_DATASET: text.default(resolve(REPO, 'config/erp/orders.yaml')),
   PLANT_CONFIG_DIR: text.default(resolve(REPO, 'config/plant')),
   ERP_STORE_PATH: text.default('.store/erp.db'),

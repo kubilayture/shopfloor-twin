@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
@@ -20,6 +21,26 @@ export interface ReceiveResult {
   readonly outcome: 'created' | 'replayed' | 'conflict';
   readonly receipt: MessageReceipt;
 }
+
+/** A confirmation's identity: at most one stored message per (order, operation, number). */
+export interface ConfirmationIdentity {
+  readonly operation: string;
+  readonly confirmation: number;
+}
+
+/** The store refused a second confirmation with the same order, operation and number. */
+export class DuplicateConfirmationError extends Error {
+  constructor(orderNumber: string, identity: ConfirmationIdentity) {
+    super(
+      `order ${orderNumber} already has confirmation ${String(identity.confirmation)} of ${identity.operation}`,
+    );
+    this.name = 'DuplicateConfirmationError';
+  }
+}
+
+const isUniqueViolation = (error: unknown): boolean =>
+  error instanceof Error &&
+  error.message.includes('UNIQUE constraint failed: message.order_number');
 
 export interface StoredMessage {
   readonly receipt: MessageReceipt;
@@ -57,6 +78,9 @@ export class ErpStore {
   readonly #listOrder: StatementSync;
   readonly #count: StatementSync;
   readonly #insertOrder: StatementSync;
+  readonly #confirmation: StatementSync;
+  /** Created with the store and never changed: part of the feed's identity (`feedId`). */
+  readonly storeId: string;
   #closed = false;
 
   constructor(path: string) {
@@ -74,7 +98,9 @@ export class ErpStore {
         kind TEXT NOT NULL,
         order_number TEXT NOT NULL,
         body TEXT NOT NULL,
-        received_at TEXT NOT NULL
+        received_at TEXT NOT NULL,
+        operation TEXT,
+        confirmation_no INTEGER
       );
       CREATE INDEX IF NOT EXISTS message_order ON message (order_number, received_seq);
       CREATE TABLE IF NOT EXISTS admin_order (
@@ -82,11 +108,37 @@ export class ErpStore {
         body TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
+    // A store from the first #171 commit has no confirmation identity columns yet.
+    const columns = new Set(
+      (db.prepare('PRAGMA table_info(message)').all() as unknown as { name: string }[]).map(
+        (c) => c.name,
+      ),
+    );
+    if (!columns.has('operation')) db.exec('ALTER TABLE message ADD COLUMN operation TEXT');
+    if (!columns.has('confirmation_no')) {
+      db.exec('ALTER TABLE message ADD COLUMN confirmation_no INTEGER');
+    }
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS message_confirmation
+        ON message (order_number, operation, confirmation_no) WHERE kind = 'confirmation';
+      INSERT OR IGNORE INTO meta (key, value) VALUES ('store_id', '${randomUUID()}');
+    `);
+    const storeId = db.prepare("SELECT value FROM meta WHERE key = 'store_id'").get()?.value;
+    if (typeof storeId !== 'string') throw new Error('the store has no store id');
+    this.storeId = storeId;
     this.#db = db;
     this.#byKey = db.prepare('SELECT * FROM message WHERE idempotency_key = ?');
     this.#insert = db.prepare(
-      'INSERT INTO message (idempotency_key, kind, order_number, body, received_at) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO message (idempotency_key, kind, order_number, body, received_at, operation, confirmation_no) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    this.#confirmation = db.prepare(
+      "SELECT 1 AS found FROM message WHERE kind = 'confirmation' AND order_number = ? AND operation = ? AND confirmation_no = ?",
     );
     this.#list = db.prepare('SELECT * FROM message WHERE kind = ? ORDER BY received_seq');
     this.#listOrder = db.prepare(
@@ -110,16 +162,37 @@ export class ErpStore {
     return { outcome: same ? 'replayed' : 'conflict', receipt: receiptOf(existing) };
   }
 
-  /** Stores a message under a new key (one durable commit); a used key throws. */
+  /**
+   * Stores a message under a new key (one durable commit). A used key throws; a confirmation
+   * (`identity` given) whose order, operation and number are stored already throws
+   * `DuplicateConfirmationError`, whatever its key.
+   */
   insert(
     kind: MessageKind,
     key: string,
     orderNumber: string,
     body: unknown,
     now: Date,
+    identity?: ConfirmationIdentity,
   ): MessageReceipt {
     const receivedAt = now.toISOString();
-    const result = this.#insert.run(key, kind, orderNumber, canonicalJson(body), receivedAt);
+    let result: ReturnType<StatementSync['run']>;
+    try {
+      result = this.#insert.run(
+        key,
+        kind,
+        orderNumber,
+        canonicalJson(body),
+        receivedAt,
+        identity?.operation ?? null,
+        identity?.confirmation ?? null,
+      );
+    } catch (error) {
+      if (identity !== undefined && isUniqueViolation(error)) {
+        throw new DuplicateConfirmationError(orderNumber, identity);
+      }
+      throw error;
+    }
     return {
       idempotencyKey: key,
       kind,
@@ -136,12 +209,20 @@ export class ErpStore {
     orderNumber: string,
     body: unknown,
     now: Date,
+    identity?: ConfirmationIdentity,
   ): ReceiveResult {
     return (
       this.lookup(kind, key, body) ?? {
         outcome: 'created',
-        receipt: this.insert(kind, key, orderNumber, body, now),
+        receipt: this.insert(kind, key, orderNumber, body, now, identity),
       }
+    );
+  }
+
+  /** Whether a confirmation with this order, operation and number is stored. */
+  hasConfirmation(orderNumber: string, identity: ConfirmationIdentity): boolean {
+    return (
+      this.#confirmation.get(orderNumber, identity.operation, identity.confirmation) !== undefined
     );
   }
 

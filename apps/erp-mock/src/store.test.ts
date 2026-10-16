@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ErpStore, canonicalJson } from './store.ts';
+import { DuplicateConfirmationError, ErpStore, canonicalJson } from './store.ts';
 
 const dirs: string[] = [];
 const stores: ErpStore[] = [];
@@ -61,6 +62,61 @@ describe('ErpStore', () => {
       store.receive('confirmation', 'A~status~accepted', 'A', { s: 1, t: 2 }, t1).outcome,
     ).toBe('conflict');
     expect(store.counts()).toEqual({ confirmation: 0, status: 1 });
+  });
+
+  it('refuses a second confirmation of one order, operation and number under another key', () => {
+    const store = open(':memory:');
+    const op10 = { operation: 'OP10', confirmation: 1 };
+    store.insert('confirmation', 'A~OP10~conf~1', 'A', { n: 1 }, t0, op10);
+    expect(() => store.insert('confirmation', 'other-key', 'A', { n: 2 }, t1, op10)).toThrow(
+      DuplicateConfirmationError,
+    );
+    expect(() => store.receive('confirmation', 'other-key', 'A', { n: 2 }, t1, op10)).toThrow(
+      'order A already has confirmation 1 of OP10',
+    );
+    // Another number, operation or order is another confirmation; status messages carry none.
+    store.insert('confirmation', 'k2', 'A', { n: 3 }, t1, { operation: 'OP10', confirmation: 2 });
+    store.insert('confirmation', 'k3', 'A', { n: 4 }, t1, { operation: 'OP20', confirmation: 1 });
+    store.insert('confirmation', 'k4', 'B', { n: 5 }, t1, op10);
+    store.insert('status', 's1', 'A', { n: 6 }, t1);
+    store.insert('status', 's2', 'A', { n: 7 }, t1);
+    expect(store.hasConfirmation('A', op10)).toBe(true);
+    expect(store.hasConfirmation('A', { operation: 'OP30', confirmation: 1 })).toBe(false);
+    expect(store.counts()).toEqual({ confirmation: 4, status: 2 });
+  });
+
+  it('upgrades a store of the first schema, keeping its messages', () => {
+    const file = path();
+    mkdirSync(join(file, '..'), { recursive: true });
+    const old = new DatabaseSync(file);
+    old.exec(`
+      CREATE TABLE message (
+        received_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL,
+        order_number TEXT NOT NULL,
+        body TEXT NOT NULL,
+        received_at TEXT NOT NULL
+      );
+      INSERT INTO message (idempotency_key, kind, order_number, body, received_at)
+        VALUES ('k1', 'status', 'A', '{}', '2026-10-16T08:00:00.000Z');
+    `);
+    old.close();
+    const store = open(file);
+    expect(store.messages('status').map((m) => m.receipt.idempotencyKey)).toEqual(['k1']);
+    const op10 = { operation: 'OP10', confirmation: 1 };
+    store.insert('confirmation', 'c1', 'A', {}, t0, op10);
+    expect(() => store.insert('confirmation', 'c2', 'A', {}, t0, op10)).toThrow(
+      DuplicateConfirmationError,
+    );
+  });
+
+  it('keeps one store id for its life', () => {
+    const file = path();
+    const id = open(file).storeId;
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(open(file).storeId).toBe(id);
+    expect(open(path()).storeId).not.toBe(id);
   });
 
   it('keeps messages and added orders across a restart, in the order received', () => {

@@ -25,12 +25,26 @@ export const ERP_API_LIMITS = {
  * `about:blank`. A 401 (no or wrong bearer token) is `about:blank` with `WWW-Authenticate: Bearer`.
  */
 export const ERP_PROBLEM_TYPES = {
-  /** 409: the `Idempotency-Key` was used before with another body (or on the other endpoint). */
+  /** 409: the `Idempotency-Key` was used before with another body. */
   idempotencyConflict: 'urn:shopfloor:erp-idempotency-conflict',
   /** 422: a message names an order, revision or operation the ERP doesn't hold. */
   unknownOrder: 'urn:shopfloor:erp-unknown-order',
   /** 409: `POST /orders` (dev only) with a revision not above the order's latest. */
   revisionConflict: 'urn:shopfloor:erp-revision-conflict',
+  /** 422: the `Idempotency-Key` is not the key built from the body (`confirmationKey`, `statusKey`). */
+  keyMismatch: 'urn:shopfloor:erp-key-mismatch',
+  /**
+   * 409: a confirmation with the order, operation and number of a stored one under another key.
+   * The key check makes this unreachable through the API; the store refuses it anyway.
+   */
+  duplicateConfirmation: 'urn:shopfloor:erp-duplicate-confirmation',
+  /** 422: a correction for an order operation with no final confirmation received. */
+  correctionWithoutFinal: 'urn:shopfloor:erp-correction-without-final',
+  /**
+   * 409: `GET /orders?after=` beyond the feed's last entry: the cursor belongs to another feed
+   * (compare `feedId`).
+   */
+  cursorAhead: 'urn:shopfloor:erp-cursor-ahead',
 } as const;
 
 /** Order number (no `~`: the MES builds idempotency keys from it with `~` as the separator). */
@@ -48,6 +62,21 @@ export const idempotencyKeySchema = z
   .min(1)
   .max(ERP_API_LIMITS.idempotencyKey)
   .regex(IDEMPOTENCY_KEY, 'visible ASCII, no spaces');
+
+/**
+ * The `Idempotency-Key` of a confirmation: `{order}~{operation}~conf~{n}`, n = 1 for the final
+ * confirmation and 2, 3, … for corrections. One key per (order, operation, n), so a confirmation
+ * can't be stored twice under two keys.
+ */
+export const confirmationKey = (orderNumber: string, operation: string, confirmation: number) =>
+  `${orderNumber}~${operation}~conf~${String(confirmation)}`;
+
+/**
+ * The `Idempotency-Key` of a status message: `{order}~r{revision}~status~{status}`. The revision is
+ * part of it, so `accepted` for revision 1 and for revision 2 are two messages, not a conflict.
+ */
+export const statusKey = (orderNumber: string, revision: number, status: string) =>
+  `${orderNumber}~r${String(revision)}~status~${status}`;
 const idSchema = z.string().regex(ID);
 const operationSchema = z
   .string()
@@ -55,6 +84,8 @@ const operationSchema = z
   .describe('A routing operation, e.g. OP10');
 /** A time the ERP stores: ISO 8601 with an offset; served in UTC with milliseconds. */
 const timeInput = z.iso.datetime({ offset: true });
+/** A message time: ISO 8601 with an offset, normalised to UTC, so one instant is one body. */
+const messageTime = timeInput.transform((value) => new Date(value).toISOString());
 const time = z.iso.datetime();
 const int = z.number().int();
 const count = int.min(0);
@@ -143,6 +174,15 @@ export const feedEntrySchema = z.strictObject({
 
 export const orderFeedSchema = z
   .strictObject({
+    feedId: z
+      .string()
+      .regex(/^[0-9a-f]{32}$/)
+      .describe(
+        'Identity of this feed: a hash of the expanded dataset and of the store id created with the ' +
+          'store. A client keeps it beside its cursor; when it changes, the cursor belongs to ' +
+          'another feed (dataset replaced or store deleted) and the client raises an incident or ' +
+          'resets its cursor to 0 (imports are idempotent by order number and revision).',
+      ),
     entries: z.array(feedEntrySchema),
     cursor: count.describe('Pass as `after` for the next page: the last entry here, or `after`'),
     more: z.boolean().describe('More entries follow this page'),
@@ -172,7 +212,7 @@ export const confirmationRequestSchema = z
       .array(materialLine)
       .max(ERP_API_LIMITS.confirmationLines)
       .describe('Backflushed material'),
-    confirmedAt: timeInput.describe('Plant time the operation was confirmed'),
+    confirmedAt: messageTime.describe('Plant time the operation was confirmed; served in UTC'),
   })
   .superRefine((value, ctx) => {
     if ((value.kind === 'final') !== (value.confirmation === 1)) {
@@ -202,7 +242,7 @@ export const statusMessageRequestSchema = z
     status: z.enum(ORDER_STATUS_MESSAGES),
     short: z.boolean().optional().describe('Only with `completed`: packed good < quantity'),
     reason: z.string().min(1).max(ERP_API_LIMITS.reason).optional(),
-    sentAt: timeInput.describe('Plant time of the status change'),
+    sentAt: messageTime.describe('Plant time of the status change; served in UTC'),
   })
   .superRefine((value, ctx) => {
     if (value.short !== undefined && value.status !== 'completed') {
@@ -251,7 +291,11 @@ export const erpOrderViewSchema = z.strictObject({
   status: z
     .enum(ORDER_STATUS_MESSAGES)
     .nullable()
-    .describe('The latest status message received, or null'),
+    .describe(
+      'The status of the last status message received (highest `receivedSeq`), whatever its ' +
+        'place in the lifecycle; null before any. The ERP takes the MES at its word: a late ' +
+        '`released` after `completed` makes the status `released`.',
+    ),
   short: z.boolean(),
   statusHistory: z.array(
     z.strictObject({

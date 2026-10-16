@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   ERP_PROBLEM_TYPES,
+  confirmationKey,
+  statusKey,
   confirmationListSchema,
   erpOrderViewSchema,
   erpProblemSchema,
@@ -156,8 +158,19 @@ describe('ERP mock API', () => {
       'ORD-1005/1',
     ]);
     expect(rest).toMatchObject({ cursor: 6, more: false });
-    expect(await page('?after=6')).toEqual({ entries: [], cursor: 6, more: false });
-    expect(await page('?after=99')).toEqual({ entries: [], cursor: 99, more: false });
+    expect(await page('?after=6')).toEqual({
+      feedId: all.feedId,
+      entries: [],
+      cursor: 6,
+      more: false,
+    });
+    // A cursor beyond the feed belongs to another feed.
+    const ahead = await problem(
+      await fetch(`${base}/api/v1/orders?after=7`, { headers: auth }),
+      409,
+    );
+    expect(ahead.type).toBe(ERP_PROBLEM_TYPES.cursorAhead);
+    expect(ahead.detail).toContain(all.feedId);
     for (const query of ['?after=-1', '?after=x', '?limit=0', '?limit=501']) {
       await problem(await fetch(`${base}/api/v1/orders${query}`, { headers: auth }), 400);
     }
@@ -194,9 +207,9 @@ describe('ERP mock API', () => {
       409,
     );
     expect(conflict.type).toBe(ERP_PROBLEM_TYPES.idempotencyConflict);
-    // The same key on the status endpoint is a conflict as well.
+    // A confirmation key on a status message is not that message's key.
     const other = await post(base, '/api/v1/order-status', status('accepted'), key);
-    expect((await problem(other, 409)).type).toBe(ERP_PROBLEM_TYPES.idempotencyConflict);
+    expect((await problem(other, 422)).type).toBe(ERP_PROBLEM_TYPES.keyMismatch);
 
     const list = confirmationListSchema.parse(
       await (
@@ -209,7 +222,7 @@ describe('ERP mock API', () => {
     expect(metrics).toContain('erp_message_posts_total{kind="confirmation",outcome="created"} 1');
     expect(metrics).toContain('erp_message_posts_total{kind="confirmation",outcome="replayed"} 1');
     expect(metrics).toContain('erp_message_posts_total{kind="confirmation",outcome="conflict"} 1');
-    expect(metrics).toContain('erp_message_posts_total{kind="status",outcome="conflict"} 1');
+    expect(metrics).toContain('erp_message_posts_total{kind="status",outcome="key-mismatch"} 1');
     expect(metrics).toContain('erp_messages_stored{kind="confirmation"} 1');
     // Nothing secret in the log: no token, no header.
     expect(logs.join('')).not.toContain(TOKEN);
@@ -219,6 +232,8 @@ describe('ERP mock API', () => {
   it('refuses messages without a key, of the wrong type, invalid, oversized or for unknown orders', async () => {
     const { base } = await start(storePath());
     const key = (k: string) => ({ 'idempotency-key': k });
+    const k1 = (body: { orderNumber: string; operation: string; confirmation: number }) =>
+      key(confirmationKey(body.orderNumber, body.operation, body.confirmation));
     expect(
       (await problem(await post(base, '/api/v1/confirmations', confirmation()), 400)).detail,
     ).toBe('the Idempotency-Key header is required');
@@ -250,14 +265,12 @@ describe('ERP mock API', () => {
       [confirmation({ revision: 3 }), 'order ORD-1001 has no revision 3'],
       [confirmation({ operation: 'OP60' }), 'order ORD-1001 revision 1 has no operation OP60'],
     ] as const) {
-      const refused = await problem(
-        await post(base, '/api/v1/confirmations', body, key('k1')),
-        422,
-      );
+      const refused = await problem(await post(base, '/api/v1/confirmations', body, k1(body)), 422);
       expect(refused).toMatchObject({ type: ERP_PROBLEM_TYPES.unknownOrder, detail });
     }
     // None of the refusals used up the key.
-    expect((await post(base, '/api/v1/confirmations', confirmation(), key('k1'))).status).toBe(201);
+    const final = confirmation();
+    expect((await post(base, '/api/v1/confirmations', final, k1(final))).status).toBe(201);
     await problem(
       await fetch(`${base}/api/v1/confirmations?orderNumber=a~b`, { headers: auth }),
       400,
@@ -271,8 +284,8 @@ describe('ERP mock API', () => {
       const response = await post(base, path, body, { 'idempotency-key': key });
       expect(response.status).toBe(201);
     };
-    await send('/api/v1/order-status', status('accepted'), 'ORD-1001~status~accepted');
-    await send('/api/v1/order-status', status('released'), 'ORD-1001~status~released');
+    await send('/api/v1/order-status', status('accepted'), statusKey('ORD-1001', 1, 'accepted'));
+    await send('/api/v1/order-status', status('released'), statusKey('ORD-1001', 1, 'released'));
     await send('/api/v1/confirmations', confirmation(), 'ORD-1001~OP10~conf~1');
     await send(
       '/api/v1/confirmations',
@@ -305,7 +318,7 @@ describe('ERP mock API', () => {
     await send(
       '/api/v1/order-status',
       status('completed', { short: true }),
-      'ORD-1001~status~completed',
+      statusKey('ORD-1001', 1, 'completed'),
     );
 
     const response = await fetch(`${base}/api/v1/orders/ORD-1001`, { headers: auth });
@@ -363,18 +376,114 @@ describe('ERP mock API', () => {
 
   it('keeps what it received across a restart: a replay after it answers 200', async () => {
     const file = storePath();
-    const key = { 'idempotency-key': 'ORD-1002~status~accepted' };
+    const key = { 'idempotency-key': statusKey('ORD-1002', 1, 'accepted') };
     const body = status('accepted', { orderNumber: 'ORD-1002' });
     const first = await start(file);
     const created = await post(first.base, '/api/v1/order-status', body, key);
     expect(created.status).toBe(201);
     const receipt: unknown = await created.json();
+
+    const feedId = async (base: string) =>
+      orderFeedSchema.parse(await (await fetch(`${base}/api/v1/orders`, { headers: auth })).json())
+        .feedId;
+    const before = await feedId(first.base);
     await first.stop();
 
     const second = await start(file);
     const replay = await post(second.base, '/api/v1/order-status', body, key);
     expect(replay.status).toBe(200);
     expect(await replay.json()).toEqual(receipt);
+    // Same dataset, same store: the same feed. A new store is another feed.
+    expect(await feedId(second.base)).toBe(before);
+    const fresh = await start(storePath());
+    expect(await feedId(fresh.base)).not.toBe(before);
+  });
+
+  it('takes a message only under the key built from its body', async () => {
+    const { base } = await start(storePath());
+    const final = confirmation();
+    // The final under a key of another number, and a status under the old key without revision.
+    for (const [path, body, key, expected] of [
+      [
+        '/api/v1/confirmations',
+        final,
+        'ORD-1001~OP10~conf~7',
+        confirmationKey('ORD-1001', 'OP10', 1),
+      ],
+      [
+        '/api/v1/order-status',
+        status('accepted'),
+        'ORD-1001~status~accepted',
+        statusKey('ORD-1001', 1, 'accepted'),
+      ],
+    ] as const) {
+      const refused = await problem(await post(base, path, body, { 'idempotency-key': key }), 422);
+      expect(refused).toMatchObject({ type: ERP_PROBLEM_TYPES.keyMismatch });
+      expect(refused.detail).toContain(`expected ${expected}`);
+    }
+    // So the same (order, operation, number) can never be stored under two keys: the duplicate
+    // with another body under its own key is the idempotency conflict.
+    const key = { 'idempotency-key': confirmationKey('ORD-1001', 'OP10', 1) };
+    expect((await post(base, '/api/v1/confirmations', final, key)).status).toBe(201);
+    const twin = await post(base, '/api/v1/confirmations', confirmation({ yield: 50 }), key);
+    expect((await problem(twin, 409)).type).toBe(ERP_PROBLEM_TYPES.idempotencyConflict);
+    // `accepted` for two revisions of one order are two messages.
+    for (const revision of [1, 2]) {
+      const accepted = status('accepted', { orderNumber: 'ORD-1003', revision });
+      const response = await post(base, '/api/v1/order-status', accepted, {
+        'idempotency-key': statusKey('ORD-1003', revision, 'accepted'),
+      });
+      expect(response.status).toBe(201);
+    }
+  });
+
+  it('refuses a correction with no final confirmation before it', async () => {
+    const { base } = await start(storePath());
+    const correction = confirmation({ kind: 'correction', confirmation: 2, yield: -1 });
+    const key = { 'idempotency-key': confirmationKey('ORD-1001', 'OP10', 2) };
+    const refused = await problem(await post(base, '/api/v1/confirmations', correction, key), 422);
+    expect(refused.type).toBe(ERP_PROBLEM_TYPES.correctionWithoutFinal);
+    // A final of another operation doesn't count.
+    const op20 = confirmation({ operation: 'OP20' });
+    expect(
+      (
+        await post(base, '/api/v1/confirmations', op20, {
+          'idempotency-key': confirmationKey('ORD-1001', 'OP20', 1),
+        })
+      ).status,
+    ).toBe(201);
+    await problem(await post(base, '/api/v1/confirmations', correction, key), 422);
+    const final = { 'idempotency-key': confirmationKey('ORD-1001', 'OP10', 1) };
+    expect((await post(base, '/api/v1/confirmations', confirmation(), final)).status).toBe(201);
+    expect((await post(base, '/api/v1/confirmations', correction, key)).status).toBe(201);
+  });
+
+  it('answers two concurrent posts of one key with one 201 and one 200 of the same receipt', async () => {
+    const { base } = await start(storePath());
+    const key = { 'idempotency-key': confirmationKey('ORD-1001', 'OP10', 1) };
+    const responses = await Promise.all(
+      Array.from({ length: 2 }, () => post(base, '/api/v1/confirmations', confirmation(), key)),
+    );
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 201]);
+    const [a, b] = await Promise.all(responses.map((r) => r.json()));
+    expect(a).toEqual(b);
+    const list = confirmationListSchema.parse(
+      await (await fetch(`${base}/api/v1/confirmations`, { headers: auth })).json(),
+    );
+    expect(list.confirmations).toHaveLength(1);
+  });
+
+  it('stores message times in UTC, so one instant in two offsets is one body', async () => {
+    const { base } = await start(storePath());
+    const key = { 'idempotency-key': confirmationKey('ORD-1001', 'OP10', 1) };
+    const local = confirmation({ confirmedAt: '2026-10-12T16:00:00+03:00' });
+    const utc = confirmation({ confirmedAt: '2026-10-12T13:00:00Z' });
+    expect((await post(base, '/api/v1/confirmations', local, key)).status).toBe(201);
+    expect((await post(base, '/api/v1/confirmations', utc, key)).status).toBe(200);
+    const list = confirmationListSchema.parse(
+      await (await fetch(`${base}/api/v1/confirmations`, { headers: auth })).json(),
+    );
+    expect(list.confirmations[0]?.body.confirmedAt).toBe('2026-10-12T13:00:00.000Z');
   });
 
   it('adds orders through POST /orders only with ERP_ADMIN=on, at the end of the feed', async () => {
@@ -477,6 +586,10 @@ describe('environment and log', () => {
     expect(!missing.ok && missing.issues.join('\n')).toMatch(/ERP_API_TOKEN: .*\(got \(hidden\)\)/);
     expect(!missing.ok && missing.issues.join('\n')).toMatch(/HTTP_PORT: .*\(got "70000"\)/);
     expect(parseEnv({ ERP_API_TOKEN: 'x', ERP_ADMIN: 'yes' }).ok).toBe(false);
+    for (const token of ['with space', 'tab\there', ' leading', 'trailing\n']) {
+      const refused = parseEnv({ ERP_API_TOKEN: token });
+      expect(!refused.ok && refused.issues.join('\n')).toMatch(/ERP_API_TOKEN: .*\(hidden\)/);
+    }
     expect(isWeakToken('change-me')).toBe(true);
     expect(isWeakToken('short')).toBe(true);
     expect(isWeakToken('0123456789abcdef0123')).toBe(false);

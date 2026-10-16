@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  confirmationKey,
   confirmationRequestSchema,
   expandErpDataset,
   idempotencyKeySchema,
   routingAndBom,
+  statusKey,
   statusMessageRequestSchema,
   type ErpMasterData,
 } from './erp-api.ts';
@@ -122,6 +124,34 @@ describe('ERP messages', () => {
     expect(
       statusMessageRequestSchema.safeParse({ ...status, status: 'released', short: false }).success,
     ).toBe(false);
+  });
+
+  it('builds the idempotency keys from the message: one per confirmation, revision in status keys', () => {
+    expect(confirmationKey('A-1', 'OP10', 1)).toBe('A-1~OP10~conf~1');
+    expect(confirmationKey('A-1', 'OP30', 3)).toBe('A-1~OP30~conf~3');
+    expect(statusKey('A-1', 2, 'accepted')).toBe('A-1~r2~status~accepted');
+    expect(statusKey('A-1', 1, 'accepted')).not.toBe(statusKey('A-1', 2, 'accepted'));
+    for (const key of [
+      confirmationKey('A.1_x', 'OP10', 12),
+      statusKey('A-1', 999, 'rejected-revision'),
+    ]) {
+      expect(idempotencyKeySchema.safeParse(key).success).toBe(true);
+    }
+  });
+
+  it('normalises message times to UTC', () => {
+    const parsed = confirmationRequestSchema.parse({
+      ...confirmation,
+      confirmedAt: '2026-10-12T16:00:00+03:00',
+    });
+    expect(parsed.confirmedAt).toBe('2026-10-12T13:00:00.000Z');
+    const status = statusMessageRequestSchema.parse({
+      orderNumber: 'A-1',
+      revision: 1,
+      status: 'released',
+      sentAt: '2026-10-12T06:00:00+03:00',
+    });
+    expect(status.sentAt).toBe('2026-10-12T03:00:00.000Z');
   });
 
   it('takes visible ASCII idempotency keys such as the MES builds', () => {

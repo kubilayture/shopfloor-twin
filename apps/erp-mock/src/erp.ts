@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   toErpOrder,
   type ConfirmationRequest,
@@ -12,7 +13,7 @@ import {
   type StatusMessageRequest,
 } from '@shopfloor/contracts/erp-api';
 import type { Dataset } from './dataset.ts';
-import type { ErpStore } from './store.ts';
+import { canonicalJson, type ErpStore } from './store.ts';
 
 export type AddOrderResult =
   | { readonly ok: true; readonly entry: FeedEntry }
@@ -36,6 +37,8 @@ export class Erp {
   readonly #lots: readonly Lot[];
   readonly #master: ErpMasterData;
   readonly #store: ErpStore;
+  /** The feed's identity (`OrderFeed.feedId`). */
+  readonly feedId: string;
 
   constructor(dataset: Dataset, store: ErpStore) {
     const added = store.adminOrders();
@@ -51,6 +54,15 @@ export class Erp {
     this.#lots = dataset.lots;
     this.#master = dataset.master;
     this.#store = store;
+    // Orders added later only append, so they keep the feed's identity; a new dataset or a new
+    // store (its id is created with it) changes it.
+    const datasetSha256 = createHash('sha256')
+      .update(canonicalJson({ feed: dataset.feed, lots: dataset.lots }))
+      .digest('hex');
+    this.feedId = createHash('sha256')
+      .update(`${datasetSha256}:${store.storeId}`)
+      .digest('hex')
+      .slice(0, 32);
   }
 
   get feedLength(): number {
@@ -61,12 +73,17 @@ export class Erp {
     return this.#lots;
   }
 
-  /** Order versions after the cursor, in feed order. */
-  feedPage(after: number, limit: number): OrderFeed {
+  /**
+   * Order versions after the cursor, in feed order; undefined when the cursor is beyond the feed's
+   * last entry (it belongs to another feed).
+   */
+  feedPage(after: number, limit: number): OrderFeed | undefined {
+    if (after > this.#feed.length) return undefined;
     // Feed numbers are dense from 1, so the entry after `after` sits at index `after`.
     const entries = this.#feed.slice(after, after + limit);
     const last = entries.at(-1);
     return {
+      feedId: this.feedId,
       entries,
       cursor: last?.feedSeq ?? after,
       more: (last?.feedSeq ?? after) < this.#feed.length,

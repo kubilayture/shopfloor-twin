@@ -115,6 +115,19 @@ export interface RejectedMessageTable {
   received_at: DefaultTimestamp;
 }
 
+/** Read-only: a continuous aggregate (#118). */
+type ViewColumn<T> = ColumnType<T, never, never>;
+
+/** `ingest.cycle_hourly`: completed cycles per (equipment, epoch, UTC hour, product, result). */
+export interface CycleHourlyView {
+  equipment: ViewColumn<string>;
+  epoch: ViewColumn<number>;
+  hour: ViewColumn<Date>;
+  product: ViewColumn<string>;
+  result: ViewColumn<'good' | 'scrap' | 'rework'>;
+  cycles: ViewColumn<number>;
+}
+
 export interface IngestTables {
   'ingest.equipment_event': EquipmentEventTable;
   'ingest.telemetry_sample': TelemetrySampleTable;
@@ -123,6 +136,7 @@ export interface IngestTables {
   'ingest.data_quality_incident': DataQualityIncidentTable;
   'ingest.component_status': ComponentStatusTable;
   'ingest.rejected_message': RejectedMessageTable;
+  'ingest.cycle_hourly': CycleHourlyView;
 }
 
 export const INGEST_COLUMNS = {
@@ -211,4 +225,5 @@ export const INGEST_COLUMNS = {
     'detail',
     'received_at',
   ],
+  'ingest.cycle_hourly': ['equipment', 'epoch', 'hour', 'product', 'result', 'cycles'],
 } as const;

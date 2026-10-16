@@ -2,6 +2,7 @@ import {
   SYS_SEGMENT,
   UNS_ROOT,
   parseEquipmentTopic,
+  type CycleComplete,
   type Incident,
   type MachineState,
   type StateCurrent,
@@ -74,11 +75,23 @@ export interface StoredSample {
   readonly telemetry?: { readonly metric: string; readonly value: number; readonly unit: string };
 }
 
+/** A completed cycle as stored (#118): what changes `ingest.cycle_hourly`. */
+export interface StoredCycle {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly seq: number;
+  readonly sourceTime: Date;
+  readonly product: string;
+  readonly result: 'good' | 'scrap' | 'rework';
+}
+
 /**
  * What a committed message adds, for listeners (sent after commit). Device facts (state, cycle,
  * alarm) carry `settledSeq`: the highest `seq` of their device stream's epoch with no open gap at
  * or below it, a gap already reported as an incident counting as closed (#113). `gaps` says that
- * reported gaps moved it without a new fact.
+ * reported gaps moved it without a new fact. A cycle also sends `cycle` (after its `sample`), and
+ * the first fact of a device stream's new epoch sends `epoch` first, with its time, which may lie
+ * anywhere relative to the older epochs' (#118).
  */
 export type IngestNotice =
   | { readonly type: 'state'; readonly fact: StateFact; readonly settledSeq: number | null }
@@ -94,6 +107,16 @@ export type IngestNotice =
       readonly equipment: string;
       readonly epoch: number;
       readonly settledSeq: number | null;
+    }
+  | { readonly type: 'cycle'; readonly cycle: StoredCycle }
+  | {
+      readonly type: 'epoch';
+      readonly equipment: string;
+      readonly epoch: number;
+      /** The stream's epoch before, null for a stream seen for the first time. */
+      readonly previous: number | null;
+      /** The `sourceTime` of the epoch's first fact to arrive. */
+      readonly sourceTime: Date;
     };
 
 /** One `sequence-gap` incident of a device stream, placed in time by the facts around it (#113). */
@@ -286,6 +309,18 @@ export class IngestStore {
     const cursor = this.#cursors.get(stream);
     if (cursor && epoch < cursor.epoch) return { status: 'stale' };
     if (cursor?.epoch === epoch && contains(cursor.seen, seq)) return { status: 'duplicate' };
+    const epochNotices: IngestNotice[] =
+      (!cursor || epoch > cursor.epoch) && stream.startsWith('device:')
+        ? [
+            {
+              type: 'epoch',
+              equipment: stream.slice('device:'.length),
+              epoch,
+              previous: cursor?.epoch ?? null,
+              sourceTime: new Date(message.sourceTime),
+            },
+          ]
+        : [];
     const result = await this.#db.transaction().execute(async (trx) => {
       const inserted = await this.#insertFact(trx, input, topic, now);
       let next: Cursor;
@@ -357,12 +392,16 @@ export class IngestStore {
       return {
         status: 'duplicate',
         notices: [
+          ...epochNotices,
           ...(anchor ? [{ type: 'anchor' as const, anchor }] : []),
           ...factNotices(input, settledSeq),
         ],
       };
     }
-    return { status: 'stored', notices: [...result.notices, ...factNotices(input, settledSeq)] };
+    return {
+      status: 'stored',
+      notices: [...epochNotices, ...result.notices, ...factNotices(input, settledSeq)],
+    };
   }
 
   /**
@@ -701,6 +740,22 @@ function factNotices(input: FactInput, settledSeq: number | null): IngestNotice[
       },
     ];
   }
+  const cycle: IngestNotice[] =
+    input.kind === 'event' && input.eventType === 'cycle'
+      ? [
+          {
+            type: 'cycle',
+            cycle: {
+              equipment: input.equipment,
+              epoch: message.epoch,
+              seq: message.seq,
+              sourceTime,
+              product: (input.message as CycleComplete).value.product,
+              result: (input.message as CycleComplete).value.result,
+            },
+          },
+        ]
+      : [];
   return [
     {
       type: 'sample',
@@ -725,5 +780,6 @@ function factNotices(input: FactInput, settledSeq: number | null): IngestNotice[
           : {}),
       },
     },
+    ...cycle,
   ];
 }

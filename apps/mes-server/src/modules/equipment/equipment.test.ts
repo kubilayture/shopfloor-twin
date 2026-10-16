@@ -449,6 +449,9 @@ describe('equipment state intervals (#96)', () => {
       anchors: ingest.anchors.bind(ingest),
       factSummary: ingest.factSummary.bind(ingest),
       settled: ingest.settled.bind(ingest),
+      cycleCounts: ingest.cycleCounts.bind(ingest),
+      hourlyCycleTotals: ingest.hourlyCycleTotals.bind(ingest),
+      refreshCyclesThrough: ingest.refreshCyclesThrough.bind(ingest),
     };
     const masterData = new MasterData(db);
     const equipment = new Equipment({

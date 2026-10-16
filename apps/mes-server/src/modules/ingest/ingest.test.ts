@@ -245,12 +245,41 @@ describe('ingest (#95)', () => {
     expect(samples.map((s) => [s.equipment, s.name, s.value, s.unit, s.seq])).toEqual([
       [id, 'spindle-load', 41.5, '%', 1],
     ]);
-    expect(notices.map((n) => n.type)).toEqual(['state', 'state', 'sample', 'sample', 'sample']);
+    // The stream's first fact opens its epoch; a cycle also sends `cycle` (#118).
+    expect(notices.map((n) => n.type)).toEqual([
+      'epoch',
+      'state',
+      'state',
+      'sample',
+      'cycle',
+      'sample',
+      'sample',
+    ]);
+    expect(notices[0]).toEqual({
+      type: 'epoch',
+      equipment: id,
+      epoch: EPOCH,
+      previous: null,
+      sourceTime: new Date(sourceTime(1)),
+    });
+    expect(notices[4]).toEqual({
+      type: 'cycle',
+      cycle: {
+        equipment: id,
+        epoch: EPOCH,
+        seq: 3,
+        sourceTime: new Date(cycle.sourceTime),
+        product: 'VB-100',
+        result: 'good',
+      },
+    });
     // Device facts tell how far their stream is settled (#113); telemetry doesn't.
     expect(notices.map((n) => ('settledSeq' in n ? n.settledSeq : 'none'))).toEqual([
+      'none',
       1,
       2,
       3,
+      'none',
       4,
       'none',
     ]);
@@ -476,7 +505,14 @@ describe('ingest (#95)', () => {
       retained: true,
       deviceEpoch: EPOCH + 5,
     });
-    expect(notices.map((n) => n.type)).toEqual(['anchor', 'state', 'anchor', 'state']);
+    expect(notices.map((n) => n.type)).toEqual([
+      'anchor',
+      'epoch',
+      'state',
+      'epoch',
+      'anchor',
+      'state',
+    ]);
     clock.now += GRACE_MS;
     expect(await ingest.sweep()).toBe(0);
 
@@ -676,7 +712,7 @@ describe('ingest (#95)', () => {
       state: 'Off',
       deviceEpoch: EPOCH,
     });
-    expect(notices.map((n) => n.type)).toEqual(['anchor', 'anchor', 'anchor', 'state']);
+    expect(notices.map((n) => n.type)).toEqual(['anchor', 'anchor', 'anchor', 'epoch', 'state']);
   });
 
   it('without deviceEpoch, the latest waiting snapshot takes the next fact’s epoch and older ones are superseded', async () => {

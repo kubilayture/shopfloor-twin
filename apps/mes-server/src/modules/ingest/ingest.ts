@@ -1,7 +1,12 @@
 import { SYS_SEGMENT, UNS_ROOT, type MachineState } from '@shopfloor/contracts';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import mqtt, { type IClientOptions, type IPublishPacket, type MqttClient } from 'mqtt';
 import { Counter, Gauge, type Registry } from 'prom-client';
+import {
+  AggregateRefresher,
+  type AggregateStatus,
+  type RefreshOptions,
+} from '../../db/aggregate-refresh.ts';
 import type { Database } from '../../db/database.ts';
 import { classify } from './classify.ts';
 import {
@@ -65,6 +70,12 @@ export interface IngestOptions {
     /** First wait before reconnecting after a suspension; doubles while suspensions repeat. */
     readonly resumeMs?: number;
   };
+  /**
+   * Refresh `ingest.cycle_hourly` explicitly (ADR-0022): debounced, off the acknowledgement path,
+   * on `refresh.db`. Without it the aggregate is never materialised: it reads the raw facts, and
+   * no hour counts as refreshed.
+   */
+  readonly refresh?: RefreshOptions;
   /** Test seam: runs inside each fact's transaction, just before the commit. */
   readonly beforeCommit?: (topic: string) => Promise<void>;
   /** Test seam: runs after a delivery is stored, just before its acknowledgement. */
@@ -96,6 +107,24 @@ class Suspended extends Error {
     super('session dropped until the database answers');
     this.name = 'Suspended';
   }
+}
+
+/** Completed cycles of one (equipment, epoch, UTC hour, product, result): `ingest.cycle_hourly`. */
+export interface CycleHour {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly hour: Date;
+  readonly product: string;
+  readonly result: 'good' | 'scrap' | 'rework';
+  readonly count: number;
+}
+
+/** Completed cycles of one (equipment, epoch, UTC hour), all products and results. */
+export interface CycleCount {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly hour: Date;
+  readonly count: number;
 }
 
 /** Per (equipment, device epoch): what `factSummary` reports. */
@@ -142,12 +171,21 @@ export class Ingest {
   /** Suspensions since the last stored delivery: the wait before reconnecting grows with them. */
   #failedResumes = 0;
   #loaded = false;
+  readonly #cycles: AggregateRefresher | undefined;
 
   constructor(options: IngestOptions) {
     this.#options = options;
     this.#store = new IngestStore(options.db, options.beforeCommit);
     this.#now = options.now ?? Date.now;
     this.#log = options.log ?? silent;
+    this.#cycles =
+      options.refresh &&
+      new AggregateRefresher(
+        'ingest.cycle_hourly',
+        options.refresh.db ?? options.db,
+        options.refresh.debounceMs,
+        this.#log,
+      );
     const registers = options.registry ? [options.registry] : [];
     if (registers.length > 0) {
       this.#messages = new Counter({
@@ -215,6 +253,9 @@ export class Ingest {
   async start(): Promise<void> {
     await this.#store.load();
     this.#loaded = true;
+    // The start-up catch-up refresh of `cycle_hourly` (if the equipment module's catch-up didn't
+    // ask for it first); it runs beside the session, not before it.
+    this.#cycles?.catchUp().catch(() => undefined);
     const options = this.#options;
     this.#connect();
     if (options.sweepIntervalMs !== 0) {
@@ -365,6 +406,119 @@ export class Ingest {
       this.#queue.catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, STOP_WAIT_MS).unref()),
     ]);
+    await this.#cycles?.stop();
+  }
+
+  /**
+   * Completed cycles per (equipment, epoch, UTC hour, product, result) of the hours in [from, to),
+   * from `ingest.cycle_hourly` (#118): materialised below the aggregate's watermark, raw above it.
+   * An hour is current only where `cyclesRefreshed` says so, or above the watermark.
+   */
+  async cycleHourly(
+    from: Date,
+    to: Date,
+    options: { readonly equipment?: string; readonly epoch?: number } = {},
+  ): Promise<CycleHour[]> {
+    let query = (this.#options.readDb ?? this.#options.db)
+      .selectFrom('ingest.cycle_hourly')
+      .selectAll()
+      .where('hour', '>=', from)
+      .where('hour', '<', to);
+    if (options.equipment !== undefined) query = query.where('equipment', '=', options.equipment);
+    if (options.epoch !== undefined) query = query.where('epoch', '=', options.epoch);
+    const rows = await query
+      .orderBy('equipment')
+      .orderBy('epoch')
+      .orderBy('hour')
+      .orderBy('product')
+      .orderBy('result')
+      .execute();
+    return rows.map((row) => ({
+      equipment: row.equipment,
+      epoch: row.epoch,
+      hour: row.hour,
+      product: row.product,
+      result: row.result,
+      count: row.cycles,
+    }));
+  }
+
+  /**
+   * Whether `cycle_hourly` holds the hour as it is now: a refresh covered it and no cycle changed it
+   * since. With `Equipment.stateHourly`'s `final`, what makes an hour final for OEE (ADR-0022).
+   */
+  cyclesRefreshed(hour: Date): boolean {
+    return this.#cycles?.isRefreshed(hour.getTime()) ?? false;
+  }
+
+  /** How far `cycle_hourly` is refreshed; undefined when this instance doesn't refresh it. */
+  cycleAggregate(): AggregateStatus | undefined {
+    return this.#cycles?.status();
+  }
+
+  /**
+   * Buckets are final up to `end` (the equipment module's latest final hour + 1 h): `cycle_hourly`
+   * is refreshed up to it, debounced. Never waits.
+   */
+  refreshCyclesThrough(end: Date): void {
+    this.#cycles?.through(end.getTime());
+  }
+
+  /** Runs the pending refresh of `cycle_hourly` now and waits for it (tests, replays). */
+  async refreshAggregates(): Promise<void> {
+    await this.#cycles?.flush();
+  }
+
+  /**
+   * Completed cycles per UTC hour of one (equipment, epoch) in [from, to), counted from the stored
+   * facts (not the aggregate, which may lag a second): the count an hour has when it becomes final.
+   */
+  async cycleCounts(
+    equipment: string,
+    epoch: number,
+    from: Date | null,
+    to: Date | null,
+  ): Promise<CycleCount[]> {
+    let query = this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select((eb) => [
+        sql<Date>`time_bucket(INTERVAL '1 hour', source_time)`.as('hour'),
+        eb.fn.countAll<string>().as('count'),
+      ])
+      .where('equipment', '=', equipment)
+      .where('epoch', '=', epoch)
+      .where('event_type', '=', 'cycle');
+    if (from) query = query.where('source_time', '>=', from);
+    if (to) query = query.where('source_time', '<', to);
+    const rows = await query
+      .groupBy(sql`1`)
+      .orderBy(sql`1`)
+      .execute();
+    return rows.map((row) => ({ equipment, epoch, hour: row.hour, count: Number(row.count) }));
+  }
+
+  /**
+   * Completed cycles per (equipment, epoch, UTC hour) of every hour, from `cycle_hourly` once its
+   * catch-up and any pending refresh have run, so they equal the stored facts. For the equipment
+   * module's start-up check of the counts remembered with the final hours (#118); never on the
+   * acknowledgement path.
+   */
+  async hourlyCycleTotals(): Promise<CycleCount[]> {
+    await this.#cycles?.flush();
+    const rows = await this.#options.db
+      .selectFrom('ingest.cycle_hourly')
+      .select((eb) => ['equipment', 'epoch', 'hour', eb.fn.sum<string>('cycles').as('count')])
+      .groupBy(['equipment', 'epoch', 'hour'])
+      .orderBy('equipment')
+      .orderBy('epoch')
+      .orderBy('hour')
+      .execute();
+    return rows.map((row) => ({
+      equipment: row.equipment,
+      epoch: row.epoch,
+      hour: row.hour,
+      count: Number(row.count),
+    }));
   }
 
   /**
@@ -739,6 +893,15 @@ export class Ingest {
   }
 
   async #notify(notice: IngestNotice): Promise<void> {
+    // A cycle, or a new epoch's first fact, changes the hour's row of `cycle_hourly` (or may lie
+    // below its watermark): the refresh is only scheduled here, never awaited.
+    if (notice.type === 'cycle') {
+      const at = notice.cycle.sourceTime.getTime();
+      this.#cycles?.changed(at, at + 1);
+    } else if (notice.type === 'epoch') {
+      const at = notice.sourceTime.getTime();
+      this.#cycles?.changed(at, at + 1);
+    }
     for (const listener of this.#listeners) {
       try {
         await listener(notice);

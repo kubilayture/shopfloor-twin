@@ -3,7 +3,8 @@
  * "Reconciliation", exit criteria 1 and 2 without the broker). The headless simulator runs as a process (apps never
  * import each other), its event log becomes the UNS messages the gateway would publish, and they
  * go through ingest's store path into TimescaleDB. Time per state, per machine and shift bucket,
- * must equal the ground truth to the millisecond.
+ * must equal the ground truth to the millisecond; so must the hourly aggregates (#118), per machine
+ * and hour, against the ground truth's OEE inputs (`oee.machines.*.hours`, sim-summary/2).
  */
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -17,6 +18,13 @@ import { shiftSegments } from '@shopfloor/shift-calendar';
 import type { Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  cycleHourly,
+  cycleHourlyRaw,
+  fractionalPieces,
+  stateHourly,
+  stateHourlyRaw,
+} from '../../db/aggregates.test-support.ts';
 import type { Database } from '../../db/database.ts';
 import { startDatabase } from '../../testing.ts';
 import { Ingest } from '../ingest/index.ts';
@@ -61,8 +69,18 @@ interface SimEvent {
 
 type StateMs = Record<string, number>;
 
+/** One hour of a machine's OEE inputs in the ground truth (#117). */
+interface TruthHour {
+  readonly shift: string;
+  readonly stateMs: StateMs;
+  readonly cycles: readonly { product: string; result: string; count: number }[];
+}
+
 interface GroundTruth {
   readonly machines: Record<string, { stateMs: StateMs; byShift: Record<string, StateMs> }>;
+  readonly oee: {
+    readonly machines: Record<string, { readonly hours: Record<string, TruthHour> }>;
+  };
 }
 
 interface Run {
@@ -178,32 +196,126 @@ function unsMessages(run: Run): { facts: Delivery[]; anchors: Delivery[]; end: D
   return { facts, anchors, end: feed.telemetry('wsh-01', run.end, EPOCH) };
 }
 
-/** A fresh database with master data, ingest (no broker) and the equipment module. */
+/**
+ * A fresh database with master data, ingest (no broker) and the equipment module. Both refresh
+ * their hourly aggregate as in production (debounced 1 s, in the background, while the replay runs).
+ */
 async function mes(): Promise<{
   db: Kysely<Database>;
   equipment: Equipment;
+  ingest: Ingest;
   send: (deliveries: readonly Delivery[]) => Promise<void>;
 }> {
   const db = await freshDatabase(serverUrl, 'reconcile');
   databases.push(db);
   const masterData = new MasterData(db);
   await masterData.seed(plant);
-  const ingest = new Ingest({ db, url: 'mqtt://127.0.0.1:1', username: 'mes', password: 'unused' });
+  const ingest = new Ingest({
+    db,
+    url: 'mqtt://127.0.0.1:1',
+    username: 'mes',
+    password: 'unused',
+    refresh: {},
+  });
   // A replay: store open intervals at boundaries only, not every simulated minute.
   const equipment = new Equipment({
     db,
     source: ingest,
     shiftPattern: plant.shifts,
     provisionalStepMs: HOUR,
+    refresh: {},
   });
   await equipment.start();
   return {
     db,
     equipment,
+    ingest,
     send: async (deliveries) => {
       for (const d of deliveries) await ingest.deliver(d.topic, d.payload);
     },
   };
+}
+
+/**
+ * The hourly aggregates (#118), once the pending refreshes ran: equal to the raw pieces and cycles;
+ * per machine and hour equal to the ground truth's OEE inputs (state ms, cycles by product and
+ * result, shift bucket), for every hour of the run; Σ hours = shift; every final hour refreshed.
+ */
+async function expectAggregates(
+  equipment: Equipment,
+  ingest: Ingest,
+  db: Kysely<Database>,
+  run: Run,
+) {
+  await equipment.refreshAggregates();
+  await ingest.refreshAggregates();
+  expect(await fractionalPieces(db)).toBe(0);
+  expect(await stateHourly(db)).toEqual(await stateHourlyRaw(db));
+  expect(await cycleHourly(db)).toEqual(await cycleHourlyRaw(db));
+
+  const from = new Date(run.start);
+  const to = new Date(run.end);
+  interface Entry {
+    shift: string;
+    stateMs: StateMs;
+    cycles: { product: string; result: string; count: number }[];
+  }
+  const actual: Record<string, Record<string, Entry>> = {};
+  const byShift: Record<string, Record<string, StateMs>> = {};
+  const finals = new Set<string>();
+  for (const row of await equipment.stateHourly(from, to, { epoch: EPOCH })) {
+    const hour = row.hour.toISOString();
+    const machine = (actual[row.equipment] ??= {});
+    const entry = (machine[hour] ??= { shift: row.shiftKey, stateMs: {}, cycles: [] });
+    expect(entry.shift).toBe(row.shiftKey); // one shift bucket per hour
+    entry.stateMs[row.state] = row.ms;
+    const shift = ((byShift[row.equipment] ??= {})[row.shiftKey] ??= {});
+    shift[row.state] = (shift[row.state] ?? 0) + row.ms;
+    if (row.final) finals.add(`${row.equipment} ${hour}`);
+  }
+  for (const row of await ingest.cycleHourly(from, to, { epoch: EPOCH })) {
+    const entry = actual[row.equipment]?.[row.hour.toISOString()];
+    if (!entry)
+      throw new Error(`cycles without pieces: ${row.equipment} ${row.hour.toISOString()}`);
+    entry.cycles.push({
+      product: row.product,
+      result: row.result,
+      count: row.count,
+    });
+  }
+  const order = (a: { product: string; result: string }, b: { product: string; result: string }) =>
+    `${a.product} ${a.result}`.localeCompare(`${b.product} ${b.result}`);
+  const truth = Object.fromEntries(
+    Object.entries(run.truth.oee.machines).map(([machine, { hours }]) => [
+      machine,
+      Object.fromEntries(
+        Object.entries(hours).map(([hour, inputs]) => [
+          hour,
+          {
+            shift: inputs.shift,
+            stateMs: Object.fromEntries(Object.entries(inputs.stateMs).filter(([, ms]) => ms > 0)),
+            cycles: [...inputs.cycles].sort(order),
+          },
+        ]),
+      ),
+    ]),
+  );
+  for (const machine of Object.values(actual)) {
+    for (const entry of Object.values(machine)) entry.cycles.sort(order);
+  }
+  expect(actual).toEqual(truth);
+  // Σ hours = shift: the hourly rows add up to the shift totals, and so to the ground truth.
+  expect(byShift).toEqual(expected(run.truth));
+  // Every final hour is refreshed, in both aggregates: final for OEE.
+  const recorded = await db
+    .selectFrom('equipment.bucket_finality')
+    .select(['equipment', 'hour'])
+    .execute();
+  expect([...finals].sort()).toEqual(
+    recorded.map((r) => `${r.equipment} ${r.hour.toISOString()}`).sort(),
+  );
+  expect(recorded.every((r) => ingest.cyclesRefreshed(r.hour))).toBe(true);
+  return Object.keys(truth).length;
 }
 
 /** Time per state, per machine and shift bucket, from the stored intervals. */
@@ -336,7 +448,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           expect(run.summaryText).toBe(await readFile(join(span.golden, 'summary.json'), 'utf8'));
         }
         const { facts, anchors, end } = unsMessages(run);
-        const { db, equipment, send } = await mes();
+        const { db, equipment, ingest, send } = await mes();
         reference = db;
         await send([...anchors, ...facts, end]);
         expect(equipment.watermark(EPOCH)).toEqual(new Date(run.end));
@@ -347,7 +459,9 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const provisional = await expectFinality(equipment, db, run);
         expect(provisional.length).toBeGreaterThan(0);
         expect(provisional.filter((bucket) => !bucket.includes(' no-shift '))).toEqual([]);
+        expect(await expectAggregates(equipment, ingest, db, run)).toBe(6);
         await equipment.stop();
+        await ingest.stop();
       },
       IN_ORDER_MS,
     );
@@ -359,14 +473,18 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const next = random(2026);
         const copies = facts.filter(() => next() < 0.1);
         const mixed = shuffle([...anchors, ...facts, ...copies], next);
-        const { db, equipment, send } = await mes();
+        const { db, equipment, ingest, send } = await mes();
         // Telemetry flows all along; the last sample, after every fact, ends the observation.
         await send([...mixed, end, ...mixed.slice(0, 500)]);
         await equipment.flush();
         expect(await storedPieces(db)).toEqual(await storedPieces(reference));
         expect(await totals(equipment, db)).toEqual(expected(run.truth));
         await expectFinality(equipment, db, run);
+        // Refreshed in the background all along, while late facts kept changing earlier hours.
+        expect(equipment.stateAggregate()?.refreshes).toBeGreaterThan(0);
+        expect(await expectAggregates(equipment, ingest, db, run)).toBe(6);
         await equipment.stop();
+        await ingest.stop();
       },
       SHUFFLED_MS,
     );

@@ -4,7 +4,7 @@
 
 The MES database after all migrations in `db/migrations`, read from the database itself (`pg_catalog` and `timescaledb_information`). Regenerate with `pnpm --filter @shopfloor/mes-server data-model`; a test in `apps/mes-server/src/db/db.test.ts` fails when this file is out of date.
 
-Each schema belongs to exactly one module of `mes-server` (ADR-0016). Modules read each other only through their interfaces, so there are no foreign keys between schemas: a column named `equipment` holds a `master_data.equipment.id` by convention, and `ingest.state_anchor.arrival` is referenced from `equipment.interval_source.anchor_arrival` the same way, as are `ingest.data_quality_incident` ids from `equipment.bucket_finality.incident_ids`. Times are simulation time unless a column says otherwise (`received_at`, `ingested_at`, `recorded_at`, `updated_at`, `final_at`, `revised_at` and `applied_at` are wall time).
+Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do its views. Modules read each other only through their interfaces, so there are no foreign keys between schemas: a column named `equipment` holds a `master_data.equipment.id` by convention, and `ingest.state_anchor.arrival` is referenced from `equipment.interval_source.anchor_arrival` the same way, as are `ingest.data_quality_incident` ids from `equipment.bucket_finality.incident_ids`. Times are simulation time unless a column says otherwise (`received_at`, `ingested_at`, `recorded_at`, `updated_at`, `final_at`, `revised_at` and `applied_at` are wall time).
 
 ## Contents
 
@@ -23,10 +23,12 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016). Modules re
   - `ingest.source_cursor`
   - `ingest.state_anchor`
   - `ingest.telemetry_sample`
+  - `ingest.cycle_hourly` (view)
 - [`equipment`](#schema-equipment)
   - `equipment.bucket_finality`
   - `equipment.equipment_state_interval`
   - `equipment.interval_source`
+  - `equipment.state_hourly` (view)
 - [`public`](#schema-public)
   - `public.schema_migrations`
 
@@ -39,6 +41,15 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016). Modules re
 | `ingest.telemetry_sample` | `source_time` | 7 days |
 
 A unique key or primary key on a hypertable must include its partitioning column (a TimescaleDB rule), which is why the fact tables are unique on `(…, seq, source_time)`.
+
+## Continuous aggregates
+
+| View | Over | Bucket | Real-time |
+| --- | --- | --- | --- |
+| `equipment.state_hourly` | `equipment.equipment_state_interval` | 01:00:00 | yes (`materialized_only = false`) |
+| `ingest.cycle_hourly` | `ingest.equipment_event` | 01:00:00 | yes (`materialized_only = false`) |
+
+Real-time: rows below the aggregate’s watermark come from its materialisation, rows above it from the table. There are no refresh policies: the owning module refreshes explicitly (ADR-0022).
 
 ## Relationships
 
@@ -344,6 +355,33 @@ TimescaleDB hypertable, partitioned by `source_time` in chunks of 7 days.
 | Index | `telemetry_sample_series` | `ingest.telemetry_sample USING btree (equipment, name, source_time DESC)` |
 | Index | `telemetry_sample_source_time_idx` | `ingest.telemetry_sample USING btree (source_time DESC)` |
 
+### ingest.cycle_hourly
+
+Completed cycles per (equipment, epoch, UTC hour, product, result), from the cycle facts: an input of OEE (#118, ADR-0022).
+
+TimescaleDB continuous aggregate over `ingest.equipment_event`, in buckets of 01:00:00, real-time (`materialized_only = false`).
+
+| Column | Type |
+| --- | --- |
+| `equipment` | `text` |
+| `epoch` | `bigint` |
+| `hour` | `timestamp with time zone` |
+| `product` | `text` |
+| `result` | `text` |
+| `cycles` | `bigint` |
+
+```sql
+SELECT equipment,
+    epoch,
+    time_bucket('01:00:00'::interval, source_time) AS hour,
+    ((payload -> 'value'::text) ->> 'product'::text) AS product,
+    ((payload -> 'value'::text) ->> 'result'::text) AS result,
+    count(*) AS cycles
+   FROM ingest.equipment_event
+  WHERE (event_type = 'cycle'::text)
+  GROUP BY equipment, epoch, (time_bucket('01:00:00'::interval, source_time)), ((payload -> 'value'::text) ->> 'product'::text), ((payload -> 'value'::text) ->> 'result'::text);
+```
+
 ## Schema equipment
 
 Owner: equipment. State intervals built from the state facts, cut at UTC hours and shift buckets (ADR-0018): the basis of OEE.
@@ -361,10 +399,12 @@ Per (equipment, epoch, UTC hour): when the hour became final, its revision (rais
 | `revision` | `integer` | not null | `0` |
 | `revised_at` | `timestamp with time zone` | null |  |
 | `incident_ids` | `bigint[]` | not null | `'{}'::bigint[]` |
+| `cycles` | `bigint` | null |  |
 
 | Kind | Name | Definition |
 | --- | --- | --- |
 | Primary key | `bucket_finality_pkey` | `PRIMARY KEY (equipment, epoch, hour)` |
+| Check | `bucket_finality_cycles_check` | `CHECK ((cycles >= 0))` |
 | Check | `bucket_finality_hour_check` | `CHECK ((hour = date_trunc('hour'::text, hour, 'UTC'::text)))` |
 | Check | `bucket_finality_revision_check` | `CHECK ((revision >= 0))` |
 
@@ -419,6 +459,38 @@ What the stored intervals of each (equipment, epoch) were computed from, so star
 | Kind | Name | Definition |
 | --- | --- | --- |
 | Primary key | `interval_source_pkey` | `PRIMARY KEY (equipment, epoch)` |
+
+### equipment.state_hourly
+
+Time per state (and its provisional part) per (equipment, epoch, UTC hour, shift bucket), from the pieces: an input of OEE (#118, ADR-0022).
+
+TimescaleDB continuous aggregate over `equipment.equipment_state_interval`, in buckets of 01:00:00, real-time (`materialized_only = false`).
+
+| Column | Type |
+| --- | --- |
+| `equipment` | `text` |
+| `epoch` | `bigint` |
+| `hour` | `timestamp with time zone` |
+| `shift_key` | `text` |
+| `state` | `text` |
+| `ms` | `bigint` |
+| `provisional_ms` | `bigint` |
+
+```sql
+SELECT equipment,
+    epoch,
+    time_bucket('01:00:00'::interval, start_time) AS hour,
+    shift_key,
+    state,
+    (sum(((EXTRACT(epoch FROM (end_time - start_time)) * (1000)::numeric))::bigint))::bigint AS ms,
+    (sum(
+        CASE
+            WHEN provisional THEN ((EXTRACT(epoch FROM (end_time - start_time)) * (1000)::numeric))::bigint
+            ELSE (0)::bigint
+        END))::bigint AS provisional_ms
+   FROM equipment.equipment_state_interval
+  GROUP BY equipment, epoch, (time_bucket('01:00:00'::interval, start_time)), shift_key, state;
+```
 
 ## Schema public
 

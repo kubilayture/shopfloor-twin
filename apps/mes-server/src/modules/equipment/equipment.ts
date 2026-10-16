@@ -1,8 +1,14 @@
 import { HOUR, type Millis } from '@shopfloor/oee-core';
 import { shiftCuts, type ShiftPattern } from '@shopfloor/shift-calendar';
 import { sql, type Kysely, type QueryCreator, type Transaction } from 'kysely';
+import {
+  AggregateRefresher,
+  type AggregateStatus,
+  type RefreshOptions,
+} from '../../db/aggregate-refresh.ts';
 import type { Database } from '../../db/database.ts';
 import type {
+  CycleCount,
   FactSummary,
   GapIncident,
   IngestNotice,
@@ -28,6 +34,17 @@ export interface StateSource {
   anchors(): Promise<StateAnchor[]>;
   factSummary(): Promise<FactSummary[]>;
   settled(equipment: string, epoch: number, afterSeq?: number): Promise<SettledState>;
+  /** Cycles per hour of (equipment, epoch) in [from, to), from the facts (#118). */
+  cycleCounts(
+    equipment: string,
+    epoch: number,
+    from: Date | null,
+    to: Date | null,
+  ): Promise<CycleCount[]>;
+  /** Cycles per (equipment, epoch, hour) from `cycle_hourly`, once caught up (#118). */
+  hourlyCycleTotals(): Promise<CycleCount[]>;
+  /** Buckets are final up to `end`: `cycle_hourly` is to be refreshed up to it (#118). */
+  refreshCyclesThrough(end: Date): void;
 }
 
 export interface EquipmentLog {
@@ -50,6 +67,12 @@ export interface EquipmentOptions {
    * 60×). A new fact always stores the exact watermark.
    */
   readonly provisionalStepMs?: number;
+  /**
+   * Refresh `equipment.state_hourly` explicitly (ADR-0022): debounced, off the acknowledgement
+   * path, on `refresh.db`. Without it the aggregate is never materialised: it reads the raw pieces,
+   * and no hour is `final` in `stateHourly`.
+   */
+  readonly refresh?: RefreshOptions;
   readonly log?: EquipmentLog;
 }
 
@@ -97,6 +120,34 @@ export interface ShiftTotal {
   readonly revision: number;
   /** Sequence-gap incidents of the equipment's device stream over the bucket's final hours. */
   readonly incidents: number;
+}
+
+/** One row of `equipment.state_hourly`, with the hour's finality (#118). */
+export interface StateHour {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly hour: Date;
+  readonly shiftKey: string;
+  readonly state: string;
+  readonly ms: number;
+  readonly provisionalMs: number;
+  /**
+   * The hour is final (its `bucket_finality` row exists: no fact that can still arrive changes
+   * it) and `state_hourly` holds it as it is now (a refresh covered it, nothing changed since).
+   * Final for OEE also needs `Ingest.cyclesRefreshed(hour)` (ADR-0022).
+   */
+  readonly final: boolean;
+  /** How often the hour changed after it became final (0 while not final). */
+  readonly revision: number;
+}
+
+/** Sent after any write to the stored pieces of one (equipment, epoch) (#118). */
+export interface PiecesChanged {
+  readonly equipment: string;
+  readonly epoch: number;
+  /** The UTC hours whose pieces changed: [from, to), whole hours. */
+  readonly from: Date;
+  readonly to: Date;
 }
 
 /** Sent after the stored intervals of one (equipment, epoch) changed. */
@@ -157,6 +208,17 @@ const spans = (incidents: readonly GapIncident[]): IncidentSpan[] =>
   }));
 
 const hourOf = (at: Millis): Millis => Math.floor(at / HOUR) * HOUR;
+
+/** The lowest and highest of `values` (none when empty), without spreading a long list. */
+const span = (values: readonly Millis[]): Millis[] => {
+  let low = Infinity;
+  let high = -Infinity;
+  for (const value of values) {
+    low = Math.min(low, value);
+    high = Math.max(high, value);
+  }
+  return values.length === 0 ? [] : [low, high];
+};
 
 /** The fields #113 adds to a new track: nothing settled or recorded yet. */
 const UNSETTLED = {
@@ -219,6 +281,11 @@ export class Equipment {
   readonly #watermarks = new Map<number, Millis>();
   readonly #dirty = new Set<Track>();
   readonly #listeners = new Set<(change: EquipmentChange) => void>();
+  readonly #pieceListeners = new Set<(change: PiecesChanged) => void>();
+  /** Refreshes `equipment.state_hourly` (#118), if enabled. */
+  readonly #states: AggregateRefresher | undefined;
+  /** The end of the latest final hour of any (equipment, epoch): how far to refresh (#118). */
+  #finalEnd: Millis = -Infinity;
   #queue: Promise<unknown> = Promise.resolve();
   /** Shift cuts of [from, until + 8 days), for `#nextCut` with `after` in [from, until). */
   #cuts: { from: Millis; until: Millis; cuts: Millis[] } = { from: 0, until: 0, cuts: [] };
@@ -231,6 +298,20 @@ export class Equipment {
     this.#pattern = options.shiftPattern;
     this.#step = options.provisionalStepMs ?? 60_000;
     this.#log = options.log ?? silent;
+    const states =
+      options.refresh &&
+      new AggregateRefresher(
+        'equipment.state_hourly',
+        options.refresh.db ?? options.db,
+        options.refresh.debounceMs,
+        this.#log,
+      );
+    this.#states = states;
+    if (states) {
+      this.#pieceListeners.add((change) => {
+        states.changed(change.from.getTime(), change.to.getTime());
+      });
+    }
   }
 
   /** Catches up from the tables, then follows ingest's notices (queued behind the catch-up). */
@@ -242,11 +323,86 @@ export class Equipment {
     await caughtUp;
   }
 
-  /** Stops following notices and waits for the work in hand. */
+  /** Stops following notices and waits for the work in hand, then for a running refresh. */
   async stop(): Promise<void> {
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
     await this.#queue.catch(() => undefined);
+    await this.#states?.stop();
+  }
+
+  /** Listens for every write to the stored pieces, with the hours it touched (#118). */
+  onPiecesChanged(listener: (change: PiecesChanged) => void): () => void {
+    this.#pieceListeners.add(listener);
+    return () => this.#pieceListeners.delete(listener);
+  }
+
+  /** How far `state_hourly` is refreshed; undefined when this instance doesn't refresh it. */
+  stateAggregate(): AggregateStatus | undefined {
+    return this.#states?.status();
+  }
+
+  /** Runs the pending refresh of `state_hourly` now and waits for it (tests, replays). */
+  async refreshAggregates(): Promise<void> {
+    await this.#states?.flush();
+  }
+
+  /**
+   * Rows of `equipment.state_hourly` for the hours in [from, to) (#118): materialised below the
+   * aggregate's watermark, raw above it, each with its hour's finality and revision.
+   */
+  async stateHourly(
+    from: Date,
+    to: Date,
+    options: {
+      readonly equipment?: string;
+      readonly epoch?: number;
+      readonly shiftKey?: string;
+    } = {},
+  ): Promise<StateHour[]> {
+    let query = this.#readDb
+      .selectFrom('equipment.state_hourly as h')
+      .leftJoin('equipment.bucket_finality as f', (join) =>
+        join
+          .onRef('f.equipment', '=', 'h.equipment')
+          .onRef('f.epoch', '=', 'h.epoch')
+          .onRef('f.hour', '=', 'h.hour'),
+      )
+      .select([
+        'h.equipment',
+        'h.epoch',
+        'h.hour',
+        'h.shift_key',
+        'h.state',
+        'h.ms',
+        'h.provisional_ms',
+        'f.revision',
+        'f.hour as final_hour',
+      ])
+      .where('h.hour', '>=', from)
+      .where('h.hour', '<', to);
+    if (options.equipment !== undefined) {
+      query = query.where('h.equipment', '=', options.equipment);
+    }
+    if (options.epoch !== undefined) query = query.where('h.epoch', '=', options.epoch);
+    if (options.shiftKey !== undefined) query = query.where('h.shift_key', '=', options.shiftKey);
+    const rows = await query
+      .orderBy('h.equipment')
+      .orderBy('h.epoch')
+      .orderBy('h.hour')
+      .orderBy('h.state')
+      .execute();
+    return rows.map((row) => ({
+      equipment: row.equipment,
+      epoch: row.epoch,
+      hour: row.hour,
+      shiftKey: row.shift_key,
+      state: row.state,
+      ms: row.ms,
+      provisionalMs: row.provisional_ms,
+      final: row.final_hour !== null && this.#states?.isRefreshed(row.hour.getTime()) === true,
+      revision: row.revision ?? 0,
+    }));
   }
 
   /** Stores every open interval up to the exact watermark (a provisional step may lag). */
@@ -397,6 +553,10 @@ export class Equipment {
     let track: Track | undefined;
     try {
       switch (notice.type) {
+        // For the aggregates (#118); a cycle's `sample` notice is what counts here.
+        case 'cycle':
+        case 'epoch':
+          return;
         case 'state':
           track = await this.#track(notice.fact.equipment, notice.fact.epoch);
           await this.#onState(track, notice.fact, notice.settledSeq);
@@ -626,7 +786,7 @@ export class Equipment {
       // A cycle in an hour that is final already (a late fill, or a late fact of a closed epoch)
       // changes that hour's count: its revision goes up (#113).
       if (sample.kind === 'cycle' && this.#isFinalHour(track, hourOf(at))) {
-        await this.#revise(track, [hourOf(at)]);
+        await this.#revise(track, [hourOf(at)], 1);
       }
       if (await this.#learn(track, settledSeq, { seq: sample.seq, at })) {
         await this.#verifyFacts(track, 0);
@@ -782,7 +942,12 @@ export class Equipment {
     let rest = this.#db
       .with('promoted', () => promote.returning('start_time'))
       .selectFrom('equipment.equipment_state_interval')
-      .select((eb) => eb.fn.min<Date | null>('end_time').as('next'))
+      .select((eb) => [
+        eb.fn.min<Date | null>('end_time').as('next'),
+        // The hours whose pieces changed flag (#118).
+        sql<Date | null>`(SELECT min(start_time) FROM promoted)`.as('promoted_from'),
+        sql<Date | null>`(SELECT max(start_time) FROM promoted)`.as('promoted_to'),
+      ])
       .where('equipment', '=', track.equipment)
       .where('epoch', '=', track.epoch)
       .where('provisional', '=', true);
@@ -794,34 +959,139 @@ export class Equipment {
     }
     const row = await rest.executeTakeFirst();
     track.promoteAt = Number.isFinite(bound) ? (row?.next?.getTime() ?? Infinity) : Infinity;
+    this.#piecesChanged(track, [row?.promoted_from?.getTime(), row?.promoted_to?.getTime()]);
     this.#emit(track, Number.isFinite(from) ? from - HOUR : undefined, undefined);
   }
 
-  /** Records the hours in [from, until) that have pieces as final, with their incidents. */
+  /**
+   * Records the hours in [from, until) that have pieces and no row yet as final, with their
+   * incidents and their cycle count (#118), and moves the aggregates' refresh target past them.
+   */
   async #markFinal(track: Track, from: Millis, until: Millis): Promise<void> {
     let query = this.#db
-      .selectFrom('equipment.equipment_state_interval')
-      .select('hour')
+      .selectFrom('equipment.equipment_state_interval as p')
+      .select('p.hour')
       .distinct()
-      .where('equipment', '=', track.equipment)
-      .where('epoch', '=', track.epoch);
+      .where('p.equipment', '=', track.equipment)
+      .where('p.epoch', '=', track.epoch)
+      .where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom('equipment.bucket_finality as f')
+              .select('f.hour')
+              .whereRef('f.equipment', '=', 'p.equipment')
+              .whereRef('f.epoch', '=', 'p.epoch')
+              .whereRef('f.hour', '=', 'p.hour'),
+          ),
+        ),
+      );
     // `from` and `until` are whole hours, so the key's start_time bounds the hours (and the index).
-    if (Number.isFinite(from)) query = query.where('start_time', '>=', new Date(from));
-    if (Number.isFinite(until)) query = query.where('start_time', '<', new Date(until));
-    const hours = await query.execute();
+    if (Number.isFinite(from)) query = query.where('p.start_time', '>=', new Date(from));
+    if (Number.isFinite(until)) query = query.where('p.start_time', '<', new Date(until));
+    const hours = (await query.execute()).map((row) => row.hour.getTime()).sort((a, b) => a - b);
+    const first = hours[0];
+    const last = hours.at(-1);
+    if (first === undefined || last === undefined) return;
+    const counts = await this.#source.cycleCounts(
+      track.equipment,
+      track.epoch,
+      new Date(first),
+      new Date(last + HOUR),
+    );
+    const countOf = new Map(counts.map((c) => [c.hour.getTime(), c.count]));
     for (let i = 0; i < hours.length; i += INSERT_CHUNK) {
       await this.#db
         .insertInto('equipment.bucket_finality')
         .values(
-          hours.slice(i, i + INSERT_CHUNK).map(({ hour }) => ({
+          hours.slice(i, i + INSERT_CHUNK).map((hour) => ({
             equipment: track.equipment,
             epoch: track.epoch,
-            hour,
-            incident_ids: this.#incidentsIn(track, hour.getTime()),
+            hour: new Date(hour),
+            incident_ids: this.#incidentsIn(track, hour),
+            cycles: countOf.get(hour) ?? 0,
           })),
         )
         .onConflict((c) => c.columns(['equipment', 'epoch', 'hour']).doNothing())
         .execute();
+    }
+    this.#finalThrough(last + HOUR);
+  }
+
+  /** Buckets are final up to `end`: both hourly aggregates are refreshed up to it (#118). */
+  #finalThrough(end: Millis): void {
+    if (end <= this.#finalEnd) return;
+    this.#finalEnd = end;
+    this.#states?.through(end);
+    this.#source.refreshCyclesThrough(new Date(end));
+  }
+
+  /**
+   * Start-up (#118): compares each final hour's remembered cycle count with `cycle_hourly` and
+   * raises the revision of an hour whose count changed unheard (a cycle whose notice was missed:
+   * equipment stopped between the commit and the notice, or a redelivery seen as a duplicate after
+   * a resume). Hours recorded before migration 0006 only get their count.
+   */
+  async #checkCycleCounts(): Promise<void> {
+    const [totals, rows] = await Promise.all([
+      this.#source.hourlyCycleTotals(),
+      this.#db
+        .selectFrom('equipment.bucket_finality')
+        .select(['equipment', 'epoch', 'hour', 'cycles'])
+        .execute(),
+    ]);
+    const key = (equipment: string, epoch: number, hour: Date): string =>
+      `${equipment}\u0000${String(epoch)}\u0000${String(hour.getTime())}`;
+    const countOf = new Map(totals.map((t) => [key(t.equipment, t.epoch, t.hour), t.count]));
+    const changed = rows.flatMap((row) => {
+      const count = countOf.get(key(row.equipment, row.epoch, row.hour)) ?? 0;
+      return row.cycles === count ? [] : [{ ...row, count, revise: row.cycles !== null }];
+    });
+    if (changed.length === 0) return;
+    await sql`
+      UPDATE equipment.bucket_finality f
+      SET cycles = c.cycles,
+        revision = f.revision + CASE WHEN c.revise THEN 1 ELSE 0 END,
+        revised_at = CASE WHEN c.revise THEN now() ELSE f.revised_at END
+      FROM unnest(
+        ${changed.map((c) => c.equipment)}::text[],
+        ${changed.map((c) => c.epoch)}::bigint[],
+        ${changed.map((c) => c.hour)}::timestamptz[],
+        ${changed.map((c) => c.count)}::bigint[],
+        ${changed.map((c) => c.revise)}::boolean[]
+      ) AS c(equipment, epoch, hour, cycles, revise)
+      WHERE f.equipment = c.equipment AND f.epoch = c.epoch AND f.hour = c.hour`.execute(this.#db);
+    const revised = changed.filter((c) => c.revise);
+    this.#log.info(
+      {
+        filled: changed.length - revised.length,
+        revised: revised.map((c) => ({
+          equipment: c.equipment,
+          epoch: c.epoch,
+          hour: c.hour,
+          was: c.cycles,
+          now: c.count,
+        })),
+      },
+      'cycle counts of final hours checked: changed ones revised',
+    );
+  }
+
+  #piecesChanged(track: Track, hours: readonly (Millis | null | undefined)[]): void {
+    const known = hours.filter((hour): hour is Millis => typeof hour === 'number');
+    if (known.length === 0 || this.#pieceListeners.size === 0) return;
+    const change: PiecesChanged = {
+      equipment: track.equipment,
+      epoch: track.epoch,
+      from: new Date(hourOf(Math.min(...known))),
+      to: new Date(hourOf(Math.max(...known)) + HOUR),
+    };
+    for (const listener of this.#pieceListeners) {
+      try {
+        listener(change);
+      } catch (error) {
+        this.#log.error({ err: error }, 'pieces listener failed');
+      }
     }
   }
 
@@ -896,12 +1166,19 @@ export class Equipment {
     return hours.filter((hour) => before.has(hour) && before.get(hour) !== after.get(hour));
   }
 
-  /** Raises the revision of those of `hours` that are final (#113). */
-  async #revise(track: Track, hours: readonly Millis[]): Promise<void> {
+  /**
+   * Raises the revision of those of `hours` that are final (#113); `cycles`: a late cycle, which
+   * the hour's remembered count gains too (#118).
+   */
+  async #revise(track: Track, hours: readonly Millis[], cycles = 0): Promise<void> {
     if (hours.length === 0) return;
     await this.#db
       .updateTable('equipment.bucket_finality')
-      .set((eb) => ({ revision: eb('revision', '+', 1), revised_at: new Date() }))
+      .set((eb) => ({
+        revision: eb('revision', '+', 1),
+        revised_at: new Date(),
+        ...(cycles === 0 ? {} : { cycles: eb('cycles', '+', cycles) }),
+      }))
       .where('equipment', '=', track.equipment)
       .where('epoch', '=', track.epoch)
       .where(
@@ -1026,18 +1303,21 @@ export class Equipment {
     for (const piece of pieces) {
       if (piece.provisional && piece.to < track.promoteAt) track.promoteAt = piece.to;
     }
+    // The hours of the new pieces; an upserted piece keeps its start, so its old hour too (#118).
+    const touched: (Millis | undefined)[] = [pieces[0]?.from, pieces.at(-1)?.from];
     if (pieces.length <= INSERT_CHUNK) {
-      await this.#replaceAtOnce(track, from, to, pieces, source);
+      const removed = await this.#replaceAtOnce(track, from, to, pieces, source);
+      this.#piecesChanged(track, [...touched, ...removed]);
       return;
     }
-    await this.#db.transaction().execute(async (trx) => {
+    const removed = await this.#db.transaction().execute(async (trx) => {
       let remove = trx
         .deleteFrom('equipment.equipment_state_interval')
         .where('equipment', '=', track.equipment)
         .where('epoch', '=', track.epoch);
       if (from !== undefined) remove = remove.where('start_time', '>=', new Date(from));
       if (to !== undefined) remove = remove.where('start_time', '<', new Date(to));
-      await remove.execute();
+      const gone = await remove.returning('start_time').execute();
       for (let i = 0; i < pieces.length; i += INSERT_CHUNK) {
         await trx
           .insertInto('equipment.equipment_state_interval')
@@ -1047,12 +1327,15 @@ export class Equipment {
       track.facts = source.facts;
       track.lastSeq = source.lastSeq;
       await this.#saveSource(trx, track);
+      return span(gone.map((row) => row.start_time.getTime()));
     });
+    this.#piecesChanged(track, [...touched, ...removed]);
   }
 
   /**
    * `#replace` as one statement (one round trip, atomic by itself): pieces are upserted by key,
-   * and the range's other pieces deleted, so the two parts never touch the same row.
+   * and the range's other pieces deleted, so the two parts never touch the same row. Returns the
+   * earliest and latest start of the deleted pieces, if any.
    */
   async #replaceAtOnce(
     track: Track,
@@ -1060,7 +1343,7 @@ export class Equipment {
     to: Millis | undefined,
     pieces: readonly Piece[],
     source: { readonly facts: number; readonly lastSeq: number | null },
-  ): Promise<void> {
+  ): Promise<(Millis | undefined)[]> {
     const removed = (db: QueryCreator<Database>) => {
       let remove = db
         .deleteFrom('equipment.equipment_state_interval')
@@ -1075,18 +1358,24 @@ export class Equipment {
           pieces.map((piece) => new Date(piece.from)),
         );
       }
-      return remove;
+      return remove.returning('start_time');
     };
+    const range = [
+      sql<Date | null>`(SELECT min(start_time) FROM removed)`.as('removed_from'),
+      sql<Date | null>`(SELECT max(start_time) FROM removed)`.as('removed_to'),
+    ];
+    let row: { removed_from: Date | null; removed_to: Date | null } | undefined;
     const next = { ...track, facts: source.facts, lastSeq: source.lastSeq };
     if (pieces.length === 0) {
-      await this.#db
+      row = await this.#db
         .with('removed', removed)
         .insertInto('equipment.interval_source')
         .values(this.#sourceRow(next))
         .onConflict((c) => c.columns(['equipment', 'epoch']).doUpdateSet(this.#sourceUpdate(next)))
-        .execute();
+        .returning(range)
+        .executeTakeFirst();
     } else {
-      await this.#db
+      row = await this.#db
         .with('removed', removed)
         .with('stored', (db) =>
           db
@@ -1109,10 +1398,12 @@ export class Equipment {
         .insertInto('equipment.interval_source')
         .values(this.#sourceRow(next))
         .onConflict((c) => c.columns(['equipment', 'epoch']).doUpdateSet(this.#sourceUpdate(next)))
-        .execute();
+        .returning(range)
+        .executeTakeFirst();
     }
     track.facts = source.facts;
     track.lastSeq = source.lastSeq;
+    return [row?.removed_from?.getTime(), row?.removed_to?.getTime()];
   }
 
   #pieceRow(track: Track, piece: Piece) {
@@ -1289,6 +1580,14 @@ export class Equipment {
       await this.#settle(track);
     }
     this.#log.info({ tracks: pairs.size, rebuilt }, 'equipment intervals caught up');
+    // The aggregates (#118): refresh both up to the latest final hour, check the final hours' cycle
+    // counts against `cycle_hourly` (caught up first), then catch `state_hourly` up in the
+    // background, after every write of this catch-up.
+    let latestFinal = -Infinity;
+    for (const last of lastFinalOf.values()) latestFinal = Math.max(latestFinal, last);
+    if (Number.isFinite(latestFinal)) this.#finalThrough(latestFinal + HOUR);
+    await this.#checkCycleCounts();
+    this.#states?.catchUp().catch(() => undefined);
   }
 
   /**
@@ -1310,7 +1609,8 @@ export class Equipment {
     if (Number.isFinite(track.finalEnd)) {
       query = query.where('start_time', '>=', new Date(track.finalEnd));
     }
-    await query.execute();
+    const changed = await query.returning('start_time').execute();
+    this.#piecesChanged(track, span(changed.map((row) => row.start_time.getTime())));
     track.promoteAt = -Infinity;
   }
 

@@ -41,6 +41,7 @@
  *
  * Usage: pnpm test:reconcile. Results (report.json, compose.log on failure, Playwright traces) go
  * to e2e/results/. Environment: RECONCILE_PROJECT (Compose project, default shopfloor-reconcile),
+ * RECONCILE_TAG (image tag, default reconcile; give parallel runs their own),
  * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_BROWSER=0 (no Playwright),
  * OVERVIEW_SAMPLE_MS and OEE_SAMPLE_MS (how long each live check samples, default 90000 each; the
  * `live` files run in name order: the OEE dashboard first, from the shift's start as in Phase 5,
@@ -369,8 +370,9 @@ async function main(): Promise<boolean> {
       SIM_START: scenario.start,
       SIM_SPEED: String(SPEED),
       SIM_AUTOSTART: 'false',
-      // Its own image tags: the run never replaces the dev stack's images.
-      IMAGE_TAG: 'reconcile',
+      // Its own image tags: the run never replaces the dev stack's images, and RECONCILE_TAG
+      // keeps parallel runs (other worktrees) from building over each other's.
+      IMAGE_TAG: process.env.RECONCILE_TAG ?? 'reconcile',
     },
   });
   let browser: Promise<number> | undefined;

@@ -238,11 +238,17 @@ function mergeOccurrence(live: LiveAlarms | undefined, occurrence: AlarmOccurren
     ...base.occurrences,
     [occurrence.id]: kept,
   };
-  if (Object.keys(occurrences).length > LIVE_ALARM_LIMIT) {
-    const newest = Object.values(occurrences)
-      .sort((a, b) => Date.parse(b.raisedAt) - Date.parse(a.raisedAt))
-      .slice(0, LIVE_ALARM_LIMIT);
-    occurrences = Object.fromEntries(newest.map((item) => [item.id, item]));
+  if (!known && Object.keys(occurrences).length > LIVE_ALARM_LIMIT) {
+    // One new entry can push the set over the limit by one: drop the oldest, in one linear pass
+    // (sorting the whole set on every push would be O(n log n) per message at the limit).
+    let oldest: AlarmOccurrenceDto | undefined;
+    for (const item of Object.values(occurrences)) {
+      if (!oldest || Date.parse(item.raisedAt) < Date.parse(oldest.raisedAt)) oldest = item;
+    }
+    if (oldest) {
+      const dropId = oldest.id;
+      occurrences = Object.fromEntries(Object.entries(occurrences).filter(([id]) => id !== dropId));
+    }
   }
   return { occurrences, points: base.points, seq: base.seq + 1 };
 }

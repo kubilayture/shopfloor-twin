@@ -64,9 +64,18 @@ describe('alarm messages', () => {
 
   it('keeps only the newest occurrences beyond the limit', () => {
     const queryClient = liveQueryClient();
-    for (let seq = 0; seq <= LIVE_ALARM_LIMIT; seq += 1) {
-      upsertOccurrence(queryClient, occurrence(seq));
+    // Fill the set to the limit directly (5,000 single upserts would copy the map each time), then
+    // push one more: the oldest is dropped.
+    for (let seq = 0; seq < 3; seq += 1) upsertOccurrence(queryClient, occurrence(seq));
+    const full = alarms(queryClient);
+    if (!full) throw new Error('no live alarms');
+    const occurrences = { ...full.occurrences };
+    for (let seq = 3; seq < LIVE_ALARM_LIMIT; seq += 1) {
+      const item = occurrence(seq);
+      occurrences[item.id] = item;
     }
+    queryClient.setQueryData(liveKeys.alarms, { ...full, occurrences });
+    upsertOccurrence(queryClient, occurrence(LIVE_ALARM_LIMIT));
     const kept = alarms(queryClient)?.occurrences ?? {};
     expect(Object.keys(kept)).toHaveLength(LIVE_ALARM_LIMIT);
     expect(kept[occurrence(0).id]).toBeUndefined();

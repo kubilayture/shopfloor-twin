@@ -7,6 +7,7 @@ import { percentile } from '../src/compare.ts';
 import {
   judgeLatency,
   pageActivityProblems,
+  pageValueProblems,
   snapshotAgreement,
   type Change,
   type Snapshot,
@@ -28,8 +29,11 @@ const PACING_MS = 2_000;
 /** At least this many judged changes per work-center card, and in all. */
 const MIN_CARD_CHANGES = 20;
 const MIN_CHANGES = 100;
-/** The share of page values the polls never saw (held between two polls), at most. */
-const MAX_UNOBSERVED = 0.2;
+/**
+ * The share of page values the polls never saw (held between two polls), at most. Real runs see
+ * about 1 %; the judgement accepts such values whatever their age, so this floor must stay low.
+ */
+const MAX_UNOBSERVED = 0.05;
 /** Snapshot values equal to an API value around their moment, at least. */
 const MIN_AGREEMENT = 0.95;
 
@@ -54,7 +58,7 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   const shiftKey = current.shiftKey;
   const shiftEnd = Date.parse(current.shift?.end ?? '');
   if (shiftKey === null || current.shift === null) throw new Error('no current shift');
-  // Right after 06:00 no machine has data yet: wait until every one has.
+  // Right after 06:00 the shift has no buckets yet: wait until the API lists all eight.
   let first = await mes.shiftOee(shiftKey);
   await expect
     .poll(
@@ -78,8 +82,11 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
     timeout: 30_000,
   });
+  // Every card and row shows a value: four decimals, or `n/a` without planned busy time.
   for (const testId of testIds.values()) {
-    await expect(page.getByTestId(testId)).toHaveAttribute('data-oee', /./, { timeout: 30_000 });
+    await expect(page.getByTestId(testId)).toHaveAttribute('data-oee', /^(\d+\.\d{4}|n\/a)$/, {
+      timeout: 30_000,
+    });
   }
 
   // The page records each value change itself (every 20 ms), so the measured delay doesn't depend
@@ -158,14 +165,14 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   const truth = new Map(ids.map((id) => [id, (api.get(id) ?? []).slice(1)]));
   const observed = new Map(ids.map((id) => [id, new Set(api.get(id)?.map((c) => c.state))]));
   const result = judgeLatency(truth, shown, until, LIMIT_MS, { observed });
-  // The push is paced (one delta a second per topic), the API changes about twice a second: the
-  // page must still change at least a quarter as often as the API, and on every id.
-  const activity = pageActivityProblems(result.measured, shown, 0.25);
-  const transitions = ids.flatMap((id) =>
-    (shown.get(id) ?? []).slice(1).map((sample) => ({ id, value: sample.state })),
-  );
-  const unobserved = transitions.filter((t) => observed.get(t.id)?.has(t.value) !== true).length;
+  // The push is paced (one delta a second per topic) while the API changes about twice a second,
+  // yet the page changed about 0.7 times per judged change in real runs: half is the usual floor.
+  const activity = pageActivityProblems(result.measured, shown);
   const agreement = snapshotAgreement(snapshots, api, PACING_MS, 500);
+  const values = pageValueProblems(shown, observed, agreement, {
+    maxUnobserved: MAX_UNOBSERVED,
+    minAgreement: MIN_AGREEMENT,
+  });
   const latencies = result.measured.flatMap((m) =>
     m.latencyMs === undefined ? [] : [m.latencyMs],
   );
@@ -191,7 +198,8 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
     pageTransitions: Object.fromEntries(
       ids.map((id) => [id, Math.max(0, (shown.get(id)?.length ?? 0) - 1)]),
     ),
-    unobservedPageValues: unobserved,
+    pageValues: values.transitions,
+    unobservedPageValues: values.unobserved,
     snapshots: {
       count: snapshots.length,
       compared: agreement.compared,
@@ -200,6 +208,7 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
       mismatches: agreement.mismatches,
     },
     activityProblems: activity,
+    valueProblems: values.problems,
     violations: result.violations,
   };
   console.log(`OEE dashboard latency: ${JSON.stringify(summary)}`);
@@ -210,8 +219,7 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   // A meaningful sample: changes on both cards, and many in all.
   for (const id of workCenters) expect(perId[id] ?? 0).toBeGreaterThanOrEqual(MIN_CARD_CHANGES);
   expect(result.measured.length).toBeGreaterThanOrEqual(MIN_CHANGES);
-  // The page's values are the API's: few that the polls missed, and the snapshots agree.
-  expect(unobserved).toBeLessThanOrEqual(transitions.length * MAX_UNOBSERVED);
-  expect(agreement.matched).toBeGreaterThanOrEqual(agreement.compared * MIN_AGREEMENT);
-  for (const id of ids) expect(agreement.matchedPerKey[id] ?? 0).toBeGreaterThan(0);
+  // The page's values are the API's: few that the polls missed, and the snapshots agree. This is
+  // what keeps a lagging page from passing on unseen values (see `observed` in latency.ts).
+  expect(values.problems, 'the page did not show the API’s values').toEqual([]);
 });

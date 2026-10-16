@@ -93,6 +93,8 @@ test('a recode and a split through the UI change the Pareto and the audit, not O
   leaves.sort((a, b) => Number(present.has(a.id)) - Number(present.has(b.id)));
   const [first, second] = leaves.map((r) => r.id);
   if (first === undefined || second === undefined) throw new Error('fewer than two reasons');
+  // So the dashboard's Pareto row below can only come from this coding.
+  if (present.has(first)) throw new Error(`every candidate reason is already in the Pareto`);
 
   // Split on a whole plant second near the middle.
   const split = Math.floor((start + end) / 2_000) * 1_000;
@@ -164,9 +166,9 @@ test('a recode and a split through the UI change the Pareto and the audit, not O
   await page.goto(
     `/oee?shift=${encodeURIComponent(shiftKey)}&focus=${encodeURIComponent(record.equipment)}`,
   );
-  await expect(page.getByTestId('pareto').getByTestId(`pareto-${first}`)).toBeVisible({
-    timeout: 30_000,
-  });
+  const paretoRow = page.getByTestId('pareto').getByTestId(`pareto-${first}`);
+  await expect(paretoRow).toBeVisible({ timeout: 30_000 });
+  await expect(paretoRow).toHaveCount(1);
 
   // Writes the MES must refuse (ADR-0023), against a version no write can have: a guard that let
   // one through would answer 422, never code the record.

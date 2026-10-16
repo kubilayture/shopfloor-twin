@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { judgeLatency, pageActivityProblems, snapshotAgreement, type Change } from './latency.ts';
+import {
+  judgeLatency,
+  pageActivityProblems,
+  pageValueProblems,
+  snapshotAgreement,
+  type Change,
+} from './latency.ts';
 
 const run = (truth: Change[], page: Change[], until = 100_000, limit = 2_000) =>
   judgeLatency(new Map([['m', truth]]), new Map([['m', page]]), until, limit);
@@ -163,6 +169,49 @@ describe('OEE values within the limit (#123, Phase 5 exit criterion 5)', () => {
       'the page changed state 1 times for 4 judged changes',
     ]);
     expect(pageActivityProblems(measured, pages, 0.25)).toEqual([]);
+  });
+
+  it('passes a lagging page with unseen values in the judgement, but not the value floors', () => {
+    // The API changes every 500 ms; the page lags 4 s and slips an unseen value in every second.
+    const api: Change[] = [];
+    for (let i = 0; i <= 40; i++) api.push({ at: i * 500, state: `0.${String(5000 + i)}` });
+    const page: Change[] = [{ at: 0, state: '0.5000' }];
+    for (let at = 4_000; at < 20_000; at += 1_000) {
+      page.push({ at: at + 100, state: `unseen-${String(at)}` });
+      const stale = api.filter((c) => c.at <= at + 600 - 4_000).at(-1);
+      page.push({ at: at + 600, state: stale?.state ?? '' });
+    }
+    const truth = new Map([['wc', api.slice(1)]]);
+    const shown = new Map([['wc', page]]);
+    const seen = new Map([['wc', new Set(api.map((c) => c.state))]]);
+    const judged = judgeLatency(truth, shown, 20_000, 2_000, { observed: seen });
+    // The unseen values satisfy every change after the first 4 s: the judgement alone misses the lag.
+    expect(judged.violations.every((v) => v.at < 4_000)).toBe(true);
+    expect(judged.measured.filter((m) => m.at >= 4_000).length).toBeGreaterThan(20);
+    const agreement = snapshotAgreement(
+      page.slice(1).map((sample) => ({ at: sample.at + 50, values: { wc: sample.state } })),
+      new Map([['wc', api]]),
+      2_000,
+      500,
+    );
+    const floors = { maxUnobserved: 0.05, minAgreement: 0.95 };
+    expect(pageValueProblems(shown, seen, agreement, floors).problems).toEqual([
+      '16 of 32 page values were never seen in the truth',
+      '0 of 32 snapshot values agree with the truth',
+      'wc: no snapshot agrees',
+    ]);
+    // An up-to-date page with one unseen value in 32 passes them.
+    const live: Change[] = [{ at: 0, state: '0.5000' }];
+    for (let i = 1; i <= 32; i++) live.push({ at: i * 500 + 100, state: `0.${String(5000 + i)}` });
+    live[10] = { at: live[10]?.at ?? 0, state: 'unseen' };
+    const liveShown = new Map([['wc', live]]);
+    const liveAgreement = snapshotAgreement(
+      live.slice(1).map((sample) => ({ at: sample.at + 50, values: { wc: sample.state } })),
+      new Map([['wc', api]]),
+      2_000,
+      500,
+    );
+    expect(pageValueProblems(liveShown, seen, liveAgreement, floors).problems).toEqual([]);
   });
 
   it('compares snapshots with what the API held around their moment', () => {

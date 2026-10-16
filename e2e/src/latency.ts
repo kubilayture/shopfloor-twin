@@ -43,10 +43,13 @@ function sampleAt(page: readonly Change[], at: number): Change | undefined {
 export interface JudgeOptions {
   /**
    * Every value the truth was seen to hold per key, the first one included (#123). A value the
-   * page shows that is not among them is one the truth held only between two polls, so its
-   * place in the truth's order is unknown: it counts for a change only when the page took it
-   * after that change (it is then at most one poll interval older than the change's value).
-   * Without this option such a value never counts.
+   * page shows that is not among them was held by the truth only between two polls (or never),
+   * so its place in the truth's order is unknown: it counts for a change when the page took it
+   * after that change. That says nothing about how old the value was: a lagging page that
+   * interleaves unseen values with stale ones passes this judgement. Callers must therefore also
+   * bound the share of unseen values and check the page's values against the truth around their
+   * moment (`pageValueProblems` with `snapshotAgreement`). Without this option such a value never
+   * counts.
    */
   readonly observed?: ReadonlyMap<string, ReadonlySet<string>>;
 }
@@ -183,4 +186,48 @@ export function snapshotAgreement(
     }
   }
   return { compared, matched, matchedPerKey, mismatches };
+}
+
+export interface ValueFloors {
+  /** The share of page transitions to values the truth was never seen to hold, at most. */
+  readonly maxUnobserved: number;
+  /** The share of snapshot values equal to a truth value around their moment, at least. */
+  readonly minAgreement: number;
+}
+
+/**
+ * Whether the page's values are the truth's (#123): the floors that make `judgeLatency`'s
+ * `observed` option safe. Few page values may be unseen by the polls, the snapshots must agree,
+ * and every key must agree at least once. `page` holds the initial sample plus one per
+ * transition. Returns the problems found; empty when the values are the truth's.
+ */
+export function pageValueProblems(
+  page: ReadonlyMap<string, readonly Change[]>,
+  observed: ReadonlyMap<string, ReadonlySet<string>>,
+  agreement: Agreement,
+  floors: ValueFloors,
+): { readonly transitions: number; readonly unobserved: number; readonly problems: string[] } {
+  let transitions = 0;
+  let unobserved = 0;
+  for (const [key, samples] of page) {
+    for (const sample of samples.slice(1)) {
+      transitions++;
+      if (observed.get(key)?.has(sample.state) !== true) unobserved++;
+    }
+  }
+  const problems: string[] = [];
+  if (unobserved > transitions * floors.maxUnobserved) {
+    problems.push(
+      `${String(unobserved)} of ${String(transitions)} page values were never seen in the truth`,
+    );
+  }
+  if (agreement.matched < agreement.compared * floors.minAgreement) {
+    problems.push(
+      `${String(agreement.matched)} of ${String(agreement.compared)} snapshot values agree with the truth`,
+    );
+  }
+  for (const key of page.keys()) {
+    if ((agreement.matchedPerKey[key] ?? 0) === 0) problems.push(`${key}: no snapshot agrees`);
+  }
+  return { transitions, unobserved, problems };
 }

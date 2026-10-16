@@ -43,6 +43,7 @@ export function EChartsView({
   readonly height: number;
 }) {
   const container = useRef<HTMLDivElement>(null);
+  const snapshot = useRef<HTMLImageElement>(null);
   const chart = useRef<EChartsType | null>(null);
 
   useEffect(() => {
@@ -54,7 +55,20 @@ export function EChartsView({
       instance.resize({ height });
     });
     resize.observe(element);
+    // Print (#146): the live canvas is resized and redrawn while the page is laid out for paper,
+    // so it is hidden there and a still image of the chart as it is now is printed instead (a
+    // `data:` URL, which the CSP's img-src allows). Taken on `beforeprint` (Print button, Ctrl+P),
+    // after drawing once more without animation, so a chart still animating prints its end state.
+    const takeSnapshot = () => {
+      const image = snapshot.current;
+      if (!image) return;
+      instance.setOption({ animation: false });
+      image.src = instance.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
+      instance.setOption({ animation: !reducedMotion() });
+    };
+    window.addEventListener('beforeprint', takeSnapshot);
     return () => {
+      window.removeEventListener('beforeprint', takeSnapshot);
       resize.disconnect();
       instance.dispose();
       chart.current = null;
@@ -72,5 +86,10 @@ export function EChartsView({
     );
   }, [option, height]);
 
-  return <div ref={container} className="w-full" />;
+  return (
+    <>
+      <div ref={container} className="w-full print:hidden" data-print="hidden" />
+      <img ref={snapshot} alt="" data-print-snapshot="" className="hidden w-full print:block" />
+    </>
+  );
 }

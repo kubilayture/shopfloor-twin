@@ -13,6 +13,7 @@ const NAV = [
   { id: 'downtime', to: '/downtime', label: 'Downtime coding' },
   { id: 'alarms', to: '/alarms', label: 'Alarms' },
   { id: 'alarm-kpi', to: '/alarms/kpi', label: 'Alarm KPIs' },
+  { id: 'shifts', to: '/shifts', label: 'Shift reports' },
 ] as const;
 
 function PlantClock() {
@@ -52,14 +53,14 @@ export function RootLayout() {
   useLiveSubscription(STATES_TOPIC);
   useFocusOnNavigation();
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="min-h-screen bg-slate-50 text-slate-900 print:min-h-0 print:bg-white">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-10 focus:rounded focus:bg-white focus:px-3 focus:py-2"
+        className="sr-only print:hidden focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-10 focus:rounded focus:bg-white focus:px-3 focus:py-2"
       >
         Skip to content
       </a>
-      <header className="bg-slate-900 text-white">
+      <header className="bg-slate-900 text-white print:hidden" data-print="hidden">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-3">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <Link to="/" className="text-lg font-bold hover:underline">
@@ -89,7 +90,11 @@ export function RootLayout() {
           </div>
         </div>
       </header>
-      <main id="main" tabIndex={-1} className="mx-auto max-w-7xl px-4 py-6 focus:outline-none">
+      <main
+        id="main"
+        tabIndex={-1}
+        className="mx-auto max-w-7xl px-4 py-6 focus:outline-none print:max-w-none print:p-0"
+      >
         <Outlet />
       </main>
     </div>

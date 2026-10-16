@@ -14,8 +14,10 @@ import { MachineDetail } from './screens/machine-detail.tsx';
 import { OeeDashboard } from './screens/oee-dashboard.tsx';
 import { Overview } from './screens/overview.tsx';
 import { NotFound, RootLayout } from './screens/root-layout.tsx';
+import { ShiftList } from './screens/shift-list.tsx';
+import { ShiftReport } from './screens/shift-report.tsx';
 
-// Code-based routes (ADR-0020): six screens don't need a generated route tree.
+// Code-based routes (ADR-0020): eight screens don't need a generated route tree.
 const rootRoute = createRootRoute({ component: RootLayout, notFoundComponent: NotFound });
 
 const overviewRoute = createRoute({
@@ -118,7 +120,31 @@ const alarmKpiRoute = createRoute({
   component: AlarmKpi,
 });
 
-// Six routes still fit one file (ADR-0020's revisit threshold is a dozen).
+const shiftListRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/shifts',
+  component: ShiftList,
+});
+
+export interface ShiftReportSearch {
+  /** The plant epoch of the instance; the newest that has the shift when absent. */
+  readonly epoch?: number | undefined;
+}
+
+const shiftReportRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/shifts/$date/$shift',
+  validateSearch: (search: Record<string, unknown>): ShiftReportSearch => {
+    const epoch = typeof search.epoch === 'string' ? Number(search.epoch) : search.epoch;
+    return {
+      epoch:
+        typeof epoch === 'number' && Number.isSafeInteger(epoch) && epoch >= 0 ? epoch : undefined,
+    };
+  },
+  component: ShiftReport,
+});
+
+// Eight routes still fit one file (ADR-0020's revisit threshold is a dozen).
 const routeTree = rootRoute.addChildren([
   overviewRoute,
   detailRoute,
@@ -126,6 +152,8 @@ const routeTree = rootRoute.addChildren([
   downtimeRoute,
   alarmsRoute,
   alarmKpiRoute,
+  shiftListRoute,
+  shiftReportRoute,
 ]);
 
 export function createAppRouter(history?: RouterHistory) {

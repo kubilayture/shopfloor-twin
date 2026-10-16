@@ -158,7 +158,7 @@ export function waterfallOption(waterfall: Waterfall): EChartsCoreOption {
 
 /** Availability loss by reason, largest first, as horizontal bars coloured by own / external. */
 export function paretoOption(
-  pareto: Pareto,
+  pareto: Pick<Pareto, 'reasons'>,
   limit = 10,
 ): { option: EChartsCoreOption; height: number } {
   const rows = pareto.reasons.slice(0, limit).reverse();

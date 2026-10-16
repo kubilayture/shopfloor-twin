@@ -6,11 +6,14 @@ import type {
   CurrentStateDto,
   DowntimeRecordDto,
   FloodEpisodeDto,
+  HandoverNoteDto,
   OeeBucketDto,
   ServerMessage,
+  ShiftRecordDto,
 } from '@shopfloor/contracts/mes-api';
 import type { QueryClient } from '@tanstack/react-query';
 import { newerOccurrence, newerPoint, pointKey } from '../domain/alarms.ts';
+import { instanceKey, isNewerShift } from '../domain/shifts.ts';
 import { appendSample, type LiveSample } from '../domain/series.ts';
 import { isNewer, isNewerClock } from '../domain/states.ts';
 import type { LiveClient } from './live-client.ts';
@@ -86,7 +89,19 @@ export const liveKeys = {
   alarms: ['live', 'alarms'] as const,
   /** `plant`, `position:<id>` or `equipment:<id>`: the topic without `alarm-kpi:`. */
   alarmKpi: (scope: string) => ['live', 'alarm-kpi', scope] as const,
+  shifts: ['live', 'shifts'] as const,
 };
+
+/**
+ * Pushed shift instances by `instanceKey` (epoch, shift key) and handover notes by id (upserts
+ * on the `shifts` topic, #146), since the topic was taken, and a counter that moves with every
+ * message.
+ */
+export interface LiveShifts {
+  readonly instances: Readonly<Record<string, ShiftRecordDto>>;
+  readonly notes: Readonly<Record<string, HandoverNoteDto>>;
+  readonly seq: number;
+}
 
 /** Pushed downtime records kept (the newest by start); a shift has a few hundred at most. */
 export const LIVE_DOWNTIME_LIMIT = 5_000;
@@ -304,6 +319,48 @@ function applyAlarmKpi(queryClient: QueryClient, topic: string, value: LiveAlarm
   }
 }
 
+const NO_SHIFTS: LiveShifts = { instances: {}, notes: {}, seq: 0 };
+
+/** An instance upsert: kept only when newer by the MES's push rule (`isNewerShift`). */
+function mergeShift(live: LiveShifts | undefined, record: ShiftRecordDto): LiveShifts {
+  const base = live ?? NO_SHIFTS;
+  const key = instanceKey(record.epoch, record.key);
+  const known = base.instances[key];
+  if (known && !isNewerShift(record, known)) return { ...base, seq: base.seq + 1 };
+  return { ...base, instances: { ...base.instances, [key]: record }, seq: base.seq + 1 };
+}
+
+/** A note upsert: the higher `version` wins (every edit raises it). */
+function mergeNote(live: LiveShifts | undefined, note: HandoverNoteDto): LiveShifts {
+  const base = live ?? NO_SHIFTS;
+  const known = base.notes[String(note.id)];
+  if (known && known.version >= note.version) return { ...base, seq: base.seq + 1 };
+  return { ...base, notes: { ...base.notes, [String(note.id)]: note }, seq: base.seq + 1 };
+}
+
+/** An instance the app learned otherwise (a note write's answer), merged like a push. */
+export function upsertShift(queryClient: QueryClient, record: ShiftRecordDto): void {
+  queryClient.setQueryData<LiveShifts>(liveKeys.shifts, (live) => mergeShift(live, record));
+}
+
+/** A note the app learned from a write's answer, merged like a pushed one. */
+export function upsertNote(queryClient: QueryClient, note: HandoverNoteDto): void {
+  queryClient.setQueryData<LiveShifts>(liveKeys.shifts, (live) => mergeNote(live, note));
+}
+
+/**
+ * Forgets every pushed instance and note. The `shifts` topic has no snapshot (as `alarms`, the
+ * lesson of #145): pushed copies are only current while the topic is held, so a screen starts
+ * from an empty set and its REST reads when it subscribes, and drops the set when it lets go.
+ */
+export function resetLiveShifts(queryClient: QueryClient): void {
+  if (queryClient.getQueryData(liveKeys.shifts) === undefined) return;
+  queryClient.setQueryData<LiveShifts>(liveKeys.shifts, (live) => ({
+    ...NO_SHIFTS,
+    seq: (live?.seq ?? 0) + 1,
+  }));
+}
+
 /**
  * Options of the `['live', …]` queries. Pushed data changes many times a second: structural
  * sharing would compare whole sample buffers on every message (and, as buffers are appended in
@@ -379,8 +436,10 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       });
       return;
     case 'shift':
+      upsertShift(queryClient, message.shift);
+      return;
     case 'handover-note':
-      // Shift instances and handover notes (#144) have no screen yet (#146).
+      upsertNote(queryClient, message.note);
       return;
     case 'subscribed':
     case 'unsubscribed':
@@ -405,6 +464,8 @@ export function connectLiveToCache(client: LiveClient, queryClient: QueryClient)
       // monotonic rule can't order (a shelf, an end reason): start again from the REST reads
       // below and the pushes from now on (the `alarms` topic has no snapshot).
       resetLiveAlarms(queryClient);
+      // The same for shift instances and notes (#146): no snapshot, so missed pushes are lost.
+      resetLiveShifts(queryClient);
       void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'live' });
     }
   });

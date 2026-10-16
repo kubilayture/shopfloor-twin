@@ -262,6 +262,8 @@ export class LiveClient {
     if (message.type === 'subscribed') {
       const subscription = this.#subscriptions.get(keyOf(message.topic, message.metric));
       if (subscription) subscription.confirmed = true;
+      // The MES accepts subscriptions again: the next refusal starts its backoff anew.
+      this.#retryDelayMs = 0;
     } else if (message.type === 'error') {
       if (RETRIED.has(message.code)) this.#scheduleRetry();
       else this.#lastError = message;

@@ -36,12 +36,13 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],
-      // main.tsx mounts the app in the page; the chart wraps uPlot's canvas, which jsdom lacks.
+      // main.tsx mounts the app in the page; the charts wrap uPlot's and ECharts' canvas, which jsdom lacks.
       exclude: [
         'src/**/*.test.{ts,tsx}',
         'src/test/**',
         'src/main.tsx',
         'src/chart/uplot-chart.tsx',
+        'src/chart/echarts-view.tsx',
       ],
       thresholds: { lines: 70, branches: 60 },
     },

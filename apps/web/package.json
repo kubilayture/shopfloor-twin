@@ -13,8 +13,10 @@
   },
   "dependencies": {
     "@shopfloor/contracts": "workspace:*",
+    "@shopfloor/oee-core": "workspace:*",
     "@tanstack/react-query": "catalog:",
     "@tanstack/react-router": "catalog:",
+    "echarts": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "uplot": "catalog:",

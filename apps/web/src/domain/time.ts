@@ -19,6 +19,19 @@ const clockTime = new Intl.DateTimeFormat('en-GB', {
   hourCycle: 'h23',
 });
 
+const clockSeconds = new Intl.DateTimeFormat('en-GB', {
+  timeZone: PLANT_TIME_ZONE,
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** `14:05:09` in plant time (what a time input with seconds takes back). */
+export function formatClockSeconds(time: string | number): string {
+  return clockSeconds.format(new Date(time));
+}
+
 export function formatPlantTime(time: string | number): string {
   return dateTime.format(new Date(time));
 }

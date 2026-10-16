@@ -1,0 +1,79 @@
+{
+  "description": "The week-01 seed and start, two days (Monday 06:00 to Wednesday 06:00 Istanbul), with injected failures: a flood with a chattering point on Cell M1 from Monday 08:00, a fleeting alarm on LKT-01 and a standing alarm on PCK-01 (#140)",
+  "seed": 20261012,
+  "start": "2026-10-12T06:00:00+03:00",
+  "days": 2,
+  "config": "config/plant",
+  "injections": [
+    {
+      "at": "2026-10-12T05:00:05Z",
+      "machine": "cnc-01",
+      "code": "COOLANT-PRESSURE",
+      "repairMs": 3000
+    },
+    {
+      "at": "2026-10-12T05:00:15Z",
+      "machine": "cnc-02",
+      "code": "SPINDLE-OVERLOAD",
+      "repairMs": 4000
+    },
+    {
+      "at": "2026-10-12T05:00:25Z",
+      "machine": "cnc-01",
+      "code": "COOLANT-PRESSURE",
+      "repairMs": 3000
+    },
+    { "at": "2026-10-12T05:00:40Z", "machine": "wsh-01", "code": "HEATER-FAULT", "repairMs": 5000 },
+    {
+      "at": "2026-10-12T05:00:45Z",
+      "machine": "cnc-01",
+      "code": "COOLANT-PRESSURE",
+      "repairMs": 3000
+    },
+    {
+      "at": "2026-10-12T05:01:15Z",
+      "machine": "cnc-02",
+      "code": "SPINDLE-OVERLOAD",
+      "repairMs": 4000
+    },
+    {
+      "at": "2026-10-12T05:02:05Z",
+      "machine": "cnc-01",
+      "code": "SPINDLE-OVERLOAD",
+      "repairMs": 3000
+    },
+    {
+      "at": "2026-10-12T05:02:15Z",
+      "machine": "cnc-02",
+      "code": "SPINDLE-OVERLOAD",
+      "repairMs": 4000
+    },
+    { "at": "2026-10-12T05:02:40Z", "machine": "wsh-01", "code": "HEATER-FAULT", "repairMs": 5000 },
+    {
+      "at": "2026-10-12T05:03:05Z",
+      "machine": "cnc-01",
+      "code": "SPINDLE-OVERLOAD",
+      "repairMs": 3000
+    },
+    {
+      "at": "2026-10-12T05:03:15Z",
+      "machine": "cnc-02",
+      "code": "SPINDLE-OVERLOAD",
+      "repairMs": 4000
+    },
+    {
+      "at": "2026-10-12T05:04:15Z",
+      "machine": "cnc-02",
+      "code": "COOLANT-PRESSURE",
+      "repairMs": 3000
+    },
+    { "at": "2026-10-12T05:04:40Z", "machine": "wsh-01", "code": "HEATER-FAULT", "repairMs": 5000 },
+    { "at": "2026-10-12T06:20:00Z", "machine": "lkt-01", "code": "FIXTURE-SEAL", "repairMs": 500 },
+    {
+      "at": "2026-10-12T13:30:00Z",
+      "machine": "pck-01",
+      "code": "PRINTER-FAULT",
+      "repairMs": 118800000
+    }
+  ]
+}

@@ -9,7 +9,7 @@ import { HOUR, RandomSource, Simulation } from '@shopfloor/sim-core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ProductionLine, type LineEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
-import { configHash, runHeadless, summaryDocument } from './run.ts';
+import { analysisConfigHash, configHash, runHeadless, summaryDocument } from './run.ts';
 import { stableStringify } from './serialize.ts';
 
 const run = promisify(execFile);
@@ -148,6 +148,36 @@ describe('runHeadless (plan section 4, headless mode)', () => {
     expect(configHash(config)).toBe(golden.run.configSha256);
   });
 
+  it('records the analysis configuration (oee, reasons, alarms) as analysisConfigSha256 (#140)', async () => {
+    const hash = analysisConfigHash(config);
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    for (const change of [
+      (c: PlantConfig) => {
+        c.alarms.kpi.floodThreshold = 3;
+      },
+      (c: PlantConfig) => {
+        c.oee.microStopThresholdMs = 1;
+      },
+      (c: PlantConfig) => {
+        c.reasons.rules.reverse();
+      },
+    ]) {
+      const changed = structuredClone(config);
+      change(changed);
+      expect(analysisConfigHash(changed)).not.toBe(hash);
+    }
+    const plantOnly = structuredClone(config);
+    plantOnly.products.changeoverMinutes = 30;
+    expect(analysisConfigHash(plantOnly)).toBe(hash);
+    const { result } = headless(1, START + HOUR);
+    expect(result.analysisConfigSha256).toBe(hash);
+    expect(result.header).not.toHaveProperty('injections');
+    const golden = JSON.parse(
+      await readFile(resolve(import.meta.dirname, '../../golden/week-01/summary.json'), 'utf8'),
+    ) as { schema: string; analysisConfigSha256: string };
+    expect(golden).toMatchObject({ schema: 'sim-summary/3', analysisConfigSha256: hash });
+  });
+
   it('covers [start, end): nothing at or after the end, and the running shift opens at the start', () => {
     const { lines } = headless(2, START + 24 * HOUR);
     const events = lines
@@ -199,7 +229,7 @@ describe('headless CLI', () => {
       const summary = JSON.parse(await readFile(join(out, 'summary.json'), 'utf8')) as {
         schema: string;
       };
-      expect(summary.schema).toBe('sim-summary/2');
+      expect(summary.schema).toBe('sim-summary/3');
       const events = (await readFile(join(out, 'events.jsonl'), 'utf8')).trim().split('\n');
       expect(events.length).toBeGreaterThan(1_000);
     } finally {

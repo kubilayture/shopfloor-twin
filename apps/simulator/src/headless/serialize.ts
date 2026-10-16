@@ -1,6 +1,6 @@
 export const EVENT_SCHEMA = 'sim-event/1';
 export const RUN_SCHEMA = 'sim-run/1';
-export const SUMMARY_SCHEMA = 'sim-summary/2';
+export const SUMMARY_SCHEMA = 'sim-summary/3';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 

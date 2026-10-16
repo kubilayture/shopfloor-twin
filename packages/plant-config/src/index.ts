@@ -14,3 +14,10 @@ export {
   plantCauses,
 } from './reasons.ts';
 export type { CausePattern, ReasonRule, ReasonsConfig } from './reasons.ts';
+export {
+  MAX_REPAIR_MS,
+  checkInjections,
+  injectionIssues,
+  isCalendarBoundary,
+} from './injections.ts';
+export type { FailureInjectionSpec, InjectionIssue, InjectionIssueCode } from './injections.ts';

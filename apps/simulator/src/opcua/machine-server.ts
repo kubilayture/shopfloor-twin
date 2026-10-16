@@ -219,6 +219,8 @@ export class MachineServer {
       case 'program-loaded':
       case 'repair-start':
       case 'repair-end':
+      case 'injection-held':
+      case 'injection-applied':
         break;
     }
   }

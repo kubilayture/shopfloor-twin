@@ -11,6 +11,7 @@ WORKDIR /app
 FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/simulator/package.json apps/simulator/
+COPY packages/alarm-core/package.json packages/alarm-core/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/oee-core/package.json packages/oee-core/
 COPY packages/plant-config/package.json packages/plant-config/
@@ -27,6 +28,7 @@ ENV NODE_ENV=production \
 WORKDIR /app
 COPY --from=deps /app ./
 COPY config/plant config/plant
+COPY packages/alarm-core/src packages/alarm-core/src
 COPY packages/contracts/src packages/contracts/src
 COPY packages/oee-core/src packages/oee-core/src
 COPY packages/plant-config/src packages/plant-config/src

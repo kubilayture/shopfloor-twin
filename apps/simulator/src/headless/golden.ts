@@ -1,17 +1,56 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
-import { runHeadless, summaryDocument } from './run.ts';
+import { checkInjections, formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
+import { runHeadless, summaryDocument, type HeadlessOptions } from './run.ts';
 
 const REPO = resolve(import.meta.dirname, '../../../..');
 const GOLDEN = resolve(import.meta.dirname, '../../golden');
 
-interface Scenario {
+export interface Scenario {
   readonly seed: number;
   readonly start: string;
   readonly days: number;
   readonly config: string;
+  /** Failure injections (#140): `at` is ISO 8601 with an offset or Z. */
+  readonly injections?: readonly {
+    readonly at: string;
+    readonly machine: string;
+    readonly code: string;
+    readonly repairMs?: number;
+  }[];
+}
+
+export const readScenario = (name: string): Scenario =>
+  JSON.parse(readFileSync(join(GOLDEN, name, 'scenario.json'), 'utf8')) as Scenario;
+
+/** The scenario's run options: configuration, seed, span and injections in integer ms. */
+export async function scenarioOptions(name: string): Promise<HeadlessOptions> {
+  const scenario = readScenario(name);
+  const loaded = await loadPlantConfig(join(REPO, scenario.config));
+  if (!loaded.ok) {
+    throw new Error(formatIssues(loaded.issues));
+  }
+  const start = Temporal.Instant.from(scenario.start).epochMilliseconds;
+  const injections = (scenario.injections ?? []).map((injection) => ({
+    machine: injection.machine,
+    code: injection.code,
+    at: Temporal.Instant.from(injection.at).epochMilliseconds,
+    ...(injection.repairMs === undefined ? {} : { repairMs: injection.repairMs }),
+  }));
+  const issues = checkInjections(loaded.config, injections);
+  if (issues.length > 0) {
+    throw new Error(
+      `${name}/scenario.json: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
+    );
+  }
+  return {
+    config: loaded.config,
+    seed: scenario.seed,
+    start,
+    end: start + scenario.days * 86_400_000,
+    ...(injections.length === 0 ? {} : { injections }),
+  };
 }
 
 export interface GoldenOutcome {
@@ -22,29 +61,13 @@ export interface GoldenOutcome {
 }
 
 export async function runScenario(name: string): Promise<GoldenOutcome> {
-  const scenario = JSON.parse(
-    readFileSync(join(GOLDEN, name, 'scenario.json'), 'utf8'),
-  ) as Scenario;
-  const loaded = await loadPlantConfig(join(REPO, scenario.config));
-  if (!loaded.ok) {
-    throw new Error(formatIssues(loaded.issues));
-  }
-  const start = Temporal.Instant.from(scenario.start).epochMilliseconds;
+  const options = await scenarioOptions(name);
   const hash = createHash('sha256');
   let lines = 0;
-  const result = runHeadless(
-    {
-      config: loaded.config,
-      seed: scenario.seed,
-      start,
-      end: start + scenario.days * 86_400_000,
-      checkInvariants: true,
-    },
-    (line) => {
-      hash.update(`${line}\n`);
-      lines++;
-    },
-  );
+  const result = runHeadless({ ...options, checkInvariants: true }, (line) => {
+    hash.update(`${line}\n`);
+    lines++;
+  });
   return {
     name,
     summary: summaryDocument(result),

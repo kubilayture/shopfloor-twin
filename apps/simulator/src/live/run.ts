@@ -2,7 +2,14 @@ import type { PlantConfig } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { isoTime } from '../headless/serialize.ts';
 import { GroundTruth, type GroundTruthSummary } from '../headless/summary.ts';
-import { ProductionLine, type LineEvent, type PlantEvent } from '../plant/line.ts';
+import {
+  ProductionLine,
+  type FailureInjection,
+  type InjectFailureRequest,
+  type InjectFailureResult,
+  type LineEvent,
+  type PlantEvent,
+} from '../plant/line.ts';
 import type { MachineState } from '../plant/machine-state.ts';
 import { ProcessValues } from '../plant/process-values.ts';
 import { LivePacer, type WallClock } from './pacer.ts';
@@ -50,6 +57,13 @@ export interface LiveRun {
   readonly processValues: ProcessValues;
   /** The ground truth up to the simulation's current time; read-only, never moves the run. */
   groundTruth(): LiveGroundTruth;
+  /**
+   * Schedules a failure injection (#140) at `at`, or at the simulation's current time (the next
+   * step) when left out, exactly as a headless run schedules a scenario's injections.
+   */
+  injectFailure(request: InjectFailureRequest): InjectFailureResult;
+  /** Every injection so far, with its outcome. */
+  injections(): FailureInjection[];
 }
 
 export function createLiveRun(options: LiveOptions): LiveRun {
@@ -107,5 +121,13 @@ export function createLiveRun(options: LiveOptions): LiveRun {
       ...summary,
     };
   };
-  return { line, simulation, pacer, processValues, groundTruth };
+  return {
+    line,
+    simulation,
+    pacer,
+    processValues,
+    groundTruth,
+    injectFailure: (request) => line.injectFailure(request, simulation),
+    injections: () => line.injections(),
+  };
 }

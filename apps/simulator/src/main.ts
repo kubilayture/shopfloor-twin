@@ -65,6 +65,7 @@ const app = await buildControlApp({
       washer.silent = silent;
     },
     opcuaOffline: (machineId, offline) => servers.setOffline(machineId, offline),
+    failure: { inject: (request) => run.injectFailure(request), list: () => run.injections() },
   },
   groundTruth: () => ({ epoch: servers.epoch, ...run.groundTruth() }),
   logger: { level: env.LOG_LEVEL },

@@ -17,7 +17,16 @@ export async function generateOpenApi(): Promise<string> {
     hub: new EventHub(),
     ready: () => false,
     // Every optional route, so the description is complete.
-    faults: { modbusSilent: () => undefined, opcuaOffline: () => Promise.resolve(true) },
+    faults: {
+      modbusSilent: () => undefined,
+      opcuaOffline: () => Promise.resolve(true),
+      failure: {
+        inject: () => {
+          throw new Error('not served');
+        },
+        list: () => [],
+      },
+    },
     groundTruth: () => {
       throw new Error('not served');
     },

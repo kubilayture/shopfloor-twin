@@ -1,11 +1,12 @@
 # Status — updated 2026-10-16
 
-## Current phase: 07 – Orders, ERP and execution (next, not planned yet; Phase 6 closed 2026-10-16)
+## Current phase: 07 – Orders, ERP and execution (in progress; plan merged in PR #180, Phase 6 closed 2026-10-16)
 
-## Exit criteria progress: Phase 6 closed with 5 / 5 met (criteria 2 and 5 with recorded deviations; evidence from local runs, GitHub Actions could not run); Phase 7 not planned yet
+## Exit criteria progress: Phase 7: 0 / 6 met (#172 lays the simulator part of criteria 2, 4 and 6: golden `orders-01`, the order ground truth, `week-01` and `alarms-01` byte-identical event logs); Phase 6 closed with 5 / 5 met
 
 ## Done since last update
 
+- #172 done (branch `feat/172-sim-orders`): the order-driven simulator (ADR-0030, ADR-0021 amendment). Production mode `orders` (`scenario.json` `production`, `SIM_PRODUCTION`; `schedule` stays the default, also in Compose): CNCs with `campaigns: []`, nothing loaded at the start (`CHANGEOVER none→…`), no initial `Program`, `LoadProgram` refused. OPC UA `LoadOrder` (address space 1.1) with `NotBefore`, `DeviceEpoch`, `ExpiresAt`, idempotent by command id with the dedup table checked first, then epoch, then expiry, outputs `Position`, `Duplicate`, `AcceptedSeq`, `AcceptedAt`; job facts (`accepted`, `started`, `completed`) in the event log and as `ShopFloorJobEventType`, variables `ActiveOrder` and `QueuedJobs`; cause `NO-ORDER` with wake-ups that respect breaks (tested at the break start, inside and at its end). Scenario `dispatches` applied after `line.start` and before the injections in headless and live runs (a live run dispatched at its idle start equals headless `orders-01` event for event). Ground truth per job, order and unit with material booked at cycle completion (`sim-summary/4`, control API 1.4). `oee-core` `scheduledTime: orders` with reference cases 20–25; `oee.yaml` switched (the MES applies `NO-ORDER` from #175). Golden `orders-01` (new, `events.sha256` `ebd1e4aa…a893`); `week-01` and `alarms-01` summaries regenerated with every value unchanged (asserted against a `shift-calendar` run) and `events.sha256` unchanged.
 - Phase 7 plan with issues #167–#179 under milestone "Phase 07 – Orders, ERP and execution".
 - #148 merged (PR #166): Phase 6 closed, tagged `phase-06`.
 - **Phase 6 closed**: all 5 exit criteria met; tag `phase-06` after #148 merges (report: `docs/phases/phase-06-report.md`; learning notes: `docs/learning/phase-06.md`; data model: `docs/data-model.md`, confirmed current with the 14 tables of migrations `0010`–`0015`). Criterion 2's trailing buckets stay provisional and criterion 5's 405 and note refusals are checked outside the stack smoke (deviations in the report).
@@ -97,7 +98,7 @@
 
 ## In progress
 
-- #167 Phase 7 plan (in review)
+- #172 simulator orders mode (branch `feat/172-sim-orders`, in review)
 
 ## Next up
 
@@ -105,6 +106,7 @@
 
 ## Blockers and open questions for the owner
 
+- Approve the golden-summary regeneration of `week-01` and `alarms-01` to `sim-summary/4` (#172; master plan section 12): only the schema line, an empty `orders` section, `analysisConfigSha256` and `oee.config.scheduledTime` changed, `events.sha256` unchanged; reason in `apps/simulator/golden/README.md`. Done under the standing instruction; approval deferred to the owner.
 - Sign off Phase 6 (v1 success criterion 6); Claude closed it under the standing instruction without the owner's review.
 - Approve the golden-summary regeneration of `week-01` to `sim-summary/3` (#140; master plan section 12): only the new `alarms` section, `analysisConfigSha256` and the schema line changed, `events.sha256` unchanged; reason in `apps/simulator/golden/README.md`. Done under the standing instruction; approval deferred to the owner.
 - GitHub Actions is disabled by the account's spending limit: every run since PR #149's merge fails at the billing check before any job starts. Merges are gated locally (`pnpm verify`, `pnpm test:golden`, `pnpm test:e2e`, the stack smoke on a disposable project, `pnpm test:reconcile`). Raise the limit or keep the local gate.
@@ -120,6 +122,6 @@ Project board: https://github.com/users/kubilayture/projects/1
 
 - CI on `main`: not running. GitHub Actions jobs fail at the billing check (spending limit) on every run since `ed8783b` (the merge of #149); the last green CI on `main` is `cfed3a0`, the Phase 5 close. The workflow is unchanged. Merges since #150 are gated by local runs of every CI job; #165's final commit (merged as `12b9c9a`) passed `pnpm verify`, `pnpm test:e2e` and `pnpm test:reconcile` (3 of 3) locally; `pnpm test:golden` and the smoke ran on its previous commit (the fix commit changed e2e code only). Exceptions per PR are listed in the Phase 6 report.
 - Tests: 1,333 in `pnpm turbo run test --force` (Phase 5: 988), plus `pnpm test:e2e` (gateway; golden reconciliations of `week-01` and `alarms-01`: intervals, aggregates, records, OEE, 112 and 129 alarm comparisons, 255 and 102 shift report comparisons) and `pnpm test:reconcile` (live `alarms-01` shift A with 14 injections, OEE, alarm and dashboard latency, UI actions and notes).
-- Coverage (lines / branches): `sim-core` 99.4 / 98.3 (floor 95 / 90), `oee-core` 100 / 99.1 (floor 95 / 90), `alarm-core` 100 / 96.4 (floor 95 / 90), `shift-calendar` 100 / 91.4, `plant-config` 99.7 / 95.1 (floor 90 / 85), simulator 86.1 / 79.3, `edge-gateway` 92.2 / 78.5, `mes-server` 96.2 / 85.6 and web 96.2 / 87.0 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
+- Coverage (lines / branches): `sim-core` 99.4 / 98.3 (floor 95 / 90), `oee-core` 100 / 99.1 (floor 95 / 90), `alarm-core` 100 / 96.4 (floor 95 / 90), `shift-calendar` 100 / 91.4, `plant-config` 99.7 / 95.1 (floor 90 / 85), simulator 87.2 / 81.9, `edge-gateway` 92.2 / 78.5, `mes-server` 96.2 / 85.6 and web 96.2 / 87.0 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
 - Golden scenarios `week-01` and `alarms-01`: green locally (`pnpm test:golden`, `pnpm test:e2e`).
 - Open bugs: 0.

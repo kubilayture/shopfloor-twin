@@ -1,6 +1,6 @@
 # ADR-0021: OEE definitions, exact arithmetic and the micro-stop threshold
 
-- Status: accepted; amended 2026-10-16 by #119 (automatic classification) and #121 (operator coding), below
+- Status: accepted; amended 2026-10-16 by #119 (automatic classification), #121 (operator coding) and #172 (the `orders` scheduled-time rule), below
 - Date: 2026-10-16
 - Deciders: Claude (#116), within the Phase 5 plan; recorded for the owner under the standing instruction of 2026-10-15
 
@@ -58,7 +58,7 @@ Speed loss = APT − micro-stops − ideal time; it may be negative (P > 1). Qua
 
 **Work centers: (b).** ΣAPT/ΣPBT, Σideal/ΣAPT, Σgood/Σproduced: exact, time-weighted, each machine's ideal time from its own operation. It is not a line-throughput OEE; the dashboard marks the bottleneck (ASM-01) beside it. (c) waits for orders (Phase 7).
 
-**Configuration: (b).** `config/plant/oee.yaml` holds `microStopThresholdMs` and `scheduledTime`; `plant-config` validates it (positive integer; `shift-calendar` is the only rule until Phase 7) and cross-checks that shifts start and end on whole hours in a zone whose UTC offsets are whole hours (cycles carry no shift key, so each UTC hour must lie in one shift bucket). `plant-config` now separates `SIMULATION_FILES` from the full `PLANT_FILES`; the simulator's run header hashes `simulationSections(config)` only, so `configSha256` and `events.sha256` of the golden week are unchanged, and a test asserts that the hash ignores `oee`.
+**Configuration: (b).** `config/plant/oee.yaml` holds `microStopThresholdMs` and `scheduledTime`; `plant-config` validates it (positive integer; `shift-calendar` was the only rule until Phase 7, which adds `orders`, see the amendment below) and cross-checks that shifts start and end on whole hours in a zone whose UTC offsets are whole hours (cycles carry no shift key, so each UTC hour must lie in one shift bucket). `plant-config` now separates `SIMULATION_FILES` from the full `PLANT_FILES`; the simulator's run header hashes `simulationSections(config)` only, so `configSha256` and `events.sha256` of the golden week are unchanged, and a test asserts that the hash ignores `oee`.
 
 **Conventions for the two callers** (#117 simulator ground truth, #120 MES):
 
@@ -159,3 +159,14 @@ The Phase 5 plan ("Downtime reason coding") fixes that codings are time ranges s
 - Good: the Pareto and the coding screen read the same reasons in effect; OEE can't drift from the ground truth by coding.
 - Bad: a re-cut that moves a loss interval later leaves the moved-in time under the auto reason, and the moved-out time orphaned; the operator codes it again (the audit shows what was lost).
 - Bad: a clip may run up to about 100 ms after the re-cut; the audit's wall time shows the order.
+
+## Amendment (#172): the `orders` scheduled-time rule
+
+Master plan section 7 says that from Phase 7 "Idle without a dispatched order is excluded" from planned busy time. Phase 7 expresses this on device facts, so the ground truth and the MES apply it to the same intervals:
+
+- **`scheduledTime: orders`** in `oee-core` (`SCHEDULED_TIME_RULES`) and `config/plant/oee.yaml`, which switches to it. Inside a scheduled bucket, the part of Idle with cause `NO-ORDER` (an orders-mode CNC with no startable job, ADR-0030) is excluded from planned busy time, like a planned stop: `BucketInput.noOrderIdleMs` (at most `stateMs.Idle`, 0 when left out) is subtracted from the planned Idle time. Everything else is as `shift-calendar`: `no-shift` is never scheduled, and `shift-calendar` ignores `noOrderIdleMs`.
+- **Schedule-mode causes keep their meaning:** `SCHEDULE-COMPLETE` and `NO-OPERATOR` stay own availability loss. A schedule-mode run emits no `NO-ORDER`, so `week-01`'s and `alarms-01`'s OEE don't move (asserted: their summaries under both rules are equal but for the rule's name and `analysisConfigSha256`).
+- **Downstream machines get no dispatch:** their `Starved` while no order runs stays an external availability loss (the dashboard's own/external split); per-order and throughput line OEE are Phase 8's. A known limit.
+- **Ground truth:** the simulator keeps the `NO-ORDER` time per UTC hour and shift bucket from the state events' causes, as `noOrderIdleMs` of the bucket inputs (only when above 0, so schedule-mode summaries keep their bytes but for the rule's name).
+- **MES:** its hourly aggregate `equipment.state_hourly` has no cause, so the MES passes no `noOrderIdleMs` yet and applies the rule from #175, where `orders-01`'s OEE is reconciled; until then only schedule-mode runs reach it, which have no `NO-ORDER` time, so its results are unchanged.
+- **Reference cases** 20–25 in `docs/oee-reference-cases.md`: `NO-ORDER` inside a shift (and the same hour under `shift-calendar`), across an hour boundary, in `no-shift`, and `SCHEDULE-COMPLETE` and `NO-OPERATOR` unchanged.

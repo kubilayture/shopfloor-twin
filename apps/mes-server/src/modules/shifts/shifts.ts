@@ -6,6 +6,7 @@
  */
 import type { BadActor } from '@shopfloor/alarm-core';
 import type { CycleCount, Millis } from '@shopfloor/oee-core';
+import { HANDOVER_PROBLEM } from '@shopfloor/contracts/mes-api';
 import { UNCODED } from '@shopfloor/plant-config';
 import { nextShift, shiftInstances, type ShiftPattern } from '@shopfloor/shift-calendar';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
@@ -1004,24 +1005,24 @@ export class Shifts {
     if (newest !== undefined && newest > epoch) {
       throw new ShiftError(
         'conflict',
-        `handover closed: epoch ${String(epoch)} ended (epoch ${String(newest)} is newer)`,
+        `${HANDOVER_PROBLEM.closed}: epoch ${String(epoch)} ended (epoch ${String(newest)} is newer)`,
       );
     }
     const plantAt = this.#sources.equipment.watermark(epoch);
     if (plantAt === undefined) {
       throw new ShiftError(
         'conflict',
-        `handover closed: no plant clock for epoch ${String(epoch)}`,
+        `${HANDOVER_PROBLEM.closed}: no plant clock for epoch ${String(epoch)}`,
       );
     }
     const window = handoverWindow(this.#pattern, record);
     if (plantAt.getTime() < window.from) {
-      throw new ShiftError('conflict', `handover not open: shift ${key} has not begun`);
+      throw new ShiftError('conflict', `${HANDOVER_PROBLEM.notOpen}: shift ${key} has not begun`);
     }
     if (plantAt.getTime() >= window.to) {
       throw new ShiftError(
         'conflict',
-        `handover closed: notes of ${key} can be written until ${new Date(window.to).toISOString()} (plant time)`,
+        `${HANDOVER_PROBLEM.closed}: notes of ${key} can be written until ${new Date(window.to).toISOString()} (plant time)`,
       );
     }
     return { record, plantAt };

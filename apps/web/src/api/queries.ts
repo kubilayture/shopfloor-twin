@@ -41,6 +41,16 @@ export const queryKeys = {
     ['alarm-kpi', 'bad-actors', scope, from, to] as const,
   operatorKpi: (scope: string, from: number, to: number) =>
     ['alarm-kpi', 'operator', scope, from, to] as const,
+  // Shift reports (#146): instance, report, notes and a note's audit, per key and epoch asked.
+  shiftInstanceAll: ['shift-instance'] as const,
+  shiftInstance: (key: string, epoch: number | undefined) =>
+    ['shift-instance', key, epoch ?? 'newest'] as const,
+  shiftReportAll: ['shift-report'] as const,
+  shiftReport: (key: string, epoch: number | undefined) =>
+    ['shift-report', key, epoch ?? 'newest'] as const,
+  shiftNotes: (key: string, epoch: number) => ['shift-notes', key, epoch] as const,
+  /** Keyed by the note's version too: a new version reads its history again. */
+  noteAudit: (noteId: number, version: number) => ['note-audit', noteId, version] as const,
 };
 
 /** Retries network and server errors a few times, never a refused request (4xx). */

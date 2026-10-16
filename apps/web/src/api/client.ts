@@ -34,6 +34,20 @@ import {
   seriesSchema,
   shiftListSchema,
   shiftOeeSchema,
+  shiftRecordSchema,
+  shiftReportSchema,
+  handoverNotesSchema,
+  handoverAuditSchema,
+  noteCreateSchema,
+  noteEditSchema,
+  noteResultSchema,
+  type HandoverAudit,
+  type HandoverNotes,
+  type NoteCreate,
+  type NoteEdit,
+  type NoteResult,
+  type ShiftRecordDto,
+  type ShiftReportDto,
   type AcknowledgeRequest,
   type AcknowledgeResult,
   type AlarmDetail,
@@ -463,5 +477,65 @@ export function unshelvePoint(
     `/alarm-points/${segment(equipment)}/${segment(code)}/unshelve`,
     unshelveRequestSchema.parse(body),
     shelfResultSchema,
+  );
+}
+
+// ---- Shifts: instances, report and handover notes (#144, #146) ----
+
+/** A shift (`date`, `shift`) and, when asked for, a plant epoch (the newest by default). */
+export interface ShiftRef {
+  readonly date: string;
+  readonly shift: string;
+  readonly epoch?: number | undefined;
+}
+
+const shiftPath = (ref: ShiftRef): string => `/shifts/${segment(ref.date)}/${segment(ref.shift)}`;
+
+const epochQuery = (ref: ShiftRef): string =>
+  ref.epoch === undefined ? '' : `?epoch=${String(ref.epoch)}`;
+
+/** The report's URL, for the JSON download (the report as served). */
+export const shiftReportUrl = (ref: ShiftRef): string =>
+  `${API_BASE}${shiftPath(ref)}/report${epochQuery(ref)}`;
+
+/** One shift instance: status, finality and the composite revision; 404 before the clock. */
+export function getShiftInstance(ref: ShiftRef, signal?: AbortSignal): Promise<ShiftRecordDto> {
+  return getJson(`${shiftPath(ref)}${epochQuery(ref)}`, shiftRecordSchema, signal);
+}
+
+export function getShiftReport(ref: ShiftRef, signal?: AbortSignal): Promise<ShiftReportDto> {
+  return getJson(`${shiftPath(ref)}/report${epochQuery(ref)}`, shiftReportSchema, signal);
+}
+
+export function getShiftNotes(ref: ShiftRef, signal?: AbortSignal): Promise<HandoverNotes> {
+  return getJson(`${shiftPath(ref)}/notes${epochQuery(ref)}`, handoverNotesSchema, signal);
+}
+
+/** A note's history from the append-only audit, newest first. */
+export function getNoteAudit(
+  ref: ShiftRef,
+  noteId: number,
+  signal?: AbortSignal,
+): Promise<HandoverAudit> {
+  return getJson(`${shiftPath(ref)}/notes/${String(noteId)}/audit`, handoverAuditSchema, signal);
+}
+
+/** Writes a note; 409 outside the handover window, 422 beyond the notes per shift. */
+export function createNote(ref: ShiftRef, body: NoteCreate): Promise<NoteResult> {
+  return sendJson(
+    'POST',
+    `${shiftPath(ref)}/notes${epochQuery(ref)}`,
+    noteCreateSchema.parse(body),
+    noteResultSchema,
+  );
+}
+
+/** A new version of a note; 409 when `version` is stale or the handover window is closed. */
+export function editNote(ref: ShiftRef, noteId: number, body: NoteEdit): Promise<NoteResult> {
+  return sendJson(
+    'PUT',
+    `${shiftPath(ref)}/notes/${String(noteId)}`,
+    noteEditSchema.parse(body),
+    noteResultSchema,
   );
 }

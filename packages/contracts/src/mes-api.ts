@@ -63,6 +63,17 @@ export const MES_API_LIMITS = {
   notesPerShift: 200,
 } as const;
 
+/**
+ * How the `detail` of a handover note's 409 starts when the handover window refuses the write
+ * (#144, #146): `closed` after the window (or for an older epoch, or without a plant clock),
+ * `notOpen` before the shift began. Any other 409 on a note is a stale version. Shared until the
+ * problems carry structured types.
+ */
+export const HANDOVER_PROBLEM = {
+  closed: 'handover closed',
+  notOpen: 'handover not open',
+} as const;
+
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 /** A reason code id: its path in the tree, e.g. BREAKDOWN/SPINDLE-OVERLOAD. */
 const REASON_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}){0,7}$/;

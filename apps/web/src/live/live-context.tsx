@@ -1,13 +1,15 @@
-import { ALARMS_TOPIC } from '@shopfloor/contracts/mes-api';
+import { ALARMS_TOPIC, SHIFTS_TOPIC } from '@shopfloor/contracts/mes-api';
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, use, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import {
   liveKeys,
   resetLiveAlarms,
+  resetLiveShifts,
   type LiveAlarmKpi,
   type LiveAlarms,
   type LiveDowntime,
   type LiveOee,
+  type LiveShifts,
   type LiveStates,
   type LiveTelemetry,
 } from './live-cache.ts';
@@ -66,6 +68,32 @@ export function useAlarmsTopic(): void {
       resetLiveAlarms(queryClient);
     };
   }, [client, queryClient]);
+}
+
+/**
+ * Holds the `shifts` topic for the shift screens (#146), as `useAlarmsTopic`: the topic has no
+ * snapshot, so the pushed instances and notes are emptied and the REST reads (instances, reports,
+ * notes) read again before subscribing, and emptied again when the screen lets go.
+ */
+export function useShiftsTopic(): void {
+  const client = useLiveClient();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    resetLiveShifts(queryClient);
+    for (const prefix of ['shift-instance', 'shift-report', 'shift-notes', 'note-audit']) {
+      void queryClient.invalidateQueries({ queryKey: [prefix] });
+    }
+    const release = client.subscribe(SHIFTS_TOPIC);
+    return () => {
+      release();
+      resetLiveShifts(queryClient);
+    };
+  }, [client, queryClient]);
+}
+
+/** Pushed shift instances and handover notes (hold the topic with `useShiftsTopic`). */
+export function useLiveShifts(): LiveShifts | undefined {
+  return useQuery<LiveShifts>({ queryKey: liveKeys.shifts, queryFn: skipToken }).data;
 }
 
 /** Holds several topics' subscriptions while the component is mounted. */

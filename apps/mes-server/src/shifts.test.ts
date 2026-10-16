@@ -8,6 +8,7 @@
  */
 import { EventEmitter } from 'node:events';
 import { kpisOfBucket, prepare, type BadActor } from '@shopfloor/alarm-core';
+import { HANDOVER_PROBLEM } from '@shopfloor/contracts/mes-api';
 import { oeeFromTotals, sumTotals } from '@shopfloor/oee-core';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import { shiftKeyAt } from '@shopfloor/shift-calendar';
@@ -743,7 +744,9 @@ describe('evaluation load, read order, concurrency and epochs (#144 review)', ()
       .createNote(E1, '2026-10-12/B', { author: 'a', text: 'late', category: 'general' })
       .catch((error: unknown) => error);
     expect(closed).toBeInstanceOf(ShiftError);
-    expect((closed as ShiftError).message).toMatch(/handover closed: epoch/);
+    expect((closed as ShiftError).message.startsWith(`${HANDOVER_PROBLEM.closed}: epoch`)).toBe(
+      true,
+    );
     await shifts.createNote(E2, '2026-10-12/B', { author: 'a', text: 'E2', category: 'general' });
     expect((await shifts.notes(E1, '2026-10-12/B', false)).map((n) => n.note.text)).toEqual(['E1']);
     expect((await shifts.notes(E2, '2026-10-12/B', false)).map((n) => n.note.text)).toEqual(['E2']);
@@ -928,7 +931,9 @@ describe('the shifts API and push (#144)', () => {
     fake.state.clock = at('19:00');
     const closed = await app.inject({ method: 'POST', url, headers: JSON_WRITE, payload });
     expect(closed.statusCode).toBe(409);
-    expect(problemSchema.parse(closed.json()).detail).toMatch(/handover closed/);
+    expect(
+      problemSchema.parse(closed.json()).detail.startsWith(`${HANDOVER_PROBLEM.closed}: `),
+    ).toBe(true);
 
     const notes = handoverNotesSchema.parse((await get('/shifts/2026-10-12/A/notes')).json());
     expect(notes.notes.map((n) => [n.note.version, n.history.length])).toEqual([[2, 2]]);

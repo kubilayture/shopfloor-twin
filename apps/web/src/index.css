@@ -7,6 +7,56 @@
   }
 }
 
+/*
+ * Print (#146): the shift report on A4. Navigation, forms and live widgets carry `print:hidden`
+ * (Tailwind's print variant); what is left is laid out for paper here: no page background, wide
+ * tables in full instead of in a scroll box, sections kept on one page where they fit, and a
+ * chart as the still image `EChartsView` takes on `beforeprint` (none without one: the table
+ * beside every chart carries its values).
+ */
+@page {
+  size: A4;
+  margin: 12mm;
+}
+
+@media print {
+  html,
+  body {
+    background: #fff !important;
+    color: #000;
+    font-size: 10pt;
+  }
+
+  .shift-report table {
+    min-width: 0 !important;
+    font-size: 8.5pt;
+  }
+
+  .shift-report th,
+  .shift-report td {
+    padding: 1px 4px;
+  }
+
+  .report-section,
+  .shift-report tr,
+  .shift-report figure {
+    break-inside: avoid;
+  }
+
+  .shift-report h2 {
+    break-after: avoid;
+  }
+
+  img[data-print-snapshot]:not([src]) {
+    display: none !important;
+  }
+
+  a[href] {
+    color: inherit;
+    text-decoration: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

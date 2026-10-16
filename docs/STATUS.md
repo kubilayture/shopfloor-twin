@@ -6,7 +6,7 @@
 
 ## Done since last update
 
-- Phase 6 plan with issues #138–#148 under milestone "Phase 06 – Alarms and shifts".
+- Phase 6 plan with issues #138–#148 under milestone "Phase 06 – Alarms and shifts"; revised after the review of PR #149 (injection only in `Running`, revisions over every affected hour, old-epoch anchors, lost clears via resync snapshots).
 - #124 merged (PR #137): Phase 5 closed, tagged `phase-05`.
 - **Phase 5 closed**: all 5 exit criteria met; tag `phase-05` after #124 merges (report: `docs/phases/phase-05-report.md`; learning notes: `docs/learning/phase-05.md`; data model: `docs/data-model.md`, confirmed current with both continuous aggregates and the new tables).
 - Phase 5 pull requests merged: #125 (plan), #127 (#126), #128 (#116), #129 (#113), #130 (#117), #131 (#119), #132 (#118), #133 (#120), #134 (#121), #135 (#122), #136 (#123); CI's `reconcile` job passed in 10.8 min on the final commit of #136.

@@ -9,6 +9,9 @@
 import { shiftBoundaries } from '@shopfloor/shift-calendar';
 import type { PlantConfig } from './schema.ts';
 
+/** The longest injected repair: 365 days, so `at + repairMs` stays far inside safe integers. */
+export const MAX_REPAIR_MS = 365 * 24 * 3_600_000;
+
 export interface FailureInjectionSpec {
   /** Simulation time, integer ms since 1970 UTC. */
   readonly at: number;
@@ -54,10 +57,13 @@ export function injectionIssues(
       message: `${machine} has no failure mode "${code}"`,
     });
   }
-  if (repairMs !== undefined && (!Number.isSafeInteger(repairMs) || repairMs < 1)) {
+  if (
+    repairMs !== undefined &&
+    (!Number.isSafeInteger(repairMs) || repairMs < 1 || repairMs > MAX_REPAIR_MS)
+  ) {
     issues.push({
       code: 'invalid-repair',
-      message: `repairMs must be an integer of at least 1, got ${String(repairMs)}`,
+      message: `repairMs must be an integer from 1 to ${String(MAX_REPAIR_MS)}, got ${String(repairMs)}`,
     });
   }
   if (Number.isSafeInteger(at) && isCalendarBoundary(config, at)) {

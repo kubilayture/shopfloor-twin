@@ -73,7 +73,19 @@ export function runHeadless(
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) {
     throw new RangeError('start and end must be integer milliseconds with end after start');
   }
-  const issues = checkInjections(config, injections);
+  const issues = [
+    ...checkInjections(config, injections),
+    ...injections.flatMap((injection, index) =>
+      injection.at >= end || injection.at < start
+        ? [
+            {
+              path: `injections[${String(index)}]`,
+              message: `${isoTime(injection.at)} is outside the run [start, end)`,
+            },
+          ]
+        : [],
+    ),
+  ];
   if (issues.length > 0) {
     throw new RangeError(issues.map((issue) => `${issue.path}: ${issue.message}`).join('; '));
   }

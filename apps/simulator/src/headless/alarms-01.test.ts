@@ -144,6 +144,19 @@ describe('golden scenario alarms-01 (#140)', () => {
           () => undefined,
         ),
       ).toThrow(/no failure mode/);
+      // At or after the end, or before the start, an injection could never apply.
+      for (const outside of [options.end, options.end + 60_001, options.start - 60_001]) {
+        expect(() =>
+          runHeadless(
+            {
+              ...options,
+              config,
+              injections: [{ at: outside, machine: 'cnc-01', code: 'COOLANT-PRESSURE' }],
+            },
+            () => undefined,
+          ),
+        ).toThrow(/outside the run/);
+      }
     });
   });
 });

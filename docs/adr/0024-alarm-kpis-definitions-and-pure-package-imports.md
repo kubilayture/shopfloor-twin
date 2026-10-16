@@ -41,6 +41,8 @@ Configuration: (a) thresholds in `failures.yaml`; (b) a new `config/plant/alarms
 
 **Buckets.** Half-open ranges on whole UTC hours: hours, shifts and `no-shift` stretches. A raise belongs to the bucket that contains its `raisedAt`; time measures are clipped to the bucket and, while it is not over, to `asOf`. Shifts start and end on whole hours (ADR-0021), so `composeBuckets` builds a shift from its hours exactly; a property test checks that a multi-hour bucket computed directly equals the composition of its hours, for every field.
 
+**Shift bucket keys (#140, binding for #142).** Shift instances are keyed `2026-10-12/A`. A `no-shift` stretch is its own bucket, keyed `no-shift/{start}` with the stretch's start by the calendar (the last shift end at or before it, looked up within 7 days; if no shift ended in those 7 days, the stretch's start in the run), for example `no-shift/2026-10-17T03:00:00.000Z`. Standing and `activeAtEnd` are taken at a bucket's end, so the bucket must be contiguous; this differs on purpose from the OEE buckets and `/ground-truth`'s `buckets`, which collect every gap in one plain `no-shift`. Hours are listed when something happened in them, and the hour in progress always (provisional); any other hour is the empty bucket.
+
 **Window convention.** The window ending at t is (t − window, t]: a raise exactly one window earlier has left it. Several raises in one millisecond all count, in raise order, so the second of three already sees two.
 
 **Measures per bucket:**

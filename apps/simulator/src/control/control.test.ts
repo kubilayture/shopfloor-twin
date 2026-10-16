@@ -8,7 +8,7 @@ import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import type { InjectFailureRequest, PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
-import { EVENT_SCHEMA } from '../headless/serialize.ts';
+import { EVENT_SCHEMA, isoTime, stableStringify } from '../headless/serialize.ts';
 import { EVENTS_PATH, buildControlApp, type GroundTruthReport } from './app.ts';
 import { parseEnv } from './env.ts';
 import { EventHub } from './event-hub.ts';
@@ -338,7 +338,7 @@ describe('control API (#54)', () => {
   });
 
   it('injects failures (1.3, #140): a live run with alarms-01 shift A injections equals the headless alarms-01', async () => {
-    const { app: served, run, clock } = await setup(true, true, true, 20261012);
+    const { app: served, run, clock, events } = await setup(true, true, true, 20261012);
     const post = (machine: string, body: object) =>
       served.inject({ method: 'POST', url: `/api/v1/faults/failure/${machine}`, payload: body });
 
@@ -399,10 +399,24 @@ describe('control API (#54)', () => {
     // The alarm section survives the response schema whole, and shift A equals the headless run.
     expect(live.alarms).toEqual(JSON.parse(JSON.stringify(run.groundTruth().alarms)));
     const options = await scenarioOptions('alarms-01');
+    const headlessLines: string[] = [];
+    // Shift A only: the injections inside it, the same ones the test posted.
     const headless = runHeadless(
-      { ...options, end: options.start + 8 * 3_600_000 },
-      () => undefined,
+      {
+        ...options,
+        end: shiftAEnd,
+        injections: (options.injections ?? []).filter((i) => i.at < shiftAEnd),
+      },
+      (line) => headlessLines.push(line),
     );
+    // Event for event: the live run's lines up to 11:00Z are the headless run's lines.
+    const liveLines = events
+      .map((event, i) =>
+        stableStringify({ ...event, schema: EVENT_SCHEMA, seq: i + 1, at: isoTime(event.at) }),
+      )
+      .filter((line) => Date.parse((JSON.parse(line) as { at: string }).at) < shiftAEnd);
+    expect(liveLines.length).toBeGreaterThan(2_000);
+    expect(liveLines).toEqual(headlessLines.slice(1));
     for (const scope of ['plant', 'cell-m1', 'line-a1']) {
       expect(live.alarms.scopes[scope]?.shifts['2026-10-12/A']).toEqual(
         headless.summary.alarms.scopes[scope]?.shifts['2026-10-12/A'],
@@ -412,6 +426,17 @@ describe('control API (#54)', () => {
     for (const [id, machine] of Object.entries(headless.summary.machines)) {
       expect(live.machines[id]?.byShift['2026-10-12/A']).toEqual(machine.byShift['2026-10-12/A']);
     }
+    // The hour in progress is listed, provisional, even with nothing in it.
+    expect(live.alarms.scopes.plant?.hours['2026-10-12T11:00:00.000Z']).toMatchObject({
+      raises: 0,
+      provisional: true,
+    });
+
+    // After the run has finished, nothing can be injected.
+    run.pacer.stop();
+    const late = await post('cnc-01', { code: 'COOLANT-PRESSURE' });
+    expect(late.statusCode).toBe(409);
+    expect(late.json<{ message: string }>().message).toBe('the run has finished');
   });
 
   it('keeps the committed OpenAPI description in step with the routes', async () => {

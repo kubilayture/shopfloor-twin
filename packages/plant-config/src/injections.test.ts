@@ -1,6 +1,11 @@
 import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { checkInjections, injectionIssues, isCalendarBoundary } from './injections.ts';
+import {
+  MAX_REPAIR_MS,
+  checkInjections,
+  injectionIssues,
+  isCalendarBoundary,
+} from './injections.ts';
 import { formatIssues, loadPlantConfig } from './load.ts';
 import type { PlantConfig } from './schema.ts';
 
@@ -60,6 +65,14 @@ describe('failure injections (#140)', () => {
     expect(codes({ at: t, machine: 'cnc-01', code: 'COOLANT-PRESSURE', repairMs: 0 })).toEqual([
       'invalid-repair',
     ]);
+    // At most 365 days, so at + repairMs can't overflow the schedule.
+    expect(
+      codes({ at: t, machine: 'cnc-01', code: 'COOLANT-PRESSURE', repairMs: MAX_REPAIR_MS }),
+    ).toEqual([]);
+    expect(
+      codes({ at: t, machine: 'cnc-01', code: 'COOLANT-PRESSURE', repairMs: MAX_REPAIR_MS + 1 }),
+    ).toEqual(['invalid-repair']);
+    expect(MAX_REPAIR_MS).toBe(31_536_000_000);
     expect(codes({ at: t + 0.5, machine: 'cnc-01', code: 'COOLANT-PRESSURE' })).toEqual([
       'invalid-time',
     ]);

@@ -2843,7 +2843,7 @@
         "tags": [
           "faults"
         ],
-        "description": "The machine breaks down with the code as its cause and raises its alarm, as in a natural failure. It takes effect only while the machine is Running; otherwise it is held and applied where the machine would next enter Running (#140). With `at` it is scheduled as a simulation event, so a live run reproduces a headless run with the same injections. 404: unknown machine or code; 409: `at` in the past or on a calendar boundary.",
+        "description": "The machine breaks down with the code as its cause and raises its alarm, as in a natural failure. It takes effect only while the machine is Running; otherwise it is held and applied where the machine would next enter Running (#140). With `at` it is scheduled as a simulation event, so a live run reproduces a headless run with the same injections. 404: unknown machine or code; 409: `at` in the past or on a calendar boundary, or the run has finished.",
         "requestBody": {
           "required": true,
           "content": {

@@ -11,8 +11,8 @@
  * - positions from `alarms.yaml`; the plant scope is every occurrence;
  * - the horizon is the run's time so far (`asOf`); the run's epoch is never closed here.
  *
- * Hours are listed only when something happened in them (a raise, active time or a flood);
- * any other hour is the empty bucket. Shift buckets are every shift instance and `no-shift`
+ * Hours are listed only when something happened in them (a raise, active time or a flood), and
+ * the hour in progress always (provisional); any other hour is the empty bucket. Shift buckets are every shift instance and `no-shift`
  * stretch the run covers, composed from their hours with `composeBuckets`.
  */
 import {
@@ -291,7 +291,8 @@ export class AlarmTruth {
       );
       const hoursJson: Record<string, AlarmKpisJson> = {};
       for (const [hour, kpis] of hourKpis) {
-        if (!isEmpty(kpis)) {
+        // The hour in progress is always listed (provisional), even when nothing happened yet.
+        if (!isEmpty(kpis) || (hour < now && now < hour + HOUR)) {
           hoursJson[isoTime(hour)] = kpisJson(kpis);
         }
       }
@@ -344,7 +345,9 @@ export class AlarmTruth {
 
   /**
    * A `no-shift` stretch is keyed by where the calendar starts it: the last shift end at or
-   * before `from` (within a week), so the key doesn't depend on when the run started.
+   * before `from` (within a week), so the key doesn't depend on when the run started. When no
+   * shift ended in the 7 days before `from` (a calendar without workdays nearby), the key falls
+   * back to `from` itself, the stretch's start in this run.
    */
   #noShiftKey(from: SimTime): string {
     const ends = shiftBoundaries(this.#shifts, from - 7 * DAY, from + 1).filter(

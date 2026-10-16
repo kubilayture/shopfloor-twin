@@ -623,7 +623,7 @@ export async function buildControlApp({
             'held and applied where the machine would next enter Running (#140). With `at` it is ' +
             'scheduled as a simulation event, so a live run reproduces a headless run with the ' +
             'same injections. 404: unknown machine or code; 409: `at` in the past or on a ' +
-            'calendar boundary.',
+            'calendar boundary, or the run has finished.',
           params: json(z.object({ machine: z.string() })),
           body: json(injectBodySchema),
           response: {
@@ -637,6 +637,9 @@ export async function buildControlApp({
       (request, reply) => {
         const { machine } = request.params as { machine: string };
         const body = request.body as { code: string; at?: string; repairMs?: number };
+        if (pacer.state === 'finished') {
+          return conflict(reply, 'the run has finished');
+        }
         let at: number | undefined;
         if (body.at !== undefined) {
           try {

@@ -1,7 +1,8 @@
 import { resolve } from 'node:path';
 import { formatIssues, idealCycleMs, loadPlantConfig } from '@shopfloor/plant-config';
 import { sql } from 'kysely';
-import { createDatabase } from './db/database.ts';
+import { Gauge } from 'prom-client';
+import { createDatabase, poolStats } from './db/database.ts';
 import { migrate } from './db/migrate.ts';
 import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
@@ -65,6 +66,24 @@ const { app, registry, realtime } = await buildMesHttp({
   writes: env.MES_WRITES === 'on',
 });
 const log = app.log;
+// Connections of each pool, and queries waiting for one (#147: the API's 4 connections serve the
+// REST reads and every paced push computation).
+const pools = [
+  ['main', db],
+  ['api', readDb],
+  ['aggregate', aggregateDb],
+] as const;
+for (const field of ['total', 'idle', 'waiting'] as const) {
+  new Gauge({
+    name: `mes_db_pool_${field}`,
+    help: `Database pool connections (${field === 'waiting' ? 'queries waiting for one' : field}), by pool`,
+    labelNames: ['pool'] as const,
+    registers: [registry],
+    collect() {
+      for (const [name, pool] of pools) this.set({ pool: name }, poolStats(pool)?.[field] ?? 0);
+    },
+  });
+}
 
 async function shutdown(signal: string): Promise<void> {
   if (state.stopping) return;

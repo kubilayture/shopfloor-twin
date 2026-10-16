@@ -660,6 +660,11 @@ describe('MES WebSocket push (#97)', () => {
       hour: { scope: 'work-center', id: 'cell-m1', bucket: 'hour' },
       shift: { scope: 'work-center', id: 'cell-m1', bucket: 'shift' },
     });
+    // Each computation of a paced topic is timed, by kind (#147).
+    const metrics = (await app.inject({ url: '/metrics' })).body;
+    expect(
+      Number(/^mes_push_paced_compute_seconds_count\{kind="oee"\} (\d+)$/m.exec(metrics)?.[1]),
+    ).toBeGreaterThanOrEqual(1);
     ws.send({ type: 'subscribe', topic: 'downtime' });
     await ws.until((m) => m.type === 'subscribed' && m.topic === 'downtime');
     ws.send({ type: 'subscribe', topic: 'oee:nope' });

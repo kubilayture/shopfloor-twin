@@ -19,7 +19,10 @@ import {
  * every 100 ms; the page records each work-center card's and machine row's `data-oee` every 20 ms.
  */
 const LIMIT_MS = 2_000;
-/** Must end before the shift does, with the overview's sampling (both run during shift A). */
+/**
+ * Runs first in project `live`, from the shift's start (as in Phase 5), and must end before the
+ * alarm check has to start: before the first injection, about 120 s after the resume.
+ */
 const SAMPLE_MS = Number(process.env.OEE_SAMPLE_MS ?? 90_000);
 const POLL_MS = 100;
 /** Page snapshots compared with the API: one every this many ms. */
@@ -78,6 +81,30 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
     ...machines.map((id) => [id, `oee-machine-${id}`] as const),
   ]);
 
+  // Diagnostics (#147): when each value arrived on the WebSocket, to split a delay into the
+  // MES's part (API → push) and the page's (push → DOM), and the context of every slow change
+  // (above 1.3 s: the API's values and the pushed ones around it). Not judged.
+  const frames: { id: string; at: number; state: string }[] = [];
+  const pushed = new Map<string, Change[]>([...testIds.keys()].map((id) => [id, []]));
+  page.on('websocket', (socket) => {
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload !== 'string') return;
+      const at = Date.now();
+      const data = JSON.parse(payload) as {
+        type?: string;
+        topic?: string;
+        shift?: { key: string; result: { oee: { decimal: string } | null } } | null;
+      };
+      if ((data.type !== 'oee' && data.type !== 'snapshot') || !data.topic?.startsWith('oee:')) {
+        return;
+      }
+      if (data.shift?.key !== shiftKey) return;
+      const changes = pushed.get(data.topic.slice('oee:'.length));
+      const value = data.shift.result.oee?.decimal ?? 'n/a';
+      frames.push({ id: data.topic.slice('oee:'.length), at, state: value });
+      if (changes && changes.at(-1)?.state !== value) changes.push({ at, state: value });
+    });
+  });
   await page.goto('/oee');
   await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
     timeout: 30_000,
@@ -173,6 +200,29 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
     maxUnobserved: MAX_UNOBSERVED,
     minAgreement: MIN_AGREEMENT,
   });
+  // The same judgement on the WebSocket's arrivals (the MES's part), and the page's own delay from
+  // a value's arrival to the DOM.
+  const pushResult = judgeLatency(truth, pushed, until, LIMIT_MS, { observed });
+  const pushLatencies = pushResult.measured.flatMap((m) =>
+    m.latencyMs === undefined ? [] : [m.latencyMs],
+  );
+  const renderLatencies = [...shown].flatMap(([id, samples]) =>
+    samples.slice(1).flatMap((sample) => {
+      const arrived = (pushed.get(id) ?? []).filter(
+        (c) => c.state === sample.state && c.at <= sample.at,
+      );
+      const last = arrived.at(-1);
+      return last ? [sample.at - last.at] : [];
+    }),
+  );
+  const spread = (values: number[]) =>
+    values.length === 0
+      ? null
+      : {
+          max: Math.max(...values),
+          p95: percentile(values, 95),
+          p50: percentile(values, 50),
+        };
   const latencies = result.measured.flatMap((m) =>
     m.latencyMs === undefined ? [] : [m.latencyMs],
   );
@@ -209,6 +259,38 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
     },
     activityProblems: activity,
     valueProblems: values.problems,
+    diagnostics: {
+      pushLatencyMs: spread(pushLatencies),
+      pushViolations: pushResult.violations.length,
+      // Around each violation: what the API held and what arrived on the WebSocket.
+      slow: result.measured
+        .filter((m) => (m.latencyMs ?? Infinity) > 1_300)
+        .slice(0, 20)
+        .map((v) => ({
+          id: v.machine,
+          at: v.at,
+          latencyMs: v.latencyMs,
+          api: (api.get(v.machine) ?? [])
+            .filter((c) => c.at >= v.at - 3_000 && c.at <= v.at + 3_000)
+            .map((c) => `${String(c.at - v.at)}:${c.state}`),
+          frames: frames
+            .filter((f) => f.id === v.machine && f.at >= v.at - 3_000 && f.at <= v.at + 3_000)
+            .map((f) => `${String(f.at - v.at)}:${f.state}`),
+        })),
+      around: result.violations.map((v) => {
+        const near = (changes: readonly Change[] | undefined) =>
+          (changes ?? [])
+            .filter((c) => c.at >= v.at - 4_000 && c.at <= v.at + 4_000)
+            .map((c) => `${String(c.at - v.at)}:${c.state}`);
+        return {
+          id: v.machine,
+          at: v.at,
+          api: near(api.get(v.machine)),
+          pushed: near(pushed.get(v.machine)),
+        };
+      }),
+      renderLatencyMs: spread(renderLatencies),
+    },
     violations: result.violations,
   };
   console.log(`OEE dashboard latency: ${JSON.stringify(summary)}`);

@@ -1,5 +1,5 @@
 import type { FloodEpisode } from '@shopfloor/alarm-core';
-import { Counter, Gauge, type Registry } from 'prom-client';
+import { Counter, Gauge, Histogram, type Registry } from 'prom-client';
 import type { AlarmEvent, AlarmKpiBucket, AlarmScope } from '../alarms/index.ts';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
@@ -689,6 +689,7 @@ export class PushHub {
     // A snapshot for a new subscriber may come early; deltas to the others keep their pace.
     const now = Date.now();
     const deltaDue = now - topic.deltaAt >= this.#options.oeeMs;
+    const started = performance.now();
     topic.inFlight = true;
     topic.dirty = false;
     topic.computedAt = now;
@@ -696,6 +697,10 @@ export class PushHub {
       .compute()
       .then(
         ({ snapshot, delta: update, json }) => {
+          this.#metrics?.compute.observe(
+            { kind: topic.kind },
+            (performance.now() - started) / 1000,
+          );
           let delta: string | undefined;
           for (const client of this.#clients) {
             if (!client.paced.has(topic.name)) continue;
@@ -1030,6 +1035,13 @@ function createMetrics(registry: Registry, clients: () => number) {
     coalesced: new Counter({
       name: 'mes_push_coalesced_total',
       help: 'Deltas replaced by a newer one of the same key before a slow client took them',
+      registers: [registry],
+    }),
+    compute: new Histogram({
+      name: 'mes_push_paced_compute_seconds',
+      help: 'Duration of one paced topic computation (oee, alarm-kpi), by kind',
+      labelNames: ['kind'] as const,
+      buckets: [0.01, 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1, 2],
       registers: [registry],
     }),
     dropped: new Counter({

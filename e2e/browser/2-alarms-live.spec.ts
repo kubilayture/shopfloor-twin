@@ -22,7 +22,7 @@ import {
  * The truth is the simulator's `/ground-truth` (polled every 200 ms): its `alarms.occurrences`
  * hold every raise to the millisecond, and `alarms.scopes.<position>.floods` every flood episode.
  * A raise's wall time is when the paced clock reached it, from the poll that first listed it (as
- * in overview.spec.ts). Unlike the overview's states or the OEE values, the truth here is
+ * in 3-overview.spec.ts). Unlike the overview's states or the OEE values, the truth here is
  * complete: every raise is listed with its exact time, so no page value can be "unseen", and the
  * floors are strict:
  * - **rows:** every raise is one new row; a page row matching no raise of the truth fails
@@ -170,6 +170,14 @@ test('/alarms lists every raise within 2 s, shows the flood banner, and the KPI 
   await record(page, 'list', positionIds);
   await record(kpiPage, 'kpi', cardKeys);
   const started = Date.now();
+  // Every injection must still lie ahead: one applied before the page recorded can't be judged.
+  const firstInjection = Math.min(...(await sim.injections()).map((i) => Date.parse(i.at)));
+  const pacedAtStart = Date.parse((await sim.groundTruth()).pacedTime);
+  if (pacedAtStart >= firstInjection) {
+    throw new Error(
+      `the alarm check started too late: the paced clock is at ${new Date(pacedAtStart).toISOString()}, the first injection was at ${new Date(firstInjection).toISOString()} (shorten OEE_SAMPLE_MS)`,
+    );
+  }
 
   // The truth: every raise and flood episode, with the wall time the paced clock reached it.
   const { speed } = await sim.status();

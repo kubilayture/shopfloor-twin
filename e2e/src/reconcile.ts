@@ -5,8 +5,8 @@
  * database and the broker, the MES ready, the simulator idle (`SIM_AUTOSTART=false`) and the
  * gateway connected with every machine's start-up state anchored in the MES, the web app; then
  * resumes the simulator at 60× from 06:00, the start of shift A. While the shift runs, Playwright
- * checks the live overview (browser/overview.spec.ts) and the live OEE dashboard
- * (browser/oee-live.spec.ts, #123). After shift end plus a margin, the run goes
+ * checks the live overview (browser/3-overview.spec.ts) and the live OEE dashboard
+ * (browser/1-oee-live.spec.ts, #123). After shift end plus a margin, the run goes
  * on until every machine has sent a fact after the shift end (#113: a machine Down, in Setup or in
  * Maintenance across the shift end, or one without telemetry, keeps its last shift bucket
  * provisional until then), with a bounded wait that the report records. Then the simulator is
@@ -33,7 +33,7 @@
  * shift's OEE byte for byte, its alarm sections `GET /alarms/kpi`'s and the ground truth's, its
  * production the OEE inputs and the ground truth. During the shift, Playwright also judges
  * `/alarms` (every raise within 2 s, the flood banner) and the `/alarms/kpi` cards
- * (browser/alarms-live.spec.ts). After the drain, Playwright acknowledges, comments, shelves and
+ * (browser/2-alarms-live.spec.ts). After the drain, Playwright acknowledges, comments, shelves and
  * unshelves alarms (browser/final/alarm-actions.spec.ts), recodes and splits one of shift A's
  * downtime records (browser/final/downtime-coding.spec.ts, #123: the audit and the Pareto change,
  * OEE does not) and writes a handover note (browser/final/shift-report.spec.ts); the alarm KPIs and
@@ -42,10 +42,11 @@
  * Usage: pnpm test:reconcile. Results (report.json, compose.log on failure, Playwright traces) go
  * to e2e/results/. Environment: RECONCILE_PROJECT (Compose project, default shopfloor-reconcile),
  * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_BROWSER=0 (no Playwright),
- * OVERVIEW_SAMPLE_MS and OEE_SAMPLE_MS (how long each live check samples, default 90000 each; they
- * run one after the other, after the alarm check's about 205 s, and together must stay below about
- * 200 s, the shift's wall time after the browser starts, less the alarm check and the pages'
- * start-up), RECONCILE_DEADLINE_MS (overall limit, default
+ * OVERVIEW_SAMPLE_MS and OEE_SAMPLE_MS (how long each live check samples, default 90000 each; the
+ * `live` files run in name order: the OEE dashboard first, from the shift's start as in Phase 5,
+ * so it must end before the first injection about 120 s after the resume; then the alarm check,
+ * up to about 205 s; then the overview, which must end before the shift does, about 480 s),
+ * RECONCILE_DEADLINE_MS (overall limit, default
  * 25 minutes), RECONCILE_SILENT_WAIT_MS (how long past the margin, in simulated time, the run may go
  * on for a silent machine's next fact; default 2 hours, 2 wall minutes at 60×). SIGINT and SIGTERM remove the stack and the env file before exiting.
  */

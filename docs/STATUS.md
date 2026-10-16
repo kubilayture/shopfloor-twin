@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #120 done (branch `feat/120-oee-module`): the `oee` module computes OEE on read per equipment and work center, per hour and shift bucket; REST (`/oee`, `/shifts/{date}/{shift}/oee`, `/shifts`, `/shifts/current`, `/reason-codes`, `/downtime`, `/downtime/pareto`) and WebSocket topics `oee:<id>` and `downtime`. The golden week's OEE equals the ground truth exactly for every machine and both work centers in all shift buckets, in order and shuffled (exit criterion 2); the live reconciliation also requires shift A's OEE final and equal to the live ground truth (exit criterion 3 groundwork).
 - #118 done (branch `feat/118-aggregates`): hourly continuous aggregates `equipment.state_hourly` and `ingest.cycle_hourly`, refreshed explicitly by their owning modules (ADR-0022); `piecesChanged`, `cycle` and `epoch` notices; cycle counts kept with the final hours and checked at start-up; golden week equal to the raw rows and to the ground truth's hourly OEE inputs for every machine and hour.
 - #119 done (branch `feat/119-reason-codes`): reason codes and downtime records. The cause vocabulary is in `@shopfloor/contracts`, and the simulator uses it (golden week byte-identical). `config/plant/reasons.yaml` holds the reason tree and the auto-rules, with a cross-check, and is seeded into `master_data.reason_code`. `equipment.downtime_record` is derived and rebuilt with the intervals. In the golden week no record is UNCODED (exit criterion 4, first two points). ADR-0021 is amended, and the master plan's section 12 decision is closed.
 - #117 done (branch `feat/117-ground-truth-oee`): the simulator's ground truth computes OEE with `oee-core`: per machine the inputs per shift bucket and UTC hour, `bucketOee` per shift bucket and `workCenterOee` for Cell M1 and Line A1; summary `sim-summary/2`, control API 1.2. Golden `summary.json` regenerated (OEE section added, every earlier field byte-identical); `events.sha256` unchanged.
@@ -75,7 +76,7 @@
 
 ## Next up
 
-- #118 aggregates and #119 reason codes, then #120–#124 in the plan's order.
+- #121 downtime coding writes, then #122–#124 in the plan's order.
 
 ## Blockers and open questions for the owner
 

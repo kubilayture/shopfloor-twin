@@ -157,6 +157,35 @@ export function pieceViolations(
   return problems;
 }
 
+/**
+ * Where two JSON values differ, as `path: truth ≠ mes` lines (at most `limit`): the exact OEE
+ * comparison (#120), where every fraction string, integer and null must be equal.
+ */
+export function jsonDifferences(truth: unknown, mes: unknown, path = '', limit = 20): string[] {
+  const found: string[] = [];
+  const walk = (a: unknown, b: unknown, at: string): void => {
+    if (found.length >= limit) return;
+    if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') {
+      if (Array.isArray(a) !== Array.isArray(b)) {
+        found.push(`${at || '.'}: ${JSON.stringify(a)} ≠ ${JSON.stringify(b)}`);
+        return;
+      }
+      const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
+      for (const key of keys) {
+        walk(
+          (a as Record<string, unknown>)[key],
+          (b as Record<string, unknown>)[key],
+          `${at}.${key}`,
+        );
+      }
+      return;
+    }
+    if (a !== b) found.push(`${at || '.'}: ${JSON.stringify(a)} ≠ ${JSON.stringify(b)}`);
+  };
+  walk(truth, mes, path);
+  return found;
+}
+
 /** Nearest-rank percentile of a non-empty list. */
 export function percentile(values: readonly number[], p: number): number {
   const sorted = [...values].sort((a, b) => a - b);

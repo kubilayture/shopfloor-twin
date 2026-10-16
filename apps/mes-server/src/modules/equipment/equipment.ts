@@ -120,7 +120,20 @@ export interface DowntimeQuery {
   readonly epoch?: number;
   /** UNCODED records first (the coding screen), then by start; otherwise by start only. */
   readonly uncodedFirst?: boolean;
+  /** Only the records still UNCODED. */
+  readonly uncoded?: boolean;
   readonly limit?: number;
+}
+
+/** Downtime of a range summed per (equipment, epoch, reason, loss), clipped to it (#120). */
+export interface DowntimeLoss {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly reason: string;
+  readonly loss: AvailabilityLoss;
+  /** Clipped to the range; an open record runs to its epoch's watermark. */
+  readonly ms: number;
+  readonly records: number;
 }
 
 /** The latest known state of one equipment, in its newest device epoch. */
@@ -186,6 +199,37 @@ export interface StateHour {
   readonly final: boolean;
   /** How often the hour changed after it became final (0 while not final). */
   readonly revision: number;
+  /** Ids of the gap incidents over the hour (from its `bucket_finality` row; empty while not final). */
+  readonly incidentIds: readonly number[];
+}
+
+/**
+ * One stored piece of a Stopped interval with its interval's whole length (#120, ADR-0021): what
+ * `oee-core` classifies as a micro-stop or a long stop.
+ */
+export interface StopPiece {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly hour: Date;
+  readonly shiftKey: string;
+  readonly start: Date;
+  readonly end: Date;
+  readonly cause: string | null;
+  readonly intervalStart: Date;
+  /**
+   * The whole interval's length: to its end when settled; while open (the epoch's last interval,
+   * or one ending after the equipment's "final through"), to the earlier of its end and "final
+   * through", never shorter than this piece.
+   */
+  readonly wholeMs: number;
+  /** Its end may still move: a classification below the threshold is provisional. */
+  readonly open: boolean;
+}
+
+/** The hourly state rows and stop pieces of a range, read in one snapshot (#120, ADR-0021). */
+export interface OeeInputs {
+  readonly hours: readonly StateHour[];
+  readonly stops: readonly StopPiece[];
 }
 
 /** Sent after any write to the stored pieces of one (equipment, epoch) (#118). */
@@ -431,7 +475,134 @@ export class Equipment {
       readonly shiftKey?: string;
     } = {},
   ): Promise<StateHour[]> {
-    let query = this.#readDb
+    return this.#stateHourly(this.#readDb, from, to, options);
+  }
+
+  /**
+   * The hourly state rows (`stateHourly`) and the Stopped pieces (`stopPieces`) of the hours in
+   * [from, to), read in one REPEATABLE READ snapshot (ADR-0021: so a concurrent interval update
+   * can't make the stop pieces disagree with the Stopped time of the same read).
+   */
+  async oeeInputs(
+    from: Date,
+    to: Date,
+    options: { readonly equipment?: readonly string[]; readonly epoch?: number } = {},
+  ): Promise<OeeInputs> {
+    return this.#readDb
+      .transaction()
+      .setIsolationLevel('repeatable read')
+      .setAccessMode('read only')
+      .execute(async (trx) => {
+        const hours: StateHour[] = [];
+        const stops: StopPiece[] = [];
+        // One equipment at a time keeps every query on its index; all inside the same snapshot.
+        for (const equipment of options.equipment ?? [undefined]) {
+          const scope = {
+            ...(equipment === undefined ? {} : { equipment }),
+            ...(options.epoch === undefined ? {} : { epoch: options.epoch }),
+          };
+          hours.push(...(await this.#stateHourly(trx, from, to, scope)));
+          stops.push(...(await this.#stopPieces(trx, from, to, scope)));
+        }
+        return { hours, stops };
+      });
+  }
+
+  /**
+   * Stored Stopped pieces overlapping [from, to), each with its whole interval's length (#120;
+   * plan "Storage and aggregation": the threshold applies to the whole interval, so it is not
+   * stored). An interval is open while it is its epoch's last or its end lies after "final
+   * through"; its length then runs to "final through" (never short of the piece's own end).
+   */
+  async stopPieces(
+    from: Date,
+    to: Date,
+    options: { readonly equipment?: string; readonly epoch?: number } = {},
+  ): Promise<StopPiece[]> {
+    return this.#stopPieces(this.#readDb, from, to, options);
+  }
+
+  async #stopPieces(
+    db: Kysely<Database>,
+    from: Date,
+    to: Date,
+    options: { readonly equipment?: string; readonly epoch?: number },
+  ): Promise<StopPiece[]> {
+    const filters = [
+      sql`s.state = 'Stopped'`,
+      // Pieces never exceed an hour: this bound lets the index on start_time do the work.
+      sql`s.start_time > ${new Date(from.getTime() - HOUR)}`,
+      sql`s.start_time < ${to}`,
+      sql`s.end_time > ${from}`,
+      ...(options.equipment === undefined ? [] : [sql`s.equipment = ${options.equipment}`]),
+      ...(options.epoch === undefined ? [] : [sql`s.epoch = ${options.epoch}`]),
+    ];
+    // The interval ends where the next interval's first piece starts (pieces of a track are
+    // contiguous); the last interval of a track ends with the track's last piece.
+    const rows = await sql<{
+      equipment: string;
+      epoch: number;
+      hour: Date;
+      shift_key: string;
+      start_time: Date;
+      end_time: Date;
+      cause: string | null;
+      interval_start: Date;
+      next_start: Date | null;
+      last_end: Date | null;
+    }>`
+      SELECT s.equipment, s.epoch, s.hour, s.shift_key, s.start_time, s.end_time, s.cause,
+        s.interval_start,
+        n.next_start, (
+          -- Only for the last interval of a track: where its last stored piece ends.
+          SELECT p.end_time FROM equipment.equipment_state_interval p
+          WHERE n.next_start IS NULL AND p.equipment = s.equipment AND p.epoch = s.epoch
+            AND p.start_time >= s.start_time
+          ORDER BY p.start_time DESC LIMIT 1) AS last_end
+      FROM equipment.equipment_state_interval s
+      LEFT JOIN LATERAL (
+        SELECT p.start_time AS next_start FROM equipment.equipment_state_interval p
+        WHERE p.equipment = s.equipment AND p.epoch = s.epoch AND p.start_time > s.start_time
+          AND p.interval_start <> s.interval_start
+        ORDER BY p.start_time LIMIT 1) n ON true
+      WHERE ${sql.join(filters, sql` AND `)}
+      ORDER BY s.equipment, s.epoch, s.start_time`.execute(db);
+    return rows.rows.map((row) => {
+      const track = this.#tracks.get(row.equipment)?.get(row.epoch);
+      const start = row.interval_start.getTime();
+      const end = row.next_start?.getTime() ?? row.last_end?.getTime() ?? row.end_time.getTime();
+      const bound = track ? this.#bound(track) : Infinity;
+      // Open: the last interval of an epoch not closed, or one whose end is not settled yet (a
+      // later fact arrived before a missing one, #120 review). Its length so far runs to the
+      // bound, the part that can no longer shrink, and never short of the piece itself.
+      const open = (row.next_start === null && track !== undefined && !track.closed) || end > bound;
+      const wholeEnd = open ? Math.max(Math.min(end, bound), row.end_time.getTime()) : end;
+      return {
+        equipment: row.equipment,
+        epoch: row.epoch,
+        hour: row.hour,
+        shiftKey: row.shift_key,
+        start: row.start_time,
+        end: row.end_time,
+        cause: row.cause,
+        intervalStart: row.interval_start,
+        wholeMs: wholeEnd - start,
+        open,
+      };
+    });
+  }
+
+  async #stateHourly(
+    db: Kysely<Database>,
+    from: Date,
+    to: Date,
+    options: {
+      readonly equipment?: string;
+      readonly epoch?: number;
+      readonly shiftKey?: string;
+    },
+  ): Promise<StateHour[]> {
+    let query = db
       .selectFrom('equipment.state_hourly as h')
       .leftJoin('equipment.bucket_finality as f', (join) =>
         join
@@ -449,6 +620,7 @@ export class Equipment {
         'h.provisional_ms',
         'f.revision',
         'f.hour as final_hour',
+        'f.incident_ids',
       ])
       .where('h.hour', '>=', from)
       .where('h.hour', '<', to);
@@ -473,6 +645,7 @@ export class Equipment {
       provisionalMs: row.provisional_ms,
       final: row.final_hour !== null && this.#states?.isRefreshed(row.hour.getTime()) === true,
       revision: row.revision ?? 0,
+      incidentIds: row.incident_ids ?? [],
     }));
   }
 
@@ -629,6 +802,7 @@ export class Equipment {
       .where((eb) => eb.or([eb('end_time', 'is', null), eb('end_time', '>', query.from)]));
     if (query.equipment !== undefined) select = select.where('equipment', '=', query.equipment);
     if (query.epoch !== undefined) select = select.where('epoch', '=', query.epoch);
+    if (query.uncoded === true) select = select.where('auto_reason', '=', UNCODED);
     if (query.uncodedFirst === true) {
       select = select.orderBy(sql`auto_reason = ${UNCODED}`, 'desc');
     }
@@ -648,6 +822,63 @@ export class Equipment {
       autoReason: row.auto_reason,
       provisional: row.provisional,
     }));
+  }
+
+  /**
+   * Downtime records overlapping [from, to), summed in the database per (equipment, epoch, auto
+   * reason, state), each clipped to the range, without a row limit (#120: the Pareto must equal
+   * the OEE losses). An open record runs to its epoch's watermark.
+   */
+  async downtimeLoss(query: {
+    readonly from: Date;
+    readonly to: Date;
+    readonly equipment?: string;
+    readonly epoch?: number;
+  }): Promise<DowntimeLoss[]> {
+    const marks = [...this.#watermarks];
+    const filters = [
+      sql`r.start_time > ${new Date(query.from.getTime() - this.#maxBucketMs)}`,
+      sql`r.start_time < ${query.to}`,
+      sql`(r.end_time IS NULL OR r.end_time > ${query.from})`,
+      ...(query.equipment === undefined ? [] : [sql`r.equipment = ${query.equipment}`]),
+      ...(query.epoch === undefined ? [] : [sql`r.epoch = ${query.epoch}`]),
+    ];
+    const rows = await sql<{
+      equipment: string;
+      epoch: number;
+      reason: string;
+      state: string;
+      ms: number;
+      records: number;
+    }>`
+      SELECT r.equipment, r.epoch, r.auto_reason AS reason, r.state,
+        coalesce(sum(greatest(0, (extract(epoch FROM
+          least(coalesce(r.end_time, w.watermark, r.start_time), ${query.to})
+          - greatest(r.start_time, ${query.from})) * 1000)::bigint)), 0)::bigint AS ms,
+        count(*)::bigint AS records
+      FROM equipment.downtime_record r
+      LEFT JOIN unnest(${marks.map(([epoch]) => epoch)}::bigint[],
+        ${marks.map(([, at]) => new Date(at))}::timestamptz[]) AS w(epoch, watermark)
+        ON w.epoch = r.epoch
+      WHERE ${sql.join(filters, sql` AND `)}
+      GROUP BY r.equipment, r.epoch, r.auto_reason, r.state
+      ORDER BY r.equipment, r.epoch, r.auto_reason, r.state`.execute(this.#readDb);
+    const merged = new Map<string, DowntimeLoss>();
+    for (const row of rows.rows) {
+      // Stored records are availability loss by construction (a CHECK lists their states).
+      const loss = availabilityLoss(row.state, Infinity, 0) ?? 'own';
+      const key = [row.equipment, row.epoch, row.reason, loss].join('\u0000');
+      const before = merged.get(key);
+      merged.set(key, {
+        equipment: row.equipment,
+        epoch: row.epoch,
+        reason: row.reason,
+        loss,
+        ms: (before?.ms ?? 0) + row.ms,
+        records: (before?.records ?? 0) + row.records,
+      });
+    }
+    return [...merged.values()].filter((row) => row.ms > 0);
   }
 
   #enqueue<T>(work: () => Promise<T>): Promise<T> {
@@ -764,6 +995,9 @@ export class Equipment {
 
   async #onState(track: Track, fact: StateFact, settledSeq: number | null): Promise<void> {
     this.#raise(track.epoch, fact.sourceTime.getTime());
+    // How far the stored intervals were settled before this fact: only a stop class settled
+    // then can have been final, and so revised (#120 review).
+    const priorBound = this.#bound(track);
     if (await this.#learn(track, settledSeq, { seq: fact.seq, at: fact.sourceTime.getTime() })) {
       // This fact is one the track is about to count: the rest must be known already.
       await this.#verifyFacts(track, 1, false);
@@ -771,7 +1005,7 @@ export class Equipment {
     // A track whose last handling failed is recomputed, never patched from a stale state.
     const window = this.#dirty.has(track) ? undefined : await this.#window(track, fact);
     if (!window) {
-      await this.#rebuild(track);
+      await this.#rebuild(track, priorBound);
     } else {
       const { points: span, index, facts } = window;
       const first = span[0];
@@ -792,6 +1026,7 @@ export class Equipment {
           changedFrom,
           { from: pred?.at, to: succ.at },
           pieces,
+          priorBound,
         );
         await this.#replace(
           track,
@@ -810,6 +1045,7 @@ export class Equipment {
           changedFrom,
           { from: pred?.at },
           pieces,
+          priorBound,
         );
         await this.#replace(
           track,
@@ -1231,16 +1467,25 @@ export class Equipment {
   /**
    * The final hours from `from`'s hour on whose stored pieces in the replaced window
    * [window.from, window.to) differ from `pieces`: what a change after finality revises. Asked
-   * only when such an hour can exist, so the in-order path never reads.
+   * only when such an hour can exist, so the in-order path rarely reads.
+   *
+   * A Stopped piece also compares by its interval's class (micro-stop or not, ADR-0021): a late
+   * fill that moves a stop's end changes the OEE of every hour the stop touches, also hours
+   * before the fact whose pieces stay the same (#120 review). So when the window opens with a
+   * Stopped interval, the check starts at that interval's hour.
    */
   async #changedFinalHours(
     track: Track,
     from: Millis | undefined,
     window: { readonly from?: Millis | undefined; readonly to?: Millis | undefined },
     pieces: readonly Piece[],
+    settledBound: Millis = this.#bound(track),
   ): Promise<Millis[]> {
     const { to } = window;
-    const first = from === undefined ? undefined : hourOf(from);
+    const opening = pieces[0];
+    const stopFrom =
+      opening?.state === 'Stopped' && opening.from === window.from ? opening.from : undefined;
+    const first = from === undefined ? undefined : hourOf(Math.min(from, stopFrom ?? from));
     const possible =
       first === undefined
         ? track.closed || track.finalEnd > -Infinity
@@ -1268,8 +1513,55 @@ export class Equipment {
     if (window.from !== undefined) query = query.where('start_time', '>=', new Date(window.from));
     if (to !== undefined) query = query.where('start_time', '<', new Date(to));
     const stored = await query.orderBy('start_time').execute();
+    // Where each stored Stopped interval of those hours ends (its pieces may reach later hours).
+    const stoppedStarts = [
+      ...new Set(
+        stored.filter((r) => r.state === 'Stopped').map((r) => r.interval_start.getTime()),
+      ),
+    ];
+    const storedEnds = new Map<Millis, Millis>();
+    if (stoppedStarts.length > 0) {
+      const ends = await this.#db
+        .selectFrom('equipment.equipment_state_interval')
+        .select(['interval_start', (eb) => eb.fn.max<Date>('end_time').as('end')])
+        .where('equipment', '=', track.equipment)
+        .where('epoch', '=', track.epoch)
+        .where('state', '=', 'Stopped')
+        .where('start_time', '>=', new Date(Math.min(...stoppedStarts)))
+        .where(
+          'interval_start',
+          'in',
+          stoppedStarts.map((start) => new Date(start)),
+        )
+        .groupBy('interval_start')
+        .execute();
+      for (const row of ends) storedEnds.set(row.interval_start.getTime(), row.end.getTime());
+    }
+    const newEnds = new Map<Millis, Millis>();
+    for (const piece of pieces) {
+      if (piece.state !== 'Stopped') continue;
+      newEnds.set(
+        piece.intervalStart,
+        Math.max(newEnds.get(piece.intervalStart) ?? -Infinity, piece.to),
+      );
+    }
+    const threshold = this.#downtime.microStopThresholdMs;
+    // Only a settled class can be revised: a stop that was still open, or whose end lay past
+    // "final through", was provisional, so its OEE bucket was not final either.
+    // `settledBound`: "final through" before the fact being handled moved it.
+    const settled = new Set(
+      [...storedEnds]
+        .filter(([start, end]) => end <= settledBound && (track.closed || start !== track.last?.at))
+        .map(([start]) => start),
+    );
+    const stopClass = (state: string, start: Millis, ends: ReadonlyMap<Millis, Millis>) =>
+      state === 'Stopped' && settled.has(start)
+        ? (ends.get(start) ?? start) - start >= threshold
+          ? 'long'
+          : 'micro'
+        : '';
     const byHour = (
-      rows: readonly (readonly [Millis, Millis, string, string | null, Millis])[],
+      rows: readonly (readonly [Millis, Millis, string, string | null, Millis, string])[],
     ) => {
       const result = new Map<Millis, string>();
       for (const row of rows) {
@@ -1287,12 +1579,21 @@ export class Equipment {
             row.state,
             row.cause,
             row.interval_start.getTime(),
+            stopClass(row.state, row.interval_start.getTime(), storedEnds),
           ] as const,
       ),
     );
     const after = byHour(
       pieces.map(
-        (piece) => [piece.from, piece.to, piece.state, piece.cause, piece.intervalStart] as const,
+        (piece) =>
+          [
+            piece.from,
+            piece.to,
+            piece.state,
+            piece.cause,
+            piece.intervalStart,
+            stopClass(piece.state, piece.intervalStart, newEnds),
+          ] as const,
       ),
     );
     // An hour without stored pieces has nothing to compare (they were removed by hand).
@@ -1368,7 +1669,7 @@ export class Equipment {
   }
 
   /** Recomputes all intervals of (equipment, epoch) from ingest's tables. */
-  async #rebuild(track: Track): Promise<void> {
+  async #rebuild(track: Track, settledBound: Millis = this.#bound(track)): Promise<void> {
     const [facts, anchor] = await Promise.all([
       this.#source.stateFacts(track.equipment, track.epoch),
       this.#source.anchor(track.equipment, track.epoch),
@@ -1380,7 +1681,7 @@ export class Equipment {
     const end = last ? this.#end(track, last.at) : -Infinity;
     const pieces = last ? cutPieces(points, end, this.#pattern, this.#bound(track)) : [];
     track.clamped = clamped;
-    const revised = await this.#changedFinalHours(track, undefined, {}, pieces);
+    const revised = await this.#changedFinalHours(track, undefined, {}, pieces, settledBound);
     // Every piece is replaced: the earliest provisional end is among the new ones.
     track.promoteAt = Infinity;
     await this.#replace(

@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
+import { formatIssues, idealCycleMs, loadPlantConfig } from '@shopfloor/plant-config';
 import { sql } from 'kysely';
 import { createDatabase } from './db/database.ts';
 import { migrate } from './db/migrate.ts';
@@ -8,6 +8,7 @@ import { buildMesHttp } from './http.ts';
 import { Equipment, downtimeRules } from './modules/equipment/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
+import { DowntimeFeed, Oee } from './modules/oee/index.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -41,6 +42,8 @@ const state = { migrated: false, stopping: false };
 
 let ingest: Ingest | undefined;
 let equipment: Equipment | undefined;
+let oee: Oee | undefined;
+let downtime: DowntimeFeed | undefined;
 
 const { app, registry, realtime } = await buildMesHttp({
   // Ready once migrated, the database answers and the UNS subscription is granted.
@@ -69,6 +72,11 @@ async function shutdown(signal: string): Promise<void> {
   for (const close of [
     () => app.close(),
     async () => ingest?.stop(),
+    () => {
+      oee?.stop();
+      downtime?.stop();
+      return Promise.resolve();
+    },
     async () => equipment?.stop(),
     () => db.destroy(),
     () => readDb.destroy(),
@@ -120,8 +128,26 @@ try {
     log: log.child({ module: 'equipment' }),
   });
   await equipment.start();
+  // OEE is computed on read (#120): it reads the other modules through the API's pool.
+  const apiMasterData = new MasterData(readDb);
+  oee = new Oee({
+    equipment,
+    ingest,
+    masterData: apiMasterData,
+    shiftPattern: await masterData.shiftPattern(),
+    config: plant.config.oee,
+    idealCycleMs: idealCycleMs(plant.config),
+  });
+  await oee.start();
+  const oeeLog = log.child({ module: 'oee' });
+  downtime = new DowntimeFeed({
+    equipment,
+    onError: (error) => {
+      oeeLog.warn({ err: error }, 'downtime feed: reading records failed; retrying');
+    },
+  });
   // The API and push follow the modules from here; until then they answer 503.
-  await realtime.attach({ masterData: new MasterData(readDb), equipment, ingest });
+  await realtime.attach({ masterData: apiMasterData, equipment, ingest, oee, downtime });
   await ingest.start();
 } catch (error) {
   if (state.stopping) await new Promise(() => undefined); // shutdown() owns the exit

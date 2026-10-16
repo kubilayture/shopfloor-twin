@@ -12,7 +12,10 @@
  * paused, the MES drains, and shift A must be final (`provisionalMs = 0`, `revision = 0`,
  * `incidents = 0` for every machine), its time per state must equal the simulator's live ground
  * truth to the millisecond, every stored piece must lie inside one UTC hour and one shift bucket,
- * and no data may have been lost (no gap incidents).
+ * and no data may have been lost (no gap incidents). Its OEE (`GET /api/v1/shifts/{date}/A/oee`,
+ * #120) must be final for all six machines (`final`, `provisionalMs = 0`, `revision = 0`,
+ * `incidents = 0`) and equal the live ground truth's OEE exactly: inputs, fractions, four-decimal
+ * strings, totals, losses and `unplanned`, per machine and per work center.
  *
  * Usage: pnpm test:reconcile. Results (report.json, compose.log on failure, Playwright traces) go
  * to e2e/results/. Environment: RECONCILE_PROJECT (Compose project, default shopfloor-reconcile),
@@ -32,6 +35,7 @@ import { GatewayClient, MesClient, SimulatorClient, gauge, type GroundTruth } fr
 import {
   differences,
   formatDifferences,
+  jsonDifferences,
   mesTotals,
   percentile,
   pieceViolations,
@@ -53,6 +57,9 @@ const SILENT_WAIT_MS = Number(process.env.RECONCILE_SILENT_WAIT_MS ?? 2 * 3_600_
 
 /** Wall time without the simulation clock moving after which the run fails at once. */
 const STALL_MS = 30_000;
+
+/** How long the MES may take to report shift A's OEE final after the drain (refresh debounce). */
+const OEE_FINAL_MS = 30_000;
 
 /** Overall limit of a run, below the CI job's timeout (30 minutes). */
 const DEADLINE_MS = Number(process.env.RECONCILE_DEADLINE_MS ?? 25 * 60_000);
@@ -137,6 +144,23 @@ interface Report {
     }
   >;
   goldenShiftEqual?: boolean;
+  /** Shift A's OEE from the MES against the live ground truth (#120). */
+  oee?: {
+    waitedMs: number;
+    machines: Record<
+      string,
+      {
+        equal: boolean;
+        final: boolean;
+        provisionalMs: number;
+        revision: number;
+        incidents: number;
+        oee: string | null;
+        differences: string[];
+      }
+    >;
+    workCenters: Record<string, { equal: boolean; oee: string | null; differences: string[] }>;
+  };
   pieces?: { count: number; violations: string[] };
   incidents?: unknown[];
   rejectedMessages?: number;
@@ -447,6 +471,70 @@ async function main(): Promise<boolean> {
           }
         }
 
+        // OEE (#120, exit criterion 3): shift A final for every machine, equal to the live truth.
+        const oeeFrom = Date.now();
+        let shiftOee = await mes.shiftOee(shiftKey);
+        const allFinal = () =>
+          machines.every((id) => shiftOee.equipment.find((b) => b.id === id)?.final === true);
+        await until(
+          `${shiftKey} OEE final for every machine`,
+          async () => {
+            shiftOee = await mes.shiftOee(shiftKey);
+            return allFinal();
+          },
+          OEE_FINAL_MS,
+        ).catch((error: unknown) => {
+          fail(error instanceof Error ? error.message : String(error));
+        });
+        report.oee = { waitedMs: Date.now() - oeeFrom, machines: {}, workCenters: {} };
+        for (const id of machines) {
+          const bucket = shiftOee.equipment.find((b) => b.id === id);
+          const expectedOee = truth.oee.machines[id]?.shifts[shiftKey];
+          const diffs = jsonDifferences(
+            expectedOee ?? null,
+            bucket
+              ? {
+                  inputs: { stateMs: bucket.inputs.stateMs, cycles: bucket.inputs.cycles },
+                  result: bucket.result,
+                }
+              : null,
+          );
+          report.oee.machines[id] = {
+            equal: diffs.length === 0,
+            final: bucket?.final ?? false,
+            provisionalMs: bucket?.provisionalMs ?? -1,
+            revision: bucket?.revision ?? -1,
+            incidents: bucket?.incidents ?? -1,
+            oee: bucket?.result.oee?.decimal ?? null,
+            differences: diffs,
+          };
+          if (diffs.length > 0) {
+            fail(`${id}: ${shiftKey} OEE differs from the ground truth:\n  ${diffs.join('\n  ')}`);
+          }
+          if (
+            !bucket?.final ||
+            bucket.provisionalMs !== 0 ||
+            bucket.revision !== 0 ||
+            bucket.incidents !== 0
+          ) {
+            fail(
+              `${id}: ${shiftKey} OEE not final (final ${String(bucket?.final)}, provisionalMs ${String(bucket?.provisionalMs)}, revision ${String(bucket?.revision)}, incidents ${String(bucket?.incidents)})`,
+            );
+          }
+        }
+        for (const [id, wc] of Object.entries(truth.oee.workCenters)) {
+          const bucket = shiftOee.workCenters.find((b) => b.id === id);
+          const diffs = jsonDifferences(wc.shifts[shiftKey] ?? null, bucket?.result ?? null);
+          report.oee.workCenters[id] = {
+            equal: diffs.length === 0,
+            oee: bucket?.result.oee?.decimal ?? null,
+            differences: diffs,
+          };
+          if (diffs.length > 0) {
+            fail(`${id}: ${shiftKey} OEE differs from the ground truth:\n  ${diffs.join('\n  ')}`);
+          }
+        }
+
         // The live run reproduces the headless golden week's shift A: pacing never changes the run.
         const golden = JSON.parse(await readFile(join(GOLDEN, 'summary.json'), 'utf8')) as {
           machines: Record<string, { byShift: Record<string, StateMs> }>;
@@ -554,6 +642,15 @@ function summarize(report: Report): void {
       `  ${id}: ${m.equal ? 'equal' : 'DIFFERENT'} (${states}; provisional ${String(m.provisionalMs)}, revision ${String(m.revision)}, incidents ${String(m.incidents)})`,
     );
   }
+  for (const [id, m] of Object.entries(report.oee?.machines ?? {})) {
+    console.log(
+      `  OEE ${id}: ${m.equal ? 'equal' : 'DIFFERENT'} (OEE ${String(m.oee)}; final ${String(m.final)}, provisional ${String(m.provisionalMs)}, revision ${String(m.revision)}, incidents ${String(m.incidents)})`,
+    );
+  }
+  for (const [id, wc] of Object.entries(report.oee?.workCenters ?? {})) {
+    console.log(`  OEE ${id}: ${wc.equal ? 'equal' : 'DIFFERENT'} (OEE ${String(wc.oee)})`);
+  }
+  if (report.oee) console.log(`  OEE final after ${String(report.oee.waitedMs)} ms`);
   if (report.goldenShiftEqual !== undefined) {
     console.log(
       `  live ground truth equals the golden week's shift: ${String(report.goldenShiftEqual)}`,

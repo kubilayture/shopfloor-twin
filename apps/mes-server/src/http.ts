@@ -52,15 +52,19 @@ export async function buildMesHttp({
         title: 'ShopFloor Twin MES API',
         version,
         description:
-          'Read-only API of the MES (Phase 4): equipment with current state, state intervals, ' +
-          'telemetry series, shift totals and the plant clock. No authentication yet (Phase 9); ' +
+          'Read-only API of the MES (Phases 4 and 5): equipment with current state, state ' +
+          'intervals, telemetry series, shift totals, the plant clock, OEE per hour and shift, ' +
+          'shift instances, reason codes, downtime records and the loss Pareto. No ' +
+          'authentication yet (Phase 7); ' +
           'bound to loopback by default. Errors are RFC 9457 problem details. ' +
           `Push: WebSocket at ${WS_PATH} (see docs/api/realtime.md).`,
       },
       tags: [
         { name: 'equipment', description: 'Equipment, current states and state intervals' },
         { name: 'telemetry', description: 'Telemetry metrics and decimated series' },
-        { name: 'shifts', description: 'Time per state in a shift' },
+        { name: 'shifts', description: 'Shift instances, time per state and OEE in a shift' },
+        { name: 'oee', description: 'OEE per equipment and work center, per hour and shift' },
+        { name: 'downtime', description: 'Reason codes, downtime records and the loss Pareto' },
         { name: 'plant', description: 'Site and plant clock' },
         { name: 'operations', description: 'Health and metrics' },
       ],

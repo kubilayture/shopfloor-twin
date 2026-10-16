@@ -1,14 +1,27 @@
 import websocket from '@fastify/websocket';
 import type { IncomingHttpHeaders } from 'node:http';
+import { NO_SHIFT } from '@shopfloor/shift-calendar';
 import type { FastifyInstance } from 'fastify';
 import type { Registry } from 'prom-client';
 import type { Equipment, StoredInterval } from '../equipment/index.ts';
 import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
+import {
+  pareto,
+  shiftInstance,
+  shiftInstances,
+  type DowntimeFeed,
+  type Oee,
+  type OeeScope,
+} from '../oee/index.ts';
+import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
 import { PushHub, currentStateDto, type PushOptions } from './push.ts';
 import { HttpProblem, PROBLEM_TYPE, getRoute, jsonSchema, problem } from './routes.ts';
 import {
   LIMITS,
+  currentShiftSchema,
+  downtimeListSchema,
+  downtimeQuery,
   equipmentListSchema,
   equipmentParams,
   equipmentSchema,
@@ -16,12 +29,22 @@ import {
   intervalsSchema,
   metricsSchema,
   noQuery,
+  oeeListSchema,
+  oeeQuery,
+  paretoQuery,
+  paretoSchema,
   plantSchema,
   problemSchema,
+  reasonCodesQuery,
+  reasonCodesSchema,
   seriesSchema,
+  shiftListSchema,
+  shiftOeeQuery,
+  shiftOeeSchema,
   shiftParams,
   shiftTotalsQuery,
   shiftTotalsSchema,
+  shiftsQuery,
   telemetryQuery,
   type EquipmentDto,
   type IntervalDto,
@@ -32,18 +55,35 @@ export const WS_PATH = `${API_PREFIX}/ws`;
 
 /** What the API reads from the other modules (their `index.ts` interfaces). */
 export interface ApiSources {
-  readonly masterData: Pick<MasterData, 'equipment' | 'site' | 'shiftPattern'>;
+  readonly masterData: Pick<MasterData, 'equipment' | 'site' | 'shiftPattern' | 'reasonCodes'>;
   readonly equipment: Pick<
     Equipment,
     | 'currentStates'
     | 'currentState'
     | 'intervals'
     | 'shiftTotals'
+    | 'downtimeRecords'
     | 'watermark'
     | 'watermarks'
     | 'onChange'
   >;
   readonly ingest: Pick<Ingest, 'telemetryMetrics' | 'telemetrySeries' | 'onStored'>;
+  /** OEE on read (#120). */
+  readonly oee: Pick<
+    Oee,
+    | 'buckets'
+    | 'shift'
+    | 'current'
+    | 'members'
+    | 'workCenters'
+    | 'paretoInputs'
+    | 'reasonCodes'
+    | 'onChange'
+    | 'config'
+    | 'shiftPattern'
+  >;
+  /** Downtime record changes for the `downtime` push topic (#120). */
+  readonly downtime?: Pick<DowntimeFeed, 'subscribe'>;
 }
 
 export interface RealtimeOptions {
@@ -453,6 +493,227 @@ export async function registerRealtime(
         },
       );
 
+      // ---- OEE, shifts and downtime (#120) ----
+
+      const members = async (scope: OeeScope, id: string): Promise<readonly string[]> => {
+        const found = await ready().sources.oee.members(scope, id);
+        if (!found) throw new HttpProblem(404, `no ${scope} ${id}`);
+        return found;
+      };
+
+      getRoute(
+        api,
+        {
+          url: '/oee',
+          summary: 'OEE of an equipment or work center per hour or shift bucket',
+          description:
+            'Computed on read (ADR-0021): availability, performance, quality and OEE as exact ' +
+            'fractions and four-decimal strings, with inputs, totals and losses. A work center sums ' +
+            "its machines' inputs. Shift buckets are whole shifts; no-shift stretches are clipped " +
+            'to the range. `final` once nothing that can still arrive changes the bucket.',
+          tags: ['oee'],
+          query: oeeQuery,
+          response: oeeListSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ query }) => {
+          await members(query.scope, query.id);
+          const buckets = await ready().sources.oee.buckets(query);
+          return {
+            scope: query.scope,
+            id: query.id,
+            bucket: query.bucket,
+            from: iso(query.from),
+            to: iso(query.to),
+            buckets: buckets.map(bucketDto),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/shifts/:date/:shift/oee',
+          summary: 'OEE of one shift for every machine and work center',
+          tags: ['shifts', 'oee'],
+          params: shiftParams,
+          query: shiftOeeQuery,
+          response: shiftOeeSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ params, query }) => {
+          if (!ready().shifts.has(params.shift)) {
+            throw new HttpProblem(404, `no shift ${params.shift} in the shift pattern`);
+          }
+          const { oee } = ready().sources;
+          const instance = shiftInstance(oee.shiftPattern, params.date, params.shift);
+          if (!instance) {
+            throw new HttpProblem(
+              404,
+              `no shift ${params.shift} on ${params.date} (not a workday)`,
+            );
+          }
+          const result = await oee.shift(instance, query.epoch);
+          return {
+            shiftKey: instance.key,
+            start: iso(new Date(instance.start)),
+            end: iso(new Date(instance.end)),
+            equipment: result.equipment.map(bucketDto),
+            workCenters: result.workCenters.map(bucketDto),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/shifts',
+          summary: 'Scheduled shifts overlapping a time range, from the shift calendar',
+          tags: ['shifts'],
+          query: shiftsQuery,
+          response: shiftListSchema,
+          errors: [400, 503],
+        },
+        ({ query }) => ({
+          from: iso(query.from),
+          to: iso(query.to),
+          shifts: shiftInstances(
+            ready().sources.oee.shiftPattern,
+            query.from.getTime(),
+            query.to.getTime(),
+          ).map(shiftInstanceDto),
+        }),
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/shifts/current',
+          summary: 'The shift the plant clock is in',
+          tags: ['shifts'],
+          query: noQuery,
+          response: currentShiftSchema,
+          errors: [400, 503],
+        },
+        () => {
+          const { sources } = ready();
+          const clock = sources.equipment.watermarks()[0];
+          if (!clock) return { clock: null, shiftKey: null, shift: null };
+          // The instant just before the watermark, as the current OEE buckets read it.
+          const at = clock.watermark.getTime() - 1;
+          const [instance] = shiftInstances(sources.oee.shiftPattern, at, at + 1);
+          return {
+            clock: { epoch: clock.epoch, watermark: iso(clock.watermark) },
+            shiftKey: instance?.key ?? NO_SHIFT,
+            shift: instance ? shiftInstanceDto(instance) : null,
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/reason-codes',
+          summary: 'The downtime reason tree',
+          tags: ['downtime'],
+          query: reasonCodesQuery,
+          response: reasonCodesSchema,
+          errors: [400, 503],
+        },
+        async ({ query }) => {
+          const reasons = await ready().sources.masterData.reasonCodes({
+            inactive: query.inactive,
+          });
+          return {
+            reasons: reasons.map((r) => ({
+              id: r.id,
+              parent: r.parent,
+              name: r.name,
+              active: r.active,
+            })),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/downtime',
+          summary: 'Downtime records overlapping a time range',
+          description:
+            'One record per availability-loss interval per scheduled shift bucket (#119), with its ' +
+            'auto reason. With uncoded=true, only records still UNCODED.',
+          tags: ['downtime'],
+          query: downtimeQuery,
+          response: downtimeListSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ query }) => {
+          if (query.equipment !== undefined) known(query.equipment);
+          const { equipment } = ready().sources;
+          // Filtered in the database, so `truncated` counts only the records that match.
+          const found = await equipment.downtimeRecords({
+            from: query.from,
+            to: query.to,
+            uncodedFirst: true,
+            uncoded: query.uncoded,
+            limit: LIMITS.downtimeRecords + 1,
+            ...(query.equipment === undefined ? {} : { equipment: query.equipment }),
+          });
+          const truncated = found.length > LIMITS.downtimeRecords;
+          const records = truncated ? found.slice(0, LIMITS.downtimeRecords) : found;
+          return {
+            from: iso(query.from),
+            to: iso(query.to),
+            truncated,
+            records: records.map((record) => recordDto(record, equipment.watermark(record.epoch))),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/downtime/pareto',
+          summary: 'Availability loss by reason and micro-stops by cause',
+          description:
+            'Own and external availability loss by reason from the downtime records, micro-stops ' +
+            '(performance loss) by cause from the Stopped intervals below the threshold, all ' +
+            'clipped to the range, without a row limit: the sums equal the OEE losses. Epoch: the ' +
+            'one given, else the newest with data (one for all machines of a work center).',
+          tags: ['downtime', 'oee'],
+          query: paretoQuery,
+          response: paretoSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ query }) => {
+          const { oee } = ready().sources;
+          await members(query.scope, query.id);
+          const [read, reasons] = await Promise.all([
+            oee.paretoInputs(query.scope, query.id, query.from, query.to, query.epoch),
+            oee.reasonCodes(),
+          ]);
+          const result = pareto({
+            losses: read.losses,
+            stops: read.stops,
+            from: query.from,
+            to: query.to,
+            thresholdMs: oee.config.microStopThresholdMs,
+            reasons,
+          });
+          return {
+            scope: query.scope,
+            id: query.id,
+            from: iso(query.from),
+            to: iso(query.to),
+            members: read.members.map((m) => ({ ...m })),
+            availability: { ...result.availability },
+            reasons: result.reasons.map((r) => ({ ...r })),
+            microStops: result.microStops.map((m) => ({ ...m })),
+          };
+        },
+      );
+
       getRoute(
         api,
         {
@@ -479,7 +740,8 @@ export async function registerRealtime(
         {
           websocket: true,
           schema: {
-            summary: 'WebSocket push of states and telemetry (protocol: docs/api/realtime.md)',
+            summary:
+              'WebSocket push of states, telemetry, OEE and downtime (protocol: docs/api/realtime.md)',
             tags: ['push'],
             hide: true,
           },
@@ -500,10 +762,23 @@ export async function registerRealtime(
       const pattern = await sources.masterData.shiftPattern();
       const catalog = new Map(equipment.map((info) => [info.id, info]));
       attached = { sources, catalog, shifts: new Set(pattern.shifts.map((shift) => shift.id)) };
+      const workCenters = await sources.oee.workCenters();
       push.attach({
         equipment: sources.equipment,
         ingest: sources.ingest,
         catalog: new Set(catalog.keys()),
+        oee: sources.oee,
+        oeeTopics: new Map<string, { scope: OeeScope; members: readonly string[] }>([
+          ...[...catalog.keys()].map((id): [string, { scope: OeeScope; members: string[] }] => [
+            id,
+            { scope: 'equipment', members: [id] },
+          ]),
+          ...workCenters.map((wc): [string, { scope: OeeScope; members: readonly string[] }] => [
+            wc.id,
+            { scope: 'work-center', members: wc.equipment },
+          ]),
+        ]),
+        ...(sources.downtime ? { downtime: sources.downtime } : {}),
       });
     },
   };

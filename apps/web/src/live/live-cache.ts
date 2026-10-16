@@ -96,7 +96,8 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
         queryClient.setQueryData<LiveStates>(liveKeys.states, (live) =>
           mergeStates(live, message.clock, message.states),
         );
-      } else if (message.samples.length > 0) {
+        // OEE snapshots (#120) carry no samples; the OEE screens (#122) will cache them.
+      } else if ('samples' in message && message.samples.length > 0) {
         const equipment = message.topic.slice('telemetry:'.length);
         queryClient.setQueryData<LiveTelemetry>(liveKeys.telemetry(equipment), (telemetry) =>
           mergeSamples(telemetry, message.samples),
@@ -118,9 +119,12 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
         mergeSamples(telemetry, [message]),
       );
       return;
+    // OEE and downtime topics (#120): the web app doesn't subscribe to them before #122.
     case 'subscribed':
     case 'unsubscribed':
     case 'error':
+    case 'oee':
+    case 'downtime':
       return;
   }
 }

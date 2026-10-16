@@ -13,12 +13,14 @@ FROM base AS build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/
 COPY packages/contracts/package.json packages/contracts/
+COPY packages/oee-core/package.json packages/oee-core/
 COPY packages/eslint-config/package.json packages/eslint-config/
 COPY packages/tsconfig/package.json packages/tsconfig/
 # The build needs the app's dev dependencies (Vite, Tailwind); no lifecycle scripts.
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter @shopfloor/web...
 COPY packages/tsconfig/base.json packages/tsconfig/
 COPY packages/contracts/src packages/contracts/src
+COPY packages/oee-core/src packages/oee-core/src
 COPY apps/web/index.html apps/web/tsconfig.json apps/web/vite.config.ts apps/web/
 COPY apps/web/src apps/web/src
 RUN pnpm --filter @shopfloor/web build

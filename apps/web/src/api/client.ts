@@ -1,18 +1,37 @@
 import {
   MES_API_LIMITS,
+  codingResultSchema,
+  currentShiftSchema,
+  downtimeAuditSchema,
+  downtimeListSchema,
   equipmentListSchema,
   equipmentSchema,
   intervalsSchema,
   metricsSchema,
+  oeeListSchema,
+  paretoSchema,
   plantSchema,
   problemSchema,
+  reasonCodesSchema,
   seriesSchema,
+  shiftListSchema,
+  shiftOeeSchema,
+  type CodingRequest,
+  type CodingResult,
+  type CurrentShift,
+  type DowntimeAudit,
+  type DowntimeList,
   type EquipmentDto,
   type IntervalDto,
   type Metrics,
+  type OeeList,
+  type Pareto,
   type Plant,
   type Problem,
+  type ReasonCodes,
   type Series,
+  type ShiftList,
+  type ShiftOee,
 } from '@shopfloor/contracts/mes-api';
 import type { z } from 'zod';
 
@@ -22,12 +41,15 @@ export const API_BASE = '/api/v1';
 export class ApiError extends Error {
   readonly status: number;
   readonly problem: Problem | undefined;
+  /** Seconds from a 429's `Retry-After`, when the MES sent one. */
+  readonly retryAfter: number | undefined;
 
-  constructor(message: string, status: number, problem?: Problem) {
+  constructor(message: string, status: number, problem?: Problem, retryAfter?: number) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.problem = problem;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -43,18 +65,21 @@ async function problemOf(response: Response): Promise<Problem | undefined> {
   }
 }
 
-/** GET a path under `/api/v1` and parse the answer with the shared response schema. */
-export async function getJson<S extends z.ZodType>(
+function retryAfterOf(response: Response): number | undefined {
+  const value = response.headers.get('retry-after')?.trim();
+  if (value === undefined || !/^\d{1,6}$/.test(value)) return undefined;
+  return Number(value);
+}
+
+/** Sends a request under `/api/v1` and parses the JSON answer with a shared response schema. */
+async function requestJson<S extends z.ZodType>(
   path: string,
   schema: S,
-  signal?: AbortSignal,
+  init: RequestInit,
 ): Promise<z.output<S>> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, {
-      headers: { accept: 'application/json' },
-      ...(signal ? { signal } : {}),
-    });
+    response = await fetch(`${API_BASE}${path}`, init);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new ApiError('The MES cannot be reached', 0);
@@ -65,6 +90,7 @@ export async function getJson<S extends z.ZodType>(
       problem ? `${problem.title}: ${problem.detail}` : `HTTP ${String(response.status)}`,
       response.status,
       problem,
+      retryAfterOf(response),
     );
   }
   let body: unknown;
@@ -78,6 +104,37 @@ export async function getJson<S extends z.ZodType>(
     throw new ApiError(`Unexpected answer from ${path}: ${parsed.error.message}`, response.status);
   }
   return parsed.data;
+}
+
+/** GET a path under `/api/v1` and parse the answer with the shared response schema. */
+export function getJson<S extends z.ZodType>(
+  path: string,
+  schema: S,
+  signal?: AbortSignal,
+): Promise<z.output<S>> {
+  return requestJson(path, schema, {
+    headers: { accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * A write (ADR-0023): a JSON body to a relative URL, so it goes same-origin through the proxy and
+ * the browser sends the page's `Origin`. Never a form or `text/plain` body (the MES answers 415).
+ */
+export function sendJson<S extends z.ZodType>(
+  method: 'PUT' | 'POST' | 'DELETE',
+  path: string,
+  body: unknown,
+  schema: S,
+): Promise<z.output<S>> {
+  return requestJson(path, schema, {
+    method,
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    credentials: 'same-origin',
+    mode: 'same-origin',
+  });
 }
 
 const segment = encodeURIComponent;
@@ -150,4 +207,83 @@ export function getSeries(
   for (const metric of metrics.slice(0, MES_API_LIMITS.metrics)) query.append('metric', metric);
   query.set('maxPoints', String(Math.min(maxPoints, MES_API_LIMITS.maxPoints)));
   return getJson(`/equipment/${segment(id)}/telemetry?${query.toString()}`, seriesSchema, signal);
+}
+
+// ---- OEE, shifts and downtime (#120, #121) ----
+
+const iso = (time: number): string => new Date(time).toISOString();
+
+export function getCurrentShift(signal?: AbortSignal): Promise<CurrentShift> {
+  return getJson('/shifts/current', currentShiftSchema, signal);
+}
+
+export function getShifts(range: TimeRange, signal?: AbortSignal): Promise<ShiftList> {
+  return getJson(`/shifts?${rangeQuery(range).toString()}`, shiftListSchema, signal);
+}
+
+/** `2026-10-12/A` → `GET /shifts/2026-10-12/A/oee`. */
+export function getShiftOee(shiftKey: string, signal?: AbortSignal): Promise<ShiftOee> {
+  const [date = '', shift = ''] = shiftKey.split('/');
+  return getJson(`/shifts/${segment(date)}/${segment(shift)}/oee`, shiftOeeSchema, signal);
+}
+
+export type OeeScope = 'equipment' | 'work-center';
+
+export interface OeeQuery {
+  readonly scope: OeeScope;
+  readonly id: string;
+  readonly bucket: 'hour' | 'shift';
+  readonly from: number;
+  readonly to: number;
+}
+
+export function getOee(query: OeeQuery, signal?: AbortSignal): Promise<OeeList> {
+  const params = new URLSearchParams({
+    scope: query.scope,
+    id: query.id,
+    bucket: query.bucket,
+    from: iso(query.from),
+    to: iso(query.to),
+  });
+  return getJson(`/oee?${params.toString()}`, oeeListSchema, signal);
+}
+
+export function getPareto(
+  query: {
+    readonly scope: OeeScope;
+    readonly id: string;
+    readonly from: number;
+    readonly to: number;
+  },
+  signal?: AbortSignal,
+): Promise<Pareto> {
+  const params = new URLSearchParams({
+    scope: query.scope,
+    id: query.id,
+    from: iso(query.from),
+    to: iso(query.to),
+  });
+  return getJson(`/downtime/pareto?${params.toString()}`, paretoSchema, signal);
+}
+
+export function getReasonCodes(signal?: AbortSignal): Promise<ReasonCodes> {
+  return getJson('/reason-codes', reasonCodesSchema, signal);
+}
+
+export function getDowntime(
+  query: { readonly from: number; readonly to: number; readonly uncoded?: boolean },
+  signal?: AbortSignal,
+): Promise<DowntimeList> {
+  const params = new URLSearchParams({ from: iso(query.from), to: iso(query.to) });
+  if (query.uncoded) params.set('uncoded', 'true');
+  return getJson(`/downtime?${params.toString()}`, downtimeListSchema, signal);
+}
+
+export function getDowntimeAudit(id: string, signal?: AbortSignal): Promise<DowntimeAudit> {
+  return getJson(`/downtime/${segment(id)}/audit`, downtimeAuditSchema, signal);
+}
+
+/** Replaces a record's codings (#121); 409 when `version` is no longer the coding set's. */
+export function putCoding(id: string, body: CodingRequest): Promise<CodingResult> {
+  return sendJson('PUT', `/downtime/${segment(id)}/coding`, body, codingResultSchema);
 }

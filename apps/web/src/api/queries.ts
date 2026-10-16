@@ -14,6 +14,16 @@ export const queryKeys = {
   metrics: (id: string) => ['metrics', id] as const,
   series: (id: string, range: RangeKey, metrics: readonly string[]) =>
     ['series', id, range, ...metrics] as const,
+  currentShift: ['shifts', 'current'] as const,
+  shifts: (to: string) => ['shifts', 'list', to] as const,
+  shiftOee: (shiftKey: string) => ['shift-oee', shiftKey] as const,
+  hourlyOee: (id: string, shiftKey: string) => ['oee', 'hour', id, shiftKey] as const,
+  pareto: (id: string, shiftKey: string) => ['pareto', id, shiftKey] as const,
+  paretoAll: ['pareto'] as const,
+  reasonCodes: ['reason-codes'] as const,
+  downtime: (shiftKey: string) => ['downtime', shiftKey] as const,
+  downtimeAll: ['downtime'] as const,
+  audit: (id: string) => ['downtime-audit', id] as const,
 };
 
 /** Retries network and server errors a few times, never a refused request (4xx). */

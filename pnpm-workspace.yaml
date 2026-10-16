@@ -45,6 +45,7 @@ catalog:
   react-dom: 19.3.0
   tailwindcss: 4.3.3
   uplot: 1.6.32
+  echarts: 6.1.0
   vite: 8.3.4
   '@playwright/test': 1.64.0
 

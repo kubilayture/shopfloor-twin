@@ -6,6 +6,11 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Web: OEE dashboard and downtime coding screen, live (#122, ADR-0020 notes).
+  - **`/oee`:** shift picker (current shift by default, the last week from `GET /shifts`); cards for Cell M1 and Line A1 with OEE, A, P and Q as the API's four-decimal values (null is `n/a`, never 0), availability loss own and external, Final / Provisional / Revision / incidents, the bottleneck (ASM-01) marked; a machine table; per work center or machine the hourly OEE bars, the loss waterfall (PBT → own → external → APT → micro-stops → speed → quality → fully productive, from the API's losses, exact) and the downtime Pareto. Live from `oee:<id>` (all 8) and `downtime` pushes.
+  - **`/downtime`:** the shift's records UNCODED first, live (`downtime` upserts); a reason picker over the reason tree, split at a plant time, comment, `codedBy` remembered in `localStorage`; `PUT …/coding` as same-origin JSON with the record's `version`; 409 rereads and resets, 403/405/415/422/429 explained; history from the audit.
+  - Charts with Apache ECharts 6.1.0 (tree-shaken, lazily loaded), checked in a browser under the strict CSP (canvas tooltip). Stable test ids for #123. `web` depends on `@shopfloor/oee-core` for exact fractions.
+
 - Downtime coding, the MES's first writes (#121, ADR-0023, ADR-0021 amended; migration `0009`).
   - **Codings** (`equipment.downtime_coding`): time ranges inside a record's loss time with an active reason (not UNCODED), a comment and `coded_by` (free text, unauthenticated), stored by time so they survive a re-cut. A split is two codings; uncoded time keeps the auto reason. `equipment.downtime_coding_set` holds the optimistic-concurrency version per (equipment, epoch).
   - **Re-cuts.** After `piecesChanged` (and once at start-up) codings are clipped to the loss time they still cover; the rest is kept as `orphaned`, audited and raises the version.

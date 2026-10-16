@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #122 done (branch `feat/122-web-oee`): web OEE dashboard (`/oee`: work-center cards, machine table, hourly bars, loss waterfall, downtime Pareto, shift picker; live from `oee:<id>`) and downtime coding screen (`/downtime`: uncoded first, reason tree, splits, comment, `codedBy`, 409 and write errors handled, audit history; live from `downtime`). ECharts 6.1.0 under the strict CSP (canvas tooltip), checked in a browser against a disposable Compose stack: no CSP violation, OEE updates about once a second, a recode and a split saved and audited, no horizontal scroll at 375 px.
 - #121 done (branch `feat/121-coding-writes`): downtime coding, the MES's first writes. Codings by time with splits, optimistic concurrency per (equipment, epoch) (409), clipping and orphaning after a re-cut, an append-only audit; the Pareto and the records' reason view use the reasons in effect, OEE is unchanged (tested); `PUT /api/v1/downtime/{id}/coding`, `GET /api/v1/downtime/{id}/audit`, `recoded` push. Write guards (ADR-0023): Origin required and same-origin, `Sec-Fetch-Site`, JSON only (415), 16 KiB, a global rate limit, `MES_WRITES=off` (405); nginx passes only GET, POST, PUT and DELETE; the Vite proxy rewrites `Origin` for HTTP too. Stack smoke writes and clears a coding through nginx and checks the 403/415 refusals (exit criterion 4, API and smoke parts; the UI part follows in #122 and #123).
 - #120 done (branch `feat/120-oee-module`): the `oee` module computes OEE on read per equipment and work center, per hour and shift bucket; REST (`/oee`, `/shifts/{date}/{shift}/oee`, `/shifts`, `/shifts/current`, `/reason-codes`, `/downtime`, `/downtime/pareto`) and WebSocket topics `oee:<id>` and `downtime`. The golden week's OEE equals the ground truth exactly for every machine and both work centers in all shift buckets, in order and shuffled (exit criterion 2); the live reconciliation also requires shift A's OEE final and equal to the live ground truth (exit criterion 3 groundwork).
 - #118 done (branch `feat/118-aggregates`): hourly continuous aggregates `equipment.state_hourly` and `ingest.cycle_hourly`, refreshed explicitly by their owning modules (ADR-0022); `piecesChanged`, `cycle` and `epoch` notices; cycle counts kept with the final hours and checked at start-up; golden week equal to the raw rows and to the ground truth's hourly OEE inputs for every machine and hour.
@@ -77,7 +78,7 @@
 
 ## Next up
 
-- #122 web: OEE dashboard and downtime coding screen, then #123 and #124 in the plan's order.
+- #123 end to end (Playwright on `/oee` and `/downtime` with the test ids of #122), then #124.
 
 ## Blockers and open questions for the owner
 

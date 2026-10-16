@@ -32,11 +32,20 @@ export interface Occurrence {
   readonly equipment: string;
   readonly code: string;
   readonly priority: Priority;
-  /** The device sequence number of the raise: orders raises in the same millisecond. */
+  /**
+   * The device sequence number of the raise: orders one device's raises in the same millisecond.
+   * Only its order within the device matters, which is the device's emission order (ADR-0024).
+   */
   readonly seq: number;
   readonly raisedAt: Millis;
   /** The clear (device or resync snapshot), or null while open. */
   readonly clearedAt: Millis | null;
+  /**
+   * Where the clear comes from: the device (default) or `lost`, a resync snapshot that showed the
+   * code inactive after its clear was lost. A lost clear's time is not the device's, so it is
+   * never fleeting.
+   */
+  readonly clearKind?: 'device' | 'lost';
 }
 
 /**
@@ -48,11 +57,11 @@ export interface Horizon {
   readonly closedAt?: Millis | null;
 }
 
-export type EndReason = 'cleared' | 'superseded' | 'epoch-ended';
+export type EndReason = 'cleared' | 'lost' | 'superseded' | 'epoch-ended';
 
 /** An occurrence after normalisation, in raise order. */
 export interface Prepared extends Occurrence {
-  /** Its position in raise order (time, then `seq`, equipment and code). */
+  /** Its position in raise order (time, then equipment, `seq` and code). */
   readonly index: number;
   readonly point: string;
   /** When it stopped being active, or null while it is open at `asOf`. */
@@ -88,12 +97,15 @@ function checkConfig(config: AlarmKpiConfig): void {
   }
 }
 
-/** Raise order: time, then `seq`, then equipment and code (seq spaces are per equipment). */
+/**
+ * Raise order: time, then equipment, then `seq`, then code. Within a device that is the device's
+ * own order; across devices it never compares sequence numbers, which are per device.
+ */
 export function compareRaises(a: Occurrence, b: Occurrence): number {
   return (
     a.raisedAt - b.raisedAt ||
-    a.seq - b.seq ||
     (a.equipment < b.equipment ? -1 : a.equipment > b.equipment ? 1 : 0) ||
+    a.seq - b.seq ||
     (a.code < b.code ? -1 : a.code > b.code ? 1 : 0)
   );
 }
@@ -161,7 +173,8 @@ export function prepare(
       occurrence.clearedAt !== null && occurrence.clearedAt <= asOf ? occurrence.clearedAt : null;
     const next = nextRaise.get(index);
     let endAt: Millis | null = cleared;
-    let endReason: EndReason | null = cleared === null ? null : 'cleared';
+    let endReason: EndReason | null =
+      cleared === null ? null : occurrence.clearKind === 'lost' ? 'lost' : 'cleared';
     if (next !== undefined && (endAt === null || next < endAt)) {
       endAt = next;
       endReason = 'superseded';

@@ -93,30 +93,35 @@ function bucketFloods(
   bucket: Bucket,
   end: Millis,
 ): BucketFlood[] {
-  return episodes
-    .filter(
-      (episode) =>
-        episode.startAt < bucket.to && (episode.endAt === null || episode.endAt > bucket.from),
-    )
-    .map((episode) => {
-      const endsHere = episode.endAt !== null && episode.endAt <= end;
-      let peak = 0;
-      for (const raise of episode.counts) {
-        if (raise.at < bucket.to && raise.count > peak) {
-          peak = raise.count;
+  return (
+    episodes
+      // An episode is listed when it is in flood at some known instant of the bucket: an open one
+      // only while the bucket has begun by `asOf` (a bucket after `asOf` lists nothing).
+      .filter(
+        (episode) =>
+          episode.startAt < bucket.to &&
+          (episode.endAt === null ? end >= bucket.from : episode.endAt > bucket.from),
+      )
+      .map((episode) => {
+        const endsHere = episode.endAt !== null && episode.endAt <= end;
+        let peak = 0;
+        for (const raise of episode.counts) {
+          if (raise.at < bucket.to && raise.count > peak) {
+            peak = raise.count;
+          }
         }
-      }
-      return {
-        id: episode.id,
-        startAt: episode.startAt,
-        floodMs: clip(episode.startAt, episode.endAt ?? end, bucket.from, end),
-        peak,
-        open: !endsHere,
-        ended: endsHere
-          ? { endAt: episode.endAt, peak: episode.peak, raises: episode.raises }
-          : null,
-      };
-    });
+        return {
+          id: episode.id,
+          startAt: episode.startAt,
+          floodMs: clip(episode.startAt, episode.endAt ?? end, bucket.from, end),
+          peak,
+          open: !endsHere,
+          ended: endsHere
+            ? { endAt: episode.endAt, peak: episode.peak, raises: episode.raises }
+            : null,
+        };
+      })
+  );
 }
 
 /** The KPIs of one bucket from a prepared scope and its flood episodes. */

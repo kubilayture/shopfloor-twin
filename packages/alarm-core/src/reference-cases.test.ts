@@ -228,7 +228,7 @@ describe('alarm KPI reference cases (docs/alarm-kpi-reference-cases.md)', () => 
         const p = kpis.byPriority;
         const floods = kpis.floods.map((flood) => {
           const episode = episodes.find((e) => e.id === flood.id);
-          const head = `${showTime(flood.startAt)} ${episode?.equipment ?? '?'}#${String(episode?.seq)}: ${grouped(flood.floodMs)} ms, peak ${String(flood.peak)}, `;
+          const head = `${showTime(flood.startAt)} ${episode?.equipment ?? '?'}/${episode?.code ?? '?'}: ${grouped(flood.floodMs)} ms, peak ${String(flood.peak)}, `;
           return flood.ended === null
             ? `${head}open`
             : `${head}ended ${showTime(flood.ended.endAt)} (peak ${String(flood.ended.peak)}, raises ${String(flood.ended.raises)})`;
@@ -266,7 +266,7 @@ describe('alarm KPI reference cases (docs/alarm-kpi-reference-cases.md)', () => 
         episodes.map((episode) => ({
           Case: id,
           Start: showTime(episode.startAt),
-          'Starting raise': `${episode.equipment}#${String(episode.seq)}`,
+          'Starting raise': `${episode.equipment}/${episode.code}`,
           End: episode.endAt === null ? `${NULL} (open)` : showTime(episode.endAt),
           Peak: String(episode.peak),
           Raises: String(episode.raises),

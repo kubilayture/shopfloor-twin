@@ -57,19 +57,32 @@ describe('prepare', () => {
     expect(set.occurrences[0]).toMatchObject({ clearedAt: null, endAt: null, endReason: null });
   });
 
-  it('orders raises by time, seq, equipment and code', () => {
+  it('orders raises by time, equipment, seq and code, never seq across devices', () => {
     const sorted = [
-      occ('b', 'X', 1, T0),
+      occ('b', 'X', 0, T0),
       occ('a', 'Y', 1, T0),
-      occ('a', 'X', 1, T0),
+      occ('a', 'X', 2, T0),
       occ('a', 'X', 0, T0),
     ].sort(compareRaises);
     expect(sorted.map((o) => `${o.equipment}/${o.code}/${String(o.seq)}`)).toEqual([
       'a/X/0',
-      'a/X/1',
       'a/Y/1',
-      'b/X/1',
+      'a/X/2',
+      'b/X/0',
     ]);
+  });
+
+  it('never counts a lost clear as fleeting, however soon it comes', () => {
+    const lost: Occurrence = { ...occ('a', 'X', 1, T0, T0 + 10), clearKind: 'lost' };
+    const device: Occurrence = { ...occ('b', 'X', 1, T0, T0 + 10), clearKind: 'device' };
+    const [kpis] = bucketKpis(
+      [lost, device],
+      [{ from: T0, to: T0 + HOUR }],
+      { asOf: T0 + HOUR },
+      CONFIG,
+    );
+    expect(kpis?.fleeting).toBe(1);
+    expect(prepare([lost], { asOf: T0 + HOUR }, CONFIG).occurrences[0]?.endReason).toBe('lost');
   });
 
   it('ends a superseded occurrence at the next raise only when that comes before its clear', () => {
@@ -99,6 +112,17 @@ describe('buckets', () => {
       CONFIG,
     );
     expect(kpis).toMatchObject({ raises: 0, activeMs: 0, activeAtEnd: 1, provisional: true });
+  });
+
+  it('lists no open episode in a bucket that begins after asOf', () => {
+    const raises = Array.from({ length: 11 }, (_, i) =>
+      occ('a', `C${String(i)}`, i, T0 + 50 * 60_000),
+    );
+    const set = prepare(raises, { asOf: T0 + 55 * 60_000 }, CONFIG);
+    const episodes = floodEpisodes(set);
+    expect(episodes[0]?.endAt).toBeNull();
+    expect(kpisOfBucket(set, episodes, { from: T0, to: T0 + HOUR }).floods[0]?.open).toBe(true);
+    expect(kpisOfBucket(set, episodes, { from: T0 + HOUR, to: T0 + 2 * HOUR }).floods).toEqual([]);
   });
 
   it('lists an episode that ends exactly at a boundary only in the earlier bucket', () => {

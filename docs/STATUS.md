@@ -6,7 +6,7 @@
 
 ## Done since last update
 
-- #139 done (branch `feat/139-alarm-core`): new pure package `@shopfloor/alarm-core` with the alarm KPIs per bucket (raises by priority, average rate per 10 minutes as an exact fraction, fixed-window peak and flood windows, sliding flood episodes clipped per bucket with peak so far and `open`, standing, chattering, fleeting, active time), shift composition from hours, bad actors and the revised hours of late facts (ADR-0024). 20 hand-calculated reference cases in `docs/alarm-kpi-reference-cases.md`, recomputed independently in Python and parsed by the tests; property tests; coverage 100 / 94. `config/plant/alarms.yaml` (thresholds, positions, nine definitions) loaded and cross-checked by `plant-config` against `alarmVocabulary` (contracts), outside the simulator's config hash (golden week byte-identical). Pure packages may now import other pure packages by name (ADR-0005 amended by ADR-0024).
+- #139 done (branch `feat/139-alarm-core`): new pure package `@shopfloor/alarm-core` with the alarm KPIs per bucket (raises by priority, average rate per 10 minutes as an exact fraction, fixed-window peak and flood windows, sliding flood episodes clipped per bucket with peak so far and `open`, standing, chattering, fleeting, active time), shift composition from hours, bad actors and the revised hours of late facts (ADR-0024). 22 hand-calculated reference cases in `docs/alarm-kpi-reference-cases.md`, recomputed independently in Python and parsed by the tests; property tests; coverage 100 / 96. `config/plant/alarms.yaml` (thresholds, positions, nine definitions) loaded and cross-checked by `plant-config` against `alarmVocabulary` (contracts), outside the simulator's config hash (golden week byte-identical). Pure packages may now import other pure packages by name (ADR-0005 amended by ADR-0024).
 - #138 merged (PR #149): Phase 6 plan.
 - Phase 6 plan with issues #138–#148 under milestone "Phase 06 – Alarms and shifts"; revised after the review of PR #149 (injection only in `Running`, revisions over every affected hour, old-epoch anchors, lost clears via resync snapshots).
 - #124 merged (PR #137): Phase 5 closed, tagged `phase-05`.
@@ -101,6 +101,6 @@ Project board: https://github.com/users/kubilayture/projects/1
 
 - CI on `main`: green (`verify`, `end to end`, `stack smoke`, `reconcile`) on `92efe6a`, the merge of #136.
 - Tests: 988 (plus the `end to end` job: gateway, golden-week reconciliation of intervals, aggregates, records and 128 OEE buckets; and the `reconcile` job: live shift A, dashboard latency, UI coding).
-- Coverage (lines / branches): `sim-core` 99 / 98 (floor 95 / 90), `oee-core` 100 / 99 (floor 95 / 90), `alarm-core` 100 / 94 (floor 95 / 90), `plant-config` 99 / 93 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 91 / 78, `mes-server` 96 / 87 and web 96 / 86 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
+- Coverage (lines / branches): `sim-core` 99 / 98 (floor 95 / 90), `oee-core` 100 / 99 (floor 95 / 90), `alarm-core` 100 / 96 (floor 95 / 90), `plant-config` 99 / 93 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 91 / 78, `mes-server` 96 / 87 and web 96 / 86 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
 - Golden scenario `week-01`: green in CI.
 - Open bugs: 0.

@@ -15,12 +15,16 @@ export interface FloodRaise {
 }
 
 export interface FloodEpisode {
-  /** `{startAt}~{equipment}~{seq}` of the starting raise; the caller adds the scope. */
+  /**
+   * `{startAt}~{equipment}~{code}` of the starting raise; the caller adds the scope. Episodes of a
+   * scope never overlap, so the start alone is unique; the point makes the id readable. It needs
+   * no device `seq`, so the ground truth and the MES agree on it by construction.
+   */
   readonly id: string;
   readonly startAt: Millis;
+  /** The starting raise's point. */
   readonly equipment: string;
   readonly code: string;
-  readonly seq: number;
   /** The first instant out of flood; null while the episode is open at `asOf`. */
   readonly endAt: Millis | null;
   /** The highest count in the window during the episode, so far. */
@@ -31,14 +35,13 @@ export interface FloodEpisode {
   readonly counts: readonly FloodRaise[];
 }
 
-export const floodId = (startAt: Millis, equipment: string, seq: number): string =>
-  `${String(startAt)}~${equipment}~${String(seq)}`;
+export const floodId = (startAt: Millis, equipment: string, code: string): string =>
+  `${String(startAt)}~${equipment}~${code}`;
 
 interface Building {
   startAt: Millis;
   equipment: string;
   code: string;
-  seq: number;
   counts: FloodRaise[];
 }
 
@@ -48,11 +51,10 @@ function finish(episode: Building, endAt: Millis | null): FloodEpisode {
     peak = raise.count > peak ? raise.count : peak;
   }
   return {
-    id: floodId(episode.startAt, episode.equipment, episode.seq),
+    id: floodId(episode.startAt, episode.equipment, episode.code),
     startAt: episode.startAt,
     equipment: episode.equipment,
     code: episode.code,
-    seq: episode.seq,
     endAt,
     peak,
     raises: episode.counts.length,
@@ -90,6 +92,11 @@ export function floodEpisodes(set: PreparedSet): FloodEpisode[] {
       count -= 1;
       departed += 1;
     }
+    // The raises of this instant, with their counts. They join a running episode only if it is
+    // still in flood after them: an episode that ends at this instant covers [start, end), so a
+    // raise at its end instant was never in flood.
+    const arrivals: FloodRaise[] = [];
+    let started: Building | null = null;
     for (
       let raise = occurrences[arrived];
       raise?.raisedAt === instant;
@@ -97,20 +104,21 @@ export function floodEpisodes(set: PreparedSet): FloodEpisode[] {
     ) {
       count += 1;
       arrived += 1;
-      if (current === null && count > floodThreshold) {
-        current = {
-          startAt: instant,
-          equipment: raise.equipment,
-          code: raise.code,
-          seq: raise.seq,
-          counts: [],
-        };
+      if (current === null && started === null && count > floodThreshold) {
+        started = { startAt: instant, equipment: raise.equipment, code: raise.code, counts: [] };
       }
-      current?.counts.push({ at: instant, count });
+      if (current !== null || started !== null) {
+        arrivals.push({ at: instant, count });
+      }
     }
     if (current !== null && count <= floodThreshold) {
       episodes.push(finish(current, instant));
       current = null;
+    } else if (current !== null) {
+      current.counts.push(...arrivals);
+    } else if (started !== null) {
+      started.counts.push(...arrivals);
+      current = started;
     }
   }
   if (current !== null) {

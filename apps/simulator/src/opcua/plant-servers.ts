@@ -1,13 +1,8 @@
 import { join } from 'node:path';
 import { OPCUA_MACHINES } from '@shopfloor/contracts';
-import type { PlantConfig } from '@shopfloor/plant-config';
+import { plantAlarms, type PlantConfig } from '@shopfloor/plant-config';
 import type { SimTime, Simulation } from '@shopfloor/sim-core';
-import {
-  CALIBRATION_ALARM_CODE,
-  type LineEvent,
-  type PlantEvent,
-  type ProductionLine,
-} from '../plant/line.ts';
+import type { LineEvent, PlantEvent, ProductionLine } from '../plant/line.ts';
 import type { ProcessValues } from '../plant/process-values.ts';
 import { MachineServer } from './machine-server.ts';
 
@@ -27,15 +22,11 @@ export interface LiveSources {
   readonly processValues: ProcessValues;
 }
 
+/** The alarm codes a machine can raise: its slice of the plant's alarm vocabulary (ADR-0024). */
 export function alarmCodes(config: PlantConfig, machineId: string): string[] {
-  const failures =
-    config.failures.equipment[machineId]?.failureModes.map((mode) => mode.code) ?? [];
-  const equipment = config.plant.areas
-    .flatMap((a) => a.workCenters.flatMap((w) => w.equipment))
-    .find((e) => e.id === machineId);
-  return equipment?.operation === config.process.leakTest.operation
-    ? [...new Set([...failures, CALIBRATION_ALARM_CODE])]
-    : failures;
+  return plantAlarms(config)
+    .filter((point) => point.equipment === machineId)
+    .map((point) => point.code);
 }
 
 export class PlantServers {

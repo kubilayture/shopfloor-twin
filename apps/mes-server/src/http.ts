@@ -34,6 +34,9 @@ export interface MesHttpOptions {
   readonly userWriteRate?: { readonly perSecond: number; readonly burst: number };
   /** How often open sockets' sessions are checked (default 15 s). */
   readonly sessionCheckMs?: number;
+  /** Login buckets: all together (default 5/s, bursts of 10) and per user name (1/s, 5). */
+  readonly loginRate?: { readonly perSecond: number; readonly burst: number };
+  readonly userLoginRate?: { readonly perSecond: number; readonly burst: number };
 }
 
 export interface MesHttp {
@@ -57,6 +60,8 @@ export async function buildMesHttp({
   cookieSecure,
   userWriteRate,
   sessionCheckMs,
+  loginRate,
+  userLoginRate,
 }: MesHttpOptions): Promise<MesHttp> {
   // A request id per request (UUID): logged, returned as X-Request-Id on writes and audited.
   const app = Fastify({ logger, genReqId: () => randomUUID() });
@@ -149,6 +154,8 @@ export async function buildMesHttp({
     ...(cookieSecure === undefined ? {} : { cookieSecure }),
     ...(userWriteRate === undefined ? {} : { userWriteRate }),
     ...(sessionCheckMs === undefined ? {} : { sessionCheckMs }),
+    ...(loginRate === undefined ? {} : { loginRate }),
+    ...(userLoginRate === undefined ? {} : { userLoginRate }),
   });
   return { app, registry, realtime };
 }

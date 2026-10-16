@@ -100,3 +100,9 @@ export const SECURE_SESSION_COOKIE = '__Host-sft_session';
 
 /** The WebSocket close code of a missing or ended session; the web goes to `/login`. */
 export const WS_CLOSE_UNAUTHENTICATED = 4401;
+
+/**
+ * The WebSocket close code of a session that may not read: its password must be changed first,
+ * or its roles lack `read`.
+ */
+export const WS_CLOSE_FORBIDDEN = 4403;

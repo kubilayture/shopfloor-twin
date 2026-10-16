@@ -3,6 +3,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import {
   SECURE_SESSION_COOKIE,
   SESSION_COOKIE,
+  WS_CLOSE_FORBIDDEN,
   WS_CLOSE_UNAUTHENTICATED,
 } from '@shopfloor/contracts/identity';
 import {
@@ -245,6 +246,10 @@ export interface RealtimeOptions {
   readonly userWriteRate?: { readonly perSecond: number; readonly burst: number };
   /** How often open sockets' sessions are checked for expiry (default 15 s). */
   readonly sessionCheckMs?: number;
+  /** All logins together (default `LIMITS`: 5 per second, bursts of 10). */
+  readonly loginRate?: { readonly perSecond: number; readonly burst: number };
+  /** Logins per user name (default `LIMITS`: 1 per second, bursts of 5). */
+  readonly userLoginRate?: { readonly perSecond: number; readonly burst: number };
 }
 
 /** What the API uses of the identity module. */
@@ -275,6 +280,11 @@ export class WriteLimiter {
     this.#burst = burst;
     this.#tokens = burst;
     this.#at = now;
+  }
+
+  /** Whether the bucket has refilled completely (nothing to remember about its client). */
+  full(now = performance.now()): boolean {
+    return this.#tokens + ((now - this.#at) / 1000) * this.#perSecond >= this.#burst;
   }
 
   /** Takes a token: undefined when allowed, else the seconds until one is free. */
@@ -509,10 +519,14 @@ export async function registerRealtime(
   // other page can send a JSON write either.
   const writeRefusal = (
     headers: IncomingHttpHeaders,
+    access: Access,
   ):
     | { status: number; detail: string; type: ProblemType; headers?: Record<string, string> }
     | undefined => {
-    if (!writes) {
+    // Logging in and out and changing one's password stay possible with MES_WRITES=off (#168
+    // review, M3): otherwise MES_AUTH=on would lock everyone out of a read-only MES. The Origin
+    // and JSON guards below still apply.
+    if (!writes && access !== 'public' && access !== 'session') {
       return {
         status: 405,
         detail: 'writes are turned off (MES_WRITES=off)',
@@ -572,6 +586,30 @@ export async function registerRealtime(
     };
   };
 
+  // Logins have buckets of their own (#168 review, M2), so anonymous login attempts never spend
+  // the write bucket that plant writes need: one for all logins together and one per user name.
+  const loginLimiter = new WriteLimiter(
+    options.loginRate?.perSecond ?? LIMITS.loginsPerSecond,
+    options.loginRate?.burst ?? LIMITS.loginBurst,
+  );
+  const nameLimiters = new Map<string, WriteLimiter>();
+  const loginRefusal = (username: string): number | undefined => {
+    const name = username.trim().toLowerCase();
+    let bucket = nameLimiters.get(name);
+    if (!bucket) {
+      // Bounded: buckets that have refilled completely are forgotten when the map grows.
+      if (nameLimiters.size >= 1_000) {
+        for (const [key, limiter] of nameLimiters) if (limiter.full()) nameLimiters.delete(key);
+      }
+      bucket = new WriteLimiter(
+        options.userLoginRate?.perSecond ?? LIMITS.userLoginsPerSecond,
+        options.userLoginRate?.burst ?? LIMITS.userLoginBurst,
+      );
+      nameLimiters.set(name, bucket);
+    }
+    return bucket.take() ?? loginLimiter.take();
+  };
+
   // Identity (#168, ADR-0026).
   const identity = options.identity;
   const auth = options.auth ?? false;
@@ -581,6 +619,8 @@ export async function registerRealtime(
   const principals = new WeakMap<FastifyRequest, Principal>();
   /** Requests whose upgrade had no live session: the socket is closed with 4401 at once. */
   const anonymousUpgrades = new WeakSet<FastifyRequest>();
+  /** Upgrades whose session may not read (a temporary password, no `read`): closed with 4403. */
+  const forbiddenUpgrades = new WeakSet<FastifyRequest>();
   const needIdentity = (): IdentityApi => {
     if (!identity?.started) throw new HttpProblem(503, 'the MES is starting');
     return identity;
@@ -722,18 +762,26 @@ export async function registerRealtime(
       // to the MES, caught by the Host check) or by opening a WebSocket (not covered by CORS,
       // caught by the Origin check). A request without Origin is not from a browser page.
       api.addHook('onRequest', async (request, reply) => {
-        // WebSocket upgrades: Host and Origin are checked by `verifyClient`, which can answer
-        // before the upgrade; the session here (#168), so the handler can close an anonymous
-        // socket with 4401 (a browser can't read an HTTP status of a refused upgrade).
-        if (request.headers.upgrade !== undefined) {
+        // A real WebSocket upgrade of the push route only (#168 review, B1): `request.ws` is
+        // set by @fastify/websocket for a connection that upgrades (Connection: upgrade); an
+        // `Upgrade` header alone is an ordinary request and meets every guard below. Host and
+        // Origin are checked here and answered by `verifyClient`; the session here, so the handler
+        // can close a socket with 4401 or 4403 (a browser can't read an HTTP status of a refused
+        // upgrade).
+        if (request.ws && request.method === 'GET' && request.routeOptions.url === WS_PATH) {
+          // A refused Host or Origin: no session lookup; `verifyClient` answers the 403 (a reply
+          // from this hook would be dropped with the upgrading socket).
+          if (refusal(request.headers) !== undefined) return;
           if (!auth) return;
           const token = tokenOf(request);
           const principal =
             identity?.started === true && token !== undefined
               ? await identity.authenticate(token, { touch: true })
               : undefined;
-          if (principal) principals.set(request, principal);
-          else anonymousUpgrades.add(request);
+          if (!principal) anonymousUpgrades.add(request);
+          else if (principal.mustChangePassword || !principal.permissions.includes('read')) {
+            forbiddenUpgrades.add(request);
+          } else principals.set(request, principal);
           return;
         }
         const read = request.method === 'GET' || request.method === 'HEAD';
@@ -749,7 +797,7 @@ export async function registerRealtime(
         if (!read) {
           // Every other method is a write (ADR-0023); its answer names the request for the audit.
           reply.header('x-request-id', request.id);
-          const write = writeRefusal(request.headers);
+          const write = writeRefusal(request.headers, accessOf(request));
           if (write !== undefined) {
             await problemReply(reply, request, write);
             return;
@@ -760,7 +808,9 @@ export async function registerRealtime(
           await problemReply(reply, request, denied);
           return;
         }
-        if (read) return;
+        // The login has buckets of its own (in its handler, which knows the name); logout needs
+        // none (it only ends the session it presents).
+        if (read || accessOf(request) === 'public') return;
         const rate = rateRefusal(principals.get(request));
         if (rate !== undefined) await problemReply(reply, request, rate);
       });
@@ -2063,10 +2113,15 @@ export async function registerRealtime(
           params: z.strictObject({}),
           body: loginRequestSchema,
           response: sessionSchema,
-          errors: [400, 401, 405, 413, 415, 429, 503],
+          errors: [400, 401, 413, 415, 429, 503],
         },
         LIMITS.writeBodyBytes,
         async ({ body, requestId, request, reply }) => {
+          const wait = loginRefusal(body.username);
+          if (wait !== undefined) {
+            reply.header('retry-after', String(wait));
+            throw new HttpProblem(429, 'too many logins; try again', PROBLEM_TYPES.loginRate);
+          }
           const { token, principal } = await needIdentity()
             .login({
               username: body.username,
@@ -2103,20 +2158,28 @@ export async function registerRealtime(
         {
           method: 'DELETE',
           url: '/session',
-          access: 'session',
-          summary: 'Logs out: ends the session and clears the cookie',
-          description: 'The body is an empty JSON object (writes are application/json).',
+          access: 'public',
+          summary: 'Logs out: ends the session, if live, and clears the cookie',
+          description:
+            'The body is an empty JSON object (writes are application/json). Clears the cookie ' +
+            'also when the session already ended or expired, or the cookie is invalid ' +
+            '(`ended: false`).',
           tags: ['identity'],
           params: z.strictObject({}),
           body: emptyBody,
-          response: z.object({ ended: z.literal(true) }),
-          errors: [400, 405, 413, 415, 429, 503],
+          response: z.object({
+            ended: z.boolean().describe('Whether a live session ended (false: none was live)'),
+          }),
+          errors: [400, 413, 415, 503],
         },
         LIMITS.writeBodyBytes,
         async ({ requestId, request, reply }) => {
-          await needIdentity().logout(principalOf(request), requestId);
+          const live = needIdentity();
+          const token = tokenOf(request);
+          const principal = token && (await live.authenticate(token, { touch: false }));
+          if (principal) await live.logout(principal, requestId);
           setCookie(reply, '', 0);
-          return { ended: true as const };
+          return { ended: principal !== undefined };
         },
       );
 
@@ -2250,6 +2313,13 @@ export async function registerRealtime(
         (socket, request) => {
           if (anonymousUpgrades.has(request)) {
             socket.close(WS_CLOSE_UNAUTHENTICATED, 'a session is needed');
+            return;
+          }
+          if (forbiddenUpgrades.has(request)) {
+            socket.close(
+              WS_CLOSE_FORBIDDEN,
+              'the session may not read (change the password first?)',
+            );
             return;
           }
           push.connect(socket);

@@ -127,6 +127,18 @@ export interface SessionsEnded {
   readonly reason: SessionEndReason;
 }
 
+/** What failed logins of an unknown or malformed name are audited as (never the typed name). */
+export const UNKNOWN_USER = '(unknown)';
+
+/** A user's row as a login reads it, with its roles. */
+interface AccountRow {
+  readonly id: number;
+  readonly username: string;
+  readonly passwordHash: string;
+  readonly mustChangePassword: boolean;
+  readonly roles: Role[];
+}
+
 const silent: IdentityLog = {
   info: () => undefined,
   warn: () => undefined,
@@ -199,6 +211,8 @@ export class Identity {
         `identity.role holds ${stored.join(', ')}, contracts declare ${ROLES.join(', ')}`,
       );
     }
+    // The dummy hash an unknown name is checked against, made now rather than at the first one.
+    await this.#dummyHash();
     let admin: 'exists' | 'created' | 'missing' = (await this.#enabledAdmins(this.#db))
       ? 'exists'
       : 'missing';
@@ -245,11 +259,8 @@ export class Identity {
     const result = await this.#db
       .deleteFrom('identity.session')
       .where((eb) =>
-        eb.or([
-          eb('ended_at', '<', before),
-          eb('expires_at', '<', before),
-          eb('idle_expires_at', '<', before),
-        ]),
+        // idle_expires_at <= expires_at, so this covers the absolute expiry too (both indexed).
+        eb.or([eb('ended_at', '<', before), eb('idle_expires_at', '<', before)]),
       )
       .executeTakeFirst();
     return Number(result.numDeletedRows);
@@ -334,9 +345,146 @@ export class Identity {
   }
 
   /**
+   * Reserves one attempt before any hash (#168 review, H1): in one transaction it locks the user's
+   * row, refuses a disabled, locked or delayed user, and otherwise counts the attempt as a failure
+   * in advance, setting the lock (normal account) or the next delay (admin) as soon as the count
+   * reaches `lockAfter`. So however many attempts run at once, at most `lockAfter` of a normal
+   * account's are evaluated before it locks, and at most one per delay for an admin; a success
+   * clears the count afterwards. An unknown user name runs the same transaction and finds no row.
+   */
+  async #reserve(
+    where: { readonly username: string } | { readonly id: number },
+    now: Date,
+  ): Promise<
+    | { readonly kind: 'unknown' }
+    | {
+        readonly kind: 'refused';
+        readonly user: AccountRow;
+        readonly reason: 'disabled' | 'locked' | 'delayed';
+        readonly until?: Date;
+      }
+    | {
+        readonly kind: 'reserved';
+        readonly user: AccountRow;
+        readonly failures: number;
+        readonly lockedUntil?: Date;
+        readonly nextAttemptAt?: Date;
+      }
+  > {
+    return this.#db.transaction().execute(async (trx) => {
+      let query = trx
+        .selectFrom('identity.user_account as u')
+        .select([
+          'u.id',
+          'u.username',
+          'u.password_hash',
+          'u.enabled',
+          'u.must_change_password',
+          'u.failed_logins',
+          'u.locked_until',
+          'u.next_attempt_at',
+          sql<string[]>`array(SELECT r.role_id FROM identity.user_role r
+            WHERE r.user_id = u.id)`.as('roles'),
+        ])
+        .forUpdate();
+      query =
+        'id' in where
+          ? query.where('u.id', '=', where.id)
+          : query.where('u.username', '=', where.username);
+      const row = await query.executeTakeFirst();
+      if (!row) return { kind: 'unknown' as const };
+      const roles = ROLES.filter((role) => row.roles.includes(role));
+      const user: AccountRow = {
+        id: row.id,
+        username: row.username,
+        passwordHash: row.password_hash,
+        mustChangePassword: row.must_change_password,
+        roles,
+      };
+      const admin = roles.includes('admin');
+      if (!row.enabled) return { kind: 'refused' as const, user, reason: 'disabled' as const };
+      if (!admin && row.locked_until !== null && row.locked_until > now) {
+        return {
+          kind: 'refused' as const,
+          user,
+          reason: 'locked' as const,
+          until: row.locked_until,
+        };
+      }
+      if (admin && row.next_attempt_at !== null && row.next_attempt_at > now) {
+        return {
+          kind: 'refused' as const,
+          user,
+          reason: 'delayed' as const,
+          until: row.next_attempt_at,
+        };
+      }
+      // A lock that has run out starts the count anew.
+      const ranOut = row.locked_until !== null && row.locked_until <= now;
+      const failures = (ranOut ? 0 : row.failed_logins) + 1;
+      let lockedUntil: Date | undefined;
+      let nextAttemptAt: Date | undefined;
+      if (failures >= IDENTITY_LIMITS.lockAfter) {
+        if (admin) {
+          nextAttemptAt = new Date(
+            now.getTime() +
+              Math.min(
+                IDENTITY_LIMITS.adminDelayBaseMs * 2 ** (failures - IDENTITY_LIMITS.lockAfter),
+                IDENTITY_LIMITS.adminDelayMaxMs,
+              ),
+          );
+        } else {
+          lockedUntil = new Date(now.getTime() + IDENTITY_LIMITS.lockMs);
+        }
+      }
+      await trx
+        .updateTable('identity.user_account')
+        .set({
+          failed_logins: failures,
+          locked_until: lockedUntil ?? null,
+          next_attempt_at: nextAttemptAt ?? null,
+        })
+        .where('id', '=', row.id)
+        .execute();
+      return {
+        kind: 'reserved' as const,
+        user,
+        failures,
+        ...(lockedUntil === undefined ? {} : { lockedUntil }),
+        ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }),
+      };
+    });
+  }
+
+  /** After a failed reserved attempt: audits the lock this attempt set, if it set one. */
+  async #lockedBy(
+    user: AccountRow,
+    reserved: { readonly failures: number; readonly lockedUntil?: Date },
+    requestId: string | undefined,
+  ): Promise<Record<string, unknown>> {
+    const extra: Record<string, unknown> = { failures: reserved.failures };
+    if (reserved.lockedUntil !== undefined) {
+      const until = reserved.lockedUntil.toISOString();
+      extra.lockedUntil = until;
+      await this.audit(this.#db, {
+        actor: { system: 'identity' },
+        authenticated: false,
+        action: 'user.locked',
+        entityType: 'user',
+        entityId: user.username,
+        after: { failures: reserved.failures, lockedUntil: until },
+        requestId,
+      });
+      this.#log.warn({ user: user.username, until }, 'account locked');
+    }
+    return extra;
+  }
+
+  /**
    * A login. Every failure (unknown or disabled user, wrong password, a lock or an admin's delay)
-   * throws the same `IdentityError` after one password hash, and is audited. A presented session
-   * (`replaces`) ends: a login always gets a new token.
+   * throws the same `IdentityError` after one password hash, and is audited; an unknown or
+   * malformed name is neither logged nor audited as typed (it may be a mistyped password). A
+   * presented session (`replaces`) ends: a login always gets a new token.
    */
   async login(input: {
     readonly username: string;
@@ -346,104 +494,58 @@ export class Identity {
     readonly replaces?: Buffer | undefined;
   }): Promise<{ readonly token: string; readonly principal: Principal }> {
     const name = input.username.trim().toLowerCase();
-    const known = USERNAME_PATTERN.test(name) ? name : '(invalid)';
+    const now = this.#now();
     const failed = async (
       reason: string,
-      user?: { id: number; roles: Role[] },
+      user?: AccountRow,
       extra: Record<string, unknown> = {},
     ): Promise<never> => {
       await this.audit(this.#db, {
-        actor: user ? { userId: user.id, username: name, roles: user.roles } : { system: known },
+        actor: user
+          ? { userId: user.id, username: user.username, roles: user.roles }
+          : { system: UNKNOWN_USER },
         authenticated: false,
         action: 'session.login-failed',
         entityType: 'user',
-        entityId: known,
+        entityId: user ? user.username : UNKNOWN_USER,
         after: { reason, ...extra },
         requestId: input.requestId,
       });
-      this.#log.warn({ user: known, reason, ...extra }, 'login failed');
+      this.#log.warn(
+        { ...(user ? { user: user.username } : {}), reason, ...extra },
+        'login failed',
+      );
       throw new IdentityError('unauthenticated', LOGIN_FAILED, PROBLEM_TYPES.unauthenticated);
     };
-    const user = await this.#db
-      .selectFrom('identity.user_account')
-      .selectAll()
-      .where('username', '=', name)
-      .executeTakeFirst();
-    if (!user) {
+    const reserved = USERNAME_PATTERN.test(name)
+      ? await this.#reserve({ username: name }, now)
+      : ({ kind: 'unknown' } as const);
+    if (reserved.kind === 'unknown') {
       await verifyPassword(input.password, await this.#dummyHash());
       return failed('unknown-user');
     }
-    const roles = await this.#roles(this.#db, user.id);
-    const who = { id: user.id, roles };
-    const admin = roles.includes('admin');
-    const now = this.#now();
-    if (!user.enabled) {
+    const user = reserved.user;
+    if (reserved.kind === 'refused') {
       await verifyPassword(input.password, await this.#dummyHash());
-      return failed('disabled', who);
+      return failed(
+        reserved.reason,
+        user,
+        reserved.until === undefined
+          ? {}
+          : {
+              [reserved.reason === 'locked' ? 'lockedUntil' : 'nextAttemptAt']:
+                reserved.until.toISOString(),
+            },
+      );
     }
-    if (!admin && user.locked_until !== null && user.locked_until > now) {
-      await verifyPassword(input.password, await this.#dummyHash());
-      return failed('locked', who, { lockedUntil: user.locked_until.toISOString() });
-    }
-    if (admin && user.next_attempt_at !== null && user.next_attempt_at > now) {
-      await verifyPassword(input.password, await this.#dummyHash());
-      return failed('delayed', who, { nextAttemptAt: user.next_attempt_at.toISOString() });
-    }
-    if (!(await verifyPassword(input.password, user.password_hash))) {
-      // Atomic, so concurrent failures all count; a lock that has run out starts the count anew.
-      const row = await this.#db
-        .updateTable('identity.user_account')
-        .set({
-          failed_logins: sql<number>`CASE WHEN locked_until IS NOT NULL AND locked_until <= ${now}
-            THEN 1 ELSE failed_logins + 1 END`,
-          locked_until: sql<Date | null>`CASE WHEN locked_until <= ${now} THEN NULL
-            ELSE locked_until END`,
-        })
-        .where('id', '=', user.id)
-        .returning('failed_logins')
-        .executeTakeFirstOrThrow();
-      const failures = row.failed_logins;
-      if (failures >= IDENTITY_LIMITS.lockAfter) {
-        if (admin) {
-          const delay = Math.min(
-            IDENTITY_LIMITS.adminDelayBaseMs * 2 ** (failures - IDENTITY_LIMITS.lockAfter),
-            IDENTITY_LIMITS.adminDelayMaxMs,
-          );
-          const next = new Date(now.getTime() + delay);
-          await this.#db
-            .updateTable('identity.user_account')
-            .set({ next_attempt_at: next })
-            .where('id', '=', user.id)
-            .execute();
-          return failed('wrong-password', who, {
-            failures,
-            nextAttemptAt: next.toISOString(),
-          });
-        }
-        if (failures === IDENTITY_LIMITS.lockAfter) {
-          const until = new Date(now.getTime() + IDENTITY_LIMITS.lockMs);
-          await this.#db.transaction().execute(async (trx) => {
-            await trx
-              .updateTable('identity.user_account')
-              .set({ locked_until: until })
-              .where('id', '=', user.id)
-              .execute();
-            await this.audit(trx, {
-              actor: { system: 'identity' },
-              authenticated: false,
-              action: 'user.locked',
-              entityType: 'user',
-              entityId: name,
-              after: { failures, lockedUntil: until.toISOString() },
-              requestId: input.requestId,
-            });
-          });
-          this.#log.warn({ user: name, until: until.toISOString() }, 'account locked');
-          return failed('wrong-password', who, { failures, lockedUntil: until.toISOString() });
-        }
+    if (!(await verifyPassword(input.password, user.passwordHash))) {
+      const extra = await this.#lockedBy(user, reserved, input.requestId);
+      if (reserved.nextAttemptAt !== undefined) {
+        extra.nextAttemptAt = reserved.nextAttemptAt.toISOString();
       }
-      return failed('wrong-password', who, { failures });
+      return failed('wrong-password', user, extra);
     }
+    const roles = user.roles;
     const token = randomBytes(32);
     const hash = tokenHash(token);
     const session: SessionInfo = {
@@ -453,7 +555,7 @@ export class Identity {
       idleExpiresAt: new Date(now.getTime() + IDENTITY_LIMITS.idleMs[input.kind]),
       expiresAt: new Date(now.getTime() + IDENTITY_LIMITS.absoluteMs),
     };
-    const rehash = needsRehash(user.password_hash, this.#params)
+    const rehash = needsRehash(user.passwordHash, this.#params)
       ? await hashPassword(input.password, this.#params)
       : undefined;
     const replaced = await this.#db.transaction().execute(async (trx) => {
@@ -503,7 +605,7 @@ export class Identity {
         username: user.username,
         roles,
         permissions: permissionsOf(roles),
-        mustChangePassword: user.must_change_password,
+        mustChangePassword: user.mustChangePassword,
         session,
       },
     };
@@ -607,37 +709,46 @@ export class Identity {
     next: string,
     requestId?: string,
   ): Promise<{ readonly endedSessions: number }> {
-    const user = await this.#db
-      .selectFrom('identity.user_account')
-      .select(['password_hash'])
-      .where('id', '=', principal.userId)
-      .executeTakeFirstOrThrow();
-    if (!(await verifyPassword(current, user.password_hash))) {
-      await this.#db
-        .updateTable('identity.user_account')
-        .set({ failed_logins: sql<number>`failed_logins + 1` })
-        .where('id', '=', principal.userId)
-        .execute();
+    // The new password's rules first: they reveal nothing about the current one.
+    const problem =
+      passwordProblem(next) ??
+      (next === current ? 'the new password is the current one' : undefined);
+    if (problem !== undefined) {
+      throw new IdentityError('invalid', problem, PROBLEM_TYPES.passwordRejected);
+    }
+    // The current password is checked like a login (#168 review, M1): the attempt is reserved
+    // first, so a mismatch counts towards the same lock or admin delay.
+    const reserved = await this.#reserve({ id: principal.userId }, this.#now());
+    const refusedOrWrong = async (
+      reason: string,
+      extra: Record<string, unknown>,
+    ): Promise<never> => {
       await this.audit(this.#db, {
         actor: principal,
         authenticated: true,
         action: 'user.password-change-failed',
         entityType: 'user',
         entityId: principal.username,
-        after: { reason: 'wrong-current-password' },
+        after: { reason, ...extra },
         requestId,
       });
       throw new IdentityError(
         'invalid',
-        'the current password does not match',
+        reason === 'wrong-current-password'
+          ? 'the current password does not match'
+          : 'too many failed attempts; try again later',
         PROBLEM_TYPES.passwordRejected,
       );
+    };
+    if (reserved.kind !== 'reserved') {
+      return refusedOrWrong(reserved.kind === 'refused' ? reserved.reason : 'unknown-user', {});
     }
-    const problem =
-      passwordProblem(next) ??
-      (next === current ? 'the new password is the current one' : undefined);
-    if (problem !== undefined) {
-      throw new IdentityError('invalid', problem, PROBLEM_TYPES.passwordRejected);
+    if (!(await verifyPassword(current, reserved.user.passwordHash))) {
+      const extra = await this.#lockedBy(reserved.user, reserved, requestId);
+      if (reserved.nextAttemptAt !== undefined) {
+        extra.nextAttemptAt = reserved.nextAttemptAt.toISOString();
+      }
+      return refusedOrWrong('wrong-current-password', extra);
     }
     const hash = await hashPassword(next, this.#params);
     const self = Buffer.from(principal.session.id, 'hex');
@@ -648,6 +759,8 @@ export class Identity {
           password_hash: hash,
           must_change_password: false,
           failed_logins: 0,
+          locked_until: null,
+          next_attempt_at: null,
           password_changed_at: this.#now(),
           updated_at: this.#now(),
         })

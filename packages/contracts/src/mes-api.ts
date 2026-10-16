@@ -5,6 +5,7 @@ import {
   ROLES,
   SESSION_KINDS,
   USERNAME_PATTERN,
+  passwordLength,
 } from './identity.ts';
 
 // The MES API's responses and WebSocket messages (#97, ADR-0019), shared by `mes-server`, which
@@ -45,6 +46,11 @@ export const MES_API_LIMITS = {
   /** Identity (#168, ADR-0026): each user's own write bucket, beside the global one. */
   userWritesPerSecond: 5,
   userWriteBurst: 10,
+  /** Logins (#168 review): all together, and per user name; apart from the write buckets. */
+  loginsPerSecond: 5,
+  loginBurst: 10,
+  userLoginsPerSecond: 1,
+  userLoginBurst: 5,
   /** Alarm list (#142): occurrences per page, by default and at most. */
   alarmPage: 100,
   alarmPageMax: 500,
@@ -117,6 +123,8 @@ export const PROBLEM_TYPES = {
   passwordRejected: 'urn:shopfloor:password-rejected',
   /** 409: a user with that name exists. */
   userExists: 'urn:shopfloor:user-exists',
+  /** 429: too many logins, all together or for one user name; retry after `Retry-After` seconds. */
+  loginRate: 'urn:shopfloor:login-rate',
 } as const;
 
 export type ProblemType = (typeof PROBLEM_TYPES)[keyof typeof PROBLEM_TYPES];
@@ -1523,10 +1531,16 @@ const username = z
   .string()
   .regex(USERNAME_PATTERN)
   .describe('A user name: lower case, 2–64 characters of a–z, 0–9, `.`, `_`, `-`');
+// Counted in characters (code points), as the MES's policy counts them (#168 review, L2); the
+// UTF-16 bound only keeps the JSON Schema's maxLength meaningful.
 const password = z
   .string()
   .min(1)
-  .max(PASSWORD_LENGTH.max)
+  .max(PASSWORD_LENGTH.max * 2)
+  .refine(
+    (value) => passwordLength(value) <= PASSWORD_LENGTH.max,
+    `at most ${String(PASSWORD_LENGTH.max)} characters`,
+  )
   .describe(
     `A password (${String(PASSWORD_LENGTH.min)}–${String(PASSWORD_LENGTH.max)} characters when set)`,
   );

@@ -2,10 +2,12 @@ import { randomBytes, scrypt } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import { request as httpRequest } from 'node:http';
 import {
   PERMISSIONS,
   ROLES,
   ROLE_PERMISSIONS,
+  WS_CLOSE_FORBIDDEN,
   WS_CLOSE_UNAUTHENTICATED,
   type Permission,
   type Role,
@@ -90,6 +92,57 @@ async function user(name: string, roles: Role[], password = secret()) {
     { system: 'test' },
   );
   return password;
+}
+
+/** A user's failed-login state. */
+const account = (username: string) =>
+  db
+    .selectFrom('identity.user_account')
+    .select(['failed_logins', 'locked_until', 'next_attempt_at'])
+    .where('username', '=', username)
+    .executeTakeFirstOrThrow();
+
+const failureReasons = async (username: string): Promise<string[]> =>
+  (await identity.auditOf('user', username))
+    .filter((r) => r.action === 'session.login-failed')
+    .map((r) => (r.after as { reason: string }).reason);
+
+async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+/** A request over real HTTP (not inject), with any headers, for the Upgrade-header cases. */
+function rawRequest(
+  port: number,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+  body?: string,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    // A fresh connection each (no keep-alive agent: an upgrade may leave its socket closed).
+    const req = httpRequest(
+      { host: '127.0.0.1', port, method, path, headers, agent: false },
+      (res) => {
+        let text = '';
+        res.on('data', (chunk: Buffer) => (text += chunk.toString()));
+        res.on('end', () => {
+          resolve({ status: res.statusCode ?? 0, body: text });
+        });
+      },
+    );
+    req.on('upgrade', (res, socket) => {
+      socket.destroy();
+      resolve({ status: res.statusCode ?? 0, body: '' });
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
 }
 
 async function failedLogin(username: string, password: string): Promise<IdentityError> {
@@ -225,7 +278,11 @@ describe('identity module (#168)', () => {
       ['user.update', undefined],
       ['session.login-failed', 'disabled'],
     ]);
-    expect((await identity.auditOf('user', '(invalid)')).length).toBe(1);
+    // Unknown and malformed names are never stored as typed.
+    expect((await identity.auditOf('user', '(unknown)')).length).toBe(2);
+    expect(JSON.stringify(await identity.auditOf('user', '(unknown)'))).not.toMatch(
+      /nobody|NOT A NAME/i,
+    );
     const all = await db.selectFrom('identity.audit_log').selectAll().execute();
     expect(JSON.stringify(all)).not.toContain(password);
   });
@@ -395,6 +452,77 @@ describe('identity module (#168)', () => {
     ).rejects.toMatchObject({ kind: 'conflict' });
     expect((await identity.user('root')).enabled).toBe(true);
     await identity.updateUser('admin', { roles: ['admin'] }, { system: 'test' });
+  });
+
+  it('evaluates at most five of many parallel wrong attempts, then refuses the right password (H1)', async () => {
+    const password = await user('kai', ['operator']);
+    const burst = Array.from({ length: 12 }, () =>
+      identity.login({ username: 'kai', password: 'wrong-password-x', kind: 'desk' }).then(
+        () => 'ok',
+        () => 'refused',
+      ),
+    );
+    // The attempts are reserved before their hashes (two at a time) finish.
+    await waitFor(async () => (await account('kai')).failed_logins >= 5);
+    await failedLogin('kai', password);
+    expect(await Promise.all(burst)).toEqual(Array<string>(12).fill('refused'));
+    const reasons = await failureReasons('kai');
+    expect(reasons.filter((r) => r === 'wrong-password')).toHaveLength(5);
+    expect(reasons.filter((r) => r === 'locked')).toHaveLength(8);
+    expect((await identity.user('kai')).locked).toBe(true);
+  });
+
+  it('lets parallel attempts on an admin through one per delay (H1)', async () => {
+    const password = await user('adm2', ['admin']);
+    const burst = Array.from({ length: 12 }, () =>
+      identity.login({ username: 'adm2', password: 'wrong-password-x', kind: 'desk' }).then(
+        () => 'ok',
+        () => 'refused',
+      ),
+    );
+    await waitFor(async () => (await account('adm2')).next_attempt_at !== null);
+    await failedLogin('adm2', password);
+    await Promise.all(burst);
+    const reasons = await failureReasons('adm2');
+    expect(reasons.filter((r) => r === 'wrong-password')).toHaveLength(5);
+    expect(reasons.filter((r) => r === 'delayed')).toHaveLength(8);
+    clock += IDENTITY_LIMITS.adminDelayBaseMs;
+    await identity.login({ username: 'adm2', password, kind: 'desk' });
+    await identity.updateUser('adm2', { enabled: false }, { system: 'test' });
+  });
+
+  it('counts a wrong current password like a failed login: five lock the account (M1)', async () => {
+    const password = await user('lea', ['quality']);
+    const { principal } = await identity.login({ username: 'lea', password, kind: 'desk' });
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        identity.changePassword(principal, 'wrong-password-x', secret()),
+      ).rejects.toMatchObject({ message: 'the current password does not match' });
+    }
+    await expect(identity.changePassword(principal, password, secret())).rejects.toMatchObject({
+      message: 'too many failed attempts; try again later',
+    });
+    await failedLogin('lea', password);
+    expect((await identity.user('lea')).locked).toBe(true);
+    expect(
+      (await identity.auditOf('user', 'lea')).filter((r) => r.action === 'user.locked'),
+    ).toHaveLength(1);
+    clock += IDENTITY_LIMITS.lockMs + 1_000;
+    await identity.login({ username: 'lea', password, kind: 'desk' });
+  });
+
+  it('refuses one of two concurrent demotions of the last two admins (L7)', async () => {
+    // `admin` and `root` are the enabled admins now (adm2 is disabled).
+    const results = await Promise.allSettled([
+      identity.updateUser('admin', { roles: ['supervisor'] }, { system: 'test' }),
+      identity.updateUser('root', { roles: ['quality'] }, { system: 'test' }),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const refused = results.find((r) => r.status === 'rejected');
+    expect(refused?.status === 'rejected' && refused.reason).toMatchObject({ kind: 'conflict' });
+    for (const name of ['admin', 'root']) {
+      await identity.updateUser(name, { roles: ['admin'] }, { system: 'test' });
+    }
   });
 
   it('rehashes at login a hash made with other parameters', async () => {
@@ -568,7 +696,7 @@ const ROUTES: Readonly<Record<string, Permission | 'session' | 'public'>> = {
   'GET /api/v1/plant': 'read',
   'POST /api/v1/session': 'public',
   'GET /api/v1/session': 'session',
-  'DELETE /api/v1/session': 'session',
+  'DELETE /api/v1/session': 'public',
   'POST /api/v1/account/password': 'session',
   'GET /api/v1/users': 'user:admin',
   'POST /api/v1/users': 'user:admin',
@@ -603,6 +731,8 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
       writeRate: { perSecond: 1e6, burst: 1e6 },
       userWriteRate: { perSecond: 1e6, burst: 1e6 },
       sessionCheckMs: 50,
+      loginRate: { perSecond: 1e6, burst: 1e6 },
+      userLoginRate: { perSecond: 1e6, burst: 1e6 },
     });
     app = http.app;
     await app.listen({ host: '127.0.0.1', port: 0 });
@@ -614,6 +744,11 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
       passwords.set(`m-${role}`, await user(`m-${role}`, [role]));
     }
     passwords.set('m-new', secret());
+    passwords.set('m-temp', secret());
+    await identity.createUser(
+      { username: 'm-temp', roles: ['operator'], password: passwords.get('m-temp') ?? '' },
+      { system: 'test' },
+    );
     await identity.createUser(
       { username: 'm-new', roles: ['supervisor'], password: passwords.get('m-new') ?? '' },
       { system: 'test' },
@@ -745,6 +880,7 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     expect(sessionSchema.parse(me.json()).user.username).toBe('m-operator');
     const out = await send('DELETE', '/api/v1/session', { cookie });
     expect(out.statusCode).toBe(200);
+    expect(out.json()).toEqual({ ended: true });
     expect(String(out.headers['set-cookie'])).toMatch(/^sft_session=; Max-Age=0; Path=\//);
     expect((await send('GET', '/api/v1/equipment', { cookie })).statusCode).toBe(401);
   });
@@ -914,6 +1050,106 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     expect(await ws3.closed).toBe(WS_CLOSE_UNAUTHENTICATED);
   });
 
+  it('treats an Upgrade header without a real upgrade as an ordinary request (B1)', async () => {
+    const port = Number(new URL(origin).port);
+    const host = new URL(origin).host;
+    const fake = { upgrade: 'websocket', connection: 'close' };
+    // Anonymous, with an allowed Host: 401 on a read, a write and the user list.
+    expect((await rawRequest(port, 'GET', '/api/v1/users', { ...fake, host })).status).toBe(401);
+    expect((await rawRequest(port, 'GET', '/api/v1/equipment', { ...fake, host })).status).toBe(
+      401,
+    );
+    const write = await rawRequest(
+      port,
+      'POST',
+      '/api/v1/alarms/ack',
+      { ...fake, host, origin, 'content-type': 'application/json' },
+      '{}',
+    );
+    expect(write.status).toBe(401);
+    // A foreign Host, or a write without Origin: 403.
+    expect(
+      (await rawRequest(port, 'GET', '/api/v1/users', { ...fake, host: 'evil.example' })).status,
+    ).toBe(403);
+    const noOrigin = await rawRequest(
+      port,
+      'POST',
+      '/api/v1/alarms/ack',
+      { ...fake, host, 'content-type': 'application/json' },
+      '{}',
+    );
+    expect(noOrigin.status).toBe(403);
+    // With a session the user list answers only for user:admin.
+    const operator = (await login('m-operator')).cookie;
+    expect(
+      (await rawRequest(port, 'GET', '/api/v1/users', { ...fake, host, cookie: operator })).status,
+    ).toBe(403);
+    // A real upgrade of another route meets the same guards; of the push route with a foreign
+    // Host, 403 before any upgrade.
+    const realUpgrade = {
+      connection: 'Upgrade',
+      upgrade: 'websocket',
+      'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+      'sec-websocket-version': '13',
+    };
+    // (@fastify/websocket drops a real upgrade of a route that is not a WebSocket route.)
+    const other = await rawRequest(port, 'GET', '/api/v1/users', { ...realUpgrade, host }).then(
+      (r) => r.status,
+      () => 'closed',
+    );
+    expect([401, 'closed']).toContain(other);
+    expect(
+      (await rawRequest(port, 'GET', WS_PATH, { ...realUpgrade, host: 'evil.example' })).status,
+    ).toBe(403);
+    expect((await rawRequest(port, 'GET', WS_PATH, { ...realUpgrade, host })).status).toBe(101);
+  });
+
+  it('answers HEAD, OPTIONS and unknown routes only with a session (L7)', async () => {
+    const host = new URL(origin).host;
+    expect(
+      (await app.inject({ method: 'HEAD', url: '/api/v1/equipment', headers: { host } }))
+        .statusCode,
+    ).toBe(401);
+    const options = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/v1/equipment',
+      headers: { host, origin, 'content-type': 'application/json' },
+    });
+    expect(options.statusCode).toBe(401);
+    expect((await send('GET', '/api/v1/nowhere')).statusCode).toBe(401);
+    const { cookie } = await login('m-operator');
+    expect((await send('GET', '/api/v1/nowhere', { cookie })).statusCode).toBe(404);
+    const head = await app.inject({
+      method: 'HEAD',
+      url: '/api/v1/equipment',
+      headers: { host, cookie },
+    });
+    expect([401, 403]).not.toContain(head.statusCode);
+  });
+
+  it('clears the cookie on logout also when the session is gone or the cookie invalid (L4)', async () => {
+    for (const cookie of [
+      'sft_session=garbage',
+      `sft_session=${randomBytes(32).toString('base64url')}`,
+    ]) {
+      const out = await send('DELETE', '/api/v1/session', { cookie });
+      expect(out.statusCode).toBe(200);
+      expect(out.json()).toEqual({ ended: false });
+      expect(String(out.headers['set-cookie'])).toMatch(/^sft_session=; Max-Age=0;/);
+    }
+  });
+
+  it('closes a socket whose session must change its password with 4403 (M4)', async () => {
+    const { cookie } = await login('m-temp');
+    const socket = new WebSocket(`${base}${WS_PATH}`, { headers: { origin, cookie } });
+    const code = await new Promise<number>((resolve) => {
+      socket.addEventListener('close', (event) => {
+        resolve(event.code);
+      });
+    });
+    expect(code).toBe(WS_CLOSE_FORBIDDEN);
+  });
+
   it('limits each user to 5 writes per second, bursts of 10, beside the global bucket', async () => {
     const limited = await buildMesHttp({
       ready: () => Promise.resolve(true),
@@ -988,6 +1224,133 @@ describe('MES_AUTH=off (the default until #170)', () => {
     });
     socket.close();
     await app.close();
+  });
+
+  it('treats an Upgrade header as an ordinary request with MES_AUTH=off too (B1)', async () => {
+    const http = await buildMesHttp({ ready: () => Promise.resolve(true), identity });
+    await http.app.listen({ host: '127.0.0.1', port: 0 });
+    const address = http.app.server.address();
+    if (address === null || typeof address === 'string') throw new Error('no port');
+    const port = address.port;
+    const fake = { upgrade: 'websocket', connection: 'close' };
+    expect(
+      (await rawRequest(port, 'GET', '/api/v1/users', { ...fake, host: 'evil.example' })).status,
+    ).toBe(403);
+    expect(
+      (await rawRequest(port, 'GET', '/api/v1/equipment', { ...fake, host: 'evil.example' }))
+        .status,
+    ).toBe(403);
+    const noOrigin = await rawRequest(
+      port,
+      'POST',
+      '/api/v1/alarms/ack',
+      { ...fake, host: `127.0.0.1:${String(port)}`, 'content-type': 'application/json' },
+      '{}',
+    );
+    expect(noOrigin.status).toBe(403);
+    // With MES_AUTH=off no route needs a session (as before #168), but none answers a foreign
+    // Host or a write without Origin, Upgrade header or not.
+    await http.app.close();
+  });
+
+  it('keeps login, logout and the password change open with MES_WRITES=off (M3)', async () => {
+    const password = await user('nia', ['operator']);
+    const http = await buildMesHttp({
+      ready: () => Promise.resolve(true),
+      identity,
+      auth: true,
+      writes: false,
+    });
+    const headers = {
+      host: 'localhost',
+      origin: 'http://localhost',
+      'content-type': 'application/json',
+    };
+    const login = await http.app.inject({
+      method: 'POST',
+      url: '/api/v1/session',
+      headers,
+      payload: JSON.stringify({ username: 'nia', password }),
+    });
+    expect(login.statusCode).toBe(200);
+    const cookie = String(login.headers['set-cookie']).split(';')[0] ?? '';
+    const change = await http.app.inject({
+      method: 'POST',
+      url: '/api/v1/account/password',
+      headers: { ...headers, cookie },
+      payload: JSON.stringify({ currentPassword: password, newPassword: 'short' }),
+    });
+    expect(change.statusCode).toBe(422);
+    const write = await http.app.inject({
+      method: 'POST',
+      url: '/api/v1/alarms/ack',
+      headers: { ...headers, cookie },
+      payload: '{}',
+    });
+    expect(write.statusCode).toBe(405);
+    // The Origin guard still holds for the open ones.
+    const foreign = await http.app.inject({
+      method: 'POST',
+      url: '/api/v1/session',
+      headers: { ...headers, origin: 'http://evil.example' },
+      payload: JSON.stringify({ username: 'nia', password }),
+    });
+    expect(foreign.statusCode).toBe(403);
+    const out = await http.app.inject({
+      method: 'DELETE',
+      url: '/api/v1/session',
+      headers: { ...headers, cookie },
+      payload: '{}',
+    });
+    expect(out.json()).toEqual({ ended: true });
+    await http.app.close();
+  });
+
+  it('limits logins in buckets of their own, never the write bucket (M2)', async () => {
+    const password = await user('ola', ['supervisor']);
+    const http = await buildMesHttp({
+      ready: () => Promise.resolve(true),
+      identity,
+      auth: true,
+      writeRate: { perSecond: 0.001, burst: 1 },
+      userWriteRate: { perSecond: 1e6, burst: 1e6 },
+      loginRate: { perSecond: 0.001, burst: 4 },
+      userLoginRate: { perSecond: 0.001, burst: 2 },
+    });
+    const headers = {
+      host: 'localhost',
+      origin: 'http://localhost',
+      'content-type': 'application/json',
+    };
+    const attempt = (username: string, pw = 'wrong-password-x') =>
+      http.app.inject({
+        method: 'POST',
+        url: '/api/v1/session',
+        headers,
+        payload: JSON.stringify({ username, password: pw }),
+      });
+    // Per user name: the third attempt for one name is refused, another name goes on.
+    expect((await attempt('ghost-a')).statusCode).toBe(401);
+    expect((await attempt('ghost-a')).statusCode).toBe(401);
+    const third = await attempt('ghost-a');
+    expect(third.statusCode).toBe(429);
+    expect(third.json<{ type: string }>().type).toBe(PROBLEM_TYPES.loginRate);
+    expect(third.headers['retry-after']).toBeDefined();
+    // All logins together: four were taken (two failures, then ghost-b and ola).
+    expect((await attempt('ghost-b')).statusCode).toBe(401);
+    const ok = await attempt('ola', password);
+    expect(ok.statusCode).toBe(200);
+    expect((await attempt('ghost-c')).statusCode).toBe(429);
+    // The write bucket (one token) was never touched by the logins.
+    const cookie = String(ok.headers['set-cookie']).split(';')[0] ?? '';
+    const write = await http.app.inject({
+      method: 'POST',
+      url: '/api/v1/alarms/ack',
+      headers: { ...headers, cookie },
+      payload: '{}',
+    });
+    expect(write.statusCode).not.toBe(429);
+    await http.app.close();
   });
 
   it('answers 503 on the session routes until identity has started', async () => {

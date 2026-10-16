@@ -1158,7 +1158,8 @@ Login sessions by the SHA-256 of their cookie token: user, kind (desk or termina
 | Check | `session_end_reason_check` | `CHECK ((end_reason = ANY (ARRAY['logout'::text, 'password-changed'::text, 'password-reset'::text, 'user-disabled'::text, 'replaced'::text])))` |
 | Check | `session_kind_check` | `CHECK ((kind = ANY (ARRAY['desk'::text, 'terminal'::text])))` |
 | Check | `session_token_hash_check` | `CHECK ((length(token_hash) = 32))` |
-| Index | `session_by_expiry` | `identity.session USING btree (expires_at)` |
+| Index | `session_by_end` | `identity.session USING btree (ended_at) WHERE (ended_at IS NOT NULL)` |
+| Index | `session_by_idle_expiry` | `identity.session USING btree (idle_expires_at)` |
 | Index | `session_by_user` | `identity.session USING btree (user_id) WHERE (ended_at IS NULL)` |
 
 ### identity.user_account

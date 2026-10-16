@@ -59,12 +59,12 @@ const ERROR_TEXT: Readonly<Record<number, string>> = {
   401: 'No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated',
   403: 'Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)',
   404: 'Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route',
-  405: 'Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off',
+  405: 'Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off',
   409: 'The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin',
   413: 'Body larger than 16 KiB',
   415: 'Content-Type is not application/json; type urn:shopfloor:write-not-json',
   422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)',
-  429: "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+  429: "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
   503: 'The MES is starting',
 };
 

@@ -12,7 +12,7 @@
         "properties": {
           "type": {
             "type": "string",
-            "description": "about:blank (the status says it all), or a stable URI a client tells apart: urn:shopfloor:handover-closed, urn:shopfloor:handover-not-open, urn:shopfloor:note-stale, urn:shopfloor:note-limit, urn:shopfloor:coding-stale, urn:shopfloor:shelf-stale, urn:shopfloor:host-not-allowed, urn:shopfloor:write-origin, urn:shopfloor:writes-off, urn:shopfloor:write-not-json, urn:shopfloor:write-rate, urn:shopfloor:unauthenticated, urn:shopfloor:forbidden, urn:shopfloor:password-change-required, urn:shopfloor:password-rejected, urn:shopfloor:user-exists"
+            "description": "about:blank (the status says it all), or a stable URI a client tells apart: urn:shopfloor:handover-closed, urn:shopfloor:handover-not-open, urn:shopfloor:note-stale, urn:shopfloor:note-limit, urn:shopfloor:coding-stale, urn:shopfloor:shelf-stale, urn:shopfloor:host-not-allowed, urn:shopfloor:write-origin, urn:shopfloor:writes-off, urn:shopfloor:write-not-json, urn:shopfloor:write-rate, urn:shopfloor:unauthenticated, urn:shopfloor:forbidden, urn:shopfloor:password-change-required, urn:shopfloor:password-rejected, urn:shopfloor:user-exists, urn:shopfloor:login-rate"
           },
           "title": {
             "type": "string"
@@ -4697,7 +4697,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4747,7 +4747,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8599,7 +8599,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8649,7 +8649,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9042,7 +9042,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9092,7 +9092,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12209,7 +12209,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12239,7 +12239,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12575,7 +12575,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12605,7 +12605,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12995,7 +12995,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13025,7 +13025,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13609,7 +13609,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13659,7 +13659,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13956,7 +13956,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14006,7 +14006,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14463,7 +14463,7 @@
                   "password": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 128,
+                    "maxLength": 256,
                     "description": "A password (12–128 characters when set)"
                   },
                   "kind": {
@@ -14622,16 +14622,6 @@
               }
             }
           },
-          "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "413": {
             "description": "Body larger than 16 KiB",
             "content": {
@@ -14653,7 +14643,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14829,11 +14819,11 @@
         }
       },
       "delete": {
-        "summary": "Logs out: ends the session and clears the cookie",
+        "summary": "Logs out: ends the session, if live, and clears the cookie",
         "tags": [
           "identity"
         ],
-        "description": "The body is an empty JSON object (writes are application/json). Access: a session (also one whose password must be changed).",
+        "description": "The body is an empty JSON object (writes are application/json). Clears the cookie also when the session already ended or expired, or the cookie is invalid (`ended: false`). Access: anyone (no session needed).",
         "requestBody": {
           "required": true,
           "content": {
@@ -14857,9 +14847,7 @@
                   "properties": {
                     "ended": {
                       "type": "boolean",
-                      "enum": [
-                        true
-                      ]
+                      "description": "Whether a live session ended (false: none was live)"
                     }
                   },
                   "required": [
@@ -14880,28 +14868,8 @@
               }
             }
           },
-          "401": {
-            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "403": {
             "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14922,16 +14890,6 @@
           },
           "415": {
             "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14970,13 +14928,13 @@
                   "currentPassword": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 128,
+                    "maxLength": 256,
                     "description": "A password (12–128 characters when set)"
                   },
                   "newPassword": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 128,
+                    "maxLength": 256,
                     "description": "A password (12–128 characters when set)"
                   }
                 },
@@ -15051,7 +15009,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15091,7 +15049,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15276,7 +15234,7 @@
                   "password": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 128,
+                    "maxLength": 256,
                     "description": "A temporary password: the user must change it at first login"
                   }
                 },
@@ -15387,7 +15345,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15437,7 +15395,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15617,7 +15575,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15667,7 +15625,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15706,7 +15664,7 @@
                   "password": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 128,
+                    "maxLength": 256,
                     "description": "A temporary password: the user must change it at next login"
                   }
                 },
@@ -15836,7 +15794,7 @@
             }
           },
           "405": {
-            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15876,7 +15834,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {

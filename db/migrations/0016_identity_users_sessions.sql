@@ -64,7 +64,10 @@ CREATE TABLE identity.session (
   CHECK (idle_expires_at <= expires_at)
 );
 CREATE INDEX session_by_user ON identity.session (user_id) WHERE ended_at IS NULL;
-CREATE INDEX session_by_expiry ON identity.session (expires_at);
+-- The sweep deletes sessions idle (idle_expires_at <= expires_at, so this covers expiry too) or
+-- ended more than a day ago.
+CREATE INDEX session_by_idle_expiry ON identity.session (idle_expires_at);
+CREATE INDEX session_by_end ON identity.session (ended_at) WHERE ended_at IS NOT NULL;
 
 -- The audit log: one row per audited action, append-only. Wall time, plant time when known, the
 -- user and roles at that moment (null user for the system or an unknown name), `authenticated`,

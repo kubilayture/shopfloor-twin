@@ -42,6 +42,7 @@ export {
   alarmSnapshotSchema,
   cycleCompleteSchema,
   incidentSchema,
+  jobEventSchema,
   measurementSchema,
   parseUnsMessage,
   qualitySchema,
@@ -55,6 +56,7 @@ export type {
   AlarmSnapshot,
   CycleComplete,
   Incident,
+  JobEvent,
   MachineState,
   StateCurrent,
   Status,
@@ -67,9 +69,12 @@ export {
   SYS_SEGMENT,
   alarmSnapshotTopic,
   alarmTopic,
+  commandResultTopic,
+  commandTopic,
   cycleTopic,
   isRetained,
   isSysRetained,
+  jobTopic,
   parseEquipmentTopic,
   stateTopic,
   sysTopic,
@@ -78,6 +83,25 @@ export {
 } from './uns/topics.ts';
 export type { EquipmentPath, ParsedTopic, SysName } from './uns/topics.ts';
 export { Deduplicator, streamKey } from './uns/dedup.ts';
+export {
+  COMMAND_REJECTIONS,
+  COMMAND_RESULTS,
+  UNS_COMMANDS,
+  UNS_COMMAND_SCHEMAS,
+  commandResultSchema,
+  loadOrderCommandId,
+  loadOrderCommandSchema,
+  parseUnsCommandMessage,
+} from './uns/commands.ts';
+export type {
+  CommandRejection,
+  CommandResult,
+  CommandResultKind,
+  CommandResultValue,
+  LoadOrderCommand,
+  UnsCommand,
+  UnsCommandMessage,
+} from './uns/commands.ts';
 export type { Gap, Identified, Verdict } from './uns/dedup.ts';
 export {
   CYCLE_RESULTS,

@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "uns.cmd.load-order/1"
+    },
+    "scope": {
+      "type": "string",
+      "const": "topic"
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Start of the issuer (the MES process), Unix seconds"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Per topic, from the issuer"
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "Equipment id (cnc-01, wsh-01) or component instance (gw-01)"
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "opcua",
+            "modbus",
+            "internal"
+          ],
+          "description": "Where the gateway got it"
+        }
+      },
+      "required": [
+        "id",
+        "protocol"
+      ],
+      "additionalProperties": false,
+      "description": "The issuer, e.g. { id: mes-server, protocol: internal }"
+    },
+    "issuedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+      "description": "Wall time the command (or this resend) was published"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+      "description": "Wall time; a command the device has not accepted by then is refused (ExpiresAt)"
+    },
+    "value": {
+      "type": "object",
+      "properties": {
+        "commandId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^\\S(.*\\S)?$",
+          "description": "{orderId}~OP10~{n}; resends reuse it"
+        },
+        "orderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "OP10"
+        },
+        "product": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "description": "Blanks to machine"
+        },
+        "notBefore": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+          "description": "Plant (simulation) time; the job does not start earlier"
+        },
+        "deviceEpoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "The simulator run (ShopFloor.Epoch) the command is meant for"
+        }
+      },
+      "required": [
+        "commandId",
+        "orderId",
+        "operation",
+        "product",
+        "quantity",
+        "notBefore",
+        "deviceEpoch"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema",
+    "scope",
+    "epoch",
+    "seq",
+    "source",
+    "issuedAt",
+    "expiresAt",
+    "value"
+  ],
+  "additionalProperties": false,
+  "title": "uns.cmd.load-order/1",
+  "description": "Append a job to a CNC queue through LoadOrder (QoS 1, not retained)"
+}

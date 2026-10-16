@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { JOB_TRANSITIONS } from '../opcua.ts';
 
 export const MACHINE_STATES = [
   'Off',
@@ -121,6 +122,25 @@ export const cycleCompleteSchema = envelope(
   { ...DEVICE },
 ).meta({ title: 'uns.events.cycle-complete/1', description: 'A completed cycle (not retained)' });
 
+/**
+ * Orders mode (contract 1.3, #173): a job fact of a CNC (`ShopFloorJobEventType`, ADR-0030). A
+ * device fact like a cycle, in the machine's shared sequence, so job facts take part in the
+ * device stream's dedup and gap checks.
+ */
+export const jobEventSchema = envelope(
+  'uns.events.job',
+  z.strictObject({
+    transition: z
+      .enum(JOB_TRANSITIONS)
+      .describe('accepted (LoadOrder), started (first blank taken) or completed (last OP10 cycle)'),
+    commandId: z.string().min(1).max(128).describe('The command that created the job'),
+    orderId: z.string().min(1).max(128),
+    product: z.string().min(1),
+    quantity: z.int().min(1).describe('Blanks to machine'),
+  }),
+  { ...DEVICE },
+).meta({ title: 'uns.events.job/1', description: 'A job transition of a CNC (not retained)' });
+
 export const alarmSchema = envelope(
   'uns.alarms',
   z.strictObject({
@@ -202,6 +222,7 @@ export const UNS_SCHEMAS = {
   'uns.state.current/1': stateCurrentSchema,
   'uns.telemetry/1': telemetrySchema,
   'uns.events.cycle-complete/1': cycleCompleteSchema,
+  'uns.events.job/1': jobEventSchema,
   'uns.alarms/1': alarmSchema,
   'uns.alarm-snapshot/1': alarmSnapshotSchema,
   'uns.sys.status/1': statusSchema,
@@ -212,12 +233,13 @@ export type UnsSchemaName = keyof typeof UNS_SCHEMAS;
 export type StateCurrent = z.infer<typeof stateCurrentSchema>;
 export type Telemetry = z.infer<typeof telemetrySchema>;
 export type CycleComplete = z.infer<typeof cycleCompleteSchema>;
+export type JobEvent = z.infer<typeof jobEventSchema>;
 export type Alarm = z.infer<typeof alarmSchema>;
 export type AlarmSnapshot = z.infer<typeof alarmSnapshotSchema>;
 export type Status = z.infer<typeof statusSchema>;
 export type Incident = z.infer<typeof incidentSchema>;
 export type UnsMessage =
-  StateCurrent | Telemetry | CycleComplete | Alarm | AlarmSnapshot | Status | Incident;
+  StateCurrent | Telemetry | CycleComplete | JobEvent | Alarm | AlarmSnapshot | Status | Incident;
 
 /** Parses any UNS payload by its `schema` field. */
 export function parseUnsMessage(

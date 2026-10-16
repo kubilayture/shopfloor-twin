@@ -6,6 +6,9 @@ import { parseEnv } from './env.ts';
 import { buildGatewayHttp } from './http.ts';
 import { TopicSequences, unixSeconds } from './identity.ts';
 import { Outbox } from './buffer/outbox.ts';
+import { CommandExecutor, type CommandMachine } from './commands/executor.ts';
+import { CommandLink } from './commands/link.ts';
+import { CommandStore } from './commands/store.ts';
 import { equipmentPaths } from './hierarchy.ts';
 import { UnsIncidentReporter } from './incidents.ts';
 import { MqttLink } from './mqtt-link.ts';
@@ -98,6 +101,56 @@ const collectors = OPCUA_MACHINES.map((machine) => {
     },
   });
 });
+// The command path (#173, ADR-0029): deliveries are recorded in the gateway's SQLite file before
+// their PUBACK, executed on the CNCs' OPC UA sessions, and answered through the outbox.
+const commandStore = new CommandStore(resolve(env.BUFFER_PATH));
+const commandMachines = new Map<string, CommandMachine>(
+  collectors
+    .filter((collector) => collector.kind === 'machine-tool')
+    .map((collector) => [collector.machineId, collector] as const),
+);
+const executor = new CommandExecutor({
+  store: commandStore,
+  publisher: outbox,
+  sequences,
+  paths,
+  machines: commandMachines,
+  callDeadlineMs: env.GATEWAY_CALL_DEADLINE_MS,
+  onResult: (value, equipment) => {
+    const level = value.result === 'unknown' || value.result === 'rejected' ? 'warn' : 'info';
+    log[level]({ equipment, result: value }, 'command result');
+  },
+  onInvalid: (entry, error) => {
+    log.error({ topic: entry.topic, error }, 'invalid command dropped');
+  },
+  onSettleAcceptance: (value, equipment) => {
+    log.warn(
+      { equipment, result: value },
+      'settle call accepted the job after expiresAt: clock skew between gateway and device',
+    );
+  },
+  onError: (error) => {
+    log.error({ err: error }, 'command error');
+  },
+});
+const commandLink = new CommandLink({
+  url: env.MQTT_URL,
+  username: env.MQTT_USERNAME,
+  password: env.MQTT_PASSWORD,
+  clientId: `${env.GATEWAY_ID}-cmd`,
+  areas: loaded.config.plant.areas.map((area) => area.id),
+  sessionExpirySeconds: env.GATEWAY_CMD_SESSION_EXPIRY_S,
+  store: commandStore,
+  onCommand: (entry) => {
+    executor.submit(entry);
+  },
+  onIgnored: (topic) => {
+    log.warn({ topic }, 'delivery outside an equipment command topic ignored');
+  },
+  onError: (error) => {
+    log.error({ err: error }, 'command session error');
+  },
+});
 const washer = loaded.config.process.processValues.washer;
 const washerPath = paths.get(washer.machine);
 if (!washerPath) throw new Error(`${washer.machine} is not in the plant configuration`);
@@ -130,9 +183,17 @@ const poller = new ModbusPoller({
   pollMs: env.MODBUS_POLL_MS,
 });
 const http = buildGatewayHttp({
-  ready: () => link.connected,
+  // Ready when both broker sessions are up and the command subscriptions are granted.
+  ready: () => link.connected && commandLink.subscribed,
   published: () => outbox.delivered,
   buffer: () => ({ depth: outbox.depth, dropped: outbox.dropped }),
+  commands: () => ({
+    received: commandLink.received,
+    calls: executor.calls,
+    settleAcceptances: executor.settleAcceptances,
+    results: executor.results,
+    ...executor.pending,
+  }),
   machines: () => [
     ...collectors.map((c) => ({ id: c.machineId, connected: c.connected, facts: c.facts })),
     { id: poller.machineId, connected: poller.connected, facts: poller.facts },
@@ -156,9 +217,16 @@ async function shutdown(signal: string): Promise<void> {
     log.error('shutdown timed out');
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
+  // Commands first: nothing unanswered is acknowledged without being recorded, and what is
+  // recorded and unanswered is processed again at the next start.
+  await commandLink.close().catch((error: unknown) => {
+    log.error(error);
+  });
+  await executor.stop();
   const stopped = await Promise.allSettled([...collectors.map((c) => c.stop()), poller.stop()]);
   // Unsent messages stay in the outbox for the next start.
   await outbox.close();
+  commandStore.close();
   const results = [...stopped, ...(await Promise.allSettled([http.close(), link.close()]))];
   for (const result of results) {
     if (result.status === 'rejected') log.error(result.reason);
@@ -176,6 +244,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 
 await http.listen({ host: env.HTTP_HOST, port: env.HTTP_PORT });
 link.start();
+executor.start();
+commandLink.start();
 poller.start();
 // The collectors share one client certificate: create it one collector at a time, then start
 // them all at once in the background. A machine that is down keeps retrying by itself and holds

@@ -99,6 +99,9 @@ services:
       OPCUA_HOST: simulator
       MODBUS_HOST: simulator
       LOG_LEVEL: ${GATEWAY_LOG_LEVEL:-info}
+      # Command path (#173, ADR-0029): deadline per OPC UA request, command session expiry.
+      GATEWAY_CALL_DEADLINE_MS: ${GATEWAY_CALL_DEADLINE_MS:-5000}
+      GATEWAY_CMD_SESSION_EXPIRY_S: ${GATEWAY_CMD_SESSION_EXPIRY_S:-3600}
     ports:
       - '127.0.0.1:${GATEWAY_HTTP_PORT:-4900}:4900'
     volumes:

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
+import { createServer, connect, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -29,11 +30,15 @@ const SIMULATOR_MAIN = resolve(import.meta.dirname, '../../simulator/src/main.ts
  * The real simulator as a child process (apps may not import each other, plan section 8), started
  * idle, with its event stream already subscribed.
  */
-export async function startSimulator(ports: {
-  readonly opcuaOffset: number;
-  readonly modbusPort: number;
-  readonly controlPort: number;
-}): Promise<RunningSimulator> {
+export async function startSimulator(
+  ports: {
+    readonly opcuaOffset: number;
+    readonly modbusPort: number;
+    readonly controlPort: number;
+  },
+  /** Extra environment, e.g. `{ SIM_PRODUCTION: 'orders' }` (#173). */
+  extraEnv: Readonly<Record<string, string>> = {},
+): Promise<RunningSimulator> {
   const control = `http://127.0.0.1:${String(ports.controlPort)}`;
   // A fresh certificate store each run: a store left locked by a killed run would hang the start.
   const pki = join(tmpdir(), `shopfloor-twin-gw-test-pki-${String(ports.opcuaOffset)}`);
@@ -48,6 +53,7 @@ export async function startSimulator(ports: {
       MODBUS_PORT: String(ports.modbusPort),
       CONTROL_PORT: String(ports.controlPort),
       LOG_LEVEL: 'warn',
+      ...extraEnv,
     },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
@@ -138,4 +144,120 @@ export async function startGateway(env: Readonly<Record<string, string>>): Promi
       await exited;
     },
   };
+}
+
+/**
+ * A TCP proxy between a client and a server (#173), to cut a connection or hold a server's answers
+ * mid-call. In `hold`, bytes from the server are kept (the client's requests still reach it), so a
+ * call can execute on the device while its answer never reaches the client in time; `release`
+ * delivers them late, in order. `cut` destroys every connection; `down` also refuses new ones.
+ */
+export class TcpProxy {
+  readonly port: number;
+  readonly #server: Server;
+  readonly #pairs = new Set<{ client: Socket; upstream: Socket; held: Buffer[] }>();
+  #holding = false;
+  #down = false;
+
+  private constructor(server: Server, port: number) {
+    this.#server = server;
+    this.port = port;
+  }
+
+  static async start(
+    listenPort: number,
+    target: { readonly host: string; readonly port: number },
+  ): Promise<TcpProxy> {
+    const server = createServer();
+    const proxy = new TcpProxy(server, listenPort);
+    server.on('connection', (client) => {
+      proxy.#accept(client, target);
+    });
+    await new Promise<void>((resolveListen, reject) => {
+      server.once('error', reject);
+      server.listen(listenPort, () => {
+        resolveListen();
+      });
+    });
+    return proxy;
+  }
+
+  /** Keep the server's bytes from now on. */
+  hold(): void {
+    this.#holding = true;
+  }
+
+  /** Deliver what was held, in order, and pass everything again. */
+  release(): void {
+    this.#holding = false;
+    for (const pair of this.#pairs) {
+      for (const chunk of pair.held.splice(0)) pair.client.write(chunk);
+    }
+  }
+
+  /** Destroys every open connection (held bytes are lost); new connections pass. */
+  cut(): void {
+    this.#holding = false;
+    for (const pair of this.#pairs) {
+      pair.held.length = 0;
+      pair.client.destroy();
+      pair.upstream.destroy();
+    }
+    this.#pairs.clear();
+  }
+
+  /** Down: cut and refuse new connections; up: accept them again. */
+  setDown(down: boolean): void {
+    this.#down = down;
+    if (down) this.cut();
+  }
+
+  async close(): Promise<void> {
+    this.cut();
+    await new Promise<void>((resolveClose) => {
+      this.#server.close(() => {
+        resolveClose();
+      });
+    });
+  }
+
+  #accept(client: Socket, target: { readonly host: string; readonly port: number }): void {
+    if (this.#down) {
+      client.destroy();
+      return;
+    }
+    const upstream = connect(target.port, target.host);
+    const pair = { client, upstream, held: [] as Buffer[] };
+    this.#pairs.add(pair);
+    const end = (): void => {
+      this.#pairs.delete(pair);
+      client.destroy();
+      upstream.destroy();
+    };
+    client.on('data', (chunk: Buffer) => upstream.write(chunk));
+    upstream.on('data', (chunk: Buffer) => {
+      if (this.#holding) pair.held.push(chunk);
+      else client.write(chunk);
+    });
+    for (const socket of [client, upstream]) {
+      socket.on('error', end);
+      socket.on('close', end);
+    }
+  }
+}
+
+/** Proxies for the five OPC UA machine ports: `from` offset (the client's) → `to` offset (the server's). */
+export async function opcuaProxies(
+  machines: readonly { readonly id: string; readonly port: number }[],
+  from: number,
+  to: number,
+): Promise<Map<string, TcpProxy>> {
+  const proxies = new Map<string, TcpProxy>();
+  for (const machine of machines) {
+    proxies.set(
+      machine.id,
+      await TcpProxy.start(machine.port + from, { host: 'localhost', port: machine.port + to }),
+    );
+  }
+  return proxies;
 }

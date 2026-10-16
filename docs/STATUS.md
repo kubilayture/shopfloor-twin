@@ -1,11 +1,13 @@
 # Status — updated 2026-10-16
 
-## Current phase: 06 – Alarms and shifts (in progress; Phase 5 closed 2026-10-16)
+## Current phase: 07 – Orders, ERP and execution (next, not planned yet; Phase 6 closed 2026-10-16)
 
-## Exit criteria progress: Phase 6: 1 / 5 met (criterion 1: reference cases and coverage with #139, the golden reconciliation runs with #142); criterion 2's reconciliation passes with #142 for both scenarios, with the trailing buckets after the machines' last facts not final (deviation recorded in the phase log, for the owner); criteria 3, 4 and 5 have local evidence from two passing `pnpm test:reconcile` runs with #147 (not merged; CI not run)
+## Exit criteria progress: Phase 6 closed with 5 / 5 met (criteria 2 and 5 with recorded deviations; evidence from local runs, GitHub Actions could not run); Phase 7 not planned yet
 
 ## Done since last update
 
+- **Phase 6 closed**: all 5 exit criteria met; tag `phase-06` after #148 merges (report: `docs/phases/phase-06-report.md`; learning notes: `docs/learning/phase-06.md`; data model: `docs/data-model.md`, confirmed current with the 14 tables of migrations `0010`–`0015`). Criterion 2's trailing buckets stay provisional and criterion 5's 405 and note refusals are checked outside the stack smoke (deviations in the report).
+- Phase 6 pull requests merged: #149 (plan), #150 (#139), #151 (#140), #152 (#141), #153 (#142), #154 (#143), #155 (#144), #157 (#156), #158 (#145), #161 (#159), #162 (#146), #164 (#160, #163), #165 (#147). #149 was the last PR with green CI; #150–#165 were gated by the local equivalent of every CI job. `pnpm test:reconcile` passed 3 of 3 locally on #165's final commit.
 - #147 done (branch `test/147-e2e-alarms-shifts`): `pnpm test:reconcile` runs `alarms-01`'s shift A with its 14 injections posted through the control API 1.3 before the resume; shift A's alarm KPIs (plant and both positions, 3 shift and 4 hour buckets) final and equal to the live ground truth and `alarms-01`'s summary; shift A's report final with `revision.inputs = 0`, its OEE and alarm sections byte for byte the APIs', production equal to the ground truth. Playwright: every raise on `/alarms` within 2 s (max 293 ms), the flood banner, the KPI cards live (max 1,130 ms); after the drain acknowledge, bulk acknowledge, shelve and unshelve, comment, history in UI and API, `/alarms/kpi` byte-identical, operator measures 0 → 14 acknowledged, a handover note created and edited (`content` +2, `contentAtFinal` unchanged), refusals with problem types. Two consecutive local passes, 524 and 523 s. Also the PR #164 carry-overs (window labels from `windowMs`, `minShelveMs` in the MES). The OEE dashboard check's latency rose to up to 1.9 s (2 failing runs of 9) when the alarm check ran first: traced to the judge reading transient OEE values as stale when their four decimals repeat (more often later in the shift), not to the MES or the page; the OEE check samples from the shift's start again and, after the review of PR #165, counts a value as seen only within 5 s of it (three runs: max 1,204 / 1,039 / 1,238 ms), with new push and pool metrics (phase log).
 
 - #160 and #163 done (branch `feat/160-163-alarm-config-problem-types`): `GET /api/v1/alarms/config` serves `maxShelveMs`, the KPI thresholds and the benchmarks of `alarms.yaml`, and the web's shelve presets, flood threshold line, flood banner and rate bands follow it (no hard-coded `MAX_SHELVE_MS`, `FLOOD_THRESHOLD` or bands left). Write conflicts and refusals carry stable problem `type` URIs (`PROBLEM_TYPES` in contracts: handover closed and not open, note stale and limit, coding and shelf stale, the write guards); the note editor matches on `type`. Migration `0015` stores `content_at_final` with finality, served as `revision.contentAtFinal`; the "changed after final" banner uses it instead of comparing two clocks. ADR-0023 and ADR-0025 notes.
@@ -93,26 +95,29 @@
 
 ## In progress
 
-- #147 end to end (branch `test/147-e2e-alarms-shifts`, awaiting review)
+- #148 Phase 6 close (in review)
 
 ## Next up
 
-- #148 (close Phase 6).
+- Phase 7 plan: Orders, ERP and execution (master plan section 11 row 7: `erp-mock`, `identity` with users, roles, login and audit, order import, release and dispatch, routing execution, operator terminal, confirmations). Not planned yet. Carry-overs are in the Phase 6 report: the module-local audits and free-text actors to move into `identity`, separate database roles (Phases 7 and 9), positions from crews, the global write rate limit, retention, `prom-client` (ADR-0012), and the O(hours × occurrences) alarm KPI reads.
 
 ## Blockers and open questions for the owner
 
+- Sign off Phase 6 (v1 success criterion 6); Claude closed it under the standing instruction without the owner's review.
+- Approve the golden-summary regeneration of `week-01` to `sim-summary/3` (#140; master plan section 12): only the new `alarms` section, `analysisConfigSha256` and the schema line changed, `events.sha256` unchanged; reason in `apps/simulator/golden/README.md`. Done under the standing instruction; approval deferred to the owner.
+- GitHub Actions is disabled by the account's spending limit: every run since PR #149's merge fails at the billing check before any job starts. Merges are gated locally (`pnpm verify`, `pnpm test:golden`, `pnpm test:e2e`, the stack smoke on a disposable project, `pnpm test:reconcile`). Raise the limit or keep the local gate.
 - Sign off Phase 5 (v1 success criterion 6); Claude closed it under the standing instruction without the owner's review.
 - Sign off Phase 4 (v1 success criterion 6); Claude closed it under the standing instruction without the owner's review.
 - Install the Renovate GitHub app for this repository (carried over from Phase 0).
-- Optional: run `pnpm stack:up` and look at the plant overview at <http://localhost:8080>, the OEE dashboard at `/oee` and the coding screen at `/downtime` (no exit criterion depends on it). A coding saved there is audited permanently. The default dev database already holds one smoke coding and its clear from #121's first local smoke run (Phase 5 report, Known issues).
+- Optional: run `pnpm stack:up` and look at the plant overview at <http://localhost:8080>, the OEE dashboard at `/oee`, the coding screen at `/downtime`, the alarm list at `/alarms`, the alarm KPIs at `/alarms/kpi` and the shift reports at `/shifts` (no exit criterion depends on it). Codings, acknowledgements, shelves, comments and notes saved there are audited permanently. The default dev database already holds one smoke coding and its clear from #121's first local smoke run (Phase 5 report, Known issues).
 - Raise the Docker VM's memory to 4 GiB (now 2 GiB on Colima): the full stack uses about 440 MiB at 60×, but its limits add up to about 2 GiB and the Testcontainers suites run beside it (runbook, "Full stack", Memory).
 
 Project board: https://github.com/users/kubilayture/projects/1
 
 ## Health: CI on main, coverage, open bugs
 
-- CI on `main`: green (`verify`, `end to end`, `stack smoke`, `reconcile`) on `92efe6a`, the merge of #136.
-- Tests: 988 (plus the `end to end` job: gateway, golden-week reconciliation of intervals, aggregates, records and 128 OEE buckets; and the `reconcile` job: live shift A, dashboard latency, UI coding).
-- Coverage (lines / branches): `sim-core` 99 / 98 (floor 95 / 90), `oee-core` 100 / 99 (floor 95 / 90), `alarm-core` 100 / 96 (floor 95 / 90), `plant-config` 99 / 93 (floor 90 / 85), simulator 85 / 79, `edge-gateway` 91 / 78, `mes-server` 96 / 87 and web 96 / 86 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
-- Golden scenario `week-01`: green in CI.
+- CI on `main`: not running. GitHub Actions jobs fail at the billing check (spending limit) on every run since `ed8783b` (the merge of #149); the last green CI on `main` is `cfed3a0`, the Phase 5 close. The workflow is unchanged. Merges since #150 are gated by local runs of every CI job; #165's final commit (merged as `12b9c9a`) passed `pnpm verify`, `pnpm test:e2e` and `pnpm test:reconcile` (3 of 3) locally; `pnpm test:golden` and the smoke ran on its previous commit (the fix commit changed e2e code only). Exceptions per PR are listed in the Phase 6 report.
+- Tests: 1,333 in `pnpm turbo run test --force` (Phase 5: 988), plus `pnpm test:e2e` (gateway; golden reconciliations of `week-01` and `alarms-01`: intervals, aggregates, records, OEE, 112 and 129 alarm comparisons, 255 and 102 shift report comparisons) and `pnpm test:reconcile` (live `alarms-01` shift A with 14 injections, OEE, alarm and dashboard latency, UI actions and notes).
+- Coverage (lines / branches): `sim-core` 99.4 / 98.3 (floor 95 / 90), `oee-core` 100 / 99.1 (floor 95 / 90), `alarm-core` 100 / 96.4 (floor 95 / 90), `shift-calendar` 100 / 91.4, `plant-config` 99.7 / 95.1 (floor 90 / 85), simulator 86.1 / 79.3, `edge-gateway` 92.2 / 78.5, `mes-server` 96.2 / 85.6 and web 96.2 / 87.0 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
+- Golden scenarios `week-01` and `alarms-01`: green locally (`pnpm test:golden`, `pnpm test:e2e`).
 - Open bugs: 0.

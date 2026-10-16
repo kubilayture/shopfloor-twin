@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Phase 6 closed: report and learning notes; all 5 exit criteria met (evidence from local runs: GitHub Actions could not run, spending limit); `docs/data-model.md` confirmed current; tag `phase-06` on merge (#148).
 - End-to-end reconciliation with live injected faults, alarms and the shift report (#147; Phase 6 exit criteria 3, 4 and 5).
   - **Live run of `alarms-01`:** `pnpm test:reconcile` now runs the golden scenario `alarms-01` (week-01's seed and start). Before the resume it posts the scenario's 14 shift A injections through the control API 1.3 (`POST /faults/failure/{machine}` with `at`), in the scenario's order, as the headless run schedules them, and checks they were all applied in shift A (`GET /faults/injections`). Every Phase 4/5 check still runs against the live ground truth; the live ground truth's shift A (states and OEE) equals `alarms-01`'s summary, and the report names the headless prefix test that ties `alarms-01` to week-01.
   - **Alarm reconciliation:** shift A's alarm KPIs of the plant and both positions, per shift and per hour (3 shift and 4 hour buckets), final (`provisional` false, revision 0, incidents 0) and equal to the live ground truth and to `alarms-01`'s summary; the raises (14, 13, 1), the flood, the chattering point and the fleeting alarm are asserted.

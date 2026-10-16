@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Phase 6 plan with issues #138–#148 (#138).
 - Phase 5 closed: report and learning notes; all 5 exit criteria met; `docs/data-model.md` confirmed current; tag `phase-05` on merge (#124).
 - End to end: live OEE reconciliation and dashboard checks in `pnpm test:reconcile` (#123; Phase 5 exit criteria 3, 4 and 5).
   - **Live OEE (criterion 3).** Shift A's OEE must list exactly the plant's six machines and two work centers on both sides, the work centers must be final too (`provisionalMs`, `revision`, `incidents` 0), and the run asserts that 8 buckets were compared (`oee.compared` in `report.json`).

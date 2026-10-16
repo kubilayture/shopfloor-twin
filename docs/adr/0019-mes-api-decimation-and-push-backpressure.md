@@ -44,3 +44,7 @@ WebSocket: (a) `@fastify/websocket` (on `ws`); (b) `ws` on its own; (c) Server-S
 - Bad: responses aren't filtered by their schema at runtime; the tests parse them with the response schemas instead.
 - Bad: the allowlists must be kept in step with how the MES is reached (names, ports behind a proxy); a wrong list shows as 403, not as a silent leak.
 - Bad: buckets are by simulation time; after a simulator restart (new epoch, time jumping back) a range may mix both runs' samples, and "latest" per metric is by `sourceTime`.
+
+## Note: authentication (#168)
+
+"Read-only and unauthenticated until Phase 9" is amended: identity arrives in Phase 7 (ADR-0026). With `MES_AUTH=on` every `/api/v1` route but `POST /session` needs a session cookie (401 `urn:shopfloor:unauthenticated`) and the route's permission (403 `urn:shopfloor:forbidden`; every read needs `read`, which every role holds), and the WebSocket needs it too: an upgrade passes the `Host` and `Origin` checks above first (403), then a socket without a live session is closed at once with code 4401, and an open socket is closed with 4401 when its session ends or expires. The `Host` and `Origin` checks stay as they are and run before authentication, so a page on another site never learns whether a session exists. `/health/*` and `/metrics` stay open. #168 builds this behind `MES_AUTH=off` (the default until #170, which turns it on with the web's login), so until then the API answers as described above.

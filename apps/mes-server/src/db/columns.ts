@@ -1,6 +1,7 @@
 import { sql, type Kysely } from 'kysely';
 import { ALARMS_COLUMNS } from '../modules/alarms/index.ts';
 import { EQUIPMENT_COLUMNS } from '../modules/equipment/index.ts';
+import { IDENTITY_COLUMNS } from '../modules/identity/index.ts';
 import { INGEST_COLUMNS } from '../modules/ingest/index.ts';
 import { MASTER_DATA_COLUMNS } from '../modules/master-data/index.ts';
 import { SHIFTS_COLUMNS } from '../modules/shifts/index.ts';
@@ -23,6 +24,7 @@ export const MES_SCHEMAS = [
   'equipment',
   'alarms',
   'shifts',
+  'identity',
 ] as const;
 
 /** Tables and views that exist in the MES schemas, excluding TimescaleDB's own. */
@@ -61,4 +63,5 @@ export const DECLARED_COLUMNS: ColumnSpec = {
   ...EQUIPMENT_COLUMNS,
   ...ALARMS_COLUMNS,
   ...SHIFTS_COLUMNS,
+  ...IDENTITY_COLUMNS,
 };

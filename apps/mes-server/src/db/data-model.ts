@@ -40,6 +40,12 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
       'Shift instances as records per (plant epoch, shift key), with the shift report’s finality and composite revision, and the handover notes with their append-only audit (ADR-0025). The report is computed on read.',
   },
   {
+    name: 'identity',
+    owner: 'identity',
+    about:
+      'Users with their roles, scrypt password hashes, server-side sessions (only the SHA-256 of a cookie token) and failed-login state, and the append-only audit log (#168, ADR-0026). Every time in this schema is wall time, except the audit log’s `plant_at`.',
+  },
+  {
     name: 'public',
     owner: 'the migration runner',
     about: 'Bookkeeping of the migration runner (ADR-0016).',
@@ -118,6 +124,15 @@ const TABLES: Readonly<Record<string, string>> = {
     'Handover notes of a shift instance: the current version (category, text, retracted, author, version); never deleted, a trigger refuses DELETE and TRUNCATE (#144).',
   'shifts.handover_audit':
     'Append-only audit of every note create and edit: before, after, actor (unauthenticated), wall and plant time, request id and version; a trigger refuses UPDATE, DELETE and TRUNCATE (#144, ADR-0023).',
+  'identity.role':
+    'The five roles (operator, maintenance, quality, supervisor, admin), as `ROLES` in contracts; what each may do is `ROLE_PERMISSIONS` there (#168).',
+  'identity.user_account':
+    'Users: name, scrypt hash with its parameters, enabled, must-change-password, and the failed-login state (count, lock for normal accounts, next attempt for admins) (#168).',
+  'identity.user_role': 'The roles of each user, one or more (#168).',
+  'identity.session':
+    'Login sessions by the SHA-256 of their cookie token: user, kind (desk or terminal), last use, idle and absolute expiry, and how it ended (#168).',
+  'identity.audit_log':
+    'Append-only audit of every identity action (logins, failures, locks, logouts, user changes) and, from #169, every module write: user and roles at that moment, `authenticated`, action, entity, before, after, request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#168, ADR-0026).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

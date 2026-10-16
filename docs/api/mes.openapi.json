@@ -5697,6 +5697,310 @@
         }
       }
     },
+    "/api/v1/alarms/operator-kpi": {
+      "get": {
+        "summary": "Operator measures of a scope per hour, shift bucket or range (MES only)",
+        "tags": [
+          "alarms"
+        ],
+        "description": "Not reconciled and apart from /alarms/kpi, which no operator action changes (#143): shelved and annunciated raises (raises while their point was shelved, and the others), time to acknowledge (count, sum and longest in integer ms of plant time, for the raises in the bucket acknowledged in the same epoch), occurrences unacknowledged at the bucket's end (or the plant clock) and shelved time per point. One epoch: the one given, else the newest of the scope.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "plant",
+                "position",
+                "equipment"
+              ]
+            },
+            "in": "query",
+            "name": "scope",
+            "required": true,
+            "description": "The plant, an operator position (a set of work centers) or one equipment"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "in": "query",
+            "name": "id",
+            "required": false,
+            "description": "Position or equipment id (not for the plant)"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "hour",
+                "shift",
+                "range"
+              ]
+            },
+            "in": "query",
+            "name": "bucket",
+            "required": true,
+            "description": "UTC hours, shift buckets (shifts whole, no-shift stretches clipped) or one range"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "description": "Start of the range (inclusive), ISO 8601"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "description": "End of the range (exclusive), ISO 8601; at most 7 days after `from` for hours, 31 otherwise"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{1,15}$"
+            },
+            "in": "query",
+            "name": "epoch",
+            "required": false,
+            "description": "Device epoch (run) to read; default: per machine the newest with data in the range"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "plant",
+                        "position",
+                        "equipment"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "enum": [
+                        "hour",
+                        "shift",
+                        "range"
+                      ]
+                    },
+                    "from": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "to": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "epoch": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "description": "The hour start, the shift key (`2026-10-12/A`, `no-shift/{start}`) or `range`"
+                          },
+                          "from": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "to": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "raises": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Raises in the bucket, as the KPIs count them"
+                          },
+                          "shelvedRaises": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Raises while their point was shelved"
+                          },
+                          "annunciatedRaises": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Raises while their point was not shelved"
+                          },
+                          "timeToAck": {
+                            "type": "object",
+                            "properties": {
+                              "count": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "sumMs": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Milliseconds of simulation time"
+                              },
+                              "maxMs": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991,
+                                    "description": "Milliseconds of simulation time"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "count",
+                              "sumMs",
+                              "maxMs"
+                            ],
+                            "additionalProperties": false,
+                            "description": "Plant time from raise to acknowledgement of the raises in the bucket acknowledged in the same epoch (exact integers: the mean is sumMs / count)"
+                          },
+                          "unacknowledgedAtEnd": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Occurrences raised before the bucket's end (or the plant clock) not acknowledged by then; one ended by a newer epoch is closed"
+                          },
+                          "shelvedMs": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "equipment": {
+                                  "type": "string"
+                                },
+                                "code": {
+                                  "type": "string"
+                                },
+                                "ms": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "Milliseconds of simulation time"
+                                }
+                              },
+                              "required": [
+                                "equipment",
+                                "code",
+                                "ms"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "description": "Shelved time per point inside the bucket, up to the plant clock"
+                          },
+                          "provisional": {
+                            "type": "boolean",
+                            "description": "The bucket is not over at the plant clock"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "from",
+                          "to",
+                          "raises",
+                          "shelvedRaises",
+                          "annunciatedRaises",
+                          "timeToAck",
+                          "unacknowledgedAtEnd",
+                          "shelvedMs",
+                          "provisional"
+                        ],
+                        "additionalProperties": false,
+                        "description": "Operator measures of one bucket (MES only, not reconciled; #143)"
+                      },
+                      "description": "Every bucket begun by the plant clock"
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "id",
+                    "bucket",
+                    "from",
+                    "to",
+                    "epoch",
+                    "buckets"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/alarms/floods": {
       "get": {
         "summary": "Sliding flood episodes of a scope in a range",

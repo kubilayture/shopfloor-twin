@@ -249,6 +249,28 @@ export async function operatorViews(
   return result;
 }
 
+/** SQLSTATE of a deadlock and of a serialization failure: the transaction may simply be retried. */
+const RETRYABLE = new Set(['40P01', '40001']);
+const TRIES = 3;
+
+/**
+ * Runs a write transaction, again (up to 3 tries, after a short random pause) when PostgreSQL
+ * aborted it as a deadlock victim or for a serialization failure: an acknowledgement racing a
+ * rebuild of the occurrences it locks (#143 review). Every try is a whole transaction, so a retry
+ * sees the rebuild's result (an occurrence it deleted is then `not-found`).
+ */
+export async function retrying<T>(work: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await work();
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (attempt >= TRIES || typeof code !== 'string' || !RETRYABLE.has(code)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 5 + Math.floor(Math.random() * 20)));
+    }
+  }
+}
+
 export interface WriteContext {
   readonly actor: string;
   readonly requestId?: string | undefined;
@@ -335,10 +357,11 @@ export async function acknowledge(
   const now = new Date();
   const plantAt = context.clock?.watermark ?? null;
   const plantEpoch = context.clock?.epoch ?? null;
-  return db.transaction().execute(async (trx) => {
-    const codes = await lockOccurrences(trx, sorted);
-    const { equipment, epochs, seqs } = columns(sorted);
-    const inserted = await sql<OccurrenceKey>`
+  return retrying(() =>
+    db.transaction().execute(async (trx) => {
+      const codes = await lockOccurrences(trx, sorted);
+      const { equipment, epochs, seqs } = columns(sorted);
+      const inserted = await sql<OccurrenceKey>`
       INSERT INTO alarms.occurrence_state AS s
         (equipment, epoch, seq, acknowledged_by, acknowledged_at, plant_at, plant_epoch, comment,
          request_id)
@@ -349,25 +372,26 @@ export async function acknowledge(
       ORDER BY k.ord
       ON CONFLICT (equipment, epoch, seq) DO NOTHING
       RETURNING s.equipment, s.epoch, s.seq`.execute(trx);
-    const changed = inserted.rows.sort(byKey);
-    await audit(
-      trx,
-      changed.map((key) => ({
-        equipment: key.equipment,
-        code: codes.get(occurrenceKey(key)) ?? '',
-        epoch: key.epoch,
-        seq: key.seq,
-        action: 'ack' as const,
-        before: { acknowledged: false },
-        after: { acknowledged: true, by: context.actor, comment: context.comment },
-        actor: context.actor,
-        plantAt,
-        plantEpoch,
-        requestId: context.requestId,
-      })),
-    );
-    return new Set(changed.map(occurrenceKey));
-  });
+      const changed = inserted.rows.sort(byKey);
+      await audit(
+        trx,
+        changed.map((key) => ({
+          equipment: key.equipment,
+          code: codes.get(occurrenceKey(key)) ?? '',
+          epoch: key.epoch,
+          seq: key.seq,
+          action: 'ack' as const,
+          before: { acknowledged: false },
+          after: { acknowledged: true, by: context.actor, comment: context.comment },
+          actor: context.actor,
+          plantAt,
+          plantEpoch,
+          requestId: context.requestId,
+        })),
+      );
+      return new Set(changed.map(occurrenceKey));
+    }),
+  );
 }
 
 /** Adds a comment to an occurrence (append-only, in the audit). */
@@ -378,36 +402,38 @@ export async function addComment(
 ): Promise<AlarmComment> {
   const plantAt = context.clock?.watermark ?? null;
   const plantEpoch = context.clock?.epoch ?? null;
-  return db.transaction().execute(async (trx) => {
-    const codes = await lockOccurrences(trx, [key]);
-    const row = await trx
-      .insertInto('alarms.alarm_transition')
-      .values({
-        equipment: key.equipment,
-        code: codes.get(occurrenceKey(key)) ?? '',
-        epoch: key.epoch,
-        seq: key.seq,
-        action: 'comment',
-        before: null,
-        after: JSON.stringify({ text: context.text }),
+  return retrying(() =>
+    db.transaction().execute(async (trx) => {
+      const codes = await lockOccurrences(trx, [key]);
+      const row = await trx
+        .insertInto('alarms.alarm_transition')
+        .values({
+          equipment: key.equipment,
+          code: codes.get(occurrenceKey(key)) ?? '',
+          epoch: key.epoch,
+          seq: key.seq,
+          action: 'comment',
+          before: null,
+          after: JSON.stringify({ text: context.text }),
+          actor: context.actor,
+          plant_at: plantAt,
+          plant_epoch: plantEpoch,
+          request_id: context.requestId ?? null,
+          version: null,
+        })
+        .returning(['id', 'at', 'authenticated'])
+        .executeTakeFirstOrThrow();
+      return {
+        id: row.id,
+        text: context.text,
         actor: context.actor,
-        plant_at: plantAt,
-        plant_epoch: plantEpoch,
-        request_id: context.requestId ?? null,
-        version: null,
-      })
-      .returning(['id', 'at', 'authenticated'])
-      .executeTakeFirstOrThrow();
-    return {
-      id: row.id,
-      text: context.text,
-      actor: context.actor,
-      authenticated: row.authenticated,
-      at: row.at,
-      plantAt,
-      requestId: context.requestId ?? null,
-    };
-  });
+        authenticated: row.authenticated,
+        at: row.at,
+        plantAt,
+        requestId: context.requestId ?? null,
+      };
+    }),
+  );
 }
 
 const toTransition = (row: {
@@ -468,7 +494,8 @@ export async function comments(db: Db, key: OccurrenceKey): Promise<AlarmComment
 
 /**
  * The audit entries of an occurrence for its history: its acknowledgement and comments, and its
- * point's shelf transitions in the same plant epoch from its raise to its end.
+ * point's shelf transitions in the same plant epoch from its raise to its end, and the shelve in
+ * effect at its raise (the point's newest transition before the raise, when that is a shelve).
  */
 export async function occurrenceTransitions(
   db: Db,
@@ -497,7 +524,20 @@ export async function occurrenceTransitions(
     .orderBy('id')
     .limit(1_000)
     .execute();
-  return rows.map(toTransition);
+  const before = await db
+    .selectFrom('alarms.alarm_transition')
+    .selectAll()
+    .where('equipment', '=', key.equipment)
+    .where('code', '=', key.code)
+    .where('seq', 'is', null)
+    .where('plant_epoch', '=', key.epoch)
+    .where('plant_at', '<', key.raisedAt)
+    .orderBy('plant_at', 'desc')
+    .orderBy('id', 'desc')
+    .limit(1)
+    .executeTakeFirst();
+  const shelvedAtRaise = before?.action === 'shelve' ? [before] : [];
+  return [...shelvedAtRaise, ...rows].map(toTransition);
 }
 
 /** A point's audit, newest first: shelf transitions and its occurrences' acks and comments. */

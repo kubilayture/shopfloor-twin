@@ -77,6 +77,7 @@ import {
   type OperatorView,
   type PlantClock,
 } from './lifecycle.ts';
+import { operatorMeasures, type OperatorBucket } from './operator.ts';
 import type { AlarmOccurrenceTable, EndReason, UsedAnchor, UsedSnapshot } from './tables.ts';
 
 export type AlarmScope = 'plant' | 'position' | 'equipment';
@@ -739,6 +740,96 @@ export class Alarms {
   /** A point's audit, newest first (#143): shelf transitions, acknowledgements and comments. */
   async pointAudit(equipment: string, code: string, limit: number): Promise<AlarmTransition[]> {
     return pointTransitions(this.#readDb, equipment, code, limit);
+  }
+
+  /**
+   * The operator measures of a scope (#143, MES only, never reconciled): per hour, shift bucket or
+   * one range, shelved and annunciated raises, time to acknowledge (acknowledgements in the same
+   * epoch only), unacknowledged at the end and shelved time per point, in plant time of one epoch
+   * (default the scope's newest). Apart from `kpis`, which no operator action changes.
+   */
+  async operatorMeasures(query: {
+    readonly scope: AlarmScope;
+    readonly id: string;
+    readonly bucket: AlarmBucketKind | 'range';
+    readonly from: Date;
+    readonly to: Date;
+    readonly epoch?: number | undefined;
+  }): Promise<{ epoch: number | null; buckets: OperatorBucket[] }> {
+    const scope = this.#scopeOf(query.scope, query.id);
+    const epoch = query.epoch ?? this.#newestEpoch(scope.members);
+    if (epoch === undefined || scope.members.length === 0) return { epoch: null, buckets: [] };
+    const from = query.from.getTime();
+    const to = query.to.getTime();
+    const defs =
+      query.bucket === 'range'
+        ? [{ key: 'range', from, to }]
+        : query.bucket === 'hour'
+          ? alarmHourBuckets(from, to)
+          : alarmShiftBuckets(this.#pattern, from, to);
+    const last = defs.reduce((max, def) => Math.max(max, def.to), to);
+    const { occurrences, transitions } = await this.#readDb
+      .transaction()
+      .setIsolationLevel('repeatable read')
+      .setAccessMode('read only')
+      .execute(async (trx) => {
+        const occurrenceRows = await trx
+          .selectFrom('alarms.alarm_occurrence as o')
+          .leftJoin('alarms.occurrence_state as s', (join) =>
+            join
+              .onRef('s.equipment', '=', 'o.equipment')
+              .onRef('s.epoch', '=', 'o.epoch')
+              .onRef('s.seq', '=', 'o.seq'),
+          )
+          .select(['o.equipment', 'o.code', 'o.raised_at', 'o.ended_at', 'o.end_reason'])
+          .select(['s.plant_at as ack_plant_at', 's.plant_epoch as ack_plant_epoch'])
+          .where('o.epoch', '=', epoch)
+          .where('o.equipment', 'in', scope.members)
+          .where('o.raised_at', '<', new Date(last))
+          .execute();
+        const transitionRows = await trx
+          .selectFrom('alarms.alarm_transition')
+          .select(['equipment', 'code', 'action', 'plant_at', 'after'])
+          .where('seq', 'is', null)
+          .where('plant_epoch', '=', epoch)
+          .where('equipment', 'in', scope.members)
+          .orderBy('id')
+          .execute();
+        return { occurrences: occurrenceRows, transitions: transitionRows };
+      });
+    let asOf = this.#sources.equipment.watermark(epoch)?.getTime() ?? -Infinity;
+    for (const row of occurrences) {
+      asOf = Math.max(asOf, row.raised_at.getTime(), row.ended_at?.getTime() ?? -Infinity);
+    }
+    if (!Number.isFinite(asOf)) return { epoch, buckets: [] };
+    const started = defs.filter((def) => def.from < asOf);
+    return {
+      epoch,
+      buckets: operatorMeasures(
+        occurrences.map((row) => ({
+          equipment: row.equipment,
+          code: row.code,
+          raisedAt: row.raised_at.getTime(),
+          endedAt: row.ended_at?.getTime() ?? null,
+          endReason: row.end_reason,
+          ackPlantAt: row.ack_plant_at?.getTime() ?? null,
+          ackPlantEpoch: row.ack_plant_epoch,
+        })),
+        transitions.map((row) => {
+          const until = row.after?.until;
+          return {
+            equipment: row.equipment,
+            code: row.code,
+            action: row.action,
+            plantAt: row.plant_at?.getTime() ?? null,
+            until: row.action === 'shelve' && typeof until === 'string' ? Date.parse(until) : null,
+          };
+        }),
+        epoch,
+        asOf,
+        started,
+      ),
+    };
   }
 
   // ---- writes (#143, ADR-0023): on the main pool, audited ----
@@ -1810,9 +1901,27 @@ export class Alarms {
     }
     track.appliedSnapshot = snapshot?.asOfSeq ?? null;
     if (changes.length === 0 && !saveSource && track.sourceStored) return;
-    const upserts = changes.flatMap((c) => (c.after ? [c.after] : []));
+    const upserts = changes
+      .flatMap((c) => (c.after ? [c.after] : []))
+      .sort((a, b) => a.seq - b.seq);
     const deletes = changes.flatMap((c) => (c.after ? [] : c.before ? [c.before.seq] : []));
     await this.#db.transaction().execute(async (trx) => {
+      // Row locks in seq order first (#143): an acknowledgement locks its occurrences FOR SHARE in
+      // (equipment, epoch, seq) order, so both take them in one order and can't deadlock.
+      const touched = changes
+        .flatMap((c) => (c.before ? [c.before.seq] : []))
+        .sort((a, b) => a - b);
+      if (touched.length > 0) {
+        await trx
+          .selectFrom('alarms.alarm_occurrence')
+          .select('seq')
+          .where('equipment', '=', track.equipment)
+          .where('epoch', '=', track.epoch)
+          .where('seq', 'in', touched)
+          .orderBy('seq')
+          .forUpdate()
+          .execute();
+      }
       if (upserts.length > 0) {
         await trx
           .insertInto('alarms.alarm_occurrence')

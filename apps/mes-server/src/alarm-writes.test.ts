@@ -5,7 +5,7 @@ import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Database } from './db/database.ts';
 import { buildMesHttp } from './http.ts';
-import { Alarms } from './modules/alarms/index.ts';
+import { AlarmWriteError, Alarms, retrying, shelfIntervals } from './modules/alarms/index.ts';
 import { DowntimeCoding, Equipment, downtimeRules } from './modules/equipment/index.ts';
 import {
   PLANT_CONFIG,
@@ -32,6 +32,7 @@ import {
   bulkAcknowledgeResultSchema,
   commentResultSchema,
   problemSchema,
+  operatorKpiListSchema,
   shelfResultSchema,
 } from './modules/realtime/schemas.ts';
 import { startDatabase } from './testing.ts';
@@ -753,5 +754,194 @@ describe('alarm push (#143)', () => {
       point: { code: SO, shelf: { shelved: false, version: 2 } },
     });
     socket.close();
+  });
+});
+
+describe('acknowledgements racing rebuilds (#143 review)', () => {
+  it('retries an acknowledgement that deadlocks with a rebuild of its occurrences (probe A)', async () => {
+    const { db, alarms } = await world();
+    // Shaped like `#rederive` before the fix: a row with a higher seq first, a lower one later.
+    const rebuild = db.transaction().execute(async (trx) => {
+      await sql`UPDATE alarms.alarm_occurrence SET updated_at = now()
+        WHERE equipment = 'cnc-01' AND epoch = ${E1} AND seq = 4`.execute(trx);
+      await sql`SELECT pg_sleep(0.3)`.execute(trx);
+      await sql`DELETE FROM alarms.alarm_occurrence
+        WHERE equipment = 'cnc-01' AND epoch = ${E1} AND seq = 2`.execute(trx);
+      return 'rebuilt';
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const ack = alarms.acknowledge([ID4, ID2], { actor: 'racer' }).then(
+      (results) => results,
+      (error: unknown) => error,
+    );
+    expect(await rebuild).toBe('rebuilt');
+    const result = await ack;
+    // Never a deadlock (500): retried, the acknowledgement sees the rebuild's result, where the
+    // occurrence it named is gone (404, nothing acknowledged), or it went through first.
+    if (result instanceof Error) {
+      expect(result).toBeInstanceOf(AlarmWriteError);
+      expect((result as AlarmWriteError).kind).toBe('not-found');
+      expect(await db.selectFrom('alarms.occurrence_state').selectAll().execute()).toEqual([]);
+    } else {
+      expect(result).toEqual([
+        { id: ID4, changed: true },
+        { id: ID2, changed: true },
+      ]);
+    }
+  });
+
+  it('retries a deadlock or serialization failure up to three times, nothing else', async () => {
+    const failing = (codes: (string | undefined)[]) => {
+      let calls = 0;
+      return {
+        work: () => {
+          const code = codes[calls++];
+          return code === undefined
+            ? Promise.resolve(calls)
+            : Promise.reject(Object.assign(new Error(code), { code }));
+        },
+        calls: () => calls,
+      };
+    };
+    const twice = failing(['40P01', '40001']);
+    expect(await retrying(twice.work)).toBe(3);
+    const thrice = failing(['40P01', '40P01', '40P01']);
+    await expect(retrying(thrice.work)).rejects.toThrow('40P01');
+    expect(thrice.calls()).toBe(3);
+    const other = failing(['23505']);
+    await expect(retrying(other.work)).rejects.toThrow('23505');
+    expect(other.calls()).toBe(1);
+  });
+});
+
+describe('operator measures (#143)', () => {
+  it('cuts shelves from the audit: a reshelve replaces, an end closes, an open one runs to until or the clock', () => {
+    const shelve = (plantAt: number, until: number) => ({
+      equipment: 'cnc-01',
+      code: CP,
+      action: 'shelve' as const,
+      plantAt,
+      until,
+    });
+    const end = (action: 'unshelve' | 'expire' | 'epoch-ended', plantAt: number | null) => ({
+      equipment: 'cnc-01',
+      code: CP,
+      action,
+      plantAt,
+      until: null,
+    });
+    expect(
+      shelfIntervals(
+        [
+          shelve(0, 100),
+          shelve(50, 300),
+          end('unshelve', 80),
+          shelve(200, 250),
+          end('expire', 250),
+          shelve(400, 600),
+          end('epoch-ended', null),
+          shelve(700, 900),
+        ],
+        800,
+      ).get(`cnc-01/${CP}`),
+    ).toEqual([
+      { from: 0, to: 50 },
+      { from: 50, to: 80 },
+      { from: 200, to: 250 },
+      { from: 400, to: 600 },
+      { from: 700, to: 800 },
+    ]);
+  });
+
+  it('reports shelved and annunciated raises, time to acknowledge, unacknowledged at the end and shelved time, apart from the KPIs', async () => {
+    const { app, alarms, send } = await world();
+    const kpiUrl = `/alarms/kpi?scope=equipment&id=cnc-01&bucket=hour&from=${iso(t(0))}&to=${iso(t(120))}`;
+    // Acknowledged at the plant clock 04:10, 60 minutes after its raise.
+    await alarms.acknowledge([ID2], { actor: 'a' });
+    // SPINDLE-OVERLOAD shelved 04:10 for 5 minutes; it raises again (shelved) at 04:12.
+    await alarms.shelve('cnc-01', SO, {
+      actor: 'a',
+      reason: 'r',
+      durationMs: 5 * MINUTE,
+      version: 0,
+    });
+    await send(raise(E1, 6, t(72), SO), state(E1, 7, t(76)));
+    const url = (bucket: string, extra = '') =>
+      `/alarms/operator-kpi?scope=equipment&id=cnc-01&bucket=${bucket}&from=${iso(t(0))}&to=${iso(t(120))}${extra}`;
+    const hours = operatorKpiListSchema.parse((await get(app, url('hour'))).body);
+    expect(hours.epoch).toBe(E1);
+    expect(hours.buckets).toEqual([
+      {
+        key: iso(t(0)),
+        from: iso(t(0)),
+        to: iso(t(60)),
+        raises: 2,
+        shelvedRaises: 0,
+        annunciatedRaises: 2,
+        timeToAck: { count: 1, sumMs: 60 * MINUTE, maxMs: 60 * MINUTE },
+        // At 04:00 neither was acknowledged yet.
+        unacknowledgedAtEnd: 2,
+        shelvedMs: [],
+        provisional: false,
+      },
+      {
+        key: iso(t(60)),
+        from: iso(t(60)),
+        to: iso(t(120)),
+        raises: 1,
+        shelvedRaises: 1,
+        annunciatedRaises: 0,
+        timeToAck: { count: 0, sumMs: 0, maxMs: null },
+        // At the plant clock (04:16): seq 4 (superseded) and seq 6.
+        unacknowledgedAtEnd: 2,
+        shelvedMs: [{ equipment: 'cnc-01', code: SO, ms: 5 * MINUTE }],
+        provisional: true,
+      },
+    ]);
+    // The occurrence raised while shelved shows the shelf in effect at its raise.
+    const history = alarmHistorySchema.parse(
+      (await get(app, `/alarms/cnc-01~${String(E1)}~6/history`)).body,
+    );
+    expect(history.entries.map((e) => [e.source, e.transition, e.at])).toEqual([
+      ['audit', 'shelve', iso(t(70))],
+      ['fact', 'raised', iso(t(72))],
+      ['audit', 'expire', iso(t(75))],
+    ]);
+    // A new epoch: an acknowledgement then is in a later epoch and never counts as time to ack.
+    await send(state(E2, 1, t(80)));
+    await alarms.acknowledge([ID4], { actor: 'late' });
+    const range = operatorKpiListSchema.parse(
+      (await get(app, url('range', `&epoch=${String(E1)}`))).body,
+    );
+    expect(range.buckets).toMatchObject([
+      {
+        key: 'range',
+        raises: 3,
+        shelvedRaises: 1,
+        annunciatedRaises: 2,
+        timeToAck: { count: 1, sumMs: 60 * MINUTE },
+        // Seq 6 ended with its epoch (closed); seq 4 was acknowledged only in the next epoch.
+        unacknowledgedAtEnd: 1,
+      },
+    ]);
+    const shifts = operatorKpiListSchema.parse(
+      (await get(app, url('shift', `&epoch=${String(E1)}`))).body,
+    );
+    expect(shifts.buckets.map((b) => [b.key, b.raises, b.shelvedRaises])).toEqual([
+      ['2026-10-12/A', 3, 1],
+    ]);
+    // The KPIs of the closed epoch read the same with and without the operator's tables.
+    const before = (await get(app, `${kpiUrl}&epoch=${String(E1)}`)).text;
+    await alarms.comment(ID4, { actor: 'a', text: 'after the fact' });
+    expect((await get(app, `${kpiUrl}&epoch=${String(E1)}`)).text).toBe(before);
+    for (const [bad, status] of [
+      [url('week'), 400],
+      [
+        '/alarms/operator-kpi?scope=position&id=nowhere&bucket=hour&from=2026-10-12T00:00:00Z&to=2026-10-12T06:00:00Z',
+        404,
+      ],
+    ] as const) {
+      expect((await get(app, bad)).status).toBe(status);
+    }
   });
 });

@@ -14,7 +14,9 @@
  * - Operator writes (#143, ADR-0023, audited in `alarms.alarm_transition`): `acknowledge(ids,…)`
  *   (monotonic, bulk up to 100), `comment(id,…)`, `shelve(equipment, code,…)` and
  *   `unshelve(…)` (versioned, limited in plant time); reads `points()`, `point()`, `shelf()`,
- *   `comments(id)`, `pointAudit()`. None of them changes a KPI.
+ *   `comments(id)`, `pointAudit()`, and `operatorMeasures(...)` (shelved and annunciated raises,
+ *   time to acknowledge, unacknowledged at the end, shelved time: MES only, apart from the
+ *   KPIs). None of them changes a KPI.
  * - `Alarms.scopes()`, `scope(kind, id)`, `definition(equipment, code)`.
  * - `deriveOccurrences(...)`: the pure pairing of facts, anchors, snapshot and epoch end.
  */
@@ -41,7 +43,9 @@ export type {
 export { alarmHourBuckets, alarmShiftBuckets, noShiftKey } from './buckets.ts';
 export type { AlarmBucket } from './buckets.ts';
 export { deriveOccurrences, earliestEffect } from './derive.ts';
-export { AlarmWriteError, UNSHELVED, alarmState } from './lifecycle.ts';
+export { AlarmWriteError, UNSHELVED, alarmState, retrying } from './lifecycle.ts';
+export { operatorMeasures, shelfIntervals } from './operator.ts';
+export type { OperatorBucket, OperatorOccurrence, ShelfTransition } from './operator.ts';
 export type {
   Acknowledgement,
   AlarmComment,

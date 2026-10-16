@@ -12,6 +12,7 @@ export {
   alarmPointAuditSchema,
   alarmPointListSchema,
   alarmPointSchema,
+  operatorKpiListSchema,
   bulkAcknowledgeRequestSchema,
   bulkAcknowledgeResultSchema,
   commentRequestSchema,
@@ -361,3 +362,21 @@ export const alarmPointsQuery = z.strictObject({
   position: identifier.optional().describe('Only the equipment of this operator position'),
   shelved: flag.describe('Only points shelved now'),
 });
+
+export const operatorKpiQuery = z
+  .strictObject({
+    scope: alarmScopeParam,
+    id: identifier.optional().describe('Position or equipment id (not for the plant)'),
+    bucket: z
+      .enum(['hour', 'shift', 'range'])
+      .describe('UTC hours, shift buckets (shifts whole, no-shift stretches clipped) or one range'),
+    from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
+    to: queryTime.describe(
+      'End of the range (exclusive), ISO 8601; at most 7 days after `from` for hours, 31 otherwise',
+    ),
+    epoch: epochParam.optional(),
+  })
+  .superRefine((query, ctx) => {
+    scopeId(query, ctx);
+    range(query.bucket === 'hour' ? LIMITS.alarmHourRangeMs : LIMITS.oeeShiftRangeMs)(query, ctx);
+  });

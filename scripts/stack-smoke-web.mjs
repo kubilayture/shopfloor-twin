@@ -144,7 +144,10 @@ for (const [name, headers, status] of [
   if (answer.status !== status) fail(`write with ${name} answered ${answer.status}, not ${status}`);
   console.log(`ok: write with ${name} refused (${status})`);
 }
-// The alarm writes (#143) sit behind the same guards; the occurrence need not exist.
+// The alarm writes (#143) sit behind the same guards; the occurrence need not exist. The 405 of
+// MES_WRITES=off is not checked here: MES_WRITES is the `mes` container's environment, fixed for
+// the stack under test, and toggling it would mean recreating the MES in the middle of the smoke.
+// The MES's own tests check the 405 for every alarm write (alarm-writes.test.ts).
 const alarmWrites = [
   ['/api/v1/alarms/cnc-01~0~0/ack', { actor: 'stack smoke' }],
   ['/api/v1/alarms/ack', { ids: ['cnc-01~0~0'], actor: 'stack smoke' }],
@@ -153,6 +156,7 @@ const alarmWrites = [
     '/api/v1/alarm-points/cnc-01/SPINDLE-OVERLOAD/shelve',
     { actor: 'stack smoke', reason: 'refused', durationMs: 60_000, version: 0 },
   ],
+  ['/api/v1/alarm-points/cnc-01/SPINDLE-OVERLOAD/unshelve', { actor: 'stack smoke', version: 0 }],
 ];
 for (const [path, request] of alarmWrites) {
   for (const [name, headers, status] of [

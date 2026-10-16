@@ -169,7 +169,10 @@ function snapshot(deviceEpoch: number, asOfSeq: number, at: number, active: stri
 /** Every occurrence, active and ended, oldest raise first, as [seq, code, raise, end, reason]. */
 async function occurrences(alarms: Alarms, epoch?: number) {
   const all = [
+    // The four views partition the occurrences (#143), whatever operators did.
     ...(await alarms.list({ view: 'active', limit: 1000 })),
+    ...(await alarms.list({ view: 'acknowledged', limit: 1000 })),
+    ...(await alarms.list({ view: 'shelved', limit: 1000 })),
     ...(await alarms.list({ view: 'history', limit: 1000 })),
   ]
     .filter((o) => epoch === undefined || o.epoch === epoch)

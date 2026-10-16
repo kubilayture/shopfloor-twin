@@ -43,6 +43,8 @@ import {
   alarmPointListSchema,
   alarmPointParams,
   alarmPointsQuery,
+  operatorKpiListSchema,
+  operatorKpiQuery,
   bulkAcknowledgeRequestSchema,
   bulkAcknowledgeResultSchema,
   commentRequestSchema,
@@ -157,6 +159,7 @@ export interface ApiSources {
     | 'shelf'
     | 'comments'
     | 'pointAudit'
+    | 'operatorMeasures'
   >;
 }
 
@@ -1113,6 +1116,44 @@ export async function registerRealtime(
             from: iso(query.from),
             to: iso(query.to),
             buckets: buckets.map(alarmKpiDto),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/alarms/operator-kpi',
+          summary: 'Operator measures of a scope per hour, shift bucket or range (MES only)',
+          description:
+            'Not reconciled and apart from /alarms/kpi, which no operator action changes (#143): ' +
+            'shelved and annunciated raises (raises while their point was shelved, and the others), ' +
+            'time to acknowledge (count, sum and longest in integer ms of plant time, for the ' +
+            'raises in the bucket acknowledged in the same epoch), occurrences unacknowledged at ' +
+            "the bucket's end (or the plant clock) and shelved time per point. One epoch: the one " +
+            'given, else the newest of the scope.',
+          tags: ['alarms'],
+          query: operatorKpiQuery,
+          response: operatorKpiListSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ query }) => {
+          const id = alarmScope(query.scope, query.id);
+          const { epoch, buckets } = await alarmsOf().operatorMeasures({ ...query, id });
+          return {
+            scope: query.scope,
+            id,
+            bucket: query.bucket,
+            from: iso(query.from),
+            to: iso(query.to),
+            epoch,
+            buckets: buckets.map((bucket) => ({
+              ...bucket,
+              from: iso(new Date(bucket.from)),
+              to: iso(new Date(bucket.to)),
+              timeToAck: { ...bucket.timeToAck },
+              shelvedMs: bucket.shelvedMs.map((point) => ({ ...point })),
+            })),
           };
         },
       );

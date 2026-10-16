@@ -943,6 +943,47 @@ export const alarmPointAuditSchema = z.object({
     ),
 });
 
+export const operatorBucketSchema = z
+  .object({
+    key: z
+      .string()
+      .describe('The hour start, the shift key (`2026-10-12/A`, `no-shift/{start}`) or `range`'),
+    from: time,
+    to: time,
+    raises: int.describe('Raises in the bucket, as the KPIs count them'),
+    shelvedRaises: int.describe('Raises while their point was shelved'),
+    annunciatedRaises: int.describe('Raises while their point was not shelved'),
+    timeToAck: z
+      .object({
+        count: int,
+        sumMs: ms,
+        maxMs: ms.nullable(),
+      })
+      .describe(
+        'Plant time from raise to acknowledgement of the raises in the bucket acknowledged in the same epoch (exact integers: the mean is sumMs / count)',
+      ),
+    unacknowledgedAtEnd: int.describe(
+      "Occurrences raised before the bucket's end (or the plant clock) not acknowledged by then; one ended by a newer epoch is closed",
+    ),
+    shelvedMs: z
+      .array(z.object({ equipment: z.string(), code: z.string(), ms }))
+      .describe('Shelved time per point inside the bucket, up to the plant clock'),
+    provisional: z.boolean().describe('The bucket is not over at the plant clock'),
+  })
+  .describe('Operator measures of one bucket (MES only, not reconciled; #143)');
+
+export const operatorKpiListSchema = z.object({
+  scope: alarmScope,
+  id: z.string(),
+  bucket: z.enum(['hour', 'shift', 'range']),
+  from: time,
+  to: time,
+  epoch: int.nullable(),
+  buckets: z.array(operatorBucketSchema).describe('Every bucket begun by the plant clock'),
+});
+
+export type OperatorBucketDto = z.infer<typeof operatorBucketSchema>;
+export type OperatorKpiList = z.infer<typeof operatorKpiListSchema>;
 export type AlarmOccurrenceDto = z.infer<typeof alarmOccurrenceSchema>;
 export type AlarmShelfDto = z.infer<typeof alarmShelfSchema>;
 export type AlarmCommentDto = z.infer<typeof alarmCommentSchema>;

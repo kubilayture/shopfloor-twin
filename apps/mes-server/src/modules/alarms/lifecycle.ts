@@ -656,12 +656,20 @@ export async function shelve(
   });
 }
 
-/** Unshelves a point, if its shelf is still at `version` and it is shelved. */
+/**
+ * Unshelves a point, if its shelf is still at `version` and it is shelved. Audited in the shelf's
+ * own epoch (#156): when a newer epoch has begun but `endShelves` has not ended the shelf yet, the
+ * unshelve is recorded at the old epoch's last plant time (`watermarkOf`, never past `until`), so
+ * the old epoch's shelved time is not overstated and the new epoch gets no transition.
+ */
 export async function unshelve(
   db: Kysely<Database>,
   equipment: string,
   code: string,
-  request: WriteContext & { readonly version: number },
+  request: WriteContext & {
+    readonly version: number;
+    readonly watermarkOf?: ((epoch: number) => Date | undefined) | undefined;
+  },
 ): Promise<AlarmShelf> {
   return db.transaction().execute(async (trx) => {
     const row = await lockShelf(trx, equipment, code);
@@ -673,6 +681,7 @@ export async function unshelve(
     }
     const after: AlarmShelf = { ...UNSHELVED, version: row.version + 1 };
     await writeShelf(trx, equipment, code, after);
+    const plant = unshelvePlantTime(row, request.clock, request.watermarkOf);
     await audit(trx, [
       {
         equipment,
@@ -681,14 +690,33 @@ export async function unshelve(
         before: shelfJson(toShelf(row)),
         after: shelfJson(after),
         actor: request.actor,
-        plantAt: request.clock?.watermark ?? null,
-        plantEpoch: request.clock?.epoch ?? null,
+        plantAt: plant.at,
+        plantEpoch: plant.epoch,
         requestId: request.requestId,
         version: after.version,
       },
     ]);
     return after;
   });
+}
+
+/**
+ * Where an unshelve lands in plant time (#156): the plant clock when the shelf is of the clock's
+ * epoch (or has none); else the shelf's own epoch, at that epoch's last plant time but never past
+ * the shelf's `until` (null when the old epoch's clock is unknown).
+ */
+export function unshelvePlantTime(
+  shelf: { readonly plant_epoch: number | null; readonly until: Date | null },
+  clock: PlantClock | undefined,
+  watermarkOf: ((epoch: number) => Date | undefined) | undefined,
+): { readonly epoch: number | null; readonly at: Date | null } {
+  const own = shelf.plant_epoch;
+  if (own === null || own === clock?.epoch) {
+    return { epoch: clock?.epoch ?? own, at: clock?.watermark ?? null };
+  }
+  const old = watermarkOf?.(own);
+  if (old === undefined) return { epoch: own, at: null };
+  return { epoch: own, at: new Date(Math.min(old.getTime(), shelf.until?.getTime() ?? Infinity)) };
 }
 
 async function writeShelf(
@@ -769,7 +797,9 @@ export async function endShelves(
           after: shelfJson(after),
           actor: 'system',
           plantAt: expired ? until : (old ?? null),
-          plantEpoch: expired || old !== undefined ? epoch : null,
+          // Always the shelf's own epoch (#156), also when its last plant time is unknown: the
+          // operator measures of that epoch then close the shelf at `until` or their own clock.
+          plantEpoch: epoch,
           requestId: null,
           version: after.version,
         },

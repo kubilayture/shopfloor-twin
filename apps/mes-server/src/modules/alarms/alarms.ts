@@ -768,7 +768,11 @@ export class Alarms {
           ? alarmHourBuckets(from, to)
           : alarmShiftBuckets(this.#pattern, from, to);
     const last = defs.reduce((max, def) => Math.max(max, def.to), to);
-    const { occurrences, transitions } = await this.#readDb
+    // The earliest bucket start (an hour or a shift may start before `from`): the query loads only
+    // the occurrences that can count from there on (`measuredFrom`, #156).
+    const first = new Date(defs.reduce((min, def) => Math.min(min, def.from), from));
+    const watermark = this.#sources.equipment.watermark(epoch)?.getTime() ?? -Infinity;
+    const { occurrences, transitions, asOf } = await this.#readDb
       .transaction()
       .setIsolationLevel('repeatable read')
       .setAccessMode('read only')
@@ -786,7 +790,53 @@ export class Alarms {
           .where('o.epoch', '=', epoch)
           .where('o.equipment', 'in', scope.members)
           .where('o.raised_at', '<', new Date(last))
+          // Mirrors `measuredFrom`: raised from `first` on; or else not ended with its epoch by
+          // `first` and not acknowledged in this epoch by `first`.
+          .where((eb) =>
+            eb.or([
+              eb('o.raised_at', '>=', first),
+              eb.and([
+                eb.or([
+                  eb('o.end_reason', 'is distinct from', 'epoch-ended'),
+                  eb('o.ended_at', '>', first),
+                ]),
+                eb.or([
+                  eb('s.plant_at', 'is', null),
+                  eb('s.plant_epoch', '<>', epoch),
+                  eb('s.plant_at', '>', first),
+                ]),
+              ]),
+            ]),
+          )
           .execute();
+        // The clock of an epoch without a watermark is its latest raise or end (raised before
+        // `last`), as if every occurrence were loaded: only those left out above can move it, and
+        // only past what is known already.
+        let known = watermark;
+        for (const row of occurrenceRows) {
+          known = Math.max(known, row.raised_at.getTime(), row.ended_at?.getTime() ?? -Infinity);
+        }
+        const unloaded = await trx
+          .selectFrom('alarms.alarm_occurrence')
+          // Null over no row.
+          .select((eb) => [
+            eb.fn.max<Date | null>('raised_at').as('raised'),
+            eb.fn.max<Date | null>('ended_at').as('ended'),
+          ])
+          .where('epoch', '=', epoch)
+          .where('equipment', 'in', scope.members)
+          .where('raised_at', '<', first)
+          .$if(Number.isFinite(known), (qb) =>
+            qb.where((eb) =>
+              eb.or([eb('raised_at', '>', new Date(known)), eb('ended_at', '>', new Date(known))]),
+            ),
+          )
+          .executeTakeFirst();
+        const clock = Math.max(
+          known,
+          unloaded?.raised?.getTime() ?? -Infinity,
+          unloaded?.ended?.getTime() ?? -Infinity,
+        );
         const transitionRows = await trx
           .selectFrom('alarms.alarm_transition')
           .select(['equipment', 'code', 'action', 'plant_at', 'after'])
@@ -795,12 +845,8 @@ export class Alarms {
           .where('equipment', 'in', scope.members)
           .orderBy('id')
           .execute();
-        return { occurrences: occurrenceRows, transitions: transitionRows };
+        return { occurrences: occurrenceRows, transitions: transitionRows, asOf: clock };
       });
-    let asOf = this.#sources.equipment.watermark(epoch)?.getTime() ?? -Infinity;
-    for (const row of occurrences) {
-      asOf = Math.max(asOf, row.raised_at.getTime(), row.ended_at?.getTime() ?? -Infinity);
-    }
     if (!Number.isFinite(asOf)) return { epoch, buckets: [] };
     const started = defs.filter((def) => def.from < asOf);
     return {
@@ -932,6 +978,7 @@ export class Alarms {
       requestId: request.requestId,
       clock: this.#clock(),
       version: request.version,
+      watermarkOf: (epoch) => this.#sources.equipment.watermark(epoch),
     });
     return this.#shelfChanged(equipment, code, shelf, 'unshelved');
   }

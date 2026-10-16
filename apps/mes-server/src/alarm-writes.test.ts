@@ -5,7 +5,17 @@ import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Database } from './db/database.ts';
 import { buildMesHttp } from './http.ts';
-import { AlarmWriteError, Alarms, retrying, shelfIntervals } from './modules/alarms/index.ts';
+import fc from 'fast-check';
+import {
+  AlarmWriteError,
+  Alarms,
+  alarmHourBuckets,
+  alarmShiftBuckets,
+  operatorMeasures,
+  retrying,
+  shelfIntervals,
+  type EndReason,
+} from './modules/alarms/index.ts';
 import { DowntimeCoding, Equipment, downtimeRules } from './modules/equipment/index.ts';
 import {
   PLANT_CONFIG,
@@ -631,6 +641,55 @@ describe('shelving alarm points (#143)', () => {
       ['epoch-ended', E2],
     ]);
   });
+
+  it("books an unshelve that lands after a newer epoch began, before the shelf was ended, to the shelf's own epoch (#156)", async () => {
+    const { app, db, send, alarms, sources } = await world();
+    // Shelved at 04:10 (E1) for an hour; the E1 clock reaches 04:13.
+    await post(app, shelvePath, { actor: 'a', reason: 'r', durationMs: 60 * MINUTE, version: 0 });
+    await send(state(E1, 6, t(73)));
+    await alarms.flush();
+    // The window: E2 begins, and the unshelve lands before `endShelves` has run for it.
+    await alarms.stop();
+    await send(state(E2, 1, t(100)));
+    await alarms.unshelve('cnc-01', SO, { actor: 'b', version: 1 });
+    // cnc-02 is still in E1: its fact moves E1's clock on to 04:30 after the unshelve.
+    const cnc02 = new UnsFeed(new Map([['cnc-02', { ...PATH, equipment: 'cnc-02' }]]));
+    await send(cnc02.state('cnc-02', E1, 1, t(90), 'Running', null));
+    expect(sources.equipment.watermark(E1)).toEqual(new Date(t(90)));
+    const restarted = new Alarms({
+      db,
+      ingest: sources.ingest as Ingest,
+      equipment: sources.equipment as Equipment,
+      masterData: sources.masterData as MasterData,
+      shiftPattern: plant.shifts,
+      config: plant.alarms.kpi,
+    });
+    await restarted.start();
+    cleanup.push(() => restarted.stop());
+    const measures = (epoch: number) =>
+      restarted.operatorMeasures({
+        scope: 'equipment',
+        id: 'cnc-01',
+        bucket: 'range',
+        from: new Date(t(0)),
+        to: new Date(t(240)),
+        epoch,
+      });
+    // E1's shelved time ends at the unshelve (3 minutes), not at E1's end or later.
+    expect((await measures(E1)).buckets[0]?.shelvedMs).toEqual([
+      { equipment: 'cnc-01', code: SO, ms: 3 * MINUTE },
+    ]);
+    expect((await measures(E2)).buckets.flatMap((b) => b.shelvedMs)).toEqual([]);
+    // Audited at E1's last plant time, in E1.
+    expect(
+      (await transitions(db))
+        .filter((a) => a.code === SO)
+        .map((a) => [a.action, a.plant_epoch, a.plant_at]),
+    ).toEqual([
+      ['shelve', E1, new Date(t(70))],
+      ['unshelve', E1, new Date(t(73))],
+    ]);
+  });
 });
 
 describe('operator writes never change KPIs (#143)', () => {
@@ -942,6 +1001,136 @@ describe('operator measures (#143)', () => {
       ],
     ] as const) {
       expect((await get(app, bad)).status).toBe(status);
+    }
+  });
+});
+
+describe('the bounded operator measures query (#156)', () => {
+  /** An epoch no device fed: no watermark, so its clock is its latest raise or end. */
+  const E9 = 1_760_090_000;
+  const occurrenceArb = fc.record({
+    equipment: fc.constantFrom('cnc-01', 'cnc-02', 'wsh-01'),
+    code: fc.constantFrom(CP, SO),
+    raisedAt: fc.integer({ min: t(-12 * 60), max: t(12 * 60) }),
+    end: fc.option(
+      fc.record({
+        after: fc.integer({ min: 0, max: 3 * 60 * MINUTE }),
+        reason: fc.constantFrom<EndReason>('cleared', 'lost', 'superseded', 'epoch-ended'),
+      }),
+    ),
+    ack: fc.option(
+      fc.record({
+        after: fc.option(fc.integer({ min: 0, max: 4 * 60 * MINUTE })),
+        epoch: fc.constantFrom(E9, E9 + 1),
+      }),
+    ),
+  });
+  const queryArb = fc.record({
+    bucket: fc.constantFrom('hour' as const, 'shift' as const, 'range' as const),
+    from: fc.integer({ min: t(-14 * 60), max: t(14 * 60) }),
+    hours: fc.integer({ min: 1, max: 12 }),
+    scope: fc.integer({ min: 0, max: 100 }),
+  });
+
+  it('answers exactly as the unbounded computation over random occurrences and acknowledgements', async () => {
+    const { db, alarms } = await world();
+    const generated = fc.sample(fc.array(occurrenceArb, { minLength: 200, maxLength: 200 }), {
+      numRuns: 1,
+      seed: 156,
+    })[0];
+    if (!generated) throw new Error('no sample');
+    // Acknowledged early but ended last of all: left out of most queries, yet it sets the clock.
+    generated.push({
+      equipment: 'cnc-02',
+      code: CP,
+      raisedAt: t(-13 * 60),
+      end: { after: 33 * 60 * MINUTE, reason: 'cleared' },
+      ack: { after: MINUTE, epoch: E9 },
+    });
+    const rows = generated.map((o, seq) => {
+      const ackAfter = o.ack?.after ?? null;
+      return {
+        equipment: o.equipment,
+        seq,
+        code: o.code,
+        raisedAt: o.raisedAt,
+        endedAt: o.end === null ? null : o.raisedAt + o.end.after,
+        endReason: o.end?.reason ?? null,
+        ackPlantAt: ackAfter === null ? null : o.raisedAt + ackAfter,
+        ackPlantEpoch: ackAfter === null ? null : (o.ack?.epoch ?? null),
+        acknowledged: o.ack !== null,
+      };
+    });
+    await db
+      .insertInto('alarms.alarm_occurrence')
+      .values(
+        rows.map((o) => ({
+          equipment: o.equipment,
+          epoch: E9,
+          seq: o.seq,
+          code: o.code,
+          severity: 700,
+          priority: 'high' as const,
+          defined: true,
+          source: 'fact' as const,
+          raised_at: new Date(o.raisedAt),
+          ended_at: o.endedAt === null ? null : new Date(o.endedAt),
+          end_reason: o.endReason,
+          end_seq: null,
+        })),
+      )
+      .execute();
+    await db
+      .insertInto('alarms.occurrence_state')
+      .values(
+        rows
+          .filter((o) => o.acknowledged)
+          .map((o) => ({
+            equipment: o.equipment,
+            epoch: E9,
+            seq: o.seq,
+            acknowledged_by: 'property',
+            acknowledged_at: new Date(),
+            plant_at: o.ackPlantAt === null ? null : new Date(o.ackPlantAt),
+            plant_epoch: o.ackPlantEpoch,
+          })),
+      )
+      .execute();
+    const scopes = alarms.scopes();
+    for (const query of fc.sample(queryArb, { numRuns: 60, seed: 1156 })) {
+      const { from, bucket } = query;
+      const to = from + query.hours * 60 * MINUTE;
+      const scope = scopes[query.scope % scopes.length];
+      if (!scope) throw new Error('no scope');
+      // The computation before #156: every occurrence of the scope raised before the last end.
+      const defs =
+        bucket === 'range'
+          ? [{ key: 'range', from, to }]
+          : bucket === 'hour'
+            ? alarmHourBuckets(from, to)
+            : alarmShiftBuckets(plant.shifts, from, to);
+      const last = defs.reduce((max, def) => Math.max(max, def.to), to);
+      const all = rows.filter((o) => scope.equipment.includes(o.equipment) && o.raisedAt < last);
+      let asOf = -Infinity;
+      for (const o of all) asOf = Math.max(asOf, o.raisedAt, o.endedAt ?? -Infinity);
+      const expected = Number.isFinite(asOf)
+        ? operatorMeasures(
+            all,
+            [],
+            E9,
+            asOf,
+            defs.filter((def) => def.from < asOf),
+          )
+        : [];
+      const actual = await alarms.operatorMeasures({
+        scope: scope.scope,
+        id: scope.id,
+        bucket,
+        from: new Date(from),
+        to: new Date(to),
+        epoch: E9,
+      });
+      expect([query, scope.id, actual.buckets]).toEqual([query, scope.id, expected]);
     }
   });
 });

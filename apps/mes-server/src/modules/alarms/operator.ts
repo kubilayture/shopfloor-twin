@@ -44,14 +44,18 @@ export interface OperatorBucket extends OperatorBucketDef {
   readonly annunciatedRaises: number;
   /**
    * Time from raise to acknowledgement (plant time) of the raises in the bucket acknowledged in the
-   * same epoch: how many, the sum and the longest (null when none).
+   * same epoch: how many, the sum and the longest (null when none). In the raise's bucket, so a
+   * late acknowledgement changes a bucket already over (#156, ADR-0024).
    */
   readonly timeToAck: {
     readonly count: number;
     readonly sumMs: number;
     readonly maxMs: number | null;
   };
-  /** Occurrences raised before the bucket's end (or the plant clock) not acknowledged by then. */
+  /**
+   * Occurrences raised before the bucket's end (or the plant clock) not acknowledged in the epoch
+   * by then, shelved and cleared-unacknowledged ones too; not those ended by a newer epoch by then.
+   */
   readonly unacknowledgedAtEnd: number;
   /** Shelved time per point inside the bucket (up to the plant clock), points with some only. */
   readonly shelvedMs: readonly {
@@ -59,7 +63,7 @@ export interface OperatorBucket extends OperatorBucketDef {
     readonly code: string;
     readonly ms: Millis;
   }[];
-  /** The bucket is not over at the plant clock. */
+  /** The bucket is not over at the plant clock (its `timeToAck` may still change after; #156). */
   readonly provisional: boolean;
 }
 
@@ -108,6 +112,19 @@ export function shelfIntervals(
   }
   for (const key of [...open.keys()]) close(key, asOf);
   return result;
+}
+
+/**
+ * Whether an occurrence can count in a bucket starting at or after `first` (#156): the bound of the
+ * operator measures' query, which mirrors it in SQL. Raised at or after `first`, it may be one of a
+ * bucket's raises; raised before, it counts only as unacknowledged at a bucket's end, which is
+ * after `first`, so it is needed unless acknowledged in this epoch by `first` or ended with its
+ * epoch by `first`. Dropping the others changes no bucket (a property test holds it to that).
+ */
+export function measuredFrom(o: OperatorOccurrence, epoch: number, first: Millis): boolean {
+  if (o.raisedAt >= first) return true;
+  if (o.endReason === 'epoch-ended' && o.endedAt !== null && o.endedAt <= first) return false;
+  return o.ackPlantEpoch !== epoch || o.ackPlantAt === null || o.ackPlantAt > first;
 }
 
 const shelvedAt = (intervals: readonly Interval[] | undefined, at: Millis): boolean =>

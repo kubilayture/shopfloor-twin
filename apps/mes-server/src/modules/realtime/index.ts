@@ -8,11 +8,13 @@ export {
   API_PREFIX,
   WS_PATH,
   WriteLimiter,
+  cookieValue,
   mergePieces,
   registerRealtime,
   sameOrigin,
 } from './realtime.ts';
-export type { ApiSources, Realtime, RealtimeOptions } from './realtime.ts';
+export type { ApiSources, IdentityApi, Realtime, RealtimeOptions } from './realtime.ts';
+export type { Access } from './routes.ts';
 export { bucketDto, recordDto, resultDto, shiftInstanceDto } from './oee-dto.ts';
 export {
   alarmKpiDto,

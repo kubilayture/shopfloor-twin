@@ -1,8 +1,28 @@
 import websocket from '@fastify/websocket';
 import type { IncomingHttpHeaders } from 'node:http';
-import { PROBLEM_TYPES, type ProblemType } from '@shopfloor/contracts/mes-api';
+import {
+  SECURE_SESSION_COOKIE,
+  SESSION_COOKIE,
+  WS_CLOSE_UNAUTHENTICATED,
+} from '@shopfloor/contracts/identity';
+import {
+  PROBLEM_TYPES,
+  loginRequestSchema,
+  passwordChangeRequestSchema,
+  passwordChangeResultSchema,
+  passwordResetRequestSchema,
+  sessionSchema,
+  userCreateRequestSchema,
+  userListSchema,
+  userSchema,
+  userUpdateRequestSchema,
+  type ProblemType,
+  type SessionDto,
+  type UserDto,
+} from '@shopfloor/contracts/mes-api';
+import { z } from 'zod';
 import { NO_SHIFT, shiftInstance, shiftInstances } from '@shopfloor/shift-calendar';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Registry } from 'prom-client';
 import {
   CodingError,
@@ -12,6 +32,13 @@ import {
   type StoredInterval,
 } from '../equipment/index.ts';
 import { AlarmWriteError, type Alarms, type AlarmScope } from '../alarms/index.ts';
+import {
+  IdentityError,
+  parseToken,
+  type Identity,
+  type Principal,
+  type User,
+} from '../identity/index.ts';
 import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
 import { pareto, type DowntimeFeed, type Oee, type OeeScope } from '../oee/index.ts';
@@ -38,7 +65,16 @@ import {
   shiftReportDto,
 } from './shift-dto.ts';
 import { PushHub, currentStateDto, type PushOptions } from './push.ts';
-import { HttpProblem, PROBLEM_TYPE, getRoute, jsonSchema, problem, writeRoute } from './routes.ts';
+import {
+  HttpProblem,
+  PROBLEM_TYPE,
+  getRoute,
+  jsonSchema,
+  problem,
+  writeRoute,
+  type Access,
+  type RouteConfig,
+} from './routes.ts';
 import {
   LIMITS,
   acknowledgeRequestSchema,
@@ -196,7 +232,36 @@ export interface RealtimeOptions {
   readonly writes?: boolean;
   /** The global write rate limit (all clients together; default `LIMITS`). */
   readonly writeRate?: { readonly perSecond: number; readonly burst: number };
+  /**
+   * Identity (#168, ADR-0026): sessions, login and users. Without it the session and user routes
+   * answer 503 (the OpenAPI generator).
+   */
+  readonly identity?: IdentityApi;
+  /** `MES_AUTH=on`: every route but the login needs a session, and the WebSocket too. */
+  readonly auth?: boolean;
+  /** `MES_COOKIE_SECURE=on`: `Secure` cookie named `__Host-sft_session`. */
+  readonly cookieSecure?: boolean;
+  /** Each user's write bucket (default `LIMITS`: 5 per second, bursts of 10). */
+  readonly userWriteRate?: { readonly perSecond: number; readonly burst: number };
+  /** How often open sockets' sessions are checked for expiry (default 15 s). */
+  readonly sessionCheckMs?: number;
 }
+
+/** What the API uses of the identity module. */
+export type IdentityApi = Pick<
+  Identity,
+  | 'started'
+  | 'login'
+  | 'authenticate'
+  | 'live'
+  | 'logout'
+  | 'changePassword'
+  | 'users'
+  | 'createUser'
+  | 'updateUser'
+  | 'resetPassword'
+  | 'onSessionsEnded'
+>;
 
 /** A token bucket: one for all writes, because behind nginx every request comes from nginx. */
 export class WriteLimiter {
@@ -232,6 +297,51 @@ const isJson = (contentType: string | undefined): boolean =>
   (contentType ?? '').split(';', 1)[0]?.trim().toLowerCase() === 'application/json';
 
 const CODING_STATUS = { 'not-found': 404, conflict: 409, invalid: 422 } as const;
+const IDENTITY_STATUS = {
+  unauthenticated: 401,
+  'not-found': 404,
+  conflict: 409,
+  invalid: 422,
+} as const;
+
+/** The value of one cookie of a `Cookie` header. */
+export function cookieValue(header: string | undefined, name: string): string | undefined {
+  for (const part of (header ?? '').split(';')) {
+    const split = part.indexOf('=');
+    if (split > 0 && part.slice(0, split).trim() === name) return part.slice(split + 1).trim();
+  }
+  return undefined;
+}
+
+const sessionDto = (principal: Principal): SessionDto => ({
+  user: {
+    id: principal.userId,
+    username: principal.username,
+    roles: [...principal.roles],
+    permissions: [...principal.permissions],
+    mustChangePassword: principal.mustChangePassword,
+  },
+  kind: principal.session.kind,
+  createdAt: principal.session.createdAt.toISOString(),
+  idleExpiresAt: principal.session.idleExpiresAt.toISOString(),
+  expiresAt: principal.session.expiresAt.toISOString(),
+});
+
+const userDto = (user: User): UserDto => ({
+  id: user.id,
+  username: user.username,
+  roles: [...user.roles],
+  enabled: user.enabled,
+  mustChangePassword: user.mustChangePassword,
+  locked: user.locked,
+  createdAt: user.createdAt.toISOString(),
+  updatedAt: user.updatedAt.toISOString(),
+});
+
+const usernameParams = z.strictObject({
+  username: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,63}$/),
+});
+const emptyBody = z.strictObject({}).describe('An empty JSON object');
 /** Alarm write refusals (#143) map the same way. */
 const ALARM_WRITE_STATUS = CODING_STATUS;
 const SHIFT_STATUS = { 'not-found': 404, conflict: 409, invalid: 422 } as const;
@@ -428,16 +538,144 @@ export async function registerRealtime(
         type: PROBLEM_TYPES.writeNotJson,
       };
     }
-    const wait = limiter.take();
-    if (wait !== undefined) {
+    return undefined;
+  };
+  // The rate limits come last, after authentication (#168): an anonymous request never spends a
+  // token. The global bucket stays (ADR-0023); each user has its own besides.
+  const userLimiters = new Map<number, WriteLimiter>();
+  const rateRefusal = (
+    principal: Principal | undefined,
+  ):
+    | { status: number; detail: string; type: ProblemType; headers: Record<string, string> }
+    | undefined => {
+    let wait: number | undefined;
+    let detail = 'too many writes; try again';
+    if (principal !== undefined) {
+      let bucket = userLimiters.get(principal.userId);
+      if (!bucket) {
+        bucket = new WriteLimiter(
+          options.userWriteRate?.perSecond ?? LIMITS.userWritesPerSecond,
+          options.userWriteRate?.burst ?? LIMITS.userWriteBurst,
+        );
+        userLimiters.set(principal.userId, bucket);
+      }
+      wait = bucket.take();
+      if (wait !== undefined) detail = `too many writes by ${principal.username}; try again`;
+    }
+    wait ??= limiter.take();
+    if (wait === undefined) return undefined;
+    return {
+      status: 429,
+      detail,
+      type: PROBLEM_TYPES.writeRate,
+      headers: { 'retry-after': String(wait) },
+    };
+  };
+
+  // Identity (#168, ADR-0026).
+  const identity = options.identity;
+  const auth = options.auth ?? false;
+  const cookieName = options.cookieSecure === true ? SECURE_SESSION_COOKIE : SESSION_COOKIE;
+  const cookieAttributes = `Path=/; HttpOnly; SameSite=Strict${options.cookieSecure === true ? '; Secure' : ''}`;
+  /** Principals of authenticated requests (also WebSocket upgrades). */
+  const principals = new WeakMap<FastifyRequest, Principal>();
+  /** Requests whose upgrade had no live session: the socket is closed with 4401 at once. */
+  const anonymousUpgrades = new WeakSet<FastifyRequest>();
+  const needIdentity = (): IdentityApi => {
+    if (!identity?.started) throw new HttpProblem(503, 'the MES is starting');
+    return identity;
+  };
+  const principalOf = (request: FastifyRequest): Principal => {
+    const principal = principals.get(request);
+    if (!principal) {
+      throw new HttpProblem(401, 'a session is needed', PROBLEM_TYPES.unauthenticated);
+    }
+    return principal;
+  };
+  const tokenOf = (request: FastifyRequest): Buffer | undefined =>
+    parseToken(cookieValue(request.headers.cookie, cookieName));
+  const accessOf = (request: FastifyRequest): Access =>
+    (request.routeOptions.config as Partial<RouteConfig> | undefined)?.access ?? 'read';
+  /**
+   * Authentication (401) and permission (403), after the Host and Origin checks so a cross-site
+   * request never learns whether a session exists (ADR-0026). With `MES_AUTH=off` only the
+   * `session` routes need one.
+   */
+  const authRefusal = async (
+    request: FastifyRequest,
+  ): Promise<{ status: number; detail: string; type?: ProblemType } | undefined> => {
+    const access = accessOf(request);
+    if (access === 'public' || (!auth && access !== 'session')) return undefined;
+    if (!identity?.started) return { status: 503, detail: 'the MES is starting' };
+    const token = tokenOf(request);
+    const principal = token && (await identity.authenticate(token, { touch: true }));
+    if (!principal) {
       return {
-        status: 429,
-        detail: 'too many writes; try again',
-        type: PROBLEM_TYPES.writeRate,
-        headers: { 'retry-after': String(wait) },
+        status: 401,
+        detail: 'a session is needed: log in (POST /api/v1/session)',
+        type: PROBLEM_TYPES.unauthenticated,
+      };
+    }
+    principals.set(request, principal);
+    if (access === 'session') return undefined;
+    if (principal.mustChangePassword) {
+      return {
+        status: 403,
+        detail: 'change the password first (POST /api/v1/account/password)',
+        type: PROBLEM_TYPES.passwordChangeRequired,
+      };
+    }
+    if (!principal.permissions.includes(access)) {
+      return {
+        status: 403,
+        detail: `permission ${access} needed`,
+        type: PROBLEM_TYPES.forbidden,
       };
     }
     return undefined;
+  };
+  /** Open sockets per session id, closed with 4401 when the session ends or expires. */
+  const sockets = new Map<string, Set<{ close(code: number, reason: string): void }>>();
+  const closeSession = (id: string, reason: string): void => {
+    for (const socket of sockets.get(id) ?? []) socket.close(WS_CLOSE_UNAUTHENTICATED, reason);
+    sockets.delete(id);
+  };
+  const unsubscribe = identity?.onSessionsEnded((ended) => {
+    for (const id of ended.ids) closeSession(id, `session ended (${ended.reason})`);
+  });
+  const sessionCheck = setInterval(() => {
+    if (!identity) return;
+    for (const id of [...sockets.keys()]) {
+      identity.live(id).then(
+        (live) => {
+          if (!live) closeSession(id, 'session expired');
+        },
+        (error: unknown) => {
+          app.log.warn({ err: error }, 'session check failed');
+        },
+      );
+    }
+  }, options.sessionCheckMs ?? 15_000);
+  sessionCheck.unref();
+  app.addHook('onClose', () => {
+    clearInterval(sessionCheck);
+    unsubscribe?.();
+  });
+  const problemReply = async (
+    reply: FastifyReply,
+    request: FastifyRequest,
+    refused: {
+      status: number;
+      detail: string;
+      type?: ProblemType;
+      headers?: Record<string, string>;
+    },
+  ): Promise<void> => {
+    await reply
+      .code(refused.status)
+      .headers(refused.headers ?? {})
+      .type(PROBLEM_TYPE)
+      .send(problem(refused.status, refused.detail, request.url, refused.type));
   };
   // A page on another site must not read plant data: by DNS rebinding (its own name resolving to
   // the MES, caught by the Host check) or by opening a WebSocket (not covered by CORS, caught by
@@ -484,8 +722,20 @@ export async function registerRealtime(
       // to the MES, caught by the Host check) or by opening a WebSocket (not covered by CORS,
       // caught by the Origin check). A request without Origin is not from a browser page.
       api.addHook('onRequest', async (request, reply) => {
-        // WebSocket upgrades are checked by `verifyClient`, which can answer before the upgrade.
-        if (request.headers.upgrade !== undefined) return;
+        // WebSocket upgrades: Host and Origin are checked by `verifyClient`, which can answer
+        // before the upgrade; the session here (#168), so the handler can close an anonymous
+        // socket with 4401 (a browser can't read an HTTP status of a refused upgrade).
+        if (request.headers.upgrade !== undefined) {
+          if (!auth) return;
+          const token = tokenOf(request);
+          const principal =
+            identity?.started === true && token !== undefined
+              ? await identity.authenticate(token, { touch: true })
+              : undefined;
+          if (principal) principals.set(request, principal);
+          else anonymousUpgrades.add(request);
+          return;
+        }
         const read = request.method === 'GET' || request.method === 'HEAD';
         // A write's Origin is checked by `writeRefusal`, after MES_WRITES (ADR-0023's order).
         const refused = refusal(read ? request.headers : { host: request.headers.host });
@@ -496,17 +746,23 @@ export async function registerRealtime(
             .send(problem(403, refused.detail, request.url, refused.type));
           return;
         }
-        if (read) return;
-        // Every other method is a write (ADR-0023); its answer names the request for the audit.
-        reply.header('x-request-id', request.id);
-        const write = writeRefusal(request.headers);
-        if (write !== undefined) {
-          await reply
-            .code(write.status)
-            .headers(write.headers ?? {})
-            .type(PROBLEM_TYPE)
-            .send(problem(write.status, write.detail, request.url, write.type));
+        if (!read) {
+          // Every other method is a write (ADR-0023); its answer names the request for the audit.
+          reply.header('x-request-id', request.id);
+          const write = writeRefusal(request.headers);
+          if (write !== undefined) {
+            await problemReply(reply, request, write);
+            return;
+          }
         }
+        const denied = await authRefusal(request);
+        if (denied !== undefined) {
+          await problemReply(reply, request, denied);
+          return;
+        }
+        if (read) return;
+        const rate = rateRefusal(principals.get(request));
+        if (rate !== undefined) await problemReply(reply, request, rate);
       });
       api.setErrorHandler((error: { statusCode?: number; message: string }, request, reply) => {
         const busy = isBusy(error);
@@ -954,6 +1210,7 @@ export async function registerRealtime(
         {
           method: 'PUT',
           url: '/downtime/:id/coding',
+          access: 'downtime:code',
           summary: 'Codes one downtime record: replaces its codings (splits, comment, who)',
           description:
             'Each segment is a time range [from, to) inside the record with an active reason ' +
@@ -1145,6 +1402,7 @@ export async function registerRealtime(
         {
           method: 'POST',
           url: '/shifts/:date/:shift/notes',
+          access: 'note:write',
           summary: 'Writes a handover note on a shift instance',
           description:
             'From the shift’s start until the end of the following shift (plant time); afterwards ' +
@@ -1190,6 +1448,7 @@ export async function registerRealtime(
         {
           method: 'PUT',
           url: '/shifts/:date/:shift/notes/:noteId',
+          access: 'note:write',
           summary: 'Writes a new version of a handover note (text, category, retracted)',
           description:
             '`version` is the note’s `version` as read; a mismatch is 409. No delete: a wrong note ' +
@@ -1542,6 +1801,7 @@ export async function registerRealtime(
         {
           method: 'POST',
           url: '/alarms/ack',
+          access: 'alarm:ack',
           summary: 'Acknowledges up to 100 occurrences in one transaction',
           description:
             'Monotonic, so no version: one INSERT … ON CONFLICT DO NOTHING; an id acknowledged ' +
@@ -1570,6 +1830,7 @@ export async function registerRealtime(
         {
           method: 'POST',
           url: '/alarms/:id/ack',
+          access: 'alarm:ack',
           summary: 'Acknowledges one occurrence',
           description:
             'Monotonic, so no version; acknowledged already: 200 with `changed: false` and no ' +
@@ -1601,6 +1862,7 @@ export async function registerRealtime(
         {
           method: 'POST',
           url: '/alarms/:id/comments',
+          access: 'alarm:comment',
           summary: 'Adds a comment to an occurrence',
           description: 'Append-only (1 to 500 characters), so no version. ' + guarded,
           tags: ['alarms'],
@@ -1654,6 +1916,7 @@ export async function registerRealtime(
         {
           method: 'POST',
           url: '/alarm-points/:equipment/:code/shelve',
+          access: 'alarm:shelve',
           summary: 'Shelves an alarm point for a time of plant time',
           description:
             'ISA-18.2 shelves a point, not an occurrence: its occurrences leave the active list ' +
@@ -1693,6 +1956,7 @@ export async function registerRealtime(
         {
           method: 'POST',
           url: '/alarm-points/:equipment/:code/unshelve',
+          access: 'alarm:shelve',
           summary: 'Unshelves an alarm point',
           description:
             '`version` is the shelf’s as read: a mismatch is 409; a point not shelved is 422. ' +
@@ -1770,6 +2034,208 @@ export async function registerRealtime(
         },
       );
 
+      // Identity (#168, ADR-0026): the session and user administration.
+      const identityProblem = (error: unknown): unknown =>
+        error instanceof IdentityError
+          ? new HttpProblem(IDENTITY_STATUS[error.kind], error.message, error.type)
+          : error;
+      const setCookie = (reply: FastifyReply, token: string, maxAgeS: number): void => {
+        reply.header(
+          'set-cookie',
+          `${cookieName}=${token}; Max-Age=${String(maxAgeS)}; ${cookieAttributes}`,
+        );
+      };
+
+      writeRoute(
+        api,
+        {
+          method: 'POST',
+          url: '/session',
+          access: 'public',
+          summary: 'Logs in: sets the session cookie',
+          description:
+            `Sets \`${cookieName}\` (HttpOnly, SameSite=Strict, Path=/) to a new random token; ` +
+            'a session the request carried ends. Every failure (unknown or disabled user, wrong ' +
+            'password, a locked account, an admin within its delay) is the same 401. Five ' +
+            'failures in a row lock a normal account for 15 minutes; an admin is delayed instead ' +
+            '(1 s doubling, at most 5 min). Passes the write guards (login CSRF).',
+          tags: ['identity'],
+          params: z.strictObject({}),
+          body: loginRequestSchema,
+          response: sessionSchema,
+          errors: [400, 401, 405, 413, 415, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ body, requestId, request, reply }) => {
+          const { token, principal } = await needIdentity()
+            .login({
+              username: body.username,
+              password: body.password,
+              kind: body.kind,
+              requestId,
+              replaces: tokenOf(request),
+            })
+            .catch((error: unknown) => {
+              throw identityProblem(error);
+            });
+          const { createdAt, expiresAt } = principal.session;
+          setCookie(reply, token, Math.ceil((expiresAt.getTime() - createdAt.getTime()) / 1000));
+          return sessionDto(principal);
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/session',
+          access: 'session',
+          summary: "The caller's session: user, roles, permissions, expiry",
+          tags: ['identity'],
+          query: noQuery,
+          response: sessionSchema,
+          errors: [400, 503],
+        },
+        ({ request }) => sessionDto(principalOf(request)),
+      );
+
+      writeRoute(
+        api,
+        {
+          method: 'DELETE',
+          url: '/session',
+          access: 'session',
+          summary: 'Logs out: ends the session and clears the cookie',
+          description: 'The body is an empty JSON object (writes are application/json).',
+          tags: ['identity'],
+          params: z.strictObject({}),
+          body: emptyBody,
+          response: z.object({ ended: z.literal(true) }),
+          errors: [400, 405, 413, 415, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ requestId, request, reply }) => {
+          await needIdentity().logout(principalOf(request), requestId);
+          setCookie(reply, '', 0);
+          return { ended: true as const };
+        },
+      );
+
+      writeRoute(
+        api,
+        {
+          method: 'POST',
+          url: '/account/password',
+          access: 'session',
+          summary: "Changes the caller's own password",
+          description:
+            'The current password must match (a mismatch counts as a failed login); the new one ' +
+            'has 12–128 characters and differs from it. Ends every other session of the user.',
+          tags: ['identity'],
+          params: z.strictObject({}),
+          body: passwordChangeRequestSchema,
+          response: passwordChangeResultSchema,
+          errors: [400, 405, 413, 415, 422, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ body, requestId, request }) => {
+          const { endedSessions } = await needIdentity()
+            .changePassword(principalOf(request), body.currentPassword, body.newPassword, requestId)
+            .catch((error: unknown) => {
+              throw identityProblem(error);
+            });
+          return { changed: true as const, endedSessions };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/users',
+          access: 'user:admin',
+          summary: 'Every user with roles, enabled and locked',
+          tags: ['identity'],
+          query: noQuery,
+          response: userListSchema,
+          errors: [400, 503],
+        },
+        async () => ({ users: (await needIdentity().users()).map(userDto) }),
+      );
+
+      writeRoute(
+        api,
+        {
+          method: 'POST',
+          url: '/users',
+          access: 'user:admin',
+          summary: 'Creates a user with a temporary password',
+          tags: ['identity'],
+          params: z.strictObject({}),
+          body: userCreateRequestSchema,
+          response: userSchema,
+          errors: [400, 405, 409, 413, 415, 422, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ body, requestId, request }) =>
+          userDto(
+            await needIdentity()
+              .createUser(body, principalOf(request), requestId)
+              .catch((error: unknown) => {
+                throw identityProblem(error);
+              }),
+          ),
+      );
+
+      writeRoute(
+        api,
+        {
+          method: 'PUT',
+          url: '/users/:username',
+          access: 'user:admin',
+          summary: "Changes a user's roles or whether it may log in",
+          description:
+            'Disabling ends every session of the user and closes its sockets (4401). The last ' +
+            'enabled admin stays an enabled admin (409).',
+          tags: ['identity'],
+          params: usernameParams,
+          body: userUpdateRequestSchema,
+          response: userSchema,
+          errors: [400, 404, 405, 409, 413, 415, 422, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ params, body, requestId, request }) =>
+          userDto(
+            await needIdentity()
+              .updateUser(params.username, body, principalOf(request), requestId)
+              .catch((error: unknown) => {
+                throw identityProblem(error);
+              }),
+          ),
+      );
+
+      writeRoute(
+        api,
+        {
+          method: 'POST',
+          url: '/users/:username/password',
+          access: 'user:admin',
+          summary: 'Sets a temporary password; ends the sessions and clears a lock',
+          tags: ['identity'],
+          params: usernameParams,
+          body: passwordResetRequestSchema,
+          response: userSchema,
+          errors: [400, 404, 405, 413, 415, 422, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ params, body, requestId, request }) =>
+          userDto(
+            await needIdentity()
+              .resetPassword(params.username, body.password, principalOf(request), requestId)
+              .catch((error: unknown) => {
+                throw identityProblem(error);
+              }),
+          ),
+      );
+
       api.get(
         '/ws',
         {
@@ -1781,8 +2247,23 @@ export async function registerRealtime(
             hide: true,
           },
         },
-        (socket) => {
+        (socket, request) => {
+          if (anonymousUpgrades.has(request)) {
+            socket.close(WS_CLOSE_UNAUTHENTICATED, 'a session is needed');
+            return;
+          }
           push.connect(socket);
+          const principal = principals.get(request);
+          if (principal) {
+            const id = principal.session.id;
+            const open = sockets.get(id) ?? new Set();
+            open.add(socket);
+            sockets.set(id, open);
+            socket.on('close', () => {
+              open.delete(socket);
+              if (open.size === 0 && sockets.get(id) === open) sockets.delete(id);
+            });
+          }
         },
       );
       done();

@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { PASSWORD_LENGTH, passwordLength } from '@shopfloor/contracts/identity';
 import { z } from 'zod';
 
 const REPO = resolve(import.meta.dirname, '../../..');
@@ -24,6 +25,21 @@ export const envSchema = z.object({
   HTTP_ALLOWED_ORIGINS: z.string().trim().default(''),
   // Writes (#121, ADR-0023): `off` answers every non-GET request under /api/v1 with 405.
   MES_WRITES: z.enum(['on', 'off']).default('on'),
+  // Identity (#168, ADR-0026): `on` needs a session on every /api/v1 route but the login, and on
+  // the WebSocket; `off` (the default until #170) serves everyone as before and logs a warning.
+  MES_AUTH: z.enum(['on', 'off']).default('off'),
+  // `on` marks the session cookie `Secure` and names it `__Host-sft_session` (behind TLS only).
+  MES_COOKIE_SECURE: z.enum(['on', 'off']).default('off'),
+  // Optional: creates the user `admin` (must change its password) when no enabled admin exists.
+  MES_BOOTSTRAP_ADMIN_PASSWORD: z
+    .string()
+    .refine(
+      (value) =>
+        passwordLength(value) >= PASSWORD_LENGTH.min &&
+        passwordLength(value) <= PASSWORD_LENGTH.max,
+      `expected ${String(PASSWORD_LENGTH.min)}–${String(PASSWORD_LENGTH.max)} characters`,
+    )
+    .optional(),
   // The API's own read pool, so dashboard reads never hold up ingest's writes.
   API_DB_POOL_SIZE: integer.pipe(z.number().min(1).max(50)).default(4),
   API_STATEMENT_TIMEOUT_MS: integer.pipe(z.number().min(100)).default(5_000),

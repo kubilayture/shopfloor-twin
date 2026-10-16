@@ -29,3 +29,4 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0023](0023-guarded-writes-before-identity.md)                     | Guarded, audited writes before identity                                                 | accepted           |
 | [0024](0024-alarm-kpis-definitions-and-pure-package-imports.md)    | Alarm KPI definitions, exact arithmetic and pure-package imports                        | accepted           |
 | [0025](0025-shift-instances-report-finality-and-handover-notes.md) | Shift instances, report finality, composite revision and handover notes                 | accepted           |
+| [0026](0026-identity-sessions-roles-and-auth-switch.md)            | Identity: local users with roles, cookie sessions, scrypt and an enforcement switch     | accepted           |

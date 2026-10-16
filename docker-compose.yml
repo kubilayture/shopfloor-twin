@@ -136,6 +136,10 @@ services:
       HTTP_ALLOWED_ORIGINS: ${MES_ALLOWED_ORIGINS:-}
       # Downtime coding writes (#121, ADR-0023); `off` answers every write with 405.
       MES_WRITES: ${MES_WRITES:-on}
+      # Identity (#168, ADR-0026): `on` needs a session on every API route; off until #170.
+      MES_AUTH: ${MES_AUTH:-off}
+      # Optional, not required: without it the MES starts and has no admin until one is created.
+      MES_BOOTSTRAP_ADMIN_PASSWORD: ${MES_BOOTSTRAP_ADMIN_PASSWORD:-}
       LOG_LEVEL: ${MES_LOG_LEVEL:-info}
     ports:
       - '127.0.0.1:${MES_HTTP_PORT:-4700}:4700'

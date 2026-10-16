@@ -3,7 +3,7 @@
   "info": {
     "title": "ShopFloor Twin MES API",
     "version": "0.0.0",
-    "description": "API of the MES (Phases 4 and 5): equipment with current state, state intervals, telemetry series, shift totals, the plant clock, OEE per hour and shift, shift instances, reason codes, downtime records and the loss Pareto; alarm occurrences and alarm KPIs per hour and shift (Phase 6); one write, downtime coding (#121), with its audit. No authentication yet (Phase 7): writes are guarded (ADR-0023: Origin of this host, Sec-Fetch-Site, application/json, 16 KiB, a global rate limit, MES_WRITES=off answers 405) and audited as unauthenticated; bound to loopback by default. Errors are RFC 9457 problem details. Push: WebSocket at /api/v1/ws (see docs/api/realtime.md)."
+    "description": "API of the MES (Phases 4 and 5): equipment with current state, state intervals, telemetry series, shift totals, the plant clock, OEE per hour and shift, shift instances, reason codes, downtime records and the loss Pareto; alarm occurrences and alarm KPIs per hour and shift (Phase 6); operator writes (downtime coding, alarm acknowledgement, shelving and comments, handover notes) with their audits. Identity (Phase 7, ADR-0026): login sets the session cookie sft_session (POST /session); with MES_AUTH=on every route but the login needs it (401) and the permission each route names (403); with MES_AUTH=off (the default until #170) only the session routes do. Writes are guarded (ADR-0023: Origin of this host, Sec-Fetch-Site, application/json, 16 KiB, a global and a per-user rate limit, MES_WRITES=off answers 405); bound to loopback by default. Errors are RFC 9457 problem details. Push: WebSocket at /api/v1/ws (see docs/api/realtime.md)."
   },
   "components": {
     "schemas": {
@@ -12,7 +12,7 @@
         "properties": {
           "type": {
             "type": "string",
-            "description": "about:blank (the status says it all), or a stable URI a client tells apart: urn:shopfloor:handover-closed, urn:shopfloor:handover-not-open, urn:shopfloor:note-stale, urn:shopfloor:note-limit, urn:shopfloor:coding-stale, urn:shopfloor:shelf-stale, urn:shopfloor:host-not-allowed, urn:shopfloor:write-origin, urn:shopfloor:writes-off, urn:shopfloor:write-not-json, urn:shopfloor:write-rate"
+            "description": "about:blank (the status says it all), or a stable URI a client tells apart: urn:shopfloor:handover-closed, urn:shopfloor:handover-not-open, urn:shopfloor:note-stale, urn:shopfloor:note-limit, urn:shopfloor:coding-stale, urn:shopfloor:shelf-stale, urn:shopfloor:host-not-allowed, urn:shopfloor:write-origin, urn:shopfloor:writes-off, urn:shopfloor:write-not-json, urn:shopfloor:write-rate, urn:shopfloor:unauthenticated, urn:shopfloor:forbidden, urn:shopfloor:password-change-required, urn:shopfloor:password-rejected, urn:shopfloor:user-exists"
           },
           "title": {
             "type": "string"
@@ -88,6 +88,7 @@
         "tags": [
           "equipment"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "responses": {
           "200": {
             "description": "OK",
@@ -289,6 +290,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The MES is starting",
             "content": {
@@ -308,6 +329,7 @@
         "tags": [
           "equipment"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -509,6 +531,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -538,7 +580,7 @@
         "tags": [
           "equipment"
         ],
-        "description": "The stored pieces (each inside one UTC hour and one shift) are merged back into whole intervals and clipped to the range. Per shift, use /shifts/{date}/{shift}/totals.",
+        "description": "The stored pieces (each inside one UTC hour and one shift) are merged back into whole intervals and clipped to the range. Per shift, use /shifts/{date}/{shift}/totals. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -704,6 +746,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -733,6 +795,7 @@
         "tags": [
           "telemetry"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -814,6 +877,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -843,7 +926,7 @@
         "tags": [
           "telemetry"
         ],
-        "description": "The range is cut into at most maxPoints buckets of equal width, aligned on `from` (TimescaleDB time_bucket); each non-empty bucket gives min, max, average and count.",
+        "description": "The range is cut into at most maxPoints buckets of equal width, aligned on `from` (TimescaleDB time_bucket); each non-empty bucket gives min, max, average and count. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -1021,6 +1104,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -1050,6 +1153,7 @@
         "tags": [
           "shifts"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -1165,6 +1269,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -1194,7 +1318,7 @@
         "tags": [
           "oee"
         ],
-        "description": "Computed on read (ADR-0021): availability, performance, quality and OEE as exact fractions and four-decimal strings, with inputs, totals and losses. A work center sums its machines' inputs. Shift buckets are whole shifts; no-shift stretches are clipped to the range. `final` once nothing that can still arrive changes the bucket.",
+        "description": "Computed on read (ADR-0021): availability, performance, quality and OEE as exact fractions and four-decimal strings, with inputs, totals and losses. A work center sums its machines' inputs. Shift buckets are whole shifts; no-shift stretches are clipped to the range. `final` once nothing that can still arrive changes the bucket. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -1878,6 +2002,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -1908,6 +2052,7 @@
           "shifts",
           "oee"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -3092,6 +3237,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -3121,6 +3286,7 @@
         "tags": [
           "shifts"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -3247,6 +3413,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The MES is starting",
             "content": {
@@ -3266,6 +3452,7 @@
         "tags": [
           "shifts"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "responses": {
           "200": {
             "description": "OK",
@@ -3398,6 +3585,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The MES is starting",
             "content": {
@@ -3417,6 +3624,7 @@
         "tags": [
           "downtime"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -3491,6 +3699,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The MES is starting",
             "content": {
@@ -3510,7 +3738,7 @@
         "tags": [
           "downtime"
         ],
-        "description": "One record per availability-loss interval per scheduled shift bucket (#119), with its auto reason. With uncoded=true, only records still UNCODED.",
+        "description": "One record per availability-loss interval per scheduled shift bucket (#119), with its auto reason. With uncoded=true, only records still UNCODED. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -3801,6 +4029,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -3831,7 +4079,7 @@
           "downtime",
           "oee"
         ],
-        "description": "Own and external availability loss by reason from the downtime records, micro-stops (performance loss) by cause from the Stopped intervals below the threshold, all clipped to the range, without a row limit: the sums equal the OEE losses. Epoch: the one given, else the newest with data (one for all machines of a work center).",
+        "description": "Own and external availability loss by reason from the downtime records, micro-stops (performance loss) by cause from the Stopped intervals below the threshold, all clipped to the range, without a row limit: the sums equal the OEE losses. Epoch: the one given, else the newest with data (one for all machines of a work center). Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -4059,6 +4307,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -4088,7 +4356,7 @@
         "tags": [
           "downtime"
         ],
-        "description": "Each segment is a time range [from, to) inside the record with an active reason (not UNCODED); segments must not overlap; an empty list clears the codings. Time without a coding keeps the auto reason. `version` is the record’s `version` as read: it belongs to the coding set of the (equipment, epoch), and a mismatch is 409. `codedBy` is free text, recorded as unauthenticated. Audited; reasons never change OEE, only the Pareto and the reason view. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023).",
+        "description": "Each segment is a time range [from, to) inside the record with an active reason (not UNCODED); segments must not overlap; an empty list clears the codings. Time without a coding keeps the auto reason. `version` is the record’s `version` as read: it belongs to the coding set of the (equipment, epoch), and a mismatch is 409. `codedBy` is free text, recorded as unauthenticated. Audited; reasons never change OEE, only the Pareto and the reason view. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `downtime:code` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -4398,8 +4666,18 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin); type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin",
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4429,7 +4707,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4459,7 +4737,7 @@
             }
           },
           "422": {
-            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit)",
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4469,7 +4747,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (one global limit): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4497,7 +4775,7 @@
         "tags": [
           "downtime"
         ],
-        "description": "Writes to the record and clips of codings that lay in its time (after a late fact re-cut the intervals), newest first, at most 500.",
+        "description": "Writes to the record and clips of codings that lay in its time (after a late fact re-cut the intervals), newest first, at most 500. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -4720,6 +4998,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -4749,7 +5047,7 @@
         "tags": [
           "shifts"
         ],
-        "description": "A shift instance is stored per (plant epoch, shift key) once the plant clock enters the shift (ADR-0025). Default epoch: the newest that has it.",
+        "description": "A shift instance is stored per (plant epoch, shift key) once the plant clock enters the shift (ADR-0025). Default epoch: the newest that has it. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -4932,6 +5230,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -4961,7 +5279,7 @@
         "tags": [
           "shifts"
         ],
-        "description": "Computed on read (ADR-0025): the OEE section is the body of /shifts/{date}/{shift}/oee; the downtime Pareto by reason sums to the own and external availability loss, with the ten longest records and the uncoded time; production per machine from the OEE inputs and finished parts (the line’s last machine); per position and the plant the alarm KPIs of the shift bucket (equal to /alarms/kpi) and the top 5 bad actors; the handover notes with their history. `final` once every input is final; `revision.inputs` counts input revisions after that, `revision.content` note writes and recodes (recoding never changes OEE). `generatedAt` and `asOf` are for a printout.",
+        "description": "Computed on read (ADR-0025): the OEE section is the body of /shifts/{date}/{shift}/oee; the downtime Pareto by reason sums to the own and external availability loss, with the ten longest records and the uncoded time; production per machine from the OEE inputs and finished parts (the line’s last machine); per position and the plant the alarm KPIs of the shift bucket (equal to /alarms/kpi) and the top 5 bad actors; the handover notes with their history. `final` once every input is final; `revision.inputs` counts input revisions after that, `revision.content` note writes and recodes (recoding never changes OEE). `generatedAt` and `asOf` are for a printout. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -7525,6 +7843,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -7554,6 +7892,7 @@
         "tags": [
           "shifts"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -7860,6 +8199,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -7887,7 +8246,7 @@
         "tags": [
           "shifts"
         ],
-        "description": "From the shift’s start until the end of the following shift (plant time); afterwards 409 (handover closed). `author` is free text, recorded as unauthenticated; audited. Raises the report’s `revision.content`. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023).",
+        "description": "From the shift’s start until the end of the following shift (plant time); afterwards 409 (handover closed). `author` is free text, recorded as unauthenticated; audited. Raises the report’s `revision.content`. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `note:write` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -8209,8 +8568,18 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin); type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin",
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8240,7 +8609,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8270,7 +8639,7 @@
             }
           },
           "422": {
-            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit)",
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8280,7 +8649,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (one global limit): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8308,7 +8677,7 @@
         "tags": [
           "shifts"
         ],
-        "description": "`version` is the note’s `version` as read; a mismatch is 409. No delete: a wrong note is retracted and stays in the history. Same handover window and guards as a create; audited; raises the report’s `revision.content`.",
+        "description": "`version` is the note’s `version` as read; a mismatch is 409. No delete: a wrong note is retracted and stays in the history. Same handover window and guards as a create; audited; raises the report’s `revision.content`. Access: permission `note:write` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -8642,8 +9011,18 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin); type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin",
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8673,7 +9052,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8703,7 +9082,7 @@
             }
           },
           "422": {
-            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit)",
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8713,7 +9092,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (one global limit): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8741,7 +9120,7 @@
         "tags": [
           "shifts"
         ],
-        "description": "Every create and edit with before, after, actor, wall and plant time.",
+        "description": "Every create and edit with before, after, actor, wall and plant time. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -8941,6 +9320,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -8970,7 +9369,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "One occurrence per device raise (ADR-0024), id `{equipment}~{epoch}~{seq}`. `active`: not ended; `history`: ended (cleared by the device, lost by a resync snapshot, superseded by the next raise, or ended by a newer epoch), by raise time in a range of at most 7 days. Pages by `cursor` (`next`). Views (#143, ISA-18.2) partition the occurrences: `active` (default) not acknowledged and not closed (a cleared one stays until acknowledged), `acknowledged` still active, both with the point not shelved; `shelved` not closed with the point shelved; `history` closed (ended and acknowledged, or ended by a newer epoch), by raise time in a range of at most 7 days.",
+        "description": "One occurrence per device raise (ADR-0024), id `{equipment}~{epoch}~{seq}`. `active`: not ended; `history`: ended (cleared by the device, lost by a resync snapshot, superseded by the next raise, or ended by a newer epoch), by raise time in a range of at most 7 days. Pages by `cursor` (`next`). Views (#143, ISA-18.2) partition the occurrences: `active` (default) not acknowledged and not closed (a cleared one stays until acknowledged), `acknowledged` still active, both with the point not shelved; `shelved` not closed with the point shelved; `history` closed (ended and acknowledged, or ended by a newer epoch), by raise time in a range of at most 7 days. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -9343,6 +9742,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -9372,6 +9791,7 @@
         "tags": [
           "alarms"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "responses": {
           "200": {
             "description": "OK",
@@ -9434,6 +9854,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The MES is starting",
             "content": {
@@ -9453,7 +9893,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "From config/plant/alarms.yaml (#160): `maxShelveMs` (a longer shelf is 422) and the shortest shelf, the KPI thresholds alarm-core computes with (flood threshold and window, chattering, fleeting, standing) and the rate benchmarks (for colouring only). Fixed while the MES runs.",
+        "description": "From config/plant/alarms.yaml (#160): `maxShelveMs` (a longer shelf is 422) and the shortest shelf, the KPI thresholds alarm-core computes with (flood threshold and window, chattering, fleeting, standing) and the rate benchmarks (for colouring only). Fixed while the MES runs. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "responses": {
           "200": {
             "description": "OK",
@@ -9584,6 +10024,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The MES is starting",
             "content": {
@@ -9603,7 +10063,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Computed on read with alarm-core (ADR-0024), in exact integers and fractions: raises by priority, average and peak per 10 minutes, flood windows and sliding flood episodes, standing, active at the end, chattering, fleeting, active time. Hours are listed when something happened in them, and the hour in progress; shift buckets are every shift instance and `no-shift/{start}` stretch (clipped to the range) begun by the plant clock. `final` once every equipment of the scope is final through the bucket's end plus fleetingMs; `revision` counts changes after that.",
+        "description": "Computed on read with alarm-core (ADR-0024), in exact integers and fractions: raises by priority, average and peak per 10 minutes, flood windows and sliding flood episodes, standing, active at the end, chattering, fleeting, active time. Hours are listed when something happened in them, and the hour in progress; shift buckets are every shift instance and `no-shift/{start}` stretch (clipped to the range) begun by the plant clock. `final` once every equipment of the scope is final through the bucket's end plus fleetingMs; `revision` counts changes after that. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -10045,6 +10505,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -10074,7 +10554,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Not reconciled and apart from /alarms/kpi, which no operator action changes (#143): shelved and annunciated raises (raises while their point was shelved, and the others), time to acknowledge (count, sum and longest in integer ms of plant time, for the raises in the bucket acknowledged in the same epoch), occurrences unacknowledged at the bucket's end (or the plant clock) and shelved time per point. One epoch: the one given, else the newest of the scope.",
+        "description": "Not reconciled and apart from /alarms/kpi, which no operator action changes (#143): shelved and annunciated raises (raises while their point was shelved, and the others), time to acknowledge (count, sum and longest in integer ms of plant time, for the raises in the bucket acknowledged in the same epoch), occurrences unacknowledged at the bucket's end (or the plant clock) and shelved time per point. One epoch: the one given, else the newest of the scope. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -10349,6 +10829,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -10378,7 +10878,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "An episode starts at the raise that makes the count in the last 10 minutes exceed the flood threshold and ends when the count is back at it (ADR-0024); its id is `{startAt ms}~{equipment}~{code}` of the starting raise, unique in its scope.",
+        "description": "An episode starts at the raise that makes the count in the last 10 minutes exceed the flood threshold and ends when the count is back at it (ADR-0024); its id is `{startAt ms}~{equipment}~{code}` of the starting raise, unique in its scope. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -10560,6 +11060,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -10589,7 +11109,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Ranked by raises, then active time descending, then equipment and code; each with its share of the scope's raises (exact), active time and chattering raises.",
+        "description": "Ranked by raises, then active time descending, then equipment and code; each with its share of the scope's raises (exact), active time and chattering raises. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -10782,6 +11302,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -10811,6 +11351,7 @@
         "tags": [
           "alarms"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -11254,6 +11795,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -11283,7 +11844,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "From ingest's stored facts (seq, sourceTime, receivedAt, protocol), or the retained delivery or resync snapshot they came from, merged with the audit (#143): its acknowledgement and comments, and its point’s shelf transitions while it was active, each with actor, wall time and request id, by plant time.",
+        "description": "From ingest's stored facts (seq, sourceTime, receivedAt, protocol), or the retained delivery or resync snapshot they came from, merged with the audit (#143): its acknowledgement and comments, and its point’s shelf transitions while it was active, each with actor, wall time and request id, by plant time. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -11475,6 +12036,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -11504,7 +12085,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Monotonic, so no version: one INSERT … ON CONFLICT DO NOTHING; an id acknowledged already (also concurrently) is `changed: false` and gets no audit entry. An unknown id is 404 and nothing changes. Counts as one write for the rate limit. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts).",
+        "description": "Monotonic, so no version: one INSERT … ON CONFLICT DO NOTHING; an id acknowledged already (also concurrently) is `changed: false` and gets no audit entry. An unknown id is 404 and nothing changes. Counts as one write for the rate limit. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:ack` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -11597,8 +12178,18 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin); type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin",
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11648,7 +12239,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (one global limit): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11676,7 +12267,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Monotonic, so no version; acknowledged already: 200 with `changed: false` and no audit entry. A clear does not acknowledge: a cleared occurrence stays in the active list until acknowledged. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts).",
+        "description": "Monotonic, so no version; acknowledged already: 200 with `changed: false` and no audit entry. A clear does not acknowledge: a cleared occurrence stays in the active list until acknowledged. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:ack` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -11953,8 +12544,18 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin); type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin",
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12004,7 +12605,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (one global limit): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12032,7 +12633,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Append-only (1 to 500 characters), so no version. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts).",
+        "description": "Append-only (1 to 500 characters), so no version. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:comment` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -12363,8 +12964,18 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin); type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin",
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12414,7 +13025,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (one global limit): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12442,7 +13053,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Every defined point (alarms.yaml), and every other point with an active occurrence or a shelf, by equipment and code. `shelf.version` goes with shelve and unshelve.",
+        "description": "Every defined point (alarms.yaml), and every other point with an active occurrence or a shelf, by equipment and code. `shelf.version` goes with shelve and unshelve. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -12667,6 +13278,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -12696,7 +13327,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "ISA-18.2 shelves a point, not an occurrence: its occurrences leave the active list and keep their states; KPIs count every raise anyway. `durationMs` runs in plant time, 1 minute to maxShelveMs (alarms.yaml, 8 hours; longer is 422): `until` = the plant clock now + duration; once the plant clock passes it, the MES unshelves the point itself (audited `expire`, actor system), and a newer epoch ends the shelf (`epoch-ended`). Shelving a shelved point replaces its shelf. `version` is the shelf’s as read (0 for a point never shelved): a mismatch is 409. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts).",
+        "description": "ISA-18.2 shelves a point, not an occurrence: its occurrences leave the active list and keep their states; KPIs count every raise anyway. `durationMs` runs in plant time, 1 minute to maxShelveMs (alarms.yaml, 8 hours; longer is 422): `until` = the plant clock now + duration; once the plant clock passes it, the MES unshelves the point itself (audited `expire`, actor system), and a newer epoch ends the shelf (`epoch-ended`). Shelving a shelved point replaces its shelf. `version` is the shelf’s as read (0 for a point never shelved): a mismatch is 409. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:shelve` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -12947,8 +13578,18 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin); type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin",
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12978,7 +13619,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13008,7 +13649,7 @@
             }
           },
           "422": {
-            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit)",
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13018,7 +13659,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (one global limit): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13046,7 +13687,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "`version` is the shelf’s as read: a mismatch is 409; a point not shelved is 422. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts).",
+        "description": "`version` is the shelf’s as read: a mismatch is 409; a point not shelved is 422. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts). Access: permission `alarm:shelve` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -13284,8 +13925,18 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin); type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin",
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13315,7 +13966,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13345,7 +13996,7 @@
             }
           },
           "422": {
-            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit)",
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13355,7 +14006,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (one global limit): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13383,7 +14034,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "Its shelf transitions (shelve, unshelve, expire, epoch-ended) and its occurrences’ acknowledgements and comments, at most 500, each with actor, `authenticated: false`, wall time, plant time and request id.",
+        "description": "Its shelf transitions (shelve, unshelve, expire, epoch-ended) and its occurrences’ acknowledgements and comments, at most 500, each with actor, `authenticated: false`, wall time, plant time and request id. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -13583,6 +14234,26 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
             "content": {
@@ -13612,6 +14283,7 @@
         "tags": [
           "plant"
         ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "responses": {
           "200": {
             "description": "OK",
@@ -13736,6 +14408,1483 @@
               }
             }
           },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/session": {
+      "post": {
+        "summary": "Logs in: sets the session cookie",
+        "tags": [
+          "identity"
+        ],
+        "description": "Sets `sft_session` (HttpOnly, SameSite=Strict, Path=/) to a new random token; a session the request carried ends. Every failure (unknown or disabled user, wrong password, a locked account, an admin within its delay) is the same 401. Five failures in a row lock a normal account for 15 minutes; an admin is delayed instead (1 s doubling, at most 5 min). Passes the write guards (login CSRF). Access: anyone (no session needed).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "A password (12–128 characters when set)"
+                  },
+                  "kind": {
+                    "default": "desk",
+                    "description": "desk (idle timeout 60 min) or terminal (15 min); absolute limit 12 h",
+                    "type": "string",
+                    "enum": [
+                      "desk",
+                      "terminal"
+                    ]
+                  }
+                },
+                "required": [
+                  "username",
+                  "password"
+                ],
+                "additionalProperties": false,
+                "description": "A login: sets the session cookie"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "username": {
+                          "type": "string"
+                        },
+                        "roles": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "operator",
+                              "maintenance",
+                              "quality",
+                              "supervisor",
+                              "admin"
+                            ]
+                          }
+                        },
+                        "permissions": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "read",
+                              "downtime:code",
+                              "alarm:ack",
+                              "alarm:comment",
+                              "alarm:shelve",
+                              "note:write",
+                              "terminal:operate",
+                              "scrap:code",
+                              "order:release",
+                              "order:dispatch",
+                              "order:cancel",
+                              "order:redispatch",
+                              "order:close",
+                              "user:admin"
+                            ]
+                          }
+                        },
+                        "mustChangePassword": {
+                          "type": "boolean",
+                          "description": "Only the session and password routes answer until the password is changed"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "username",
+                        "roles",
+                        "permissions",
+                        "mustChangePassword"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "desk",
+                        "terminal"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "idleExpiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the session ends unless used before (wall time)"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the session ends at the latest (wall time)"
+                    }
+                  },
+                  "required": [
+                    "user",
+                    "kind",
+                    "createdAt",
+                    "idleExpiresAt",
+                    "expiresAt"
+                  ],
+                  "additionalProperties": false,
+                  "description": "The caller's session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "The caller's session: user, roles, permissions, expiry",
+        "tags": [
+          "identity"
+        ],
+        "description": "Access: a session (also one whose password must be changed).",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "username": {
+                          "type": "string"
+                        },
+                        "roles": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "operator",
+                              "maintenance",
+                              "quality",
+                              "supervisor",
+                              "admin"
+                            ]
+                          }
+                        },
+                        "permissions": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "read",
+                              "downtime:code",
+                              "alarm:ack",
+                              "alarm:comment",
+                              "alarm:shelve",
+                              "note:write",
+                              "terminal:operate",
+                              "scrap:code",
+                              "order:release",
+                              "order:dispatch",
+                              "order:cancel",
+                              "order:redispatch",
+                              "order:close",
+                              "user:admin"
+                            ]
+                          }
+                        },
+                        "mustChangePassword": {
+                          "type": "boolean",
+                          "description": "Only the session and password routes answer until the password is changed"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "username",
+                        "roles",
+                        "permissions",
+                        "mustChangePassword"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "desk",
+                        "terminal"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "idleExpiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the session ends unless used before (wall time)"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the session ends at the latest (wall time)"
+                    }
+                  },
+                  "required": [
+                    "user",
+                    "kind",
+                    "createdAt",
+                    "idleExpiresAt",
+                    "expiresAt"
+                  ],
+                  "additionalProperties": false,
+                  "description": "The caller's session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Logs out: ends the session and clears the cookie",
+        "tags": [
+          "identity"
+        ],
+        "description": "The body is an empty JSON object (writes are application/json). Access: a session (also one whose password must be changed).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+                "description": "An empty JSON object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ended": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ended"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/account/password": {
+      "post": {
+        "summary": "Changes the caller's own password",
+        "tags": [
+          "identity"
+        ],
+        "description": "The current password must match (a mismatch counts as a failed login); the new one has 12–128 characters and differs from it. Ends every other session of the user. Access: a session (also one whose password must be changed).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "currentPassword": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "A password (12–128 characters when set)"
+                  },
+                  "newPassword": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "A password (12–128 characters when set)"
+                  }
+                },
+                "required": [
+                  "currentPassword",
+                  "newPassword"
+                ],
+                "additionalProperties": false,
+                "description": "A change of the caller's own password; ends the user's other sessions"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "changed": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "endedSessions": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The user's other sessions that ended"
+                    }
+                  },
+                  "required": [
+                    "changed",
+                    "endedSessions"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users": {
+      "get": {
+        "summary": "Every user with roles, enabled and locked",
+        "tags": [
+          "identity"
+        ],
+        "description": "Access: permission `user:admin` (MES_AUTH=on; ADR-0026).",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "username": {
+                            "type": "string"
+                          },
+                          "roles": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "operator",
+                                "maintenance",
+                                "quality",
+                                "supervisor",
+                                "admin"
+                              ]
+                            }
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "mustChangePassword": {
+                            "type": "boolean"
+                          },
+                          "locked": {
+                            "type": "boolean",
+                            "description": "Locked after failed logins (not for admins, who get a delay)"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "username",
+                          "roles",
+                          "enabled",
+                          "mustChangePassword",
+                          "locked",
+                          "createdAt",
+                          "updatedAt"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "users"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Creates a user with a temporary password",
+        "tags": [
+          "identity"
+        ],
+        "description": "Access: permission `user:admin` (MES_AUTH=on; ADR-0026).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$",
+                    "description": "A user name: lower case, 2–64 characters of a–z, 0–9, `.`, `_`, `-`"
+                  },
+                  "roles": {
+                    "minItems": 1,
+                    "maxItems": 5,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "operator",
+                        "maintenance",
+                        "quality",
+                        "supervisor",
+                        "admin"
+                      ]
+                    },
+                    "description": "One or more roles"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "A temporary password: the user must change it at first login"
+                  }
+                },
+                "required": [
+                  "username",
+                  "roles",
+                  "password"
+                ],
+                "additionalProperties": false,
+                "description": "A new user"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "username": {
+                      "type": "string"
+                    },
+                    "roles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "operator",
+                          "maintenance",
+                          "quality",
+                          "supervisor",
+                          "admin"
+                        ]
+                      }
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "mustChangePassword": {
+                      "type": "boolean"
+                    },
+                    "locked": {
+                      "type": "boolean",
+                      "description": "Locked after failed logins (not for admins, who get a delay)"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "username",
+                    "roles",
+                    "enabled",
+                    "mustChangePassword",
+                    "locked",
+                    "createdAt",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}": {
+      "put": {
+        "summary": "Changes a user's roles or whether it may log in",
+        "tags": [
+          "identity"
+        ],
+        "description": "Disabling ends every session of the user and closes its sockets (4401). The last enabled admin stays an enabled admin (409). Access: permission `user:admin` (MES_AUTH=on; ADR-0026).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "roles": {
+                    "minItems": 1,
+                    "maxItems": 5,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "operator",
+                        "maintenance",
+                        "quality",
+                        "supervisor",
+                        "admin"
+                      ]
+                    },
+                    "description": "One or more roles"
+                  },
+                  "enabled": {
+                    "description": "false ends every session of the user and closes their sockets",
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A change of a user's roles or whether it may log in"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+            },
+            "in": "path",
+            "name": "username",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "username": {
+                      "type": "string"
+                    },
+                    "roles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "operator",
+                          "maintenance",
+                          "quality",
+                          "supervisor",
+                          "admin"
+                        ]
+                      }
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "mustChangePassword": {
+                      "type": "boolean"
+                    },
+                    "locked": {
+                      "type": "boolean",
+                      "description": "Locked after failed logins (not for admins, who get a delay)"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "username",
+                    "roles",
+                    "enabled",
+                    "mustChangePassword",
+                    "locked",
+                    "createdAt",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{username}/password": {
+      "post": {
+        "summary": "Sets a temporary password; ends the sessions and clears a lock",
+        "tags": [
+          "identity"
+        ],
+        "description": "Access: permission `user:admin` (MES_AUTH=on; ADR-0026).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "password": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "A temporary password: the user must change it at next login"
+                  }
+                },
+                "required": [
+                  "password"
+                ],
+                "additionalProperties": false,
+                "description": "Resets a password; ends every session of the user and clears a lock"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+            },
+            "in": "path",
+            "name": "username",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "username": {
+                      "type": "string"
+                    },
+                    "roles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "operator",
+                          "maintenance",
+                          "quality",
+                          "supervisor",
+                          "admin"
+                        ]
+                      }
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "mustChangePassword": {
+                      "type": "boolean"
+                    },
+                    "locked": {
+                      "type": "boolean",
+                      "description": "Locked after failed logins (not for admins, who get a delay)"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "username",
+                    "roles",
+                    "enabled",
+                    "mustChangePassword",
+                    "locked",
+                    "createdAt",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The MES is starting",
             "content": {
@@ -13778,6 +15927,10 @@
     {
       "name": "plant",
       "description": "Site and plant clock"
+    },
+    {
+      "name": "identity",
+      "description": "Login, sessions, password changes and users"
     },
     {
       "name": "operations",

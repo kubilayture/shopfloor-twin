@@ -1,5 +1,6 @@
 import { STATUS_CODES } from 'node:http';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { Permission } from '@shopfloor/contracts/identity';
 import type { ProblemType } from '@shopfloor/contracts/mes-api';
 import { z } from 'zod';
 
@@ -27,20 +28,47 @@ export function problem(status: number, detail: string, url: string, type?: Prob
   };
 }
 
+/**
+ * Who may call a route (#168, ADR-0026): a permission of `ROLE_PERMISSIONS`, `session` (any logged
+ * in user, also one that must change the password: the session and password routes) or `public`
+ * (the login). With `MES_AUTH=off` only `session` routes need a session.
+ */
+export type Access = Permission | 'session' | 'public';
+
+/** A route's access, kept in its Fastify config for the `/api/v1` hook. */
+export interface RouteConfig {
+  readonly access: Access;
+}
+
+const ACCESS_TEXT: Readonly<Record<'session' | 'public', string>> = {
+  session: 'Access: a session (also one whose password must be changed).',
+  public: 'Access: anyone (no session needed).',
+};
+
+/** The route description with its access appended, as the OpenAPI document shows it. */
+function described(description: string | undefined, access: Access): string {
+  const line =
+    access === 'session' || access === 'public'
+      ? ACCESS_TEXT[access]
+      : `Access: permission \`${access}\` (MES_AUTH=on; ADR-0026).`;
+  return description === undefined ? line : `${description} ${line}`;
+}
+
 const ERROR_TEXT: Readonly<Record<number, string>> = {
   400: 'Invalid path, query parameters or body',
-  403: 'Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin); type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin',
+  401: 'No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated',
+  403: 'Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)',
   404: 'Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route',
   405: 'Writes are turned off (MES_WRITES=off); type urn:shopfloor:writes-off',
-  409: 'The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open)',
+  409: 'The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin',
   413: 'Body larger than 16 KiB',
   415: 'Content-Type is not application/json; type urn:shopfloor:write-not-json',
-  422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit)',
-  429: 'Too many writes (one global limit): retry after Retry-After seconds; type urn:shopfloor:write-rate',
+  422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected)',
+  429: "Too many writes (the global limit, or the user's own): retry after Retry-After seconds; type urn:shopfloor:write-rate",
   503: 'The MES is starting',
 };
 
-export type ErrorStatus = 400 | 403 | 404 | 405 | 409 | 413 | 415 | 422 | 429 | 503;
+export type ErrorStatus = 400 | 401 | 403 | 404 | 405 | 409 | 413 | 415 | 422 | 429 | 503;
 
 /** JSON Schema (2020-12, as OpenAPI 3.1 uses) of a zod schema, without `$schema`. */
 export function jsonSchema(schema: z.ZodType, io: 'input' | 'output'): Record<string, unknown> {
@@ -64,6 +92,8 @@ export interface RouteSpec<P extends z.ZodType, Q extends z.ZodType, R extends z
   readonly query: Q;
   readonly response: R;
   readonly errors: readonly ErrorStatus[];
+  /** Default `read`. */
+  readonly access?: Access;
 }
 
 /**
@@ -71,10 +101,18 @@ export interface RouteSpec<P extends z.ZodType, Q extends z.ZodType, R extends z
  * and whose response is typed by a zod schema. The same schemas, as JSON Schema, describe the
  * route in the OpenAPI document. A handler throws `HttpProblem` for an error answer.
  */
-function errorResponses(errors: readonly ErrorStatus[]) {
+function errorResponses(errors: readonly ErrorStatus[], access: Access) {
   const problemContent = { [PROBLEM_TYPE]: { schema: { $ref: 'Problem#' } } };
+  // Every route but the login may answer 401, and every route 403 (#168).
+  const all = new Set<ErrorStatus>([
+    ...errors,
+    403,
+    ...(access === 'public' ? [] : [401 as const]),
+  ]);
   return Object.fromEntries(
-    errors.map((code) => [code, { description: ERROR_TEXT[code], content: problemContent }]),
+    [...all]
+      .sort((a, b) => a - b)
+      .map((code) => [code, { description: ERROR_TEXT[code], content: problemContent }]),
   );
 }
 
@@ -108,6 +146,8 @@ export interface WriteRouteSpec<
   readonly body: B;
   readonly response: R;
   readonly errors: readonly ErrorStatus[];
+  /** The permission the write needs (MES_AUTH=on), or `session` / `public`. */
+  readonly access: Access;
 }
 
 /**
@@ -128,15 +168,19 @@ export function writeRoute<
     query: z.output<Q>;
     body: z.output<B>;
     requestId: string;
+    request: FastifyRequest;
+    reply: FastifyReply;
   }) => z.input<R> | Promise<z.input<R>>,
 ): void {
+  const config: RouteConfig = { access: spec.access };
   app.route({
     method: spec.method,
     url: spec.url,
     bodyLimit,
+    config,
     schema: {
       summary: spec.summary,
-      ...(spec.description === undefined ? {} : { description: spec.description }),
+      description: described(spec.description, spec.access),
       tags: [...spec.tags],
       params: jsonSchema(spec.params, 'input'),
       ...(spec.query ? { querystring: jsonSchema(spec.query, 'input') } : {}),
@@ -149,7 +193,7 @@ export function writeRoute<
           description: 'OK',
           content: { 'application/json': { schema: jsonSchema(spec.response, 'output') } },
         },
-        ...errorResponses(spec.errors),
+        ...errorResponses(spec.errors, spec.access),
       },
     },
     validatorCompiler: validator({
@@ -158,12 +202,14 @@ export function writeRoute<
       ...(spec.query ? { querystring: spec.query } : {}),
     }),
     serializerCompiler: () => (data: unknown) => JSON.stringify(data),
-    handler: async (request) =>
+    handler: async (request, reply) =>
       handler({
         params: request.params as z.output<P>,
         query: request.query as z.output<Q>,
         body: request.body as z.output<B>,
         requestId: request.id,
+        request,
+        reply,
       }),
   });
 }
@@ -171,14 +217,21 @@ export function writeRoute<
 export function getRoute<P extends z.ZodType, Q extends z.ZodType, R extends z.ZodType>(
   app: FastifyInstance,
   spec: RouteSpec<P, Q, R>,
-  handler: (input: { params: z.output<P>; query: z.output<Q> }) => z.input<R> | Promise<z.input<R>>,
+  handler: (input: {
+    params: z.output<P>;
+    query: z.output<Q>;
+    request: FastifyRequest;
+  }) => z.input<R> | Promise<z.input<R>>,
 ): void {
+  const access = spec.access ?? 'read';
+  const config: RouteConfig = { access };
   app.route({
     method: 'GET',
     url: spec.url,
+    config,
     schema: {
       summary: spec.summary,
-      ...(spec.description === undefined ? {} : { description: spec.description }),
+      description: described(spec.description, access),
       tags: [...spec.tags],
       ...(spec.params ? { params: jsonSchema(spec.params, 'input') } : {}),
       querystring: jsonSchema(spec.query, 'input'),
@@ -187,7 +240,7 @@ export function getRoute<P extends z.ZodType, Q extends z.ZodType, R extends z.Z
           description: 'OK',
           content: { 'application/json': { schema: jsonSchema(spec.response, 'output') } },
         },
-        ...errorResponses(spec.errors),
+        ...errorResponses(spec.errors, access),
       },
     },
     validatorCompiler: validator({ params: spec.params, querystring: spec.query }),
@@ -197,6 +250,7 @@ export function getRoute<P extends z.ZodType, Q extends z.ZodType, R extends z.Z
       handler({
         params: request.params as z.output<P>,
         query: request.query as z.output<Q>,
+        request,
       }),
   });
 }

@@ -1,4 +1,11 @@
 import { z } from 'zod';
+import {
+  PASSWORD_LENGTH,
+  PERMISSIONS,
+  ROLES,
+  SESSION_KINDS,
+  USERNAME_PATTERN,
+} from './identity.ts';
 
 // The MES API's responses and WebSocket messages (#97, ADR-0019), shared by `mes-server`, which
 // generates docs/api/mes.openapi.json and mes-realtime.schema.json from them, and `web`, which
@@ -35,6 +42,9 @@ export const MES_API_LIMITS = {
   /** The global write rate (all clients together): tokens per second and the burst. */
   writesPerSecond: 10,
   writeBurst: 20,
+  /** Identity (#168, ADR-0026): each user's own write bucket, beside the global one. */
+  userWritesPerSecond: 5,
+  userWriteBurst: 10,
   /** Alarm list (#142): occurrences per page, by default and at most. */
   alarmPage: 100,
   alarmPageMax: 500,
@@ -89,8 +99,24 @@ export const PROBLEM_TYPES = {
   writesOff: 'urn:shopfloor:writes-off',
   /** 415: a write that is not application/json. */
   writeNotJson: 'urn:shopfloor:write-not-json',
-  /** 429: the global write rate limit; retry after `Retry-After` seconds. */
+  /** 429: the global or the user's write rate limit; retry after `Retry-After` seconds. */
   writeRate: 'urn:shopfloor:write-rate',
+  /**
+   * 401 (#168, ADR-0026): no session, or one that ended or expired; also a failed login (the same
+   * answer whatever failed).
+   */
+  unauthenticated: 'urn:shopfloor:unauthenticated',
+  /** 403: the session's roles lack the route's permission. */
+  forbidden: 'urn:shopfloor:forbidden',
+  /** 403: the user must change the password first (only the session and password routes answer). */
+  passwordChangeRequired: 'urn:shopfloor:password-change-required',
+  /**
+   * 422: a new password shorter or longer than allowed or equal to the current one, or a wrong
+   * current password in a password change.
+   */
+  passwordRejected: 'urn:shopfloor:password-rejected',
+  /** 409: a user with that name exists. */
+  userExists: 'urn:shopfloor:user-exists',
 } as const;
 
 export type ProblemType = (typeof PROBLEM_TYPES)[keyof typeof PROBLEM_TYPES];
@@ -1490,3 +1516,116 @@ export const serverMessageSchema = z
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 export type ServerMessage = z.infer<typeof serverMessageSchema>;
 export type TelemetrySample = z.infer<typeof telemetrySample>;
+
+// Identity (#168, ADR-0026): the session and user administration routes.
+
+const username = z
+  .string()
+  .regex(USERNAME_PATTERN)
+  .describe('A user name: lower case, 2–64 characters of a–z, 0–9, `.`, `_`, `-`');
+const password = z
+  .string()
+  .min(1)
+  .max(PASSWORD_LENGTH.max)
+  .describe(
+    `A password (${String(PASSWORD_LENGTH.min)}–${String(PASSWORD_LENGTH.max)} characters when set)`,
+  );
+const role = z.enum(ROLES);
+const roles = z
+  .array(role)
+  .min(1)
+  .max(ROLES.length)
+  .refine((list) => new Set(list).size === list.length, 'roles must not repeat')
+  .describe('One or more roles');
+
+export const loginRequestSchema = z
+  .strictObject({
+    // Not the user name pattern: an unknown or malformed name gets the same 401 as a wrong password.
+    username: z.string().min(1).max(64),
+    password,
+    kind: z
+      .enum(SESSION_KINDS)
+      .default('desk')
+      .describe('desk (idle timeout 60 min) or terminal (15 min); absolute limit 12 h'),
+  })
+  .describe('A login: sets the session cookie');
+
+export const sessionUserSchema = z.object({
+  id: int,
+  username: z.string(),
+  roles: z.array(role),
+  permissions: z.array(z.enum(PERMISSIONS)),
+  mustChangePassword: z
+    .boolean()
+    .describe('Only the session and password routes answer until the password is changed'),
+});
+
+export const sessionSchema = z
+  .object({
+    user: sessionUserSchema,
+    kind: z.enum(SESSION_KINDS),
+    createdAt: time,
+    idleExpiresAt: time.describe('When the session ends unless used before (wall time)'),
+    expiresAt: time.describe('When the session ends at the latest (wall time)'),
+  })
+  .describe("The caller's session");
+
+export const passwordChangeRequestSchema = z
+  .strictObject({
+    currentPassword: password,
+    newPassword: password,
+  })
+  .describe("A change of the caller's own password; ends the user's other sessions");
+
+export const passwordChangeResultSchema = z.object({
+  changed: z.literal(true),
+  endedSessions: int.describe("The user's other sessions that ended"),
+});
+
+export const userSchema = z.object({
+  id: int,
+  username: z.string(),
+  roles: z.array(role),
+  enabled: z.boolean(),
+  mustChangePassword: z.boolean(),
+  locked: z.boolean().describe('Locked after failed logins (not for admins, who get a delay)'),
+  createdAt: time,
+  updatedAt: time,
+});
+
+export const userListSchema = z.object({ users: z.array(userSchema) });
+
+export const userCreateRequestSchema = z
+  .strictObject({
+    username,
+    roles,
+    password: password.describe('A temporary password: the user must change it at first login'),
+  })
+  .describe('A new user');
+
+export const userUpdateRequestSchema = z
+  .strictObject({
+    roles: roles.optional(),
+    enabled: z
+      .boolean()
+      .optional()
+      .describe('false ends every session of the user and closes their sockets'),
+  })
+  .describe("A change of a user's roles or whether it may log in");
+
+export const passwordResetRequestSchema = z
+  .strictObject({
+    password: password.describe('A temporary password: the user must change it at next login'),
+  })
+  .describe('Resets a password; ends every session of the user and clears a lock');
+
+export type LoginRequest = z.input<typeof loginRequestSchema>;
+export type SessionDto = z.infer<typeof sessionSchema>;
+export type SessionUserDto = z.infer<typeof sessionUserSchema>;
+export type PasswordChangeRequest = z.infer<typeof passwordChangeRequestSchema>;
+export type PasswordChangeResult = z.infer<typeof passwordChangeResultSchema>;
+export type UserDto = z.infer<typeof userSchema>;
+export type UserList = z.infer<typeof userListSchema>;
+export type UserCreateRequest = z.infer<typeof userCreateRequestSchema>;
+export type UserUpdateRequest = z.infer<typeof userUpdateRequestSchema>;
+export type PasswordResetRequest = z.infer<typeof passwordResetRequestSchema>;

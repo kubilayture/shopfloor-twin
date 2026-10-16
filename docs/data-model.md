@@ -50,6 +50,12 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `shifts.handover_audit`
   - `shifts.handover_note`
   - `shifts.shift_instance`
+- [`identity`](#schema-identity)
+  - `identity.audit_log`
+  - `identity.role`
+  - `identity.session`
+  - `identity.user_account`
+  - `identity.user_role`
 - [`public`](#schema-public)
   - `public.schema_migrations`
 
@@ -152,6 +158,34 @@ erDiagram
   }
   handover_note ||--o{ handover_audit : "note_id"
   shift_instance ||--o{ handover_note : "epoch, shift_key"
+```
+
+Schema identity:
+
+```mermaid
+erDiagram
+  audit_log {
+    bigint id PK
+    bigint user_id FK
+  }
+  role {
+    text id PK
+  }
+  session {
+    bytea token_hash PK
+    bigint user_id FK
+  }
+  user_account {
+    bigint id PK
+  }
+  user_role {
+    bigint user_id PK, FK
+    text role_id PK, FK
+  }
+  user_account |o--o{ audit_log : "user_id"
+  user_account ||--o{ session : "user_id"
+  role ||--o{ user_role : "role_id"
+  user_account ||--o{ user_role : "user_id"
 ```
 
 The other schemas have no foreign keys; their references are by value, as described above.
@@ -1052,6 +1086,121 @@ One scheduled shift the plant clock entered, per (plant epoch, shift key): calen
 | Check | `shift_instance_status_check` | `CHECK ((status = ANY (ARRAY['running'::text, 'ended'::text, 'final'::text])))` |
 | Index | `shift_instance_key` | `shifts.shift_instance USING btree (shift_key, epoch DESC)` |
 | Index | `shift_instance_range` | `shifts.shift_instance USING btree (epoch, start_time)` |
+
+## Schema identity
+
+Owner: identity. Users with their roles, scrypt password hashes, server-side sessions (only the SHA-256 of a cookie token) and failed-login state, and the append-only audit log (#168, ADR-0026). Every time in this schema is wall time, except the audit log’s `plant_at`.
+
+### identity.audit_log
+
+Append-only audit of every identity action (logins, failures, locks, logouts, user changes) and, from #169, every module write: user and roles at that moment, `authenticated`, action, entity, before, after, request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#168, ADR-0026).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `plant_at` | `timestamp with time zone` | null |  |
+| `user_id` | `bigint` | null |  |
+| `username` | `text` | not null |  |
+| `roles` | `text[]` | not null | `'{}'::text[]` |
+| `authenticated` | `boolean` | not null |  |
+| `action` | `text` | not null |  |
+| `entity_type` | `text` | not null |  |
+| `entity_id` | `text` | not null |  |
+| `before` | `jsonb` | null |  |
+| `after` | `jsonb` | null |  |
+| `request_id` | `text` | null |  |
+| `legacy` | `boolean` | not null | `false` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `audit_log_pkey` | `PRIMARY KEY (id)` |
+| Foreign key | `audit_log_user_id_fkey` | `FOREIGN KEY (user_id) REFERENCES identity.user_account(id)` |
+| Check | `audit_log_action_check` | `CHECK ((action ~ '^[a-z]+(-[a-z]+)*\.[a-z]+(-[a-z]+)*$'::text))` |
+| Index | `audit_log_entity` | `identity.audit_log USING btree (entity_type, entity_id, id)` |
+| Index | `audit_log_user` | `identity.audit_log USING btree (user_id, id)` |
+
+### identity.role
+
+The five roles (operator, maintenance, quality, supervisor, admin), as `ROLES` in contracts; what each may do is `ROLE_PERMISSIONS` there (#168).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `text` | not null |  |
+| `description` | `text` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `role_pkey` | `PRIMARY KEY (id)` |
+
+### identity.session
+
+Login sessions by the SHA-256 of their cookie token: user, kind (desk or terminal), last use, idle and absolute expiry, and how it ended (#168).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `token_hash` | `bytea` | not null |  |
+| `user_id` | `bigint` | not null |  |
+| `kind` | `text` | not null |  |
+| `created_at` | `timestamp with time zone` | not null |  |
+| `last_used_at` | `timestamp with time zone` | not null |  |
+| `idle_expires_at` | `timestamp with time zone` | not null |  |
+| `expires_at` | `timestamp with time zone` | not null |  |
+| `ended_at` | `timestamp with time zone` | null |  |
+| `end_reason` | `text` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `session_pkey` | `PRIMARY KEY (token_hash)` |
+| Foreign key | `session_user_id_fkey` | `FOREIGN KEY (user_id) REFERENCES identity.user_account(id)` |
+| Check | `session_check` | `CHECK (((ended_at IS NULL) = (end_reason IS NULL)))` |
+| Check | `session_check1` | `CHECK ((idle_expires_at <= expires_at))` |
+| Check | `session_end_reason_check` | `CHECK ((end_reason = ANY (ARRAY['logout'::text, 'password-changed'::text, 'password-reset'::text, 'user-disabled'::text, 'replaced'::text])))` |
+| Check | `session_kind_check` | `CHECK ((kind = ANY (ARRAY['desk'::text, 'terminal'::text])))` |
+| Check | `session_token_hash_check` | `CHECK ((length(token_hash) = 32))` |
+| Index | `session_by_expiry` | `identity.session USING btree (expires_at)` |
+| Index | `session_by_user` | `identity.session USING btree (user_id) WHERE (ended_at IS NULL)` |
+
+### identity.user_account
+
+Users: name, scrypt hash with its parameters, enabled, must-change-password, and the failed-login state (count, lock for normal accounts, next attempt for admins) (#168).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `username` | `text` | not null |  |
+| `password_hash` | `text` | not null |  |
+| `enabled` | `boolean` | not null | `true` |
+| `must_change_password` | `boolean` | not null | `false` |
+| `failed_logins` | `integer` | not null | `0` |
+| `locked_until` | `timestamp with time zone` | null |  |
+| `next_attempt_at` | `timestamp with time zone` | null |  |
+| `password_changed_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `created_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `user_account_pkey` | `PRIMARY KEY (id)` |
+| Unique | `user_account_username_key` | `UNIQUE (username)` |
+| Check | `user_account_failed_logins_check` | `CHECK ((failed_logins >= 0))` |
+| Check | `user_account_password_hash_check` | `CHECK ((password_hash ~~ 'scrypt$%'::text))` |
+| Check | `user_account_username_check` | `CHECK ((username ~ '^[a-z0-9][a-z0-9._-]{1,63}$'::text))` |
+
+### identity.user_role
+
+The roles of each user, one or more (#168).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `user_id` | `bigint` | not null |  |
+| `role_id` | `text` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `user_role_pkey` | `PRIMARY KEY (user_id, role_id)` |
+| Foreign key | `user_role_role_id_fkey` | `FOREIGN KEY (role_id) REFERENCES identity.role(id)` |
+| Foreign key | `user_role_user_id_fkey` | `FOREIGN KEY (user_id) REFERENCES identity.user_account(id)` |
 
 ## Schema public
 

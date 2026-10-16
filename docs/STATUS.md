@@ -1,11 +1,12 @@
 # Status — updated 2026-10-16
 
-## Current phase: 07 – Orders, ERP and execution (next, not planned yet; Phase 6 closed 2026-10-16)
+## Current phase: 07 – Orders, ERP and execution (in progress, wave A; Phase 6 closed 2026-10-16)
 
-## Exit criteria progress: Phase 6 closed with 5 / 5 met (criteria 2 and 5 with recorded deviations; evidence from local runs, GitHub Actions could not run); Phase 7 not planned yet
+## Exit criteria progress: Phase 6 closed with 5 / 5 met (criteria 2 and 5 with recorded deviations; evidence from local runs, GitHub Actions could not run); Phase 7 0 / 6 met (criterion 1's identity groundwork in #168)
 
 ## Done since last update
 
+- #168 done (branch `feat/168-identity`): the MES `identity` module behind `MES_AUTH=off` (the default; tested with `on` and `off`). Users with one or more of the five roles, the permission matrix in `@shopfloor/contracts/identity` (`ROLES`, `PERMISSIONS`, `ROLE_PERMISSIONS`, compared cell by cell with the plan); scrypt hashes (N = 2^15, r = 8, p = 3, explicit `maxmem` 64 MiB, at most two at a time, rehash on login); sessions in the `HttpOnly`, `SameSite=Strict` cookie `sft_session` with only the token's SHA-256 stored (idle 60 / 15 min, 12 h absolute; logout, password change, reset and disabling end them); five failures lock a normal account for 15 min, admins get a 1 s doubling delay up to 5 min; the optional bootstrap admin (`MES_BOOTSTRAP_ADMIN_PASSWORD`) and `user:create` (password from stdin); session, account and user routes; with `on`, 401 `urn:shopfloor:unauthenticated` and 403 `urn:shopfloor:forbidden` on every route after the Host and Origin checks, a WebSocket without a session or whose session ends closed with 4401, a per-user write bucket (5/s, bursts of 10) beside the global one; append-only `identity.audit_log` for every identity action (migration `0016`); a test that `.env.example` holds only placeholders. A matrix test sends every route of the OpenAPI document (46) as anonymous and as each role (276 answers). ADR-0026; ADR-0019 and ADR-0023 notes.
 - Phase 7 plan with issues #167–#179 under milestone "Phase 07 – Orders, ERP and execution".
 - #148 merged (PR #166): Phase 6 closed, tagged `phase-06`.
 - **Phase 6 closed**: all 5 exit criteria met; tag `phase-06` after #148 merges (report: `docs/phases/phase-06-report.md`; learning notes: `docs/learning/phase-06.md`; data model: `docs/data-model.md`, confirmed current with the 14 tables of migrations `0010`–`0015`). Criterion 2's trailing buckets stay provisional and criterion 5's 405 and note refusals are checked outside the stack smoke (deviations in the report).
@@ -97,11 +98,11 @@
 
 ## In progress
 
-- #167 Phase 7 plan (in review)
+- #168 identity behind `MES_AUTH=off` (in review)
 
 ## Next up
 
-- Wave A: #168 identity, #169 database roles and one audit log, #170 web login, #171 ERP mock; then wave B: #172–#178; #179 closes the phase.
+- Wave A: #169 database roles and one audit log, #170 web login and `MES_AUTH=on`, #171 ERP mock; then wave B: #172–#178; #179 closes the phase.
 
 ## Blockers and open questions for the owner
 

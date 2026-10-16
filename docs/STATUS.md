@@ -6,6 +6,8 @@
 
 ## Done since last update
 
+- Phase 7 plan with issues #167–#179 under milestone "Phase 07 – Orders, ERP and execution".
+- #148 merged (PR #166): Phase 6 closed, tagged `phase-06`.
 - **Phase 6 closed**: all 5 exit criteria met; tag `phase-06` after #148 merges (report: `docs/phases/phase-06-report.md`; learning notes: `docs/learning/phase-06.md`; data model: `docs/data-model.md`, confirmed current with the 14 tables of migrations `0010`–`0015`). Criterion 2's trailing buckets stay provisional and criterion 5's 405 and note refusals are checked outside the stack smoke (deviations in the report).
 - Phase 6 pull requests merged: #149 (plan), #150 (#139), #151 (#140), #152 (#141), #153 (#142), #154 (#143), #155 (#144), #157 (#156), #158 (#145), #161 (#159), #162 (#146), #164 (#160, #163), #165 (#147). #149 was the last PR with green CI; #150–#165 were gated by the local equivalent of every CI job. `pnpm test:reconcile` passed 3 of 3 locally on #165's final commit.
 - #147 done (branch `test/147-e2e-alarms-shifts`): `pnpm test:reconcile` runs `alarms-01`'s shift A with its 14 injections posted through the control API 1.3 before the resume; shift A's alarm KPIs (plant and both positions, 3 shift and 4 hour buckets) final and equal to the live ground truth and `alarms-01`'s summary; shift A's report final with `revision.inputs = 0`, its OEE and alarm sections byte for byte the APIs', production equal to the ground truth. Playwright: every raise on `/alarms` within 2 s (max 293 ms), the flood banner, the KPI cards live (max 1,130 ms); after the drain acknowledge, bulk acknowledge, shelve and unshelve, comment, history in UI and API, `/alarms/kpi` byte-identical, operator measures 0 → 14 acknowledged, a handover note created and edited (`content` +2, `contentAtFinal` unchanged), refusals with problem types. Two consecutive local passes, 524 and 523 s. Also the PR #164 carry-overs (window labels from `windowMs`, `minShelveMs` in the MES). The OEE dashboard check's latency rose to up to 1.9 s (2 failing runs of 9) when the alarm check ran first: traced to the judge reading transient OEE values as stale when their four decimals repeat (more often later in the shift), not to the MES or the page; the OEE check samples from the shift's start again and, after the review of PR #165, counts a value as seen only within 5 s of it (three runs: max 1,204 / 1,039 / 1,238 ms), with new push and pool metrics (phase log).
@@ -95,11 +97,11 @@
 
 ## In progress
 
-- #148 Phase 6 close (in review)
+- #167 Phase 7 plan (in review)
 
 ## Next up
 
-- Phase 7 plan: Orders, ERP and execution (master plan section 11 row 7: `erp-mock`, `identity` with users, roles, login and audit, order import, release and dispatch, routing execution, operator terminal, confirmations). Not planned yet. Carry-overs are in the Phase 6 report: the module-local audits and free-text actors to move into `identity`, separate database roles (Phases 7 and 9), positions from crews, the global write rate limit, retention, `prom-client` (ADR-0012), and the O(hours × occurrences) alarm KPI reads.
+- Wave A: #168 identity, #169 database roles and one audit log, #170 web login, #171 ERP mock; then wave B: #172–#178; #179 closes the phase.
 
 ## Blockers and open questions for the owner
 

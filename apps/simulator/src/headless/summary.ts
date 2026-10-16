@@ -3,6 +3,7 @@ import { NO_SHIFT } from '@shopfloor/shift-calendar';
 import type { SimTime } from '@shopfloor/sim-core';
 import type { PlantEvent, ProductionLine } from '../plant/line.ts';
 import type { MachineState } from '../plant/machine-state.ts';
+import { AlarmTruth, type AlarmSummary } from './alarm-truth.ts';
 import { OeeTruth, zeroStates as zero, type OeeSummary, type StateMs } from './oee-truth.ts';
 
 interface MachineTruth {
@@ -34,16 +35,20 @@ export interface GroundTruthSummary {
   readonly lots: Record<string, number>;
   /** OEE inputs and results per machine, shift bucket and hour, and per work center (#117). */
   readonly oee: OeeSummary;
+  /** Alarm occurrences and KPIs per position and plant, per hour and shift bucket (#140). */
+  readonly alarms: AlarmSummary;
 }
 
 export class GroundTruth {
   readonly #machines = new Map<string, MachineTruth>();
   readonly #scrapped = new Map<string, Map<string, number>>();
   readonly #oee: OeeTruth;
+  readonly #alarms: AlarmTruth;
   #shift: string = NO_SHIFT;
 
   constructor(config: PlantConfig, start: SimTime) {
     this.#oee = new OeeTruth(config);
+    this.#alarms = new AlarmTruth(config, start);
     const machineIds = config.plant.areas.flatMap((a) =>
       a.workCenters.flatMap((w) => w.equipment.map((e) => e.id)),
     );
@@ -61,6 +66,10 @@ export class GroundTruth {
   }
 
   record(event: PlantEvent): void {
+    if (event.type === 'alarm') {
+      this.#alarms.record(event);
+      return;
+    }
     if (event.type === 'shift') {
       this.#closeAll(event.at);
       this.#shift = event.action === 'shift-end' ? NO_SHIFT : `${event.shiftDate}/${event.shiftId}`;
@@ -136,6 +145,7 @@ export class GroundTruth {
       machines,
       ...this.#production(line, lotIds),
       oee: this.#oee.summary(now, open, shifts),
+      alarms: this.#alarms.summary(now),
     };
   }
 

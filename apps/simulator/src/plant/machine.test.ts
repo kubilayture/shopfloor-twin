@@ -26,9 +26,9 @@ describe('transition table', () => {
     }
   });
 
-  it('never allows a transition to the same state', () => {
+  it('never allows a transition to the same state, except Down → Down for a held injection (#140)', () => {
     MACHINE_STATES.forEach((state) => {
-      expect(canTransition(state, state)).toBe(false);
+      expect(canTransition(state, state)).toBe(state === 'Down');
     });
   });
 
@@ -40,7 +40,7 @@ describe('transition table', () => {
   });
 
   it('keeps a Down machine down until repaired (plan section 7: availability loss)', () => {
-    expect(TRANSITIONS.Down).toEqual(['Idle', 'Running', 'PlannedStop', 'Off']);
+    expect(TRANSITIONS.Down).toEqual(['Idle', 'Running', 'Down', 'PlannedStop', 'Off']);
     expect(TRANSITIONS.Down).not.toContain('Stopped');
     expect(TRANSITIONS.Down).not.toContain('Setup');
   });

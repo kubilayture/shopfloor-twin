@@ -177,6 +177,8 @@ export class WasherModbusServer {
       case 'repair-start':
       case 'repair-end':
       case 'operator':
+      case 'injection-held':
+      case 'injection-applied':
         break;
     }
   }

@@ -13,6 +13,7 @@ COPY apps/edge-gateway/package.json apps/edge-gateway/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/oee-core/package.json packages/oee-core/
 COPY packages/plant-config/package.json packages/plant-config/
+COPY packages/shift-calendar/package.json packages/shift-calendar/
 # Production dependencies of the gateway and its workspace packages only; no lifecycle scripts.
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts --filter @shopfloor/edge-gateway...
 
@@ -28,6 +29,7 @@ COPY config/plant config/plant
 COPY packages/contracts/src packages/contracts/src
 COPY packages/oee-core/src packages/oee-core/src
 COPY packages/plant-config/src packages/plant-config/src
+COPY packages/shift-calendar/src packages/shift-calendar/src
 COPY apps/edge-gateway/src apps/edge-gateway/src
 RUN mkdir -p /var/lib/gateway/buffer /var/lib/gateway/pki && chown -R node:node /var/lib/gateway
 USER node

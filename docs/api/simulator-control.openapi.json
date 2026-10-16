@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ShopFloor Twin simulator control API",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "description": "Controls the pacing of the live simulation and streams its plant events. Plant events: WebSocket at /api/v1/events (see docs/contracts/simulator-control-api.md)."
   },
   "components": {
@@ -1865,6 +1865,779 @@
                       ],
                       "additionalProperties": false,
                       "description": "OEE inputs per machine, shift bucket and UTC hour; results per shift bucket (#117)"
+                    },
+                    "alarms": {
+                      "type": "object",
+                      "properties": {
+                        "config": {
+                          "type": "object",
+                          "properties": {
+                            "floodThreshold": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "windowMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "chatterCount": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "chatterWindowMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "fleetingMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "standingMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "floodThreshold",
+                            "windowMs",
+                            "chatterCount",
+                            "chatterWindowMs",
+                            "fleetingMs",
+                            "standingMs"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "positions": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "workCenters": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": [
+                              "workCenters"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "occurrences": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "equipment": {
+                                "type": "string"
+                              },
+                              "code": {
+                                "type": "string"
+                              },
+                              "priority": {
+                                "type": "string",
+                                "enum": [
+                                  "high",
+                                  "medium",
+                                  "low"
+                                ]
+                              },
+                              "severity": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "raisedAt": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "clearedAt": {
+                                "nullable": true,
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "endReason": {
+                                "nullable": true,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "equipment",
+                              "code",
+                              "priority",
+                              "severity",
+                              "raisedAt",
+                              "clearedAt",
+                              "endReason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "scopes": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "hours": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "object",
+                                  "properties": {
+                                    "from": {
+                                      "type": "string",
+                                      "description": "ISO 8601 UTC"
+                                    },
+                                    "to": {
+                                      "type": "string",
+                                      "description": "ISO 8601 UTC"
+                                    },
+                                    "raises": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "byPriority": {
+                                      "type": "object",
+                                      "properties": {
+                                        "high": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "medium": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "low": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "required": [
+                                        "high",
+                                        "medium",
+                                        "low"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "averageRate": {
+                                      "type": "object",
+                                      "properties": {
+                                        "fraction": {
+                                          "type": "string",
+                                          "description": "Exact reduced fraction `num/den`"
+                                        },
+                                        "decimal": {
+                                          "type": "string",
+                                          "description": "Rounded half-up to four decimals"
+                                        }
+                                      },
+                                      "required": [
+                                        "fraction",
+                                        "decimal"
+                                      ],
+                                      "additionalProperties": false,
+                                      "description": "Raises per windowMs over the whole bucket"
+                                    },
+                                    "windows": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "peak10": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "floodWindows": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "floods": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "description": "`{startAt ms}~{equipment}~{code}` of the starting raise"
+                                          },
+                                          "startAt": {
+                                            "type": "string",
+                                            "description": "ISO 8601 UTC"
+                                          },
+                                          "floodMs": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "peak": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "open": {
+                                            "type": "boolean"
+                                          },
+                                          "ended": {
+                                            "nullable": true,
+                                            "type": "object",
+                                            "properties": {
+                                              "endAt": {
+                                                "type": "string",
+                                                "description": "ISO 8601 UTC"
+                                              },
+                                              "peak": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "raises": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991
+                                              }
+                                            },
+                                            "required": [
+                                              "endAt",
+                                              "peak",
+                                              "raises"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "required": [
+                                          "id",
+                                          "startAt",
+                                          "floodMs",
+                                          "peak",
+                                          "open",
+                                          "ended"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "floodMs": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "activeAtEnd": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "standing": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "equipment": {
+                                            "type": "string"
+                                          },
+                                          "code": {
+                                            "type": "string"
+                                          },
+                                          "raisedAt": {
+                                            "type": "string",
+                                            "description": "ISO 8601 UTC"
+                                          }
+                                        },
+                                        "required": [
+                                          "equipment",
+                                          "code",
+                                          "raisedAt"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "chatteringRaises": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "chatteringPoints": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "fleeting": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "fleetingUndecided": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "activeMs": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provisional": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "from",
+                                    "to",
+                                    "raises",
+                                    "byPriority",
+                                    "averageRate",
+                                    "windows",
+                                    "peak10",
+                                    "floodWindows",
+                                    "floods",
+                                    "floodMs",
+                                    "activeAtEnd",
+                                    "standing",
+                                    "chatteringRaises",
+                                    "chatteringPoints",
+                                    "fleeting",
+                                    "fleetingUndecided",
+                                    "activeMs",
+                                    "provisional"
+                                  ],
+                                  "additionalProperties": false,
+                                  "description": "`kpisOfBucket` / `composeBuckets` of `alarm-core` (ADR-0024)"
+                                },
+                                "description": "Keyed by the UTC hour start; only hours where something happened"
+                              },
+                              "shifts": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "object",
+                                  "properties": {
+                                    "from": {
+                                      "type": "string",
+                                      "description": "ISO 8601 UTC"
+                                    },
+                                    "to": {
+                                      "type": "string",
+                                      "description": "ISO 8601 UTC"
+                                    },
+                                    "raises": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "byPriority": {
+                                      "type": "object",
+                                      "properties": {
+                                        "high": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "medium": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "low": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "required": [
+                                        "high",
+                                        "medium",
+                                        "low"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "averageRate": {
+                                      "type": "object",
+                                      "properties": {
+                                        "fraction": {
+                                          "type": "string",
+                                          "description": "Exact reduced fraction `num/den`"
+                                        },
+                                        "decimal": {
+                                          "type": "string",
+                                          "description": "Rounded half-up to four decimals"
+                                        }
+                                      },
+                                      "required": [
+                                        "fraction",
+                                        "decimal"
+                                      ],
+                                      "additionalProperties": false,
+                                      "description": "Raises per windowMs over the whole bucket"
+                                    },
+                                    "windows": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "peak10": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "floodWindows": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "floods": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "description": "`{startAt ms}~{equipment}~{code}` of the starting raise"
+                                          },
+                                          "startAt": {
+                                            "type": "string",
+                                            "description": "ISO 8601 UTC"
+                                          },
+                                          "floodMs": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "peak": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "open": {
+                                            "type": "boolean"
+                                          },
+                                          "ended": {
+                                            "nullable": true,
+                                            "type": "object",
+                                            "properties": {
+                                              "endAt": {
+                                                "type": "string",
+                                                "description": "ISO 8601 UTC"
+                                              },
+                                              "peak": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "raises": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991
+                                              }
+                                            },
+                                            "required": [
+                                              "endAt",
+                                              "peak",
+                                              "raises"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "required": [
+                                          "id",
+                                          "startAt",
+                                          "floodMs",
+                                          "peak",
+                                          "open",
+                                          "ended"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "floodMs": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "activeAtEnd": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "standing": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "equipment": {
+                                            "type": "string"
+                                          },
+                                          "code": {
+                                            "type": "string"
+                                          },
+                                          "raisedAt": {
+                                            "type": "string",
+                                            "description": "ISO 8601 UTC"
+                                          }
+                                        },
+                                        "required": [
+                                          "equipment",
+                                          "code",
+                                          "raisedAt"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "chatteringRaises": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "chatteringPoints": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "fleeting": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "fleetingUndecided": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "activeMs": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "provisional": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "from",
+                                    "to",
+                                    "raises",
+                                    "byPriority",
+                                    "averageRate",
+                                    "windows",
+                                    "peak10",
+                                    "floodWindows",
+                                    "floods",
+                                    "floodMs",
+                                    "activeAtEnd",
+                                    "standing",
+                                    "chatteringRaises",
+                                    "chatteringPoints",
+                                    "fleeting",
+                                    "fleetingUndecided",
+                                    "activeMs",
+                                    "provisional"
+                                  ],
+                                  "additionalProperties": false,
+                                  "description": "`kpisOfBucket` / `composeBuckets` of `alarm-core` (ADR-0024)"
+                                },
+                                "description": "Every shift instance and `no-shift/{start}` stretch so far"
+                              },
+                              "floods": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "startAt": {
+                                      "type": "string",
+                                      "description": "ISO 8601 UTC"
+                                    },
+                                    "equipment": {
+                                      "type": "string"
+                                    },
+                                    "code": {
+                                      "type": "string"
+                                    },
+                                    "endAt": {
+                                      "nullable": true,
+                                      "type": "string",
+                                      "description": "ISO 8601 UTC"
+                                    },
+                                    "peak": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "raises": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "startAt",
+                                    "equipment",
+                                    "code",
+                                    "endAt",
+                                    "peak",
+                                    "raises"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "badActors": {
+                                "type": "object",
+                                "properties": {
+                                  "run": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "equipment": {
+                                          "type": "string"
+                                        },
+                                        "code": {
+                                          "type": "string"
+                                        },
+                                        "raises": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "share": {
+                                          "type": "object",
+                                          "properties": {
+                                            "fraction": {
+                                              "type": "string",
+                                              "description": "Exact reduced fraction `num/den`"
+                                            },
+                                            "decimal": {
+                                              "type": "string",
+                                              "description": "Rounded half-up to four decimals"
+                                            }
+                                          },
+                                          "required": [
+                                            "fraction",
+                                            "decimal"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "activeMs": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "chatteringRaises": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "required": [
+                                        "equipment",
+                                        "code",
+                                        "raises",
+                                        "share",
+                                        "activeMs",
+                                        "chatteringRaises"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "shifts": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "equipment": {
+                                            "type": "string"
+                                          },
+                                          "code": {
+                                            "type": "string"
+                                          },
+                                          "raises": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "share": {
+                                            "type": "object",
+                                            "properties": {
+                                              "fraction": {
+                                                "type": "string",
+                                                "description": "Exact reduced fraction `num/den`"
+                                              },
+                                              "decimal": {
+                                                "type": "string",
+                                                "description": "Rounded half-up to four decimals"
+                                              }
+                                            },
+                                            "required": [
+                                              "fraction",
+                                              "decimal"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          "activeMs": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "chatteringRaises": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "required": [
+                                          "equipment",
+                                          "code",
+                                          "raises",
+                                          "share",
+                                          "activeMs",
+                                          "chatteringRaises"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "run",
+                                  "shifts"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "hours",
+                              "shifts",
+                              "floods",
+                              "badActors"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "config",
+                        "positions",
+                        "occurrences",
+                        "scopes"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Alarm occurrences and KPIs per position and plant, per hour and shift bucket (#140)"
                     }
                   },
                   "required": [
@@ -1878,7 +2651,8 @@
                     "machines",
                     "production",
                     "lots",
-                    "oee"
+                    "oee",
+                    "alarms"
                   ],
                   "additionalProperties": false
                 }
@@ -2063,6 +2837,271 @@
         }
       }
     },
+    "/api/v1/faults/failure/{machine}": {
+      "post": {
+        "summary": "Inject a failure mode on a machine, now or at a simulation time",
+        "tags": [
+          "faults"
+        ],
+        "description": "The machine breaks down with the code as its cause and raises its alarm, as in a natural failure. It takes effect only while the machine is Running; otherwise it is held and applied where the machine would next enter Running (#140). With `at` it is scheduled as a simulation event, so a live run reproduces a headless run with the same injections. 404: unknown machine or code; 409: `at` in the past or on a calendar boundary.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "description": "A failure-mode code of the machine (failures.yaml)"
+                  },
+                  "at": {
+                    "description": "Simulation time, ISO 8601 with an offset or Z; the current time when left out",
+                    "type": "string"
+                  },
+                  "repairMs": {
+                    "description": "Exact repair time; drawn from the mode's repair stream when left out",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "code"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "machine",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "injection": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "machine": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string",
+                          "description": "When it was due"
+                        },
+                        "repairMs": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "scheduled",
+                            "held",
+                            "applied"
+                          ],
+                          "description": "held: waiting for the machine to enter Running; applied: the machine went Down"
+                        },
+                        "heldAt": {
+                          "type": "string",
+                          "description": "ISO 8601 UTC"
+                        },
+                        "appliedAt": {
+                          "type": "string",
+                          "description": "ISO 8601 UTC"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "machine",
+                        "code",
+                        "at",
+                        "status"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "injection"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/faults/injections": {
+      "get": {
+        "summary": "Every failure injection of the run, in order, with its outcome",
+        "tags": [
+          "faults"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "injections": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "machine": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "at": {
+                            "type": "string",
+                            "description": "When it was due"
+                          },
+                          "repairMs": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "scheduled",
+                              "held",
+                              "applied"
+                            ],
+                            "description": "held: waiting for the machine to enter Running; applied: the machine went Down"
+                          },
+                          "heldAt": {
+                            "type": "string",
+                            "description": "ISO 8601 UTC"
+                          },
+                          "appliedAt": {
+                            "type": "string",
+                            "description": "ISO 8601 UTC"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "machine",
+                          "code",
+                          "at",
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "injections"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health/live": {
       "get": {
         "summary": "The process is up",
@@ -2177,7 +3216,7 @@
     },
     {
       "name": "faults",
-      "description": "Infrastructure faults for resilience tests"
+      "description": "Infrastructure faults for resilience tests, and failure injection"
     }
   ]
 }

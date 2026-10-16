@@ -6,7 +6,11 @@ import {
   changeoverCause,
   materialCause,
 } from '@shopfloor/contracts';
-import type { PlantConfig } from '@shopfloor/plant-config';
+import {
+  injectionIssues,
+  type InjectionIssueCode,
+  type PlantConfig,
+} from '@shopfloor/plant-config';
 import {
   HOUR,
   MINUTE,
@@ -38,7 +42,8 @@ type StationEvent =
   | { readonly type: 'stop-end'; readonly station: string }
   | { readonly type: 'repair-end'; readonly station: string }
   | { readonly type: 'maintenance-end'; readonly station: string }
-  | { readonly type: 'calibration-due'; readonly station: string };
+  | { readonly type: 'calibration-due'; readonly station: string }
+  | { readonly type: 'inject-failure'; readonly station: string; readonly injection: number };
 
 export type LineEvent =
   | StationEvent
@@ -95,6 +100,17 @@ export type PlantEvent =
       readonly shiftDate: string;
     }
   | {
+      /**
+       * A failure injection (#140) took effect (`injection-applied`: the machine goes Down with its
+       * code now) or is held until the machine would next enter Running (`injection-held`).
+       */
+      readonly type: 'injection-held' | 'injection-applied';
+      readonly at: SimTime;
+      readonly machineId: string;
+      readonly injection: number;
+      readonly code: string;
+    }
+  | {
       readonly type: 'operator';
       readonly at: SimTime;
       readonly machineId: string;
@@ -127,6 +143,48 @@ export type LoadProgramResult =
       code: 'not-a-cnc' | 'invalid-product' | 'invalid-quantity' | 'not-attached';
       reason: string;
     };
+
+/** A failure injection (#140) and what became of it. */
+export interface FailureInjection {
+  /** 1, 2, … in the order the line accepted them. */
+  readonly id: number;
+  readonly machine: string;
+  readonly code: string;
+  /** When it was due (simulation time). */
+  readonly at: SimTime;
+  readonly repairMs?: number;
+  /** `scheduled` until due; `held` while the machine is not Running; `applied` once Down. */
+  readonly status: 'scheduled' | 'held' | 'applied';
+  readonly heldAt?: SimTime;
+  readonly appliedAt?: SimTime;
+}
+
+export interface InjectFailureRequest {
+  readonly machine: string;
+  readonly code: string;
+  /** Simulation time; the current time when left out. */
+  readonly at?: SimTime | undefined;
+  readonly repairMs?: number | undefined;
+}
+
+export type InjectFailureResult =
+  | { readonly ok: true; readonly injection: FailureInjection }
+  | {
+      readonly ok: false;
+      readonly code: InjectionIssueCode | 'in-the-past';
+      readonly reason: string;
+    };
+
+interface Injection {
+  readonly id: number;
+  readonly machine: string;
+  readonly code: string;
+  readonly at: SimTime;
+  readonly repairMs: number | undefined;
+  status: FailureInjection['status'];
+  heldAt: SimTime | undefined;
+  appliedAt: SimTime | undefined;
+}
 
 const CYCLE = 'cycle';
 const MINOR_STOP = 'minor-stop';
@@ -180,6 +238,10 @@ interface Station {
   busy: boolean;
   pending: EventHandle | undefined;
   failure: FailureMode | undefined;
+  /** The exact repair time of an injected failure; undefined draws from the mode's stream. */
+  repairMs: number | undefined;
+  /** Injections waiting for the machine to enter Running, in order (#140). */
+  readonly held: Injection[];
 }
 
 export interface LineOptions {
@@ -201,6 +263,7 @@ export class ProductionLine {
   readonly #onEvent: (event: PlantEvent) => void;
   readonly #repairQueue: Station[] = [];
   readonly #crew: Crew;
+  readonly #injections: Injection[] = [];
   #unavailable: Unavailable | undefined = 'Off';
   #freeTechnicians: number;
   #nextPartId = 1;
@@ -290,6 +353,8 @@ export class ProductionLine {
         busy: false,
         pending: undefined,
         failure: undefined,
+        repairMs: undefined,
+        held: [],
       };
     });
   }
@@ -351,7 +416,13 @@ export class ProductionLine {
         break;
       case 'stop-end':
         station.stopEnd = undefined;
-        this.#run(station, simulation);
+        // Guard (#140): a minor stop ends into Running only; a Down machine waits for its repair.
+        if (station.failure === undefined && station.machine.state === 'Stopped') {
+          this.#run(station, simulation);
+        }
+        break;
+      case 'inject-failure':
+        this.#onInjection(station, this.#injection(event.injection), simulation);
         break;
       case 'repair-end':
         this.#finishRepair(station, simulation);
@@ -491,6 +562,13 @@ export class ProductionLine {
   }
 
   #run(station: Station, simulation: Simulation<LineEvent>): void {
+    // A held injection takes effect where the machine would enter Running: straight to Down, so
+    // there is never a Running interval of zero length (#140). The cycle clock stays paused.
+    const held = station.held.shift();
+    if (held) {
+      this.#applyInjection(station, held, simulation);
+      return;
+    }
     this.#enter(station, 'Running');
     station.clock.start(this.#now);
     this.#reschedule(station, simulation);
@@ -550,17 +628,135 @@ export class ProductionLine {
     });
   }
 
-  #breakDown(station: Station, mode: FailureMode, simulation: Simulation<LineEvent>): void {
-    station.clock.set(
-      FAILURE + mode.code,
-      millis(weibull(mode.arrival, mode.shape, mode.scale)),
-      this.#now,
-    );
+  #breakDown(
+    station: Station,
+    mode: FailureMode,
+    simulation: Simulation<LineEvent>,
+    injected?: { readonly repairMs: number | undefined },
+  ): void {
+    // An injection doesn't redraw the mode's natural time to failure.
+    if (!injected) {
+      station.clock.set(
+        FAILURE + mode.code,
+        millis(weibull(mode.arrival, mode.shape, mode.scale)),
+        this.#now,
+      );
+    }
     station.failure = mode;
-    this.#enter(station, 'Down', mode.code);
+    station.repairMs = injected?.repairMs;
+    if (station.machine.state === 'Down') {
+      // Only a held injection at the end of a repair: the machine stays Down with the new code.
+      station.machine.transition('Down', this.#now, mode.code);
+    } else {
+      this.#enter(station, 'Down', mode.code);
+    }
     this.#alarm(station, mode.code, 'active', FAILURE_ALARM_SEVERITY);
     this.#repairQueue.push(station);
     this.#dispatchTechnicians(simulation);
+  }
+
+  /**
+   * Accepts a failure injection (#140, control API 1.3 and scenario `injections`) and schedules it
+   * as a simulation event at `at` (now when left out). Refused: an unknown machine or code, an
+   * invalid repair time, a time in the past or on a calendar boundary.
+   */
+  injectFailure(
+    request: InjectFailureRequest,
+    simulation: Simulation<LineEvent>,
+  ): InjectFailureResult {
+    this.#now = simulation.now;
+    const at = request.at ?? simulation.now;
+    const [issue] = injectionIssues(this.#config, { ...request, at });
+    if (issue) {
+      return { ok: false, code: issue.code, reason: issue.message };
+    }
+    if (at < simulation.now) {
+      return {
+        ok: false,
+        code: 'in-the-past',
+        reason: `${new Date(at).toISOString()} is before the simulation time ${new Date(simulation.now).toISOString()}`,
+      };
+    }
+    const injection: Injection = {
+      id: this.#injections.length + 1,
+      machine: request.machine,
+      code: request.code,
+      at,
+      repairMs: request.repairMs,
+      status: 'scheduled',
+      heldAt: undefined,
+      appliedAt: undefined,
+    };
+    this.#injections.push(injection);
+    simulation.schedule(at, {
+      type: 'inject-failure',
+      station: request.machine,
+      injection: injection.id,
+    });
+    return { ok: true, injection: this.#view(injection) };
+  }
+
+  /** Every injection accepted so far, in order, with its outcome. */
+  injections(): FailureInjection[] {
+    return this.#injections.map((injection) => this.#view(injection));
+  }
+
+  #view(injection: Injection): FailureInjection {
+    return {
+      id: injection.id,
+      machine: injection.machine,
+      code: injection.code,
+      at: injection.at,
+      status: injection.status,
+      ...(injection.repairMs === undefined ? {} : { repairMs: injection.repairMs }),
+      ...(injection.heldAt === undefined ? {} : { heldAt: injection.heldAt }),
+      ...(injection.appliedAt === undefined ? {} : { appliedAt: injection.appliedAt }),
+    };
+  }
+
+  #injection(id: number): Injection {
+    const injection = this.#injections[id - 1];
+    if (!injection) {
+      throw new RangeError(`unknown injection ${String(id)}`);
+    }
+    return injection;
+  }
+
+  /** An injection falls due: it takes effect only in Running, else it is held (#140). */
+  #onInjection(station: Station, injection: Injection, simulation: Simulation<LineEvent>): void {
+    if (station.machine.state === 'Running') {
+      // The order of a natural failure: halt the cycle and cancel its clock event, then break down.
+      this.#halt(station, simulation);
+      this.#applyInjection(station, injection, simulation);
+      return;
+    }
+    injection.status = 'held';
+    injection.heldAt = this.#now;
+    station.held.push(injection);
+    this.#onEvent({
+      type: 'injection-held',
+      at: this.#now,
+      machineId: station.id,
+      injection: injection.id,
+      code: injection.code,
+    });
+  }
+
+  #applyInjection(station: Station, injection: Injection, simulation: Simulation<LineEvent>): void {
+    const mode = station.failures.find((m) => m.code === injection.code);
+    if (!mode) {
+      throw new RangeError(`${station.id}: no failure mode ${injection.code}`);
+    }
+    injection.status = 'applied';
+    injection.appliedAt = this.#now;
+    this.#onEvent({
+      type: 'injection-applied',
+      at: this.#now,
+      machineId: station.id,
+      injection: injection.id,
+      code: injection.code,
+    });
+    this.#breakDown(station, mode, simulation, { repairMs: injection.repairMs });
   }
 
   #alarm(station: Station, code: string, transition: 'active' | 'cleared', severity: number): void {
@@ -610,7 +806,8 @@ export class ProductionLine {
         failureCode: mode.code,
       });
       simulation.scheduleIn(
-        millis(logNormalFromMedian(mode.repair, mode.repairMedian, mode.repairSpread)),
+        station.repairMs ??
+          millis(logNormalFromMedian(mode.repair, mode.repairMedian, mode.repairSpread)),
         {
           type: 'repair-end',
           station: station.id,
@@ -632,6 +829,7 @@ export class ProductionLine {
     });
     this.#alarm(station, mode.code, 'cleared', FAILURE_ALARM_SEVERITY);
     station.failure = undefined;
+    station.repairMs = undefined;
     this.#freeTechnicians++;
     if (this.#canWork(station)) {
       this.#run(station, simulation);
@@ -642,7 +840,8 @@ export class ProductionLine {
   }
 
   #tryStart(station: Station, simulation: Simulation<LineEvent>): void {
-    if (station.busy || !this.#canWork(station)) {
+    // Guard (#140): a Down machine starts nothing until its repair ends.
+    if (station.busy || station.failure !== undefined || !this.#canWork(station)) {
       return;
     }
     if (station.tool?.needsChange) {
@@ -941,7 +1140,12 @@ export class ProductionLine {
 
   #releaseUpstream(buffer: PartBuffer, simulation: Simulation<LineEvent>): void {
     for (const upstream of this.stations.filter((s) => s.output === buffer)) {
-      if (upstream.machine.state === 'Blocked' && !buffer.isFull) {
+      // Guard (#140): only a Blocked machine without a failure unloads.
+      if (
+        upstream.machine.state === 'Blocked' &&
+        upstream.failure === undefined &&
+        !buffer.isFull
+      ) {
         this.#unload(upstream, simulation);
       }
     }

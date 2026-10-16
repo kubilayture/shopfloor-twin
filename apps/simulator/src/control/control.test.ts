@@ -6,7 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
-import type { PlantEvent } from '../plant/line.ts';
+import type { InjectFailureRequest, PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
 import { EVENT_SCHEMA } from '../headless/serialize.ts';
 import { EVENTS_PATH, buildControlApp, type GroundTruthReport } from './app.ts';
@@ -27,13 +27,13 @@ afterEach(async () => {
   app = undefined;
 });
 
-async function setup(ready = true, withGroundTruth = false) {
+async function setup(ready = true, withGroundTruth = false, withFailure = false, seed = 3) {
   const clock = new ManualClock();
   const hub = new EventHub();
   const events: PlantEvent[] = [];
   const run: LiveRun = createLiveRun({
     config,
-    seed: 3,
+    seed,
     start: T0,
     speed: 60,
     clock,
@@ -46,6 +46,16 @@ async function setup(ready = true, withGroundTruth = false) {
     pacer: run.pacer,
     hub,
     ready: () => ready,
+    ...(withFailure
+      ? {
+          faults: {
+            failure: {
+              inject: (request: InjectFailureRequest) => run.injectFailure(request),
+              list: () => run.injections(),
+            },
+          },
+        }
+      : {}),
     ...(withGroundTruth
       ? { groundTruth: () => ({ epoch: 1_760_000_000, ...run.groundTruth() }) }
       : {}),
@@ -327,11 +337,90 @@ describe('control API (#54)', () => {
     expect((await closed).code).toBe(1003);
   });
 
+  it('injects failures (1.3, #140): a live run with alarms-01 shift A injections equals the headless alarms-01', async () => {
+    const { app: served, run, clock } = await setup(true, true, true, 20261012);
+    const post = (machine: string, body: object) =>
+      served.inject({ method: 'POST', url: `/api/v1/faults/failure/${machine}`, payload: body });
+
+    // Refusals: unknown machine or code 404, the past or a calendar boundary 409, bad bodies 400.
+    expect((await post('cnc-09', { code: 'COOLANT-PRESSURE' })).statusCode).toBe(404);
+    expect((await post('cnc-01', { code: 'PRINTER-FAULT' })).statusCode).toBe(404);
+    expect(
+      (await post('cnc-01', { code: 'COOLANT-PRESSURE', at: '2026-10-12T02:00:00Z' })).statusCode,
+    ).toBe(409);
+    const boundary = await post('cnc-01', {
+      code: 'COOLANT-PRESSURE',
+      at: '2026-10-12T10:00:00+03:00',
+    });
+    expect(boundary.statusCode).toBe(409);
+    expect(boundary.json<{ message: string }>().message).toMatch(/calendar boundary/);
+    for (const body of [
+      { code: 'COOLANT-PRESSURE', at: 'tomorrow' },
+      { code: 'COOLANT-PRESSURE', repairMs: 0 },
+      { code: 'COOLANT-PRESSURE', repairMs: '5' },
+      { code: 'COOLANT-PRESSURE', extra: true },
+      {},
+    ]) {
+      expect((await post('cnc-01', body)).statusCode).toBe(400);
+    }
+
+    // alarms-01's injections in shift A, posted in list order before the run starts, as the
+    // headless run schedules them after line.start.
+    const { readScenario, scenarioOptions } = await import('../headless/golden.ts');
+    const { runHeadless } = await import('../headless/run.ts');
+    const shiftAEnd = Date.parse('2026-10-12T11:00:00Z');
+    const injections = (readScenario('alarms-01').injections ?? []).filter(
+      (i) => Date.parse(i.at) < shiftAEnd,
+    );
+    expect(injections).toHaveLength(14);
+    for (const injection of injections) {
+      const { machine, ...body } = injection;
+      const response = await post(machine, body);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        injection: { machine, code: body.code, status: 'scheduled' },
+      });
+    }
+    await served.inject({ method: 'POST', url: '/api/v1/resume' });
+    clock.advance(8 * 60_000 + 10_000);
+    await served.inject({ method: 'POST', url: '/api/v1/pause' });
+    const live = (
+      await served.inject({ method: 'GET', url: '/api/v1/ground-truth' })
+    ).json<GroundTruthReport>();
+    expect(live.simTime).toBe('2026-10-12T11:10:00.000Z');
+
+    const listed = (await served.inject({ method: 'GET', url: '/api/v1/faults/injections' })).json<{
+      injections: { status: string; heldAt?: string; appliedAt?: string }[];
+    }>().injections;
+    expect(listed).toHaveLength(14);
+    expect(listed.every((i) => i.status === 'applied')).toBe(true);
+    expect(listed.filter((i) => i.heldAt !== undefined)).toHaveLength(2);
+
+    // The alarm section survives the response schema whole, and shift A equals the headless run.
+    expect(live.alarms).toEqual(JSON.parse(JSON.stringify(run.groundTruth().alarms)));
+    const options = await scenarioOptions('alarms-01');
+    const headless = runHeadless(
+      { ...options, end: options.start + 8 * 3_600_000 },
+      () => undefined,
+    );
+    for (const scope of ['plant', 'cell-m1', 'line-a1']) {
+      expect(live.alarms.scopes[scope]?.shifts['2026-10-12/A']).toEqual(
+        headless.summary.alarms.scopes[scope]?.shifts['2026-10-12/A'],
+      );
+    }
+    expect(live.alarms.scopes['cell-m1']?.shifts['2026-10-12/A']?.raises).toBe(13);
+    for (const [id, machine] of Object.entries(headless.summary.machines)) {
+      expect(live.machines[id]?.byShift['2026-10-12/A']).toEqual(machine.byShift['2026-10-12/A']);
+    }
+  });
+
   it('keeps the committed OpenAPI description in step with the routes', async () => {
     const generated = await generateOpenApi();
     expect(await readFile(OPENAPI_FILE, 'utf8')).toBe(generated);
     const document = JSON.parse(generated) as { paths: Record<string, unknown> };
     expect(Object.keys(document.paths).sort()).toEqual([
+      '/api/v1/faults/failure/{machine}',
+      '/api/v1/faults/injections',
       '/api/v1/faults/modbus',
       '/api/v1/faults/opcua/{machine}',
       '/api/v1/ground-truth',

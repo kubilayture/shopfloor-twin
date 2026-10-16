@@ -14,6 +14,7 @@
   "dependencies": {
     "@shopfloor/contracts": "workspace:*",
     "@shopfloor/oee-core": "workspace:*",
+    "@shopfloor/shift-calendar": "workspace:*",
     "yaml": "catalog:",
     "zod": "catalog:"
   },

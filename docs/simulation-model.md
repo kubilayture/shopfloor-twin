@@ -28,6 +28,7 @@ stateDiagram-v2
   Off --> Starved
   Off --> Blocked
   Off --> Setup
+  Off --> Down
   Off --> PlannedStop
   Off --> Maintenance
   Idle --> Running
@@ -75,6 +76,7 @@ stateDiagram-v2
   Setup --> Off
   Down --> Idle
   Down --> Running
+  Down --> Down
   Down --> PlannedStop
   Down --> Off
   PlannedStop --> Idle
@@ -82,11 +84,13 @@ stateDiagram-v2
   PlannedStop --> Starved
   PlannedStop --> Blocked
   PlannedStop --> Setup
+  PlannedStop --> Down
   PlannedStop --> Maintenance
   PlannedStop --> Off
   Maintenance --> Idle
   Maintenance --> Running
   Maintenance --> Starved
+  Maintenance --> Down
   Maintenance --> PlannedStop
   Maintenance --> Off
 ```
@@ -97,7 +101,8 @@ Rules behind the table:
 - Breaks and shift ends move working machines (`Running`, `Stopped`, `Starved`, `Blocked`, `Idle`) to `PlannedStop` or `Off`. At the next shift start or break end they continue straight into whatever state they now need: `Off` and `PlannedStop` can lead directly to `Running`, `Starved`, `Blocked` or `Setup`.
 - `Stopped` returns to `Running` (the interrupted cycle continues), escalates to `Down`, or is overtaken by a planned break.
 - `Setup` starts only between cycles, never mid-cycle: right after a cycle ends (`Running` or `Blocked`, when the next campaign needs another product) or from `Idle`, `Starved` or `PlannedStop`.
-- A transition to the same state is illegal: it would mean the model lost track of what the machine is doing.
+- A transition to the same state is illegal: it would mean the model lost track of what the machine is doing. The one exception is `Down → Down`, which only a held failure injection uses (see "Failure injection"): at the end of a repair the machine stays `Down` with the injected code, so the new cause gets its own interval.
+- `Off`, `PlannedStop` and `Maintenance` → `Down` are used only by a held failure injection, which takes effect where the machine would enter `Running`.
 - An illegal transition throws `IllegalTransitionError`, a programmer error that stops the run (plan section 4).
 
 ### Time accounting
@@ -209,6 +214,21 @@ When two countdowns end at the same millisecond, the cycle is handled first, the
 - The machine joins a FIFO repair queue. A repair starts as soon as one of the `maintenanceTechnicians` (default 2) is free, and is logged as a `repair-start` event.
 - The repair takes a log-normal time around `repairMedianMinutes`, with `repairSpread` as the sigma of its logarithm. A `repair-end` event follows, the machine returns to `Running` and the technician takes the next machine in the queue.
 - Waiting for a technician is part of the `Down` time, as in a real plant. The waiting share is the difference between `Down` time and repair time.
+
+### Failure injection
+
+Source: `injectFailure` in `apps/simulator/src/plant/line.ts` (#140, Phase 6 plan "Fault injection"). A failure injection names a machine, one of its failure-mode codes, a simulation time and optionally an exact repair time. It comes from the control API (`POST /api/v1/faults/failure/{machine}`, docs/contracts/simulator-control-api.md) or from a golden scenario's `injections` list (below).
+
+- **A simulation event:** the injection is scheduled as an `inject-failure` event at its time; without a time it is due at the current time, the next step.
+- **Only in `Running`:** when it falls due and the machine is `Running`, the line does what a natural failure does, in the same order: halt the cycle (the running clock pauses), cancel the machine's pending clock event, then break down. The machine enters `Down` with the code as cause, raises the code's alarm (severity 700), joins the repair queue and clears the alarm when the repair ends. An `injection-applied` event comes first.
+- **Held otherwise:** in any other state the injection is held on the machine (an `injection-held` event) and applied where the machine would next enter `Running`, before anything else happens to it at that instant. Several held injections apply in their order, one per entry to `Running`.
+- **No zero-length `Running`:** the held injection is checked where the line would enter `Running` (`#run`, which `#startCycle`, the end of a minor stop, the end of a repair and the activation after a break or shift start all go through). The machine goes straight from its current state to `Down`; the cycle clock stays paused and no cycle event is scheduled. After the repair it resumes through the normal path. That needs the edges `Off`, `PlannedStop` and `Maintenance` → `Down`, and `Down → Down`: a held injection on a machine that is already down applies when its repair ends, and the machine stays `Down` with the injected code (a new interval with the new cause), as the transition table shows.
+- **Guards:** `#tryStart` starts nothing on a machine with a failure, the `stop-end` handler resumes only a `Stopped` machine without one, and `#releaseUpstream` unloads only a `Blocked` machine without one, so a held or pending failure is neither lost nor doubled by the paths that bypass a natural failure.
+- **Repair:** with `repairMs` the repair takes exactly that long once a technician starts it (at least 1 ms); without it the time is drawn from the mode's repair stream, as for a natural failure. Waiting for a technician still counts, so a fleeting injection needs a free technician.
+- **Natural failures unchanged:** an injection doesn't redraw the mode's natural time to failure.
+- **Calendar boundaries:** an injection's time must not coincide with a shift start or end or a break start or end; `checkInjections` in `plant-config` refuses such a scenario and the control API answers 409. At a boundary the order of the injection and the calendar event would depend on how they were queued.
+
+**Validation** (`apps/simulator/src/plant/injection.test.ts`): for each of `Running`, `Stopped`, `Starved`, `Blocked`, `Setup`, `Down`, `PlannedStop`, `Off` and `Maintenance`, an injection in the middle of a real interval of that state (from the default plant; the weekend before the golden Monday for `Off`, a daily calibration for `Maintenance`) is compared with the same run without it. The two event logs are identical up to the instant the plain run first enters `Running`; there the injected run goes to `Down` with the code from the same state (from `Down` after a natural repair), raises the alarm once and clears it after the repair; no machine has a `Running` interval of zero length; and the invariant checker passes after every step. Further tests: two held injections on one machine apply one per entry to `Running` (`Down → Down` at the first repair's end), `repairMs` is exact, and invalid requests are refused.
 
 ### Minor stops (`Stopped`)
 
@@ -414,7 +434,7 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 
 ### Event log (`events.jsonl`)
 
-- **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the simulation sections of the validated plant configuration (`SIMULATION_FILES` in `plant-config`). Any change to a value in those files changes the hash; `oee.yaml`, `reasons.yaml` and `alarms.yaml` are not simulation inputs and are not hashed (ADR-0021, ADR-0024).
+- **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the simulation sections of the validated plant configuration (`SIMULATION_FILES` in `plant-config`). Any change to a value in those files changes the hash; `oee.yaml`, `reasons.yaml` and `alarms.yaml` are not simulation inputs and are not hashed (ADR-0021, ADR-0024). A run with failure injections also lists them (`injections: [{ at, machine, code, repairMs? }]`); a run without has no such field, so its header is unchanged (#140).
 - **Every other line is one event** with `schema: sim-event/1`, a run-wide sequence number `seq` starting at 1, and `at` in ISO 8601 UTC. Lines are in simulation-time order; events at the same millisecond keep the order in which the model produced them.
 - **No raw floats leave the model:** durations are rounded to whole milliseconds before scheduling (ADR-0006), and measurements are rounded to instrument resolution. The last bits of `Math.log`, `Math.cos` and `**` can differ between CPU architectures; the first golden run in CI (Linux x86) differed from a local run (macOS ARM) in exactly the unrounded leak readings.
 - **Byte stability:** keys are sorted at every level (string order, except that integer-like keys come first in numeric order, as JSON objects always do), and undefined fields are dropped. Values that are not plain JSON (`Map`, `Set`, `Temporal` objects, functions) are rejected instead of being written as `{}`. One function, `stableStringify`, writes every line, so the bytes depend only on the data, never on how an object was built.
@@ -429,6 +449,8 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 | `program-loaded`             | `machineId`, `product`, `quantity`                                                                          | A program was loaded on a CNC from outside (OPC UA `LoadProgram`) |
 | `shift`                      | `action` (`shift-start`, `break-start`, `break-end`, `shift-end`), `shiftId`, `shiftDate`                   | A calendar boundary is reached                                    |
 | `operator`                   | `machineId`, `operatorId` (or null), `absent`                                                               | A station is staffed at shift start                               |
+| `injection-held`             | `machineId`, `injection` (its id), `code`                                                                   | A failure injection falls due while the machine is not `Running`  |
+| `injection-applied`          | `machineId`, `injection`, `code`                                                                            | A failure injection takes effect: the machine goes `Down` now     |
 
 These are the simulator's internal facts, the "truth". They are not the UNS payloads of plan section 5; the MES sees the plant only through OPC UA and MQTT from Phase 2 on.
 
@@ -440,12 +462,14 @@ These are the simulator's internal facts, the "truth". They are not the UNS payl
 - `production`: parts started (blanks consumed), finished per product, and scrapped per product and reason.
 - `lots`: remaining quantity of every lot.
 - `oee`: the ground-truth OEE (#117), below.
+- `alarms`: the alarm ground truth (#140), below.
+- `analysisConfigSha256`: a SHA-256 hash of `oee.yaml`, `reasons.yaml` and `alarms.yaml` as loaded (#140): the files that shape the analysis but not the simulation. The summary says which analysis configuration produced it, while `configSha256` and the event log stay as they are.
 
 `GroundTruth` builds the state times and cycle counts only from the events; `production` and `lots` are read from the model at the end of the run. A test runs the same seed through the plant directly and checks that every machine's own time accounting equals the summary exactly.
 
 A run covers the half-open interval [start, end): no event at or after `end` is written. The shift running at `start` (and its break, if the run starts inside one) is announced by `shift` events at `start`, so the log is self-contained.
 
-The format is `sim-summary/2` since #117; `/1` had no `oee` section, and every other field is unchanged.
+The format is `sim-summary/3` since #140: it adds `alarms` and `analysisConfigSha256`, and every other field is unchanged. `/2` (#117) added `oee`; `/1` had neither.
 
 #### Ground-truth OEE (`oee`)
 
@@ -465,6 +489,28 @@ How the inputs are built:
 - **Stopped intervals** are held while open and filed when they close: one piece per hour and one per shift bucket, each with the interval's whole length (`wholeMs`), so the threshold applies to the whole interval and each piece is still credited to its own hour. While an interval is open, a summary or snapshot includes it with `open: true` and `wholeMs` running to the snapshot time (ADR-0021); such a bucket can be `provisional`. A run that ends inside a Stopped interval reports it open in the same way.
 - **Cycles** are bucketed by their time (`shiftKeyAt` of the cycle's UTC hour; buckets are half-open), not by the last shift event seen, so a cycle exactly at a boundary lands where the MES puts it. Before #117 the summary counted cycles only per machine in total, so no count changed; in the golden week no cycle completes on an hour boundary, and the time-based and event-based buckets agree for all 10,988 cycles.
 - **Work centers** are Cell M1 (CNC-01, CNC-02, WSH-01) and Line A1 (ASM-01, LKT-01, PCK-01), from `plant.yaml`.
+
+#### Ground-truth alarms (`alarms`)
+
+`AlarmTruth` (`apps/simulator/src/headless/alarm-truth.ts`) records every `alarm` event and computes the alarm KPIs with `alarm-core` and `config/plant/alarms.yaml`, the same code, configuration and conventions as the MES (#142, ADR-0024):
+
+- **Occurrences:** one per raise, paired with the next clear of the same (equipment, code). Its `seq` for `alarm-core` is its index among the machine's alarm events: it rises with the machine's emission order, which is all `alarm-core` needs of the device sequence (ADR-0024). It is not the device's number, so the summary never shows it.
+- **Priorities** from the definitions of `alarms.yaml`; a code without a definition gets `priorityFromSeverity`.
+- **Scopes:** `plant` (every occurrence) and each operator position of `alarms.yaml` (`cell-m1`, `line-a1`), through `scopeOccurrences`.
+- **Horizon:** the run's time so far (`asOf`); the epoch is not closed. At the end of a headless run every bucket is over, so only an open occurrence younger than `fleetingMs` can keep a bucket provisional.
+
+The section holds:
+
+- `alarms.config`: the KPI thresholds used; `alarms.positions`: each position's work centers;
+- `alarms.occurrences`: every occurrence in raise order (time, equipment, machine order, code): `equipment`, `code`, `priority`, `severity`, `raisedAt`, `clearedAt` (null while active) and `endReason` (`cleared`, or null);
+- `alarms.scopes.<scope>.hours.<ISO hour>`: `kpisOfBucket` of every UTC hour where something happened (a raise, active time or a flood); any other hour is the empty bucket (no raises, 6 windows, nothing active), which keeps the week's file small;
+- `alarms.scopes.<scope>.shifts.<bucket>`: every shift instance (`2026-10-12/A`) and `no-shift` stretch of the run, composed from its hours with `composeBuckets`. A `no-shift` stretch is keyed `no-shift/{start}` by where the calendar starts it (the last shift end, for example `no-shift/2026-10-17T03:00:00.000Z` for the weekend), not by the run's start. The OEE section keeps one `no-shift` bucket; alarm buckets need a contiguous range, because standing alarms and `activeAtEnd` are taken at the bucket's end;
+- `alarms.scopes.<scope>.floods`: every flood episode (`floodEpisodes`) with id, start, starting point, end, peak and raises;
+- `alarms.scopes.<scope>.badActors`: the top 10 (`badActors`) of the run so far and of each shift bucket.
+
+Every KPI is as `alarm-core` returns it, with times in ISO 8601 UTC, ratios as `{ fraction, decimal }`, and standing alarms without the `seq`. The live run serves the same section in `GET /api/v1/ground-truth` (control API 1.3), with `simulation.now` as the horizon.
+
+In the golden week the section has two occurrences, CNC-01 `COOLANT-PRESSURE` and `SPINDLE-OVERLOAD`; `alarms-01` (below) has the floods, chattering, fleeting and standing alarms.
 
 The inputs are kept incrementally while events are recorded; ratios and losses are computed only when a summary or snapshot is read. A snapshot costs about 0.2 ms after one shift and about 3 ms after a full week (measured on an M3, JSON serialization included), well within 5 Hz polling; the response is about 30 KB after a shift and about 450 KB after a week.
 
@@ -546,9 +592,20 @@ The first violation stops the run with an `InvariantViolation` naming the time a
 Coverage:
 
 - the three 5-day production weeks (Monday 06:00 to Saturday 06:00, seeds 1–3) in the test suite;
-- the golden scenario `week-01` (seed 20261012, 7 days, default plant), about 12,600 checks per run.
+- the golden scenario `week-01` (seed 20261012, 7 days, default plant), about 12,600 checks per run;
+- the golden scenario `alarms-01` (#140), about 2,000 checks per run.
 
-The golden snapshot pins the run byte for byte: its summary file, and the SHA-256 of its 35,764-line event log. CI runs it on every pull request.
+The golden snapshot pins each run byte for byte: its summary file, and the SHA-256 of its event log (35,764 lines for `week-01`, 5,332 for `alarms-01`). CI runs them on every pull request.
+
+**Scenario injections (#140):** a scenario's `scenario.json` may carry `injections: [{ at, machine, code, repairMs? }]` (`at` ISO 8601 with an offset or `Z`). `checkInjections` refuses an unknown machine or code, a bad repair time and a time on a calendar boundary. The headless run schedules them right after `line.start`, in list order, exactly as the live control API does when a test posts them in that order before the run starts, so both put the same events in the queue with the same tie-breaking sequence.
+
+**`alarms-01`:** the week-01 seed and start, two days (Monday 06:00 to Wednesday 06:00 Istanbul), with 15 injections:
+
+- **Flood and chattering, Cell M1, Monday 08:00 Istanbul (05:00Z):** 13 injections between 05:00:05Z and 05:04:40Z on CNC-01 (`COOLANT-PRESSURE` at :05, :25 and :45 of 05:00, then `SPINDLE-OVERLOAD` at 05:02:05 and 05:03:05), CNC-02 (`SPINDLE-OVERLOAD` every minute from 05:00:15 to 05:03:15, `COOLANT-PRESSURE` at 05:04:15) and WSH-01 (`HEATER-FAULT` at 05:00:40, 05:02:40 and 05:04:40), with repairs of 3 to 5 s. Two of the washer's are held while it is starved and raise at 05:00:42.403Z and 05:04:53.262Z. 13 raises in the 05:00 window: one flood window and one flood episode (`1791781395000~cnc-02~SPINDLE-OVERLOAD`, 05:03:15Z to 05:10:25Z, peak 13); CNC-01 `COOLANT-PRESSURE` raises three times in 40 s, so it chatters. CNC-02's raises are exactly 60 s apart and, by the window convention, don't.
+- **Fleeting, LKT-01, Monday 09:20 Istanbul (06:20Z):** `FIXTURE-SEAL` with `repairMs: 500`, raised and cleared 500 ms apart with a technician free.
+- **Standing, PCK-01, Monday 16:30 Istanbul (13:30Z), in shift B and off every boundary:** `PRINTER-FAULT` with `repairMs` 118,800,000 (33 h). PCK-01 is not `Running` at 13:30Z, so the injection is held and raises at 13:30:20.030Z; it clears at Tuesday 22:30:20.030Z, so it is active at the end of Tuesday's shift B (22:00 Istanbul, 29.5 h after the raise) and standing there. It holds one of the two technicians for 33 hours and blocks Line A1 upstream, which lowers Line A1's OEE on Monday and Tuesday; both effects are part of the ground truth.
+
+A headless test asserts that `alarms-01`'s event log is byte-identical to `week-01`'s up to the first injection (05:00:05Z; the header differs only by its `injections`), so week-01's live evidence carries over, and that its ground truth holds the flood episode, the chattering point, the fleeting and the standing alarm. A control API test posts the shift A injections live and checks that shift A's alarm KPIs and state times equal the headless `alarms-01`.
 
 ## Random numbers and distributions
 

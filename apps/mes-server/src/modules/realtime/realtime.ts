@@ -10,7 +10,7 @@ import {
   type Equipment,
   type StoredInterval,
 } from '../equipment/index.ts';
-import type { Alarms, AlarmScope } from '../alarms/index.ts';
+import { AlarmWriteError, type Alarms, type AlarmScope } from '../alarms/index.ts';
 import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
 import {
@@ -24,15 +24,35 @@ import {
 import {
   alarmKpiDto,
   badActorDto,
+  commentDto,
   floodEpisodeDto,
   historyDto,
   occurrenceDto,
+  pointDto,
+  shelfDto,
+  transitionDto,
 } from './alarm-dto.ts';
 import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
 import { PushHub, currentStateDto, type PushOptions } from './push.ts';
 import { HttpProblem, PROBLEM_TYPE, getRoute, jsonSchema, problem, writeRoute } from './routes.ts';
 import {
   LIMITS,
+  acknowledgeRequestSchema,
+  acknowledgeResultSchema,
+  alarmPointAuditSchema,
+  alarmPointListSchema,
+  alarmPointParams,
+  alarmPointsQuery,
+  operatorKpiListSchema,
+  operatorKpiQuery,
+  bulkAcknowledgeRequestSchema,
+  bulkAcknowledgeResultSchema,
+  commentRequestSchema,
+  commentResultSchema,
+  noParams,
+  shelfResultSchema,
+  shelveRequestSchema,
+  unshelveRequestSchema,
   alarmDetailSchema,
   alarmHistorySchema,
   alarmKpiListSchema,
@@ -130,6 +150,16 @@ export interface ApiSources {
     | 'definition'
     | 'current'
     | 'onChange'
+    | 'acknowledge'
+    | 'comment'
+    | 'shelve'
+    | 'unshelve'
+    | 'points'
+    | 'point'
+    | 'shelf'
+    | 'comments'
+    | 'pointAudit'
+    | 'operatorMeasures'
   >;
 }
 
@@ -182,6 +212,8 @@ const isJson = (contentType: string | undefined): boolean =>
   (contentType ?? '').split(';', 1)[0]?.trim().toLowerCase() === 'application/json';
 
 const CODING_STATUS = { 'not-found': 404, conflict: 409, invalid: 422 } as const;
+/** Alarm write refusals (#143) map the same way. */
+const ALARM_WRITE_STATUS = CODING_STATUS;
 
 export const DEFAULT_ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]'] as const;
 
@@ -998,8 +1030,12 @@ export async function registerRealtime(
             'One occurrence per device raise (ADR-0024), id `{equipment}~{epoch}~{seq}`. ' +
             '`active`: not ended; `history`: ended (cleared by the device, lost by a resync ' +
             'snapshot, superseded by the next raise, or ended by a newer epoch), by raise time in ' +
-            'a range of at most 7 days. Pages by `cursor` (`next`). Acknowledge and shelve come ' +
-            'with #143.',
+            'a range of at most 7 days. Pages by `cursor` (`next`). Views (#143, ISA-18.2) ' +
+            'partition the occurrences: `active` (default) not acknowledged and not closed (a ' +
+            'cleared one stays until acknowledged), `acknowledged` still active, both with the ' +
+            'point not shelved; `shelved` not closed with the point shelved; `history` closed ' +
+            '(ended and acknowledged, or ended by a newer epoch), by raise time in a range of at ' +
+            'most 7 days.',
           tags: ['alarms'],
           query: alarmListQuery,
           response: alarmListSchema,
@@ -1087,6 +1123,44 @@ export async function registerRealtime(
       getRoute(
         api,
         {
+          url: '/alarms/operator-kpi',
+          summary: 'Operator measures of a scope per hour, shift bucket or range (MES only)',
+          description:
+            'Not reconciled and apart from /alarms/kpi, which no operator action changes (#143): ' +
+            'shelved and annunciated raises (raises while their point was shelved, and the others), ' +
+            'time to acknowledge (count, sum and longest in integer ms of plant time, for the ' +
+            'raises in the bucket acknowledged in the same epoch), occurrences unacknowledged at ' +
+            "the bucket's end (or the plant clock) and shelved time per point. One epoch: the one " +
+            'given, else the newest of the scope.',
+          tags: ['alarms'],
+          query: operatorKpiQuery,
+          response: operatorKpiListSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ query }) => {
+          const id = alarmScope(query.scope, query.id);
+          const { epoch, buckets } = await alarmsOf().operatorMeasures({ ...query, id });
+          return {
+            scope: query.scope,
+            id,
+            bucket: query.bucket,
+            from: iso(query.from),
+            to: iso(query.to),
+            epoch,
+            buckets: buckets.map((bucket) => ({
+              ...bucket,
+              from: iso(new Date(bucket.from)),
+              to: iso(new Date(bucket.to)),
+              timeToAck: { ...bucket.timeToAck },
+              shelvedMs: bucket.shelvedMs.map((point) => ({ ...point })),
+            })),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
           url: '/alarms/floods',
           summary: 'Sliding flood episodes of a scope in a range',
           description:
@@ -1155,6 +1229,10 @@ export async function registerRealtime(
           const occurrence = await alarms.occurrence(params.id);
           if (!occurrence) throw new HttpProblem(404, `no alarm ${params.id}`);
           const definition = alarms.definition(occurrence.equipment, occurrence.code);
+          const [shelf, comments] = await Promise.all([
+            alarms.shelf(occurrence.equipment, occurrence.code),
+            alarms.comments(params.id),
+          ]);
           return {
             occurrence: occurrenceDto(occurrence),
             definition: definition
@@ -1164,6 +1242,8 @@ export async function registerRealtime(
                   response: definition.response,
                 }
               : null,
+            shelf: shelfDto(shelf),
+            comments: (comments ?? []).map(commentDto),
           };
         },
       );
@@ -1175,7 +1255,9 @@ export async function registerRealtime(
           summary: 'The device raise and end of an occurrence, by time',
           description:
             "From ingest's stored facts (seq, sourceTime, receivedAt, protocol), or the retained " +
-            'delivery or resync snapshot they came from; operator transitions join with #143.',
+            'delivery or resync snapshot they came from, merged with the audit (#143): its ' +
+            'acknowledgement and comments, and its point’s shelf transitions while it was ' +
+            'active, each with actor, wall time and request id, by plant time.',
           tags: ['alarms'],
           params: alarmParams,
           query: noQuery,
@@ -1186,6 +1268,238 @@ export async function registerRealtime(
           const entries = await alarmsOf().history(params.id);
           if (!entries) throw new HttpProblem(404, `no alarm ${params.id}`);
           return historyDto(params.id, entries);
+        },
+      );
+
+      // ---- Alarm writes (#143, ADR-0023, ADR-0024 "Operator lifecycle") ----
+
+      const alarmWriteProblem = (error: unknown): unknown =>
+        error instanceof AlarmWriteError
+          ? new HttpProblem(ALARM_WRITE_STATUS[error.kind], error.message)
+          : error;
+      const guarded =
+        'Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when ' +
+        'sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated ' +
+        'in alarms.alarm_transition with wall time, plant time and the request id. Operator ' +
+        'actions never change alarm KPIs or their revisions (every raise counts).';
+      const occurrenceAfterWrite = async (id: string) => {
+        const occurrence = await alarmsOf().occurrence(id);
+        if (!occurrence) throw new HttpProblem(404, `no alarm ${id}`);
+        return occurrenceDto(occurrence);
+      };
+      const knownPoint = (equipment: string): void => {
+        known(equipment);
+      };
+
+      writeRoute(
+        api,
+        {
+          method: 'POST',
+          url: '/alarms/ack',
+          summary: 'Acknowledges up to 100 occurrences in one transaction',
+          description:
+            'Monotonic, so no version: one INSERT … ON CONFLICT DO NOTHING; an id acknowledged ' +
+            'already (also concurrently) is `changed: false` and gets no audit entry. An unknown ' +
+            'id is 404 and nothing changes. Counts as one write for the rate limit. ' +
+            guarded,
+          tags: ['alarms'],
+          params: noParams,
+          body: bulkAcknowledgeRequestSchema,
+          response: bulkAcknowledgeResultSchema,
+          errors: [400, 403, 404, 405, 413, 415, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ body, requestId }) => {
+          const results = await alarmsOf()
+            .acknowledge(body.ids, { actor: body.actor, comment: body.comment, requestId })
+            .catch((error: unknown) => {
+              throw alarmWriteProblem(error);
+            });
+          return { results, acknowledged: results.filter((r) => r.changed).length };
+        },
+      );
+
+      writeRoute(
+        api,
+        {
+          method: 'POST',
+          url: '/alarms/:id/ack',
+          summary: 'Acknowledges one occurrence',
+          description:
+            'Monotonic, so no version; acknowledged already: 200 with `changed: false` and no ' +
+            'audit entry. A clear does not acknowledge: a cleared occurrence stays in the active ' +
+            'list until acknowledged. ' +
+            guarded,
+          tags: ['alarms'],
+          params: alarmParams,
+          body: acknowledgeRequestSchema,
+          response: acknowledgeResultSchema,
+          errors: [400, 403, 404, 405, 413, 415, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ params, body, requestId }) => {
+          const [result] = await alarmsOf()
+            .acknowledge([params.id], { actor: body.actor, comment: body.comment, requestId })
+            .catch((error: unknown) => {
+              throw alarmWriteProblem(error);
+            });
+          return {
+            occurrence: await occurrenceAfterWrite(params.id),
+            changed: result?.changed ?? false,
+          };
+        },
+      );
+
+      writeRoute(
+        api,
+        {
+          method: 'POST',
+          url: '/alarms/:id/comments',
+          summary: 'Adds a comment to an occurrence',
+          description: 'Append-only (1 to 500 characters), so no version. ' + guarded,
+          tags: ['alarms'],
+          params: alarmParams,
+          body: commentRequestSchema,
+          response: commentResultSchema,
+          errors: [400, 403, 404, 405, 413, 415, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ params, body, requestId }) => {
+          const comment = await alarmsOf()
+            .comment(params.id, { actor: body.actor, text: body.text, requestId })
+            .catch((error: unknown) => {
+              throw alarmWriteProblem(error);
+            });
+          return {
+            comment: commentDto(comment),
+            occurrence: await occurrenceAfterWrite(params.id),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/alarm-points',
+          summary: 'Alarm points with their definition, shelf and active occurrence',
+          description:
+            'Every defined point (alarms.yaml), and every other point with an active occurrence ' +
+            'or a shelf, by equipment and code. `shelf.version` goes with shelve and unshelve.',
+          tags: ['alarms'],
+          query: alarmPointsQuery,
+          response: alarmPointListSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ query }) => {
+          const alarms = alarmsOf();
+          if (query.equipment !== undefined) known(query.equipment);
+          if (query.position !== undefined) alarmScope('position', query.position);
+          const points = await alarms.points({
+            equipment: query.equipment,
+            position: query.position,
+            shelved: query.shelved,
+          });
+          return { points: points.map(pointDto) };
+        },
+      );
+
+      writeRoute(
+        api,
+        {
+          method: 'POST',
+          url: '/alarm-points/:equipment/:code/shelve',
+          summary: 'Shelves an alarm point for a time of plant time',
+          description:
+            'ISA-18.2 shelves a point, not an occurrence: its occurrences leave the active list ' +
+            'and keep their states; KPIs count every raise anyway. `durationMs` runs in plant ' +
+            'time, 1 minute to maxShelveMs (alarms.yaml, 8 hours; longer is 422): `until` = the ' +
+            'plant clock now + duration; once the plant clock passes it, the MES unshelves the ' +
+            'point itself (audited `expire`, actor system), and a newer epoch ends the shelf ' +
+            '(`epoch-ended`). Shelving a shelved point replaces its shelf. `version` is the ' +
+            'shelf’s as read (0 for a point never shelved): a mismatch is 409. ' +
+            guarded,
+          tags: ['alarms'],
+          params: alarmPointParams,
+          body: shelveRequestSchema,
+          response: shelfResultSchema,
+          errors: [400, 403, 404, 405, 409, 413, 415, 422, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ params, body, requestId }) => {
+          knownPoint(params.equipment);
+          const point = await alarmsOf()
+            .shelve(params.equipment, params.code, {
+              actor: body.actor,
+              reason: body.reason,
+              durationMs: body.durationMs,
+              version: body.version,
+              requestId,
+            })
+            .catch((error: unknown) => {
+              throw alarmWriteProblem(error);
+            });
+          return { point: pointDto(point) };
+        },
+      );
+
+      writeRoute(
+        api,
+        {
+          method: 'POST',
+          url: '/alarm-points/:equipment/:code/unshelve',
+          summary: 'Unshelves an alarm point',
+          description:
+            '`version` is the shelf’s as read: a mismatch is 409; a point not shelved is 422. ' +
+            guarded,
+          tags: ['alarms'],
+          params: alarmPointParams,
+          body: unshelveRequestSchema,
+          response: shelfResultSchema,
+          errors: [400, 403, 404, 405, 409, 413, 415, 422, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ params, body, requestId }) => {
+          knownPoint(params.equipment);
+          const point = await alarmsOf()
+            .unshelve(params.equipment, params.code, {
+              actor: body.actor,
+              version: body.version,
+              requestId,
+            })
+            .catch((error: unknown) => {
+              throw alarmWriteProblem(error);
+            });
+          return { point: pointDto(point) };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/alarm-points/:equipment/:code/audit',
+          summary: "An alarm point's audit (append-only), newest first",
+          description:
+            'Its shelf transitions (shelve, unshelve, expire, epoch-ended) and its occurrences’ ' +
+            'acknowledgements and comments, at most 500, each with actor, `authenticated: ' +
+            'false`, wall time, plant time and request id.',
+          tags: ['alarms'],
+          params: alarmPointParams,
+          query: noQuery,
+          response: alarmPointAuditSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ params }) => {
+          knownPoint(params.equipment);
+          const alarms = alarmsOf();
+          if (!(await alarms.point(params.equipment, params.code))) {
+            throw new HttpProblem(404, `no alarm point ${params.equipment}/${params.code}`);
+          }
+          const entries = await alarms.pointAudit(params.equipment, params.code, LIMITS.alarmAudit);
+          return {
+            equipment: params.equipment,
+            code: params.code,
+            entries: entries.map(transitionDto),
+          };
         },
       );
 
@@ -1216,7 +1530,7 @@ export async function registerRealtime(
           websocket: true,
           schema: {
             summary:
-              'WebSocket push of states, telemetry, OEE, downtime and alarms (protocol: docs/api/realtime.md)',
+              'WebSocket push of states, telemetry, OEE, downtime, alarms and shelves (protocol: docs/api/realtime.md)',
             tags: ['push'],
             hide: true,
           },

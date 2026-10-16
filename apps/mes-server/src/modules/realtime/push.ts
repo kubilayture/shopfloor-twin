@@ -1,15 +1,10 @@
 import type { FloodEpisode } from '@shopfloor/alarm-core';
 import { Counter, Gauge, type Registry } from 'prom-client';
-import type {
-  AlarmChange,
-  AlarmFinalityChange,
-  AlarmKpiBucket,
-  AlarmScope,
-} from '../alarms/index.ts';
+import type { AlarmEvent, AlarmKpiBucket, AlarmScope } from '../alarms/index.ts';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
 import type { DowntimeChange, OeeBucket, OeeChange, OeeScope } from '../oee/index.ts';
-import { alarmKpiDto, floodEpisodeDto, occurrenceDto } from './alarm-dto.ts';
+import { alarmKpiDto, floodEpisodeDto, occurrenceDto, pointDto } from './alarm-dto.ts';
 import { bucketDto, recordDto } from './oee-dto.ts';
 import {
   ALARMS_TOPIC,
@@ -74,7 +69,7 @@ export interface PushSources {
       shift: AlarmKpiBucket | null;
       floods: FloodEpisode[];
     }>;
-    onChange(listener: (change: AlarmChange | AlarmFinalityChange) => void): () => void;
+    onChange(listener: (change: AlarmEvent) => void): () => void;
   };
   /** What `alarm-kpi:<key>` may name (`plant`, `position:<id>`, `equipment:<id>`). */
   readonly alarmKpiTopics?: ReadonlyMap<
@@ -561,11 +556,34 @@ export class PushHub {
     }
   }
 
-  /** An occurrence upsert goes to `alarms` followers (keyed by id); KPI topics turn dirty. */
-  #onAlarm(change: AlarmChange | AlarmFinalityChange): void {
+  /**
+   * An occurrence upsert goes to `alarms` followers (keyed by id), and so does a point's shelf
+   * change (#143, keyed by point); a device change or a finality move turns KPI topics dirty, an
+   * operator's never does (operator actions don't change KPIs).
+   */
+  #onAlarm(change: AlarmEvent): void {
+    if (change.type === 'point') {
+      let point: string | undefined;
+      const key = `alarm:point/${change.point.equipment}/${change.point.code}`;
+      for (const client of this.#clients) {
+        if (!client.alarms) continue;
+        point ??= message({
+          type: 'alarm-point',
+          event: change.event,
+          point: pointDto(change.point),
+        });
+        this.#enqueue(client, key, point);
+      }
+      return;
+    }
+    const device =
+      change.type === 'finality' ||
+      change.event === 'raised' ||
+      change.event === 'cleared' ||
+      change.event === 'updated';
     const equipment = change.type === 'occurrence' ? change.occurrence.equipment : change.equipment;
     for (const topic of this.#paced.values()) {
-      if (topic.kind === 'alarm-kpi' && topic.members.has(equipment)) topic.dirty = true;
+      if (device && topic.kind === 'alarm-kpi' && topic.members.has(equipment)) topic.dirty = true;
     }
     if (change.type !== 'occurrence') return;
     let data: string | undefined;

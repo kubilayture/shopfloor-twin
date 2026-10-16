@@ -3660,9 +3660,12 @@
               "enum": [
                 "raised",
                 "cleared",
-                "updated"
+                "updated",
+                "acknowledged",
+                "commented",
+                "shelf"
               ],
-              "description": "What happened to the occurrence since the last message about it"
+              "description": "What happened to the occurrence since the last message about it (shelf: its point's shelf changed)"
             },
             "occurrence": {
               "type": "object",
@@ -3777,6 +3780,71 @@
                 "final": {
                   "type": "boolean",
                   "description": "Its raise and its end (or that it is still open) can no longer change"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "unacked-active",
+                    "acked-active",
+                    "unacked-cleared",
+                    "closed"
+                  ],
+                  "description": "ISA-18.2 (#143): a clear does not acknowledge, so a cleared occurrence stays unacked-cleared until acknowledged; closed: ended and acknowledged, or ended by a newer epoch"
+                },
+                "acknowledged": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "by": {
+                          "type": "string",
+                          "description": "As typed: unauthenticated"
+                        },
+                        "at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "Wall time"
+                        },
+                        "plantAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The plant clock at that moment; null without one"
+                        },
+                        "comment": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "by",
+                        "at",
+                        "plantAt",
+                        "comment"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "shelved": {
+                  "type": "boolean",
+                  "description": "Its point is shelved now: an overlay, the state is kept; KPIs count it anyway"
+                },
+                "comments": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "description": "Comments on it (GET /alarms/{id} lists them)"
                 }
               },
               "required": [
@@ -3795,7 +3863,11 @@
                 "endReason",
                 "endSeq",
                 "active",
-                "final"
+                "final",
+                "state",
+                "acknowledged",
+                "shelved",
+                "comments"
               ],
               "additionalProperties": false,
               "description": "One alarm occurrence: one per device raise (ADR-0024)"
@@ -3805,6 +3877,189 @@
             "type",
             "event",
             "occurrence"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "alarm-point"
+            },
+            "event": {
+              "type": "string",
+              "enum": [
+                "shelved",
+                "unshelved",
+                "expire",
+                "epoch-ended"
+              ],
+              "description": "A shelf change on the `alarms` topic (#143)"
+            },
+            "point": {
+              "type": "object",
+              "properties": {
+                "equipment": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "defined": {
+                  "type": "boolean",
+                  "description": "It has a definition in alarms.yaml"
+                },
+                "priority": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "high",
+                        "medium",
+                        "low"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "From the definition; null without one"
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "shelf": {
+                  "type": "object",
+                  "properties": {
+                    "shelved": {
+                      "type": "boolean"
+                    },
+                    "version": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "The shelf's version: send it with shelve or unshelve (409 if moved)"
+                    },
+                    "by": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "shelvedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Wall time of the shelve"
+                    },
+                    "epoch": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The plant clock's epoch at the shelve"
+                    },
+                    "plantAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The plant clock at the shelve"
+                    },
+                    "until": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Plant time: the point unshelves itself once the plant clock passes it"
+                    },
+                    "durationMs": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "shelved",
+                    "version",
+                    "by",
+                    "reason",
+                    "shelvedAt",
+                    "epoch",
+                    "plantAt",
+                    "until",
+                    "durationMs"
+                  ],
+                  "additionalProperties": false,
+                  "description": "The shelf of an alarm point (ISA-18.2 shelves a point, not an occurrence)"
+                },
+                "activeOccurrence": {
+                  "description": "The id of its occurrence still active (device), if any",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "equipment",
+                "code",
+                "defined",
+                "priority",
+                "text",
+                "shelf",
+                "activeOccurrence"
+              ],
+              "additionalProperties": false,
+              "description": "An alarm point (equipment, code): its definition, shelf and active occurrence"
+            }
+          },
+          "required": [
+            "type",
+            "event",
+            "point"
           ],
           "additionalProperties": false
         },

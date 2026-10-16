@@ -13,16 +13,16 @@
 
 ## Client messages
 
-| Message                                                                              | Meaning                                                                      |
-| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| `{ "type": "subscribe", "topic": "states" }`                                         | Current state of every equipment, then each change                           |
-| `{ "type": "subscribe", "topic": "telemetry:wsh-01" }`                               | Every metric of one equipment: latest values, then each                      |
-| `{ "type": "subscribe", "topic": "telemetry:wsh-01", "metric": "bath-temperature" }` | One metric (repeat for more)                                                 |
-| `{ "type": "unsubscribe", "topic": "telemetry:wsh-01" }`                             | Stops the topic (with `metric`: only that metric)                            |
-| `{ "type": "subscribe", "topic": "oee:cell-m1" }`                                    | OEE of an equipment or work center: current hour and shift, then each change |
-| `{ "type": "subscribe", "topic": "downtime" }`                                       | Downtime records as they are created, closed or recoded                      |
-| `{ "type": "subscribe", "topic": "alarms" }`                                         | Alarm occurrences as they are raised, cleared or change (#142)               |
-| `{ "type": "subscribe", "topic": "alarm-kpi:position:cell-m1" }`                     | Alarm KPIs of a scope: current hour and shift and open floods, then changes  |
+| Message                                                                              | Meaning                                                                           |
+| ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `{ "type": "subscribe", "topic": "states" }`                                         | Current state of every equipment, then each change                                |
+| `{ "type": "subscribe", "topic": "telemetry:wsh-01" }`                               | Every metric of one equipment: latest values, then each                           |
+| `{ "type": "subscribe", "topic": "telemetry:wsh-01", "metric": "bath-temperature" }` | One metric (repeat for more)                                                      |
+| `{ "type": "unsubscribe", "topic": "telemetry:wsh-01" }`                             | Stops the topic (with `metric`: only that metric)                                 |
+| `{ "type": "subscribe", "topic": "oee:cell-m1" }`                                    | OEE of an equipment or work center: current hour and shift, then each change      |
+| `{ "type": "subscribe", "topic": "downtime" }`                                       | Downtime records as they are created, closed or recoded                           |
+| `{ "type": "subscribe", "topic": "alarms" }`                                         | Alarm occurrences as they are raised, cleared or change, and shelves (#142, #143) |
+| `{ "type": "subscribe", "topic": "alarm-kpi:position:cell-m1" }`                     | Alarm KPIs of a scope: current hour and shift and open floods, then changes       |
 
 `metric` applies to telemetry topics only. A client may hold up to 16 OEE topics and 16 alarm KPI topics (`too-many-subscriptions`) and up to 64 telemetry subscriptions, counted per metric (a whole equipment counts one), and read up to 4 snapshots at a time (`busy`). Subscribing again sends a fresh snapshot. A client subscribed to every metric of an equipment can't unsubscribe one of them: unsubscribe the topic and subscribe the metrics wanted.
 
@@ -38,7 +38,8 @@
 | `state`                          | `equipment`, `current` (as in `GET /api/v1/equipment/{id}`)                                                                                 | The equipment's state, cause, start or epoch changed                   |
 | `oee`                            | `topic`, `hour`, `shift` (as in the snapshot)                                                                                               | Inputs of a member machine changed: at most once a second per topic    |
 | `downtime`                       | `event` (`created`, `closed`, `recoded`, `updated`, `removed`), `record` (as in `GET /api/v1/downtime`)                                     | A record changed (within about 250 ms of its write)                    |
-| `alarm`                          | `event` (`raised`, `cleared`, `updated`), `occurrence` (as in `GET /api/v1/alarms`)                                                         | An occurrence was stored or changed (its commit)                       |
+| `alarm`                          | `event` (`raised`, `cleared`, `updated`, `acknowledged`, `commented`, `shelf`), `occurrence` (as in `GET /api/v1/alarms`)                   | An occurrence was stored or changed, or an operator acted (its commit) |
+| `alarm-point`                    | `event` (`shelved`, `unshelved`, `expire`, `epoch-ended`), `point` (as in `GET /api/v1/alarm-points`)                                       | A point's shelf changed (#143)                                         |
 | `alarm-kpi`                      | `topic`, `hour`, `shift`, `floods` (as in the snapshot)                                                                                     | Its alarms or the plant clock changed: at most once a second per topic |
 | `telemetry`                      | `equipment`, `metric`, `unit`, `t`, `value`                                                                                                 | A sample was stored                                                    |
 | `clock`                          | `epoch`, `watermark`                                                                                                                        | The plant clock moved (at most once a second, to `states` subscribers) |
@@ -56,7 +57,7 @@
 
 ### Alarm topics (#142)
 
-- `alarms` has no snapshot: read `GET /api/v1/alarms` (active, or the history of a range) first, then apply every `alarm` message as an upsert by `occurrence.id` (`{equipment}~{epoch}~{seq}`). `raised`: a new occurrence (a raise fact or a retained delivery); `cleared`: it ended (any `endReason`: the device's clear, a resync snapshot's `lost`, `superseded` by the next raise, `epoch-ended`); `updated`: anything else (an anchor replaced by its fact, a late clear replacing a `lost` end, a priority after a configuration change). Deltas are keyed per occurrence, so a slow client may get only the latest state of each. Acknowledge and shelve (#143) will add their own events.
+- `alarms` has no snapshot: read `GET /api/v1/alarms` (active, or the history of a range) first, then apply every `alarm` message as an upsert by `occurrence.id` (`{equipment}~{epoch}~{seq}`). `raised`: a new occurrence (a raise fact or a retained delivery); `cleared`: it ended (any `endReason`: the device's clear, a resync snapshot's `lost`, `superseded` by the next raise, `epoch-ended`); `updated`: anything else (an anchor replaced by its fact, a late clear replacing a `lost` end, a priority after a configuration change). Deltas are keyed per occurrence, so a slow client may get only the latest state of each. Operator actions (#143) push the occurrence again with its `state`, `acknowledged`, `shelved` and `comments`: `acknowledged`, `commented`, and `shelf` for every occurrence of a point that is not closed when the point's shelf changes; the shelf itself comes as an `alarm-point` message (keyed per point), also when the plant clock ends it (`expire`, `epoch-ended`). Device upserts carry the operator's state as well, read after their commit in the module's order, so a later message is never older. Operator actions never mark an `alarm-kpi` topic dirty: they change no KPI.
 - `alarm-kpi:<scope>` names the plant (`alarm-kpi:plant`), an operator position (`alarm-kpi:position:cell-m1`) or an equipment (`alarm-kpi:equipment:cnc-01`); another gets `unknown-equipment`. The buckets are those the plant clock is in, read just before it, in the newest epoch: the UTC hour, and the shift (whole) or the `no-shift/{start}` stretch up to the end of the current hour, each the full bucket of `GET /api/v1/alarms/kpi` with `final`, `revision` and `incidents`. `floods` lists the episodes still in flood (the banner of a position, #145).
 - The topic is computed off ingest's path, like OEE: an occurrence change or a finality move of a member, or the plant clock moving (active time grows while an alarm is active), marks it dirty; a timer computes dirty topics at most once a second, and an `alarm-kpi` delta goes out only when the content differs.
 

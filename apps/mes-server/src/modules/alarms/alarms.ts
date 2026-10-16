@@ -51,6 +51,33 @@ import {
   type Derived,
   type DeviceTransition,
 } from './derive.ts';
+import {
+  AlarmWriteError,
+  NO_OPERATOR,
+  UNSHELVED,
+  acknowledge,
+  addComment,
+  alarmState,
+  comments as readComments,
+  endShelves,
+  occurrenceTransitions,
+  operatorViews,
+  pointKey,
+  pointTransitions,
+  shelve as writeShelve,
+  shelves as readShelves,
+  unshelve as writeUnshelve,
+  type AlarmComment,
+  type AlarmPoint,
+  type AlarmShelf,
+  type AlarmState,
+  type AlarmTransition,
+  type Acknowledgement,
+  type OccurrenceKey,
+  type OperatorView,
+  type PlantClock,
+} from './lifecycle.ts';
+import { operatorMeasures, type OperatorBucket } from './operator.ts';
 import type { AlarmOccurrenceTable, EndReason, UsedAnchor, UsedSnapshot } from './tables.ts';
 
 export type AlarmScope = 'plant' | 'position' | 'equipment';
@@ -85,6 +112,8 @@ export interface AlarmsOptions extends AlarmSources {
   readonly shiftPattern: ShiftPattern;
   /** `alarms.yaml` → `kpi`. */
   readonly config: AlarmKpiConfig;
+  /** `alarms.yaml` → `maxShelveMs`: the longest shelf, in plant time (default 8 hours). */
+  readonly maxShelveMs?: number;
   readonly log?: AlarmsLog;
 }
 
@@ -108,22 +137,57 @@ export interface AlarmOccurrence {
   readonly endSeq: number | null;
   /** Its raise and its end (or, open, the absence of one) can no longer change. */
   readonly final: boolean;
+  /** ISA-18.2 state (#143): the device's end and the operator's acknowledgement. */
+  readonly state: AlarmState;
+  readonly acknowledged: Acknowledgement | null;
+  /** Its point is shelved now (an overlay; KPIs count it anyway). */
+  readonly shelved: boolean;
+  readonly comments: number;
 }
 
 /** A device or MES event in an occurrence's history. */
 export interface AlarmHistoryEntry {
-  readonly source: 'fact' | 'anchor' | 'snapshot' | 'mes';
-  readonly transition: 'raised' | 'cleared' | 'lost' | 'superseded' | 'epoch-ended';
+  readonly source: 'fact' | 'anchor' | 'snapshot' | 'mes' | 'audit';
+  readonly transition:
+    | 'raised'
+    | 'cleared'
+    | 'lost'
+    | 'superseded'
+    | 'epoch-ended'
+    | 'ack'
+    | 'comment'
+    | 'shelve'
+    | 'unshelve'
+    | 'expire';
+  /** Plant time: the device's, or the plant clock at an audited transition. */
   readonly at: Date;
   readonly seq: number | null;
   readonly receivedAt: Date | null;
   readonly protocol: string | null;
+  /** Audit entries (#143): the transition as recorded. */
+  readonly audit?: AlarmTransition;
 }
 
 export interface AlarmChange {
   readonly type: 'occurrence';
-  readonly event: 'raised' | 'cleared' | 'updated';
+  /** Device changes (`raised`, `cleared`, `updated`) or the operator's (#143). */
+  readonly event: 'raised' | 'cleared' | 'updated' | 'acknowledged' | 'commented' | 'shelf';
   readonly occurrence: AlarmOccurrence;
+}
+
+/** A point's shelf changed (#143): by an operator, or ended by the plant clock. */
+export interface AlarmPointChange {
+  readonly type: 'point';
+  readonly event: 'shelved' | 'unshelved' | 'expire' | 'epoch-ended';
+  readonly point: AlarmPoint;
+}
+
+/** What an alarm write names (#143). */
+export interface AlarmWriteRequest {
+  /** As typed: recorded as unauthenticated. */
+  readonly actor: string;
+  /** The HTTP request's id, for the audit. */
+  readonly requestId?: string | undefined;
 }
 
 export interface AlarmFinalityChange {
@@ -132,9 +196,17 @@ export interface AlarmFinalityChange {
   readonly epoch: number;
 }
 
+/** Everything `Alarms.onChange` reports. */
+export type AlarmEvent = AlarmChange | AlarmFinalityChange | AlarmPointChange;
+
 export interface AlarmListQuery {
-  /** `active`: not ended; `history`: ended (cleared, lost, superseded or epoch-ended). */
-  readonly view: 'active' | 'history';
+  /**
+   * The operator's lists (#143, ISA-18.2), a partition of the occurrences: `active` unacknowledged
+   * and not closed, `acknowledged` acknowledged and still active, both without a shelved point;
+   * `shelved` not closed with a shelved point; `history` closed (ended and acknowledged, or ended by
+   * a newer epoch).
+   */
+  readonly view: 'active' | 'acknowledged' | 'shelved' | 'history';
   readonly position?: string | undefined;
   readonly equipment?: string | undefined;
   readonly priority?: Priority | undefined;
@@ -257,6 +329,11 @@ interface ScopeView {
 
 const silent: AlarmsLog = { info: () => undefined, error: () => undefined };
 
+/** alarms.yaml's default `maxShelveMs`: one shift. */
+const DEFAULT_MAX_SHELVE_MS = 8 * HOUR;
+/** Occurrences of a point pushed after its shelf changed, at most. */
+const SHELF_PUSH_LIMIT = 500;
+
 const UNSETTLED = { settledSeq: null, finalThrough: -Infinity, incidents: [] } as const;
 
 export const occurrenceId = (equipment: string, epoch: number, seq: number): string =>
@@ -311,12 +388,23 @@ export class Alarms {
   readonly #log: AlarmsLog;
   readonly #tracks = new Map<string, Map<number, Track>>();
   readonly #dirty = new Set<Track>();
-  readonly #listeners = new Set<(change: AlarmChange | AlarmFinalityChange) => void>();
+  readonly #listeners = new Set<(change: AlarmEvent) => void>();
   #definitions = new Map<string, AlarmDefinition>();
   #scopes = new Map<string, Scope>();
   #order: string[] = [];
   #queue: Promise<unknown> = Promise.resolve();
   #unsubscribe: (() => void) | undefined;
+  readonly #maxShelveMs: number;
+  /**
+   * The shelved points (#143) by `equipment/code`, as last written: when the plant clock may end
+   * them (`#endShelves` checks the table itself). A newer version replaces an older one only.
+   */
+  readonly #shelved = new Map<
+    string,
+    { readonly epoch: number; readonly until: Millis; readonly version: number }
+  >();
+  /** Versions of points whose shelf ended, so an older write's late update can't revive them. */
+  readonly #shelfVersions = new Map<string, number>();
 
   constructor(options: AlarmsOptions) {
     this.#db = options.db;
@@ -324,7 +412,12 @@ export class Alarms {
     this.#sources = options;
     this.#pattern = options.shiftPattern;
     this.#config = options.config;
+    this.#maxShelveMs = options.maxShelveMs ?? DEFAULT_MAX_SHELVE_MS;
     this.#log = options.log ?? silent;
+  }
+
+  get maxShelveMs(): number {
+    return this.#maxShelveMs;
   }
 
   get config(): AlarmKpiConfig {
@@ -338,9 +431,17 @@ export class Alarms {
   /** Loads the catalog, catches up from the tables, then follows ingest's notices. */
   async start(): Promise<void> {
     await this.#loadCatalog();
-    const caughtUp = this.#enqueue(() => this.#catchUp());
+    for (const [key, shelf] of await readShelves(this.#db)) this.#noteShelf(key, shelf);
+    const caughtUp = this.#enqueue(async () => {
+      await this.#catchUp();
+      // The plant clock may have passed a shelf's limit (or a newer epoch begun) while away.
+      await this.#endShelves();
+    });
     this.#unsubscribe = this.#sources.ingest.onStored((notice) =>
-      this.#enqueue(() => this.#handle(notice)),
+      this.#enqueue(async () => {
+        await this.#handle(notice);
+        await this.#endShelves();
+      }),
     );
     await caughtUp;
   }
@@ -361,7 +462,7 @@ export class Alarms {
    * Listens for stored occurrence changes and finality moves (synchronously, after the commit:
    * the listener must only record what changed, never read). Returns an unsubscribe.
    */
-  onChange(listener: (change: AlarmChange | AlarmFinalityChange) => void): () => void {
+  onChange(listener: (change: AlarmEvent) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
@@ -389,56 +490,603 @@ export class Alarms {
 
   // ---- reads (the API's pool) ----
 
-  /** Occurrences by raise time, newest first, up to `limit`. */
+  /**
+   * Occurrences of one operator list (#143) by raise time, newest first, up to `limit`, with their
+   * acknowledgement, the shelf of their point and their comment count.
+   */
   async list(query: AlarmListQuery): Promise<AlarmOccurrence[]> {
-    let select = this.#readDb.selectFrom('alarms.alarm_occurrence').selectAll();
-    select =
-      query.view === 'active'
-        ? select.where('ended_at', 'is', null)
-        : select.where('ended_at', 'is not', null);
+    let select = this.#withOperator(this.#readDb);
+    // `closed`: ended and acknowledged, or ended by a newer epoch (alarmState).
+    const closed = sql<boolean>`(o.ended_at IS NOT NULL AND (s.seq IS NOT NULL OR o.end_reason = 'epoch-ended'))`;
+    const shelved = sql<boolean>`coalesce(sh.shelved, false)`;
+    switch (query.view) {
+      case 'active':
+        select = select.where(sql<boolean>`NOT ${closed} AND NOT ${shelved} AND s.seq IS NULL`);
+        break;
+      case 'acknowledged':
+        select = select.where(
+          sql<boolean>`s.seq IS NOT NULL AND o.ended_at IS NULL AND NOT ${shelved}`,
+        );
+        break;
+      case 'shelved':
+        select = select.where(sql<boolean>`NOT ${closed} AND ${shelved}`);
+        break;
+      case 'history':
+        select = select.where(closed);
+        break;
+    }
     if (query.position !== undefined) {
       const members = this.#scopes.get(this.#scopeKey('position', query.position))?.members ?? [];
       if (members.length === 0) return [];
-      select = select.where('equipment', 'in', members);
+      select = select.where('o.equipment', 'in', members);
     }
-    if (query.equipment !== undefined) select = select.where('equipment', '=', query.equipment);
-    if (query.priority !== undefined) select = select.where('priority', '=', query.priority);
-    if (query.from !== undefined) select = select.where('raised_at', '>=', query.from);
-    if (query.to !== undefined) select = select.where('raised_at', '<', query.to);
+    if (query.equipment !== undefined) select = select.where('o.equipment', '=', query.equipment);
+    if (query.priority !== undefined) select = select.where('o.priority', '=', query.priority);
+    if (query.from !== undefined) select = select.where('o.raised_at', '>=', query.from);
+    if (query.to !== undefined) select = select.where('o.raised_at', '<', query.to);
     const after = query.after && parseOccurrenceId(query.after.id);
     if (query.after && after) {
       select = select.where(
-        sql<boolean>`(raised_at, equipment, epoch, seq) < (${query.after.raisedAt}, ${after.equipment}, ${after.epoch}, ${after.seq})`,
+        sql<boolean>`(o.raised_at, o.equipment, o.epoch, o.seq) < (${query.after.raisedAt}, ${after.equipment}, ${after.epoch}, ${after.seq})`,
       );
     }
     const rows = await select
-      .orderBy('raised_at', 'desc')
-      .orderBy('equipment', 'desc')
-      .orderBy('epoch', 'desc')
-      .orderBy('seq', 'desc')
+      .orderBy('o.raised_at', 'desc')
+      .orderBy('o.equipment', 'desc')
+      .orderBy('o.epoch', 'desc')
+      .orderBy('o.seq', 'desc')
       .limit(query.limit)
       .execute();
-    return rows.map((row) => this.#view(row));
+    return rows.map((row) => this.#view(row, this.#operatorOf(row)));
   }
 
-  /** One occurrence by its id. */
-  async occurrence(id: string): Promise<AlarmOccurrence | undefined> {
+  /** One occurrence by its id, with its operator state. */
+  async occurrence(
+    id: string,
+    db: Kysely<Database> = this.#readDb,
+  ): Promise<AlarmOccurrence | undefined> {
     const key = parseOccurrenceId(id);
     if (!key) return undefined;
-    const row = await this.#readDb
-      .selectFrom('alarms.alarm_occurrence')
-      .selectAll()
-      .where('equipment', '=', key.equipment)
-      .where('epoch', '=', key.epoch)
-      .where('seq', '=', key.seq)
+    const row = await this.#withOperator(db)
+      .where('o.equipment', '=', key.equipment)
+      .where('o.epoch', '=', key.epoch)
+      .where('o.seq', '=', key.seq)
       .executeTakeFirst();
-    return row && this.#view(row);
+    return row && this.#view(row, this.#operatorOf(row));
+  }
+
+  /** Occurrences joined with their acknowledgement, their point's shelf and comment count. */
+  #withOperator(db: Kysely<Database> | Transaction<Database>) {
+    return db
+      .selectFrom('alarms.alarm_occurrence as o')
+      .leftJoin('alarms.occurrence_state as s', (join) =>
+        join
+          .onRef('s.equipment', '=', 'o.equipment')
+          .onRef('s.epoch', '=', 'o.epoch')
+          .onRef('s.seq', '=', 'o.seq'),
+      )
+      .leftJoin('alarms.alarm_shelf as sh', (join) =>
+        join.onRef('sh.equipment', '=', 'o.equipment').onRef('sh.code', '=', 'o.code'),
+      )
+      .selectAll('o')
+      .select([
+        's.acknowledged_by',
+        's.acknowledged_at',
+        's.plant_at as acknowledged_plant_at',
+        's.comment as acknowledged_comment',
+        'sh.shelved as point_shelved',
+        sql<number>`(SELECT count(*) FROM alarms.alarm_transition t
+          WHERE t.equipment = o.equipment AND t.epoch = o.epoch AND t.seq = o.seq
+            AND t.action = 'comment')`.as('comment_count'),
+      ]);
+  }
+
+  #operatorOf(row: {
+    acknowledged_by: string | null;
+    acknowledged_at: Date | null;
+    acknowledged_plant_at: Date | null;
+    acknowledged_comment: string | null;
+    point_shelved: boolean | null;
+    comment_count: number;
+  }): OperatorView {
+    return {
+      acknowledged:
+        row.acknowledged_by !== null && row.acknowledged_at !== null
+          ? {
+              by: row.acknowledged_by,
+              at: row.acknowledged_at,
+              plantAt: row.acknowledged_plant_at,
+              comment: row.acknowledged_comment ?? '',
+            }
+          : null,
+      shelved: row.point_shelved === true,
+      comments: row.comment_count,
+    };
+  }
+
+  /** The comments of an occurrence, oldest first (#143); undefined when it doesn't exist. */
+  async comments(id: string): Promise<AlarmComment[] | undefined> {
+    const key = parseOccurrenceId(id);
+    if (!key) return undefined;
+    return readComments(this.#readDb, key);
+  }
+
+  /** The shelf of an alarm point now (unshelved at version 0 when it never was). */
+  async shelf(equipment: string, code: string): Promise<AlarmShelf> {
+    return (
+      (await readShelves(this.#readDb, [{ equipment, code }])).get(pointKey(equipment, code)) ??
+      UNSHELVED
+    );
+  }
+
+  /**
+   * Alarm points (#143): every defined point, and every other point with an active occurrence or a
+   * shelf row, with the shelf and the active occurrence, by equipment and code.
+   */
+  async points(
+    query: {
+      equipment?: string | undefined;
+      position?: string | undefined;
+      shelved?: boolean;
+    } = {},
+    db: Kysely<Database> = this.#readDb,
+  ): Promise<AlarmPoint[]> {
+    let members: ReadonlySet<string> | undefined;
+    if (query.position !== undefined) {
+      members = new Set(
+        this.#scopes.get(this.#scopeKey('position', query.position))?.members ?? [],
+      );
+    }
+    const wanted = (equipment: string): boolean =>
+      (query.equipment === undefined || equipment === query.equipment) &&
+      (members === undefined || members.has(equipment));
+    const [shelfRows, active] = await Promise.all([
+      readShelves(db),
+      sql<{ equipment: string; code: string; epoch: number; seq: number }>`
+        SELECT DISTINCT ON (equipment, code) equipment, code, epoch, seq
+        FROM alarms.alarm_occurrence WHERE ended_at IS NULL
+        ORDER BY equipment, code, raised_at DESC, epoch DESC, seq DESC`.execute(db),
+    ]);
+    const activeOf = new Map(
+      active.rows.map((row) => [
+        pointKey(row.equipment, row.code),
+        occurrenceId(row.equipment, row.epoch, row.seq),
+      ]),
+    );
+    const keys = new Map<string, { equipment: string; code: string }>();
+    for (const definition of this.#definitions.values()) {
+      keys.set(pointKey(definition.equipment, definition.code), definition);
+    }
+    for (const row of active.rows) keys.set(pointKey(row.equipment, row.code), row);
+    for (const key of shelfRows.keys()) {
+      const split = key.indexOf('/');
+      keys.set(key, { equipment: key.slice(0, split), code: key.slice(split + 1) });
+    }
+    const points: AlarmPoint[] = [];
+    for (const [key, { equipment, code }] of keys) {
+      if (!wanted(equipment)) continue;
+      const shelf = shelfRows.get(key) ?? UNSHELVED;
+      if (query.shelved === true && !shelf.shelved) continue;
+      points.push(this.#point(equipment, code, shelf, activeOf.get(key) ?? null));
+    }
+    return points.sort((a, b) =>
+      a.equipment < b.equipment
+        ? -1
+        : a.equipment > b.equipment
+          ? 1
+          : a.code < b.code
+            ? -1
+            : a.code > b.code
+              ? 1
+              : 0,
+    );
+  }
+
+  /** One alarm point, or undefined when it is unknown (no definition, occurrence or shelf). */
+  async point(
+    equipment: string,
+    code: string,
+    db: Kysely<Database> = this.#readDb,
+  ): Promise<AlarmPoint | undefined> {
+    const [shelf, active, any] = await Promise.all([
+      readShelves(db, [{ equipment, code }]),
+      db
+        .selectFrom('alarms.alarm_occurrence')
+        .select(['epoch', 'seq'])
+        .where('equipment', '=', equipment)
+        .where('code', '=', code)
+        .where('ended_at', 'is', null)
+        .orderBy('raised_at', 'desc')
+        .orderBy('epoch', 'desc')
+        .orderBy('seq', 'desc')
+        .limit(1)
+        .executeTakeFirst(),
+      db
+        .selectFrom('alarms.alarm_occurrence')
+        .select('seq')
+        .where('equipment', '=', equipment)
+        .where('code', '=', code)
+        .limit(1)
+        .executeTakeFirst(),
+    ]);
+    const found = shelf.get(pointKey(equipment, code));
+    if (!this.definition(equipment, code) && !found && !any) return undefined;
+    return this.#point(
+      equipment,
+      code,
+      found ?? UNSHELVED,
+      active ? occurrenceId(equipment, active.epoch, active.seq) : null,
+    );
+  }
+
+  #point(
+    equipment: string,
+    code: string,
+    shelf: AlarmShelf,
+    activeOccurrence: string | null,
+  ): AlarmPoint {
+    const definition = this.definition(equipment, code);
+    return {
+      equipment,
+      code,
+      defined: definition !== undefined,
+      priority: definition?.priority ?? null,
+      text: definition?.text ?? null,
+      shelf,
+      activeOccurrence,
+    };
+  }
+
+  /** A point's audit, newest first (#143): shelf transitions, acknowledgements and comments. */
+  async pointAudit(equipment: string, code: string, limit: number): Promise<AlarmTransition[]> {
+    return pointTransitions(this.#readDb, equipment, code, limit);
+  }
+
+  /**
+   * The operator measures of a scope (#143, MES only, never reconciled): per hour, shift bucket or
+   * one range, shelved and annunciated raises, time to acknowledge (acknowledgements in the same
+   * epoch only), unacknowledged at the end and shelved time per point, in plant time of one epoch
+   * (default the scope's newest). Apart from `kpis`, which no operator action changes.
+   */
+  async operatorMeasures(query: {
+    readonly scope: AlarmScope;
+    readonly id: string;
+    readonly bucket: AlarmBucketKind | 'range';
+    readonly from: Date;
+    readonly to: Date;
+    readonly epoch?: number | undefined;
+  }): Promise<{ epoch: number | null; buckets: OperatorBucket[] }> {
+    const scope = this.#scopeOf(query.scope, query.id);
+    const epoch = query.epoch ?? this.#newestEpoch(scope.members);
+    if (epoch === undefined || scope.members.length === 0) return { epoch: null, buckets: [] };
+    const from = query.from.getTime();
+    const to = query.to.getTime();
+    const defs =
+      query.bucket === 'range'
+        ? [{ key: 'range', from, to }]
+        : query.bucket === 'hour'
+          ? alarmHourBuckets(from, to)
+          : alarmShiftBuckets(this.#pattern, from, to);
+    const last = defs.reduce((max, def) => Math.max(max, def.to), to);
+    const { occurrences, transitions } = await this.#readDb
+      .transaction()
+      .setIsolationLevel('repeatable read')
+      .setAccessMode('read only')
+      .execute(async (trx) => {
+        const occurrenceRows = await trx
+          .selectFrom('alarms.alarm_occurrence as o')
+          .leftJoin('alarms.occurrence_state as s', (join) =>
+            join
+              .onRef('s.equipment', '=', 'o.equipment')
+              .onRef('s.epoch', '=', 'o.epoch')
+              .onRef('s.seq', '=', 'o.seq'),
+          )
+          .select(['o.equipment', 'o.code', 'o.raised_at', 'o.ended_at', 'o.end_reason'])
+          .select(['s.plant_at as ack_plant_at', 's.plant_epoch as ack_plant_epoch'])
+          .where('o.epoch', '=', epoch)
+          .where('o.equipment', 'in', scope.members)
+          .where('o.raised_at', '<', new Date(last))
+          .execute();
+        const transitionRows = await trx
+          .selectFrom('alarms.alarm_transition')
+          .select(['equipment', 'code', 'action', 'plant_at', 'after'])
+          .where('seq', 'is', null)
+          .where('plant_epoch', '=', epoch)
+          .where('equipment', 'in', scope.members)
+          .orderBy('id')
+          .execute();
+        return { occurrences: occurrenceRows, transitions: transitionRows };
+      });
+    let asOf = this.#sources.equipment.watermark(epoch)?.getTime() ?? -Infinity;
+    for (const row of occurrences) {
+      asOf = Math.max(asOf, row.raised_at.getTime(), row.ended_at?.getTime() ?? -Infinity);
+    }
+    if (!Number.isFinite(asOf)) return { epoch, buckets: [] };
+    const started = defs.filter((def) => def.from < asOf);
+    return {
+      epoch,
+      buckets: operatorMeasures(
+        occurrences.map((row) => ({
+          equipment: row.equipment,
+          code: row.code,
+          raisedAt: row.raised_at.getTime(),
+          endedAt: row.ended_at?.getTime() ?? null,
+          endReason: row.end_reason,
+          ackPlantAt: row.ack_plant_at?.getTime() ?? null,
+          ackPlantEpoch: row.ack_plant_epoch,
+        })),
+        transitions.map((row) => {
+          const until = row.after?.until;
+          return {
+            equipment: row.equipment,
+            code: row.code,
+            action: row.action,
+            plantAt: row.plant_at?.getTime() ?? null,
+            until: row.action === 'shelve' && typeof until === 'string' ? Date.parse(until) : null,
+          };
+        }),
+        epoch,
+        asOf,
+        started,
+      ),
+    };
+  }
+
+  // ---- writes (#143, ADR-0023): on the main pool, audited ----
+
+  /** The plant clock: the newest epoch's watermark. */
+  #clock(): PlantClock | undefined {
+    return this.#sources.equipment.watermarks()[0];
+  }
+
+  /**
+   * Acknowledges occurrences (one, or up to 100 in one transaction): monotonic, so no version; an
+   * unknown id is `not-found` and nothing changes. Per distinct id, in request order, whether this
+   * call acknowledged it (false: acknowledged already, no audit entry).
+   */
+  async acknowledge(
+    ids: readonly string[],
+    request: AlarmWriteRequest & { readonly comment?: string | undefined },
+  ): Promise<{ id: string; changed: boolean }[]> {
+    const unique = [...new Set(ids)];
+    const keys: OccurrenceKey[] = [];
+    for (const id of unique) {
+      const key = parseOccurrenceId(id);
+      if (!key) throw new AlarmWriteError('not-found', `no alarm ${id}`);
+      keys.push(key);
+    }
+    const changed = await acknowledge(this.#db, keys, {
+      actor: request.actor,
+      requestId: request.requestId,
+      clock: this.#clock(),
+      comment: request.comment ?? '',
+    });
+    const acknowledged = keys.filter((key) =>
+      changed.has(occurrenceId(key.equipment, key.epoch, key.seq)),
+    );
+    if (acknowledged.length > 0) this.#pushOccurrences(acknowledged, 'acknowledged');
+    return unique.map((id) => ({ id, changed: changed.has(id) }));
+  }
+
+  /** Adds a comment to an occurrence (append-only, audited). */
+  async comment(
+    id: string,
+    request: AlarmWriteRequest & { readonly text: string },
+  ): Promise<AlarmComment> {
+    const key = parseOccurrenceId(id);
+    if (!key) throw new AlarmWriteError('not-found', `no alarm ${id}`);
+    const comment = await addComment(this.#db, key, {
+      actor: request.actor,
+      requestId: request.requestId,
+      clock: this.#clock(),
+      text: request.text,
+    });
+    this.#pushOccurrences([key], 'commented');
+    return comment;
+  }
+
+  /**
+   * Shelves an alarm point for `durationMs` of plant time (1 minute to `maxShelveMs`), if its shelf
+   * is still at `version` (409 otherwise). The point must be known: defined, or with an occurrence.
+   */
+  async shelve(
+    equipment: string,
+    code: string,
+    request: AlarmWriteRequest & {
+      readonly reason: string;
+      readonly durationMs: number;
+      readonly version: number;
+    },
+  ): Promise<AlarmPoint> {
+    await this.#knownPoint(equipment, code);
+    if (
+      !Number.isSafeInteger(request.durationMs) ||
+      request.durationMs < 60_000 ||
+      request.durationMs > this.#maxShelveMs
+    ) {
+      throw new AlarmWriteError(
+        'invalid',
+        `durationMs must be 60000 to ${String(this.#maxShelveMs)} (maxShelveMs), not ${String(request.durationMs)}`,
+      );
+    }
+    const shelf = await writeShelve(this.#db, equipment, code, {
+      actor: request.actor,
+      requestId: request.requestId,
+      clock: this.#clock(),
+      reason: request.reason,
+      durationMs: request.durationMs,
+      version: request.version,
+    });
+    return this.#shelfChanged(equipment, code, shelf, 'shelved');
+  }
+
+  /** Unshelves an alarm point, if its shelf is still at `version` (409) and shelved (422). */
+  async unshelve(
+    equipment: string,
+    code: string,
+    request: AlarmWriteRequest & { readonly version: number },
+  ): Promise<AlarmPoint> {
+    await this.#knownPoint(equipment, code);
+    const shelf = await writeUnshelve(this.#db, equipment, code, {
+      actor: request.actor,
+      requestId: request.requestId,
+      clock: this.#clock(),
+      version: request.version,
+    });
+    return this.#shelfChanged(equipment, code, shelf, 'unshelved');
+  }
+
+  async #knownPoint(equipment: string, code: string): Promise<void> {
+    if (!this.#order.includes(equipment)) {
+      throw new AlarmWriteError('not-found', `no equipment ${equipment}`);
+    }
+    if (this.definition(equipment, code)) return;
+    const any = await this.#db
+      .selectFrom('alarms.alarm_occurrence')
+      .select('seq')
+      .where('equipment', '=', equipment)
+      .where('code', '=', code)
+      .limit(1)
+      .executeTakeFirst();
+    if (!any) throw new AlarmWriteError('not-found', `no alarm point ${equipment}/${code}`);
+  }
+
+  async #shelfChanged(
+    equipment: string,
+    code: string,
+    shelf: AlarmShelf,
+    event: AlarmPointChange['event'],
+  ): Promise<AlarmPoint> {
+    this.#noteShelf(pointKey(equipment, code), shelf);
+    const point =
+      (await this.point(equipment, code, this.#db)) ?? this.#point(equipment, code, shelf, null);
+    this.#pushShelf(equipment, code, event);
+    return point;
+  }
+
+  /** Keeps the shelved points in memory for the expiry check; a newer version wins. */
+  #noteShelf(key: string, shelf: AlarmShelf): void {
+    if ((this.#shelfVersions.get(key) ?? -1) >= shelf.version) return;
+    this.#shelfVersions.set(key, shelf.version);
+    if (shelf.shelved && shelf.epoch !== null && shelf.until !== null) {
+      this.#shelved.set(key, {
+        epoch: shelf.epoch,
+        until: shelf.until.getTime(),
+        version: shelf.version,
+      });
+    } else {
+      this.#shelved.delete(key);
+    }
+  }
+
+  /**
+   * Ends the shelves the plant clock has passed (#143): `expire` once the clock of the shelf's
+   * epoch reaches `until`, `epoch-ended` once a newer epoch has begun. Runs after every notice (in
+   * the module's queue) and at start-up; checks memory first, so a notice costs nothing while no
+   * shelf is due.
+   */
+  async #endShelves(): Promise<void> {
+    const clock = this.#clock();
+    if (!clock) return;
+    const now = clock.watermark.getTime();
+    const due = [...this.#shelved.values()].some(
+      (shelf) => shelf.epoch < clock.epoch || (shelf.epoch === clock.epoch && shelf.until <= now),
+    );
+    if (!due) return;
+    try {
+      const ended = await endShelves(this.#db, clock, (epoch) =>
+        this.#sources.equipment.watermark(epoch),
+      );
+      for (const end of ended) {
+        this.#noteShelf(pointKey(end.equipment, end.code), end.shelf);
+        this.#log.info(
+          { equipment: end.equipment, code: end.code, action: end.action },
+          'alarm shelf ended by the plant clock',
+        );
+      }
+      // The table had none due: the memory was stale (a newer write came first); versions only
+      // rise, so the table's newer rows replace it.
+      if (ended.length === 0) {
+        for (const [key, shelf] of await readShelves(this.#db)) this.#noteShelf(key, shelf);
+      }
+      for (const end of ended) await this.#emitShelf(end.equipment, end.code, end.action);
+    } catch (error) {
+      // Tried again after the next notice.
+      this.#log.error({ err: error }, 'ending alarm shelves failed');
+    }
+  }
+
+  /** Pushes occurrence upserts after an operator write, in the module's order (after the commit). */
+  #pushOccurrences(keys: readonly OccurrenceKey[], event: AlarmChange['event']): void {
+    if (this.#listeners.size === 0) return;
+    void this.#enqueue(async () => {
+      try {
+        await this.#emitOccurrences(keys, event);
+      } catch (error) {
+        this.#log.error({ err: error }, 'alarm push after a write failed');
+      }
+    });
+  }
+
+  #pushShelf(equipment: string, code: string, event: AlarmPointChange['event']): void {
+    if (this.#listeners.size === 0) return;
+    void this.#enqueue(async () => {
+      try {
+        await this.#emitShelf(equipment, code, event);
+      } catch (error) {
+        this.#log.error({ err: error }, 'alarm push after a shelf change failed');
+      }
+    });
+  }
+
+  /** Reads the occurrences as they are now and pushes them (a later read is never older). */
+  async #emitOccurrences(
+    keys: readonly OccurrenceKey[],
+    event: AlarmChange['event'],
+  ): Promise<void> {
+    if (this.#listeners.size === 0 || keys.length === 0) return;
+    const rows = await this.#withOperator(this.#db)
+      .where(
+        sql<boolean>`(o.equipment, o.epoch, o.seq) IN (SELECT * FROM unnest(${keys.map((k) => k.equipment)}::text[], ${keys.map((k) => k.epoch)}::bigint[], ${keys.map((k) => k.seq)}::bigint[]))`,
+      )
+      .execute();
+    for (const row of rows) {
+      this.#emit({ type: 'occurrence', event, occurrence: this.#view(row, this.#operatorOf(row)) });
+    }
+  }
+
+  /** Pushes a point's shelf change and its occurrences that are not closed (their `shelved`). */
+  async #emitShelf(
+    equipment: string,
+    code: string,
+    event: AlarmPointChange['event'],
+  ): Promise<void> {
+    if (this.#listeners.size === 0) return;
+    const point = await this.point(equipment, code, this.#db);
+    if (point) this.#emit({ type: 'point', event, point });
+    const rows = await this.#withOperator(this.#db)
+      .where('o.equipment', '=', equipment)
+      .where('o.code', '=', code)
+      .where(
+        sql<boolean>`NOT (o.ended_at IS NOT NULL AND (s.seq IS NOT NULL OR o.end_reason = 'epoch-ended'))`,
+      )
+      .orderBy('o.raised_at', 'desc')
+      .limit(SHELF_PUSH_LIMIT)
+      .execute();
+    for (const row of rows) {
+      this.#emit({
+        type: 'occurrence',
+        event: 'shelf',
+        occurrence: this.#view(row, this.#operatorOf(row)),
+      });
+    }
   }
 
   /**
    * The device's raise and end of an occurrence (from ingest's facts: seq, sourceTime, receivedAt,
-   * protocol; or the anchor or snapshot they came from), by time. MES transitions (acknowledge,
-   * shelve, comment) join them with #143.
+   * protocol; or the anchor or snapshot they came from) and its MES transitions from the audit
+   * (#143: acknowledgement, comments, and its point's shelf transitions while it was active), by
+   * plant time.
    */
   async history(id: string): Promise<AlarmHistoryEntry[] | undefined> {
     const occurrence = await this.occurrence(id);
@@ -507,6 +1155,27 @@ export class Alarms {
           break;
       }
     }
+    // The MES transitions (#143): acknowledgement, comments, and the point's shelf while active.
+    for (const transition of await occurrenceTransitions(this.#readDb, {
+      equipment,
+      epoch,
+      seq,
+      code,
+      raisedAt: occurrence.raisedAt,
+      endedAt: occurrence.endedAt,
+    })) {
+      entries.push({
+        source: 'audit',
+        transition: transition.action,
+        // Without a plant clock at the write (rare), it sorts at the raise.
+        at: transition.plantAt ?? occurrence.raisedAt,
+        seq: null,
+        receivedAt: null,
+        protocol: null,
+        audit: transition,
+      });
+    }
+    // Stable: at one instant the device's entries stay first, audit entries in their order.
     return entries.sort((a, b) => a.at.getTime() - b.at.getTime());
   }
 
@@ -658,20 +1327,23 @@ export class Alarms {
     return to + this.#config.fleetingMs <= frontier;
   }
 
-  #view(row: {
-    equipment: string;
-    epoch: number;
-    seq: number;
-    code: string;
-    severity: number;
-    priority: Priority;
-    defined: boolean;
-    source: 'fact' | 'anchor';
-    raised_at: Date;
-    ended_at: Date | null;
-    end_reason: EndReason | null;
-    end_seq: number | null;
-  }): AlarmOccurrence {
+  #view(
+    row: {
+      equipment: string;
+      epoch: number;
+      seq: number;
+      code: string;
+      severity: number;
+      priority: Priority;
+      defined: boolean;
+      source: 'fact' | 'anchor';
+      raised_at: Date;
+      ended_at: Date | null;
+      end_reason: EndReason | null;
+      end_seq: number | null;
+    },
+    operator: OperatorView = NO_OPERATOR,
+  ): AlarmOccurrence {
     const bound = this.#bound(this.#tracks.get(row.equipment)?.get(row.epoch));
     const raisedAt = row.raised_at.getTime();
     const endedAt = row.ended_at?.getTime() ?? null;
@@ -691,6 +1363,10 @@ export class Alarms {
       endReason: row.end_reason,
       endSeq: row.end_seq,
       final: raisedAt <= bound && (endedAt === null ? bound === Infinity : endedAt <= bound),
+      state: alarmState(endedAt, row.end_reason, operator.acknowledged !== null),
+      acknowledged: operator.acknowledged,
+      shelved: operator.shelved,
+      comments: operator.comments,
     };
   }
 
@@ -885,7 +1561,7 @@ export class Alarms {
     return result;
   }
 
-  #emit(change: AlarmChange | AlarmFinalityChange): void {
+  #emit(change: AlarmEvent): void {
     for (const listener of this.#listeners) {
       try {
         listener(change);
@@ -1225,9 +1901,27 @@ export class Alarms {
     }
     track.appliedSnapshot = snapshot?.asOfSeq ?? null;
     if (changes.length === 0 && !saveSource && track.sourceStored) return;
-    const upserts = changes.flatMap((c) => (c.after ? [c.after] : []));
+    const upserts = changes
+      .flatMap((c) => (c.after ? [c.after] : []))
+      .sort((a, b) => a.seq - b.seq);
     const deletes = changes.flatMap((c) => (c.after ? [] : c.before ? [c.before.seq] : []));
     await this.#db.transaction().execute(async (trx) => {
+      // Row locks in seq order first (#143): an acknowledgement locks its occurrences FOR SHARE in
+      // (equipment, epoch, seq) order, so both take them in one order and can't deadlock.
+      const touched = changes
+        .flatMap((c) => (c.before ? [c.before.seq] : []))
+        .sort((a, b) => a - b);
+      if (touched.length > 0) {
+        await trx
+          .selectFrom('alarms.alarm_occurrence')
+          .select('seq')
+          .where('equipment', '=', track.equipment)
+          .where('epoch', '=', track.epoch)
+          .where('seq', 'in', touched)
+          .orderBy('seq')
+          .forUpdate()
+          .execute();
+      }
       if (upserts.length > 0) {
         await trx
           .insertInto('alarms.alarm_occurrence')
@@ -1262,8 +1956,27 @@ export class Alarms {
     });
     track.rows = next;
     track.persistedFinal = Math.max(track.persistedFinal, track.finalThrough);
-    if (changes.length === 0) return;
-    for (const change of changes) {
+    if (changes.length === 0 || this.#listeners.size === 0) return;
+    // The operator's side (#143) of what is pushed: read after the commit, in the module's queue,
+    // so a later push never carries an older acknowledgement or shelf than an earlier one.
+    const upserted = changes.flatMap((change) => (change.after ? [change] : []));
+    let operator: Map<string, OperatorView>;
+    try {
+      operator = await operatorViews(
+        this.#db,
+        upserted.map((change) => ({
+          equipment: track.equipment,
+          epoch: track.epoch,
+          seq: change.after?.seq ?? 0,
+          code: change.after?.code ?? '',
+        })),
+      );
+    } catch (error) {
+      // The rows are stored; clients read the list again on their next (re)connect.
+      this.#log.error({ err: error }, 'alarm push skipped: operator state not read');
+      return;
+    }
+    for (const change of upserted) {
       if (!change.after) continue;
       this.#emit({
         type: 'occurrence',
@@ -1273,7 +1986,10 @@ export class Alarms {
             : change.before.endedAt === null && change.after.endedAt !== null
               ? 'cleared'
               : 'updated',
-        occurrence: this.#view(this.#tableRow(track, change.after)),
+        occurrence: this.#view(
+          this.#tableRow(track, change.after),
+          operator.get(occurrenceId(track.equipment, track.epoch, change.after.seq)),
+        ),
       });
     }
   }

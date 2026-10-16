@@ -47,6 +47,16 @@ export const MES_API_LIMITS = {
   badActorsMax: 50,
   /** Alarm KPI topics (`alarm-kpi:<scope>`) one WebSocket client may follow. */
   alarmKpiTopics: 16,
+  /** Alarm writes (#143): occurrences in one bulk acknowledgement. */
+  alarmAckBulk: 100,
+  /** Characters of an alarm write's `actor`, a comment (and an acknowledgement's), a shelf reason. */
+  alarmActor: 100,
+  alarmComment: 500,
+  shelveReason: 200,
+  /** The shortest shelf; the longest is `maxShelveMs` of alarms.yaml. */
+  minShelveMs: 60_000,
+  /** Entries of one alarm point's audit. */
+  alarmAudit: 500,
 } as const;
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -532,8 +542,55 @@ export const paretoSchema = z.object({
 const priority = z.enum(['high', 'medium', 'low']);
 const alarmScope = z.enum(['plant', 'position', 'equipment']);
 const alarmBucketKind = z.enum(['hour', 'shift']);
-export const ALARM_VIEWS = ['active', 'history'] as const;
+export const ALARM_VIEWS = ['active', 'acknowledged', 'shelved', 'history'] as const;
 const alarmView = z.enum(ALARM_VIEWS);
+export const ALARM_STATES = [
+  'unacked-active',
+  'acked-active',
+  'unacked-cleared',
+  'closed',
+] as const;
+const alarmState = z.enum(ALARM_STATES);
+const alarmActor = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MES_API_LIMITS.alarmActor)
+  .describe('Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)');
+const occurrenceIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\d{1,15}~\d{1,15}$/;
+
+export const acknowledgementSchema = z.object({
+  by: z.string().describe('As typed: unauthenticated'),
+  at: time.describe('Wall time'),
+  plantAt: time.nullable().describe('The plant clock at that moment; null without one'),
+  comment: z.string(),
+});
+
+export const alarmCommentSchema = z.object({
+  id: int,
+  text: z.string(),
+  actor: z.string().describe('As typed: unauthenticated'),
+  authenticated: z.boolean().describe('Always false until identity (Phase 7)'),
+  at: time.describe('Wall time'),
+  plantAt: time.nullable().describe('The plant clock at that moment'),
+  requestId: z.string().nullable(),
+});
+
+export const alarmShelfSchema = z
+  .object({
+    shelved: z.boolean(),
+    version: int.describe("The shelf's version: send it with shelve or unshelve (409 if moved)"),
+    by: z.string().nullable(),
+    reason: z.string().nullable(),
+    shelvedAt: time.nullable().describe('Wall time of the shelve'),
+    epoch: int.nullable().describe("The plant clock's epoch at the shelve"),
+    plantAt: time.nullable().describe('The plant clock at the shelve'),
+    until: time
+      .nullable()
+      .describe('Plant time: the point unshelves itself once the plant clock passes it'),
+    durationMs: int.nullable(),
+  })
+  .describe('The shelf of an alarm point (ISA-18.2 shelves a point, not an occurrence)');
 
 export const alarmOccurrenceSchema = z
   .object({
@@ -568,6 +625,14 @@ export const alarmOccurrenceSchema = z
     final: z
       .boolean()
       .describe('Its raise and its end (or that it is still open) can no longer change'),
+    state: alarmState.describe(
+      'ISA-18.2 (#143): a clear does not acknowledge, so a cleared occurrence stays unacked-cleared until acknowledged; closed: ended and acknowledged, or ended by a newer epoch',
+    ),
+    acknowledged: acknowledgementSchema.nullable(),
+    shelved: z
+      .boolean()
+      .describe('Its point is shelved now: an overlay, the state is kept; KPIs count it anyway'),
+    comments: int.describe('Comments on it (GET /alarms/{id} lists them)'),
   })
   .describe('One alarm occurrence: one per device raise (ADR-0024)');
 
@@ -591,6 +656,8 @@ export const alarmDetailSchema = z.object({
       response: z.string().nullable(),
     })
     .nullable(),
+  shelf: alarmShelfSchema.describe("Its point's shelf now"),
+  comments: z.array(alarmCommentSchema).describe('Oldest first'),
 });
 
 export const alarmHistorySchema = z.object({
@@ -599,16 +666,42 @@ export const alarmHistorySchema = z.object({
     .array(
       z.object({
         source: z
-          .enum(['fact', 'anchor', 'snapshot', 'mes'])
-          .describe('A device fact, a retained delivery, a resync snapshot or the MES itself'),
-        transition: z.enum(['raised', 'cleared', 'lost', 'superseded', 'epoch-ended']),
-        at: time.describe('Simulation (device) time'),
+          .enum(['fact', 'anchor', 'snapshot', 'mes', 'audit'])
+          .describe(
+            'A device fact, a retained delivery, a resync snapshot, the MES deriving it, or an entry of the audit (alarms.alarm_transition, #143)',
+          ),
+        transition: z.enum([
+          'raised',
+          'cleared',
+          'lost',
+          'superseded',
+          'epoch-ended',
+          'ack',
+          'comment',
+          'shelve',
+          'unshelve',
+          'expire',
+        ]),
+        at: time.describe(
+          'Simulation (plant) time; for an audit entry the plant clock at the transition',
+        ),
         seq: int.nullable(),
         receivedAt: time.nullable().describe('When the gateway received the fact'),
         protocol: z.string().nullable(),
+        actor: z.string().nullable().describe("Audit entries: as typed, or 'system'"),
+        authenticated: z.boolean().nullable().describe('Audit entries: always false (Phase 7)'),
+        recordedAt: time.nullable().describe('Audit entries: wall time'),
+        requestId: z.string().nullable().describe('Audit entries: the X-Request-Id of the write'),
+        auditId: int.nullable(),
+        detail: z
+          .record(z.string(), z.unknown())
+          .nullable()
+          .describe('Audit entries: the state after (comment text, shelf)'),
       }),
     )
-    .describe('By time; operator transitions join with #143'),
+    .describe(
+      "By time: the device raise and end, the occurrence's acknowledgement and comments, and its point's shelf transitions while it was active",
+    ),
 });
 
 const bucketFloodSchema = z.object({
@@ -727,7 +820,186 @@ export const alarmScopesSchema = z.object({
   ),
 });
 
+export const alarmPointSchema = z
+  .object({
+    equipment: z.string(),
+    code: z.string(),
+    defined: z.boolean().describe('It has a definition in alarms.yaml'),
+    priority: priority.nullable().describe('From the definition; null without one'),
+    text: z.string().nullable(),
+    shelf: alarmShelfSchema,
+    activeOccurrence: z
+      .string()
+      .nullable()
+      .describe('The id of its occurrence still active (device), if any'),
+  })
+  .describe('An alarm point (equipment, code): its definition, shelf and active occurrence');
+
+export const alarmPointListSchema = z.object({
+  points: z
+    .array(alarmPointSchema)
+    .describe(
+      'Every defined point, and every other point with an active occurrence or a shelf, by equipment and code',
+    ),
+});
+
+/** An occurrence id in a request body. */
+const occurrenceIdBody = z
+  .string()
+  .regex(occurrenceIdPattern, 'expected {equipment}~{epoch}~{seq}');
+
+export const acknowledgeRequestSchema = z
+  .strictObject({
+    actor: alarmActor,
+    comment: z.string().max(MES_API_LIMITS.alarmComment).optional(),
+  })
+  .describe('Acknowledges one occurrence (monotonic: no version)');
+
+export const bulkAcknowledgeRequestSchema = z
+  .strictObject({
+    ids: z
+      .array(occurrenceIdBody)
+      .min(1)
+      .max(MES_API_LIMITS.alarmAckBulk)
+      .describe('Occurrence ids (at most 100); an unknown one is 404 and nothing changes'),
+    actor: alarmActor,
+    comment: z.string().max(MES_API_LIMITS.alarmComment).optional(),
+  })
+  .describe('Acknowledges up to 100 occurrences in one transaction');
+
+export const acknowledgeResultSchema = z.object({
+  occurrence: alarmOccurrenceSchema,
+  changed: z.boolean().describe('False: it was acknowledged already (no audit entry)'),
+});
+
+export const bulkAcknowledgeResultSchema = z.object({
+  results: z
+    .array(z.object({ id: z.string(), changed: z.boolean() }))
+    .describe('Per distinct id, in request order'),
+  acknowledged: int.describe('How many this request acknowledged (audited)'),
+});
+
+export const commentRequestSchema = z
+  .strictObject({
+    actor: alarmActor,
+    text: z.string().trim().min(1).max(MES_API_LIMITS.alarmComment),
+  })
+  .describe('Adds a comment to an occurrence (append-only: no version)');
+
+export const commentResultSchema = z.object({
+  comment: alarmCommentSchema,
+  occurrence: alarmOccurrenceSchema,
+});
+
+export const shelveRequestSchema = z
+  .strictObject({
+    actor: alarmActor,
+    reason: z.string().trim().min(1).max(MES_API_LIMITS.shelveReason),
+    durationMs: int
+      .min(MES_API_LIMITS.minShelveMs)
+      .max(Number.MAX_SAFE_INTEGER)
+      .describe('Plant time, 1 minute to maxShelveMs of alarms.yaml (8 hours): longer is 422'),
+    version: int.min(0).describe("The shelf's `version` as read: 409 when it moved on"),
+  })
+  .describe('Shelves an alarm point (or changes its shelf) for a duration of plant time');
+
+export const unshelveRequestSchema = z
+  .strictObject({
+    actor: alarmActor,
+    version: int.min(0).describe("The shelf's `version` as read: 409 when it moved on"),
+  })
+  .describe('Unshelves an alarm point');
+
+export const shelfResultSchema = z.object({ point: alarmPointSchema });
+
+export const alarmTransitionSchema = z.object({
+  id: int,
+  equipment: z.string(),
+  code: z.string(),
+  occurrence: z.string().nullable().describe('The occurrence id for ack and comment'),
+  action: z
+    .enum(['ack', 'comment', 'shelve', 'unshelve', 'expire', 'epoch-ended'])
+    .describe(
+      'expire: the plant-time limit passed; epoch-ended: a newer plant epoch ended the shelf',
+    ),
+  before: z.record(z.string(), z.unknown()).nullable(),
+  after: z.record(z.string(), z.unknown()).nullable(),
+  actor: z.string().describe("As typed, or 'system' for expire and epoch-ended"),
+  authenticated: z.boolean().describe('Always false until identity (Phase 7)'),
+  at: time.describe('Wall time'),
+  plantAt: time.nullable().describe('The plant clock at the transition (expire: the `until`)'),
+  plantEpoch: int.nullable(),
+  requestId: z.string().nullable(),
+  version: int.nullable().describe("The shelf's version after a point action"),
+});
+
+export const alarmPointAuditSchema = z.object({
+  equipment: z.string(),
+  code: z.string(),
+  entries: z
+    .array(alarmTransitionSchema)
+    .describe(
+      "Newest first, at most 500: the point's shelf transitions and its occurrences' acknowledgements and comments",
+    ),
+});
+
+export const operatorBucketSchema = z
+  .object({
+    key: z
+      .string()
+      .describe('The hour start, the shift key (`2026-10-12/A`, `no-shift/{start}`) or `range`'),
+    from: time,
+    to: time,
+    raises: int.describe('Raises in the bucket, as the KPIs count them'),
+    shelvedRaises: int.describe('Raises while their point was shelved'),
+    annunciatedRaises: int.describe('Raises while their point was not shelved'),
+    timeToAck: z
+      .object({
+        count: int,
+        sumMs: ms,
+        maxMs: ms.nullable(),
+      })
+      .describe(
+        'Plant time from raise to acknowledgement of the raises in the bucket acknowledged in the same epoch (exact integers: the mean is sumMs / count)',
+      ),
+    unacknowledgedAtEnd: int.describe(
+      "Occurrences raised before the bucket's end (or the plant clock) not acknowledged by then; one ended by a newer epoch is closed",
+    ),
+    shelvedMs: z
+      .array(z.object({ equipment: z.string(), code: z.string(), ms }))
+      .describe('Shelved time per point inside the bucket, up to the plant clock'),
+    provisional: z.boolean().describe('The bucket is not over at the plant clock'),
+  })
+  .describe('Operator measures of one bucket (MES only, not reconciled; #143)');
+
+export const operatorKpiListSchema = z.object({
+  scope: alarmScope,
+  id: z.string(),
+  bucket: z.enum(['hour', 'shift', 'range']),
+  from: time,
+  to: time,
+  epoch: int.nullable(),
+  buckets: z.array(operatorBucketSchema).describe('Every bucket begun by the plant clock'),
+});
+
+export type OperatorBucketDto = z.infer<typeof operatorBucketSchema>;
+export type OperatorKpiList = z.infer<typeof operatorKpiListSchema>;
 export type AlarmOccurrenceDto = z.infer<typeof alarmOccurrenceSchema>;
+export type AlarmShelfDto = z.infer<typeof alarmShelfSchema>;
+export type AlarmCommentDto = z.infer<typeof alarmCommentSchema>;
+export type AlarmPointDto = z.infer<typeof alarmPointSchema>;
+export type AlarmPointList = z.infer<typeof alarmPointListSchema>;
+export type AlarmTransitionDto = z.infer<typeof alarmTransitionSchema>;
+export type AlarmPointAudit = z.infer<typeof alarmPointAuditSchema>;
+export type AcknowledgeRequest = z.input<typeof acknowledgeRequestSchema>;
+export type BulkAcknowledgeRequest = z.input<typeof bulkAcknowledgeRequestSchema>;
+export type AcknowledgeResult = z.infer<typeof acknowledgeResultSchema>;
+export type BulkAcknowledgeResult = z.infer<typeof bulkAcknowledgeResultSchema>;
+export type CommentRequest = z.input<typeof commentRequestSchema>;
+export type CommentResult = z.infer<typeof commentResultSchema>;
+export type ShelveRequest = z.input<typeof shelveRequestSchema>;
+export type UnshelveRequest = z.input<typeof unshelveRequestSchema>;
+export type ShelfResult = z.infer<typeof shelfResultSchema>;
 export type AlarmList = z.infer<typeof alarmListSchema>;
 export type AlarmDetail = z.infer<typeof alarmDetailSchema>;
 export type AlarmHistory = z.infer<typeof alarmHistorySchema>;
@@ -878,9 +1150,18 @@ export const serverMessageSchema = z
     z.object({
       type: z.literal('alarm'),
       event: z
-        .enum(['raised', 'cleared', 'updated'])
-        .describe('What happened to the occurrence since the last message about it'),
+        .enum(['raised', 'cleared', 'updated', 'acknowledged', 'commented', 'shelf'])
+        .describe(
+          "What happened to the occurrence since the last message about it (shelf: its point's shelf changed)",
+        ),
       occurrence: alarmOccurrenceSchema,
+    }),
+    z.object({
+      type: z.literal('alarm-point'),
+      event: z
+        .enum(['shelved', 'unshelved', 'expire', 'epoch-ended'])
+        .describe('A shelf change on the `alarms` topic (#143)'),
+      point: alarmPointSchema,
     }),
     z.object({
       type: z.literal('alarm-kpi'),

@@ -510,7 +510,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -705,7 +705,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -815,7 +815,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1022,7 +1022,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1166,7 +1166,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1879,7 +1879,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3093,7 +3093,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3802,7 +3802,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4060,7 +4060,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4409,7 +4409,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4429,7 +4429,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one: read again and retry",
+            "description": "The version sent is not the current one (coding set, alarm shelf): read again and retry",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4459,7 +4459,7 @@
             }
           },
           "422": {
-            "description": "Well-formed, but not applicable to the record (outside it, overlapping, unknown reason)",
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock, or an unshelve of a point not shelved)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4721,7 +4721,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4749,20 +4749,22 @@
         "tags": [
           "alarms"
         ],
-        "description": "One occurrence per device raise (ADR-0024), id `{equipment}~{epoch}~{seq}`. `active`: not ended; `history`: ended (cleared by the device, lost by a resync snapshot, superseded by the next raise, or ended by a newer epoch), by raise time in a range of at most 7 days. Pages by `cursor` (`next`). Acknowledge and shelve come with #143.",
+        "description": "One occurrence per device raise (ADR-0024), id `{equipment}~{epoch}~{seq}`. `active`: not ended; `history`: ended (cleared by the device, lost by a resync snapshot, superseded by the next raise, or ended by a newer epoch), by raise time in a range of at most 7 days. Pages by `cursor` (`next`). Views (#143, ISA-18.2) partition the occurrences: `active` (default) not acknowledged and not closed (a cleared one stays until acknowledged), `acknowledged` still active, both with the point not shelved; `shelved` not closed with the point shelved; `history` closed (ended and acknowledged, or ended by a newer epoch), by raise time in a range of at most 7 days.",
         "parameters": [
           {
             "schema": {
               "type": "string",
               "enum": [
                 "active",
+                "acknowledged",
+                "shelved",
                 "history"
               ]
             },
             "in": "query",
             "name": "view",
             "required": false,
-            "description": "active: not ended (default); history: ended (cleared, lost, superseded, epoch-ended), needs a range"
+            "description": "The operator lists (#143), a partition: active (default): not acknowledged and not closed, point not shelved (a cleared one stays until acknowledged); acknowledged: acknowledged and still active, point not shelved; shelved: not closed, point shelved; history: closed (ended and acknowledged, or ended by a newer epoch), needs a range"
           },
           {
             "schema": {
@@ -4852,6 +4854,8 @@
                       "type": "string",
                       "enum": [
                         "active",
+                        "acknowledged",
+                        "shelved",
                         "history"
                       ]
                     },
@@ -5001,6 +5005,71 @@
                           "final": {
                             "type": "boolean",
                             "description": "Its raise and its end (or that it is still open) can no longer change"
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "unacked-active",
+                              "acked-active",
+                              "unacked-cleared",
+                              "closed"
+                            ],
+                            "description": "ISA-18.2 (#143): a clear does not acknowledge, so a cleared occurrence stays unacked-cleared until acknowledged; closed: ended and acknowledged, or ended by a newer epoch"
+                          },
+                          "acknowledged": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "by": {
+                                    "type": "string",
+                                    "description": "As typed: unauthenticated"
+                                  },
+                                  "at": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                    "description": "Wall time"
+                                  },
+                                  "plantAt": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "format": "date-time",
+                                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "The plant clock at that moment; null without one"
+                                  },
+                                  "comment": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "by",
+                                  "at",
+                                  "plantAt",
+                                  "comment"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "shelved": {
+                            "type": "boolean",
+                            "description": "Its point is shelved now: an overlay, the state is kept; KPIs count it anyway"
+                          },
+                          "comments": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Comments on it (GET /alarms/{id} lists them)"
                           }
                         },
                         "required": [
@@ -5019,7 +5088,11 @@
                           "endReason",
                           "endSeq",
                           "active",
-                          "final"
+                          "final",
+                          "state",
+                          "acknowledged",
+                          "shelved",
+                          "comments"
                         ],
                         "additionalProperties": false,
                         "description": "One alarm occurrence: one per device raise (ADR-0024)"
@@ -5050,7 +5123,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5602,7 +5675,311 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alarms/operator-kpi": {
+      "get": {
+        "summary": "Operator measures of a scope per hour, shift bucket or range (MES only)",
+        "tags": [
+          "alarms"
+        ],
+        "description": "Not reconciled and apart from /alarms/kpi, which no operator action changes (#143): shelved and annunciated raises (raises while their point was shelved, and the others), time to acknowledge (count, sum and longest in integer ms of plant time, for the raises in the bucket acknowledged in the same epoch), occurrences unacknowledged at the bucket's end (or the plant clock) and shelved time per point. One epoch: the one given, else the newest of the scope.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "plant",
+                "position",
+                "equipment"
+              ]
+            },
+            "in": "query",
+            "name": "scope",
+            "required": true,
+            "description": "The plant, an operator position (a set of work centers) or one equipment"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "in": "query",
+            "name": "id",
+            "required": false,
+            "description": "Position or equipment id (not for the plant)"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "hour",
+                "shift",
+                "range"
+              ]
+            },
+            "in": "query",
+            "name": "bucket",
+            "required": true,
+            "description": "UTC hours, shift buckets (shifts whole, no-shift stretches clipped) or one range"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "description": "Start of the range (inclusive), ISO 8601"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "description": "End of the range (exclusive), ISO 8601; at most 7 days after `from` for hours, 31 otherwise"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{1,15}$"
+            },
+            "in": "query",
+            "name": "epoch",
+            "required": false,
+            "description": "Device epoch (run) to read; default: per machine the newest with data in the range"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "plant",
+                        "position",
+                        "equipment"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "enum": [
+                        "hour",
+                        "shift",
+                        "range"
+                      ]
+                    },
+                    "from": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "to": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "epoch": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "description": "The hour start, the shift key (`2026-10-12/A`, `no-shift/{start}`) or `range`"
+                          },
+                          "from": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "to": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "raises": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Raises in the bucket, as the KPIs count them"
+                          },
+                          "shelvedRaises": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Raises while their point was shelved"
+                          },
+                          "annunciatedRaises": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Raises while their point was not shelved"
+                          },
+                          "timeToAck": {
+                            "type": "object",
+                            "properties": {
+                              "count": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "sumMs": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Milliseconds of simulation time"
+                              },
+                              "maxMs": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991,
+                                    "description": "Milliseconds of simulation time"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "count",
+                              "sumMs",
+                              "maxMs"
+                            ],
+                            "additionalProperties": false,
+                            "description": "Plant time from raise to acknowledgement of the raises in the bucket acknowledged in the same epoch (exact integers: the mean is sumMs / count)"
+                          },
+                          "unacknowledgedAtEnd": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Occurrences raised before the bucket's end (or the plant clock) not acknowledged by then; one ended by a newer epoch is closed"
+                          },
+                          "shelvedMs": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "equipment": {
+                                  "type": "string"
+                                },
+                                "code": {
+                                  "type": "string"
+                                },
+                                "ms": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "Milliseconds of simulation time"
+                                }
+                              },
+                              "required": [
+                                "equipment",
+                                "code",
+                                "ms"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "description": "Shelved time per point inside the bucket, up to the plant clock"
+                          },
+                          "provisional": {
+                            "type": "boolean",
+                            "description": "The bucket is not over at the plant clock"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "from",
+                          "to",
+                          "raises",
+                          "shelvedRaises",
+                          "annunciatedRaises",
+                          "timeToAck",
+                          "unacknowledgedAtEnd",
+                          "shelvedMs",
+                          "provisional"
+                        ],
+                        "additionalProperties": false,
+                        "description": "Operator measures of one bucket (MES only, not reconciled; #143)"
+                      },
+                      "description": "Every bucket begun by the plant clock"
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "id",
+                    "bucket",
+                    "from",
+                    "to",
+                    "epoch",
+                    "buckets"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5813,7 +6190,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6035,7 +6412,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6196,6 +6573,71 @@
                         "final": {
                           "type": "boolean",
                           "description": "Its raise and its end (or that it is still open) can no longer change"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "unacked-active",
+                            "acked-active",
+                            "unacked-cleared",
+                            "closed"
+                          ],
+                          "description": "ISA-18.2 (#143): a clear does not acknowledge, so a cleared occurrence stays unacked-cleared until acknowledged; closed: ended and acknowledged, or ended by a newer epoch"
+                        },
+                        "acknowledged": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "by": {
+                                  "type": "string",
+                                  "description": "As typed: unauthenticated"
+                                },
+                                "at": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                  "description": "Wall time"
+                                },
+                                "plantAt": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "The plant clock at that moment; null without one"
+                                },
+                                "comment": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "by",
+                                "at",
+                                "plantAt",
+                                "comment"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "shelved": {
+                          "type": "boolean",
+                          "description": "Its point is shelved now: an overlay, the state is kept; KPIs count it anyway"
+                        },
+                        "comments": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Comments on it (GET /alarms/{id} lists them)"
                         }
                       },
                       "required": [
@@ -6214,7 +6656,11 @@
                         "endReason",
                         "endSeq",
                         "active",
-                        "final"
+                        "final",
+                        "state",
+                        "acknowledged",
+                        "shelved",
+                        "comments"
                       ],
                       "additionalProperties": false,
                       "description": "One alarm occurrence: one per device raise (ADR-0024)"
@@ -6251,11 +6697,176 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "shelf": {
+                      "type": "object",
+                      "properties": {
+                        "shelved": {
+                          "type": "boolean"
+                        },
+                        "version": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The shelf's version: send it with shelve or unshelve (409 if moved)"
+                        },
+                        "by": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "shelvedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Wall time of the shelve"
+                        },
+                        "epoch": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The plant clock's epoch at the shelve"
+                        },
+                        "plantAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The plant clock at the shelve"
+                        },
+                        "until": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Plant time: the point unshelves itself once the plant clock passes it"
+                        },
+                        "durationMs": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "shelved",
+                        "version",
+                        "by",
+                        "reason",
+                        "shelvedAt",
+                        "epoch",
+                        "plantAt",
+                        "until",
+                        "durationMs"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Its point's shelf now"
+                    },
+                    "comments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "actor": {
+                            "type": "string",
+                            "description": "As typed: unauthenticated"
+                          },
+                          "authenticated": {
+                            "type": "boolean",
+                            "description": "Always false until identity (Phase 7)"
+                          },
+                          "at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "Wall time"
+                          },
+                          "plantAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The plant clock at that moment"
+                          },
+                          "requestId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "text",
+                          "actor",
+                          "authenticated",
+                          "at",
+                          "plantAt",
+                          "requestId"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Oldest first"
                     }
                   },
                   "required": [
                     "occurrence",
-                    "definition"
+                    "definition",
+                    "shelf",
+                    "comments"
                   ],
                   "additionalProperties": false
                 }
@@ -6273,7 +6884,7 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6301,7 +6912,7 @@
         "tags": [
           "alarms"
         ],
-        "description": "From ingest's stored facts (seq, sourceTime, receivedAt, protocol), or the retained delivery or resync snapshot they came from; operator transitions join with #143.",
+        "description": "From ingest's stored facts (seq, sourceTime, receivedAt, protocol), or the retained delivery or resync snapshot they came from, merged with the audit (#143): its acknowledgement and comments, and its point’s shelf transitions while it was active, each with actor, wall time and request id, by plant time.",
         "parameters": [
           {
             "schema": {
@@ -6336,9 +6947,10 @@
                               "fact",
                               "anchor",
                               "snapshot",
-                              "mes"
+                              "mes",
+                              "audit"
                             ],
-                            "description": "A device fact, a retained delivery, a resync snapshot or the MES itself"
+                            "description": "A device fact, a retained delivery, a resync snapshot, the MES deriving it, or an entry of the audit (alarms.alarm_transition, #143)"
                           },
                           "transition": {
                             "type": "string",
@@ -6347,14 +6959,19 @@
                               "cleared",
                               "lost",
                               "superseded",
-                              "epoch-ended"
+                              "epoch-ended",
+                              "ack",
+                              "comment",
+                              "shelve",
+                              "unshelve",
+                              "expire"
                             ]
                           },
                           "at": {
                             "type": "string",
                             "format": "date-time",
                             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
-                            "description": "Simulation (device) time"
+                            "description": "Simulation (plant) time; for an audit entry the plant clock at the transition"
                           },
                           "seq": {
                             "anyOf": [
@@ -6386,6 +7003,67 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "actor": {
+                            "description": "Audit entries: as typed, or 'system'",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "authenticated": {
+                            "description": "Audit entries: always false (Phase 7)",
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          },
+                          "recordedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Audit entries: wall time"
+                          },
+                          "requestId": {
+                            "description": "Audit entries: the X-Request-Id of the write",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "auditId": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "detail": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Audit entries: the state after (comment text, shelf)"
                           }
                         },
                         "required": [
@@ -6394,11 +7072,17 @@
                           "at",
                           "seq",
                           "receivedAt",
-                          "protocol"
+                          "protocol",
+                          "actor",
+                          "authenticated",
+                          "recordedAt",
+                          "requestId",
+                          "auditId",
+                          "detail"
                         ],
                         "additionalProperties": false
                       },
-                      "description": "By time; operator transitions join with #143"
+                      "description": "By time: the device raise and end, the occurrence's acknowledgement and comments, and its point's shelf transitions while it was active"
                     }
                   },
                   "required": [
@@ -6421,7 +7105,2115 @@
             }
           },
           "404": {
-            "description": "Unknown equipment, work center, metric, shift, record or route",
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alarms/ack": {
+      "post": {
+        "summary": "Acknowledges up to 100 occurrences in one transaction",
+        "tags": [
+          "alarms"
+        ],
+        "description": "Monotonic, so no version: one INSERT … ON CONFLICT DO NOTHING; an id acknowledged already (also concurrently) is `changed: false` and gets no audit entry. An unknown id is 404 and nothing changes. Counts as one write for the rate limit. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ids": {
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\\d{1,15}~\\d{1,15}$"
+                    },
+                    "description": "Occurrence ids (at most 100); an unknown one is 404 and nothing changes"
+                  },
+                  "actor": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)"
+                  },
+                  "comment": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "ids",
+                  "actor"
+                ],
+                "additionalProperties": false,
+                "description": "Acknowledges up to 100 occurrences in one transaction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "changed": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "changed"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Per distinct id, in request order"
+                    },
+                    "acknowledged": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How many this request acknowledged (audited)"
+                    }
+                  },
+                  "required": [
+                    "results",
+                    "acknowledged"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (one global limit): retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alarms/{id}/ack": {
+      "post": {
+        "summary": "Acknowledges one occurrence",
+        "tags": [
+          "alarms"
+        ],
+        "description": "Monotonic, so no version; acknowledged already: 200 with `changed: false` and no audit entry. A clear does not acknowledge: a cleared occurrence stays in the active list until acknowledged. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "actor": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)"
+                  },
+                  "comment": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "actor"
+                ],
+                "additionalProperties": false,
+                "description": "Acknowledges one occurrence (monotonic: no version)"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\\d{1,15}~\\d{1,15}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "An occurrence id: `{equipment}~{epoch}~{seq}` (the raise’s device seq)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "occurrence": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "`{equipment}~{epoch}~{seq}`: stable under reordering, rebuilds and restarts"
+                        },
+                        "equipment": {
+                          "type": "string"
+                        },
+                        "epoch": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The device epoch (run)"
+                        },
+                        "seq": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The device sequence number of the raise"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "priority": {
+                          "type": "string",
+                          "enum": [
+                            "high",
+                            "medium",
+                            "low"
+                          ],
+                          "description": "From the point's definition, or from the severity for a code without one"
+                        },
+                        "defined": {
+                          "type": "boolean",
+                          "description": "False for a code without a definition in alarms.yaml"
+                        },
+                        "text": {
+                          "description": "The definition's operator text",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "severity": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The wire severity of the raise, 1 to 1000"
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "fact",
+                            "anchor"
+                          ],
+                          "description": "The raise fact, or a retained alarm delivery whose fact is not stored"
+                        },
+                        "raisedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        "endedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When it stopped being active; null while active"
+                        },
+                        "endReason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "cleared",
+                                "lost",
+                                "superseded",
+                                "epoch-ended"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "cleared: the device clear; lost: a resync snapshot showed it inactive (the clear was lost); superseded: the next raise of the point (a lost clear); epoch-ended: a newer run"
+                        },
+                        "endSeq": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The clear's seq, the snapshot's asOfSeq or the superseding raise's seq"
+                        },
+                        "active": {
+                          "type": "boolean"
+                        },
+                        "final": {
+                          "type": "boolean",
+                          "description": "Its raise and its end (or that it is still open) can no longer change"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "unacked-active",
+                            "acked-active",
+                            "unacked-cleared",
+                            "closed"
+                          ],
+                          "description": "ISA-18.2 (#143): a clear does not acknowledge, so a cleared occurrence stays unacked-cleared until acknowledged; closed: ended and acknowledged, or ended by a newer epoch"
+                        },
+                        "acknowledged": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "by": {
+                                  "type": "string",
+                                  "description": "As typed: unauthenticated"
+                                },
+                                "at": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                  "description": "Wall time"
+                                },
+                                "plantAt": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "The plant clock at that moment; null without one"
+                                },
+                                "comment": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "by",
+                                "at",
+                                "plantAt",
+                                "comment"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "shelved": {
+                          "type": "boolean",
+                          "description": "Its point is shelved now: an overlay, the state is kept; KPIs count it anyway"
+                        },
+                        "comments": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Comments on it (GET /alarms/{id} lists them)"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "equipment",
+                        "epoch",
+                        "seq",
+                        "code",
+                        "priority",
+                        "defined",
+                        "text",
+                        "severity",
+                        "source",
+                        "raisedAt",
+                        "endedAt",
+                        "endReason",
+                        "endSeq",
+                        "active",
+                        "final",
+                        "state",
+                        "acknowledged",
+                        "shelved",
+                        "comments"
+                      ],
+                      "additionalProperties": false,
+                      "description": "One alarm occurrence: one per device raise (ADR-0024)"
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "False: it was acknowledged already (no audit entry)"
+                    }
+                  },
+                  "required": [
+                    "occurrence",
+                    "changed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (one global limit): retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alarms/{id}/comments": {
+      "post": {
+        "summary": "Adds a comment to an occurrence",
+        "tags": [
+          "alarms"
+        ],
+        "description": "Append-only (1 to 500 characters), so no version. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "actor": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "actor",
+                  "text"
+                ],
+                "additionalProperties": false,
+                "description": "Adds a comment to an occurrence (append-only: no version)"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}~\\d{1,15}~\\d{1,15}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "An occurrence id: `{equipment}~{epoch}~{seq}` (the raise’s device seq)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "comment": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "actor": {
+                          "type": "string",
+                          "description": "As typed: unauthenticated"
+                        },
+                        "authenticated": {
+                          "type": "boolean",
+                          "description": "Always false until identity (Phase 7)"
+                        },
+                        "at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "Wall time"
+                        },
+                        "plantAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The plant clock at that moment"
+                        },
+                        "requestId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "text",
+                        "actor",
+                        "authenticated",
+                        "at",
+                        "plantAt",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "occurrence": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "`{equipment}~{epoch}~{seq}`: stable under reordering, rebuilds and restarts"
+                        },
+                        "equipment": {
+                          "type": "string"
+                        },
+                        "epoch": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The device epoch (run)"
+                        },
+                        "seq": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The device sequence number of the raise"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "priority": {
+                          "type": "string",
+                          "enum": [
+                            "high",
+                            "medium",
+                            "low"
+                          ],
+                          "description": "From the point's definition, or from the severity for a code without one"
+                        },
+                        "defined": {
+                          "type": "boolean",
+                          "description": "False for a code without a definition in alarms.yaml"
+                        },
+                        "text": {
+                          "description": "The definition's operator text",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "severity": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The wire severity of the raise, 1 to 1000"
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "fact",
+                            "anchor"
+                          ],
+                          "description": "The raise fact, or a retained alarm delivery whose fact is not stored"
+                        },
+                        "raisedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        "endedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "When it stopped being active; null while active"
+                        },
+                        "endReason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "cleared",
+                                "lost",
+                                "superseded",
+                                "epoch-ended"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "cleared: the device clear; lost: a resync snapshot showed it inactive (the clear was lost); superseded: the next raise of the point (a lost clear); epoch-ended: a newer run"
+                        },
+                        "endSeq": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The clear's seq, the snapshot's asOfSeq or the superseding raise's seq"
+                        },
+                        "active": {
+                          "type": "boolean"
+                        },
+                        "final": {
+                          "type": "boolean",
+                          "description": "Its raise and its end (or that it is still open) can no longer change"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "unacked-active",
+                            "acked-active",
+                            "unacked-cleared",
+                            "closed"
+                          ],
+                          "description": "ISA-18.2 (#143): a clear does not acknowledge, so a cleared occurrence stays unacked-cleared until acknowledged; closed: ended and acknowledged, or ended by a newer epoch"
+                        },
+                        "acknowledged": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "by": {
+                                  "type": "string",
+                                  "description": "As typed: unauthenticated"
+                                },
+                                "at": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                  "description": "Wall time"
+                                },
+                                "plantAt": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "The plant clock at that moment; null without one"
+                                },
+                                "comment": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "by",
+                                "at",
+                                "plantAt",
+                                "comment"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "shelved": {
+                          "type": "boolean",
+                          "description": "Its point is shelved now: an overlay, the state is kept; KPIs count it anyway"
+                        },
+                        "comments": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Comments on it (GET /alarms/{id} lists them)"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "equipment",
+                        "epoch",
+                        "seq",
+                        "code",
+                        "priority",
+                        "defined",
+                        "text",
+                        "severity",
+                        "source",
+                        "raisedAt",
+                        "endedAt",
+                        "endReason",
+                        "endSeq",
+                        "active",
+                        "final",
+                        "state",
+                        "acknowledged",
+                        "shelved",
+                        "comments"
+                      ],
+                      "additionalProperties": false,
+                      "description": "One alarm occurrence: one per device raise (ADR-0024)"
+                    }
+                  },
+                  "required": [
+                    "comment",
+                    "occurrence"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (one global limit): retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alarm-points": {
+      "get": {
+        "summary": "Alarm points with their definition, shelf and active occurrence",
+        "tags": [
+          "alarms"
+        ],
+        "description": "Every defined point (alarms.yaml), and every other point with an active occurrence or a shelf, by equipment and code. `shelf.version` goes with shelve and unshelve.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "in": "query",
+            "name": "equipment",
+            "required": false,
+            "description": "Only this equipment"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "in": "query",
+            "name": "position",
+            "required": false,
+            "description": "Only the equipment of this operator position"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "in": "query",
+            "name": "shelved",
+            "required": false,
+            "description": "Only points shelved now"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "points": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "equipment": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "defined": {
+                            "type": "boolean",
+                            "description": "It has a definition in alarms.yaml"
+                          },
+                          "priority": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "high",
+                                  "medium",
+                                  "low"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "From the definition; null without one"
+                          },
+                          "text": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "shelf": {
+                            "type": "object",
+                            "properties": {
+                              "shelved": {
+                                "type": "boolean"
+                              },
+                              "version": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "The shelf's version: send it with shelve or unshelve (409 if moved)"
+                              },
+                              "by": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "shelvedAt": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "Wall time of the shelve"
+                              },
+                              "epoch": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "The plant clock's epoch at the shelve"
+                              },
+                              "plantAt": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "The plant clock at the shelve"
+                              },
+                              "until": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "Plant time: the point unshelves itself once the plant clock passes it"
+                              },
+                              "durationMs": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "shelved",
+                              "version",
+                              "by",
+                              "reason",
+                              "shelvedAt",
+                              "epoch",
+                              "plantAt",
+                              "until",
+                              "durationMs"
+                            ],
+                            "additionalProperties": false,
+                            "description": "The shelf of an alarm point (ISA-18.2 shelves a point, not an occurrence)"
+                          },
+                          "activeOccurrence": {
+                            "description": "The id of its occurrence still active (device), if any",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "equipment",
+                          "code",
+                          "defined",
+                          "priority",
+                          "text",
+                          "shelf",
+                          "activeOccurrence"
+                        ],
+                        "additionalProperties": false,
+                        "description": "An alarm point (equipment, code): its definition, shelf and active occurrence"
+                      },
+                      "description": "Every defined point, and every other point with an active occurrence or a shelf, by equipment and code"
+                    }
+                  },
+                  "required": [
+                    "points"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alarm-points/{equipment}/{code}/shelve": {
+      "post": {
+        "summary": "Shelves an alarm point for a time of plant time",
+        "tags": [
+          "alarms"
+        ],
+        "description": "ISA-18.2 shelves a point, not an occurrence: its occurrences leave the active list and keep their states; KPIs count every raise anyway. `durationMs` runs in plant time, 1 minute to maxShelveMs (alarms.yaml, 8 hours; longer is 422): `until` = the plant clock now + duration; once the plant clock passes it, the MES unshelves the point itself (audited `expire`, actor system), and a newer epoch ends the shelf (`epoch-ended`). Shelving a shelved point replaces its shelf. `version` is the shelf’s as read (0 for a point never shelved): a mismatch is 409. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "actor": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "durationMs": {
+                    "type": "integer",
+                    "minimum": 60000,
+                    "maximum": 9007199254740991,
+                    "description": "Plant time, 1 minute to maxShelveMs of alarms.yaml (8 hours): longer is 422"
+                  },
+                  "version": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "The shelf's `version` as read: 409 when it moved on"
+                  }
+                },
+                "required": [
+                  "actor",
+                  "reason",
+                  "durationMs",
+                  "version"
+                ],
+                "additionalProperties": false,
+                "description": "Shelves an alarm point (or changes its shelf) for a duration of plant time"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "in": "path",
+            "name": "equipment",
+            "required": true,
+            "description": "Equipment id"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "description": "Alarm code, e.g. COOLANT-PRESSURE"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "point": {
+                      "type": "object",
+                      "properties": {
+                        "equipment": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "defined": {
+                          "type": "boolean",
+                          "description": "It has a definition in alarms.yaml"
+                        },
+                        "priority": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "From the definition; null without one"
+                        },
+                        "text": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "shelf": {
+                          "type": "object",
+                          "properties": {
+                            "shelved": {
+                              "type": "boolean"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "The shelf's version: send it with shelve or unshelve (409 if moved)"
+                            },
+                            "by": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "reason": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "shelvedAt": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "Wall time of the shelve"
+                            },
+                            "epoch": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "The plant clock's epoch at the shelve"
+                            },
+                            "plantAt": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "The plant clock at the shelve"
+                            },
+                            "until": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "Plant time: the point unshelves itself once the plant clock passes it"
+                            },
+                            "durationMs": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "shelved",
+                            "version",
+                            "by",
+                            "reason",
+                            "shelvedAt",
+                            "epoch",
+                            "plantAt",
+                            "until",
+                            "durationMs"
+                          ],
+                          "additionalProperties": false,
+                          "description": "The shelf of an alarm point (ISA-18.2 shelves a point, not an occurrence)"
+                        },
+                        "activeOccurrence": {
+                          "description": "The id of its occurrence still active (device), if any",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "equipment",
+                        "code",
+                        "defined",
+                        "priority",
+                        "text",
+                        "shelf",
+                        "activeOccurrence"
+                      ],
+                      "additionalProperties": false,
+                      "description": "An alarm point (equipment, code): its definition, shelf and active occurrence"
+                    }
+                  },
+                  "required": [
+                    "point"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The version sent is not the current one (coding set, alarm shelf): read again and retry",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock, or an unshelve of a point not shelved)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (one global limit): retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alarm-points/{equipment}/{code}/unshelve": {
+      "post": {
+        "summary": "Unshelves an alarm point",
+        "tags": [
+          "alarms"
+        ],
+        "description": "`version` is the shelf’s as read: a mismatch is 409; a point not shelved is 422. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023); `actor` is free text, audited as unauthenticated in alarms.alarm_transition with wall time, plant time and the request id. Operator actions never change alarm KPIs or their revisions (every raise counts).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "actor": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Who acts, as typed: recorded as unauthenticated (until identity, Phase 7)"
+                  },
+                  "version": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "The shelf's `version` as read: 409 when it moved on"
+                  }
+                },
+                "required": [
+                  "actor",
+                  "version"
+                ],
+                "additionalProperties": false,
+                "description": "Unshelves an alarm point"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "in": "path",
+            "name": "equipment",
+            "required": true,
+            "description": "Equipment id"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "description": "Alarm code, e.g. COOLANT-PRESSURE"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "point": {
+                      "type": "object",
+                      "properties": {
+                        "equipment": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "defined": {
+                          "type": "boolean",
+                          "description": "It has a definition in alarms.yaml"
+                        },
+                        "priority": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "high",
+                                "medium",
+                                "low"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "From the definition; null without one"
+                        },
+                        "text": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "shelf": {
+                          "type": "object",
+                          "properties": {
+                            "shelved": {
+                              "type": "boolean"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "The shelf's version: send it with shelve or unshelve (409 if moved)"
+                            },
+                            "by": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "reason": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "shelvedAt": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "Wall time of the shelve"
+                            },
+                            "epoch": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "The plant clock's epoch at the shelve"
+                            },
+                            "plantAt": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "The plant clock at the shelve"
+                            },
+                            "until": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "Plant time: the point unshelves itself once the plant clock passes it"
+                            },
+                            "durationMs": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "shelved",
+                            "version",
+                            "by",
+                            "reason",
+                            "shelvedAt",
+                            "epoch",
+                            "plantAt",
+                            "until",
+                            "durationMs"
+                          ],
+                          "additionalProperties": false,
+                          "description": "The shelf of an alarm point (ISA-18.2 shelves a point, not an occurrence)"
+                        },
+                        "activeOccurrence": {
+                          "description": "The id of its occurrence still active (device), if any",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "equipment",
+                        "code",
+                        "defined",
+                        "priority",
+                        "text",
+                        "shelf",
+                        "activeOccurrence"
+                      ],
+                      "additionalProperties": false,
+                      "description": "An alarm point (equipment, code): its definition, shelf and active occurrence"
+                    }
+                  },
+                  "required": [
+                    "point"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The version sent is not the current one (coding set, alarm shelf): read again and retry",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock, or an unshelve of a point not shelved)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (one global limit): retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alarm-points/{equipment}/{code}/audit": {
+      "get": {
+        "summary": "An alarm point's audit (append-only), newest first",
+        "tags": [
+          "alarms"
+        ],
+        "description": "Its shelf transitions (shelve, unshelve, expire, epoch-ended) and its occurrences’ acknowledgements and comments, at most 500, each with actor, `authenticated: false`, wall time, plant time and request id.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "in": "path",
+            "name": "equipment",
+            "required": true,
+            "description": "Equipment id"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "description": "Alarm code, e.g. COOLANT-PRESSURE"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "equipment": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    },
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "equipment": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "occurrence": {
+                            "description": "The occurrence id for ack and comment",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "ack",
+                              "comment",
+                              "shelve",
+                              "unshelve",
+                              "expire",
+                              "epoch-ended"
+                            ],
+                            "description": "expire: the plant-time limit passed; epoch-ended: a newer plant epoch ended the shelf"
+                          },
+                          "before": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "after": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {}
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "actor": {
+                            "type": "string",
+                            "description": "As typed, or 'system' for expire and epoch-ended"
+                          },
+                          "authenticated": {
+                            "type": "boolean",
+                            "description": "Always false until identity (Phase 7)"
+                          },
+                          "at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "Wall time"
+                          },
+                          "plantAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The plant clock at the transition (expire: the `until`)"
+                          },
+                          "plantEpoch": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "requestId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "version": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The shelf's version after a point action"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "equipment",
+                          "code",
+                          "occurrence",
+                          "action",
+                          "before",
+                          "after",
+                          "actor",
+                          "authenticated",
+                          "at",
+                          "plantAt",
+                          "plantEpoch",
+                          "requestId",
+                          "version"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Newest first, at most 500: the point's shelf transitions and its occurrences' acknowledgements and comments"
+                    }
+                  },
+                  "required": [
+                    "equipment",
+                    "code",
+                    "entries"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, record, alarm, alarm point or route",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -600,7 +600,10 @@ async function expectAlarms(
 ): Promise<{ compared: number; final: number; open: string[] }> {
   const truth = run.truth.alarms;
   const all = [
+    // The four views partition the occurrences (#143), whatever operators did.
     ...(await alarms.list({ view: 'active', limit: 100_000 })),
+    ...(await alarms.list({ view: 'acknowledged', limit: 100_000 })),
+    ...(await alarms.list({ view: 'shelved', limit: 100_000 })),
     ...(await alarms.list({ view: 'history', limit: 100_000 })),
   ].sort(
     (a, b) =>

@@ -4,6 +4,8 @@
 // Host and Origin a browser on this machine would send.
 // Usage: node scripts/stack-smoke-web.mjs [web base URL, default http://127.0.0.1:8080]
 // Since #121 it checks the write refusals, and with SMOKE_WRITES=1 codes and clears one record.
+// Since #143 it checks the alarm write refusals too, and with SMOKE_WRITES=1 acknowledges one
+// alarm occurrence (skipped when the plant has raised none yet).
 
 import { request as httpRequest } from 'node:http';
 
@@ -142,6 +144,38 @@ for (const [name, headers, status] of [
   if (answer.status !== status) fail(`write with ${name} answered ${answer.status}, not ${status}`);
   console.log(`ok: write with ${name} refused (${status})`);
 }
+// The alarm writes (#143) sit behind the same guards; the occurrence need not exist. The 405 of
+// MES_WRITES=off is not checked here: MES_WRITES is the `mes` container's environment, fixed for
+// the stack under test, and toggling it would mean recreating the MES in the middle of the smoke.
+// The MES's own tests check the 405 for every alarm write (alarm-writes.test.ts).
+const alarmWrites = [
+  ['/api/v1/alarms/cnc-01~0~0/ack', { actor: 'stack smoke' }],
+  ['/api/v1/alarms/ack', { ids: ['cnc-01~0~0'], actor: 'stack smoke' }],
+  ['/api/v1/alarms/cnc-01~0~0/comments', { actor: 'stack smoke', text: 'refused' }],
+  [
+    '/api/v1/alarm-points/cnc-01/SPINDLE-OVERLOAD/shelve',
+    { actor: 'stack smoke', reason: 'refused', durationMs: 60_000, version: 0 },
+  ],
+  ['/api/v1/alarm-points/cnc-01/SPINDLE-OVERLOAD/unshelve', { actor: 'stack smoke', version: 0 }],
+];
+for (const [path, request] of alarmWrites) {
+  for (const [name, headers, status] of [
+    ['a foreign Origin', { origin: 'http://evil.test', ...json }, 403],
+    ['no Origin', json, 403],
+    [
+      'a form content type',
+      { origin: base.origin, 'content-type': 'application/x-www-form-urlencoded' },
+      415,
+    ],
+  ]) {
+    const answer = await send('POST', path, headers, JSON.stringify(request));
+    if (answer.status !== status) {
+      fail(`alarm write ${path} with ${name} answered ${answer.status}, not ${status}`);
+    }
+  }
+}
+console.log('ok: alarm writes with a foreign Origin, no Origin or a form content type refused');
+
 const patch = await send('PATCH', refused, page, body);
 if (patch.status !== 403) fail(`PATCH through the web answered ${patch.status}, not 403`);
 console.log('ok: nginx passes only GET, POST, PUT and DELETE under /api/ (PATCH refused, 403)');
@@ -213,4 +247,40 @@ const actions = audit.entries
 if (actions !== 'cleared:stack smoke,coded:stack smoke') fail(`audit: ${actions}`);
 console.log(
   `ok: write through the web with the page's origin (${record.id} coded, cleared, audited)`,
+);
+
+// An alarm acknowledgement (#143): the newest unacknowledged occurrence of the last 7 days of plant
+// time, if the plant has raised one (the alarms-01 injections raise some early; week-01's first
+// alarm comes on Tuesday). Acknowledging is monotonic: a second write is `changed: false` and adds
+// no audit entry.
+const { clock } = await getJson('/api/v1/plant');
+const alarmTo = new Date(Date.parse(clock?.watermark ?? new Date().toISOString()) + 1);
+const alarmFrom = new Date(alarmTo.getTime() - 7 * 86_400_000);
+const alarmList = await getJson(
+  `/api/v1/alarms?view=active&from=${alarmFrom.toISOString()}&to=${alarmTo.toISOString()}`,
+);
+const occurrence = alarmList.alarms?.find((a) => a.acknowledged === null);
+if (occurrence === undefined) {
+  console.log('skipped: an alarm acknowledgement through the web (no unacknowledged occurrence)');
+  process.exit(0);
+}
+const ackPath = `/api/v1/alarms/${encodeURIComponent(occurrence.id)}/ack`;
+const acked = await send('POST', ackPath, page, JSON.stringify({ actor: 'stack smoke' }));
+if (acked.status !== 200)
+  fail(`acknowledging ${occurrence.id} answered ${acked.status}: ${acked.text}`);
+const ackResult = JSON.parse(acked.text);
+if (!ackResult.changed || ackResult.occurrence.acknowledged?.by !== 'stack smoke') {
+  fail(`acknowledgement not applied: ${acked.text}`);
+}
+const again = await send('POST', ackPath, page, JSON.stringify({ actor: 'stack smoke' }));
+if (again.status !== 200 || JSON.parse(again.text).changed !== false) {
+  fail(`a second acknowledgement of ${occurrence.id} changed it: ${again.text}`);
+}
+const alarmHistory = await getJson(`/api/v1/alarms/${encodeURIComponent(occurrence.id)}/history`);
+const acks = alarmHistory.entries.filter((e) => e.source === 'audit' && e.transition === 'ack');
+if (acks.length !== 1 || acks[0].actor !== 'stack smoke' || acks[0].authenticated !== false) {
+  fail(`alarm audit: ${JSON.stringify(acks)}`);
+}
+console.log(
+  `ok: alarm acknowledged through the web with the page's origin (${occurrence.id}, audited once)`,
 );

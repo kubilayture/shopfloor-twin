@@ -41,8 +41,11 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `equipment.state_hourly` (view)
 - [`alarms`](#schema-alarms)
   - `alarms.alarm_occurrence`
+  - `alarms.alarm_shelf`
+  - `alarms.alarm_transition`
   - `alarms.kpi_revision`
   - `alarms.occurrence_source`
+  - `alarms.occurrence_state`
 - [`public`](#schema-public)
   - `public.schema_migrations`
 
@@ -766,7 +769,7 @@ SELECT equipment,
 
 ## Schema alarms
 
-Owner: alarms. Alarm occurrences derived from the device’s raise and clear facts, anchors and resync snapshots (ADR-0010, ADR-0024), what they were derived from, and the revisions of final alarm KPI hours. KPIs are computed on read.
+Owner: alarms. Alarm occurrences derived from the device’s raise and clear facts, anchors and resync snapshots (ADR-0010, ADR-0024), what they were derived from, and the revisions of final alarm KPI hours; the operator’s acknowledgements, point shelves and the append-only audit of every MES transition (ADR-0023). KPIs are computed on read and never read the operator’s tables.
 
 ### alarms.alarm_occurrence
 
@@ -801,6 +804,69 @@ One alarm occurrence per device raise, keyed (equipment, epoch, raise seq), with
 | Index | `alarm_occurrence_epoch_ended` | `alarms.alarm_occurrence USING btree (epoch, ended_at)` |
 | Index | `alarm_occurrence_epoch_raised` | `alarms.alarm_occurrence USING btree (epoch, raised_at)` |
 | Index | `alarm_occurrence_raised` | `alarms.alarm_occurrence USING btree (raised_at DESC)` |
+
+### alarms.alarm_shelf
+
+The shelf of each alarm point (equipment, code) ever shelved: who, why, the plant time it ends at (`until`, at most maxShelveMs) and its version, the optimistic-concurrency token of shelve and unshelve (#143).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `code` | `text` | not null |  |
+| `version` | `bigint` | not null | `0` |
+| `shelved` | `boolean` | not null | `false` |
+| `shelved_by` | `text` | null |  |
+| `reason` | `text` | null |  |
+| `shelved_at` | `timestamp with time zone` | null |  |
+| `plant_epoch` | `bigint` | null |  |
+| `plant_at` | `timestamp with time zone` | null |  |
+| `until` | `timestamp with time zone` | null |  |
+| `duration_ms` | `bigint` | null |  |
+| `updated_at` | `timestamp with time zone` | not null | `now()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `alarm_shelf_pkey` | `PRIMARY KEY (equipment, code)` |
+| Check | `alarm_shelf_check` | `CHECK ((shelved = ((shelved_by IS NOT NULL) AND (reason IS NOT NULL) AND (shelved_at IS NOT NULL) AND (plant_epoch IS NOT NULL) AND (plant_at IS NOT NULL) AND (until IS NOT NULL) AND (duration_ms IS NOT NULL))))` |
+| Check | `alarm_shelf_check1` | `CHECK (((until IS NULL) OR (until > plant_at)))` |
+| Check | `alarm_shelf_duration_ms_check` | `CHECK (((duration_ms IS NULL) OR (duration_ms > 0)))` |
+| Check | `alarm_shelf_reason_check` | `CHECK (((length(reason) >= 1) AND (length(reason) <= 200)))` |
+| Check | `alarm_shelf_shelved_by_check` | `CHECK (((length(shelved_by) >= 1) AND (length(shelved_by) <= 100)))` |
+| Check | `alarm_shelf_version_check` | `CHECK ((version >= 0))` |
+| Index | `alarm_shelf_shelved` | `alarms.alarm_shelf USING btree (plant_epoch, until) WHERE shelved` |
+
+### alarms.alarm_transition
+
+Append-only audit of every MES transition of an alarm (ack, comment, shelve, unshelve, expire, epoch-ended) with before, after, actor, `authenticated`, wall time, plant time and request id; a trigger refuses UPDATE, DELETE and TRUNCATE (#143, ADR-0023).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `equipment` | `text` | not null |  |
+| `code` | `text` | not null |  |
+| `epoch` | `bigint` | null |  |
+| `seq` | `bigint` | null |  |
+| `action` | `text` | not null |  |
+| `before` | `jsonb` | null |  |
+| `after` | `jsonb` | null |  |
+| `actor` | `text` | not null |  |
+| `authenticated` | `boolean` | not null | `false` |
+| `at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `plant_at` | `timestamp with time zone` | null |  |
+| `plant_epoch` | `bigint` | null |  |
+| `request_id` | `text` | null |  |
+| `version` | `bigint` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `alarm_transition_pkey` | `PRIMARY KEY (id)` |
+| Check | `alarm_transition_action_check` | `CHECK ((action = ANY (ARRAY['ack'::text, 'comment'::text, 'shelve'::text, 'unshelve'::text, 'expire'::text, 'epoch-ended'::text])))` |
+| Check | `alarm_transition_actor_check` | `CHECK (((length(actor) >= 1) AND (length(actor) <= 100)))` |
+| Check | `alarm_transition_check` | `CHECK (((seq IS NULL) = (epoch IS NULL)))` |
+| Check | `alarm_transition_check1` | `CHECK (((seq IS NOT NULL) = (action = ANY (ARRAY['ack'::text, 'comment'::text]))))` |
+| Check | `alarm_transition_check2` | `CHECK (((version IS NULL) = (action = ANY (ARRAY['ack'::text, 'comment'::text]))))` |
+| Index | `alarm_transition_occurrence` | `alarms.alarm_transition USING btree (equipment, epoch, seq) WHERE (seq IS NOT NULL)` |
+| Index | `alarm_transition_point` | `alarms.alarm_transition USING btree (equipment, code, id)` |
 
 ### alarms.kpi_revision
 
@@ -840,6 +906,29 @@ What the occurrences of each (equipment, epoch) were derived from (alarm fact co
 | --- | --- | --- |
 | Primary key | `occurrence_source_pkey` | `PRIMARY KEY (equipment, epoch)` |
 | Check | `occurrence_source_facts_check` | `CHECK ((facts >= 0))` |
+
+### alarms.occurrence_state
+
+Acknowledgement per occurrence (who, wall time, plant time, comment, request id); insert-only by a trigger, so acknowledging is monotonic and needs no version; never touched by a rebuild (#143).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `seq` | `bigint` | not null |  |
+| `acknowledged_by` | `text` | not null |  |
+| `acknowledged_at` | `timestamp with time zone` | not null |  |
+| `plant_at` | `timestamp with time zone` | null |  |
+| `plant_epoch` | `bigint` | null |  |
+| `comment` | `text` | not null | `''::text` |
+| `request_id` | `text` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `occurrence_state_pkey` | `PRIMARY KEY (equipment, epoch, seq)` |
+| Check | `occurrence_state_acknowledged_by_check` | `CHECK (((length(acknowledged_by) >= 1) AND (length(acknowledged_by) <= 100)))` |
+| Check | `occurrence_state_check` | `CHECK (((plant_at IS NULL) = (plant_epoch IS NULL)))` |
+| Check | `occurrence_state_comment_check` | `CHECK ((length(comment) <= 500))` |
 
 ## Schema public
 

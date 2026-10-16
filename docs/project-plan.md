@@ -11,6 +11,8 @@ Oct 10, 2026 · @Kubilay
 > **Change note — rev. 5 (12 Oct 2026).** Phases 1–6 run from a fixed weekly production schedule file (variant campaigns per CNC), the counterpart of the initial stock file, until released orders replace it in Phase 7 (sections 4, 11). Found while planning Phase 1: the plan defined what is in stock but not what to make.
 >
 > **Change note — rev. 6 (15 Oct 2026).** Claude merges pull requests after an independent review agent and a green CI; the owner approves plans and phases and may review or revert any PR (ADR-0011, superseding ADR-0004's merge rule; sections 2, 8, 12).
+>
+> **Change note — rev. 7 (16 Oct 2026).** From the Phase 7 plan and its review (#167): (1) orders reach the CNCs through a new idempotent OPC UA method `LoadOrder` on `cmd/load-order`, with job facts in the device sequence as the proof of execution; `LoadProgram` stays for the schedule mode (sections 5, 11). (2) The weekly schedule file stays as a production mode beside the order-driven mode; the ERP mock and the simulator read the same lot file, because the simulator never calls a business system (sections 4, 11). (3) "Idle without a dispatched order" is the cause `NO-ORDER` (section 7). (4) Identity in Phase 7 authenticates reads too; migrations run as an owner role and the MES as a role that owns no table (sections 7, 12). (5) Phase 7 is XL, delivered in two waves (section 11).
 
 ShopFloor Twin is a realistic simulation of a discrete-manufacturing plant plus a working MES core built on top of it, developed end to end in TypeScript. The simulator plays the role of the physical shop floor; everything above it (edge gateway, MQTT Unified Namespace, historian, MES, operator and management UIs) is built the way it would be in a real plant, so the same software could in principle be pointed at real machines.
 
@@ -178,8 +180,8 @@ The simulator is a deterministic discrete-event engine: the same seed, plant con
 | Tool wear | Linear wear per cycle; defect probability rises with wear; tool change resets it | Tool life, wear-to-defect curve |
 | Leak-test reading | Normal distribution with slow sensor drift until calibration | Mean, sigma, drift per day |
 | Operators | Presence by shift, absences, individual speed factor, skill qualification per station | Roster file |
-| Production schedule | Which variant each CNC runs, as a fixed weekly list of campaigns (variant, quantity, machine); a variant change triggers a changeover | Schedule file in Phases 1–6; replaced by released orders from Phase 7 |
-| Materials | Lots with finite quantity; a missing lot starves the consuming operation | Initial stock file in Phases 1–6; issued by the mock ERP from Phase 7 |
+| Production schedule | Which variant each CNC runs: in `schedule` mode a fixed weekly list of campaigns (variant, quantity, machine); in `orders` mode (from Phase 7) only the jobs the MES dispatched through `LoadOrder`, run in order, each not before its planned start; a variant change triggers a changeover | Schedule file (`schedule` mode, the default); dispatched jobs (`orders` mode, rev. 7) |
+| Materials | Lots with finite quantity; a missing lot starves the consuming operation | Stock file, which from Phase 7 the ERP mock also serves as its lot master data; the simulator never calls the ERP (rev. 7) |
 
 **Interactivity.** The simulator exposes a control API (REST for commands, WebSocket for live state) used by the simulation console:
 
@@ -209,11 +211,11 @@ Only the gateway talks to machines and only the MES talks to the database; the c
 | Component | ISA-95 level | Responsibility | Talks to |
 | --- | --- | --- | --- |
 | `simulator` | 0–2 (process, devices, control) | Discrete-event plant model; one OPC UA server endpoint per machine (ports 4841–4845); Modbus TCP server for WSH-01 (port 5020); control API | Gateway (serves it), simulation console |
-| `edge-gateway` | 2 (edge) | OPC UA subscriptions and Modbus polling; normalization to canonical payloads; on-disk store-and-forward buffer; MQTT publishing; executing commands as OPC UA writes or method calls | Simulator, broker |
+| `edge-gateway` | 2 (edge) | OPC UA subscriptions and Modbus polling; normalization to canonical payloads; on-disk store-and-forward buffer; MQTT publishing; executing commands as OPC UA method calls (`LoadOrder`, idempotent by command id) | Simulator, broker |
 | `broker` | Integration | Eclipse Mosquitto; per-client credentials and topic ACLs; retained state; last-will messages | Gateway, MES |
 | `mes-server` | 3 (operations) | Modular monolith: ingest, equipment states and downtime, OEE, alarms, orders and routing, genealogy, quality and SPC, shifts, users; REST API and WebSocket push | Broker, database, ERP mock, web |
 | `db` | 3 | PostgreSQL with TimescaleDB: relational MES data plus time-series hypertables and continuous aggregates | MES only |
-| `erp-mock` | 4 (business) | Issues production orders and material lots; receives production confirmations | MES |
+| `erp-mock` | 4 (business) | Serves production orders (with routing and BOM) and lot master data; receives confirmations and order status messages, idempotently | MES |
 | `web` | UI | MES screens, operator terminal, simulation console | MES API, simulator control API |
 
 **Unified Namespace (UNS).** All shop-floor data flows through one MQTT topic tree that follows the ISA-95 hierarchy:
@@ -226,7 +228,7 @@ Only the gateway talks to machines and only the MES talks to the database; the c
 | `telemetry` | `…/cnc-01/telemetry/spindle-load` | Sampled process values | Yes (last value) |
 | `events` | `…/cnc-01/events/cycle-complete` | Discrete events: cycle complete with serial and result, tool change | No |
 | `alarms` | `…/cnc-01/alarms/spindle-overload` | Alarm lifecycle: active, acknowledged, cleared | Yes |
-| `cmd` / `cmd-res` | `…/cnc-01/cmd/load-program` | Commands from MES and their responses | No |
+| `cmd` / `cmd-res` | `…/cnc-01/cmd/load-order` | Commands from MES (command envelope with expiry and target device epoch) and the gateway's results | No |
 | `mes` | `…/assembly/line-a1/asm-01/mes/active-order` | Context published by MES for HMIs | Yes |
 | `_sys` | `orbis/gebze/_sys/edge-gateway/gw-01/status` | Component health, last-will "offline" | Yes |
 
@@ -244,7 +246,7 @@ Every payload uses one envelope: schema name and version, source timestamp, gate
 
 1. Telemetry and events: machine → OPC UA monitored item (or Modbus poll) → gateway normalizes → UNS → MES ingest → TimescaleDB.
 2. Equipment state: state changes become state intervals in the MES; operators or rules attach downtime reason codes; OEE is computed from intervals and counts.
-3. Orders down: ERP mock → MES order released → MES publishes `cmd/load-program` → gateway calls the machine's OPC UA method → response published on `cmd-res`.
+3. Orders down: ERP mock → MES imports and releases the order → MES dispatches it to a CNC and publishes `cmd/load-order` → gateway calls the machine's OPC UA method `LoadOrder` → result published on `cmd-res`; the machine's job `accepted` fact (UNS `events/job`) confirms it. Only the MES may publish commands (broker ACL).
 4. Confirmations up: MES aggregates good, scrap and material consumption per order operation → sends confirmations to the ERP mock.
 5. UI: MES pushes changes over WebSocket; the simulation console talks only to the simulator's control API.
 
@@ -299,17 +301,17 @@ The MES is a modular monolith: one deployable `mes-server` whose modules own the
 | `equipment` | State intervals, downtime records | Turn state changes into closed intervals; auto-classify by rules; operator reason coding; split intervals at hour and shift boundaries so every stored interval lies inside one hour and one shift (required for correct hourly continuous aggregates); open intervals are closed provisionally at each boundary |
 | `oee` | OEE results and aggregates | Calculate per equipment, work center, shift, order; continuous aggregates per hour and shift |
 | `alarms` | Alarm definitions and occurrences | Lifecycle (active, acknowledged, cleared, shelved), priorities, alarm-flood detection, top-offender reports |
-| `orders` | Production orders and order operations | Import from ERP mock, release, dispatch to equipment, progress, close, confirm back to ERP |
+| `orders` | Production orders and order operations | Import from ERP mock, release, dispatch to a CNC over the command path, progress, close, confirm back to ERP |
 | `execution` | Operation records per serial | Track each serial through OP10–OP50, enforce routing order, rework loop, component consumption |
 | `genealogy` | Lots, serials, cartons, parent-child links | Forward and backward trace queries |
 | `quality` | Measurements, inspections, scrap and rework records | Limits per characteristic, SPC charts and run rules, quality holds |
 | `shifts` | Shift instances, crews, handover notes | Shift calendar, shift report generation |
-| `identity` | Users, roles, sessions, audit log | Local accounts; roles: operator, supervisor, maintenance, quality, admin; every write is audited |
+| `identity` | Users, roles, sessions, audit log | Local accounts; roles: operator, supervisor, maintenance, quality, admin; every request needs a session (from Phase 7); every write is audited in one audit log |
 | `realtime` | WebSocket channels | Push state, alarm and order changes to subscribed screens |
 
 **OEE definitions.** Terms follow ISO 22400-2. Planned busy time is the scheduled time minus planned stops (breaks, planned maintenance, no scheduled order). Actual production time is time in the Running state plus time in `Stopped` episodes shorter than the micro-stop threshold.
 
-"Scheduled" depends on the phase. In Phases 1–6 there are no production orders, so every shift in the shift calendar counts as scheduled and Idle is always an availability loss. From Phase 7, scheduled time is the time a released order is dispatched to the equipment, and Idle without one is excluded. The rule is a single configuration switch in `oee-core`, so the golden-scenario snapshots change only in the pull request that switches it, with the reason written down.
+"Scheduled" depends on the phase. In Phases 1–6 there are no production orders, so every shift in the shift calendar counts as scheduled and Idle is always an availability loss. From Phase 7, scheduled time is the time a released order is dispatched to the equipment, and Idle without one is excluded: in `orders` mode a CNC with no startable job is `Idle` with cause `NO-ORDER`, and that time is excluded from planned busy time (rule `scheduledTime: orders`). Machines downstream of the CNCs receive no dispatch; their `Starved` time stays an external availability loss (rev. 7). The rule is a single configuration switch in `oee-core`, so the golden-scenario snapshots change only in the pull request that switches it, with the reason written down.
 
 ```latex
 \text{Availability} = \frac{\text{Actual production time}}{\text{Planned busy time}}
@@ -530,7 +532,7 @@ Eleven phases build the system bottom-up, following the data from the machine to
 | 4 | MES foundation: historian and equipment states | `mes-server` skeleton, migrations, master-data seeding, idempotent ingest, hypertables, state intervals with hour and shift splitting, REST and WebSocket; web plant overview and machine detail with live state and trends | Recorded state intervals for a simulated shift equal the simulator's ground truth; duplicate and reorder tests pass; live overview works at 60× | L |
 | 5 | OEE and downtime | `oee-core` with reference cases; continuous aggregates; reason-code tree; auto-classification rules; operator downtime coding UI; OEE dashboard and downtime Pareto | MES OEE for the golden scenario equals the simulator's ground truth to four decimals, per machine and per shift | L |
 | 6 | Alarms and shifts | Alarm lifecycle (active, acknowledged, cleared, shelved), alarm list UI, alarm KPIs and flood detection; shift calendar, handover notes, shift report | Injected faults appear, are acknowledged and clear with a complete audit trail; shift report totals reconcile with OEE data | M |
-| 7 | Orders, ERP and execution | `erp-mock`; `identity` (users, roles, login, audit); order import, release and dispatch over the command path; routing execution per serial; operator terminal; confirmations to ERP; simulator takes lots from the ERP mock | An order runs end to end: ERP → MES → machine program → production → confirmation in ERP, quantities reconciled; role permissions tested | L |
+| 7 | Orders, ERP and execution | `erp-mock`; `identity` (users, roles, login, audit) and separate database roles; order import, release and dispatch over the command path (`cmd/load-order` → `LoadOrder`); routing execution per part; operator terminal; confirmations to ERP; the ERP mock serves the lots the simulator stocks (same lot file) | An order runs end to end: ERP → MES → machine program → production → confirmation in ERP, quantities reconciled; role permissions tested | XL (two waves) |
 | 8 | Traceability and quality | Lots, serials, cartons, genealogy queries; rework loop; leak-test measurements; SPC charts (I-MR, X̄-R) with run rules; quality holds; traceability screen | Any shipped serial traces back to its blank lot, component lots, machines, operators and test values, and a lot traces forward to all affected cartons; SPC detects an injected drift | L |
 | 9 | Simulation console, scenarios and hardening | Interactive console UI; scenario playback; resilience suite; OPC UA security mode SignAndEncrypt with certificates; optional Prometheus + Grafana profile; load-test tool chosen and performance test run | Resilience suite passes; performance at 60× meets the targets set in the phase plan; security review checklist complete | M |
 | 10 | Release 1.0 | Documentation pass, architecture views updated, demo scenario and recording, final report, `v1.0.0` tag | All six success criteria in section 1 verified and recorded in the final report | S |
@@ -551,6 +553,9 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 | Golden snapshots updated carelessly, hiding regressions | Medium | High | Snapshot updates require a written justification in the pull request and owner approval |
 | Local machine resources: many containers at 60× speed | Medium | Low | Speed limits configurable; Compose profiles keep optional services off by default |
 | Continuity between Claude sessions | High | Medium | Repository docs are the memory: session protocol in section 2 starts and ends with `docs/STATUS.md` |
+| A command executed twice (a retried method call, a late acceptance, a re-dispatch) | Medium | High | Command id dedup on the device, device-side expiry and epoch checks, failure declared only after the last expiry, exactly-once asserted per order (Phase 7, ADR-0029) |
+| The MES's database role can weaken its own audit | Medium | Medium | Owner and application roles separated in Phase 7; the application role owns no table; the continuous aggregates have their own owner role (ADR-0027) |
+| No CI while GitHub Actions is unavailable | High | Medium | Every CI job's local equivalent on each final commit, recorded per pull request (Phases 6 and 7) |
 
 **Constraints**
 
@@ -565,6 +570,8 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 - [x] Modbus library confirmation: `modbus-serial` (ADR-0013)
 - [x] Micro-stop threshold: 120 s over the whole Stopped interval, in `config/plant/oee.yaml` (ADR-0021)
 - [x] Auto-classification rules for downtime: an ordered list of (state, cause pattern) → reason in `config/plant/reasons.yaml`, first match wins, else UNCODED (ADR-0021, #119)
+- [x] Order-driven simulation and the command path: `orders` mode beside the schedule, idempotent `LoadOrder`, job facts in the device sequence (ADR-0029, ADR-0030; Phase 7)
+- [x] Identity: sessions in a cookie, scrypt, five roles, one audit log; separate database roles (ADR-0026, ADR-0027; Phase 7)
 - [ ] Load-testing tool and performance targets (Phase 9)
 - [ ] Whether to add Sparkplug B after v1.0 (Phase 10 report)
 

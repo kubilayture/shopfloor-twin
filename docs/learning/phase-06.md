@@ -38,7 +38,7 @@ The device owns active and cleared, and the MES owns acknowledged and shelved (A
 
 ### EEMUA 191 and ISA-18.2 alarm KPIs
 
-The KPIs measure the load on one operator, so they are computed per **operator position** (here a configured set of work centers: `cell-m1`, `line-a1`) and for the plant. The benchmarks come from EEMUA 191 and ISA-18.2: about one alarm per 10 minutes per operator is very likely acceptable, about two is the most manageable; more than 10 in 10 minutes is a flood; under about 1 % of time in flood; no chattering or fleeting alarms; few standing alarms; the top 10 alarms under a few percent of the load.
+The KPIs measure the load on one operator, so they are computed per **operator position** (here a configured set of work centers: `cell-m1`, `line-a1`) and for the plant. The benchmarks come from EEMUA 191 and ISA-18.2: about one alarm per 10 minutes per operator is very likely acceptable, about two is the most manageable; more than 10 in 10 minutes is a flood; under about 1 % of 10-minute windows in flood; no chattering or fleeting alarms; few standing alarms; the top 10 alarms under a few percent of the load.
 
 Definitions in this project (`config/plant/alarms.yaml`, ADR-0024):
 
@@ -61,7 +61,7 @@ A worked example from `alarms-01`'s shift A on Cell M1 (13 injected raises from 
 
 ### Window conventions
 
-Every windowed KPI uses one convention: **the window ending at t is (t − window, t]**, open on the left, closed on the right.
+The **sliding** windows (chattering and flood episodes) use one convention: **the window ending at t is (t − window, t]**, open on the left, closed on the right. The **fixed** windows behind `peak10` and flood windows are half-open like the buckets, **[start, start + window)**, aligned on the hour.
 
 - A raise exactly one window earlier has left the window. Chattering at 60,000 ms is therefore not chattering (the first raise has left), while 59,999 ms is.
 - Several raises in one millisecond all count, in raise order: the second of three already sees two. Raise order is time, then equipment, then the device's `seq`, then code. `seq` is per device, so it never orders raises of two devices.

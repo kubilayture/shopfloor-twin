@@ -107,6 +107,10 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Fixed
 
+- MES operator measures, review follow-ups of #143 (#156; ADR-0024 "Operator measures follow-ups (#156)", ADR-0025 note).
+  - **Bounded query:** `Alarms.operatorMeasures` loads only the occurrences that can count from the earliest bucket start on (raised from there, or earlier and neither acknowledged in the epoch nor ended by a newer epoch by then) instead of every occurrence of the epoch; the plant clock of an epoch without a watermark stays exact through one aggregate over the rows left out. Results identical: a property test holds the predicate to the unbounded computation, and a PostgreSQL test compares 60 random queries over 200 random occurrences with it. No new index (no migration).
+  - **Unshelve booked to its own epoch:** an unshelve that lands after a newer epoch began but before the MES ended the shelf is audited in the shelf's epoch at that epoch's last plant time (never past `until`), not in the new epoch; `expire` and `epoch-ended` always record the shelf's epoch. Before, the old epoch's shelved time ran on while a machine still in it moved its clock (tested: 20 minutes instead of 3).
+  - **Documented:** `timeToAck` is counted in the raise's bucket, so a late acknowledgement changes a bucket with `provisional: false` (OpenAPI descriptions; no new flag); `unacknowledgedAtEnd` counts shelved and cleared-unacknowledged occurrences too. OpenAPI regenerated.
 - A CNC's first changeover with no product loaded gives cause `CHANGEOVER none→<product>` instead of `CHANGEOVER undefined→<product>`; the format is documented in `docs/simulation-model.md` and the OPC UA address-space contract. Golden week `week-01` not regenerated: a validated schedule always loads a CNC's first campaign at start, so the week never takes this path; its events (35,764 lines, `events.sha256` `e7c69736…009b740b`) and `summary.json` are byte-identical, and that hash is the baseline #117 must keep (#126).
 
 ### Changed

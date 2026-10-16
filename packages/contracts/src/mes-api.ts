@@ -964,15 +964,19 @@ export const operatorBucketSchema = z
         maxMs: ms.nullable(),
       })
       .describe(
-        'Plant time from raise to acknowledgement of the raises in the bucket acknowledged in the same epoch (exact integers: the mean is sumMs / count)',
+        "Plant time from raise to acknowledgement of the raises in the bucket acknowledged in the same epoch (exact integers: the mean is sumMs / count). Counted in the raise's bucket: a later acknowledgement still changes it after the bucket is over (provisional: false)",
       ),
     unacknowledgedAtEnd: int.describe(
-      "Occurrences raised before the bucket's end (or the plant clock) not acknowledged by then; one ended by a newer epoch is closed",
+      "Occurrences raised before the bucket's end (or the plant clock) not acknowledged in this epoch by then, whatever their device state: shelved ones and cleared ones never acknowledged count too; one ended by a newer epoch by then is closed and does not. Fixed once the bucket is over",
     ),
     shelvedMs: z
       .array(z.object({ equipment: z.string(), code: z.string(), ms }))
       .describe('Shelved time per point inside the bucket, up to the plant clock'),
-    provisional: z.boolean().describe('The bucket is not over at the plant clock'),
+    provisional: z
+      .boolean()
+      .describe(
+        'The bucket is not over at the plant clock. False does not settle timeToAck: a late acknowledgement of a raise in the bucket still adds to it',
+      ),
   })
   .describe('Operator measures of one bucket (MES only, not reconciled; #143)');
 

@@ -43,8 +43,14 @@ export type {
 export { alarmHourBuckets, alarmShiftBuckets, noShiftKey } from './buckets.ts';
 export type { AlarmBucket } from './buckets.ts';
 export { deriveOccurrences, earliestEffect } from './derive.ts';
-export { AlarmWriteError, UNSHELVED, alarmState, retrying } from './lifecycle.ts';
-export { operatorMeasures, shelfIntervals } from './operator.ts';
+export {
+  AlarmWriteError,
+  UNSHELVED,
+  alarmState,
+  retrying,
+  unshelvePlantTime,
+} from './lifecycle.ts';
+export { measuredFrom, operatorMeasures, shelfIntervals } from './operator.ts';
 export type { OperatorBucket, OperatorOccurrence, ShelfTransition } from './operator.ts';
 export type {
   Acknowledgement,

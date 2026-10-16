@@ -92,3 +92,7 @@ The print view is the web page with a print stylesheet (#146). The API adds what
 - Bad: an alarm KPI hour without activity is not listed by `Alarms.kpis`, so its revision is not seen; a late fact that changes an hour makes it active, so in practice none is missed.
 - Bad: a report read may write (the counter catch-up), on the main pool.
 - Good: the MES-only operator figures of #143 sit beside the reconciled KPIs without touching finality; only an acknowledgement after final moves the report, as `content`.
+
+### Note: operator figures after final (#156)
+
+ADR-0024's operator measures keep a late acknowledgement in the raise's bucket and document it instead of flagging it ("Operator measures follow-ups (#156)": `provisional: false` means the bucket is over, not that its time to acknowledge is settled). The content rule above already matches: the only operator figure that can change after a shift ends is its time to acknowledge, and each acknowledgement of an occurrence raised in a final shift is one `content` step. `unacknowledgedAtEnd` (which counts shelved and cleared-unacknowledged occurrences too) is taken at the shift's end and never moves. An unshelve or system end of a shelf is now booked to the shelf's own epoch at that epoch's last plant time, which is after every ended shift of that epoch, so it still is no step. The step is conservative in one case: an acknowledgement made in a later epoch is counted as a step though it does not enter the time to acknowledge (an acknowledgement does not carry its plant epoch to the shifts module).

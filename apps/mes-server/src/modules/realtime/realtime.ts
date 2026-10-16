@@ -302,6 +302,44 @@ export class WriteLimiter {
   }
 }
 
+/**
+ * One token bucket per key (the login's user name, #168): a bucket that has refilled completely
+ * holds nothing worth remembering, so it is forgotten (at most once a second), and the map holds
+ * only the keys used within about `burst / perSecond` seconds, whatever names are tried.
+ */
+export class KeyedLimiter {
+  readonly #perSecond: number;
+  readonly #burst: number;
+  readonly #buckets = new Map<string, WriteLimiter>();
+  #pruned = -Infinity;
+
+  constructor(perSecond: number, burst: number) {
+    this.#perSecond = perSecond;
+    this.#burst = burst;
+  }
+
+  /** Keys with a bucket that has not refilled yet (or not been pruned). */
+  get size(): number {
+    return this.#buckets.size;
+  }
+
+  /** Takes a token for the key: undefined when allowed, else the seconds until one is free. */
+  take(key: string, now = performance.now()): number | undefined {
+    if (now - this.#pruned >= 1_000) {
+      this.#pruned = now;
+      for (const [other, bucket] of this.#buckets) {
+        if (bucket.full(now)) this.#buckets.delete(other);
+      }
+    }
+    let bucket = this.#buckets.get(key);
+    if (!bucket) {
+      bucket = new WriteLimiter(this.#perSecond, this.#burst, now);
+      this.#buckets.set(key, bucket);
+    }
+    return bucket.take(now);
+  }
+}
+
 /** A JSON content type: `application/json`, with parameters (charset) or not. */
 const isJson = (contentType: string | undefined): boolean =>
   (contentType ?? '').split(';', 1)[0]?.trim().toLowerCase() === 'application/json';
@@ -592,23 +630,12 @@ export async function registerRealtime(
     options.loginRate?.perSecond ?? LIMITS.loginsPerSecond,
     options.loginRate?.burst ?? LIMITS.loginBurst,
   );
-  const nameLimiters = new Map<string, WriteLimiter>();
-  const loginRefusal = (username: string): number | undefined => {
-    const name = username.trim().toLowerCase();
-    let bucket = nameLimiters.get(name);
-    if (!bucket) {
-      // Bounded: buckets that have refilled completely are forgotten when the map grows.
-      if (nameLimiters.size >= 1_000) {
-        for (const [key, limiter] of nameLimiters) if (limiter.full()) nameLimiters.delete(key);
-      }
-      bucket = new WriteLimiter(
-        options.userLoginRate?.perSecond ?? LIMITS.userLoginsPerSecond,
-        options.userLoginRate?.burst ?? LIMITS.userLoginBurst,
-      );
-      nameLimiters.set(name, bucket);
-    }
-    return bucket.take() ?? loginLimiter.take();
-  };
+  const nameLimiters = new KeyedLimiter(
+    options.userLoginRate?.perSecond ?? LIMITS.userLoginsPerSecond,
+    options.userLoginRate?.burst ?? LIMITS.userLoginBurst,
+  );
+  const loginRefusal = (username: string): number | undefined =>
+    nameLimiters.take(username.trim().toLowerCase()) ?? loginLimiter.take();
 
   // Identity (#168, ADR-0026).
   const identity = options.identity;

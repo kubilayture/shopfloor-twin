@@ -7,6 +7,7 @@
 export {
   API_PREFIX,
   WS_PATH,
+  KeyedLimiter,
   WriteLimiter,
   cookieValue,
   mergePieces,

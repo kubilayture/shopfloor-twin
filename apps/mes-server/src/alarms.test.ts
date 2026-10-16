@@ -205,6 +205,16 @@ async function writeOff(mes: Mes): Promise<void> {
   expect(await mes.ingest.sweep()).toBe(1);
 }
 
+const revisions = async (db: Kysely<Database>) =>
+  (
+    await db
+      .selectFrom('alarms.kpi_revision')
+      .selectAll()
+      .orderBy('scope')
+      .orderBy('hour')
+      .execute()
+  ).map((r) => [r.scope, r.hour.toISOString(), r.revision]);
+
 const storedRows = (db: Kysely<Database>) =>
   db
     .selectFrom('alarms.alarm_occurrence')
@@ -343,6 +353,22 @@ describe('lost clears, late facts and revisions (#142, ADR-0024 "Revisions")', (
     expect(revisions.map((r) => [r.scope, r.hour.toISOString(), r.revision])).toEqual([
       ['equipment:cnc-01', HOUR3, 1],
     ]);
+  });
+
+  it('never revises hours a snapshot closes while the jump that applies it makes them final (review P1)', async () => {
+    const mes = await setup();
+    // The clear at seq 3 is lost; final through stays at 03:05 while facts up to 05:05 arrive.
+    await mes.send(state(E1, 1, t(0)), raise(E1, 2, t(5)), state(E1, 4, t(30), 'Stopped'));
+    await mes.retained(snapshot(E1, 4, t(30), []));
+    await mes.send(state(E1, 5, t(125)));
+    expect([...(await equipmentHours(mes.alarms)).values()].some((b) => b.final)).toBe(false);
+    // Writing the gap off settles through 05:05 and applies the snapshot at once: 03:00 and 04:00
+    // become final with the lost clear in them, never having been final without it.
+    await writeOff(mes);
+    expect(await occurrences(mes.alarms)).toEqual([[2, CP, 'fact', t(5), t(30), 'lost']]);
+    const hours = await equipmentHours(mes.alarms);
+    expect([hours.get(HOUR3)?.final, hours.get(HOUR3)?.revision]).toEqual([true, 0]);
+    expect(await revisions(mes.db)).toEqual([]);
   });
 
   it('revises every final hour a late raise can change: its windows and its active span', async () => {
@@ -488,6 +514,36 @@ describe('alarm catch-up at start-up (#142)', () => {
     const again = await mes.startAlarms();
     expect(await storedRows(mes.db)).toEqual(before);
     expect((await equipmentHours(again)).get(HOUR3)?.kpis.activeMs).toBe(10 * MINUTE);
+  });
+});
+
+describe('alarm revisions across a restart (#142, review P3)', () => {
+  it('a gap filled while stopped revises nothing that was never final', async () => {
+    const mes = await setup();
+    // seq 3 is missing: final through stays at 03:10 though facts reach 05:05.
+    await mes.send(state(E1, 1, t(0)), raise(E1, 2, t(10)), state(E1, 4, t(125)));
+    await mes.alarms.stop();
+    await mes.send(clear(E1, 3, t(20)));
+    const restarted = await mes.startAlarms();
+    expect(await occurrences(restarted)).toEqual([[2, CP, 'fact', t(10), t(20), 'cleared']]);
+    const hours = await equipmentHours(restarted);
+    expect([hours.get(HOUR3)?.final, hours.get(HOUR3)?.revision]).toEqual([true, 0]);
+    expect(await revisions(mes.db)).toEqual([]);
+  });
+
+  it('a late fact found at start-up revises an hour reported final before the restart', async () => {
+    const mes = await setup();
+    // seq 3 (the clear) is written off; final through 04:00:30 makes 03:00 final (end + 1 s).
+    await mes.send(state(E1, 1, t(0)), raise(E1, 2, t(10)), state(E1, 4, t(60, 400)));
+    await writeOff(mes);
+    await mes.send(state(E1, 5, t(60, 30_000)));
+    expect((await equipmentHours(mes.alarms)).get(HOUR3)?.final).toBe(true);
+    await mes.alarms.stop();
+    await mes.send(clear(E1, 3, t(20)));
+    const restarted = await mes.startAlarms();
+    expect(await occurrences(restarted)).toEqual([[2, CP, 'fact', t(10), t(20), 'cleared']]);
+    expect(await revisions(mes.db)).toEqual([['equipment:cnc-01', HOUR3, 1]]);
+    expect((await equipmentHours(restarted)).get(HOUR3)?.revision).toBe(1);
   });
 });
 

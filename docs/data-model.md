@@ -798,6 +798,7 @@ One alarm occurrence per device raise, keyed (equipment, epoch, raise seq), with
 | Check | `alarm_occurrence_severity_check` | `CHECK (((severity >= 1) AND (severity <= 1000)))` |
 | Check | `alarm_occurrence_source_check` | `CHECK ((source = ANY (ARRAY['fact'::text, 'anchor'::text])))` |
 | Index | `alarm_occurrence_active` | `alarms.alarm_occurrence USING btree (equipment, epoch) WHERE (ended_at IS NULL)` |
+| Index | `alarm_occurrence_epoch_ended` | `alarms.alarm_occurrence USING btree (epoch, ended_at)` |
 | Index | `alarm_occurrence_epoch_raised` | `alarms.alarm_occurrence USING btree (epoch, raised_at)` |
 | Index | `alarm_occurrence_raised` | `alarms.alarm_occurrence USING btree (raised_at DESC)` |
 

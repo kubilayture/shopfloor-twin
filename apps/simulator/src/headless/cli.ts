@@ -38,10 +38,10 @@ function parse(): {
       strict: true,
       allowPositionals: false,
       options: {
-        seed: { type: 'string', default: '1' },
-        start: { type: 'string', default: '2026-10-12T06:00:00+03:00' },
-        days: { type: 'string', default: '7' },
-        config: { type: 'string', default: DEFAULT_CONFIG },
+        seed: { type: 'string' },
+        start: { type: 'string' },
+        days: { type: 'string' },
+        config: { type: 'string' },
         out: { type: 'string', default: 'runs/latest' },
         scenario: { type: 'string' },
       },
@@ -49,30 +49,42 @@ function parse(): {
   } catch (error) {
     return usage(error instanceof Error ? error.message : String(error));
   }
-  if (!/^\d{1,10}$/.test(values.seed) || Number(values.seed) >= 2 ** 32) {
-    return usage(`invalid --seed "${values.seed}"`);
+  if (values.scenario !== undefined) {
+    // A scenario brings its own seed, span and configuration.
+    const extra = (['seed', 'start', 'days', 'config'] as const).filter(
+      (name) => values[name] !== undefined,
+    );
+    if (extra.length > 0) {
+      return usage(`--scenario takes no ${extra.map((name) => `--${name}`).join(', ')}`);
+    }
+  }
+  const seedText = values.seed ?? '1';
+  const startText = values.start ?? '2026-10-12T06:00:00+03:00';
+  const daysText = values.days ?? '7';
+  if (!/^\d{1,10}$/.test(seedText) || Number(seedText) >= 2 ** 32) {
+    return usage(`invalid --seed "${seedText}"`);
   }
   let start: number;
   try {
-    start = Temporal.Instant.from(values.start).epochMilliseconds;
+    start = Temporal.Instant.from(startText).epochMilliseconds;
   } catch {
     return usage(
-      `invalid --start "${values.start}" (needs an offset or Z, e.g. 2026-10-12T06:00:00+03:00)`,
+      `invalid --start "${startText}" (needs an offset or Z, e.g. 2026-10-12T06:00:00+03:00)`,
     );
   }
-  const days = Number(values.days);
+  const days = Number(daysText);
   const end = start + Math.round(days * 24 * 3_600_000);
   if (!Number.isFinite(days) || !Number.isSafeInteger(end) || end <= start) {
-    return usage(`invalid --days "${values.days}"`);
+    return usage(`invalid --days "${daysText}"`);
   }
   if (values.scenario !== undefined && !scenarioNames().includes(values.scenario)) {
     return usage(`no golden scenario "${values.scenario}" (${scenarioNames().join(', ')})`);
   }
   return {
-    seed: Number(values.seed),
+    seed: Number(seedText),
     start,
     end,
-    config: values.config,
+    config: values.config ?? DEFAULT_CONFIG,
     out: values.out,
     scenario: values.scenario,
   };

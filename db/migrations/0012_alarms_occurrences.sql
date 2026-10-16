@@ -40,6 +40,8 @@ CREATE TABLE alarms.alarm_occurrence (
 -- The alarm list (newest first) and the KPI reads (per epoch, by raise time).
 CREATE INDEX alarm_occurrence_raised ON alarms.alarm_occurrence (raised_at DESC);
 CREATE INDEX alarm_occurrence_epoch_raised ON alarms.alarm_occurrence (epoch, raised_at);
+-- Occurrences still active after a cut, for the KPI reads' lookback (ended_at > cut).
+CREATE INDEX alarm_occurrence_epoch_ended ON alarms.alarm_occurrence (epoch, ended_at);
 -- Active occurrences.
 CREATE INDEX alarm_occurrence_active ON alarms.alarm_occurrence (equipment, epoch)
 WHERE ended_at IS NULL;

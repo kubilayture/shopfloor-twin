@@ -209,9 +209,8 @@ interface Track {
   settledSeq: number | null;
   /** The latest fact time up to `settledSeq`: alarm facts at or before it are final. */
   finalThrough: Millis;
-  /** As stored in `occurrence_source` (what was final before a restart). */
+  /** As last stored in `occurrence_source.final_through` (what a restart will find final). */
   persistedFinal: Millis;
-  persistedClosed: boolean;
   closed: boolean;
   closedAt: Millis | null;
   incidents: readonly IncidentSpan[];
@@ -225,6 +224,9 @@ interface Track {
   appliedSnapshot: number | null;
   sourceStored: boolean;
 }
+
+/** How far a track was (or is) final, by which a change is judged late. */
+type Bound = (track: Track | undefined) => Millis;
 
 interface Scope {
   readonly kind: AlarmScope;
@@ -623,19 +625,22 @@ export class Alarms {
     return newest;
   }
 
-  /** How far a track's alarm facts are final: everything once its epoch is closed. */
-  #bound(track: Track | undefined, persisted = false): Millis {
+  /** How far a track's alarm facts are final now: everything once its epoch is closed. */
+  readonly #live: Bound = (track) => {
     if (!track) return -Infinity;
-    if (persisted) return track.persistedClosed ? Infinity : track.persistedFinal;
     return track.closed ? Infinity : track.finalThrough;
+  };
+
+  #bound(track: Track | undefined): Millis {
+    return this.#live(track);
   }
 
-  /** The time every member is final through (the lowest), in one epoch. */
-  #frontier(members: readonly string[], epoch: number, persisted = false): Millis {
+  /** The time every member is final through (the lowest), in one epoch, by `bound`. */
+  #frontier(members: readonly string[], epoch: number, bound: Bound = this.#live): Millis {
     let frontier = Infinity;
     for (const equipment of members) {
-      const bound = this.#bound(this.#tracks.get(equipment)?.get(epoch), persisted);
-      if (bound < frontier) frontier = bound;
+      const at = bound(this.#tracks.get(equipment)?.get(epoch));
+      if (at < frontier) frontier = at;
     }
     return members.length === 0 ? -Infinity : frontier;
   }
@@ -1062,7 +1067,6 @@ export class Alarms {
       epoch,
       ...UNSETTLED,
       persistedFinal: -Infinity,
-      persistedClosed: false,
       closed: false,
       closedAt: null,
       facts: undefined,
@@ -1088,7 +1092,7 @@ export class Alarms {
       (await this.#sources.ingest.settled(track.equipment, track.epoch)).incidents,
     );
     // Closing changes nothing before the close, which is at or after what was final: no revision.
-    await this.#rederive(track, true, 'none');
+    await this.#rederive(track, true, null);
     this.#emit({ type: 'finality', equipment: track.equipment, epoch: track.epoch });
   }
 
@@ -1125,7 +1129,7 @@ export class Alarms {
   async #reload(track: Track): Promise<void> {
     track.facts = undefined;
     track.rows = undefined;
-    await this.#rederive(track, true, 'live');
+    await this.#rederive(track, true, this.#live);
   }
 
   #fromTable(row: {
@@ -1174,13 +1178,14 @@ export class Alarms {
   /**
    * Derives the track's occurrences from what it knows and stores the difference (one
    * transaction with its source row). A change that can affect an hour already final raises that
-   * hour's revision in every scope of the equipment (`#revise`), judged by finality as it is now
-   * (`live`) or as it was stored before a restart (`persisted`, catch-up).
+   * hour's revision in every scope of the equipment (`#revise`), in the same transaction, judged
+   * by `revise`: what was final before the change (the live bounds, the bounds from before "final
+   * through" moved, or what was stored before a restart); null: no revision (an epoch's close).
    */
   async #rederive(
     track: Track,
     saveSource: boolean,
-    revise: 'live' | 'persisted' | 'none' = 'live',
+    revise: Bound | null = this.#live,
   ): Promise<void> {
     await this.#load(track);
     const facts = track.facts ?? new Map<number, DeviceTransition>();
@@ -1234,11 +1239,13 @@ export class Alarms {
           .where('seq', 'in', deletes)
           .execute();
       }
+      // Revisions commit with the rows they follow from: a crash loses neither or both.
+      if (revise && changes.length > 0) await this.#revise(trx, track, changes, revise);
       await this.#saveSource(trx, track);
     });
     track.rows = next;
+    track.persistedFinal = Math.max(track.persistedFinal, track.finalThrough);
     if (changes.length === 0) return;
-    if (revise !== 'none') await this.#revise(track, changes, revise === 'persisted');
     for (const change of changes) {
       if (!change.after) continue;
       this.#emit({
@@ -1307,8 +1314,6 @@ export class Alarms {
       )
       .execute();
     track.sourceStored = true;
-    track.persistedFinal = Math.max(track.persistedFinal, track.finalThrough);
-    track.persistedClosed = track.closed;
   }
 
   /**
@@ -1318,9 +1323,10 @@ export class Alarms {
    * in-order path never reads here.
    */
   async #revise(
+    trx: Transaction<Database>,
     track: Track,
     changes: readonly { before: Row | undefined; after: Row | undefined }[],
-    persisted: boolean,
+    bound: Bound,
   ): Promise<void> {
     let earliest = Infinity;
     for (const change of changes) {
@@ -1331,7 +1337,7 @@ export class Alarms {
     // The end of each scope's last final hour, as it was before this change.
     const finalEnds = new Map<Scope, Millis>();
     for (const scope of this.#scopesOf(track.equipment)) {
-      const frontier = this.#frontier(scope.members, track.epoch, persisted);
+      const frontier = this.#frontier(scope.members, track.epoch, bound);
       const end = hourStart(frontier - this.#config.fleetingMs);
       if (Number.isFinite(frontier) ? end > earliest : frontier === Infinity) {
         finalEnds.set(scope, frontier === Infinity ? Infinity : end);
@@ -1344,8 +1350,9 @@ export class Alarms {
     const tracks = plant.members
       .map((equipment) => this.#tracks.get(equipment)?.get(track.epoch))
       .filter((t): t is Track => t !== undefined);
+    // Read in the transaction: the scope after the change, as `revisionSpans` wants it.
     const occurrences = await this.#occurrenceRows(
-      this.#db,
+      trx,
       plant.members,
       track.epoch,
       earliest - LOOKBACK_MS,
@@ -1372,7 +1379,7 @@ export class Alarms {
       }
     }
     if (rows.length === 0) return;
-    await this.#db
+    await trx
       .insertInto('alarms.kpi_revision')
       .values(rows)
       .onConflict((oc) =>
@@ -1402,10 +1409,11 @@ export class Alarms {
     if (settledSeq === undefined || settledSeq === null || track.closed) return;
     const known = track.settledSeq;
     if (known !== null && settledSeq <= known) return;
+    const before = this.#live(track);
     if (fact && known !== null && fact.seq === settledSeq && known === fact.seq - 1) {
       track.settledSeq = settledSeq;
       track.finalThrough = Math.max(track.finalThrough, fact.at);
-      await this.#advanced(track);
+      await this.#advanced(track, before);
       return;
     }
     const state = await this.#sources.ingest.settled(
@@ -1415,7 +1423,7 @@ export class Alarms {
     );
     await this.#verify(track);
     this.#apply(track, state);
-    await this.#advanced(track);
+    await this.#advanced(track, before);
   }
 
   #apply(track: Track, state: SettledState): void {
@@ -1446,17 +1454,25 @@ export class Alarms {
     await this.#rederive(track, true);
   }
 
-  /** After "final through" moved: a snapshot that became applicable, the stored bound, push. */
-  async #advanced(track: Track): Promise<void> {
+  /**
+   * After "final through" moved from `before`: a snapshot that became applicable (judged by what was
+   * final before the move: hours it made final were never reported final without it), the stored
+   * bound, push.
+   */
+  async #advanced(track: Track, before: Millis): Promise<void> {
     const snapshot = this.#applicable(track);
+    const { fleetingMs } = this.#config;
     if (snapshot && track.appliedSnapshot !== snapshot.asOfSeq) {
-      await this.#rederive(track, true);
+      await this.#rederive(track, true, (t) => (t === track ? before : this.#live(t)));
     } else if (
       Number.isFinite(track.finalThrough) &&
-      hourStart(track.finalThrough) > hourStart(track.persistedFinal)
+      // An hour is final at its end plus fleetingMs: store the bound once it passes one.
+      (!Number.isFinite(track.persistedFinal) ||
+        hourStart(track.finalThrough - fleetingMs) > hourStart(track.persistedFinal - fleetingMs))
     ) {
       // About once an hour per equipment: what was final, for a late fact found at start-up.
       await this.#db.transaction().execute((trx) => this.#saveSource(trx, track));
+      track.persistedFinal = Math.max(track.persistedFinal, track.finalThrough);
       this.#emit({ type: 'finality', equipment: track.equipment, epoch: track.epoch });
     }
   }
@@ -1484,6 +1500,10 @@ export class Alarms {
       return track;
     };
     const before = new Map<Track, string>();
+    // What was final before the restart, captured before anything is written (a track without a
+    // stored source had nothing final; a stored closed epoch was final everywhere).
+    const persisted = new Map<Track, Millis>();
+    const wasFinal: Bound = (t) => (t ? (persisted.get(t) ?? -Infinity) : -Infinity);
     for (const row of stored) {
       const track = ensure(row.equipment, row.epoch);
       track.anchors = [...row.anchors];
@@ -1491,7 +1511,7 @@ export class Alarms {
       track.closed = row.closed;
       track.closedAt = row.closed_at?.getTime() ?? null;
       track.persistedFinal = row.final_through?.getTime() ?? -Infinity;
-      track.persistedClosed = row.closed;
+      persisted.set(track, row.closed ? Infinity : track.persistedFinal);
       track.sourceStored = true;
       reflected.set(track, row.facts);
       before.set(track, JSON.stringify([row.anchors, row.snapshot, row.closed]));
@@ -1534,6 +1554,11 @@ export class Alarms {
           const end = this.#sources.equipment.epochEnd(equipment, track.epoch);
           track.closedAt =
             (end.closedAt ?? this.#sources.equipment.watermark(track.epoch))?.getTime() ?? null;
+          if (track.closedAt === null) {
+            // As `#close`: else the latest time the epoch knows of.
+            await this.#load(track);
+            track.closedAt = this.#latest(track);
+          }
         }
       }
     }
@@ -1547,7 +1572,7 @@ export class Alarms {
           before.get(track) !== JSON.stringify([track.anchors, track.snapshot, track.closed]);
         if (track.closed && !changed) continue;
         // Open epochs keep their facts in memory; a closed one is derived only when it changed.
-        await this.#rederive(track, changed, 'persisted');
+        await this.#rederive(track, changed, wasFinal);
         derived++;
       }
     }

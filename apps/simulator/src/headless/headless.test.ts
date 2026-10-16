@@ -247,6 +247,11 @@ describe('headless CLI', () => {
     ['--start', '2026-10-12T06:00:00'],
     ['--bogus', '1'],
     ['stray-positional'],
+    ['--scenario', 'no-such-scenario'],
+    // A golden scenario brings its own seed, span and configuration (#142).
+    ['--scenario', 'alarms-01', '--seed', '3'],
+    ['--scenario', 'alarms-01', '--days', '1'],
+    ['--scenario', 'alarms-01', '--config', 'config/plant'],
   ])('exits with status 2 on invalid arguments %j', async (...args) => {
     await expect(run(process.execPath, [cli, ...args])).rejects.toMatchObject({ code: 2 });
   });

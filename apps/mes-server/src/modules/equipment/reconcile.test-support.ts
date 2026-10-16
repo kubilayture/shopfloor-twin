@@ -626,6 +626,14 @@ async function expectAlarms(
   const from = new Date(run.start);
   const to = new Date(run.end);
   const runRange = { from: floorHour(run.start), to: ceilHour(run.end) };
+  // The MES has exactly the ground truth's scopes: the plant and the configured positions.
+  expect(
+    alarms
+      .scopes()
+      .filter((s) => s.scope !== 'equipment')
+      .map((s) => s.id)
+      .sort(),
+  ).toEqual(Object.keys(truth.scopes).sort());
   for (const [id, expected] of Object.entries(truth.scopes)) {
     const scope: AlarmScope = id === 'plant' ? 'plant' : 'position';
     const members = alarms.scope(scope, id)?.equipment ?? [];

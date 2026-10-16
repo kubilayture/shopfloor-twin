@@ -15,7 +15,7 @@ ShopFloor Twin simulates one plant (Orbis Components, Gebze) and runs the softwa
 | `simulator`                             | Phase 1–2                                              |
 | `edge-gateway`                          | Phase 3                                                |
 | `mes-server`                            | Phase 4                                                |
-| `erp-mock`                              | Phase 7                                                |
+| `erp-mock`                              | running in Compose (#171, ADR-0028); see runbook       |
 | `web`                                   | Phase 4                                                |
 
 ## 3. Runtime views

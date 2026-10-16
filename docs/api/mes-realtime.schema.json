@@ -28,6 +28,10 @@
                 },
                 {
                   "type": "string",
+                  "const": "shifts"
+                },
+                {
+                  "type": "string",
                   "pattern": "^telemetry:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
                   "description": "telemetry:<equipment>"
                 },
@@ -75,6 +79,10 @@
                 {
                   "type": "string",
                   "const": "alarms"
+                },
+                {
+                  "type": "string",
+                  "const": "shifts"
                 },
                 {
                   "type": "string",
@@ -4765,6 +4773,259 @@
             "hour",
             "shift",
             "floods"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "shift"
+            },
+            "event": {
+              "type": "string",
+              "enum": [
+                "created",
+                "status",
+                "revised"
+              ],
+              "description": "The plant clock entered it, its status moved, or its revision rose"
+            },
+            "shift": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "description": "`date/shift`"
+                },
+                "date": {
+                  "type": "string"
+                },
+                "shift": {
+                  "type": "string"
+                },
+                "epoch": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "description": "The plant epoch (the simulator run every device shares, ADR-0015)"
+                },
+                "start": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "end": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "breaks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "start": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      },
+                      "end": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "start",
+                      "end"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "running",
+                    "ended",
+                    "final"
+                  ],
+                  "description": "running: the plant clock is inside it; ended: past its end (or a newer epoch began); final: the report’s inputs are final (never goes back)"
+                },
+                "final": {
+                  "type": "boolean",
+                  "description": "The report is final (status final)"
+                },
+                "finalAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Wall time the report became final"
+                },
+                "revision": {
+                  "type": "object",
+                  "properties": {
+                    "inputs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Starts at 0 when the report becomes final; +1 per revision of an input after that (an OEE hour of a machine, an alarm KPI hour of a scope)"
+                    },
+                    "content": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "+1 per handover note create or edit; once final, +1 per operator recode inside the shift (recoding never changes OEE, only the downtime section) and per acknowledgement of an alarm raised in it (its time to acknowledge)"
+                    }
+                  },
+                  "required": [
+                    "inputs",
+                    "content"
+                  ],
+                  "additionalProperties": false,
+                  "description": "The composite revision (ADR-0025): both stored counters"
+                }
+              },
+              "required": [
+                "key",
+                "date",
+                "shift",
+                "epoch",
+                "start",
+                "end",
+                "breaks",
+                "status",
+                "final",
+                "finalAt",
+                "revision"
+              ],
+              "additionalProperties": false,
+              "description": "One shift instance: a scheduled shift the plant clock entered, per plant epoch"
+            }
+          },
+          "required": [
+            "type",
+            "event",
+            "shift"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "handover-note"
+            },
+            "event": {
+              "type": "string",
+              "enum": [
+                "created",
+                "edited"
+              ]
+            },
+            "note": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "epoch": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "shiftKey": {
+                  "type": "string"
+                },
+                "category": {
+                  "type": "string",
+                  "enum": [
+                    "safety",
+                    "quality",
+                    "equipment",
+                    "material",
+                    "general"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "retracted": {
+                  "type": "boolean",
+                  "description": "A wrong note is retracted, never deleted"
+                },
+                "createdBy": {
+                  "type": "string",
+                  "description": "As typed: not authenticated (until Phase 7)"
+                },
+                "author": {
+                  "type": "string",
+                  "description": "Who wrote the current version, as typed"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "description": "1 when created, +1 per edit: send it with an edit (409 when stale)"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "description": "Wall time"
+                },
+                "createdPlantAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "description": "Plant time (the epoch’s clock)"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "description": "Wall time of the latest version"
+                },
+                "updatedPlantAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                }
+              },
+              "required": [
+                "id",
+                "epoch",
+                "shiftKey",
+                "category",
+                "text",
+                "retracted",
+                "createdBy",
+                "author",
+                "version",
+                "createdAt",
+                "createdPlantAt",
+                "updatedAt",
+                "updatedPlantAt"
+              ],
+              "additionalProperties": false,
+              "description": "A handover note of one shift instance (#144)"
+            }
+          },
+          "required": [
+            "type",
+            "event",
+            "note"
           ],
           "additionalProperties": false
         },

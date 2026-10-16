@@ -8,36 +8,24 @@
 import { HOUR, type Millis } from '@shopfloor/alarm-core';
 import {
   NO_SHIFT,
-  shiftBoundaries,
+  hourEnd,
+  hourStart,
+  noShiftKey,
   shiftSegments,
   type ShiftPattern,
 } from '@shopfloor/shift-calendar';
 
 const DAY = 24 * HOUR;
 
-export const hourStart = (at: Millis): Millis => at - (((at % HOUR) + HOUR) % HOUR);
-export const hourEnd = (at: Millis): Millis => {
-  const start = hourStart(at);
-  return start === at ? at : start + HOUR;
-};
+// The hour helpers and the `no-shift/{start}` key live in the pure shift calendar (#144), shared
+// with the simulator's ground truth.
+export { hourEnd, hourStart, noShiftKey };
 
 export interface AlarmBucket {
   /** The hour start (ISO 8601) or the shift bucket key. */
   readonly key: string;
   readonly from: Millis;
   readonly to: Millis;
-}
-
-/**
- * The key of a `no-shift` stretch starting at `from`: the last shift end at or before it (within
- * 7 days), so the key doesn't depend on where a range or run cuts the stretch; `from` itself when
- * no shift ended in the 7 days before. The simulator's ground truth keys it the same way.
- */
-export function noShiftKey(pattern: ShiftPattern, from: Millis): string {
-  const ends = shiftBoundaries(pattern, from - 7 * DAY, from + 1).filter(
-    (boundary) => boundary.action === 'shift-end',
-  );
-  return `${NO_SHIFT}/${new Date(ends.at(-1)?.at ?? from).toISOString()}`;
 }
 
 /**

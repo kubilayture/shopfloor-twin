@@ -101,6 +101,8 @@ export interface CodingChange {
   readonly epoch: number;
   readonly from: Date;
   readonly to: Date;
+  /** An operator's write (`coded`), or a clip after a re-cut (`clipped`, #144). */
+  readonly kind?: 'coded' | 'clipped';
 }
 
 export interface Range {
@@ -485,6 +487,7 @@ export class DowntimeCoding {
       epoch: key.epoch,
       from: new Date(result.from),
       to: new Date(Math.max(result.to, result.from + 1)),
+      kind: 'coded',
     });
     return { version: result.version };
   }
@@ -687,7 +690,13 @@ export class DowntimeCoding {
       return { from, to };
     });
     if (changed) {
-      this.#emit({ equipment, epoch, from: new Date(changed.from), to: new Date(changed.to) });
+      this.#emit({
+        equipment,
+        epoch,
+        from: new Date(changed.from),
+        to: new Date(changed.to),
+        kind: 'clipped',
+      });
     }
   }
 

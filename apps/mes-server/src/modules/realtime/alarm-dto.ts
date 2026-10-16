@@ -13,6 +13,7 @@ import {
   type AlarmPoint,
   type AlarmShelf,
   type AlarmTransition,
+  type OperatorBucket,
 } from '../alarms/index.ts';
 import { ratio } from './oee-dto.ts';
 import type {
@@ -25,6 +26,7 @@ import type {
   AlarmTransitionDto,
   BadActorDto,
   FloodEpisodeDto,
+  OperatorBucketDto,
 } from './schemas.ts';
 
 const iso = (at: number | Date): string => new Date(at).toISOString();
@@ -190,6 +192,15 @@ export const floodEpisodeDto = (episode: FloodEpisode): FloodEpisodeDto => ({
   endAt: episode.endAt === null ? null : iso(episode.endAt),
   peak: episode.peak,
   raises: episode.raises,
+});
+
+/** Operator measures of one bucket (#143): `GET /alarms/operator-kpi` and the shift report (#144). */
+export const operatorBucketDto = (bucket: OperatorBucket): OperatorBucketDto => ({
+  ...bucket,
+  from: iso(bucket.from),
+  to: iso(bucket.to),
+  timeToAck: { ...bucket.timeToAck },
+  shelvedMs: bucket.shelvedMs.map((point) => ({ ...point })),
 });
 
 export const badActorDto = (actor: BadActor): BadActorDto => ({

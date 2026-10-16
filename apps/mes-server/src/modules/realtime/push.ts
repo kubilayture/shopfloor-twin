@@ -5,11 +5,14 @@ import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
 import type { DowntimeChange, OeeBucket, OeeChange, OeeScope } from '../oee/index.ts';
 import { alarmKpiDto, floodEpisodeDto, occurrenceDto, pointDto } from './alarm-dto.ts';
+import type { ShiftChange } from '../shifts/index.ts';
 import { bucketDto, recordDto } from './oee-dto.ts';
+import { handoverNoteDto, shiftRecordDto } from './shift-dto.ts';
 import {
   ALARMS_TOPIC,
   DOWNTIME_TOPIC,
   LIMITS,
+  SHIFTS_TOPIC,
   STATES_TOPIC,
   clientMessageSchema,
   type ClientMessage,
@@ -76,6 +79,10 @@ export interface PushSources {
     string,
     { readonly scope: AlarmScope; readonly id: string; readonly members: readonly string[] }
   >;
+  /** Shift instance and handover note changes (#144). */
+  readonly shifts?: {
+    onChange(listener: (change: ShiftChange) => void): () => void;
+  };
 }
 
 export interface PushOptions {
@@ -110,6 +117,8 @@ interface Client {
   downtime: boolean;
   /** Following `alarms` (#142). */
   alarms: boolean;
+  /** Following `shifts` (#144). */
+  shifts: boolean;
   /** The paced topics followed: `oee:<id>` and `alarm-kpi:<scope>`. */
   readonly paced: Set<string>;
   /** Per equipment: the metrics subscribed, or null for all. */
@@ -259,6 +268,13 @@ export class PushHub {
         }),
       );
     }
+    if (sources.shifts) {
+      this.#detach.push(
+        sources.shifts.onChange((change) => {
+          this.#onShift(change);
+        }),
+      );
+    }
     if (sources.alarms) {
       this.#detach.push(
         sources.alarms.onChange((change) => {
@@ -299,6 +315,7 @@ export class PushHub {
       states: false,
       downtime: false,
       alarms: false,
+      shifts: false,
       paced: new Set(),
       telemetry: new Map(),
       pending: new Map(),
@@ -380,6 +397,10 @@ export class PushHub {
     }
     if (request.topic === ALARMS_TOPIC) {
       this.#alarmsRequest(client, sources, request);
+      return;
+    }
+    if (request.topic === SHIFTS_TOPIC) {
+      this.#shiftsRequest(client, sources, request);
       return;
     }
     if (request.topic.startsWith('alarm-kpi:')) {
@@ -472,6 +493,50 @@ export class PushHub {
       topic: ALARMS_TOPIC,
       metric: null,
     });
+  }
+
+  /**
+   * `shifts` (#144): instance upserts (created, status, revised) keyed by (epoch, shift key) and
+   * note upserts keyed by note id. A client reads `GET /shifts/{date}/{shift}/report` first and
+   * again when its instance's revision or status moves; the live numbers of a running shift come
+   * from `oee:<id>` and `alarm-kpi:<scope>`.
+   */
+  #shiftsRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    if (!sources.shifts) {
+      this.#send(client, {
+        type: 'error',
+        code: 'unknown-topic',
+        detail: 'shift push is not available',
+      });
+      return;
+    }
+    client.shifts = request.type === 'subscribe';
+    if (!client.shifts) {
+      this.#dropPending(client, 'shift:');
+      this.#dropPending(client, 'note:');
+    }
+    this.#send(client, {
+      type: request.type === 'subscribe' ? 'subscribed' : 'unsubscribed',
+      topic: SHIFTS_TOPIC,
+      metric: null,
+    });
+  }
+
+  #onShift(change: ShiftChange): void {
+    let data: string | undefined;
+    const key =
+      change.type === 'instance'
+        ? `shift:${String(change.instance.epoch)}:${change.instance.key}`
+        : `note:${String(change.note.id)}`;
+    for (const client of this.#clients) {
+      if (!client.shifts) continue;
+      data ??= message(
+        change.type === 'instance'
+          ? { type: 'shift', event: change.event, shift: shiftRecordDto(change.instance) }
+          : { type: 'handover-note', event: change.event, note: handoverNoteDto(change.note) },
+      );
+      this.#enqueue(client, key, data);
+    }
   }
 
   #alarmKpiRequest(client: Client, sources: PushSources, request: ClientMessage): void {

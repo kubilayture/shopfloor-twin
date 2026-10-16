@@ -10,7 +10,9 @@
  * - `Oee.onChange(listener)`: after the pieces or cycles of an hour changed.
  * - `Oee.paretoInputs(...)` and `pareto(...)`: the downtime Pareto (loss by reason, without a
  *   row limit; micro-stops by cause); `DowntimeFeed`: record changes for push; `downtimeId(record)`: the API's record id.
- * - `shiftInstances`, `shiftInstance`, `shiftBuckets`: shift instances from the calendar.
+ *
+ * Scheduled shifts and shift buckets (`shiftInstances`, `shiftBuckets`, …) come from the pure
+ * `@shopfloor/shift-calendar` (#144), which the `shifts` module uses too.
  */
 export { Oee } from './oee.ts';
 export type {
@@ -33,5 +35,3 @@ export type {
   ParetoMicroStop,
   ParetoReason,
 } from './downtime.ts';
-export { hourEnd, hourStart, shiftBuckets, shiftInstance, shiftInstances } from './shifts.ts';
-export type { ShiftBucket, ShiftInstance } from './shifts.ts';

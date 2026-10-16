@@ -33,18 +33,10 @@ import {
 } from '@shopfloor/alarm-core';
 import { formatFraction, toDecimal, type Fraction } from '@shopfloor/oee-core';
 import type { PlantConfig } from '@shopfloor/plant-config';
-import { NO_SHIFT, shiftBoundaries, shiftSegments } from '@shopfloor/shift-calendar';
+import { NO_SHIFT, hourEnd, hourStart, noShiftKey, shiftSegments } from '@shopfloor/shift-calendar';
 import type { SimTime } from '@shopfloor/sim-core';
 import type { PlantEvent } from '../plant/line.ts';
 import { isoTime } from './serialize.ts';
-
-const DAY = 24 * HOUR;
-
-const floorHour = (time: SimTime): SimTime => time - (((time % HOUR) + HOUR) % HOUR);
-const ceilHour = (time: SimTime): SimTime => {
-  const floor = floorHour(time);
-  return floor === time ? time : floor + HOUR;
-};
 
 export interface RatioJson {
   readonly fraction: string;
@@ -270,15 +262,15 @@ export class AlarmTruth {
     const occurrences: Occurrence[] = this.#occurrences.map((o) => ({ ...o }));
     const severity = new Map(this.#occurrences.map((o) => [`${o.equipment}/${String(o.seq)}`, o]));
     const horizon = { asOf: now };
-    const from = floorHour(this.#start);
-    const to = ceilHour(now);
+    const from = hourStart(this.#start);
+    const to = hourEnd(now);
     const hours: { from: SimTime; to: SimTime }[] = [];
     for (let hour = from; hour < to; hour += HOUR) {
       hours.push({ from: hour, to: hour + HOUR });
     }
     const segments = shiftSegments(this.#shifts, from, to).map((segment) => ({
       ...segment,
-      key: segment.key === NO_SHIFT ? this.#noShiftKey(segment.from) : segment.key,
+      key: segment.key === NO_SHIFT ? noShiftKey(this.#shifts, segment.from) : segment.key,
     }));
 
     const scopes: Record<string, AlarmScopeJson> = {};
@@ -341,18 +333,5 @@ export class AlarmTruth {
       occurrences: plantOrder,
       scopes,
     };
-  }
-
-  /**
-   * A `no-shift` stretch is keyed by where the calendar starts it: the last shift end at or
-   * before `from` (within a week), so the key doesn't depend on when the run started. When no
-   * shift ended in the 7 days before `from` (a calendar without workdays nearby), the key falls
-   * back to `from` itself, the stretch's start in this run.
-   */
-  #noShiftKey(from: SimTime): string {
-    const ends = shiftBoundaries(this.#shifts, from - 7 * DAY, from + 1).filter(
-      (boundary) => boundary.action === 'shift-end',
-    );
-    return `${NO_SHIFT}/${isoTime(ends.at(-1)?.at ?? from)}`;
   }
 }

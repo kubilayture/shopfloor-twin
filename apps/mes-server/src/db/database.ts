@@ -4,6 +4,7 @@ import type { AlarmsTables } from '../modules/alarms/index.ts';
 import type { EquipmentTables } from '../modules/equipment/index.ts';
 import type { IngestTables } from '../modules/ingest/index.ts';
 import type { MasterDataTables } from '../modules/master-data/index.ts';
+import type { ShiftsTables } from '../modules/shifts/index.ts';
 
 /** Tables of `public` that the MES itself owns (module schemas add their own types). */
 export interface SchemaMigrationsTable {
@@ -21,7 +22,8 @@ export type Database = PublicTables &
   MasterDataTables &
   IngestTables &
   EquipmentTables &
-  AlarmsTables;
+  AlarmsTables &
+  ShiftsTables;
 
 /**
  * BIGINT columns (epochs, sequence numbers, ids, counts) are read as numbers, not strings: every

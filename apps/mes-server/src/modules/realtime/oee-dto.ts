@@ -6,7 +6,8 @@
 import { formatFraction, toDecimal, type Fraction, type OeeResult } from '@shopfloor/oee-core';
 import { UNCODED } from '@shopfloor/plant-config';
 import { dominantReason, effectiveSegments, type DowntimeRecord } from '../equipment/index.ts';
-import { downtimeId, recordEnd, type OeeBucket, type ShiftInstance } from '../oee/index.ts';
+import type { ScheduledShift } from '@shopfloor/shift-calendar';
+import { downtimeId, recordEnd, type OeeBucket } from '../oee/index.ts';
 import type {
   DowntimeRecordDto,
   OeeBucketDto,
@@ -110,7 +111,7 @@ export function bucketDto(bucket: OeeBucket): OeeBucketDto {
   };
 }
 
-export const shiftInstanceDto = (instance: ShiftInstance): ShiftInstanceDto => ({
+export const shiftInstanceDto = (instance: ScheduledShift): ShiftInstanceDto => ({
   key: instance.key,
   date: instance.date,
   shift: instance.shift,

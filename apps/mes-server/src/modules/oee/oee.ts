@@ -19,11 +19,19 @@ import {
   type OeeState,
   type OeeTotals,
 } from '@shopfloor/oee-core';
-import { NO_SHIFT, shiftKeyAt, shiftSegments, type ShiftPattern } from '@shopfloor/shift-calendar';
+import {
+  NO_SHIFT,
+  hourEnd,
+  hourStart,
+  shiftBuckets,
+  shiftKeyAt,
+  shiftSegments,
+  type ShiftBucket,
+  type ShiftPattern,
+} from '@shopfloor/shift-calendar';
 import type { DowntimeLoss, Equipment, StateHour, StopPiece } from '../equipment/index.ts';
 import type { Ingest, IngestNotice } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData, ReasonCode } from '../master-data/index.ts';
-import { hourEnd, hourStart, shiftBuckets, type ShiftBucket } from './shifts.ts';
 
 export type OeeScope = 'equipment' | 'work-center';
 export type OeeBucketKind = 'hour' | 'shift';

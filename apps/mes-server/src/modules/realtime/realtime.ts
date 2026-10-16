@@ -1,6 +1,6 @@
 import websocket from '@fastify/websocket';
 import type { IncomingHttpHeaders } from 'node:http';
-import { NO_SHIFT } from '@shopfloor/shift-calendar';
+import { NO_SHIFT, shiftInstance, shiftInstances } from '@shopfloor/shift-calendar';
 import type { FastifyInstance } from 'fastify';
 import type { Registry } from 'prom-client';
 import {
@@ -13,14 +13,8 @@ import {
 import { AlarmWriteError, type Alarms, type AlarmScope } from '../alarms/index.ts';
 import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
-import {
-  pareto,
-  shiftInstance,
-  shiftInstances,
-  type DowntimeFeed,
-  type Oee,
-  type OeeScope,
-} from '../oee/index.ts';
+import { pareto, type DowntimeFeed, type Oee, type OeeScope } from '../oee/index.ts';
+import { ShiftError, type ShiftRecord, type Shifts } from '../shifts/index.ts';
 import {
   alarmKpiDto,
   badActorDto,
@@ -28,11 +22,20 @@ import {
   floodEpisodeDto,
   historyDto,
   occurrenceDto,
+  operatorBucketDto,
   pointDto,
   shelfDto,
   transitionDto,
 } from './alarm-dto.ts';
 import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
+import {
+  handoverAuditDto,
+  handoverNoteDto,
+  notesDto,
+  shiftOeeDto,
+  shiftRecordDto,
+  shiftReportDto,
+} from './shift-dto.ts';
 import { PushHub, currentStateDto, type PushOptions } from './push.ts';
 import { HttpProblem, PROBLEM_TYPE, getRoute, jsonSchema, problem, writeRoute } from './routes.ts';
 import {
@@ -96,6 +99,15 @@ import {
   shiftTotalsSchema,
   shiftsQuery,
   telemetryQuery,
+  handoverAuditSchema,
+  handoverNotesSchema,
+  noteCreateSchema,
+  noteEditSchema,
+  noteParams,
+  noteResultSchema,
+  shiftInstanceQuery,
+  shiftRecordSchema,
+  shiftReportSchema,
   type EquipmentDto,
   type IntervalDto,
 } from './schemas.ts';
@@ -161,6 +173,11 @@ export interface ApiSources {
     | 'pointAudit'
     | 'operatorMeasures'
   >;
+  /** Shift instances, the shift report and handover notes (#144); 503 without it. */
+  readonly shifts?: Pick<
+    Shifts,
+    'instance' | 'report' | 'notes' | 'note' | 'noteAudit' | 'createNote' | 'editNote' | 'onChange'
+  >;
 }
 
 export interface RealtimeOptions {
@@ -214,6 +231,7 @@ const isJson = (contentType: string | undefined): boolean =>
 const CODING_STATUS = { 'not-found': 404, conflict: 409, invalid: 422 } as const;
 /** Alarm write refusals (#143) map the same way. */
 const ALARM_WRITE_STATUS = CODING_STATUS;
+const SHIFT_STATUS = { 'not-found': 404, conflict: 409, invalid: 422 } as const;
 
 export const DEFAULT_ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]'] as const;
 
@@ -739,14 +757,7 @@ export async function registerRealtime(
               `no shift ${params.shift} on ${params.date} (not a workday)`,
             );
           }
-          const result = await oee.shift(instance, query.epoch);
-          return {
-            shiftKey: instance.key,
-            start: iso(new Date(instance.start)),
-            end: iso(new Date(instance.end)),
-            equipment: result.equipment.map(bucketDto),
-            workCenters: result.workCenters.map(bucketDto),
-          };
+          return shiftOeeDto(instance, await oee.shift(instance, query.epoch));
         },
       );
 
@@ -1008,6 +1019,195 @@ export async function registerRealtime(
         },
       );
 
+      // ---- Shifts: instances, report and handover notes (#144, ADR-0025) ----
+
+      const shiftsOf = () => {
+        const found = ready().sources.shifts;
+        if (!found) throw new HttpProblem(503, 'shifts are not available');
+        return found;
+      };
+      const stored = async (
+        params: { date: string; shift: string },
+        epoch: number | undefined,
+      ): Promise<ShiftRecord> => {
+        if (!ready().shifts.has(params.shift)) {
+          throw new HttpProblem(404, `no shift ${params.shift} in the shift pattern`);
+        }
+        const found = await shiftsOf().instance(params.date, params.shift, epoch);
+        if (!found) {
+          const where = epoch === undefined ? '' : ` in epoch ${String(epoch)}`;
+          throw new HttpProblem(
+            404,
+            `no shift instance ${params.date}/${params.shift}${where} (not a workday, or not reached by the plant clock)`,
+          );
+        }
+        return found;
+      };
+      const shiftProblem = (error: unknown): unknown =>
+        error instanceof ShiftError
+          ? new HttpProblem(SHIFT_STATUS[error.kind], error.message)
+          : error;
+      const WRITE_ERRORS = [400, 403, 404, 405, 409, 413, 415, 422, 429, 503] as const;
+
+      getRoute(
+        api,
+        {
+          url: '/shifts/:date/:shift',
+          summary: 'One shift instance: status, finality and the report’s composite revision',
+          description:
+            'A shift instance is stored per (plant epoch, shift key) once the plant clock enters ' +
+            'the shift (ADR-0025). Default epoch: the newest that has it.',
+          tags: ['shifts'],
+          params: shiftParams,
+          query: shiftInstanceQuery,
+          response: shiftRecordSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ params, query }) => shiftRecordDto(await stored(params, query.epoch)),
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/shifts/:date/:shift/report',
+          summary: 'The shift report: OEE, downtime, production, alarms and handover notes',
+          description:
+            'Computed on read (ADR-0025): the OEE section is the body of ' +
+            '/shifts/{date}/{shift}/oee; the downtime Pareto by reason sums to the own and external ' +
+            'availability loss, with the ten longest records and the uncoded time; production per ' +
+            'machine from the OEE inputs and finished parts (the line’s last machine); per position ' +
+            'and the plant the alarm KPIs of the shift bucket (equal to /alarms/kpi) and the top 5 ' +
+            'bad actors; the handover notes with their history. `final` once every input is final; ' +
+            '`revision.inputs` counts input revisions after that, `revision.content` note writes ' +
+            'and recodes (recoding never changes OEE). `generatedAt` and `asOf` are for a printout.',
+          tags: ['shifts'],
+          params: shiftParams,
+          query: shiftInstanceQuery,
+          response: shiftReportSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ params, query }) => {
+          const instance = await stored(params, query.epoch);
+          const report = await shiftsOf().report(params.date, params.shift, instance.epoch);
+          if (!report) throw new HttpProblem(404, `no shift instance ${instance.key}`);
+          return shiftReportDto(report, new Date());
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/shifts/:date/:shift/notes',
+          summary: 'The handover notes of a shift instance, each with its history',
+          tags: ['shifts'],
+          params: shiftParams,
+          query: shiftInstanceQuery,
+          response: handoverNotesSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ params, query }) => {
+          const instance = await stored(params, query.epoch);
+          return {
+            shiftKey: instance.key,
+            epoch: instance.epoch,
+            notes: notesDto(await shiftsOf().notes(instance.epoch, instance.key, true)),
+          };
+        },
+      );
+
+      writeRoute(
+        api,
+        {
+          method: 'POST',
+          url: '/shifts/:date/:shift/notes',
+          summary: 'Writes a handover note on a shift instance',
+          description:
+            'From the shift’s start until the end of the following shift (plant time); afterwards ' +
+            '409 (handover closed). `author` is free text, recorded as unauthenticated; audited. ' +
+            'Raises the report’s `revision.content`. Writes need an Origin of this host (or ' +
+            'allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023).',
+          tags: ['shifts'],
+          params: shiftParams,
+          query: shiftInstanceQuery,
+          body: noteCreateSchema,
+          response: noteResultSchema,
+          errors: WRITE_ERRORS,
+        },
+        LIMITS.writeBodyBytes,
+        async ({ params, query, body, requestId }) => {
+          const instance = await stored(params, query.epoch);
+          const note = await shiftsOf()
+            .createNote(instance.epoch, instance.key, { ...body, requestId })
+            .catch((error: unknown) => {
+              throw shiftProblem(error);
+            });
+          const after = await stored(params, instance.epoch);
+          return { note: handoverNoteDto(note), shift: shiftRecordDto(after) };
+        },
+      );
+
+      const noteOf = async (params: { date: string; shift: string; noteId: number }) => {
+        if (!ready().shifts.has(params.shift)) {
+          throw new HttpProblem(404, `no shift ${params.shift} in the shift pattern`);
+        }
+        const note = await shiftsOf().note(params.noteId);
+        if (note?.shiftKey !== `${params.date}/${params.shift}`) {
+          throw new HttpProblem(
+            404,
+            `no note ${String(params.noteId)} in shift ${params.date}/${params.shift}`,
+          );
+        }
+        return note;
+      };
+
+      writeRoute(
+        api,
+        {
+          method: 'PUT',
+          url: '/shifts/:date/:shift/notes/:noteId',
+          summary: 'Writes a new version of a handover note (text, category, retracted)',
+          description:
+            '`version` is the note’s `version` as read; a mismatch is 409. No delete: a wrong note ' +
+            'is retracted and stays in the history. Same handover window and guards as a create; ' +
+            'audited; raises the report’s `revision.content`.',
+          tags: ['shifts'],
+          params: noteParams,
+          body: noteEditSchema,
+          response: noteResultSchema,
+          errors: WRITE_ERRORS,
+        },
+        LIMITS.writeBodyBytes,
+        async ({ params, body, requestId }) => {
+          const found = await noteOf(params);
+          const note = await shiftsOf()
+            .editNote(found.epoch, found.shiftKey, found.id, { ...body, requestId })
+            .catch((error: unknown) => {
+              throw shiftProblem(error);
+            });
+          const after = await stored(params, found.epoch);
+          return { note: handoverNoteDto(note), shift: shiftRecordDto(after) };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/shifts/:date/:shift/notes/:noteId/audit',
+          summary: 'The history of one handover note (append-only audit)',
+          description: 'Every create and edit with before, after, actor, wall and plant time.',
+          tags: ['shifts'],
+          params: noteParams,
+          query: noQuery,
+          response: handoverAuditSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ params }) => {
+          const note = await noteOf(params);
+          const entries = await shiftsOf().noteAudit(note.id);
+          return { note: note.id, entries: entries.map(handoverAuditDto) };
+        },
+      );
+
       // ---- Alarms (#142, ADR-0024) ----
 
       const alarmsOf = () => {
@@ -1147,13 +1347,7 @@ export async function registerRealtime(
             from: iso(query.from),
             to: iso(query.to),
             epoch,
-            buckets: buckets.map((bucket) => ({
-              ...bucket,
-              from: iso(new Date(bucket.from)),
-              to: iso(new Date(bucket.to)),
-              timeToAck: { ...bucket.timeToAck },
-              shelvedMs: bucket.shelvedMs.map((point) => ({ ...point })),
-            })),
+            buckets: buckets.map(operatorBucketDto),
           };
         },
       );
@@ -1568,6 +1762,7 @@ export async function registerRealtime(
           ]),
         ]),
         ...(sources.downtime ? { downtime: sources.downtime } : {}),
+        ...(sources.shifts ? { shifts: sources.shifts } : {}),
         ...(sources.alarms
           ? {
               alarms: sources.alarms,

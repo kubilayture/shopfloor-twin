@@ -27,12 +27,12 @@ export function problem(status: number, detail: string, url: string) {
 const ERROR_TEXT: Readonly<Record<number, string>> = {
   400: 'Invalid path, query parameters or body',
   403: 'Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin)',
-  404: 'Unknown equipment, work center, metric, shift, record, alarm, alarm point or route',
+  404: 'Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note or route',
   405: 'Writes are turned off (MES_WRITES=off)',
-  409: 'The version sent is not the current one (coding set, alarm shelf): read again and retry',
+  409: 'The version sent is not the current one (coding set, alarm shelf, handover note): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch)',
   413: 'Body larger than 16 KiB',
   415: 'Content-Type is not application/json',
-  422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock, or an unshelve of a point not shelved)',
+  422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift)',
   429: 'Too many writes (one global limit): retry after Retry-After seconds',
   503: 'The MES is starting',
 };
@@ -88,13 +88,20 @@ function validator(parts: Record<string, z.ZodType | undefined>) {
     };
 }
 
-export interface WriteRouteSpec<P extends z.ZodType, B extends z.ZodType, R extends z.ZodType> {
+export interface WriteRouteSpec<
+  P extends z.ZodType,
+  B extends z.ZodType,
+  R extends z.ZodType,
+  Q extends z.ZodType = z.ZodType,
+> {
   readonly method: 'PUT' | 'POST' | 'DELETE';
   readonly url: string;
   readonly summary: string;
   readonly description?: string;
   readonly tags: readonly string[];
   readonly params: P;
+  /** Query parameters, if the write takes any (#144: `?epoch`). */
+  readonly query?: Q;
   readonly body: B;
   readonly response: R;
   readonly errors: readonly ErrorStatus[];
@@ -104,12 +111,18 @@ export interface WriteRouteSpec<P extends z.ZodType, B extends z.ZodType, R exte
  * A write route (#121, ADR-0023): path and JSON body validated by zod, the response typed. The
  * write guards run before it in the `/api/v1` hooks; the body is at most `bodyLimit` bytes.
  */
-export function writeRoute<P extends z.ZodType, B extends z.ZodType, R extends z.ZodType>(
+export function writeRoute<
+  P extends z.ZodType,
+  B extends z.ZodType,
+  R extends z.ZodType,
+  Q extends z.ZodType = z.ZodType,
+>(
   app: FastifyInstance,
-  spec: WriteRouteSpec<P, B, R>,
+  spec: WriteRouteSpec<P, B, R, Q>,
   bodyLimit: number,
   handler: (input: {
     params: z.output<P>;
+    query: z.output<Q>;
     body: z.output<B>;
     requestId: string;
   }) => z.input<R> | Promise<z.input<R>>,
@@ -123,6 +136,7 @@ export function writeRoute<P extends z.ZodType, B extends z.ZodType, R extends z
       ...(spec.description === undefined ? {} : { description: spec.description }),
       tags: [...spec.tags],
       params: jsonSchema(spec.params, 'input'),
+      ...(spec.query ? { querystring: jsonSchema(spec.query, 'input') } : {}),
       body: {
         content: { 'application/json': { schema: jsonSchema(spec.body, 'input') } },
         required: true,
@@ -135,11 +149,16 @@ export function writeRoute<P extends z.ZodType, B extends z.ZodType, R extends z
         ...errorResponses(spec.errors),
       },
     },
-    validatorCompiler: validator({ params: spec.params, body: spec.body }),
+    validatorCompiler: validator({
+      params: spec.params,
+      body: spec.body,
+      ...(spec.query ? { querystring: spec.query } : {}),
+    }),
     serializerCompiler: () => (data: unknown) => JSON.stringify(data),
     handler: async (request) =>
       handler({
         params: request.params as z.output<P>,
+        query: request.query as z.output<Q>,
         body: request.body as z.output<B>,
         requestId: request.id,
       }),

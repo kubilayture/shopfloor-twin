@@ -47,6 +47,7 @@ reasons:
   - { id: PLANNED/BREAK, name: Break }
   - { id: PLANNED/CALIBRATION, name: Calibration }
   - { id: PLANNED/SHIFT-END, name: Outside shift }
+  - { id: PLANNED/NO-ORDER, name: No order }
   - { id: UNCODED, name: Not coded }
 
 rules:
@@ -72,9 +73,11 @@ rules:
   - { state: Setup, cause: { prefix: 'CHANGEOVER ' }, reason: SETUP/CHANGEOVER }
   - { state: Setup, cause: TOOL-CHANGE, reason: SETUP/TOOL-CHANGE }
   - { state: Setup, cause: null, reason: SETUP/UNSPECIFIED }
-  # Idle: no operator this shift, or the CNC's schedule is done.
+  # Idle: no operator this shift, the CNC's schedule is done (schedule mode), or an orders-mode CNC
+  # has no startable job (#172; excluded from planned busy time under oee.yaml's `orders` rule).
   - { state: Idle, cause: NO-OPERATOR, reason: ORGANISATION/NO-OPERATOR }
   - { state: Idle, cause: SCHEDULE-COMPLETE, reason: ORGANISATION/NO-SCHEDULE }
+  - { state: Idle, cause: NO-ORDER, reason: PLANNED/NO-ORDER }
   - { state: Idle, cause: null, reason: ORGANISATION/UNSPECIFIED }
   # Starved of a material (`MATERIAL:<id>`), or of parts by an empty buffer (no cause).
   - { state: Starved, cause: { prefix: 'MATERIAL:' }, reason: MATERIAL }

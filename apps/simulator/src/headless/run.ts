@@ -6,7 +6,7 @@ import {
   type PlantConfig,
 } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
-import { ProductionLine, type LineEvent } from '../plant/line.ts';
+import { ProductionLine, type LineEvent, type ProductionMode } from '../plant/line.ts';
 import { RUN_SCHEMA, EVENT_SCHEMA, SUMMARY_SCHEMA, isoTime, stableStringify } from './serialize.ts';
 import { InvariantChecker } from './invariants.ts';
 import { GroundTruth, type GroundTruthSummary } from './summary.ts';
@@ -17,8 +17,35 @@ export interface HeadlessOptions {
   readonly start: SimTime;
   readonly end: SimTime;
   readonly checkInvariants?: boolean;
-  /** Failure injections (#140), scheduled after `line.start` in list order. */
+  /** Failure injections (#140), scheduled after `line.start` (and the dispatches) in list order. */
   readonly injections?: readonly FailureInjectionSpec[];
+  /** `schedule` (default) or `orders` (#172). */
+  readonly production?: ProductionMode;
+  /**
+   * Orders mode (#172, B3): jobs given to the CNCs after `line.start` and before the injections,
+   * in list order, at the start time, as a live run's dispatch through `LoadOrder` does.
+   */
+  readonly dispatches?: readonly DispatchSpec[];
+}
+
+/** A scenario dispatch (#172): one `LoadOrder` at the start time, without epoch or expiry. */
+export interface DispatchSpec {
+  readonly commandId: string;
+  readonly machine: string;
+  readonly orderId: string;
+  readonly product: string;
+  readonly quantity: number;
+  readonly notBefore: SimTime;
+}
+
+/** A dispatch as the run header records it. */
+export interface HeaderDispatch {
+  readonly commandId: string;
+  readonly machine: string;
+  readonly orderId: string;
+  readonly product: string;
+  readonly quantity: number;
+  readonly notBefore: string;
 }
 
 /** An injection as the run header records it. */
@@ -37,6 +64,10 @@ export interface RunHeader {
   readonly configSha256: string;
   /** Only when the run has any, so a run without injections keeps its header (#140). */
   readonly injections?: readonly HeaderInjection[];
+  /** Only in orders mode (#172), so a schedule-mode run keeps its header and `events.sha256`. */
+  readonly production?: 'orders';
+  /** Orders mode only (#172): the dispatches, in the order they were applied. */
+  readonly dispatches?: readonly HeaderDispatch[];
 }
 
 export interface HeadlessResult {
@@ -67,7 +98,16 @@ export const analysisConfigHash = (config: PlantConfig): string =>
     .digest('hex');
 
 export function runHeadless(
-  { config, seed, start, end, checkInvariants = false, injections = [] }: HeadlessOptions,
+  {
+    config,
+    seed,
+    start,
+    end,
+    checkInvariants = false,
+    injections = [],
+    production = 'schedule',
+    dispatches = [],
+  }: HeadlessOptions,
   writeLine: (line: string) => void,
 ): HeadlessResult {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) {
@@ -86,6 +126,9 @@ export function runHeadless(
         : [],
     ),
   ];
+  if (production === 'schedule' && dispatches.length > 0) {
+    issues.push({ path: 'dispatches', message: 'dispatches need production mode "orders"' });
+  }
   if (issues.length > 0) {
     throw new RangeError(issues.map((issue) => `${issue.path}: ${issue.message}`).join('; '));
   }
@@ -105,6 +148,19 @@ export function runHeadless(
             ...(injection.repairMs === undefined ? {} : { repairMs: injection.repairMs }),
           })),
         }),
+    ...(production === 'schedule'
+      ? {}
+      : {
+          production,
+          dispatches: dispatches.map((dispatch) => ({
+            commandId: dispatch.commandId,
+            machine: dispatch.machine,
+            orderId: dispatch.orderId,
+            product: dispatch.product,
+            quantity: dispatch.quantity,
+            notBefore: isoTime(dispatch.notBefore),
+          })),
+        }),
   };
   writeLine(stableStringify(header));
 
@@ -116,6 +172,7 @@ export function runHeadless(
     config,
     random: new RandomSource(seed),
     startTime: start,
+    production,
     onEvent: (event) => {
       truth.record(event);
       checker?.record(event);
@@ -130,6 +187,9 @@ export function runHeadless(
   }
   const simulation = new Simulation<LineEvent>(start);
   line.start(simulation);
+  // Dispatches after line.start and before the injections (#172, B3): a live run is attached and
+  // idle at the start time when the test dispatches, waits for every acceptance, then injects.
+  applyDispatches(line, simulation, dispatches);
   // After line.start and in list order, exactly as the control API schedules them (#140).
   for (const injection of injections) {
     const accepted = line.injectFailure(injection, simulation);
@@ -155,6 +215,25 @@ export function runHeadless(
     invariantChecks: checker?.checks ?? 0,
     summary,
   };
+}
+
+/** Gives each dispatch to its CNC through `loadOrder`, in order; throws on any refusal. */
+export function applyDispatches(
+  line: ProductionLine,
+  simulation: Simulation<LineEvent>,
+  dispatches: readonly DispatchSpec[],
+): void {
+  dispatches.forEach((dispatch, index) => {
+    const result = line.loadOrder(dispatch.machine, dispatch, simulation);
+    if (!result.ok) {
+      throw new RangeError(
+        `dispatches[${String(index)}] (${dispatch.commandId}): ${result.reason}`,
+      );
+    }
+    if (result.duplicate) {
+      throw new RangeError(`dispatches[${String(index)}]: ${dispatch.commandId} is listed twice`);
+    }
+  });
 }
 
 export const summaryDocument = (result: HeadlessResult): string =>

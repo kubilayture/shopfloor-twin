@@ -122,6 +122,7 @@ A state change carries an optional `cause`. Every cause comes from one vocabular
 | `Maintenance` | `CALIBRATION`            | `CAUSES.calibration`                                         |
 | `Idle`        | `SCHEDULE-COMPLETE`      | `CAUSES.scheduleComplete`                                    |
 | `Idle`        | `NO-OPERATOR`            | `CAUSES.noOperator`                                          |
+| `Idle`        | `NO-ORDER`               | `CAUSES.noOrder` (orders mode only, #172)                    |
 | `PlannedStop` | `BREAK`                  | `CAUSES.break`                                               |
 | `Off`         | `SHIFT-END`              | `CAUSES.shiftEnd`                                            |
 | `Starved`     | `MATERIAL:<material>`    | `materialCause`                                              |
@@ -147,6 +148,17 @@ Each CNC works through its campaigns in `config/plant/schedule.yaml` in order (p
 - When the next campaign is a different product, the CNC enters `Setup` for `changeoverMinutes` (default 25), with cause `CHANGEOVER <from>→<to>`. `<from>` is `none` when nothing is loaded: a validated schedule gives every CNC a first campaign, so this happens only to a CNC built without campaigns that then gets a program (#126).
 - When all campaigns are done, the CNC goes to `Idle` with cause `SCHEDULE-COMPLETE`.
 - In Phase 1 a CNC never runs out of blanks; material lots arrive with #27.
+
+### What OP10 makes in production mode `orders` (#172)
+
+The production mode is `schedule` (above, the default, also in Compose) or `orders` (ADR-0030): `production` in a scenario's `scenario.json`, `SIM_PRODUCTION` in live mode. In `orders` mode a CNC runs only the jobs it is given, by the OPC UA method `LoadOrder` (the MES's dispatch, through the gateway from #173) or, in a headless run, a scenario's `dispatches`. Nothing else changes: the stations, buffers, cycle times, failures, shifts, operators, tool wear, leak test, rework loop and lots are the same model, so the same seed draws the same numbers wherever the same work happens.
+
+- **CNCs:** every first-operation machine (OP10) gets `campaigns: []`, not none: the line tells a CNC from other stations by its campaign list. `schedule.yaml` is not used, and nothing is loaded at the start, so each CNC's first job begins with `Setup` `CHANGEOVER none→<product>` (the existing path, #126). OPC UA `ShopFloor.Program` starts empty and is set when a changeover starts. `LoadProgram` is refused (`BadInvalidState`).
+- **Jobs:** a job is a command id, an order id, a product, a quantity (blanks started: an OP10 scrap uses up a slot, so scrap makes an order short) and a `NotBefore` (plant time). A CNC keeps its jobs in a FIFO queue of at most 50 not completed. The head job runs: a changeover when its product isn't loaded, then one blank per cycle. Jobs never overtake each other, even when a later job's `NotBefore` has passed.
+- **`Idle NO-ORDER`:** a CNC with no startable job (an empty queue, or a head job waiting for its `NotBefore`) is `Idle` with cause `NO-ORDER`. Accepting a job with a `NotBefore` in the future schedules a wake-up event at that time. A wake-up only calls the normal start path, and only while the CNC is `Idle` inside a shift and outside its break: a wake-up in a break, a planned stop or outside a shift starts nothing, and the job starts when the machine next leaves that state, as any start does. The calendar check also covers a wake-up that the event queue processes before a calendar boundary at the same instant (boundaries are scheduled a week at a time). A test puts `NotBefore` at the 10:00 break start, inside the break and at its 10:30 end: the job starts at 10:30 in every case, with no zero-length interval.
+- **Job facts:** each job emits `job` events with `transition` `accepted` (when `LoadOrder` or a dispatch accepts it), `started` (its first blank taken, after any changeover) and `completed` (the end of its last OP10 cycle, whatever the result). They are in the device sequence on OPC UA (`ShopFloorJobEventType`), and the CNC shows `ShopFloor.ActiveOrder` and `ShopFloor.QueuedJobs`.
+- **`LoadOrder`:** idempotent by command id within the run (the device epoch). The dedup table is checked first: the same id with the same job answers `Duplicate` with the original acceptance (`AcceptedSeq`, `AcceptedAt`), even when the call is late or names another epoch; with another job it is `command-conflict`. Only on a miss does the device check `DeviceEpoch` (`epoch-mismatch`) and `ExpiresAt` against its wall clock (`expired`), then the job's arguments. So a command not accepted before its expiry is never accepted later. Details: `docs/contracts/opcua-address-space.md`, "Methods".
+- **Dispatches at the start (B3):** a scenario's `dispatches: [{ commandId, machine, orderId, product, quantity, notBefore }]` are applied right after `line.start` and before the injections, in list order, at the start time. That is the live order: the simulator is attached and idle at its start time (`SIM_AUTOSTART=false`), the test dispatches through `LoadOrder`, waits until every command is confirmed by its device fact, then posts the injections and resumes. Both runs put the same events in the queue with the same tie-breaking sequence (tested: a live run dispatched that way reproduces headless `orders-01` event for event). A CNC that enters `Idle NO-ORDER` at the start time and gets a job at that instant goes to `Setup` at the same instant; the zero-length `Idle` is dropped as a zero-length interval by the ground truth (and by the MES, ADR-0018).
 
 ### Cycle times
 
@@ -435,23 +447,24 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 
 ### Event log (`events.jsonl`)
 
-- **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the simulation sections of the validated plant configuration (`SIMULATION_FILES` in `plant-config`). Any change to a value in those files changes the hash; `oee.yaml`, `reasons.yaml` and `alarms.yaml` are not simulation inputs and are not hashed (ADR-0021, ADR-0024). A run with failure injections also lists them (`injections: [{ at, machine, code, repairMs? }]`); a run without has no such field, so its header is unchanged (#140).
+- **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the simulation sections of the validated plant configuration (`SIMULATION_FILES` in `plant-config`). Any change to a value in those files changes the hash; `oee.yaml`, `reasons.yaml` and `alarms.yaml` are not simulation inputs and are not hashed (ADR-0021, ADR-0024). A run with failure injections also lists them (`injections: [{ at, machine, code, repairMs? }]`); a run without has no such field, so its header is unchanged (#140). An orders-mode run adds `production: "orders"` and its `dispatches` (#172); a schedule-mode header has neither, so `week-01`'s and `alarms-01`'s headers and `events.sha256` are unchanged. The event schema stays `sim-event/1`: `job` is a new event type that only orders-mode runs write.
 - **Every other line is one event** with `schema: sim-event/1`, a run-wide sequence number `seq` starting at 1, and `at` in ISO 8601 UTC. Lines are in simulation-time order; events at the same millisecond keep the order in which the model produced them.
 - **No raw floats leave the model:** durations are rounded to whole milliseconds before scheduling (ADR-0006), and measurements are rounded to instrument resolution. The last bits of `Math.log`, `Math.cos` and `**` can differ between CPU architectures; the first golden run in CI (Linux x86) differed from a local run (macOS ARM) in exactly the unrounded leak readings.
 - **Byte stability:** keys are sorted at every level (string order, except that integer-like keys come first in numeric order, as JSON objects always do), and undefined fields are dropped. Values that are not plain JSON (`Map`, `Set`, `Temporal` objects, functions) are rejected instead of being written as `{}`. One function, `stableStringify`, writes every line, so the bytes depend only on the data, never on how an object was built.
 
-| `type`                       | Fields besides `at`, `seq`, `schema`                                                                        | Emitted when                                                      |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `state`                      | `machineId`, `from`, `to`, `cause?`                                                                         | A machine changes state                                           |
-| `cycle-complete`             | `machineId`, `product`, `partId`, `serial`, `result` (`good`, `scrap`, `rework`), `reason?`, `measurement?` | A station finishes a cycle                                        |
-| `material-consumed`          | `machineId`, `partId`, `material`, `lotId`                                                                  | A unit of a lot is consumed                                       |
-| `repair-start`, `repair-end` | `machineId`, `failureCode`                                                                                  | A technician starts or finishes a repair                          |
-| `alarm`                      | `machineId`, `code`, `transition` (`active`, `cleared`), `severity`                                         | An alarm is raised or cleared (see Alarms)                        |
-| `program-loaded`             | `machineId`, `product`, `quantity`                                                                          | A program was loaded on a CNC from outside (OPC UA `LoadProgram`) |
-| `shift`                      | `action` (`shift-start`, `break-start`, `break-end`, `shift-end`), `shiftId`, `shiftDate`                   | A calendar boundary is reached                                    |
-| `operator`                   | `machineId`, `operatorId` (or null), `absent`                                                               | A station is staffed at shift start                               |
-| `injection-held`             | `machineId`, `injection` (its id), `code`                                                                   | A failure injection falls due while the machine is not `Running`  |
-| `injection-applied`          | `machineId`, `injection`, `code`                                                                            | A failure injection takes effect: the machine goes `Down` now     |
+| `type`                       | Fields besides `at`, `seq`, `schema`                                                                          | Emitted when                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `state`                      | `machineId`, `from`, `to`, `cause?`                                                                           | A machine changes state                                           |
+| `cycle-complete`             | `machineId`, `product`, `partId`, `serial`, `result` (`good`, `scrap`, `rework`), `reason?`, `measurement?`   | A station finishes a cycle                                        |
+| `material-consumed`          | `machineId`, `partId`, `material`, `lotId`                                                                    | A unit of a lot is consumed                                       |
+| `repair-start`, `repair-end` | `machineId`, `failureCode`                                                                                    | A technician starts or finishes a repair                          |
+| `alarm`                      | `machineId`, `code`, `transition` (`active`, `cleared`), `severity`                                           | An alarm is raised or cleared (see Alarms)                        |
+| `program-loaded`             | `machineId`, `product`, `quantity`                                                                            | A program was loaded on a CNC from outside (OPC UA `LoadProgram`) |
+| `shift`                      | `action` (`shift-start`, `break-start`, `break-end`, `shift-end`), `shiftId`, `shiftDate`                     | A calendar boundary is reached                                    |
+| `operator`                   | `machineId`, `operatorId` (or null), `absent`                                                                 | A station is staffed at shift start                               |
+| `injection-held`             | `machineId`, `injection` (its id), `code`                                                                     | A failure injection falls due while the machine is not `Running`  |
+| `injection-applied`          | `machineId`, `injection`, `code`                                                                              | A failure injection takes effect: the machine goes `Down` now     |
+| `job`                        | `machineId`, `transition` (`accepted`, `started`, `completed`), `commandId`, `orderId`, `product`, `quantity` | Orders mode only (#172): a job is accepted, started or completed  |
 
 These are the simulator's internal facts, the "truth". They are not the UNS payloads of plan section 5; the MES sees the plant only through OPC UA and MQTT from Phase 2 on.
 
@@ -464,13 +477,14 @@ These are the simulator's internal facts, the "truth". They are not the UNS payl
 - `lots`: remaining quantity of every lot.
 - `oee`: the ground-truth OEE (#117), below.
 - `alarms`: the alarm ground truth (#140), below.
+- `orders`: jobs, orders and units of an orders-mode run (#172), below; empty in schedule mode.
 - `analysisConfigSha256`: a SHA-256 hash of `oee.yaml`, `reasons.yaml` and `alarms.yaml` as loaded (#140): the files that shape the analysis but not the simulation. The summary says which analysis configuration produced it, while `configSha256` and the event log stay as they are.
 
 `GroundTruth` builds the state times and cycle counts only from the events; `production` and `lots` are read from the model at the end of the run. A test runs the same seed through the plant directly and checks that every machine's own time accounting equals the summary exactly.
 
 A run covers the half-open interval [start, end): no event at or after `end` is written. The shift running at `start` (and its break, if the run starts inside one) is announced by `shift` events at `start`, so the log is self-contained.
 
-The format is `sim-summary/3` since #140: it adds `alarms` and `analysisConfigSha256`, and every other field is unchanged. `/2` (#117) added `oee`; `/1` had neither.
+The format is `sim-summary/4` since #172: it adds `orders` (empty in schedule mode) and the optional `noOrderIdleMs` of the OEE inputs, and every other field is unchanged; `week-01`'s and `alarms-01`'s summaries differ from `/3` only in the schema line, the empty `orders` section, `analysisConfigSha256` and `oee.config.scheduledTime` (`oee.yaml` switched to `orders`, which moves no value of a schedule-mode run; asserted field by field). `/3` (#140) added `alarms` and `analysisConfigSha256`, `/2` (#117) `oee`; `/1` had neither.
 
 #### Ground-truth OEE (`oee`)
 
@@ -479,7 +493,7 @@ The format is `sim-summary/3` since #140: it adds `alarms` and `analysisConfigSh
 - `oee.config`: the micro-stop threshold and the scheduled-time rule used.
 - `oee.machines.<id>`:
   - `operation` and `idealCycleMs` (the ideal cycle time of each product at that operation, integer ms);
-  - `shifts.<bucket>.inputs`: the `oee-core` inputs of the shift bucket: `scheduled` (false for `no-shift`), `stateMs` (equal to `byShift`), `stops` and `cycles`;
+  - `shifts.<bucket>.inputs`: the `oee-core` inputs of the shift bucket: `scheduled` (false for `no-shift`), `stateMs` (equal to `byShift`), `noOrderIdleMs` (the part of Idle with cause `NO-ORDER`, #172; only when above 0, so schedule-mode buckets are unchanged), `stops` and `cycles`;
   - `shifts.<bucket>.result`: `bucketOee` of those inputs: `availability`, `performance`, `quality` and `oee`, each `{ fraction: "num/den", decimal: "0.9778" }` (exact reduced fraction, rounded half-up to four decimals) or `null`; `anomaly`, `provisional`, `totals` (PBT, APT, excluded, long-stop and micro-stop ms, ideal ms, good, scrap, rework, produced), `unplanned` (cycles of the no-shift bucket, outside P and Q) and `losses` (`null` when PBT = 0);
   - `hours.<ISO hour>`: the same inputs per UTC hour, with `shift`, the bucket the hour lies in (shifts start and end on whole hours). Inputs only: `bucketOee` of them gives the hour's result, which keeps the week's file at about 40,000 lines.
 - `oee.workCenters.<id>`: `equipment` and, per shift bucket, `workCenterOee` of the member machines' inputs (ΣAPT/ΣPBT, Σideal/ΣAPT, Σgood/Σproduced).
@@ -490,6 +504,20 @@ How the inputs are built:
 - **Stopped intervals** are held while open and filed when they close: one piece per hour and one per shift bucket, each with the interval's whole length (`wholeMs`), so the threshold applies to the whole interval and each piece is still credited to its own hour. While an interval is open, a summary or snapshot includes it with `open: true` and `wholeMs` running to the snapshot time (ADR-0021); such a bucket can be `provisional`. A run that ends inside a Stopped interval reports it open in the same way.
 - **Cycles** are bucketed by their time (`shiftKeyAt` of the cycle's UTC hour; buckets are half-open), not by the last shift event seen, so a cycle exactly at a boundary lands where the MES puts it. Before #117 the summary counted cycles only per machine in total, so no count changed; in the golden week no cycle completes on an hour boundary, and the time-based and event-based buckets agree for all 10,988 cycles.
 - **Work centers** are Cell M1 (CNC-01, CNC-02, WSH-01) and Line A1 (ASM-01, LKT-01, PCK-01), from `plant.yaml`.
+
+**Scheduled time (#172, ADR-0021 amendment):** `oee.yaml` says `scheduledTime: orders`. Inside a shift, Idle with cause `NO-ORDER` is excluded from planned busy time, like a planned stop; everything else is as `shift-calendar`. `SCHEDULE-COMPLETE` and `NO-OPERATOR` stay availability losses, so a schedule-mode run (no `NO-ORDER`) has exactly the OEE it had under `shift-calendar`. The ground truth keeps the `NO-ORDER` time per hour and per shift bucket from the state events' causes. Downstream machines get no dispatch: their `Starved` while no order runs stays an external availability loss (a known limit; per-order and line OEE are Phase 8's).
+
+#### Ground-truth orders (`orders`)
+
+`OrderTruth` (`apps/simulator/src/headless/order-truth.ts`, #172, ADR-0030) is built from the events only, as the MES must build it from device facts; only the WIP at the end is read from the line's buffers and stations:
+
+- **Attribution:** a part belongs to the job whose `started` fact is the latest one on its CNC before its OP10 cycle (one part at a time on a CNC, so this is exact). Every later cycle of the part inherits the order.
+- `orders.jobs`: every accepted job in acceptance order: command id, order, machine, product, quantity, `acceptedAt`, `startedAt` and `completedAt` (null until then).
+- `orders.orders.<order>`: `product`, its `jobs`, `quantity` (Σ of its jobs), `started` (blanks taken), `scrap` per operation and reason (OP10 `DIMENSIONAL`, OP40 second `LEAK`), `reworkPasses` (leak-test failures, each opening pass 2 at OP30 and OP40), `packedGood`, `wip` per place at the end (a station id, a buffer `OP20→OP30`, or `asm-01 rework`), `lastTerminalAt` (the last unit packed or scrapped so far), `completedAt` (that time once every job is completed and no unit is in WIP; null otherwise), `operations.<op>` with `in`, `good`, `scrap`, `rework` counted in completed cycles of every pass (`in = good + scrap + rework`), `material` and `materialInProcess`.
+- **Material, at the point the MES can see it (H2):** consumption is booked when the consuming cycle completes: a blank with the part's OP10 cycle, components with its OP30 cycle of that pass (rework components on pass 2), because the MES knows a cycle only from its completion fact. What was taken for a cycle still running at the end (`material-consumed` before its `cycle-complete`) is `materialInProcess` and is not reconciled.
+- `orders.units`: every unit's operation records (operation, equipment, pass, completion time, result, reason) as their `count` and the SHA-256 of their canonical JSON (`unitsDocument`: units by part id, records in order). The tests derive the full list from the event log and compare it with the hash.
+
+The live run serves the section in `GET /api/v1/ground-truth` (control API 1.4), with the run's `productionMode`.
 
 #### Ground-truth alarms (`alarms`)
 
@@ -562,7 +590,7 @@ Source: `apps/simulator/src/live/`. Plan section 4: "two run modes, one engine".
 - Control calls made from _inside_ an event handler (pause, resume, speed, stop) are deferred until the current step has finished, so they can never nest a second run inside the first. `step()` from a handler is an error.
 - An optional end time makes the run half-open, [start, end), as in headless mode.
 
-**Pacing decides only _when_ a step runs, never _what_ happens.** A scripted test, and a property test with 40 random sequences of advance, pause, step, resume and speed changes (including a step before the start and an end exactly on an event time), check that the event stream is identical to the headless run with the same seed and end. Determinism and the golden scenario therefore also cover live mode. External commands (such as OPC UA `LoadProgram`) change the run's future; a live run with commands is reproducible only together with its recorded `program-loaded` events. Replaying those is part of the Phase 9 scenarios.
+**Pacing decides only _when_ a step runs, never _what_ happens.** A scripted test, and a property test with 40 random sequences of advance, pause, step, resume and speed changes (including a step before the start and an end exactly on an event time), check that the event stream is identical to the headless run with the same seed and end. Determinism and the golden scenario therefore also cover live mode. External commands (such as OPC UA `LoadProgram`) change the run's future; a live run with commands is reproducible only together with its recorded `program-loaded` events. `LoadOrder` jobs given while the run is idle at its start time are the exception the reconciliation relies on: they are applied as a headless run applies a scenario's `dispatches` (#172, B3), so such a run equals its headless scenario. `createLiveRun` also takes `production` and `dispatches` itself. Replaying those is part of the Phase 9 scenarios.
 
 **Two clocks:**
 
@@ -587,6 +615,7 @@ Source: `apps/simulator/src/headless/invariants.ts` and `golden.ts`.
 2. **Time accounting from two independent sources:** the checker rebuilds every machine's time per state from the emitted `state` events and compares it, state by state, with the machine's own accounting. Both must also sum to the elapsed time. Every `state` event must also start from the state the log last reported.
 3. **Conservation of material:** for every lot, units consumed (from `material-consumed` events) + remaining = initial quantity.
 4. **Alarms:** each alarm alternates between active and cleared in the log, the active set rebuilt from the log equals every station's own, and a machine that is down has its failure alarm active.
+5. **Jobs (orders mode, #172):** every blank taken belongs to a job (Σ blanks taken = parts started), no job takes more than its quantity, and each CNC's queue holds exactly its jobs not completed, in acceptance order.
 
 The first violation stops the run with an `InvariantViolation` naming the time and the quantities. Tests prove the checker catches each kind of violation: a lost part, a part in two places, a state change missing from the event log, time charged to the wrong state, a unit consumed without an event, an alarm transition missing from the log, and an alarm raised twice.
 
@@ -594,9 +623,10 @@ Coverage:
 
 - the three 5-day production weeks (Monday 06:00 to Saturday 06:00, seeds 1–3) in the test suite;
 - the golden scenario `week-01` (seed 20261012, 7 days, default plant), about 12,600 checks per run;
-- the golden scenario `alarms-01` (#140), about 2,000 checks per run.
+- the golden scenario `alarms-01` (#140), about 2,000 checks per run;
+- the golden scenario `orders-01` (#172), about 2,300 checks per run.
 
-The golden snapshot pins each run byte for byte: its summary file, and the SHA-256 of its event log (35,764 lines for `week-01`, 5,332 for `alarms-01`). CI runs them on every pull request.
+The golden snapshot pins each run byte for byte: its summary file, and the SHA-256 of its event log (35,764 lines for `week-01`, 5,332 for `alarms-01`, 6,622 for `orders-01`). CI runs them on every pull request.
 
 **Scenario injections (#140):** a scenario's `scenario.json` may carry `injections: [{ at, machine, code, repairMs? }]` (`at` ISO 8601 with an offset or `Z`). `checkInjections` refuses an unknown machine or code, a bad repair time and a time on a calendar boundary. The headless run schedules them right after `line.start`, in list order, exactly as the live control API does when a test posts them in that order before the run starts, so both put the same events in the queue with the same tie-breaking sequence.
 
@@ -605,6 +635,15 @@ The golden snapshot pins each run byte for byte: its summary file, and the SHA-2
 - **Flood and chattering, Cell M1, Monday 08:00 Istanbul (05:00Z):** 13 injections between 05:00:05Z and 05:04:40Z on CNC-01 (`COOLANT-PRESSURE` at :05, :25 and :45 of 05:00, then `SPINDLE-OVERLOAD` at 05:02:05 and 05:03:05), CNC-02 (`SPINDLE-OVERLOAD` every minute from 05:00:15 to 05:03:15, `COOLANT-PRESSURE` at 05:04:15) and WSH-01 (`HEATER-FAULT` at 05:00:40, 05:02:40 and 05:04:40), with repairs of 3 to 5 s. Two of the washer's are held while it is starved and raise at 05:00:42.403Z and 05:04:53.262Z. 13 raises in the 05:00 window: one flood window and one flood episode (`1791781395000~cnc-02~SPINDLE-OVERLOAD`, 05:03:15Z to 05:10:25Z, peak 13); CNC-01 `COOLANT-PRESSURE` raises three times in 40 s, so it chatters. CNC-02's raises are exactly 60 s apart and, by the window convention, don't.
 - **Fleeting, LKT-01, Monday 09:20 Istanbul (06:20Z):** `FIXTURE-SEAL` with `repairMs: 500`, raised and cleared 500 ms apart with a technician free.
 - **Standing, PCK-01, Monday 16:30 Istanbul (13:30Z), in shift B and off every boundary:** `PRINTER-FAULT` with `repairMs` 118,800,000 (33 h). PCK-01 is not `Running` at 13:30Z, so the injection is held and raises at 13:30:20.030Z; it clears at Tuesday 22:30:20.030Z, so it is active at the end of Tuesday's shift B (22:00 Istanbul, 29.5 h after the raise) and standing there. It holds one of the two technicians for 33 hours and blocks Line A1 upstream, which lowers Line A1's OEE on Monday and Tuesday; both effects are part of the ground truth.
+
+**`orders-01` (#172):** the week-01 seed and start, two days, production mode `orders`, `alarms-01`'s 14 shift A injections (its shift B injection is left out), the ERP dataset `orders.json` (every order version in feed order; the lots are `stock.yaml`'s) and the `dispatches` of the orders the scenario releases (`erp.release`). `orders.json` and `erp` are not simulation inputs: the simulator runs the `dispatches`, and a test checks that they are exactly the plan's dispatch rule applied to the released orders (planned-start order, ties by order number; each whole order to the CNC whose queue with it appended finishes first by ideal time, with `NotBefore` waits and changeovers counted; ties to the lower id), which the MES's dispatch must reproduce (#174). By construction, and asserted in `apps/simulator/src/headless/orders-01.test.ts`:
+
+- six small and large orders planned for Monday 06:00: PO-2610-001 (VB-100 × 12) and -004 (VB-100 × 12) on CNC-01, -002 (VB-200 × 10), -003 (VB-200 × 8) and -006 (VB-100 × 6, after a changeover VB-200→VB-100) on CNC-02, all complete inside Monday's shift A, and -005 (VB-100 × 150) on CNC-01, complete Monday 19:25 Istanbul;
+- PO-2610-006 has revision 2 in the dataset (quantity 5 → 6) before release; PO-2610-008 is never released;
+- both CNCs run dry on Monday (CNC-02 at 08:55, CNC-01 at 19:20 Istanbul), so `Idle NO-ORDER` fills shifts until Tuesday 11:17 Istanbul (outside the 10:00–10:30 break), the planned start of PO-2610-007 (VB-200 × 20, CNC-01) and -009 (VB-200 × 200, CNC-02);
+- PO-2610-007 ends short: one OP10 `DIMENSIONAL` scrap, 19 packed of 20, complete Tuesday 14:06;
+- PO-2610-009 is still in WIP at the end (Wednesday 06:00), with material in process, its job not completed;
+- the stock covers every dispatched job; the flood, the chattering point and the fleeting alarm of `alarms-01` are still there.
 
 A headless test asserts that `alarms-01`'s event log is byte-identical to `week-01`'s up to the first injection (05:00:05Z; the header differs only by its `injections`), so week-01's live evidence carries over, and that its ground truth holds the flood episode, the chattering point, the fleeting and the standing alarm. A control API test posts the shift A injections live and checks that shift A's alarm KPIs and state times equal the headless `alarms-01`.
 

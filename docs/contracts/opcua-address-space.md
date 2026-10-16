@@ -1,6 +1,6 @@
 # Contract: OPC UA address space
 
-Version 1 (Phase 2). Source of truth in code: `packages/contracts/src/opcua.ts`. A contract test (`apps/simulator/src/opcua/integration.test.ts`) reads the Project variables table of this file and checks it against the code and the running servers: every path, data type and machine in the Project variables table, and the fields in the Events table. It also checks the alarm codes per machine and `LoadProgram` against the code; the Alarms table describes the rules in prose and is not parsed. Decisions: ADR-0008 (model), ADR-0009 (delivery), ADR-0010 (alarms). Any change bumps the version here and needs a changelog entry (plan section 2, Definition of Done).
+Version 1.1 (Phase 7, #172: `LoadOrder`, `ShopFloor.ActiveOrder`, `ShopFloor.QueuedJobs` and `ShopFloorJobEventType` for the production mode `orders`; version 1 in Phase 2). Source of truth in code: `packages/contracts/src/opcua.ts`. A contract test (`apps/simulator/src/opcua/integration.test.ts`) reads the Project variables table of this file and checks it against the code and the running servers: every path, data type and machine in the Project variables table, and the fields in the Events table. It also checks the alarm codes per machine and `LoadProgram` and `LoadOrder` against the code; the Alarms table describes the rules in prose and is not parsed. Decisions: ADR-0008 (model), ADR-0009 (delivery), ADR-0010 (alarms), ADR-0030 (orders mode, `LoadOrder`, job facts). Any change bumps the version here and needs a changelog entry (plan section 2, Definition of Done).
 
 ## Endpoints
 
@@ -51,7 +51,9 @@ Both Machinery state machines are derived from the project `State`. Their `Curre
 | `ShopFloor.Epoch`                                           | UInt32         | all      | Start of this simulator run, Unix seconds (wall time): the epoch of `Sequence`, which restarts at 1 with every run (ADR-0015)          |
 | `ShopFloor.Counters.Produced`, `.Good`, `.Scrap`, `.Rework` | UInt32         | all      | Completed cycles since server start, total and per result                                                                              |
 | `ShopFloor.LastSerial`                                      | String         | all      | Serial of the last completed cycle                                                                                                     |
-| `ShopFloor.Program`                                         | String         | CNCs     | Product the CNC is set up for                                                                                                          |
+| `ShopFloor.Program`                                         | String         | CNCs     | Product the CNC is set up for; empty in orders mode until the first job's changeover starts                                            |
+| `ShopFloor.ActiveOrder`                                     | String         | CNCs     | Orders mode: the order of the job the CNC works on (from its `started` to its `completed` fact), empty if none                         |
+| `ShopFloor.QueuedJobs`                                      | UInt32         | CNCs     | Orders mode: jobs accepted and not completed, the active one included (at most 50); 0 in schedule mode                                 |
 | `ShopFloor.Operator`                                        | String         | ASM-01   | Operator id at the station, empty if none                                                                                              |
 | `ShopFloor.ProcessValues.SpindleLoad`                       | Double, %      | CNCs     | Telemetry, sampled (minimum sampling interval 100 ms)                                                                                  |
 | `ShopFloor.ProcessValues.CoolantTemperature`                | Double, °C     | CNCs     | Telemetry, sampled                                                                                                                     |
@@ -83,7 +85,32 @@ Value timestamps:
   - node-opcua itself rejects missing arguments (`BadArgumentsMissing`), extra arguments (`BadTooManyArguments`) and wrong types (`BadInvalidArgument`, with `BadTypeMismatch` on the argument).
 - In live mode the command takes effect at the simulation time of the last processed step, which can trail the paced clock by up to about 1 s × speed.
 - Every accepted call is recorded as a `program-loaded` event in the simulator's event log (not an OPC UA event).
-- MES order dispatch uses this method in Phase 7 (plan section 5, data path 3).
+- In production mode `orders` (Phase 7, #172) the call is refused with `BadInvalidState`: CNCs then run only `LoadOrder` jobs.
+
+`ShopFloor.LoadOrder` on CNC-01 and CNC-02 (`nsu=<uri>;s=<machine>.ShopFloor.LoadOrder`, object `…ShopFloor`; #172, ADR-0030). The MES's order dispatch (plan section 5, data path 3) reaches it through the gateway's `cmd/load-order` (#173). Argument order: `LOAD_ORDER_INPUTS` and `LOAD_ORDER_OUTPUTS` in `@shopfloor/contracts`.
+
+| Argument          | Type     | Meaning                                                                                                    |
+| ----------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| in `CommandId`    | String   | The command's id, `{orderId}~OP10~{n}` from the MES; 1–128 characters                                      |
+| in `OrderId`      | String   | The MES order the job belongs to; 1–128 characters                                                         |
+| in `Product`      | String   | Product id, for example `VB-200`                                                                           |
+| in `Quantity`     | UInt32   | Blanks to machine, 1–100,000 (OP10 scrap uses up a slot)                                                   |
+| in `NotBefore`    | DateTime | Plant (simulation) time; the job doesn't start earlier                                                     |
+| in `DeviceEpoch`  | UInt32   | The device epoch (`ShopFloor.Epoch`) the command is meant for                                              |
+| in `ExpiresAt`    | DateTime | Wall time; a command that was not accepted by then is refused                                              |
+| out `Position`    | UInt32   | Place of the job in the CNC's queue when it was accepted (1 = next); a duplicate returns the original      |
+| out `Duplicate`   | Boolean  | True when this command id was already accepted with the same job: nothing was added                        |
+| out `AcceptedSeq` | UInt32   | The `Sequence` of the job's `accepted` event (`ShopFloorJobEventType`); a duplicate returns the original's |
+| out `AcceptedAt`  | DateTime | The plant time of that event; a duplicate returns the original's                                           |
+
+- **Dedup first.** The device looks the `CommandId` up in the run's table of accepted commands before any other check. The table is line-wide: a command id names one job on one CNC. A hit with the same job (`OrderId`, `Product`, `Quantity`, `NotBefore`) on the same CNC answers `Good` with `Duplicate = true` and the original outputs, even when `ExpiresAt` has passed or `DeviceEpoch` is wrong: a late call for an accepted job always learns that it was. A hit with another job, or for the other CNC, is `BadInvalidArgument` (`command-conflict`, flagged on `CommandId`).
+- **Only on a miss:** a `DeviceEpoch` other than this run's is `BadInvalidState` flagged on `DeviceEpoch` (`epoch-mismatch`); an `ExpiresAt` before the simulator's wall clock is `BadInvalidState` flagged on `ExpiresAt` (`expired`). So a command not accepted before its expiry is never accepted later, and an `expired` answer proves that it never was. Then the job's arguments: an unknown product, a quantity outside 1–100,000 or an empty or over-long id is `BadInvalidArgument` flagged on that argument; a queue of 50 jobs is `BadResourceUnavailable`.
+- A refusal flags exactly one argument in `inputArgumentResults` (the others `Good`), or none. The two refusals with no argument flagged differ in their status code, so a client can tell a retry from a definitive answer:
+  - **Transient:** `BadWaitingForInitialData`, no argument flagged: the simulation is not attached yet, or not every server has started and replayed the events it missed (`not-attached`), or the run has finished (`not-running`). Nothing was checked or accepted; the caller may retry the same command until its `ExpiresAt` (a finished run never accepts again, so its commands end as `expired` or are settled against the next epoch).
+  - **Permanent:** `BadInvalidState`, no argument flagged: production mode `schedule` (`wrong-mode`), where no retry is ever accepted. `BadInvalidState` with an argument flagged is `epoch-mismatch` or `expired` (above).
+- **FIFO:** the job is appended; the CNC runs its queue in order, and the head job waits for its `NotBefore` (the CNC is `Idle` with cause `NO-ORDER` meanwhile). A job whose product isn't loaded starts with a changeover (`CHANGEOVER A→B`, `A` = `none` for a CNC's first job). A job's quantity is blanks started.
+- Every accepted call raises the job's `accepted` event in the device sequence before the call returns; the job's `started` (its first blank) and `completed` (the end of its last OP10 cycle, whatever the result) follow.
+- In live mode the job is accepted at the simulation time of the last processed step, as `LoadProgram`.
 
 ## Alarms (ADR-0010)
 
@@ -103,14 +130,15 @@ The simulator raises and clears alarms; acknowledgement, shelving and history be
 
 Events are raised on the machine object, which is a notifier of the Server object, so a subscription on `i=2253` receives the events of that server.
 
-| Event type (`nsu=<uri>;s=…`)    | Fields besides BaseEventType                                                                                             | Raised when            |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------- |
-| `ShopFloorStateChangeEventType` | Sequence, MachineId, FromState, ToState, Cause                                                                           | Every state change     |
-| `CycleCompleteEventType`        | Sequence, MachineId, Product, PartId, Serial, Result (`good`, `scrap`, `rework`), Reason, MeasurementValue (NaN if none) | Every completed cycle  |
-| `ShopFloorAlarmEventType`       | Sequence, MachineId, AlarmCode, Transition (`active`, `cleared`); BaseEventType `Severity` set per code                  | Every alarm transition |
+| Event type (`nsu=<uri>;s=…`)    | Fields besides BaseEventType                                                                                             | Raised when                                   |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| `ShopFloorStateChangeEventType` | Sequence, MachineId, FromState, ToState, Cause                                                                           | Every state change                            |
+| `CycleCompleteEventType`        | Sequence, MachineId, Product, PartId, Serial, Result (`good`, `scrap`, `rework`), Reason, MeasurementValue (NaN if none) | Every completed cycle                         |
+| `ShopFloorAlarmEventType`       | Sequence, MachineId, AlarmCode, Transition (`active`, `cleared`); BaseEventType `Severity` set per code                  | Every alarm transition                        |
+| `ShopFloorJobEventType`         | Sequence, MachineId, Transition (`accepted`, `started`, `completed`), CommandId, OrderId, Product, Quantity              | Every job transition (orders mode, CNCs only) |
 
 - `Time` is the simulation time; `ReceiveTime` is wall time.
-- `Sequence` starts at 1 per machine and grows by 1 per event across all three types, so gaps mean loss (plan section 5).
+- `Sequence` starts at 1 per machine and grows by 1 per event across all project event types, so gaps mean loss (plan section 5). Job events exist only in orders mode; a schedule-mode run's sequence is unchanged.
 - After a reconnect, compare the `ShopFloor.Sequence` variable with the last event received (ADR-0009).
 - Clients that need every event subscribe with sampling 0, a queue of 5000 and `discardOldest = false`. The server revises an event queue to 100–5000 entries, so a client should log `revisedQueueSize`.
 - When a burst within one publishing interval is larger than the queue, the excess is lost. The queue also holds the Machinery `TransitionEventType` events, unless an OfType where-clause excludes them. The `Sequence` field shows the gap, and the `ShopFloor.Sequence` variable says how far the server got (tested in #56).

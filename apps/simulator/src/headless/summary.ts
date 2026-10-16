@@ -1,3 +1,4 @@
+import { CAUSES } from '@shopfloor/contracts';
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { NO_SHIFT } from '@shopfloor/shift-calendar';
 import type { SimTime } from '@shopfloor/sim-core';
@@ -5,16 +6,21 @@ import type { PlantEvent, ProductionLine } from '../plant/line.ts';
 import type { MachineState } from '../plant/machine-state.ts';
 import { AlarmTruth, type AlarmSummary } from './alarm-truth.ts';
 import { OeeTruth, zeroStates as zero, type OeeSummary, type StateMs } from './oee-truth.ts';
+import { OrderTruth, type OrdersSummary } from './order-truth.ts';
 
 interface MachineTruth {
   readonly id: string;
   state: MachineState;
+  /** In Idle with cause `NO-ORDER` (#172): kept apart for `scheduledTime: orders`. */
+  noOrder: boolean;
   /** Where the time not yet counted starts (the last state change or shift boundary). */
   since: SimTime;
   /** When the current state began. */
   changedAt: SimTime;
   readonly total: StateMs;
   readonly byShift: Map<string, StateMs>;
+  /** Idle `NO-ORDER` time per shift bucket (#172). */
+  readonly noOrderByShift: Map<string, number>;
   readonly cycles: { good: number; scrap: number; rework: number };
 }
 
@@ -37,6 +43,8 @@ export interface GroundTruthSummary {
   readonly oee: OeeSummary;
   /** Alarm occurrences and KPIs per position and plant, per hour and shift bucket (#140). */
   readonly alarms: AlarmSummary;
+  /** Jobs, orders and units of an orders-mode run (#172); empty in schedule mode. */
+  readonly orders: OrdersSummary;
 }
 
 export class GroundTruth {
@@ -44,11 +52,13 @@ export class GroundTruth {
   readonly #scrapped = new Map<string, Map<string, number>>();
   readonly #oee: OeeTruth;
   readonly #alarms: AlarmTruth;
+  readonly #orders: OrderTruth;
   #shift: string = NO_SHIFT;
 
   constructor(config: PlantConfig, start: SimTime) {
     this.#oee = new OeeTruth(config);
     this.#alarms = new AlarmTruth(config, start);
+    this.#orders = new OrderTruth(config);
     const machineIds = config.plant.areas.flatMap((a) =>
       a.workCenters.flatMap((w) => w.equipment.map((e) => e.id)),
     );
@@ -56,16 +66,19 @@ export class GroundTruth {
       this.#machines.set(id, {
         id,
         state: 'Off',
+        noOrder: false,
         since: start,
         changedAt: start,
         total: zero(),
         byShift: new Map(),
+        noOrderByShift: new Map(),
         cycles: { good: 0, scrap: 0, rework: 0 },
       });
     }
   }
 
   record(event: PlantEvent): void {
+    this.#orders.record(event);
     if (event.type === 'alarm') {
       this.#alarms.record(event);
       return;
@@ -80,6 +93,7 @@ export class GroundTruth {
       this.#close(machine, event.at);
       this.#oee.stateChange(machine.id, machine.state, event.to, event.at);
       machine.state = event.to;
+      machine.noOrder = event.to === 'Idle' && event.cause === CAUSES.noOrder;
       machine.changedAt = event.at;
       return;
     }
@@ -119,23 +133,29 @@ export class GroundTruth {
    * current bucket, and an open Stopped interval's whole length runs to `now` (ADR-0021).
    */
   snapshot(now: SimTime, line: ProductionLine, lotIds: readonly string[]): GroundTruthSummary {
-    const open = new Map<string, { state: MachineState; since: SimTime }>();
+    const open = new Map<string, { state: MachineState; since: SimTime; noOrder: boolean }>();
     const shifts = new Map<string, Record<string, StateMs>>();
+    const noOrderShifts = new Map<string, Record<string, number>>();
     const machines = Object.fromEntries(
       [...this.#machines].map(([id, m]) => {
         const time = now - m.since;
         if (time < 0) {
           throw new RangeError(`snapshot at ${String(now)} is before ${String(m.since)}`);
         }
-        open.set(id, { state: m.state, since: m.since });
+        open.set(id, { state: m.state, since: m.since, noOrder: m.noOrder });
         const stateMs = { ...m.total };
         const byShift = new Map([...m.byShift].map(([key, ms]) => [key, { ...ms }]));
+        const noOrder = new Map(m.noOrderByShift);
         if (time > 0) {
           stateMs[m.state] += time;
           const shift = byShift.get(this.#shift) ?? zero();
           shift[m.state] += time;
           byShift.set(this.#shift, shift);
+          if (m.noOrder) {
+            noOrder.set(this.#shift, (noOrder.get(this.#shift) ?? 0) + time);
+          }
         }
+        noOrderShifts.set(id, Object.fromEntries(noOrder));
         const perShift = Object.fromEntries(byShift);
         shifts.set(id, perShift);
         return [id, { stateMs, byShift: perShift, cycles: { ...m.cycles } }];
@@ -144,8 +164,9 @@ export class GroundTruth {
     return {
       machines,
       ...this.#production(line, lotIds),
-      oee: this.#oee.summary(now, open, shifts),
+      oee: this.#oee.summary(now, open, shifts, noOrderShifts),
       alarms: this.#alarms.summary(now),
+      orders: this.#orders.summary(line),
     };
   }
 
@@ -195,10 +216,16 @@ export class GroundTruth {
     if (duration === 0) {
       return;
     }
-    this.#oee.addTime(machine.id, machine.state, at - duration, at);
+    this.#oee.addTime(machine.id, machine.state, at - duration, at, machine.noOrder);
     machine.total[machine.state] += duration;
     const shift = machine.byShift.get(this.#shift) ?? zero();
     shift[machine.state] += duration;
     machine.byShift.set(this.#shift, shift);
+    if (machine.noOrder) {
+      machine.noOrderByShift.set(
+        this.#shift,
+        (machine.noOrderByShift.get(this.#shift) ?? 0) + duration,
+      );
+    }
   }
 }

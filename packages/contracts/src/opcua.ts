@@ -29,18 +29,54 @@ export const OPCUA_VARIABLES = {
   leakRate: 'ShopFloor.LeakTest.LastReading',
   leakUpperLimit: 'ShopFloor.LeakTest.UpperLimit',
   alarmsActiveCount: 'ShopFloor.Alarms.ActiveCount',
+  /** Orders mode (#172): the order of the job the CNC works on now, empty if none. */
+  activeOrder: 'ShopFloor.ActiveOrder',
+  /** Orders mode (#172): jobs accepted and not completed, the active one included. */
+  queuedJobs: 'ShopFloor.QueuedJobs',
 } as const;
 
 export type OpcuaVariable = keyof typeof OPCUA_VARIABLES;
 
 export const OPCUA_METHODS = {
   loadProgram: 'ShopFloor.LoadProgram',
+  /** Orders mode (#172, ADR-0030): append an idempotent job to a CNC's queue. */
+  loadOrder: 'ShopFloor.LoadOrder',
 } as const;
+
+/**
+ * `LoadOrder`'s input arguments, in call order (#172, ADR-0030). A refusal flags the offending
+ * argument in `inputArgumentResults` at its index here, which is how a client tells
+ * `epoch-mismatch` (DeviceEpoch) from `expired` (ExpiresAt): both are `BadInvalidState`. With no argument
+ * flagged, `BadInvalidState` is production mode `schedule` (permanent) and
+ * `BadWaitingForInitialData` a run not attached or finished (transient).
+ */
+export const LOAD_ORDER_INPUTS = [
+  'CommandId',
+  'OrderId',
+  'Product',
+  'Quantity',
+  'NotBefore',
+  'DeviceEpoch',
+  'ExpiresAt',
+] as const;
+
+/** `LoadOrder`'s output arguments, in order. */
+export const LOAD_ORDER_OUTPUTS = ['Position', 'Duplicate', 'AcceptedSeq', 'AcceptedAt'] as const;
+
+/** At most this many jobs accepted and not completed per CNC. */
+export const MAX_QUEUED_JOBS = 50;
+
+/** The transitions of a job fact (`ShopFloorJobEventType`, event-log type `job`). */
+export const JOB_TRANSITIONS = ['accepted', 'started', 'completed'] as const;
+
+export type JobTransition = (typeof JOB_TRANSITIONS)[number];
 
 export const OPCUA_EVENT_TYPES = {
   stateChange: 'ShopFloorStateChangeEventType',
   cycleComplete: 'CycleCompleteEventType',
   alarm: 'ShopFloorAlarmEventType',
+  /** Orders mode (#172): a job accepted, started (first blank) or completed (last OP10 cycle). */
+  job: 'ShopFloorJobEventType',
 } as const;
 
 export const OPCUA_EVENT_FIELDS = {
@@ -48,6 +84,7 @@ export const OPCUA_EVENT_FIELDS = {
   stateChange: ['FromState', 'ToState', 'Cause'],
   cycleComplete: ['Product', 'PartId', 'Serial', 'Result', 'Reason', 'MeasurementValue'],
   alarm: ['AlarmCode', 'Transition'],
+  job: ['Transition', 'CommandId', 'OrderId', 'Product', 'Quantity'],
 } as const;
 
 export const OPCUA_EVENT_FIELD_TYPES = {
@@ -64,6 +101,9 @@ export const OPCUA_EVENT_FIELD_TYPES = {
   MeasurementValue: 'Double',
   AlarmCode: 'String',
   Transition: 'String',
+  CommandId: 'String',
+  OrderId: 'String',
+  Quantity: 'UInt32',
 } as const satisfies Record<string, 'String' | 'UInt32' | 'Double'>;
 
 export const opcuaNodeId = (machineId: string, path: string): string =>

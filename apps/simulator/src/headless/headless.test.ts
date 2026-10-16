@@ -175,7 +175,7 @@ describe('runHeadless (plan section 4, headless mode)', () => {
     const golden = JSON.parse(
       await readFile(resolve(import.meta.dirname, '../../golden/week-01/summary.json'), 'utf8'),
     ) as { schema: string; analysisConfigSha256: string };
-    expect(golden).toMatchObject({ schema: 'sim-summary/3', analysisConfigSha256: hash });
+    expect(golden).toMatchObject({ schema: 'sim-summary/4', analysisConfigSha256: hash });
   });
 
   it('covers [start, end): nothing at or after the end, and the running shift opens at the start', () => {
@@ -229,7 +229,7 @@ describe('headless CLI', () => {
       const summary = JSON.parse(await readFile(join(out, 'summary.json'), 'utf8')) as {
         schema: string;
       };
-      expect(summary.schema).toBe('sim-summary/3');
+      expect(summary.schema).toBe('sim-summary/4');
       const events = (await readFile(join(out, 'events.jsonl'), 'utf8')).trim().split('\n');
       expect(events.length).toBeGreaterThan(1_000);
     } finally {

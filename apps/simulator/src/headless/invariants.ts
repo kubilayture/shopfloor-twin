@@ -86,6 +86,45 @@ export class InvariantChecker {
     this.#checkTime(now);
     this.#checkLots(now);
     this.#checkAlarms(now);
+    this.#checkJobs(now);
+  }
+
+  /**
+   * Orders mode (#172): every blank taken belongs to a job, no job takes more blanks than its
+   * quantity, and a CNC's queue holds exactly its jobs that are not completed, in acceptance order.
+   */
+  #checkJobs(now: SimTime): void {
+    if (this.#line.production !== 'orders') {
+      return;
+    }
+    const jobs = this.#line.jobs();
+    const taken = jobs.reduce((sum, job) => sum + job.taken, 0);
+    if (taken !== this.#line.producedParts) {
+      throw new InvariantViolation(
+        now,
+        `jobs took ${String(taken)} blanks but ${String(this.#line.producedParts)} parts were started`,
+      );
+    }
+    for (const job of jobs) {
+      if (job.taken > job.quantity) {
+        throw new InvariantViolation(
+          now,
+          `job ${job.commandId} took ${String(job.taken)} blanks for a quantity of ${String(job.quantity)}`,
+        );
+      }
+    }
+    for (const station of this.#line.stations.filter((s) => s.jobs)) {
+      const queued = this.#line.queue(station.id).map((job) => job.commandId);
+      const open = jobs
+        .filter((job) => job.machine === station.id && job.completedAt === undefined)
+        .map((job) => job.commandId);
+      if (queued.join(',') !== open.join(',')) {
+        throw new InvariantViolation(
+          now,
+          `${station.id}: queue [${queued.join(', ')}] is not its open jobs [${open.join(', ')}]`,
+        );
+      }
+    }
   }
 
   #checkAlarms(now: SimTime): void {

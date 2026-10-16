@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { checkInjections, formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
-import { runHeadless, summaryDocument, type HeadlessOptions } from './run.ts';
+import { PRODUCTION_MODES, type ProductionMode } from '../plant/line.ts';
+import { runHeadless, summaryDocument, type DispatchSpec, type HeadlessOptions } from './run.ts';
 
 const REPO = resolve(import.meta.dirname, '../../../..');
 const GOLDEN = resolve(import.meta.dirname, '../../golden');
@@ -19,6 +20,24 @@ export interface Scenario {
     readonly code: string;
     readonly repairMs?: number;
   }[];
+  /** `schedule` when left out; `orders` (#172) runs only the dispatched jobs. */
+  readonly production?: ProductionMode;
+  /** Orders mode (#172): `notBefore` is ISO 8601 with an offset or Z. */
+  readonly dispatches?: readonly {
+    readonly commandId: string;
+    readonly machine: string;
+    readonly orderId: string;
+    readonly product: string;
+    readonly quantity: number;
+    readonly notBefore: string;
+  }[];
+  /**
+   * Orders mode (#172): the ERP dataset of the scenario (`orders.json` beside it, served by the
+   * ERP mock and the golden MES harness) and the orders the scenario releases. Not a simulation
+   * input: the simulator runs the `dispatches`, which the MES's dispatch of these released orders
+   * must reproduce.
+   */
+  readonly erp?: { readonly dataset: string; readonly release: readonly string[] };
 }
 
 export const readScenario = (name: string): Scenario =>
@@ -38,6 +57,18 @@ export async function scenarioOptions(name: string): Promise<HeadlessOptions> {
     at: Temporal.Instant.from(injection.at).epochMilliseconds,
     ...(injection.repairMs === undefined ? {} : { repairMs: injection.repairMs }),
   }));
+  const production = scenario.production ?? 'schedule';
+  if (!PRODUCTION_MODES.includes(production)) {
+    throw new Error(`${name}/scenario.json: unknown production mode "${production}"`);
+  }
+  const dispatches: DispatchSpec[] = (scenario.dispatches ?? []).map((dispatch) => ({
+    commandId: dispatch.commandId,
+    machine: dispatch.machine,
+    orderId: dispatch.orderId,
+    product: dispatch.product,
+    quantity: dispatch.quantity,
+    notBefore: Temporal.Instant.from(dispatch.notBefore).epochMilliseconds,
+  }));
   const issues = checkInjections(loaded.config, injections);
   if (issues.length > 0) {
     throw new Error(
@@ -50,6 +81,8 @@ export async function scenarioOptions(name: string): Promise<HeadlessOptions> {
     start,
     end: start + scenario.days * 86_400_000,
     ...(injections.length === 0 ? {} : { injections }),
+    ...(production === 'schedule' ? {} : { production }),
+    ...(dispatches.length === 0 ? {} : { dispatches }),
   };
 }
 

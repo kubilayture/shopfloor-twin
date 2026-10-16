@@ -354,7 +354,7 @@ describe('OEE configuration (ADR-0021)', () => {
     const result = await loadPlantConfig(DEFAULT_DIR);
     expect(result.ok && result.config.oee).toEqual({
       microStopThresholdMs: 120_000,
-      scheduledTime: 'shift-calendar',
+      scheduledTime: 'orders',
     });
   });
 
@@ -376,7 +376,7 @@ describe('OEE configuration (ADR-0021)', () => {
     [
       'an unknown scheduled-time rule',
       (c) => {
-        Object.assign(c.oee, { scheduledTime: 'orders' });
+        Object.assign(c.oee, { scheduledTime: 'released-orders' });
       },
       'oee:scheduledTime',
     ],

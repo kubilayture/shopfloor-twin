@@ -31,6 +31,7 @@ const servers = new PlantServers({
   start: env.SIM_START,
   host: env.OPCUA_HOST,
   portOffset: env.OPCUA_PORT_OFFSET,
+  production: env.SIM_PRODUCTION,
   ...(env.OPCUA_PKI_DIR ? { pkiFolder: resolve(env.OPCUA_PKI_DIR) } : {}),
 });
 const washer = new WasherModbusServer({
@@ -47,6 +48,7 @@ const run = createLiveRun({
   seed: env.SIM_SEED,
   start: env.SIM_START,
   speed: env.SIM_SPEED,
+  production: env.SIM_PRODUCTION,
   onEvent: (event) => {
     servers.record(event);
     washer.record(event);
@@ -122,6 +124,7 @@ log.info(
     seed: env.SIM_SEED,
     epoch: servers.epoch,
     speed: env.SIM_SPEED,
+    production: env.SIM_PRODUCTION,
     start: new Date(env.SIM_START).toISOString(),
     running: env.SIM_AUTOSTART === 'true',
   },

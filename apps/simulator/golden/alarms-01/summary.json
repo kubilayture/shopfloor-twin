@@ -3160,7 +3160,7 @@
       }
     }
   },
-  "analysisConfigSha256": "a916ef725aca855af2c429a6118d41b3375e965a27b076675b417ab8aa0c25c1",
+  "analysisConfigSha256": "5756271448987031c8b24ff5a3e2dc58b79cf4e7408a25bb4cf0e40350b43764",
   "events": 5331,
   "lots": {
     "BL100-2610-01": 516,
@@ -3734,7 +3734,7 @@
   "oee": {
     "config": {
       "microStopThresholdMs": 120000,
-      "scheduledTime": "shift-calendar"
+      "scheduledTime": "orders"
     },
     "machines": {
       "asm-01": {
@@ -14156,6 +14156,14 @@
       }
     }
   },
+  "orders": {
+    "jobs": [],
+    "orders": {},
+    "units": {
+      "count": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  },
   "production": {
     "finished": {
       "VB-100": 328
@@ -14266,5 +14274,5 @@
     "seed": 20261012,
     "start": "2026-10-12T03:00:00.000Z"
   },
-  "schema": "sim-summary/3"
+  "schema": "sim-summary/4"
 }

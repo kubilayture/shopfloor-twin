@@ -2,7 +2,15 @@ import { join } from 'node:path';
 import { OPCUA_MACHINES } from '@shopfloor/contracts';
 import { plantAlarms, type PlantConfig } from '@shopfloor/plant-config';
 import type { SimTime, Simulation } from '@shopfloor/sim-core';
-import type { LineEvent, PlantEvent, ProductionLine } from '../plant/line.ts';
+import type { PacerState } from '../live/pacer.ts';
+import type {
+  LineEvent,
+  LoadOrderRequest,
+  LoadOrderResult,
+  PlantEvent,
+  ProductionLine,
+  ProductionMode,
+} from '../plant/line.ts';
 import type { ProcessValues } from '../plant/process-values.ts';
 import { MachineServer } from './machine-server.ts';
 
@@ -14,12 +22,21 @@ export interface PlantServersOptions {
   readonly pkiFolder?: string;
   /** Start of this run, Unix seconds: the epoch of every device sequence (ADR-0015). */
   readonly epoch?: number;
+  /**
+   * The line's production mode (#172): in `orders` mode no CNC starts with a `Program` (nothing
+   * is loaded until its first job's changeover). `schedule` when left out.
+   */
+  readonly production?: ProductionMode;
+  /** The wall clock `LoadOrder` compares `ExpiresAt` with; `Date.now` when left out. */
+  readonly wallClock?: () => number;
 }
 
 export interface LiveSources {
   readonly line: ProductionLine;
   readonly simulation: Simulation<LineEvent>;
   readonly processValues: ProcessValues;
+  /** The live run's pacer: `LoadOrder` is refused (`not-running`) once it has finished. */
+  readonly pacer?: { readonly state: PacerState };
 }
 
 /** The alarm codes a machine can raise: its slice of the plant's alarm vocabulary (ADR-0024). */
@@ -35,6 +52,7 @@ export class PlantServers {
   readonly #start: SimTime;
   readonly epoch: number;
   readonly #pending: PlantEvent[] = [];
+  readonly #production: ProductionMode;
   #sources: LiveSources | undefined;
 
   constructor({
@@ -44,8 +62,11 @@ export class PlantServers {
     portOffset = 0,
     pkiFolder = join(process.cwd(), '.pki'),
     epoch = Math.floor(Date.now() / 1000),
+    production = 'schedule',
+    wallClock,
   }: PlantServersOptions) {
     this.epoch = epoch;
+    this.#production = production;
     this.#config = config;
     this.#start = start;
     const equipment = config.plant.areas.flatMap((a) => a.workCenters.flatMap((w) => w.equipment));
@@ -72,6 +93,8 @@ export class PlantServers {
           }
           return sources.line.loadProgram(machine.id, product, quantity, sources.simulation);
         },
+        loadOrder: (request, wallNow) => this.loadOrder(machine.id, request, wallNow),
+        ...(wallClock ? { wallClock } : {}),
         ...(host ? { host } : {}),
       });
     });
@@ -111,15 +134,43 @@ export class PlantServers {
     for (const server of this.servers) {
       server.setInitial('epoch', this.epoch, this.#start);
     }
-    for (const server of this.servers) {
-      const first = this.#config.schedule.machines[server.machineId]?.[0];
-      if (first) {
-        server.setProgram(first.product, this.#start);
+    // Orders mode (#172): no initial Program; the first changeover sets it.
+    if (this.#production === 'schedule') {
+      for (const server of this.servers) {
+        const first = this.#config.schedule.machines[server.machineId]?.[0];
+        if (first) {
+          server.setProgram(first.product, this.#start);
+        }
       }
     }
     for (const event of this.#pending.splice(0)) {
       this.#route(event);
     }
+  }
+
+  /**
+   * `LoadOrder` on a CNC (#172, ADR-0030), as its OPC UA method calls it: the line's `loadOrder`
+   * with this run's epoch and the wall clock as the guard. Refused `not-attached` until the run is
+   * attached and every server has started and replayed what it missed (the accepted event must
+   * reach the server at once, so that the call can answer its sequence number), and
+   * `not-running` once the run's pacer has finished.
+   */
+  loadOrder(machineId: string, request: LoadOrderRequest, wallNow: number): LoadOrderResult {
+    const sources = this.#sources;
+    if (!sources || this.#pending.length > 0 || !this.#started()) {
+      return {
+        ok: false,
+        code: 'not-attached',
+        reason: 'simulation not attached or servers not started',
+      };
+    }
+    if (sources.pacer?.state === 'finished') {
+      return { ok: false, code: 'not-running', reason: 'the simulation run has finished' };
+    }
+    return sources.line.loadOrder(machineId, request, sources.simulation, {
+      epoch: this.epoch,
+      wallNow,
+    });
   }
 
   attach(sources: LiveSources): void {

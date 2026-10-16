@@ -115,7 +115,7 @@ describe('golden scenario alarms-01 (#140)', () => {
     const committed = JSON.parse(
       await readFile(resolve(GOLDEN, 'alarms-01/summary.json'), 'utf8'),
     ) as { schema: string; analysisConfigSha256: string };
-    expect(committed.schema).toBe('sim-summary/3');
+    expect(committed.schema).toBe('sim-summary/4');
     expect(committed.analysisConfigSha256).toBe(alarms.result.analysisConfigSha256);
   });
 

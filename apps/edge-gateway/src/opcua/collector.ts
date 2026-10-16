@@ -592,6 +592,11 @@ export class OpcuaCollector {
         this.#send({ topic: alarmTopic(this.#options.path, code), message, retain: true });
         break;
       }
+      case 'job':
+        // Orders-mode job facts (#172, simulator only so far): their select clause and their
+        // `events/job` topic come with the command path (#173). Until then a job event's sequence
+        // number is seen (dedup, highest) but not published.
+        break;
     }
   }
 

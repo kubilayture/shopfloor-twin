@@ -3,7 +3,13 @@ import type { IncomingHttpHeaders } from 'node:http';
 import { NO_SHIFT } from '@shopfloor/shift-calendar';
 import type { FastifyInstance } from 'fastify';
 import type { Registry } from 'prom-client';
-import type { Equipment, StoredInterval } from '../equipment/index.ts';
+import {
+  CodingError,
+  parseRecordId,
+  type DowntimeCoding,
+  type Equipment,
+  type StoredInterval,
+} from '../equipment/index.ts';
 import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
 import {
@@ -16,11 +22,15 @@ import {
 } from '../oee/index.ts';
 import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
 import { PushHub, currentStateDto, type PushOptions } from './push.ts';
-import { HttpProblem, PROBLEM_TYPE, getRoute, jsonSchema, problem } from './routes.ts';
+import { HttpProblem, PROBLEM_TYPE, getRoute, jsonSchema, problem, writeRoute } from './routes.ts';
 import {
   LIMITS,
+  codingRequestSchema,
+  codingResultSchema,
   currentShiftSchema,
+  downtimeAuditSchema,
   downtimeListSchema,
+  downtimeParams,
   downtimeQuery,
   equipmentListSchema,
   equipmentParams,
@@ -84,6 +94,8 @@ export interface ApiSources {
   >;
   /** Downtime record changes for the `downtime` push topic (#120). */
   readonly downtime?: Pick<DowntimeFeed, 'subscribe'>;
+  /** Operator coding writes and their audit (#121). */
+  readonly coding: Pick<DowntimeCoding, 'code' | 'audit'>;
 }
 
 export interface RealtimeOptions {
@@ -91,9 +103,50 @@ export interface RealtimeOptions {
   readonly push?: Omit<PushOptions, 'registry'>;
   /** Host names the API answers (`Host` header, against DNS rebinding); `*` for any. */
   readonly allowedHosts?: readonly string[];
-  /** Origins a WebSocket may connect from besides the MES's own host (none by default). */
+  /**
+   * Origins a WebSocket or a write may come from besides the MES's own host (none by default).
+   */
   readonly allowedOrigins?: readonly string[];
+  /** `MES_WRITES`: false turns every write (non-GET request) into a 405 (ADR-0023). */
+  readonly writes?: boolean;
+  /** The global write rate limit (all clients together; default `LIMITS`). */
+  readonly writeRate?: { readonly perSecond: number; readonly burst: number };
 }
+
+/** A token bucket: one for all writes, because behind nginx every request comes from nginx. */
+export class WriteLimiter {
+  readonly #perSecond: number;
+  readonly #burst: number;
+  #tokens: number;
+  #at: number;
+
+  constructor(perSecond: number, burst: number, now = performance.now()) {
+    this.#perSecond = perSecond;
+    this.#burst = burst;
+    this.#tokens = burst;
+    this.#at = now;
+  }
+
+  /** Takes a token: undefined when allowed, else the seconds until one is free. */
+  take(now = performance.now()): number | undefined {
+    this.#tokens = Math.min(
+      this.#burst,
+      this.#tokens + ((now - this.#at) / 1000) * this.#perSecond,
+    );
+    this.#at = now;
+    if (this.#tokens >= 1) {
+      this.#tokens -= 1;
+      return undefined;
+    }
+    return Math.max(1, Math.ceil((1 - this.#tokens) / this.#perSecond));
+  }
+}
+
+/** A JSON content type: `application/json`, with parameters (charset) or not. */
+const isJson = (contentType: string | undefined): boolean =>
+  (contentType ?? '').split(';', 1)[0]?.trim().toLowerCase() === 'application/json';
+
+const CODING_STATUS = { 'not-found': 404, conflict: 409, invalid: 422 } as const;
 
 export const DEFAULT_ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]'] as const;
 
@@ -115,10 +168,15 @@ export function hostName(host: string): string {
   return (name ?? '').toLowerCase();
 }
 
-/** Whether an Origin header names the host the request was sent to. */
-function sameOrigin(origin: string, host: string | undefined): boolean {
+/**
+ * Whether an Origin header names the host the request was sent to: host and port, not the scheme
+ * (TLS ends in front of the MES, if anywhere; acceptable on loopback, ADR-0023).
+ */
+export function sameOrigin(origin: string, host: string | undefined): boolean {
   try {
-    return new URL(origin).host === host;
+    const url = new URL(origin);
+    // Only an exact origin string (scheme://host[:port], nothing after it) is one.
+    return url.origin === origin && url.host === host;
   } catch {
     return false;
   }
@@ -236,6 +294,47 @@ export async function registerRealtime(
     (options.allowedHosts ?? DEFAULT_ALLOWED_HOSTS).map((host) => host.toLowerCase()),
   );
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
+  const writes = options.writes ?? true;
+  const limiter = new WriteLimiter(
+    options.writeRate?.perSecond ?? LIMITS.writesPerSecond,
+    options.writeRate?.burst ?? LIMITS.writeBurst,
+  );
+  // Writes before identity (ADR-0023): only a page of this origin (or an allowlisted one) may
+  // write. A cross-site form or other simple request (no JSON content type, no Origin from a
+  // non-browser that didn't set one) never reaches a handler; there are no CORS headers, so no
+  // other page can send a JSON write either.
+  const writeRefusal = (
+    headers: IncomingHttpHeaders,
+  ): { status: number; detail: string; headers?: Record<string, string> } | undefined => {
+    if (!writes) {
+      return {
+        status: 405,
+        detail: 'writes are turned off (MES_WRITES=off)',
+        headers: { allow: 'GET, HEAD' },
+      };
+    }
+    const origin = headers.origin;
+    if (origin === undefined) return { status: 403, detail: 'a write needs an Origin header' };
+    if (!allowedOrigins.has(origin) && !sameOrigin(origin, headers.host)) {
+      return { status: 403, detail: 'origin not allowed (HTTP_ALLOWED_ORIGINS)' };
+    }
+    const site = headers['sec-fetch-site'];
+    if (site !== undefined && site !== 'same-origin') {
+      return { status: 403, detail: `Sec-Fetch-Site ${site} not allowed for a write` };
+    }
+    if (!isJson(headers['content-type'])) {
+      return { status: 415, detail: 'a write must be application/json' };
+    }
+    const wait = limiter.take();
+    if (wait !== undefined) {
+      return {
+        status: 429,
+        detail: 'too many writes; try again',
+        headers: { 'retry-after': String(wait) },
+      };
+    }
+    return undefined;
+  };
   // A page on another site must not read plant data: by DNS rebinding (its own name resolving to
   // the MES, caught by the Host check) or by opening a WebSocket (not covered by CORS, caught by
   // the Origin check). A request without Origin is not from a browser page.
@@ -278,12 +377,26 @@ export async function registerRealtime(
       api.addHook('onRequest', async (request, reply) => {
         // WebSocket upgrades are checked by `verifyClient`, which can answer before the upgrade.
         if (request.headers.upgrade !== undefined) return;
-        const refused = refusal(request.headers);
+        const read = request.method === 'GET' || request.method === 'HEAD';
+        // A write's Origin is checked by `writeRefusal`, after MES_WRITES (ADR-0023's order).
+        const refused = refusal(read ? request.headers : { host: request.headers.host });
         if (refused !== undefined) {
           await reply
             .code(403)
             .type(PROBLEM_TYPE)
             .send(problem(403, refused, request.url));
+          return;
+        }
+        if (read) return;
+        // Every other method is a write (ADR-0023); its answer names the request for the audit.
+        reply.header('x-request-id', request.id);
+        const write = writeRefusal(request.headers);
+        if (write !== undefined) {
+          await reply
+            .code(write.status)
+            .headers(write.headers ?? {})
+            .type(PROBLEM_TYPE)
+            .send(problem(write.status, write.detail, request.url));
         }
       });
       api.setErrorHandler((error: { statusCode?: number; message: string }, request, reply) => {
@@ -710,6 +823,114 @@ export async function registerRealtime(
             availability: { ...result.availability },
             reasons: result.reasons.map((r) => ({ ...r })),
             microStops: result.microStops.map((m) => ({ ...m })),
+          };
+        },
+      );
+
+      // ---- Downtime coding writes (#121, ADR-0023) ----
+
+      const recordKey = (id: string) => {
+        const key = parseRecordId(id);
+        if (!key) throw new HttpProblem(404, `no downtime record ${id}`);
+        known(key.equipment);
+        return key;
+      };
+      const codingProblem = (error: unknown): unknown =>
+        error instanceof CodingError
+          ? new HttpProblem(CODING_STATUS[error.kind], error.message)
+          : error;
+
+      writeRoute(
+        api,
+        {
+          method: 'PUT',
+          url: '/downtime/:id/coding',
+          summary: 'Codes one downtime record: replaces its codings (splits, comment, who)',
+          description:
+            'Each segment is a time range [from, to) inside the record with an active reason ' +
+            '(not UNCODED); segments must not overlap; an empty list clears the codings. Time ' +
+            'without a coding keeps the auto reason. `version` is the record’s `version` as read: ' +
+            'it belongs to the coding set of the (equipment, epoch), and a mismatch is 409. ' +
+            '`codedBy` is free text, recorded as unauthenticated. Audited; reasons never change ' +
+            'OEE, only the Pareto and the reason view. Writes need an Origin of this host (or ' +
+            'allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023).',
+          tags: ['downtime'],
+          params: downtimeParams,
+          body: codingRequestSchema,
+          response: codingResultSchema,
+          errors: [400, 403, 404, 405, 409, 413, 415, 422, 429, 503],
+        },
+        LIMITS.writeBodyBytes,
+        async ({ params, body, requestId }) => {
+          const { sources } = ready();
+          const key = recordKey(params.id);
+          const { version } = await sources.coding
+            .code(key, {
+              segments: body.segments.map((segment) => ({
+                from: new Date(segment.from),
+                to: new Date(segment.to),
+                reason: segment.reason,
+                comment: segment.comment,
+              })),
+              codedBy: body.codedBy,
+              version: body.version,
+              requestId,
+            })
+            .catch((error: unknown) => {
+              throw codingProblem(error);
+            });
+          const records = await sources.equipment.downtimeRecords({
+            from: key.start,
+            to: new Date(key.start.getTime() + 1),
+            equipment: key.equipment,
+            epoch: key.epoch,
+          });
+          const record = records.find((r) => r.start.getTime() === key.start.getTime());
+          if (!record) throw new HttpProblem(404, `no downtime record ${params.id}`);
+          return {
+            record: recordDto(record, sources.equipment.watermark(record.epoch)),
+            version,
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/downtime/:id/audit',
+          summary: 'The coding history of one downtime record (append-only audit)',
+          description:
+            'Writes to the record and clips of codings that lay in its time (after a late fact ' +
+            're-cut the intervals), newest first, at most 500.',
+          tags: ['downtime'],
+          params: downtimeParams,
+          query: noQuery,
+          response: downtimeAuditSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ params }) => {
+          const key = recordKey(params.id);
+          const entries = await ready()
+            .sources.coding.audit(key)
+            .catch((error: unknown) => {
+              throw codingProblem(error);
+            });
+          return {
+            record: params.id,
+            entries: entries.map((entry) => ({
+              id: entry.id,
+              recordId: entry.recordId,
+              from: iso(entry.from),
+              to: entry.to && iso(entry.to),
+              action: entry.action,
+              before: [...entry.before],
+              after: [...entry.after],
+              actor: entry.actor,
+              authenticated: entry.authenticated,
+              at: iso(entry.at),
+              requestId: entry.requestId,
+              version: entry.version,
+            })),
           };
         },
       );

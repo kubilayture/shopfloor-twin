@@ -5,7 +5,7 @@ import { createDatabase } from './db/database.ts';
 import { migrate } from './db/migrate.ts';
 import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
-import { Equipment, downtimeRules } from './modules/equipment/index.ts';
+import { DowntimeCoding, Equipment, downtimeRules } from './modules/equipment/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 import { DowntimeFeed, Oee } from './modules/oee/index.ts';
@@ -44,6 +44,7 @@ let ingest: Ingest | undefined;
 let equipment: Equipment | undefined;
 let oee: Oee | undefined;
 let downtime: DowntimeFeed | undefined;
+let coding: DowntimeCoding | undefined;
 
 const { app, registry, realtime } = await buildMesHttp({
   // Ready once migrated, the database answers and the UNS subscription is granted.
@@ -57,6 +58,7 @@ const { app, registry, realtime } = await buildMesHttp({
   logger: { level: env.LOG_LEVEL },
   allowedHosts: list(env.HTTP_ALLOWED_HOSTS),
   allowedOrigins: list(env.HTTP_ALLOWED_ORIGINS),
+  writes: env.MES_WRITES === 'on',
 });
 const log = app.log;
 
@@ -75,6 +77,7 @@ async function shutdown(signal: string): Promise<void> {
     () => {
       oee?.stop();
       downtime?.stop();
+      coding?.stop();
       return Promise.resolve();
     },
     async () => equipment?.stop(),
@@ -140,14 +143,36 @@ try {
   });
   await oee.start();
   const oeeLog = log.child({ module: 'oee' });
+  // Operator coding (#121): writes on the main pool; clips codings after a re-cut.
+  const codingModule = new DowntimeCoding({
+    db,
+    equipment,
+    codable: async (reason) =>
+      (await apiMasterData.reasonCodes()).some((r) => r.id === reason && r.active),
+    log: log.child({ module: 'equipment', part: 'coding' }),
+  });
+  coding = codingModule;
+  await codingModule.start();
   downtime = new DowntimeFeed({
     equipment,
+    codings: codingModule,
     onError: (error) => {
       oeeLog.warn({ err: error }, 'downtime feed: reading records failed; retrying');
     },
   });
   // The API and push follow the modules from here; until then they answer 503.
-  await realtime.attach({ masterData: apiMasterData, equipment, ingest, oee, downtime });
+  await realtime.attach({
+    masterData: apiMasterData,
+    equipment,
+    ingest,
+    oee,
+    downtime,
+    coding: {
+      code: (key, request) => codingModule.code(key, request),
+      audit: (key) => codingModule.audit(key, readDb),
+    },
+  });
+  log.info({ writes: env.MES_WRITES }, 'downtime coding writes');
   await ingest.start();
 } catch (error) {
   if (state.stopping) await new Promise(() => undefined); // shutdown() owns the exit

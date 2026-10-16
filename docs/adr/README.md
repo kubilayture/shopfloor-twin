@@ -26,3 +26,4 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0020](0020-web-shared-api-schemas-code-routes-live-cache.md)    | Web app: shared zod API schemas, code-based routes, pushed states in the query cache    | accepted           |
 | [0021](0021-oee-definitions-exact-arithmetic-and-micro-stops.md) | OEE definitions, exact arithmetic and the micro-stop threshold                          | accepted           |
 | [0022](0022-hourly-aggregates-refreshed-explicitly.md)           | Hourly continuous aggregates, refreshed explicitly by their owning modules              | accepted           |
+| [0023](0023-guarded-writes-before-identity.md)                   | Guarded, audited writes before identity                                                 | accepted           |

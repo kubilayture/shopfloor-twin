@@ -134,6 +134,8 @@ services:
       # Names the browser uses for the web app and the API (the web proxy forwards its Host).
       HTTP_ALLOWED_HOSTS: ${MES_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}
       HTTP_ALLOWED_ORIGINS: ${MES_ALLOWED_ORIGINS:-}
+      # Downtime coding writes (#121, ADR-0023); `off` answers every write with 405.
+      MES_WRITES: ${MES_WRITES:-on}
       LOG_LEVEL: ${MES_LOG_LEVEL:-info}
     ports:
       - '127.0.0.1:${MES_HTTP_PORT:-4700}:4700'

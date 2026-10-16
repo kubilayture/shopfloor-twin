@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import swagger from '@fastify/swagger';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 import { Gauge, Registry, collectDefaultMetrics } from 'prom-client';
@@ -17,6 +18,10 @@ export interface MesHttpOptions {
   /** See `RealtimeOptions`: Host names answered, extra WebSocket origins allowed. */
   readonly allowedHosts?: readonly string[];
   readonly allowedOrigins?: readonly string[];
+  /** `MES_WRITES`: false answers every write with 405 (ADR-0023). */
+  readonly writes?: boolean;
+  /** The global write rate limit (default 10/s, bursts of 20). */
+  readonly writeRate?: { readonly perSecond: number; readonly burst: number };
 }
 
 export interface MesHttp {
@@ -33,8 +38,11 @@ export async function buildMesHttp({
   version = '0.0.0',
   allowedHosts,
   allowedOrigins,
+  writes,
+  writeRate,
 }: MesHttpOptions): Promise<MesHttp> {
-  const app = Fastify({ logger });
+  // A request id per request (UUID): logged, returned as X-Request-Id on writes and audited.
+  const app = Fastify({ logger, genReqId: () => randomUUID() });
   const registry = new Registry();
   collectDefaultMetrics({ register: registry });
   new Gauge({
@@ -52,10 +60,12 @@ export async function buildMesHttp({
         title: 'ShopFloor Twin MES API',
         version,
         description:
-          'Read-only API of the MES (Phases 4 and 5): equipment with current state, state ' +
+          'API of the MES (Phases 4 and 5): equipment with current state, state ' +
           'intervals, telemetry series, shift totals, the plant clock, OEE per hour and shift, ' +
-          'shift instances, reason codes, downtime records and the loss Pareto. No ' +
-          'authentication yet (Phase 7); ' +
+          'shift instances, reason codes, downtime records and the loss Pareto; one write, ' +
+          'downtime coding (#121), with its audit. No authentication yet (Phase 7): writes are ' +
+          'guarded (ADR-0023: Origin of this host, Sec-Fetch-Site, application/json, 16 KiB, a ' +
+          'global rate limit, MES_WRITES=off answers 405) and audited as unauthenticated; ' +
           'bound to loopback by default. Errors are RFC 9457 problem details. ' +
           `Push: WebSocket at ${WS_PATH} (see docs/api/realtime.md).`,
       },
@@ -105,6 +115,8 @@ export async function buildMesHttp({
     ...(push === undefined ? {} : { push }),
     ...(allowedHosts === undefined ? {} : { allowedHosts }),
     ...(allowedOrigins === undefined ? {} : { allowedOrigins }),
+    ...(writes === undefined ? {} : { writes }),
+    ...(writeRate === undefined ? {} : { writeRate }),
   });
   return { app, registry, realtime };
 }

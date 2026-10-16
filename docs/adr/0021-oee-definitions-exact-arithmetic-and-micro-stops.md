@@ -1,6 +1,6 @@
 # ADR-0021: OEE definitions, exact arithmetic and the micro-stop threshold
 
-- Status: accepted; amended 2026-10-16 by #119 (automatic classification, below)
+- Status: accepted; amended 2026-10-16 by #119 (automatic classification) and #121 (operator coding), below
 - Date: 2026-10-16
 - Deciders: Claude (#116), within the Phase 5 plan; recorded for the owner under the standing instruction of 2026-10-15
 
@@ -140,3 +140,22 @@ The Phase 5 plan ("Downtime reason coding") fixes the reason tree, the rule form
 - Bad: an open stop becomes a record only at the next tail rewrite after it reaches the threshold, which is at most `provisionalStepMs` late.
 - Bad: a breakdown on the weekend (`no-shift`) makes no record. It shows in the intervals only, until Phase 7 changes the scheduled-time rule.
 - Bad: changing the threshold recomputes every (equipment, epoch) at the next start-up. That costs one pass over ingest's state facts.
+
+## Amendment (#121): operator coding
+
+The Phase 5 plan ("Downtime reason coding") fixes that codings are time ranges stored by time, that a split is two codings, and that a re-cut clips them. The writes themselves (guards, concurrency, audit) are ADR-0023. Implementing the rules left open how a coding relates to the records, what a record's reason is when it is split, and when clipping runs.
+
+### Decision
+
+- **Codings** (`equipment.downtime_coding`, migration `0009`) are ranges [from, to) of one (equipment, epoch), each with a reason (an active master-data reason, never UNCODED), a comment, `coded_by` and the coding set's version it was written at. A write names one record and replaces the codings inside it; every segment must lie in the record (an open record: up to its epoch's watermark), and segments must not overlap. Codings that are not orphaned never overlap, so every kept coding lies in exactly one record.
+- **Reasons in effect.** Over a record, a coding's reason applies where a coding lies, the auto reason elsewhere. The record's `reason` is the one covering most of its time (the earliest on a tie); `segments` lists the reasons in effect by time. A record has "uncoded time" when its auto reason is UNCODED and codings don't cover it all; an open record never counts as covered, because it keeps growing under its auto reason. `uncoded=true` and the UNCODED-first order use this.
+- **Pareto.** `Equipment.downtimeLoss` sums coded time under the coding's reason and the rest of each record under its auto reason, in SQL, still without a row limit; `records` counts the records with time under a reason, so a split record counts once under each of its reasons. The sums per own and external loss are unchanged by coding.
+- **OEE never reads codings.** Availability, performance and quality follow the states (the loss table above), so a recode or a split changes the Pareto and the reason view and leaves every OEE input, ratio and loss as it was. A test checks the OEE answers byte for byte before and after.
+- **Clipping after a re-cut.** The coding module follows `Equipment.onPiecesChanged`. About 100 ms after a change it locks the coding set of that (equipment, epoch), reads the codings within a day of the changed hours and the records they overlap, and cuts each coding by the records: the parts inside a record are kept (one coding per record), the rest is stored with `orphaned = true` and never applies again. Each clip is audited (`orphaned`, actor `system`) and raises the set's version. At start-up every coding set is clipped once, because the records may have changed while the MES was away. Between a re-cut and its clip, readers clip codings to the record they read, so no time is counted twice. A write reads its record `FOR SHARE`: a rebuild that re-cuts the record waits for the write to commit, so its clip always sees the new codings. A clip that fails is retried with exponential backoff (0.2 s doubling, at most 30 s).
+
+### Consequences
+
+- Good: codings survive every rebuild of the records (late facts, restarts, a threshold change), because nothing about them depends on a record's identity.
+- Good: the Pareto and the coding screen read the same reasons in effect; OEE can't drift from the ground truth by coding.
+- Bad: a re-cut that moves a loss interval later leaves the moved-in time under the auto reason, and the moved-out time orphaned; the operator codes it again (the audit shows what was lost).
+- Bad: a clip may run up to about 100 ms after the re-cut; the audit's wall time shows the order.

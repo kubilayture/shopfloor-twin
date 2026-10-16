@@ -77,12 +77,57 @@ export interface DowntimeRecordTable {
   recorded_at: DefaultTimestamp;
 }
 
+/** The coding set of one (equipment, epoch): its version is the concurrency token (#121). */
+export interface DowntimeCodingSetTable {
+  equipment: string;
+  epoch: number;
+  version: ColumnType<number, number | undefined, number>;
+  updated_at: DefaultTimestamp;
+}
+
+/** One operator coding: a time range with a reason, inside a record's loss time (#121). */
+export interface DowntimeCodingTable {
+  id: ColumnType<number, never, never>;
+  equipment: string;
+  epoch: number;
+  from_time: Timestamp;
+  to_time: Timestamp;
+  reason: string;
+  comment: ColumnType<string, string | undefined, string>;
+  coded_by: string;
+  coded_at: Timestamp;
+  version: number;
+  orphaned: ColumnType<boolean, boolean | undefined, boolean>;
+  orphaned_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+}
+
+/** Append-only audit of codings and clips (#121). */
+export interface DowntimeAuditTable {
+  id: ColumnType<number, never, never>;
+  equipment: string;
+  epoch: number;
+  record_id: string | null;
+  from_time: Timestamp;
+  to_time: ColumnType<Date | null, Date | string | null, Date | string | null>;
+  action: string;
+  before: ColumnType<unknown, string, never>;
+  after: ColumnType<unknown, string, never>;
+  actor: string;
+  authenticated: ColumnType<boolean, boolean | undefined, never>;
+  at: ColumnType<Date, Date | string | undefined, never>;
+  request_id: string | null;
+  version: number;
+}
+
 export interface EquipmentTables {
   'equipment.equipment_state_interval': EquipmentStateIntervalTable;
   'equipment.interval_source': IntervalSourceTable;
   'equipment.bucket_finality': BucketFinalityTable;
   'equipment.state_hourly': StateHourlyView;
   'equipment.downtime_record': DowntimeRecordTable;
+  'equipment.downtime_coding_set': DowntimeCodingSetTable;
+  'equipment.downtime_coding': DowntimeCodingTable;
+  'equipment.downtime_audit': DowntimeAuditTable;
 }
 
 export const EQUIPMENT_COLUMNS = {
@@ -143,5 +188,36 @@ export const EQUIPMENT_COLUMNS = {
     'auto_reason',
     'provisional',
     'recorded_at',
+  ],
+  'equipment.downtime_coding_set': ['equipment', 'epoch', 'version', 'updated_at'],
+  'equipment.downtime_coding': [
+    'id',
+    'equipment',
+    'epoch',
+    'from_time',
+    'to_time',
+    'reason',
+    'comment',
+    'coded_by',
+    'coded_at',
+    'version',
+    'orphaned',
+    'orphaned_at',
+  ],
+  'equipment.downtime_audit': [
+    'id',
+    'equipment',
+    'epoch',
+    'record_id',
+    'from_time',
+    'to_time',
+    'action',
+    'before',
+    'after',
+    'actor',
+    'authenticated',
+    'at',
+    'request_id',
+    'version',
   ],
 } as const;

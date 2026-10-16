@@ -4,7 +4,8 @@
  * import each other), its event log becomes the UNS messages the gateway would publish, and they
  * go through ingest's store path into TimescaleDB. Time per state, per machine and shift bucket,
  * must equal the ground truth to the millisecond; so must the hourly aggregates (#118), per machine
- * and hour, against the ground truth's OEE inputs (`oee.machines.*.hours`, sim-summary/2).
+ * and hour, against the ground truth's OEE inputs (`oee.machines.*.hours`, sim-summary/2), and the
+ * OEE of every machine and work center in every shift bucket (#120, `oee.*.shifts`), exactly.
  */
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -12,8 +13,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { EquipmentPath, MachineState } from '@shopfloor/contracts';
-import { HOUR, availabilityLoss } from '@shopfloor/oee-core';
-import { UNCODED, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
+import { HOUR, availabilityLoss, oeeFromTotals, sumTotals } from '@shopfloor/oee-core';
+import { UNCODED, idealCycleMs, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import { NO_SHIFT, shiftSegments } from '@shopfloor/shift-calendar';
 import type { Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
@@ -29,6 +30,8 @@ import type { Database } from '../../db/database.ts';
 import { startDatabase } from '../../testing.ts';
 import { Ingest } from '../ingest/index.ts';
 import { MasterData } from '../master-data/index.ts';
+import { Oee, pareto, shiftBuckets, type OeeBucket } from '../oee/index.ts';
+import { resultDto } from '../realtime/index.ts';
 import { Equipment, downtimeRules } from './index.ts';
 import {
   PLANT_CONFIG,
@@ -73,13 +76,27 @@ type StateMs = Record<string, number>;
 interface TruthHour {
   readonly shift: string;
   readonly stateMs: StateMs;
+  readonly stops: readonly { ms: number; wholeMs: number }[];
   readonly cycles: readonly { product: string; result: string; count: number }[];
+}
+
+/** One shift bucket of a machine in the ground truth: `oee-core` inputs and `bucketOee` (#117). */
+interface TruthShift {
+  readonly inputs: {
+    readonly stateMs: StateMs;
+    readonly cycles: readonly { product: string; result: string; count: number }[];
+  };
+  readonly result: unknown;
 }
 
 interface GroundTruth {
   readonly machines: Record<string, { stateMs: StateMs; byShift: Record<string, StateMs> }>;
   readonly oee: {
-    readonly machines: Record<string, { readonly hours: Record<string, TruthHour> }>;
+    readonly machines: Record<
+      string,
+      { readonly hours: Record<string, TruthHour>; readonly shifts: Record<string, TruthShift> }
+    >;
+    readonly workCenters: Record<string, { readonly shifts: Record<string, unknown> }>;
   };
 }
 
@@ -204,6 +221,7 @@ async function mes(): Promise<{
   db: Kysely<Database>;
   equipment: Equipment;
   ingest: Ingest;
+  masterData: MasterData;
   send: (deliveries: readonly Delivery[]) => Promise<void>;
 }> {
   const db = await freshDatabase(serverUrl, 'reconcile');
@@ -216,6 +234,8 @@ async function mes(): Promise<{
     username: 'mes',
     password: 'unused',
     refresh: {},
+    // Above the run's length (exit criterion 2): no gap of a shuffled replay becomes an incident.
+    gapGraceMs: 3_600_000,
   });
   // A replay: store open intervals at boundaries only, not every simulated minute.
   const equipment = new Equipment({
@@ -231,6 +251,7 @@ async function mes(): Promise<{
     db,
     equipment,
     ingest,
+    masterData,
     send: async (deliveries) => {
       for (const d of deliveries) await ingest.deliver(d.topic, d.payload);
     },
@@ -317,6 +338,170 @@ async function expectAggregates(
   );
   expect(recorded.every((r) => ingest.cyclesRefreshed(r.hour))).toBe(true);
   return Object.keys(truth).length;
+}
+
+/** A bucket's OEE inputs and result as the ground truth writes them (sim-summary/2). */
+const bucketJson = (bucket: OeeBucket) => ({
+  stateMs: { ...bucket.stateMs },
+  cycles: bucket.cycles.map((c) => ({ ...c })),
+  result: resultDto(bucket.result),
+});
+
+/**
+ * OEE (#120, Phase 5 exit criterion 2): for every machine and both work centers, in every shift
+ * bucket of the run, the MES's OEE (computed on read by the `oee` module from the aggregates and
+ * stop pieces) equals the ground truth exactly: inputs (integer ms per state, cycles per product
+ * and result), the A/P/Q/OEE fractions with their four-decimal strings, totals, losses and
+ * `unplanned`. Every scheduled bucket is final, with no provisional time, revision or incident;
+ * the no-shift bucket's OEE is null on both sides. Then Σ hours = shift for the OEE totals, the
+ * stop pieces per hour equal the ground truth's, and the downtime Pareto of every shift equals its
+ * availability losses. Returns the number of bucket comparisons.
+ */
+async function expectOee(
+  equipment: Equipment,
+  ingest: Ingest,
+  masterData: MasterData,
+  run: Run,
+): Promise<number> {
+  const oee = new Oee({
+    equipment,
+    ingest,
+    masterData,
+    shiftPattern: plant.shifts,
+    config: plant.oee,
+    idealCycleMs: idealCycleMs(plant),
+  });
+  await oee.start();
+  const truth = run.truth.oee;
+  let comparisons = 0;
+  const shiftResults = new Map<string, OeeBucket>();
+  for (const bucket of shiftBuckets(plant.shifts, run.start, run.end)) {
+    const { equipment: machines, workCenters } = await oee.shift(bucket, EPOCH);
+    const scheduled = bucket.key !== NO_SHIFT;
+    expect(machines.map((b) => b.id).sort()).toEqual(
+      Object.keys(truth.machines)
+        .filter((id) => truth.machines[id]?.shifts[bucket.key])
+        .sort(),
+    );
+    expect(workCenters.map((b) => b.id).sort()).toEqual(
+      Object.keys(truth.workCenters)
+        .filter((id) => truth.workCenters[id]?.shifts[bucket.key])
+        .sort(),
+    );
+    for (const b of machines) {
+      const expected = truth.machines[b.id]?.shifts[bucket.key];
+      const zeroFree = (states: StateMs) =>
+        Object.fromEntries(Object.entries(states).filter(([, ms]) => ms > 0));
+      const actual = bucketJson(b);
+      expect([b.id, bucket.key, zeroFree(actual.stateMs), actual.cycles, actual.result]).toEqual([
+        b.id,
+        bucket.key,
+        zeroFree(expected?.inputs.stateMs ?? {}),
+        expected?.inputs.cycles,
+        expected?.result,
+      ]);
+      shiftResults.set(`${b.id} ${bucket.key}`, b);
+      comparisons++;
+    }
+    for (const b of workCenters) {
+      expect([b.id, bucket.key, resultDto(b.result)]).toEqual([
+        b.id,
+        bucket.key,
+        truth.workCenters[b.id]?.shifts[bucket.key],
+      ]);
+      comparisons++;
+    }
+    for (const b of [...machines, ...workCenters]) {
+      if (scheduled) {
+        expect([b.id, bucket.key, b.final, b.provisionalMs, b.revision, b.incidents]).toEqual([
+          b.id,
+          bucket.key,
+          true,
+          0,
+          0,
+          0,
+        ]);
+      } else {
+        expect([b.result.availability, b.result.oee]).toEqual([null, null]);
+      }
+    }
+  }
+
+  for (const machine of Object.keys(truth.machines)) {
+    // Σ hours = shift: the hour buckets' totals add up to the shift bucket's, per shift.
+    const hours = await oee.buckets({
+      scope: 'equipment',
+      id: machine,
+      bucket: 'hour',
+      from: new Date(run.start),
+      to: new Date(run.end),
+      epoch: EPOCH,
+    });
+    const byShift = new Map<string, OeeBucket[]>();
+    for (const hour of hours)
+      byShift.set(hour.shiftKey, [...(byShift.get(hour.shiftKey) ?? []), hour]);
+    for (const [key, list] of byShift) {
+      const summed = oeeFromTotals(sumTotals(list.map((hour) => hour.result.totals)));
+      expect([machine, key, resultDto(summed)]).toEqual([
+        machine,
+        key,
+        resultDto(shiftResults.get(`${machine} ${key}`)?.result ?? summed),
+      ]);
+      expect(shiftResults.has(`${machine} ${key}`)).toBe(true);
+    }
+    // The stop pieces per hour, with their whole interval's length, equal the ground truth's.
+    const pieces = await equipment.stopPieces(new Date(run.start), new Date(run.end), {
+      equipment: machine,
+      epoch: EPOCH,
+    });
+    const actual: Record<string, [number, number][]> = {};
+    for (const piece of pieces) {
+      (actual[piece.hour.toISOString()] ??= []).push([
+        piece.end.getTime() - piece.start.getTime(),
+        piece.wholeMs,
+      ]);
+    }
+    const expected: Record<string, [number, number][]> = {};
+    for (const [hour, inputs] of Object.entries(truth.machines[machine]?.hours ?? {})) {
+      if (inputs.stops.length > 0) expected[hour] = inputs.stops.map((s) => [s.ms, s.wholeMs]);
+    }
+    const sorted = (map: Record<string, [number, number][]>) =>
+      Object.fromEntries(
+        Object.entries(map).map(([hour, list]) => [
+          hour,
+          [...list].sort((a, b) => a[0] - b[0] || a[1] - b[1]),
+        ]),
+      );
+    expect([machine, sorted(actual)]).toEqual([machine, sorted(expected)]);
+  }
+
+  // The Pareto of every scheduled shift: reasons never change OEE, so the record time by loss
+  // equals the shift's availability losses, and the micro-stops by cause sum to its micro-stops.
+  const reasons = await oee.reasonCodes();
+  for (const [key, bucket] of shiftResults) {
+    const [machine = ''] = key.split(' ');
+    if (bucket.shiftKey === NO_SHIFT) continue;
+    const read = await oee.downtimeRecords([machine], bucket.start, bucket.end, EPOCH, 10_000);
+    const loss = pareto({
+      ...read,
+      from: bucket.start,
+      to: bucket.end,
+      thresholdMs: plant.oee.microStopThresholdMs,
+      reasons,
+      watermark: (epoch) => equipment.watermark(epoch),
+    });
+    const losses = bucket.result.losses;
+    expect([key, loss.availability, loss.microStops.reduce((sum, m) => sum + m.ms, 0)]).toEqual([
+      key,
+      {
+        own: Number(losses?.availability.own.total ?? 0n),
+        external: Number(losses?.availability.external.total ?? 0n),
+      },
+      Number(losses?.performance.microStops ?? 0n),
+    ]);
+  }
+  oee.stop();
+  return comparisons;
 }
 
 /** Time per state, per machine and shift bucket, from the stored intervals. */
@@ -499,7 +684,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           expect(run.summaryText).toBe(await readFile(join(span.golden, 'summary.json'), 'utf8'));
         }
         const { facts, anchors, end } = unsMessages(run);
-        const { db, equipment, ingest, send } = await mes();
+        const { db, equipment, ingest, masterData, send } = await mes();
         reference = db;
         await send([...anchors, ...facts, end]);
         expect(equipment.watermark(EPOCH)).toEqual(new Date(run.end));
@@ -511,6 +696,8 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         expect(provisional.length).toBeGreaterThan(0);
         expect(provisional.filter((bucket) => !bucket.includes(' no-shift '))).toEqual([]);
         expect(await expectAggregates(equipment, ingest, db, run)).toBe(6);
+        const compared = await expectOee(equipment, ingest, masterData, run);
+        console.log(`${title}: in order, ${String(compared)} OEE buckets equal the ground truth`);
         const downtime = await expectRecords(db, run);
         expect(downtime.records).toBeGreaterThanOrEqual(downtime.lossIntervals);
         expect(downtime.lossIntervals).toBeGreaterThan(0);
@@ -527,7 +714,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const next = random(2026);
         const copies = facts.filter(() => next() < 0.1);
         const mixed = shuffle([...anchors, ...facts, ...copies], next);
-        const { db, equipment, ingest, send } = await mes();
+        const { db, equipment, ingest, masterData, send } = await mes();
         // Telemetry flows all along; the last sample, after every fact, ends the observation.
         await send([...mixed, end, ...mixed.slice(0, 500)]);
         await equipment.flush();
@@ -538,6 +725,8 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         // Refreshed in the background all along, while late facts kept changing earlier hours.
         expect(equipment.stateAggregate()?.refreshes).toBeGreaterThan(0);
         expect(await expectAggregates(equipment, ingest, db, run)).toBe(6);
+        const compared = await expectOee(equipment, ingest, masterData, run);
+        console.log(`${title}: shuffled, ${String(compared)} OEE buckets equal the ground truth`);
         await equipment.stop();
         await ingest.stop();
       },

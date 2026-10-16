@@ -186,6 +186,36 @@ export interface StateHour {
   readonly final: boolean;
   /** How often the hour changed after it became final (0 while not final). */
   readonly revision: number;
+  /** Ids of the gap incidents over the hour (from its `bucket_finality` row; empty while not final). */
+  readonly incidentIds: readonly number[];
+}
+
+/**
+ * One stored piece of a Stopped interval with its interval's whole length (#120, ADR-0021): what
+ * `oee-core` classifies as a micro-stop or a long stop.
+ */
+export interface StopPiece {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly hour: Date;
+  readonly shiftKey: string;
+  readonly start: Date;
+  readonly end: Date;
+  readonly cause: string | null;
+  readonly intervalStart: Date;
+  /**
+   * The whole interval's length: to its end when closed; while open, to the later of the
+   * equipment's "final through" time and the stored end (never shorter than a stored piece).
+   */
+  readonly wholeMs: number;
+  /** The interval is still open: its classification below the threshold is provisional. */
+  readonly open: boolean;
+}
+
+/** The hourly state rows and stop pieces of a range, read in one snapshot (#120, ADR-0021). */
+export interface OeeInputs {
+  readonly hours: readonly StateHour[];
+  readonly stops: readonly StopPiece[];
 }
 
 /** Sent after any write to the stored pieces of one (equipment, epoch) (#118). */
@@ -431,7 +461,125 @@ export class Equipment {
       readonly shiftKey?: string;
     } = {},
   ): Promise<StateHour[]> {
-    let query = this.#readDb
+    return this.#stateHourly(this.#readDb, from, to, options);
+  }
+
+  /**
+   * The hourly state rows (`stateHourly`) and the Stopped pieces (`stopPieces`) of the hours in
+   * [from, to), read in one REPEATABLE READ snapshot (ADR-0021: so a concurrent interval update
+   * can't make the stop pieces disagree with the Stopped time of the same read).
+   */
+  async oeeInputs(
+    from: Date,
+    to: Date,
+    options: { readonly equipment?: readonly string[]; readonly epoch?: number } = {},
+  ): Promise<OeeInputs> {
+    return this.#readDb
+      .transaction()
+      .setIsolationLevel('repeatable read')
+      .setAccessMode('read only')
+      .execute(async (trx) => {
+        const hours: StateHour[] = [];
+        const stops: StopPiece[] = [];
+        // One equipment at a time keeps every query on its index; all inside the same snapshot.
+        for (const equipment of options.equipment ?? [undefined]) {
+          const scope = {
+            ...(equipment === undefined ? {} : { equipment }),
+            ...(options.epoch === undefined ? {} : { epoch: options.epoch }),
+          };
+          hours.push(...(await this.#stateHourly(trx, from, to, scope)));
+          stops.push(...(await this.#stopPieces(trx, from, to, scope)));
+        }
+        return { hours, stops };
+      });
+  }
+
+  /**
+   * Stored Stopped pieces overlapping [from, to), each with its whole interval's length (#120;
+   * plan "Storage and aggregation": the threshold applies to the whole interval, so it is not
+   * stored). An open interval's length runs to the later of "final through" and its stored end.
+   */
+  async stopPieces(
+    from: Date,
+    to: Date,
+    options: { readonly equipment?: string; readonly epoch?: number } = {},
+  ): Promise<StopPiece[]> {
+    return this.#stopPieces(this.#readDb, from, to, options);
+  }
+
+  async #stopPieces(
+    db: Kysely<Database>,
+    from: Date,
+    to: Date,
+    options: { readonly equipment?: string; readonly epoch?: number },
+  ): Promise<StopPiece[]> {
+    const filters = [
+      sql`s.state = 'Stopped'`,
+      // Pieces never exceed an hour: this bound lets the index on start_time do the work.
+      sql`s.start_time > ${new Date(from.getTime() - HOUR)}`,
+      sql`s.start_time < ${to}`,
+      sql`s.end_time > ${from}`,
+      ...(options.equipment === undefined ? [] : [sql`s.equipment = ${options.equipment}`]),
+      ...(options.epoch === undefined ? [] : [sql`s.epoch = ${options.epoch}`]),
+    ];
+    // The interval ends where the next interval's first piece starts (pieces of a track are
+    // contiguous); the last interval of a track ends with the track's last piece.
+    const rows = await sql<{
+      equipment: string;
+      epoch: number;
+      hour: Date;
+      shift_key: string;
+      start_time: Date;
+      end_time: Date;
+      cause: string | null;
+      interval_start: Date;
+      next_start: Date | null;
+      last_end: Date;
+    }>`
+      SELECT s.equipment, s.epoch, s.hour, s.shift_key, s.start_time, s.end_time, s.cause,
+        s.interval_start,
+        (SELECT p.start_time FROM equipment.equipment_state_interval p
+          WHERE p.equipment = s.equipment AND p.epoch = s.epoch AND p.start_time > s.start_time
+            AND p.interval_start <> s.interval_start
+          ORDER BY p.start_time LIMIT 1) AS next_start,
+        (SELECT p.end_time FROM equipment.equipment_state_interval p
+          WHERE p.equipment = s.equipment AND p.epoch = s.epoch
+          ORDER BY p.start_time DESC LIMIT 1) AS last_end
+      FROM equipment.equipment_state_interval s
+      WHERE ${sql.join(filters, sql` AND `)}
+      ORDER BY s.equipment, s.epoch, s.start_time`.execute(db);
+    return rows.rows.map((row) => {
+      const track = this.#tracks.get(row.equipment)?.get(row.epoch);
+      const start = row.interval_start.getTime();
+      const open = row.next_start === null && track !== undefined && !track.closed;
+      const end = row.next_start?.getTime() ?? row.last_end.getTime();
+      const wholeEnd = open ? Math.max(end, track.finalThrough) : end;
+      return {
+        equipment: row.equipment,
+        epoch: row.epoch,
+        hour: row.hour,
+        shiftKey: row.shift_key,
+        start: row.start_time,
+        end: row.end_time,
+        cause: row.cause,
+        intervalStart: row.interval_start,
+        wholeMs: wholeEnd - start,
+        open,
+      };
+    });
+  }
+
+  async #stateHourly(
+    db: Kysely<Database>,
+    from: Date,
+    to: Date,
+    options: {
+      readonly equipment?: string;
+      readonly epoch?: number;
+      readonly shiftKey?: string;
+    },
+  ): Promise<StateHour[]> {
+    let query = db
       .selectFrom('equipment.state_hourly as h')
       .leftJoin('equipment.bucket_finality as f', (join) =>
         join
@@ -449,6 +597,7 @@ export class Equipment {
         'h.provisional_ms',
         'f.revision',
         'f.hour as final_hour',
+        'f.incident_ids',
       ])
       .where('h.hour', '>=', from)
       .where('h.hour', '<', to);
@@ -473,6 +622,7 @@ export class Equipment {
       provisionalMs: row.provisional_ms,
       final: row.final_hour !== null && this.#states?.isRefreshed(row.hour.getTime()) === true,
       revision: row.revision ?? 0,
+      incidentIds: row.incident_ids ?? [],
     }));
   }
 

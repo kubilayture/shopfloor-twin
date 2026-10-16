@@ -26,7 +26,7 @@ export function problem(status: number, detail: string, url: string) {
 
 const ERROR_TEXT: Readonly<Record<number, string>> = {
   400: 'Invalid path or query parameters',
-  404: 'Unknown equipment, metric or route',
+  404: 'Unknown equipment, work center, metric, shift or route',
   503: 'The MES is starting',
 };
 

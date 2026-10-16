@@ -4,9 +4,13 @@ import { z } from 'zod';
 // Responses and WebSocket messages are shared with `web` through `contracts` (ADR-0020); the
 // request schemas, with their transforms to parsed values, are the server's own.
 export {
+  DOWNTIME_TOPIC,
   STATES_TOPIC,
   clientMessageSchema,
+  currentShiftSchema,
   currentStateSchema,
+  downtimeListSchema,
+  downtimeRecordSchema,
   equipmentListSchema,
   equipmentSchema,
   identifier,
@@ -14,18 +18,30 @@ export {
   intervalsSchema,
   metricName,
   metricsSchema,
+  oeeBucketSchema,
+  oeeListSchema,
+  oeeResultSchema,
+  paretoSchema,
   plantSchema,
   problemSchema,
+  reasonCodesSchema,
   serverMessageSchema,
   seriesSchema,
+  shiftListSchema,
+  shiftOeeSchema,
   shiftTotalsSchema,
 } from '@shopfloor/contracts';
 export type {
   ClientMessage,
   CurrentStateDto,
+  DowntimeRecordDto,
   EquipmentDto,
   IntervalDto,
+  OeeBucketDto,
+  OeeResultDto,
+  Ratio,
   ServerMessage,
+  ShiftInstanceDto,
 } from '@shopfloor/contracts';
 export { LIMITS };
 
@@ -103,3 +119,68 @@ export const telemetryQuery = z
 export const shiftTotalsQuery = z.strictObject({
   equipment: identifier.optional().describe('Only this equipment'),
 });
+
+// ---- OEE, shifts and downtime (#120) ----
+
+const flag = z
+  .enum(['true', 'false'])
+  .optional()
+  .transform((value) => value === 'true');
+
+const epochParam = z
+  .string()
+  .regex(/^\d{1,15}$/, 'expected a decimal integer')
+  .transform(Number)
+  .pipe(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER))
+  .describe('Device epoch (run) to read; default: per machine the newest with data in the range');
+
+const oeeScope = z
+  .enum(['equipment', 'work-center'])
+  .describe('An equipment, or a work center (the sums of its machines’ inputs)');
+
+export const oeeQuery = z
+  .strictObject({
+    scope: oeeScope,
+    id: identifier.describe('Equipment or work center id'),
+    bucket: z.enum(['hour', 'shift']).describe('UTC hours, or shift buckets (whole shifts)'),
+    from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
+    to: queryTime.describe(
+      'End of the range (exclusive), ISO 8601; at most 7 days after `from` for hours, 31 for shifts',
+    ),
+    epoch: epochParam.optional(),
+  })
+  .superRefine((query, ctx) => {
+    range(query.bucket === 'hour' ? LIMITS.oeeHourRangeMs : LIMITS.oeeShiftRangeMs)(query, ctx);
+  });
+
+export const shiftOeeQuery = z.strictObject({ epoch: epochParam.optional() });
+
+export const shiftsQuery = z
+  .strictObject({
+    from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
+    to: queryTime.describe('End of the range (exclusive), ISO 8601; at most 31 days after `from`'),
+  })
+  .superRefine(range(LIMITS.oeeShiftRangeMs));
+
+export const reasonCodesQuery = z.strictObject({
+  inactive: flag.describe('Also the reasons the configuration no longer lists'),
+});
+
+export const downtimeQuery = z
+  .strictObject({
+    equipment: identifier.optional().describe('Only this equipment'),
+    from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
+    to: queryTime.describe('End of the range (exclusive), ISO 8601; at most 31 days after `from`'),
+    uncoded: flag.describe('Only records still UNCODED (the coding screen)'),
+  })
+  .superRefine(range(LIMITS.oeeShiftRangeMs));
+
+export const paretoQuery = z
+  .strictObject({
+    scope: oeeScope,
+    id: identifier.describe('Equipment or work center id'),
+    from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
+    to: queryTime.describe('End of the range (exclusive), ISO 8601; at most 31 days after `from`'),
+    epoch: epochParam.optional(),
+  })
+  .superRefine(range(LIMITS.oeeShiftRangeMs));

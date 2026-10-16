@@ -3,6 +3,7 @@ import {
   HOUR,
   differences,
   formatDifferences,
+  jsonDifferences,
   mesTotals,
   percentile,
   pieceViolations,
@@ -80,5 +81,25 @@ describe('reconciliation comparisons (#100)', () => {
     expect(percentile([5, 1, 4, 2, 3], 50)).toBe(3);
     expect(percentile([5, 1, 4, 2, 3], 100)).toBe(5);
     expect(percentile([7], 95)).toBe(7);
+  });
+
+  it('lists where two OEE answers differ, exactly (#120)', () => {
+    const truth = {
+      result: { oee: { fraction: '2/15', decimal: '0.1333' }, quality: null },
+      n: [1, 2],
+    };
+    expect(jsonDifferences(truth, structuredClone(truth))).toEqual([]);
+    expect(
+      jsonDifferences(truth, {
+        result: { oee: { fraction: '2/15', decimal: '0.1334' }, quality: { fraction: '1/1' } },
+        n: [1, 3],
+      }),
+    ).toEqual([
+      '.n.1: 2 ≠ 3',
+      '.result.oee.decimal: "0.1333" ≠ "0.1334"',
+      '.result.quality: null ≠ {"fraction":"1/1"}',
+    ]);
+    expect(jsonDifferences([1], { 0: 1 })).toEqual(['.: [1] ≠ {"0":1}']);
+    expect(jsonDifferences({ a: 1, b: 2, c: 3 }, {}, '', 2)).toHaveLength(2);
   });
 });

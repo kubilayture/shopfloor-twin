@@ -22,6 +22,11 @@
  *   a pending refresh now. The module refreshes `state_hourly` itself and tells ingest how far
  *   buckets are final, so `cycle_hourly` follows (`Ingest.refreshCyclesThrough`).
  *
+ * For OEE (#120, ADR-0021):
+ * - `Equipment.oeeInputs(from, to, { equipment?, epoch? })`: the hourly state rows (with their
+ *   incidents) and the Stopped pieces with their whole interval's length, in one REPEATABLE READ
+ *   snapshot; `stopPieces(...)` reads the latter alone.
+ *
  * For downtime (#119, #120):
  * - `Equipment.downtimeRecords({ from, to, equipment?, epoch?, uncodedFirst?, limit? })`: the
  *   downtime records (availability-loss intervals per shift bucket, with their auto reason)
@@ -39,10 +44,12 @@ export type {
   EquipmentChange,
   EquipmentLog,
   EquipmentOptions,
+  OeeInputs,
   PiecesChanged,
   ShiftTotal,
   StateHour,
   StateSource,
+  StopPiece,
   StoredInterval,
 } from './equipment.ts';
 export { EQUIPMENT_COLUMNS } from './tables.ts';

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
-import { loadPlantConfig } from '@shopfloor/plant-config';
+import { idealCycleMs, loadPlantConfig } from '@shopfloor/plant-config';
 import type { FastifyInstance } from 'fastify';
 import { sql, type Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
@@ -11,14 +11,22 @@ import { Equipment, downtimeRules } from './modules/equipment/index.ts';
 import { PLANT_CONFIG, UnsFeed, freshDatabase } from './modules/equipment/test-support.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
+import { DowntimeFeed, Oee } from './modules/oee/index.ts';
 import { WS_PATH, serverMessageSchema, type ServerMessage } from './modules/realtime/index.ts';
 import {
+  currentShiftSchema,
+  downtimeListSchema,
   equipmentListSchema,
   intervalsSchema,
   metricsSchema,
+  oeeListSchema,
+  paretoSchema,
   plantSchema,
   problemSchema,
+  reasonCodesSchema,
   seriesSchema,
+  shiftListSchema,
+  shiftOeeSchema,
   shiftTotalsSchema,
 } from './modules/realtime/schemas.ts';
 import {
@@ -44,6 +52,8 @@ let readDb: Kysely<Database>;
 let app: FastifyInstance;
 let ingest: Ingest;
 let equipment: Equipment;
+let oee: Oee;
+let downtime: DowntimeFeed;
 let attach: () => Promise<void>;
 let base: string;
 let seq = 10;
@@ -82,16 +92,35 @@ beforeAll(async () => {
     downtime: downtimeRules(plant.config),
   });
   await equipment.start();
+  oee = new Oee({
+    equipment,
+    ingest,
+    masterData: new MasterData(readDb),
+    shiftPattern: await masterData.shiftPattern(),
+    config: plant.config.oee,
+    idealCycleMs: idealCycleMs(plant.config),
+  });
+  await oee.start();
+  downtime = new DowntimeFeed({ equipment, debounceMs: 20 });
   const http = await buildMesHttp({
     ready: () => Promise.resolve(true),
-    push: { clockMs: 50 },
+    push: { clockMs: 50, oeeMs: 200 },
   });
   app = http.app;
-  attach = () => http.realtime.attach({ masterData: new MasterData(readDb), equipment, ingest });
+  attach = () =>
+    http.realtime.attach({
+      masterData: new MasterData(readDb),
+      equipment,
+      ingest,
+      oee,
+      downtime,
+    });
 }, 180_000);
 
 afterAll(async () => {
   await app.close();
+  oee.stop();
+  downtime.stop();
   await equipment.stop();
   await db.destroy();
   await readDb.destroy();
@@ -352,6 +381,155 @@ describe('MES REST API (#97)', () => {
     expect((await get(`/shifts/2026-10-12/A/totals`)).status).toBe(200);
   });
 
+  it('returns OEE per hour and per shift, for an equipment and a work center (#120)', async () => {
+    const hours = oeeListSchema.parse(
+      (
+        await get(
+          `/oee?scope=equipment&id=cnc-01&bucket=hour&from=${iso('03:00')}&to=${iso('05:00')}`,
+        )
+      ).body,
+    );
+    // No aggregate refresher in this test: nothing is final.
+    expect(hours.buckets.map((b) => [b.key, b.shiftKey, b.final])).toEqual([
+      [iso('03:00'), '2026-10-12/A', false],
+      [iso('04:00'), '2026-10-12/A', false],
+    ]);
+    // 03:00: Running 40 min and 20 min of a 40-min stop (availability loss); nothing produced.
+    expect(hours.buckets[0]?.inputs.stateMs).toMatchObject({
+      Running: 40 * MINUTE,
+      Stopped: 20 * MINUTE,
+      Down: 0,
+    });
+    expect(hours.buckets[0]?.result.availability).toEqual({ fraction: '2/3', decimal: '0.6667' });
+    expect(hours.buckets[0]?.result.quality).toBeNull();
+    expect(hours.buckets[0]?.result.oee).toEqual({ fraction: '0/1', decimal: '0.0000' });
+    expect(hours.buckets[0]?.result.losses?.availability.own.stopped).toBe(20 * MINUTE);
+
+    const shift = oeeListSchema.parse(
+      (
+        await get(
+          `/oee?scope=work-center&id=cell-m1&bucket=shift&from=${iso('03:00')}&to=${iso('04:00')}`,
+        )
+      ).body,
+    );
+    expect(
+      shift.buckets.map((b) => [b.key, b.start, b.end, b.members.map((m) => m.equipment)]),
+    ).toEqual([['2026-10-12/A', iso('03:00'), iso('11:00'), ['cnc-01']]]);
+    expect(shift.buckets[0]?.result.totals.plannedBusyMs).toBe(120 * MINUTE);
+
+    const all = shiftOeeSchema.parse((await get('/shifts/2026-10-12/A/oee')).body);
+    expect([all.shiftKey, all.start, all.end]).toEqual([
+      '2026-10-12/A',
+      iso('03:00'),
+      iso('11:00'),
+    ]);
+    expect(all.equipment.map((b) => b.id)).toEqual(['cnc-01']);
+    expect(all.workCenters.map((b) => b.id)).toEqual(['cell-m1']);
+    // Cell M1 has data of CNC-01 only: the same result, not final (its machines are missing).
+    expect(all.workCenters[0]?.result).toEqual(all.equipment[0]?.result);
+    expect(all.workCenters[0]?.final).toBe(false);
+  });
+
+  it('lists shifts, the current shift, reason codes, downtime records and the Pareto (#120)', async () => {
+    const shifts = shiftListSchema.parse(
+      (await get('/shifts?from=2026-10-16T00:00:00Z&to=2026-10-19T00:00:00Z')).body,
+    );
+    // Friday: Thursday's night shift ends at 06:00 Istanbul; the weekend has none.
+    expect(shifts.shifts.map((s) => s.key)).toEqual([
+      '2026-10-15/C',
+      '2026-10-16/A',
+      '2026-10-16/B',
+      '2026-10-16/C',
+    ]);
+    expect(shifts.shifts[1]).toEqual({
+      key: '2026-10-16/A',
+      date: '2026-10-16',
+      shift: 'A',
+      start: '2026-10-16T03:00:00.000Z',
+      end: '2026-10-16T11:00:00.000Z',
+      breaks: [{ start: '2026-10-16T07:00:00.000Z', end: '2026-10-16T07:30:00.000Z' }],
+    });
+    const current = currentShiftSchema.parse((await get('/shifts/current')).body);
+    expect(current).toMatchObject({
+      clock: { epoch: E1, watermark: iso('05:00') },
+      shiftKey: '2026-10-12/A',
+      shift: { key: '2026-10-12/A', start: iso('03:00') },
+    });
+
+    const reasons = reasonCodesSchema.parse((await get('/reason-codes')).body).reasons;
+    expect(reasons.find((r) => r.id === 'BREAKDOWN/SPINDLE-OVERLOAD')).toMatchObject({
+      parent: 'BREAKDOWN',
+      active: true,
+    });
+    expect(reasons.some((r) => r.id === 'UNCODED')).toBe(true);
+
+    const records = downtimeListSchema.parse(
+      (await get(`/downtime?equipment=cnc-01&from=${iso('03:00')}&to=${iso('05:00')}`)).body,
+    );
+    expect(records.truncated).toBe(false);
+    expect(records.records).toEqual([
+      {
+        id: `cnc-01~${String(E1)}~${String(at('03:40'))}`,
+        equipment: 'cnc-01',
+        epoch: E1,
+        start: iso('03:40'),
+        end: iso('04:20'),
+        intervalStart: iso('03:40'),
+        shiftKey: '2026-10-12/A',
+        state: 'Stopped',
+        cause: 'jam',
+        loss: 'own',
+        autoReason: 'UNCODED',
+        reason: 'UNCODED',
+        provisional: false,
+        ms: 40 * MINUTE,
+      },
+    ]);
+    const uncoded = downtimeListSchema.parse(
+      (await get(`/downtime?from=${iso('03:00')}&to=${iso('05:00')}&uncoded=true`)).body,
+    );
+    expect(uncoded.records.map((r) => r.id)).toEqual(records.records.map((r) => r.id));
+
+    const loss = paretoSchema.parse(
+      (
+        await get(
+          `/downtime/pareto?scope=work-center&id=cell-m1&from=${iso('03:00')}&to=${iso('04:00')}`,
+        )
+      ).body,
+    );
+    expect(loss).toMatchObject({
+      members: [{ equipment: 'cnc-01', epoch: E1 }],
+      availability: { own: 20 * MINUTE, external: 0 },
+      reasons: [{ reason: 'UNCODED', name: 'Not coded', loss: 'own', ms: 20 * MINUTE, records: 1 }],
+      microStops: [],
+    });
+  });
+
+  it('answers bad OEE, shift and downtime requests with problem details (#120)', async () => {
+    const range = `from=${iso('03:00')}&to=${iso('05:00')}`;
+    const week = 'from=2026-10-01T00:00:00Z&to=2026-10-09T00:00:00Z';
+    for (const [url, status] of [
+      [`/oee?scope=equipment&id=nope&bucket=hour&${range}`, 404],
+      [`/oee?scope=work-center&id=cnc-01&bucket=hour&${range}`, 404],
+      [`/oee?scope=machine&id=cnc-01&bucket=hour&${range}`, 400],
+      [`/oee?scope=equipment&id=cnc-01&bucket=day&${range}`, 400],
+      [`/oee?scope=equipment&id=cnc-01&bucket=hour&${week}`, 400],
+      [`/oee?scope=equipment&id=cnc-01&bucket=shift&${week}`, 200],
+      [`/oee?scope=equipment&id=cnc-01&bucket=hour&${range}&epoch=x`, 400],
+      ['/shifts/2026-10-17/A/oee', 404],
+      ['/shifts/2026-10-12/Z/oee', 404],
+      ['/shifts?from=2026-10-12T05:00:00Z&to=2026-10-12T03:00:00Z', 400],
+      [`/downtime?equipment=nope&${range}`, 404],
+      [`/downtime?${range}&uncoded=yes`, 400],
+      [`/downtime/pareto?scope=work-center&id=nope&${range}`, 404],
+      ['/reason-codes?inactive=1', 400],
+    ] as const) {
+      const response = await get(url);
+      expect([url, response.status]).toEqual([url, status]);
+      if (status !== 200) expect(response.type).toMatch(/^application\/problem\+json/);
+    }
+  });
+
   it('refuses Host headers outside the allowlist (DNS rebinding)', async () => {
     for (const [host, status] of [
       ['evil.example', 403],
@@ -466,6 +644,57 @@ describe('MES WebSocket push (#97)', () => {
     });
     expect(latencies).toHaveLength(75);
     expect(Math.max(...latencies)).toBeLessThan(2_000);
+    ws.socket.close();
+  });
+
+  it('pushes OEE buckets at most once per interval per topic, and downtime records (#120)', async () => {
+    const ws = await client();
+    ws.send({ type: 'subscribe', topic: 'oee:cell-m1' });
+    const snapshot = await ws.until((m) => m.type === 'snapshot' && m.topic === 'oee:cell-m1');
+    expect(snapshot).toMatchObject({
+      hour: { scope: 'work-center', id: 'cell-m1', bucket: 'hour' },
+      shift: { scope: 'work-center', id: 'cell-m1', bucket: 'shift' },
+    });
+    ws.send({ type: 'subscribe', topic: 'downtime' });
+    await ws.until((m) => m.type === 'subscribed' && m.topic === 'downtime');
+    ws.send({ type: 'subscribe', topic: 'oee:nope' });
+    expect(await ws.until((m) => m.type === 'error')).toMatchObject({ code: 'unknown-equipment' });
+    ws.send({ type: 'subscribe', topic: 'downtime', metric: 'x' });
+    expect(await ws.until((m) => m.type === 'error' && m.code === 'invalid-message')).toBeDefined();
+
+    // A breakdown of CNC-01 is a downtime record as soon as it has a length (the clock moves).
+    await send(
+      feed.state('cnc-01', E1, 6, at('08:00'), 'Down', 'SPINDLE-OVERLOAD'),
+      feed.telemetry('wsh-01', at('08:05'), E1),
+    );
+    expect(
+      await ws.until((m) => m.type === 'downtime' && m.record.equipment === 'cnc-01'),
+    ).toMatchObject({
+      event: 'created',
+      record: { equipment: 'cnc-01', end: null, autoReason: 'BREAKDOWN/SPINDLE-OVERLOAD' },
+    });
+    const delta = await ws.until((m) => m.type === 'oee' && m.hour?.key === iso('08:00'));
+    expect(delta).toMatchObject({ topic: 'oee:cell-m1', shift: { key: '2026-10-12/A' } });
+    await send(feed.state('cnc-01', E1, 7, at('08:10'), 'Running'));
+    expect(
+      await ws.until(
+        (m) => m.type === 'downtime' && m.event === 'closed' && m.record.equipment === 'cnc-01',
+      ),
+    ).toMatchObject({ record: { end: iso('08:10'), ms: 10 * MINUTE } });
+    // Changes keep coming every 60 ms; the topic's deltas don't.
+    for (let i = 1; i <= 6; i++) {
+      await send(
+        feed.state('cnc-01', E1, 7 + i, at('08:10') + i * MINUTE, i % 2 ? 'Idle' : 'Running'),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    await ws.until((m) => m.type === 'oee' && m.hour?.inputs.stateMs.Idle === 3 * MINUTE);
+    // At most one delta per topic per interval (200 ms here, 1 s by default).
+    const times = ws.messages.flatMap((m, i) => (m.type === 'oee' ? [ws.received[i] ?? 0] : []));
+    expect(times.length).toBeGreaterThan(1);
+    for (let i = 1; i < times.length; i++) {
+      expect((times[i] ?? 0) - (times[i - 1] ?? 0)).toBeGreaterThanOrEqual(150);
+    }
     ws.socket.close();
   });
 

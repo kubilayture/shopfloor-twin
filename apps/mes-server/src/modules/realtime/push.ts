@@ -1,7 +1,11 @@
 import { Counter, Gauge, type Registry } from 'prom-client';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
+import type { DowntimeChange, OeeBucket, OeeChange, OeeScope } from '../oee/index.ts';
+import { bucketDto, recordDto } from './oee-dto.ts';
 import {
+  DOWNTIME_TOPIC,
+  LIMITS,
   STATES_TOPIC,
   clientMessageSchema,
   type ClientMessage,
@@ -34,6 +38,23 @@ export interface PushSources {
   };
   /** Equipment ids from master data: subscriptions to others are refused. */
   readonly catalog: ReadonlySet<string>;
+  /** OEE on read (#120): the current hour and shift bucket per equipment or work center. */
+  readonly oee?: {
+    current(
+      scope: OeeScope,
+      id: string,
+    ): Promise<{ hour: OeeBucket | null; shift: OeeBucket | null }>;
+    onChange(listener: (change: OeeChange) => void): () => void;
+  };
+  /** The ids `oee:<id>` may name, each with its scope and machines. */
+  readonly oeeTopics?: ReadonlyMap<
+    string,
+    { readonly scope: OeeScope; readonly members: readonly string[] }
+  >;
+  /** Downtime record changes (#120). */
+  readonly downtime?: {
+    subscribe(listener: (change: DowntimeChange) => void): () => void;
+  };
 }
 
 export interface PushOptions {
@@ -47,6 +68,10 @@ export interface PushOptions {
   readonly clockMs?: number;
   /** How soon deltas held for a slow client are tried again (100 ms). */
   readonly retryMs?: number;
+  /** At most one OEE delta per topic this often (1 s, plan "API, push and web"). */
+  readonly oeeMs?: number;
+  /** OEE topics per client (16). */
+  readonly maxOeeTopics?: number;
   readonly maxClients?: number;
   /** Telemetry subscriptions per client, counted per metric (a whole equipment counts one). */
   readonly maxSubscriptions?: number;
@@ -60,6 +85,10 @@ interface Client {
   readonly socket: PushSocket;
   alive: boolean;
   states: boolean;
+  /** Following `downtime`. */
+  downtime: boolean;
+  /** The ids of the `oee:<id>` topics followed. */
+  readonly oee: Set<string>;
   /** Per equipment: the metrics subscribed, or null for all. */
   readonly telemetry: Map<string, Set<string> | null>;
   /** Deltas not yet sent, by key: a newer delta of the same key replaces the older one. */
@@ -72,6 +101,24 @@ interface Client {
 }
 
 const MAX_HOLDS = 4;
+
+/** One `oee:<id>` topic with subscribers: what it last pushed and whether it must be computed. */
+interface OeeTopicState {
+  readonly id: string;
+  readonly scope: OeeScope;
+  readonly members: ReadonlySet<string>;
+  /** Its inputs changed since the last computation. */
+  dirty: boolean;
+  inFlight: boolean;
+  /** Wall time of the last computation (deltas at most once per `oeeMs`). */
+  computedAt: number;
+  /** Wall time the last delta was computed for (at most one per `oeeMs`). */
+  deltaAt: number;
+  /** The last computed hour and shift buckets, as JSON: a delta is sent only when they differ. */
+  last: string | undefined;
+  /** Clients waiting for their snapshot. */
+  readonly awaiting: Set<Client>;
+}
 
 /** Close codes (RFC 6455): 1013 try again later. */
 const TRY_AGAIN_LATER = 1013;
@@ -115,6 +162,7 @@ export class PushHub {
   #flushScheduled = false;
   #retry: NodeJS.Timeout | undefined;
   #lastClock: string | undefined;
+  readonly #oeeTopics = new Map<string, OeeTopicState>();
 
   constructor(options: PushOptions = {}) {
     this.#options = {
@@ -123,6 +171,8 @@ export class PushHub {
       heartbeatMs: options.heartbeatMs ?? 15_000,
       clockMs: options.clockMs ?? 1_000,
       retryMs: options.retryMs ?? 100,
+      oeeMs: options.oeeMs ?? 1_000,
+      maxOeeTopics: options.maxOeeTopics ?? LIMITS.oeeTopics,
       maxClients: options.maxClients ?? 64,
       maxSubscriptions: options.maxSubscriptions ?? 64,
       requestsPerSecond: options.requestsPerSecond ?? 10,
@@ -156,6 +206,28 @@ export class PushHub {
         this.#clock();
       }, this.#options.clockMs).unref(),
     );
+    if (sources.oee) {
+      this.#detach.push(
+        sources.oee.onChange((change) => {
+          this.#onOeeChange(change);
+        }),
+      );
+      this.#timers.push(
+        setInterval(
+          () => {
+            this.#oeeTick();
+          },
+          Math.max(10, Math.floor(this.#options.oeeMs / 4)),
+        ).unref(),
+      );
+    }
+    if (sources.downtime) {
+      this.#detach.push(
+        sources.downtime.subscribe((change) => {
+          this.#onDowntime(change);
+        }),
+      );
+    }
   }
 
   /** Stops following and disconnects every client. */
@@ -165,6 +237,7 @@ export class PushHub {
     clearTimeout(this.#retry);
     for (const client of this.#clients) client.socket.terminate();
     this.#clients.clear();
+    this.#oeeTopics.clear();
   }
 
   connect(socket: PushSocket): void {
@@ -176,6 +249,8 @@ export class PushHub {
       socket,
       alive: true,
       states: false,
+      downtime: false,
+      oee: new Set(),
       telemetry: new Map(),
       pending: new Map(),
       holds: new Map(),
@@ -191,6 +266,7 @@ export class PushHub {
     });
     socket.on('close', () => {
       this.#clients.delete(client);
+      this.#leaveOee(client);
     });
   }
 
@@ -237,14 +313,24 @@ export class PushHub {
       return;
     }
     const request = result.data;
+    if (request.metric !== undefined && !request.topic.startsWith('telemetry:')) {
+      this.#send(client, {
+        type: 'error',
+        code: 'invalid-message',
+        detail: '`metric` applies to telemetry topics only',
+      });
+      return;
+    }
+    if (request.topic === DOWNTIME_TOPIC) {
+      this.#downtimeRequest(client, sources, request);
+      return;
+    }
+    if (request.topic.startsWith('oee:')) {
+      this.#oeeRequest(client, sources, request);
+      return;
+    }
     if (request.topic === STATES_TOPIC) {
-      if (request.metric !== undefined) {
-        this.#send(client, {
-          type: 'error',
-          code: 'invalid-message',
-          detail: '`metric` applies to telemetry topics only',
-        });
-      } else if (request.type === 'subscribe') {
+      if (request.type === 'subscribe') {
         this.#subscribeStates(client, sources);
       } else {
         client.states = false;
@@ -267,6 +353,165 @@ export class PushHub {
       this.#subscribeTelemetry(client, sources, equipment, request);
     } else {
       this.#unsubscribeTelemetry(client, equipment, request);
+    }
+  }
+
+  #downtimeRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    if (!sources.downtime) {
+      this.#send(client, {
+        type: 'error',
+        code: 'unknown-topic',
+        detail: 'downtime push is not available',
+      });
+      return;
+    }
+    client.downtime = request.type === 'subscribe';
+    if (!client.downtime) this.#dropPending(client, 'downtime:');
+    this.#send(client, {
+      type: request.type === 'subscribe' ? 'subscribed' : 'unsubscribed',
+      topic: DOWNTIME_TOPIC,
+      metric: null,
+    });
+  }
+
+  #oeeRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    const id = request.topic.slice('oee:'.length);
+    const known = sources.oeeTopics?.get(id);
+    if (!sources.oee || !known) {
+      this.#send(client, {
+        type: 'error',
+        code: sources.oee ? 'unknown-equipment' : 'unknown-topic',
+        detail: sources.oee ? `no equipment or work center ${id}` : 'OEE push is not available',
+      });
+      return;
+    }
+    if (request.type === 'unsubscribe') {
+      client.oee.delete(id);
+      this.#oeeTopics.get(id)?.awaiting.delete(client);
+      this.#dropPending(client, request.topic);
+      this.#send(client, { type: 'unsubscribed', topic: request.topic, metric: null });
+      return;
+    }
+    if (!client.oee.has(id) && client.oee.size >= this.#options.maxOeeTopics) {
+      this.#send(client, {
+        type: 'error',
+        code: 'too-many-subscriptions',
+        detail: `at most ${String(this.#options.maxOeeTopics)} OEE topics`,
+      });
+      return;
+    }
+    client.oee.add(id);
+    let topic = this.#oeeTopics.get(id);
+    if (!topic) {
+      topic = {
+        id,
+        scope: known.scope,
+        members: new Set(known.members),
+        dirty: true,
+        inFlight: false,
+        computedAt: 0,
+        deltaAt: 0,
+        last: undefined,
+        awaiting: new Set(),
+      };
+      this.#oeeTopics.set(id, topic);
+    }
+    this.#send(client, { type: 'subscribed', topic: request.topic, metric: null });
+    // The snapshot is newer than a delta waiting; the next computation brings it.
+    this.#dropPending(client, request.topic);
+    topic.awaiting.add(client);
+    this.#computeOee(topic);
+  }
+
+  #onOeeChange(change: OeeChange): void {
+    for (const topic of this.#oeeTopics.values()) {
+      if (topic.members.has(change.equipment)) topic.dirty = true;
+    }
+  }
+
+  /** Computes the dirty topics whose last computation is at least `oeeMs` old (off ingest's path). */
+  #oeeTick(): void {
+    const now = Date.now();
+    for (const topic of this.#oeeTopics.values()) {
+      if (
+        topic.awaiting.size > 0 ||
+        (topic.dirty && now - topic.computedAt >= this.#options.oeeMs)
+      ) {
+        this.#computeOee(topic);
+      }
+    }
+  }
+
+  #computeOee(topic: OeeTopicState): void {
+    const oee = this.#sources?.oee;
+    if (!oee || topic.inFlight) return;
+    // A snapshot for a new subscriber may come early; deltas to the others keep their pace.
+    const now = Date.now();
+    const deltaDue = now - topic.deltaAt >= this.#options.oeeMs;
+    topic.inFlight = true;
+    topic.dirty = false;
+    topic.computedAt = now;
+    oee
+      .current(topic.scope, topic.id)
+      .then(
+        (current) => {
+          const hour = current.hour && bucketDto(current.hour);
+          const shift = current.shift && bucketDto(current.shift);
+          const json = JSON.stringify({ hour, shift });
+          const name = `oee:${topic.id}`;
+          let delta: string | undefined;
+          for (const client of this.#clients) {
+            if (!client.oee.has(topic.id)) continue;
+            if (topic.awaiting.has(client)) {
+              this.#send(client, { type: 'snapshot', topic: name, hour, shift });
+            } else if (json !== topic.last && deltaDue) {
+              delta ??= message({ type: 'oee', topic: name, hour, shift });
+              this.#enqueue(client, name, delta);
+            }
+          }
+          topic.awaiting.clear();
+          if (delta !== undefined) topic.deltaAt = now;
+          if (deltaDue || json === topic.last) topic.last = json;
+          // A change held back for the pace goes out with the next computation.
+          else topic.dirty = true;
+        },
+        () => {
+          // Tried again at the next tick; waiting clients keep waiting.
+          topic.dirty = true;
+        },
+      )
+      .finally(() => {
+        topic.inFlight = false;
+        this.#pruneOee();
+      });
+  }
+
+  /** Drops the topics nobody follows any more. */
+  #pruneOee(): void {
+    for (const [id, topic] of this.#oeeTopics) {
+      if (![...this.#clients].some((client) => client.oee.has(id)) && !topic.inFlight) {
+        this.#oeeTopics.delete(id);
+      }
+    }
+  }
+
+  #leaveOee(client: Client): void {
+    for (const id of client.oee) this.#oeeTopics.get(id)?.awaiting.delete(client);
+    client.oee.clear();
+    this.#pruneOee();
+  }
+
+  #onDowntime(change: DowntimeChange): void {
+    const sources = this.#sources;
+    if (!sources) return;
+    let data: string | undefined;
+    let key: string | undefined;
+    for (const client of this.#clients) {
+      if (!client.downtime) continue;
+      const dto = recordDto(change.record, sources.equipment.watermark(change.record.epoch));
+      key ??= `downtime:${dto.id}`;
+      data ??= message({ type: 'downtime', event: change.event, record: dto });
+      this.#enqueue(client, key, data);
     }
   }
 
@@ -513,6 +758,7 @@ export class PushHub {
     // A close frame would queue behind the backlog the client isn't reading.
     client.socket.terminate();
     this.#clients.delete(client);
+    this.#leaveOee(client);
     this.#metrics?.dropped.inc({ reason });
   }
 

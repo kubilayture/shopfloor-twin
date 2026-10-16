@@ -41,7 +41,7 @@ import {
   resultDto,
   shiftOeeDto,
 } from '../realtime/index.ts';
-import { REPORT_BAD_ACTORS, Shifts } from '../shifts/index.ts';
+import { LONGEST_RECORDS, REPORT_BAD_ACTORS, Shifts } from '../shifts/index.ts';
 import { Equipment, downtimeRules } from './index.ts';
 import {
   PLANT_CONFIG,
@@ -822,6 +822,28 @@ async function expectShiftReports(
     expect(report.downtime.pareto.reasons.reduce((sum, r) => sum + r.ms, 0)).toBe(
       loss.own + loss.external,
     );
+    // Downtime records: the summary has no record list, so `records` and `longest` (equipment,
+    // start, length, longest first) are checked against the records computed from the event log
+    // (`lossRecords`, as `expectRecords` checks the stored ones); `uncodedMs` is 0, since no
+    // golden record is UNCODED (asserted there) and nothing is coded.
+    const expectedRecords = lossRecords(run)
+      .records.filter((r) => r.shiftKey === s.key)
+      .map((r) => [r.equipment, r.start, r.end - r.start] as const)
+      .sort((a, b) => b[2] - a[2] || a[1] - b[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    expect([s.key, report.downtime.records, report.downtime.uncodedMs]).toEqual([
+      s.key,
+      expectedRecords.length,
+      0,
+    ]);
+    const watermark = equipment.watermark(EPOCH)?.getTime() ?? run.end;
+    expect([
+      s.key,
+      report.downtime.longest.map((r) => [
+        r.equipment,
+        r.start.getTime(),
+        (r.end?.getTime() ?? Math.max(r.start.getTime(), watermark)) - r.start.getTime(),
+      ]),
+    ]).toEqual([s.key, expectedRecords.slice(0, LONGEST_RECORDS)]);
     // Alarms per scope: GET /alarms/kpi for the shift, the ground truth, the top 5 bad actors.
     expect(report.alarms.map((a) => a.scope.id).sort()).toEqual(scopes.map((x) => x.id).sort());
     for (const section of report.alarms) {
@@ -865,7 +887,7 @@ async function expectShiftReports(
     expect([s.key, report.instance.revision]).toEqual([s.key, { inputs: 0, content: 0 }]);
     expect(report.instance.status).not.toBe('running');
     if (inputsFinal) final++;
-    compared += 3 + report.production.machines.length;
+    compared += 5 + report.production.machines.length;
   }
   await shifts.stop();
   oee.stop();
@@ -987,10 +1009,19 @@ const storedRecords = (db: Kysely<Database>) =>
  * whole interval, one record per scheduled shift bucket), has exactly its records, none of them
  * UNCODED, all closed and final. Returns the counts for the log.
  */
-async function expectRecords(db: Kysely<Database>, run: Run) {
-  const last = lastFacts(run);
+/**
+ * The downtime records of a run computed from its event log alone (ADR-0021's loss table, the
+ * micro-stop threshold over the whole interval, one record per scheduled shift bucket, an
+ * interval still open at the run's end running to it, the watermark), and how many loss
+ * intervals they come from. The ground truth's summary has no record list, so this is what the
+ * MES's records and the shift report's downtime section are checked against.
+ */
+function lossRecords(run: Run): {
+  records: { equipment: string; start: number; end: number; shiftKey: string }[];
+  lossIntervals: number;
+} {
   const segments = shiftSegments(plant.shifts, run.start, run.end);
-  const expectedKeys: string[] = [];
+  const records: { equipment: string; start: number; end: number; shiftKey: string }[] = [];
   const byMachine = new Map<string, { at: number; state: string }[]>();
   for (const event of run.events) {
     if (event.type !== 'state' || !event.machineId) continue;
@@ -1005,13 +1036,25 @@ async function expectRecords(db: Kysely<Database>, run: Run) {
       if (end <= point.at) return;
       if (!availabilityLoss(point.state, end - point.at, plant.oee.microStopThresholdMs)) return;
       // Inside planned time only: the no-shift bucket has none, so nothing is lost there.
-      const keys = segments
+      const pieces = segments
         .filter((seg) => seg.key !== NO_SHIFT && seg.to > point.at && seg.from < end)
-        .map((seg) => `${machine} ${new Date(Math.max(point.at, seg.from)).toISOString()}`);
-      if (keys.length > 0) lossIntervals++;
-      expectedKeys.push(...keys);
+        .map((seg) => ({
+          equipment: machine,
+          start: Math.max(point.at, seg.from),
+          end: Math.min(end, seg.to),
+          shiftKey: seg.key,
+        }));
+      if (pieces.length > 0) lossIntervals++;
+      records.push(...pieces);
     });
   }
+  return { records, lossIntervals };
+}
+
+async function expectRecords(db: Kysely<Database>, run: Run) {
+  const last = lastFacts(run);
+  const { records, lossIntervals } = lossRecords(run);
+  const expectedKeys = records.map((r) => `${r.equipment} ${new Date(r.start).toISOString()}`);
   const stored = await storedRecords(db);
   expect(stored.map((r) => `${r.equipment} ${r.start_time.toISOString()}`).sort()).toEqual(
     expectedKeys.sort(),
@@ -1052,7 +1095,11 @@ export interface Scenario {
   /** Whether every machine reports at the run's end (the golden week ends with a shutdown). */
   readonly settledToEnd?: boolean;
   /** Shift instances of the run and the shift reports final (#144), if pinned. */
-  readonly shifts?: { readonly instances: number; readonly final: number };
+  readonly shifts?: {
+    readonly instances: number;
+    readonly final: number;
+    readonly compared: number;
+  };
 }
 
 /** A golden scenario of apps/simulator/golden by name. */
@@ -1087,7 +1134,7 @@ export async function goldenWeek(): Promise<Scenario> {
     settledToEnd: true,
     // 15 shift reports (#144), all final but Friday's shift C: every machine shuts down exactly at
     // its end, so its alarm KPI buckets (end + fleetingMs) stay provisional.
-    shifts: { instances: 15, final: 14 },
+    shifts: { instances: 15, final: 14, compared: 255 },
   };
 }
 
@@ -1101,6 +1148,33 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
     let run: Run;
     let span: Scenario;
     let reference: Kysely<Database>;
+    /** Every shift report of the run against the ground truth (#144), with the pinned counts. */
+    const checkReports = async (
+      label: string,
+      m: Pick<
+        Awaited<ReturnType<typeof mes>>,
+        'db' | 'equipment' | 'ingest' | 'masterData' | 'alarms'
+      >,
+    ) => {
+      const reports = await expectShiftReports(
+        m.db,
+        m.equipment,
+        m.ingest,
+        m.masterData,
+        m.alarms,
+        run,
+      );
+      if (span.shifts !== undefined) {
+        expect([reports.shifts, reports.final, reports.compared]).toEqual([
+          span.shifts.instances,
+          span.shifts.final,
+          span.shifts.compared,
+        ]);
+      }
+      console.log(
+        `${title}: ${label}, ${String(reports.shifts)} shift reports (${String(reports.final)} final) reconciled in ${String(reports.compared)} comparisons`,
+      );
+    };
 
     it(
       'in order: time per state, per machine and shift, equals the ground truth to the ms',
@@ -1142,16 +1216,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         console.log(
           `${title}: in order, ${String(alarmed.compared)} alarm comparisons equal the ground truth; ${String(alarmed.final)} KPI buckets final, not final (no fact after them): ${alarmed.open.join(', ') || 'none'}`,
         );
-        const reports = await expectShiftReports(db, equipment, ingest, masterData, alarms, run);
-        if (span.shifts !== undefined) {
-          expect([reports.shifts, reports.final]).toEqual([
-            span.shifts.instances,
-            span.shifts.final,
-          ]);
-        }
-        console.log(
-          `${title}: in order, ${String(reports.shifts)} shift reports (${String(reports.final)} final) reconciled in ${String(reports.compared)} comparisons`,
-        );
+        await checkReports('in order', { db, equipment, ingest, masterData, alarms });
         await alarms.stop();
         await equipment.stop();
         await ingest.stop();
@@ -1189,6 +1254,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         console.log(
           `${title}: shuffled, ${String(alarmed.compared)} alarm comparisons equal the ground truth`,
         );
+        await checkReports('shuffled', { db, equipment, ingest, masterData, alarms });
         await alarms.stop();
         await equipment.stop();
         await ingest.stop();

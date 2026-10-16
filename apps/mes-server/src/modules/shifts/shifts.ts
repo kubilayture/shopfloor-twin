@@ -42,7 +42,8 @@ export const MAX_NOTES = 200;
 export const LONGEST_RECORDS = 10;
 export const REPORT_BAD_ACTORS = 5;
 
-const DAY = 24 * 3_600_000;
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
 /** How far back the first fact of an epoch is looked for at start-up. */
 const EPOCH_LOOKBACK_MS = 31 * DAY;
 
@@ -274,6 +275,18 @@ export function revisionSteps(seen: InputRevisions, now: InputRevisions): number
   return steps;
 }
 
+const STATUS_RANK: Record<ShiftStatus, number> = { running: 0, ended: 1, final: 2 };
+
+/** Whether `next` is a later state of the instance than `kept`: nothing lower, something higher. */
+export function isNewer(next: ShiftRecord, kept: ShiftRecord): boolean {
+  const steps = [
+    STATUS_RANK[next.status] - STATUS_RANK[kept.status],
+    next.revision.inputs - kept.revision.inputs,
+    next.revision.content - kept.revision.content,
+  ];
+  return steps.every((step) => step >= 0) && steps.some((step) => step > 0);
+}
+
 /** `seen` with every input at least at `now`'s revision. */
 function merged(seen: InputRevisions, now: InputRevisions): InputRevisions {
   const result: InputRevisions = { ...seen };
@@ -357,9 +370,11 @@ export class Shifts {
     const rows = await this.#db.selectFrom('shifts.shift_instance').selectAll().execute();
     for (const row of rows) {
       const record = toRecord(row);
+      // Only reports not final yet are evaluated at start-up: a final one is evaluated again when
+      // one of its inputs changes, and every read of it brings its `inputs` up to date.
       this.#tracked.set(instanceKey(record.epoch, record.key), {
         record,
-        dirty: true,
+        dirty: record.status !== 'final',
         checkedAt: 0,
       });
     }
@@ -459,13 +474,20 @@ export class Shifts {
 
   /**
    * The shift report (ADR-0025), computed on read. If the stored finality or `inputs` is behind
-   * what this read found, it is brought up to date first (idempotent), so a report never shows a
-   * revision older than its own content.
+   * what this read found, it is brought up to date (idempotent, under the row lock).
+   *
+   * A revision may lag the content it is served with, never lead it. So the instance row (its
+   * `content` counter) and then the input revisions are read before the content: a note written
+   * meanwhile commits its counter with the note, so the notes read later include it; a recode is
+   * committed before its counter moves; an input revised after its revision was read shows in
+   * the content now and is counted as a step of `inputs` later. The revision served is the one of
+   * these early reads, even when a concurrent read has stored a higher one.
    */
   async report(date: string, shift: string, epoch?: number): Promise<ShiftReport | undefined> {
     const found = await this.instance(date, shift, epoch);
     if (!found) return undefined;
     const record = found;
+    const revisions = await this.#revisions(record);
     const { equipment, oee, alarms } = this.#sources;
     const start = record.start;
     const end = record.end;
@@ -515,16 +537,30 @@ export class Shifts {
       0,
     );
     const longest = [...inShift]
-      .sort((a, b) => length(b) - length(a) || a.start.getTime() - b.start.getTime())
+      .sort(
+        (a, b) =>
+          length(b) - length(a) ||
+          a.start.getTime() - b.start.getTime() ||
+          (a.equipment < b.equipment ? -1 : a.equipment > b.equipment ? 1 : 0),
+      )
       .slice(0, LONGEST_RECORDS);
     const machines = shiftOee.equipment.map(production);
     const last = workCenters.at(-1)?.equipment.at(-1) ?? null;
-    const inputs = await this.#inputs(record, {
+    const final = await this.#finality(record, {
       oee: shiftOee,
       records: inShift,
       alarms: alarmScopes,
     });
-    const instance = await this.#observe(record, inputs);
+    const { stored, seen } = await this.#observe(record, { final, revisions });
+    // `inputs` as of the revisions read above: the stored count less the steps counted beyond
+    // them (by this read's own catch-up nothing, by a concurrent read or the tick perhaps some).
+    const instance: ShiftRecord = {
+      ...stored,
+      revision: {
+        inputs: Math.max(0, stored.revision.inputs - revisionSteps(revisions, seen)),
+        content: Math.min(stored.revision.content, record.revision.content),
+      },
+    };
     return {
       instance,
       asOf: watermark ?? null,
@@ -771,18 +807,28 @@ export class Shifts {
   }
 
   /**
-   * The report's inputs: whether all are final, and the revision of every OEE hour of every machine
-   * and of every alarm KPI hour of every scope (the inputs `inputs` counts). `read`: what the
-   * report itself read already.
+   * The report's inputs: the revisions (read first) and then whether all are final. Read in this
+   * order, the revisions can only lag what the finality was judged on, never lead it: a change
+   * between the two reads is counted later, as a step of `inputs`, rather than lost in the
+   * baseline.
    */
-  async #inputs(
+  async #inputs(record: ShiftRecord): Promise<Inputs> {
+    const revisions = await this.#revisions(record);
+    return { revisions, final: await this.#finality(record) };
+  }
+
+  /**
+   * Whether every input of the report is final: the shift ended, every OEE bucket, every downtime
+   * record and every alarm KPI shift bucket of it final. `read`: what the report read already.
+   */
+  async #finality(
     record: ShiftRecord,
     read?: {
       readonly oee: { equipment: readonly OeeBucket[]; workCenters: readonly OeeBucket[] };
       readonly records: readonly DowntimeRecord[];
       readonly alarms: readonly ReportAlarmScope[];
     },
-  ): Promise<Inputs> {
+  ): Promise<boolean> {
     const { equipment, oee, alarms } = this.#sources;
     const scopes = alarms.scopes().filter((s) => s.scope !== 'equipment');
     const range = { from: record.start, to: record.end };
@@ -809,11 +855,22 @@ export class Shifts {
             }),
           ),
         ]);
-    const final =
+    return (
       this.#ended(record, equipment.watermarks()[0]?.epoch) &&
       [...shiftOee.equipment, ...shiftOee.workCenters].every((b) => b.final) &&
       records.every((r) => !r.provisional) &&
-      alarmFinal.every(Boolean);
+      alarmFinal.every(Boolean)
+    );
+  }
+
+  /**
+   * The revision of every OEE hour of every machine and of every alarm KPI hour of every scope of
+   * the shift: the inputs `inputs` counts.
+   */
+  async #revisions(record: ShiftRecord): Promise<InputRevisions> {
+    const { equipment, alarms } = this.#sources;
+    const scopes = alarms.scopes().filter((s) => s.scope !== 'equipment');
+    const range = { from: record.start, to: record.end };
     const map: InputRevisions = {};
     const [hours, alarmHours] = await Promise.all([
       equipment.stateHourly(range.from, range.to, { epoch: record.epoch }),
@@ -840,7 +897,7 @@ export class Shifts {
         map[`alarm:${id}:${bucket.key}`] = bucket.revision;
       }
     }
-    return { final, revisions: map };
+    return map;
   }
 
   /**
@@ -848,7 +905,10 @@ export class Shifts {
    * lock: final once (with the revisions at that moment), then `inputs` + the revision steps
    * since the last count. Returns the instance as stored.
    */
-  async #observe(record: ShiftRecord, inputs: Inputs): Promise<ShiftRecord> {
+  async #observe(
+    record: ShiftRecord,
+    inputs: Inputs,
+  ): Promise<{ stored: ShiftRecord; seen: InputRevisions }> {
     const result = await this.#db.transaction().execute(async (trx) => {
       const row = await trx
         .selectFrom('shifts.shift_instance')
@@ -910,7 +970,7 @@ export class Shifts {
     });
     const stored = toRecord(result.row);
     if (result.event) this.#store(stored, result.event);
-    return stored;
+    return { stored, seen: result.row.seen_inputs ?? {} };
   }
 
   /** The instance locked for a note write, open for notes at the epoch's plant clock. */
@@ -929,6 +989,15 @@ export class Shifts {
     if (!row)
       throw new ShiftError('not-found', `no shift instance ${key} in epoch ${String(epoch)}`);
     const record = toRecord(row);
+    // A newer epoch ends the old one's plant time: its clock stands still (or is unknown after a
+    // restart), so its handover is closed, the same before and after a restart.
+    const newest = this.#sources.equipment.watermarks()[0]?.epoch;
+    if (newest !== undefined && newest > epoch) {
+      throw new ShiftError(
+        'conflict',
+        `handover closed: epoch ${String(epoch)} ended (epoch ${String(newest)} is newer)`,
+      );
+    }
     const plantAt = this.#sources.equipment.watermark(epoch);
     if (plantAt === undefined) {
       throw new ShiftError(
@@ -1018,41 +1087,59 @@ export class Shifts {
     if (row) this.#store(toRecord(row), event);
   }
 
-  /** Keeps the instance as stored and tells the listeners. */
+  /**
+   * Keeps the instance as stored and tells the listeners, but only when it is newer than the one
+   * kept (status, `inputs` and `content` each at least as high, one higher): interleaved writers
+   * (a report read, the tick, a note write) may finish out of order, and a client must never be
+   * left on an older revision.
+   */
   #store(record: ShiftRecord, event: 'created' | 'status' | 'revised'): void {
     const tracked = this.#tracked.get(instanceKey(record.epoch, record.key));
-    if (tracked) tracked.record = record;
-    else
+    if (!tracked) {
       this.#tracked.set(instanceKey(record.epoch, record.key), {
         record,
-        dirty: true,
+        dirty: record.status !== 'final',
         checkedAt: 0,
       });
+      this.#emit({ type: 'instance', event, instance: record });
+      return;
+    }
+    if (!isNewer(record, tracked.record)) return;
+    tracked.record = record;
     this.#emit({ type: 'instance', event, instance: record });
   }
 
-  /** Marks the ended instances of an epoch overlapping [from, to) for evaluation. */
-  #mark(epoch: number, from: Millis, to: Millis): void {
+  /**
+   * Marks the instances of an epoch overlapping [from, to) for evaluation: ended ones, and final
+   * ones too unless `finalToo` is false. A final report only needs evaluating when one of its
+   * inputs' values may have changed (a range is known); a finality move concerns only reports not
+   * final yet.
+   */
+  #mark(epoch: number, from: Millis, to: Millis, finalToo: boolean): void {
     for (const tracked of this.#tracked.values()) {
       const { record } = tracked;
       if (record.epoch !== epoch || record.status === 'running') continue;
+      if (record.status === 'final' && !finalToo) continue;
       if (record.start.getTime() < to && record.end.getTime() > from) tracked.dirty = true;
     }
   }
 
   #onInputs(change: OeeChange): void {
-    this.#mark(change.epoch, change.from.getTime(), change.to.getTime());
+    this.#mark(change.epoch, change.from.getTime(), change.to.getTime(), true);
   }
 
   #onAlarm(change: AlarmEvent): void {
     if (change.type === 'point') return;
     if (change.type === 'finality') {
-      this.#mark(change.epoch, -Infinity, Infinity);
+      this.#mark(change.epoch, -Infinity, Infinity, false);
       return;
     }
-    // Windowed KPIs reach past the occurrence itself (floods, chattering): an hour before it on.
-    const occurrence = change.occurrence;
-    this.#mark(occurrence.epoch, occurrence.raisedAt.getTime() - 3_600_000, Infinity);
+    // Windowed KPIs reach past the occurrence itself (floods, chattering): from an hour before
+    // its raise to an hour after its end (an open one: after the epoch's plant clock).
+    const { epoch, raisedAt, endedAt } = change.occurrence;
+    const until =
+      endedAt?.getTime() ?? this.#sources.equipment.watermark(epoch)?.getTime() ?? Infinity;
+    this.#mark(epoch, raisedAt.getTime() - HOUR, until + HOUR, true);
   }
 
   /** An operator recode inside a final shift raises its `content` (a clip after a re-cut doesn't). */

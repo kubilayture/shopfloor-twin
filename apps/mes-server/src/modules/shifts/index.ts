@@ -24,6 +24,7 @@ export {
   ShiftError,
   Shifts,
   handoverWindow,
+  isNewer,
   production,
   revisionSteps,
 } from './shifts.ts';

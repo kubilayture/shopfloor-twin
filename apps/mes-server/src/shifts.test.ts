@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events';
 import { kpisOfBucket, prepare, type BadActor } from '@shopfloor/alarm-core';
 import { oeeFromTotals, sumTotals } from '@shopfloor/oee-core';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
+import { shiftKeyAt } from '@shopfloor/shift-calendar';
 import type { FastifyInstance } from 'fastify';
 import { sql, type Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
@@ -20,6 +21,7 @@ import type {
   AlarmEvent,
   AlarmKpiBucket,
   AlarmKpiQuery,
+  AlarmOccurrence,
 } from './modules/alarms/index.ts';
 import type {
   CodingChange,
@@ -42,12 +44,15 @@ import {
   type ServerMessage,
 } from './modules/realtime/schemas.ts';
 import {
+  MAX_NOTES,
   ShiftError,
   Shifts,
   handoverWindow,
+  isNewer,
   production,
   revisionSteps,
   type ShiftChange,
+  type ShiftRecord,
   type ShiftsSources,
 } from './modules/shifts/index.ts';
 import { startDatabase } from './testing.ts';
@@ -101,6 +106,12 @@ function fakes() {
       { product: 'VB-100', result: 'good' as const, count: 40 },
       { product: 'VB-100', result: 'scrap' as const, count: 2 },
     ],
+    /** How often the input revisions were read (one per evaluation of a report's inputs). */
+    evaluations: 0,
+    /** A newer epoch (a restarted simulator) and its clock, if any. */
+    newer: undefined as { epoch: number; clock: number } | undefined,
+    /** Runs while a report reads its content (after the notes and the OEE section). */
+    duringContent: undefined as (() => Promise<void>) | undefined,
   };
   const listeners = {
     oee: new Set<(change: OeeChange) => void>(),
@@ -174,15 +185,25 @@ function fakes() {
       revision,
       incidents: 0,
     });
-    if (query.bucket === 'shift') return [make('2026-10-12/A', from, to, 0)];
+    if (query.bucket === 'shift') return [make(shiftKeyAt(plant.shifts, from), from, to, 0)];
     return [...state.alarmRevisions].map(([hour, revision]) =>
       make(hour, Date.parse(hour), Date.parse(hour) + HOUR, revision),
     );
   };
   const sources: ShiftsSources = {
     equipment: {
-      watermark: (epoch) => (epoch === E1 ? new Date(state.clock) : undefined),
-      watermarks: () => [{ epoch: E1, watermark: new Date(state.clock) }],
+      watermark: (epoch) =>
+        epoch === E1
+          ? new Date(state.clock)
+          : epoch === state.newer?.epoch
+            ? new Date(state.newer.clock)
+            : undefined,
+      watermarks: () => [
+        ...(state.newer
+          ? [{ epoch: state.newer.epoch, watermark: new Date(state.newer.clock) }]
+          : []),
+        { epoch: E1, watermark: new Date(state.clock) },
+      ],
       downtimeRecords: (query) =>
         Promise.resolve(
           query.from.getTime() === at('03:00')
@@ -190,6 +211,7 @@ function fakes() {
             : [],
         ),
       stateHourly: (from, to) => {
+        state.evaluations++;
         const rows: StateHour[] = [];
         for (let hour = from.getTime(); hour < to.getTime(); hour += HOUR) {
           const key = new Date(hour).toISOString();
@@ -218,7 +240,11 @@ function fakes() {
     oee: {
       shift: (b) =>
         Promise.resolve({ equipment: [bucket(b.start, b.end, b.key)], workCenters: [] }),
-      paretoInputs: () => Promise.resolve({ losses: [], stops: [], members: [] }),
+      // The report's last content read: a test may let something happen right there.
+      paretoInputs: async () => {
+        await state.duringContent?.();
+        return { losses: [], stops: [], members: [] };
+      },
       reasonCodes: () => Promise.resolve([]),
       config: plant.oee,
       workCenters: () =>
@@ -244,6 +270,15 @@ function fakes() {
     alarmFinality: () => {
       for (const l of listeners.alarms) l({ type: 'finality', equipment: 'cnc-01', epoch: E1 });
     },
+    /** An occurrence raised at `raisedAt` and cleared a minute later was stored (or changed). */
+    alarmStored: (raisedAt: number) => {
+      const occurrence = {
+        epoch: E1,
+        raisedAt: new Date(raisedAt),
+        endedAt: new Date(raisedAt + 60_000),
+      } as unknown as AlarmOccurrence;
+      for (const l of listeners.alarms) l({ type: 'occurrence', event: 'cleared', occurrence });
+    },
     coded: (from: number, to: number, kind: 'coded' | 'clipped') => {
       for (const l of listeners.coding) {
         l({ equipment: 'cnc-01', epoch: E1, from: new Date(from), to: new Date(to), kind });
@@ -252,7 +287,7 @@ function fakes() {
   };
 }
 
-async function setup(prefix: string) {
+async function setup(prefix: string, recheckMs = 0) {
   const db = await freshDatabase(serverUrl, prefix);
   databases.push(db);
   const fake = fakes();
@@ -263,7 +298,7 @@ async function setup(prefix: string) {
       ...fake.sources,
       shiftPattern: plant.shifts,
       tickMs: 3_600_000,
-      recheckMs: 0,
+      recheckMs,
     });
     modules.push(shifts);
     shifts.onChange((change) => changes.push(change));
@@ -352,7 +387,7 @@ describe('report finality and the composite revision (ADR-0025)', () => {
     // Two inputs at once (an OEE hour and an alarm hour) count two, never one.
     fake.state.oeeRevisions.set(new Date(at('06:00')).toISOString(), 1);
     fake.state.alarmRevisions.set(new Date(at('06:00')).toISOString(), 1);
-    fake.alarmFinality();
+    fake.alarmStored(at('06:10'));
     await shifts.tick();
     expect((await shifts.instance('2026-10-12', 'A'))?.revision.inputs).toBe(3);
     // The same hour revised twice more: two steps.
@@ -529,35 +564,203 @@ describe('handover notes: versions, the handover window and the audit (ADR-0023)
   });
 });
 
+describe('evaluation load, read order, concurrency and epochs (#144 review)', () => {
+  const finalAB = async (prefix: string) => {
+    const context = await setup(prefix, 3_600_000);
+    const { fake, shifts } = context;
+    fake.state.oeeFinal = true;
+    fake.state.alarmFinal = true;
+    fake.state.clock = at('19:00') + 1; // A and B ended, C running
+    await shifts.tick(); // B ends and is evaluated: final
+    fake.alarmFinality(); // A, ended since the start, is evaluated again: final
+    await shifts.tick();
+    expect((await shifts.instance('2026-10-12', 'A'))?.status).toBe('final');
+    expect((await shifts.instance('2026-10-12', 'B'))?.status).toBe('final');
+    return context;
+  };
+
+  it('evaluates a final report only when an input in its range may have changed', async () => {
+    const { fake, shifts, create } = await finalAB('load');
+    const evaluated = () => fake.state.evaluations;
+    const before = evaluated();
+    // Finality moves (nearly every fact) concern only reports not final yet: none here.
+    for (let i = 0; i < 20; i++) fake.alarmFinality();
+    await shifts.tick();
+    expect(evaluated()).toBe(before);
+    // An OEE change of 05:00 reaches shift A only; an occurrence at 12:00-12:01 shift B only.
+    fake.oeeChanged(at('05:00'));
+    await shifts.tick();
+    expect(evaluated()).toBe(before + 1);
+    fake.alarmStored(at('12:00'));
+    await shifts.tick();
+    expect(evaluated()).toBe(before + 2);
+    // At start-up only reports not final are evaluated (C is running: none).
+    await shifts.stop();
+    const restarted = await create();
+    expect(evaluated()).toBe(before + 2);
+    await restarted.tick();
+    expect(evaluated()).toBe(before + 2);
+  });
+
+  it('serves a revision that never leads its content', async () => {
+    const { fake, shifts } = await finalAB('order');
+    // An input is revised while the report reads its content, after the revisions were read:
+    // this read shows `inputs` 0, the next one the step.
+    fake.state.duringContent = () => {
+      fake.state.oeeRevisions.set(new Date(at('05:00')).toISOString(), 1);
+      return Promise.resolve();
+    };
+    expect((await shifts.report('2026-10-12', 'A'))?.instance.revision.inputs).toBe(0);
+    fake.state.duringContent = undefined;
+    expect((await shifts.report('2026-10-12', 'A'))?.instance.revision.inputs).toBe(1);
+    // A note written while the report reads its content (after its notes): not in this report,
+    // so neither is its `content` step.
+    fake.state.clock = at('12:00');
+    fake.state.duringContent = async () => {
+      fake.state.duringContent = undefined;
+      await shifts.createNote(E1, '2026-10-12/A', {
+        author: 'Ayşe',
+        text: 'Written meanwhile',
+        category: 'general',
+      });
+    };
+    const first = await shifts.report('2026-10-12', 'A');
+    expect([first?.notes.length, first?.instance.revision.content]).toEqual([0, 0]);
+    const second = await shifts.report('2026-10-12', 'A');
+    expect([second?.notes.length, second?.instance.revision.content]).toEqual([1, 1]);
+  });
+
+  it('counts a step once when reports are read concurrently, and pushes only newer revisions', async () => {
+    const { fake, shifts, changes } = await finalAB('concurrent');
+    fake.state.oeeRevisions.set(new Date(at('06:00')).toISOString(), 2);
+    const reads = await Promise.all(
+      Array.from({ length: 5 }, () => shifts.report('2026-10-12', 'A')),
+    );
+    expect(reads.every((r) => (r?.instance.revision.inputs ?? 0) <= 2)).toBe(true);
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision.inputs).toBe(2);
+    // Every push of shift A carries a revision at least as new as the one before.
+    const pushed = changes.flatMap((c) =>
+      c.type === 'instance' && c.instance.key === '2026-10-12/A' ? [c.instance.revision] : [],
+    );
+    for (const [i, revision] of pushed.entries()) {
+      const previous = pushed[i - 1];
+      if (previous) {
+        expect(revision.inputs).toBeGreaterThanOrEqual(previous.inputs);
+        expect(revision.content).toBeGreaterThanOrEqual(previous.content);
+      }
+    }
+    expect(pushed.at(-1)?.inputs).toBe(2);
+    const kept: ShiftRecord | undefined = reads[0]?.instance;
+    if (!kept) throw new Error('no report');
+    const older = { ...kept, revision: { inputs: 1, content: 0 } };
+    const newer = { ...kept, revision: { inputs: 2, content: 0 } };
+    expect([isNewer(older, newer), isNewer(newer, older), isNewer(newer, newer)]).toEqual([
+      false,
+      true,
+      false,
+    ]);
+  });
+
+  it('keeps epochs apart and closes the handover of an older epoch', async () => {
+    const { fake, shifts } = await setup('epochs');
+    const E2 = E1 + 1;
+    // Shift B of E1 is open for notes at 12:00 …
+    await shifts.createNote(E1, '2026-10-12/B', { author: 'a', text: 'E1', category: 'general' });
+    // … until a restarted simulator (E2) replays the day.
+    fake.state.newer = { epoch: E2, clock: at('12:00') };
+    await shifts.tick();
+    expect((await shifts.instance('2026-10-12', 'B'))?.epoch).toBe(E2);
+    expect((await shifts.instance('2026-10-12', 'B', E1))?.status).toBe('ended');
+    const closed = await shifts
+      .createNote(E1, '2026-10-12/B', { author: 'a', text: 'late', category: 'general' })
+      .catch((error: unknown) => error);
+    expect(closed).toBeInstanceOf(ShiftError);
+    expect((closed as ShiftError).message).toMatch(/handover closed: epoch/);
+    await shifts.createNote(E2, '2026-10-12/B', { author: 'a', text: 'E2', category: 'general' });
+    expect((await shifts.notes(E1, '2026-10-12/B', false)).map((n) => n.note.text)).toEqual(['E1']);
+    expect((await shifts.notes(E2, '2026-10-12/B', false)).map((n) => n.note.text)).toEqual(['E2']);
+    expect((await shifts.report('2026-10-12', 'B', E1))?.instance.epoch).toBe(E1);
+  });
+
+  it('refuses the 201st note of a shift', async () => {
+    const { shifts } = await setup('limit');
+    for (let i = 0; i < MAX_NOTES; i++) {
+      await shifts.createNote(E1, '2026-10-12/A', {
+        author: 'a',
+        text: `note ${String(i)}`,
+        category: 'general',
+      });
+    }
+    const refused = await shifts
+      .createNote(E1, '2026-10-12/A', { author: 'a', text: 'one more', category: 'general' })
+      .catch((error: unknown) => error);
+    expect([(refused as ShiftError).kind, (refused as ShiftError).message]).toEqual([
+      'invalid',
+      'at most 200 notes per shift',
+    ]);
+    expect((await shifts.instance('2026-10-12', 'A'))?.revision.content).toBe(MAX_NOTES);
+  });
+
+  it('takes ?epoch on a note write', async () => {
+    const context = await setup('api_epoch');
+    const front = await api(context);
+    const app = await front(true);
+    context.fake.state.newer = { epoch: E1 + 1, clock: at('12:00') };
+    await context.shifts.tick();
+    const post = (epoch: number) =>
+      app.inject({
+        method: 'POST',
+        url: `/api/v1/shifts/2026-10-12/B/notes?epoch=${String(epoch)}`,
+        headers: JSON_WRITE,
+        payload: { author: 'a', text: 'x', category: 'general' },
+      });
+    const newer = await post(E1 + 1);
+    expect(newer.statusCode).toBe(200);
+    expect(noteResultSchema.parse(newer.json()).note.epoch).toBe(E1 + 1);
+    expect((await post(E1)).statusCode).toBe(409);
+    expect((await post(E1 + 2)).statusCode).toBe(404);
+  });
+});
+
+/** An MES HTTP front over the fakes and a real `Shifts`, with or without writes. */
+async function api({
+  db,
+  fake,
+  shifts,
+}: Awaited<ReturnType<typeof setup>>): Promise<(writes: boolean) => Promise<FastifyInstance>> {
+  const masterData = new MasterData(db);
+  await masterData.seed(plant);
+  const none = () => () => undefined;
+  const sources = {
+    masterData,
+    equipment: {
+      ...fake.sources.equipment,
+      currentStates: () => [],
+      currentState: () => undefined,
+      onChange: none,
+    },
+    ingest: { onStored: none, telemetryMetrics: () => Promise.resolve([]) },
+    oee: {
+      ...fake.sources.oee,
+      shiftPattern: plant.shifts,
+      current: () => Promise.resolve({ hour: null, shift: null }),
+    },
+    coding: {},
+    shifts,
+  } as unknown as ApiSources;
+  return async (writes) => {
+    const http = await buildMesHttp({ ready: () => Promise.resolve(true), writes });
+    await http.realtime.attach(sources);
+    apps.push(http.app);
+    return http.app;
+  };
+}
+
 describe('the shifts API and push (#144)', () => {
   it('serves the instance, report and notes; writes pass the guards; push sends upserts', async () => {
-    const { db, fake, shifts } = await setup('api');
-    const masterData = new MasterData(db);
-    await masterData.seed(plant);
-    const none = () => () => undefined;
-    const sources = {
-      masterData,
-      equipment: {
-        ...fake.sources.equipment,
-        currentStates: () => [],
-        currentState: () => undefined,
-        onChange: none,
-      },
-      ingest: { onStored: none, telemetryMetrics: () => Promise.resolve([]) },
-      oee: {
-        ...fake.sources.oee,
-        shiftPattern: plant.shifts,
-        current: () => Promise.resolve({ hour: null, shift: null }),
-      },
-      coding: {},
-      shifts,
-    } as unknown as ApiSources;
-    const front = async (writes: boolean) => {
-      const http = await buildMesHttp({ ready: () => Promise.resolve(true), writes });
-      await http.realtime.attach(sources);
-      apps.push(http.app);
-      return http.app;
-    };
+    const context = await setup('api');
+    const { fake, shifts } = context;
+    const front = await api(context);
     const app = await front(true);
     const get = async (url: string) =>
       app.inject({ method: 'GET', url: `/api/v1${url}`, headers: { host: HOST } });

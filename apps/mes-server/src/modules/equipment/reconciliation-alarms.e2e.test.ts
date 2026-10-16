@@ -12,6 +12,6 @@ reconciliationSuite(
     golden('alarms-01', {
       oeeBuckets: 48,
       alarmComparisons: 129,
-      shifts: { instances: 6, final: 5 },
+      shifts: { instances: 6, final: 5, compared: 102 },
     }),
 );

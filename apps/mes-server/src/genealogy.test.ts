@@ -1082,4 +1082,47 @@ describe('genealogy on partial data (#199 review)', () => {
     expect(await members()).toEqual({ 'X-1-C01': [1, 2] });
     expect((await h.genealogy.cartons({ orderId: 'X-1' }))[0]?.status).toBe('closed');
   });
+
+  it('places no pack past a unit whose rebuild keeps failing, so no carton closes without it (PROBE5)', async () => {
+    const h = await harness('poison_carton', { capacity: { 'VB-100': 2, 'VB-200': 2 } });
+    let poison = 0;
+    const flaky: GenealogyExecution = {
+      onUnits: (listener) => h.execution.onUnits(listener),
+      processedThrough: () => h.execution.processedThrough(),
+      unitStates: () => h.execution.unitStates(),
+      units: async (query) => {
+        const found = await h.execution.units(query);
+        if (poison === 0 || !found.units.some((u) => u.partId === 2)) return found;
+        poison--;
+        return {
+          units: found.units.map((u) => (u.partId === 2 ? { ...u, status: 'bogus' as never } : u)),
+        };
+      },
+    };
+    await h.restart(flaky);
+    await dispatched(h, 'X-1', 3);
+    const l = h.line;
+    await send(h, [l.job('cnc-01', 'accepted', 'X-1', 3), l.job('cnc-01', 'started', 'X-1', 3)]);
+    poison = 1_000;
+    await send(h, [
+      ...l.unit(1, { blank: 'B1', kit: 'K1' }),
+      ...l.unit(2, { blank: 'B1', kit: 'K1' }),
+      ...l.unit(3, { blank: 'B1', kit: 'K1' }),
+      ...l.settleAll(),
+    ]);
+    for (let i = 0; i < 4; i++) await settle(h);
+    const members = async () =>
+      Object.fromEntries(
+        [...(await h.genealogy.cartonMembers())].map(([id, m]) => [id, m.map((x) => x.partId)]),
+      );
+    // Unit 2 keeps failing: unit 3 doesn't take its place, the carton stays open with unit 1.
+    expect(await members()).toEqual({ 'X-1-C01': [1] });
+    expect((await h.genealogy.cartons({ orderId: 'X-1' })).map((c) => c.status)).toEqual(['open']);
+    expect(await incidents(h)).toEqual([['rebuild-failed', null, 'open']]);
+    // Once it rebuilds (within the backoff), the cartons are placed in order.
+    poison = 0;
+    for (let i = 0; i < 40; i++) await settle(h);
+    expect(await members()).toEqual({ 'X-1-C01': [1, 2], 'X-1-C02': [3] });
+    expect(await incidents(h)).toEqual([['rebuild-failed', null, 'closed']]);
+  });
 });

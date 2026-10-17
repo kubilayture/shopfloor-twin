@@ -394,9 +394,13 @@ export class Genealogy {
         for (const [epoch, parts] of dirty) await this.#rebuild(epoch, parts, watermark);
         orders = [...new Set([...this.#dirtyOrders, ...this.#unsettled])].sort();
         this.#dirtyOrders.clear();
-        const cutoff = this.#placementCutoff(watermark);
-        for (const id of orders) await this.#placeOrder(id, watermark, cutoff);
-        this.#processed = await this.#capped(watermark);
+        // Cartons are placed with the progress held below failing units (review round 3): a
+        // unit whose rebuild keeps failing has no rows, so its pack would otherwise be skipped
+        // and a later unit take its place in a carton that closes.
+        const processed = await this.#capped(watermark);
+        const cutoff = this.#placementCutoff(processed);
+        for (const id of orders) await this.#placeOrder(id, processed, cutoff);
+        this.#processed = processed;
       } catch (error) {
         // What this round took is put back, so a failed round (a lost connection, a deadlock)
         // loses no unit or order it heard of.

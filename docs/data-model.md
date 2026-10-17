@@ -2045,7 +2045,7 @@ Cartons per order by the packing rule (`packing.yaml`, `trace-core`), placed on 
 
 ### genealogy.genealogy_incident
 
-Incidents of the genealogy module: `unknown-lot` (closed when the import lists it), `serial-reused` (one per pair of device epochs) and `material-mismatch` (a lot the BOM doesn’t list for that operation and pass), open at most once per key (#199).
+Incidents of the genealogy module: `unknown-lot` (closed when the import lists it), `serial-reused` (one per pair of device epochs), `material-mismatch` (a lot the BOM doesn’t list for that operation and pass, or the ERP lists with another material) and `rebuild-failed` (a unit whose rebuild keeps failing; its rows kept, genealogy’s watermark held below its facts), open at most once per key, kept, never deleted (#199).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |

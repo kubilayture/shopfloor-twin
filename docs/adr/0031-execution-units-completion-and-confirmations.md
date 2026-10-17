@@ -90,3 +90,8 @@ The golden `orders-01` (`reconciliation-orders.e2e.test.ts`), in order and shuff
 - Bad: WIP is a routing segment, not a buffer slot: the facts can't tell a buffer from the next machine's cycle. A suspect on a machine that stops reporting stays a suspect (its final-through never passes the record).
 - Bad: rebuilding a unit replaces its records; a part with very many facts (none in this plant) would cost more per fact.
 - Bad: an existing database that recorded Idle `NO-ORDER` downtime records before #175 keeps them until those intervals are recomputed (only orders-mode runs have them; `pnpm stack:reset` as for any derived data).
+
+## Notes (#177): sign-off and close
+
+- An operation may be signed off at its terminal only once the MES has it complete, which is exactly when its final confirmation exists (`orders.confirmation`, n = 1): the orders module checks that row, so it needs nothing of the execution module. `Orders.close` needs every operation of the order signed off (409 `urn:shopfloor:sign-off-missing`, naming the operations and their work centers); `closed` is then posted to the ERP as before. Signing off never changes a quantity or a confirmation; a correction after a sign-off is still sent.
+- Start, pause and resume are the operator's time on an operation (activity intervals), never a hold on dispatch or the machine: the CNC runs its queue whatever the terminal says, and the counts the terminal shows come from the facts only.

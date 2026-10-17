@@ -51,3 +51,8 @@ DOM for tests: (a) Vitest browser mode with Playwright; (b) jsdom; (c) happy-dom
 - With the login, the account and the user administration the app has eleven routes, near the "revisit past a dozen" above. They stay code-based (nothing generated); each area has one file in `src/routes/` (`plant`, `oee`, `alarms`, `shifts`, `identity`, the shared search parsing in `search.ts`), and `src/router.tsx` only joins them.
 - The root route wraps an auth provider (the session, starting and stopping the live client, a lost session) and a shell that decides what the outlet shows: `/login` alone, every other route only with a session whose password needs no change.
 - The shell decides by the matched route, not by the location: during a navigation the location changes before the matches, so a gate reading the location could render a protected screen, and let it read the API, for one render. A test asserts that only the session is read before it is known.
+
+## Notes (#177): the terminal routes
+
+- Two more routes in `src/routes/terminal.ts`: `/terminal` (the work center picker, inside the app's layout, linked for users with `terminal:operate`) and `/terminal/$workCenter`. The shell shows the latter on its own, like `/login`: the screen signs operators on itself (a `terminal` session) and never keeps a page under a re-login, since the next person at a shared tablet is usually someone else.
+- The screen is built for a tablet (375–1024 px, touch targets of at least 56 px) and needs nothing beyond the app's CSP (`script-src 'self'`, `style-src 'self'`, no inline styles).

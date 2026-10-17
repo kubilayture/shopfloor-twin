@@ -75,3 +75,8 @@ Migration `0018_identity_audit_log_backfill.sql` copies into it, in that shape (
 ## Notes (#170)
 
 - **Actors.** The two-step removal planned under "Actors (H4)" is complete: `codedBy`, `actor` and `author` are gone from the request schemas (a request that still sends one is refused, 400), and every write needs a session also with `MES_AUTH=off` (ADR-0026, notes), so every new row of `identity.audit_log` written through the API has a user id, the roles and `authenticated: true`. Rows with `authenticated: false` are the legacy backfill of `0018` and rows written with `MES_AUTH=off` before #170. The modules still accept a typed name (`WriteBy`) for their own tests, which write without the HTTP layer; the API never passes one.
+
+## Notes (#177)
+
+- **Crews written.** The terminal writes `shifts.crew_assignment` from #177: `crew.sign-on` and `crew.sign-off` are audited with the operator, `crew.end` (a session's end, the shift's end, `replaced`) as the system (`shifts`). Migration `0027` adds `replaced` to `end_reason`. The shift report's crew section reads the rows of its instance.
+- **Terminal records on order operations.** `orders.order_operation` gains a version and the sign-off (user, wall and plant time); `orders.operation_activity` holds the operators' work and pause intervals (`KEEP` grants: closed, never deleted). Every terminal write is audited (`operation.start`, `operation.pause`, `operation.resume`, `operation.sign-off`, entity `order_operation`, id `{order}/{operation}`).

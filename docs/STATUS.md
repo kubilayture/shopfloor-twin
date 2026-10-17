@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #198 done (branch `feat/198-erp-quality`; ADR-0028 amendment): the ERP mock's quality side. `GET /api/v1/lots` carries `feedId` (a changed lot list is a changed feed); lots stay the dataset's (no `ERP_STOCK`), a lot id listed twice is refused at load. Idempotent `POST`/`GET /api/v1/quality-notifications` (key `qualityNotificationKey` `{holdId}~{transition}~{n}` built from the body, 201/200/409/422 as for confirmations, times in UTC), with provisional scope counts (`scopeAsOf`, `scopeFinal`) and no notification for a comment; refusals `erp-unknown-subject` (lot or order the ERP doesn't hold), `erp-hold-sequence` (a decision before the opening) and `erp-hold-decided` (a second decision). `GET /api/v1/lots/{id}`: the holds on the lot and `blocked` while one is open or rejected. Schemas in `@shopfloor/contracts/erp-api` (receipts told apart by `kind`, ready for #201's outbox kind `quality-notification`).
 - Phase 8 plan with issues #192, #194–#205 under milestone "Phase 08 – Traceability and quality" (branch `docs/194-phase-08-plan`, master plan rev. 8, phase log started).
 - **Phase 7 closed**: all 6 exit criteria met by local runs; tagged `phase-07` (PR #193) (report: `docs/phases/phase-07-report.md`; learning notes: `docs/learning/phase-07.md`; data model: `docs/data-model.md`, confirmed current with migrations `0016`–`0027`, regenerated without a change, 24 new tables, 59 in eight module schemas). The closing `pnpm gate` (all five jobs) passed on the #179 branch (record in the report). Criterion 5 carries a limit (the scrap is reached by stepping, not at paced speed) and criterion 6 a deviation (`oee.config.scheduledTime` also stripped in the summary comparison); every gate exception of the phase's PRs is listed in the report.
 - Phase 7 pull requests merged: #180 (plan, #167), #181 (#171), #182 (#168), #183 (#172), #184 (#173), #185 (#169), #186 (#170), #187 (#174), #188 (#175), #189 (#176), #190 (#177), #191 (#178). None ran in GitHub Actions (spending limit); each was gated locally, #191 with `pnpm gate`.
@@ -113,6 +114,7 @@
 
 - #194 Phase 8 plan (branch `docs/194-phase-08-plan`, in review)
 - #192 `alarm-core` revision spans (PR #206, in review)
+- #198 ERP mock quality notifications and per-lot view (branch `feat/198-erp-quality`, pushed for review)
 
 ## Next up
 

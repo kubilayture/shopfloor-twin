@@ -10,21 +10,25 @@ import {
   ERP_API_LIMITS,
   ERP_PROBLEM_TYPES,
   ERP_ORDER_NUMBER,
+  HOLD_ID,
   MESSAGE_KINDS,
   confirmationKey,
   confirmationRequestSchema,
   erpOrderInputSchema,
   statusKey,
   idempotencyKeySchema,
+  qualityNotificationKey,
+  qualityNotificationRequestSchema,
   statusMessageRequestSchema,
   type ConfirmationRequest,
   type MessageKind,
+  type OrderMessageKind,
   type StatusMessageRequest,
 } from '@shopfloor/contracts/erp-api';
 import type { z } from 'zod';
 import type { Erp } from './erp.ts';
 import type { Logger } from './log.ts';
-import { DuplicateConfirmationError, type ErpStore } from './store.ts';
+import { DuplicateConfirmationError, DuplicateTransitionError, type ErpStore } from './store.ts';
 
 export interface ErpServerOptions {
   readonly erp: Erp;
@@ -79,6 +83,9 @@ const POST_OUTCOMES = [
   'key-mismatch',
   'unknown-order',
   'no-final',
+  'unknown-subject',
+  'hold-sequence',
+  'hold-decided',
 ] as const;
 type PostOutcome = (typeof POST_OUTCOMES)[number];
 
@@ -149,7 +156,8 @@ function orderNumberParam(url: URL): string | undefined {
 
 /**
  * The ERP mock's REST API (ADR-0028) on `node:http`: the order change feed, lots, idempotent
- * confirmations and status messages, the ERP's view of an order, and the dev-only order post.
+ * confirmations, status messages and quality notifications, the ERP's view of an order and of a
+ * lot, and the dev-only order post.
  * Every `/api/v1` route needs the bearer token; `/health/*` and `/metrics` are open (loopback).
  */
 export function createErpServer(options: ErpServerOptions): Server {
@@ -169,60 +177,93 @@ export function createErpServer(options: ErpServerOptions): Server {
     return match?.[1] !== undefined && timingSafeEqual(digest(match[1]), tokenDigest);
   };
 
+  /** The `Idempotency-Key` header, or 400. */
+  const readKey = (kind: MessageKind, request: IncomingMessage): string => {
+    const header = request.headers['idempotency-key'];
+    const key = idempotencyKeySchema.safeParse(header);
+    if (!key.success) {
+      count(kind, 'invalid');
+      throw new HttpError(
+        400,
+        header === undefined
+          ? 'the Idempotency-Key header is required'
+          : `Idempotency-Key: ${issuesText(key.error)}`,
+      );
+    }
+    return key.data;
+  };
+
+  /** The validated body, or 4xx. */
+  const readMessage = async <S extends z.ZodType>(
+    kind: MessageKind,
+    schema: S,
+    request: IncomingMessage,
+  ): Promise<z.output<S>> => {
+    try {
+      return parseBody(schema, await readJson(request));
+    } catch (error) {
+      count(kind, 'invalid');
+      throw error;
+    }
+  };
+
+  /** 422 unless the key is the one built from the body. */
+  const checkKey = (kind: MessageKind, key: string, expected: string): void => {
+    if (key === expected) return;
+    count(kind, 'key-mismatch');
+    throw new HttpError(
+      422,
+      `Idempotency-Key ${key} is not the key of this ${kind}: expected ${expected}`,
+      ERP_PROBLEM_TYPES.keyMismatch,
+    );
+  };
+
+  /**
+   * A key seen before: 200 with the stored receipt for the same body, 409 for another body or kind;
+   * undefined for a new key. From here to the insert everything is synchronous (node:sqlite), so no
+   * other request interleaves between the key lookup and the insert.
+   */
+  const replay = (kind: MessageKind, key: string, body: unknown): Reply | undefined => {
+    const prior = store.lookup(kind, key, body);
+    if (prior?.outcome === 'replayed') {
+      count(kind, 'replayed');
+      return { status: 200, body: prior.receipt };
+    }
+    if (prior?.outcome === 'conflict') {
+      count(kind, 'conflict');
+      throw new HttpError(
+        409,
+        `Idempotency-Key ${key} was used before with another ${prior.receipt.kind} body (received as number ${String(prior.receipt.receivedSeq)})`,
+        ERP_PROBLEM_TYPES.idempotencyConflict,
+      );
+    }
+    return undefined;
+  };
+
   const postMessage =
     (
-      kind: MessageKind,
+      kind: OrderMessageKind,
       schema: typeof confirmationRequestSchema | typeof statusMessageRequestSchema,
     ) =>
     async (request: IncomingMessage): Promise<Reply> => {
-      const header = request.headers['idempotency-key'];
-      const key = idempotencyKeySchema.safeParse(header);
-      if (!key.success) {
-        count(kind, 'invalid');
-        throw new HttpError(
-          400,
-          header === undefined
-            ? 'the Idempotency-Key header is required'
-            : `Idempotency-Key: ${issuesText(key.error)}`,
-        );
-      }
-      let body: ConfirmationRequest | StatusMessageRequest;
-      try {
-        body = parseBody(schema, await readJson(request));
-      } catch (error) {
-        count(kind, 'invalid');
-        throw error;
-      }
+      const key = readKey(kind, request);
+      const body: ConfirmationRequest | StatusMessageRequest = await readMessage(
+        kind,
+        schema,
+        request,
+      );
       // The key is built from the body, so one (order, operation, number) or (order, revision,
       // status) has exactly one key: a second message for it can't hide under another key.
       const confirmation = 'operation' in body ? body : undefined;
-      const expected =
+      checkKey(
+        kind,
+        key,
         confirmation !== undefined
           ? confirmationKey(body.orderNumber, confirmation.operation, confirmation.confirmation)
-          : statusKey(body.orderNumber, body.revision, (body as StatusMessageRequest).status);
-      if (key.data !== expected) {
-        count(kind, 'key-mismatch');
-        throw new HttpError(
-          422,
-          `Idempotency-Key ${key.data} is not the key of this ${kind}: expected ${expected}`,
-          ERP_PROBLEM_TYPES.keyMismatch,
-        );
-      }
-      // From here on everything is synchronous (node:sqlite), so no other request interleaves
-      // between the key lookup and the insert.
-      const prior = store.lookup(kind, key.data, body);
-      if (prior?.outcome === 'replayed') {
-        count(kind, 'replayed');
-        return { status: 200, body: prior.receipt };
-      }
-      if (prior?.outcome === 'conflict') {
-        count(kind, 'conflict');
-        throw new HttpError(
-          409,
-          `Idempotency-Key ${key.data} was used before with another ${prior.receipt.kind} body (received as number ${String(prior.receipt.receivedSeq)})`,
-          ERP_PROBLEM_TYPES.idempotencyConflict,
-        );
-      }
+          : statusKey(body.orderNumber, body.revision, (body as StatusMessageRequest).status),
+      );
+      const prior = replay(kind, key, body);
+      if (prior !== undefined) return prior;
       const unknown = erp.unknownReference(body);
       if (unknown !== undefined) {
         count(kind, 'unknown-order');
@@ -246,7 +287,7 @@ export function createErpServer(options: ErpServerOptions): Server {
       }
       let receipt;
       try {
-        receipt = store.insert(kind, key.data, body.orderNumber, body, now(), identity);
+        receipt = store.insert(kind, key, body.orderNumber, body, now(), identity);
       } catch (error) {
         if (!(error instanceof DuplicateConfirmationError)) throw error;
         count(kind, 'conflict');
@@ -254,19 +295,74 @@ export function createErpServer(options: ErpServerOptions): Server {
       }
       count(kind, 'created');
       log.info(
-        { key: key.data, kind, orderNumber: body.orderNumber, receivedSeq: receipt.receivedSeq },
+        { key, kind, orderNumber: body.orderNumber, receivedSeq: receipt.receivedSeq },
         'message received',
       );
       return { status: 201, body: receipt };
     };
 
+  const REFUSALS = {
+    'unknown-subject': { status: 422, type: ERP_PROBLEM_TYPES.unknownSubject },
+    'hold-sequence': { status: 422, type: ERP_PROBLEM_TYPES.holdSequence },
+    'hold-decided': { status: 409, type: ERP_PROBLEM_TYPES.holdDecided },
+  } as const;
+
+  /** `POST /quality-notifications` (ADR-0028 amendment): the idempotency of the order messages. */
+  const postNotification = async (request: IncomingMessage): Promise<Reply> => {
+    const kind = 'quality-notification';
+    const key = readKey(kind, request);
+    const body = await readMessage(kind, qualityNotificationRequestSchema, request);
+    checkKey(kind, key, qualityNotificationKey(body.holdId, body.transition, body.transitionNo));
+    const prior = replay(kind, key, body);
+    if (prior !== undefined) return prior;
+    const refusal = erp.notificationRefusal(body);
+    if (refusal !== undefined) {
+      count(kind, refusal.reason);
+      const { status, type } = REFUSALS[refusal.reason];
+      throw new HttpError(status, refusal.detail, type);
+    }
+    const identity = { holdId: body.holdId, transitionNo: body.transitionNo };
+    let receipt;
+    try {
+      receipt = store.insertNotification(key, identity, body, now());
+    } catch (error) {
+      if (!(error instanceof DuplicateTransitionError)) throw error;
+      count(kind, 'hold-decided');
+      throw new HttpError(409, error.message, ERP_PROBLEM_TYPES.holdDecided);
+    }
+    count(kind, 'created');
+    log.info(
+      {
+        key,
+        kind,
+        holdId: body.holdId,
+        transition: body.transition,
+        subject: `${body.subject.kind}:${body.subject.id}`,
+        receivedSeq: receipt.receivedSeq,
+      },
+      'message received',
+    );
+    return { status: 201, body: receipt };
+  };
+
   const listMessages =
-    (kind: MessageKind, field: 'confirmations' | 'messages') =>
+    (kind: OrderMessageKind, field: 'confirmations' | 'messages') =>
     (_request: IncomingMessage, url: URL): Promise<Reply> =>
       Promise.resolve({
         status: 200,
         body: { [field]: store.messages(kind, orderNumberParam(url)) },
       });
+
+  const listNotifications = (_request: IncomingMessage, url: URL): Promise<Reply> => {
+    const holdId = url.searchParams.get('holdId') ?? undefined;
+    if (holdId !== undefined && !HOLD_ID.test(holdId)) {
+      throw new HttpError(400, 'holdId is not a hold id');
+    }
+    return Promise.resolve({
+      status: 200,
+      body: { notifications: store.notifications(holdId) },
+    });
+  };
 
   const routes: Route[] = [
     {
@@ -334,7 +430,23 @@ export function createErpServer(options: ErpServerOptions): Server {
     },
     {
       pattern: /^\/api\/v1\/lots$/,
-      methods: { GET: () => Promise.resolve({ status: 200, body: { lots: erp.lots } }) },
+      methods: {
+        GET: () => Promise.resolve({ status: 200, body: { feedId: erp.feedId, lots: erp.lots } }),
+      },
+    },
+    {
+      pattern: /^\/api\/v1\/lots\/([^/]+)$/,
+      methods: {
+        GET: (_request, _url, [id = '']) => {
+          const view = erp.lotView(id);
+          if (view === undefined) throw new HttpError(404, `lot ${id} is unknown`);
+          return Promise.resolve({ status: 200, body: view });
+        },
+      },
+    },
+    {
+      pattern: /^\/api\/v1\/quality-notifications$/,
+      methods: { GET: listNotifications, POST: postNotification },
     },
     {
       pattern: /^\/api\/v1\/confirmations$/,

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { USERNAME_PATTERN } from './identity.ts';
 import { problemSchema } from './mes-api.ts';
 
 // The ERP mock's REST API (#171, ADR-0028), shared by `erp-mock`, which serves it, the MES's
@@ -18,6 +19,8 @@ export const ERP_API_LIMITS = {
   reason: 500,
   /** Scrap and material lines of one confirmation. */
   confirmationLines: 64,
+  /** Characters of a quality notification's `comment`. */
+  comment: 500,
 } as const;
 
 /**
@@ -45,6 +48,18 @@ export const ERP_PROBLEM_TYPES = {
    * (compare `feedId`).
    */
   cursorAhead: 'urn:shopfloor:erp-cursor-ahead',
+  /**
+   * 422: a quality notification whose subject the ERP doesn't hold (a lot not in its lot list, an
+   * order not in its feed). Serials and cartons are the MES's own and are not checked.
+   */
+  unknownSubject: 'urn:shopfloor:erp-unknown-subject',
+  /**
+   * 422: a hold's release or rejection the ERP can't place: it has not received the hold's
+   * `opened` notification, or that one named another subject.
+   */
+  holdSequence: 'urn:shopfloor:erp-hold-sequence',
+  /** 409: a second decision (release or rejection) on a hold the ERP holds as decided. */
+  holdDecided: 'urn:shopfloor:erp-hold-decided',
 } as const;
 
 /** Order number (no `~`: the MES builds idempotency keys from it with `~` as the separator). */
@@ -77,6 +92,26 @@ export const confirmationKey = (orderNumber: string, operation: string, confirma
  */
 export const statusKey = (orderNumber: string, revision: number, status: string) =>
   `${orderNumber}~r${String(revision)}~status~${status}`;
+
+/** A quality hold's id as the MES sends it (no `~`: the key separator). */
+export const HOLD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** What a quality notification reports: a hold opened, released (use as is) or rejected. */
+export const QUALITY_HOLD_TRANSITIONS = ['opened', 'released', 'rejected'] as const;
+export type QualityHoldTransition = (typeof QUALITY_HOLD_TRANSITIONS)[number];
+
+/**
+ * The `Idempotency-Key` of a quality notification (Phase 8, ADR-0028 amendment):
+ * `{holdId}~{transition}~{n}`, n the transition's number within the hold (1 for `opened`). One
+ * key per hold transition, so a transition can't be stored twice under two keys, and a notification
+ * the MES's outbox sends again (`orders.erp_message_log`, kind `quality-notification`) is answered
+ * from the store.
+ */
+export const qualityNotificationKey = (
+  holdId: string,
+  transition: QualityHoldTransition,
+  transitionNo: number,
+) => `${holdId}~${transition}~${String(transitionNo)}`;
 const idSchema = z.string().regex(ID);
 const operationSchema = z
   .string()
@@ -167,6 +202,9 @@ export const erpDatasetSchema = z.strictObject({
   lots: z.array(lotSchema).optional(),
 });
 
+/** The feed's identity (`OrderFeed.feedId`, `LotList.feedId`). */
+const feedIdSchema = z.string().regex(/^[0-9a-f]{32}$/);
+
 export const feedEntrySchema = z.strictObject({
   feedSeq: int.min(1).describe('Position in the change feed; the cursor a client keeps'),
   order: erpOrderSchema,
@@ -174,22 +212,27 @@ export const feedEntrySchema = z.strictObject({
 
 export const orderFeedSchema = z
   .strictObject({
-    feedId: z
-      .string()
-      .regex(/^[0-9a-f]{32}$/)
-      .describe(
-        'Identity of this feed: a hash of the expanded dataset and of the store id created with the ' +
-          'store. A client keeps it beside its cursor; when it changes, the cursor belongs to ' +
-          'another feed (dataset replaced or store deleted) and the client raises an incident or ' +
-          'resets its cursor to 0 (imports are idempotent by order number and revision).',
-      ),
+    feedId: feedIdSchema.describe(
+      'Identity of this feed: a hash of the expanded dataset and of the store id created with the ' +
+        'store. A client keeps it beside its cursor; when it changes, the cursor belongs to ' +
+        'another feed (dataset replaced or store deleted) and the client raises an incident or ' +
+        'resets its cursor to 0 (imports are idempotent by order number and revision).',
+    ),
     entries: z.array(feedEntrySchema),
     cursor: count.describe('Pass as `after` for the next page: the last entry here, or `after`'),
     more: z.boolean().describe('More entries follow this page'),
   })
   .describe('`GET /api/v1/orders?after={cursor}&limit={n}`: order versions after the cursor');
 
-export const lotListSchema = z.strictObject({ lots: z.array(lotSchema) });
+export const lotListSchema = z
+  .strictObject({
+    feedId: feedIdSchema.describe(
+      "The order feed's identity, which hashes the lots too: a changed lot list is a changed feed, " +
+        'and the MES re-imports the lots idempotently by lot id',
+    ),
+    lots: z.array(lotSchema),
+  })
+  .describe('`GET /api/v1/lots`: the lot master data, in dataset order');
 
 const scrapLine = z.strictObject({ reason: z.string().regex(REASON), quantity: int });
 const materialLine = z.strictObject({ material: idSchema, quantity: int });
@@ -250,27 +293,139 @@ export const statusMessageRequestSchema = z
     }
   });
 
-export const MESSAGE_KINDS = ['confirmation', 'status'] as const;
+/** What a quality hold is on (plan Phase 8 "Quality holds"). */
+export const QUALITY_HOLD_SUBJECT_KINDS = ['lot', 'serial', 'carton', 'order'] as const;
+const unitIdSchema = z.string().regex(HOLD_ID);
 
-/** The answer to a message post: 201 the first time, 200 with the same receipt on a replay. */
-export const messageReceiptSchema = z.strictObject({
+export const holdSubjectSchema = z
+  .discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('lot'), id: idSchema.describe('A lot of the lot list') }),
+    z.strictObject({ kind: z.literal('serial'), id: unitIdSchema.describe('A serial (DMC)') }),
+    z.strictObject({ kind: z.literal('carton'), id: unitIdSchema.describe('A carton id') }),
+    z.strictObject({ kind: z.literal('order'), id: orderNumberSchema }),
+  ])
+  .describe('The subject of a hold; its scope follows the genealogy in the MES');
+
+export const holdScopeSchema = z
+  .strictObject({ units: count, cartons: count, orders: count })
+  .describe("Counts of the hold's scope in the MES when the notification was written");
+
+/**
+ * `POST /api/v1/quality-notifications`: a quality hold opened, released or rejected in the MES
+ * (Phase 8, ADR-0028 amendment). A comment on a hold is not notified. The scope counts are
+ * provisional: the scope grows with facts, so they are the counts as of `scopeAsOf`, and
+ * `scopeFinal` is false while a machine of the scope is not final through the transition.
+ */
+export const qualityNotificationRequestSchema = z
+  .strictObject({
+    holdId: z.string().regex(HOLD_ID).describe("The MES's hold id"),
+    transition: z.enum(QUALITY_HOLD_TRANSITIONS),
+    transitionNo: int
+      .min(1)
+      .max(999)
+      .describe('n of the key `{holdId}~{transition}~{n}`: 1 for `opened`, 2 and above after'),
+    subject: holdSubjectSchema,
+    reason: idSchema.describe('Reason code of the transition (`quality.yaml`)'),
+    comment: z.string().min(1).max(ERP_API_LIMITS.comment).optional(),
+    user: z.string().regex(USERNAME_PATTERN).describe('The MES user who made the transition'),
+    occurredAt: messageTime.describe('Time of the transition in the MES; served in UTC'),
+    scope: holdScopeSchema,
+    scopeAsOf: messageTime.describe('Plant time the scope counts stand at; served in UTC'),
+    scopeFinal: z
+      .boolean()
+      .describe('False while a machine of the scope is not final through the transition'),
+  })
+  .superRefine((value, ctx) => {
+    if ((value.transition === 'opened') !== (value.transitionNo === 1)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['transitionNo'],
+        message: '`opened` is transition 1 of a hold, a release or rejection 2 and above',
+      });
+    }
+  });
+
+/** Messages about an order (`confirmation`, `status`); with quality notifications, every kind. */
+export const ORDER_MESSAGE_KINDS = ['confirmation', 'status'] as const;
+export const MESSAGE_KINDS = [...ORDER_MESSAGE_KINDS, 'quality-notification'] as const;
+
+const receiptFields = {
   idempotencyKey: z.string(),
-  kind: z.enum(MESSAGE_KINDS),
-  orderNumber: orderNumberSchema,
-  receivedSeq: int.min(1).describe('Order in which the ERP received its messages'),
+  receivedSeq: int.min(1).describe('Order in which the ERP received its messages (every kind)'),
   receivedAt: time.describe('Wall time of the first receipt'),
+};
+
+/** The answer to a confirmation or status post: 201 the first time, 200 with the same receipt on a replay. */
+export const orderMessageReceiptSchema = z.strictObject({
+  ...receiptFields,
+  kind: z.enum(ORDER_MESSAGE_KINDS),
+  orderNumber: orderNumberSchema,
 });
+
+/** The answer to a quality notification post: 201 the first time, 200 with the same receipt on a replay. */
+export const qualityNotificationReceiptSchema = z.strictObject({
+  ...receiptFields,
+  kind: z.literal('quality-notification'),
+  holdId: z.string().regex(HOLD_ID),
+});
+
+/** The answer to any message post, told apart by `kind`. */
+export const messageReceiptSchema = z.discriminatedUnion('kind', [
+  orderMessageReceiptSchema,
+  qualityNotificationReceiptSchema,
+]);
 
 export const confirmationListSchema = z.strictObject({
   confirmations: z.array(
-    z.strictObject({ receipt: messageReceiptSchema, body: confirmationRequestSchema }),
+    z.strictObject({ receipt: orderMessageReceiptSchema, body: confirmationRequestSchema }),
   ),
 });
 
 export const statusMessageListSchema = z.strictObject({
   messages: z.array(
-    z.strictObject({ receipt: messageReceiptSchema, body: statusMessageRequestSchema }),
+    z.strictObject({ receipt: orderMessageReceiptSchema, body: statusMessageRequestSchema }),
   ),
+});
+
+/** `GET /api/v1/quality-notifications?holdId=`: what was received, in the order received. */
+export const qualityNotificationListSchema = z.strictObject({
+  notifications: z.array(
+    z.strictObject({
+      receipt: qualityNotificationReceiptSchema,
+      body: qualityNotificationRequestSchema,
+    }),
+  ),
+});
+
+export const QUALITY_HOLD_STATES = ['open', 'released', 'rejected'] as const;
+
+/** A hold as the ERP sees it, derived from its notifications. */
+export const erpHoldSchema = z.strictObject({
+  holdId: z.string().regex(HOLD_ID),
+  state: z.enum(QUALITY_HOLD_STATES),
+  reason: idSchema.describe("The latest transition's reason"),
+  openedBy: z.string(),
+  openedAt: time,
+  decidedBy: z.string().nullable(),
+  decidedAt: time.nullable(),
+  scope: holdScopeSchema.describe("The latest notification's counts"),
+  scopeAsOf: time,
+  scopeFinal: z.boolean(),
+  notifications: z
+    .array(int.min(1))
+    .describe("The notifications' `receivedSeq`, in the order received"),
+});
+
+/**
+ * `GET /api/v1/lots/{id}`: the ERP's view of a lot: its master data and the holds on it (subject
+ * kind `lot`) from the quality notifications received. `blocked` while a hold on it is open or
+ * rejected (a released lot is used as is).
+ */
+export const erpLotViewSchema = z.strictObject({
+  feedId: feedIdSchema,
+  lot: lotSchema,
+  blocked: z.boolean(),
+  holds: z.array(erpHoldSchema).describe('In the order their `opened` was received'),
 });
 
 export const operationTotalsSchema = z.strictObject({
@@ -326,7 +481,19 @@ export type LotList = z.infer<typeof lotListSchema>;
 export type ConfirmationRequest = z.infer<typeof confirmationRequestSchema>;
 export type StatusMessageRequest = z.infer<typeof statusMessageRequestSchema>;
 export type MessageKind = (typeof MESSAGE_KINDS)[number];
+export type OrderMessageKind = (typeof ORDER_MESSAGE_KINDS)[number];
 export type MessageReceipt = z.infer<typeof messageReceiptSchema>;
+export type OrderMessageReceipt = z.infer<typeof orderMessageReceiptSchema>;
+export type QualityNotificationReceipt = z.infer<typeof qualityNotificationReceiptSchema>;
+export type HoldSubject = z.infer<typeof holdSubjectSchema>;
+export type HoldScope = z.infer<typeof holdScopeSchema>;
+/** A quality notification as received: times normalised to UTC. */
+export type QualityNotificationRequest = z.output<typeof qualityNotificationRequestSchema>;
+export type QualityNotificationInput = z.input<typeof qualityNotificationRequestSchema>;
+export type QualityNotificationList = z.infer<typeof qualityNotificationListSchema>;
+export type QualityHoldState = (typeof QUALITY_HOLD_STATES)[number];
+export type ErpHold = z.infer<typeof erpHoldSchema>;
+export type ErpLotView = z.infer<typeof erpLotViewSchema>;
 export type ConfirmationList = z.infer<typeof confirmationListSchema>;
 export type StatusMessageList = z.infer<typeof statusMessageListSchema>;
 export type OperationTotals = z.infer<typeof operationTotalsSchema>;
@@ -409,8 +576,14 @@ export function expandErpDataset(raw: unknown, master: ErpMasterData): DatasetRe
     latest.set(input.orderNumber, Math.max(before ?? 0, input.revision));
     feed.push({ feedSeq: index + 1, order: toErpOrder(input, master) });
   });
+  const lots = parsed.data.lots ?? [...master.lots];
+  const lotIds = new Set<string>();
+  lots.forEach((lot, index) => {
+    if (lotIds.has(lot.id)) issues.push(`lots.${String(index)}: lot ${lot.id} is listed twice`);
+    lotIds.add(lot.id);
+  });
   if (issues.length > 0) return { ok: false, issues };
-  return { ok: true, feed, lots: parsed.data.lots ?? [...master.lots] };
+  return { ok: true, feed, lots };
 }
 
 /** An input order version completed from master data (routing and BOM unless given), times in UTC. */

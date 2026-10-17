@@ -19,3 +19,6 @@ apps/*/runs/
 
 # Reconciliation run output (#100): report, compose logs, Playwright traces.
 e2e/results/
+
+# Agent worktrees (full checkouts of this repository)
+.claude/worktrees/

@@ -53,7 +53,18 @@ function snapshot(
 const scenarioArb = fc
   .record({
     closed: fc.option(fc.integer({ min: 7 * HOUR, max: SPAN - 1 }), { nil: null }),
-    base: fc.integer({ min: 0, max: 6 * HOUR }),
+    // Biased toward boundaries (#192): a base just before a whole hour, offsets on multiples of
+    // the windows (plus a few ms) and durations of a window or an hour put raises, ends and window
+    // edges on hour ends and on each other.
+    base: fc.oneof(
+      fc.integer({ min: 0, max: 6 * HOUR }),
+      fc
+        .record({
+          hour: fc.integer({ min: 1, max: 6 }),
+          before: fc.integer({ min: 0, max: 1_500 }),
+        })
+        .map(({ hour, before }) => hour * HOUR - before),
+    ),
     raises: fc.array(
       fc.record({
         equipment: fc.constantFrom('a', 'b', 'c'),
@@ -61,8 +72,25 @@ const scenarioArb = fc
         offset: fc.oneof(
           fc.integer({ min: 0, max: 1_500_000 }),
           fc.integer({ min: 0, max: 3 * HOUR }),
+          fc
+            .record({
+              step: fc.constantFrom(CONFIG.windowMs, CONFIG.chatterWindowMs),
+              k: fc.integer({ min: 0, max: 18 }),
+              extra: fc.integer({ min: 0, max: 30 }),
+            })
+            .map(({ step, k, extra }) => k * step + extra),
         ),
-        duration: fc.constantFrom(500, 999, 1_000, 30_000, 3 * HOUR, -1),
+        duration: fc.constantFrom(
+          500,
+          999,
+          1_000,
+          30_000,
+          CONFIG.chatterWindowMs,
+          CONFIG.windowMs,
+          HOUR,
+          3 * HOUR,
+          -1,
+        ),
       }),
       { minLength: 2, maxLength: 18 },
     ),

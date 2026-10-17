@@ -38,6 +38,13 @@ export const TRACE_SEARCH_KINDS = ['serial', 'lot', 'carton', 'order'] as const;
  */
 export const BLANK_OPERATION = 'OP10';
 
+/**
+ * The operation that consumes the BOM's components (`products.yaml`'s `componentsOperation`:
+ * ASM-01 scans the seal kit and spring lots), once per pass (#202). A `mes-server` test pins it to
+ * the plant configuration.
+ */
+export const COMPONENTS_OPERATION = 'OP30';
+
 export const lotRefDtoSchema = z.object({ material: z.string(), lot: z.string() });
 
 export const materialLotSchema = z

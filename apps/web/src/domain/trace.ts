@@ -1,5 +1,6 @@
 import {
   BLANK_OPERATION,
+  COMPONENTS_OPERATION,
   GENEALOGY_LIMITS,
   type HoldRefDto,
   type LotRefDto,
@@ -41,11 +42,16 @@ export const LOT_FAST_POLL_UNITS = 500;
 /**
  * How often a trace answer is read again (`refetchInterval`). Genealogy has no push (holds and
  * orders do, and read it again at once): while the answer is moving every 5 s, otherwise every
- * 30 s. Never after a failed read or a 404: the page offers **Try again**, and a push still reads
- * it again.
+ * 30 s. `moving` is undefined while there is no answer: then never (a first read that failed shows
+ * **Try again**), nor after a refusal (4xx: a 404, a 400). A background read that failed otherwise
+ * (the MES unreachable, a 5xx) with an answer on screen keeps polling, so the page recovers.
  */
-export function tracePoll(failed: boolean, moving: boolean): number | false {
-  if (failed) return false;
+export function tracePoll(
+  moving: boolean | undefined,
+  errorStatus: number | undefined,
+): number | false {
+  if (moving === undefined) return false;
+  if (errorStatus !== undefined && errorStatus >= 400 && errorStatus < 500) return false;
   return moving ? TRACE_POLL_MOVING_MS : TRACE_POLL_SETTLED_MS;
 }
 
@@ -110,18 +116,15 @@ export function blankLots(unit: TraceUnitDto): readonly LotRefDto[] | null | 'no
 }
 
 /**
- * The components of a unit per pass: every record after the first operation that consumed a lot
- * or did not report its lots (`lots: null`, shown as not reported); records that reported none
- * (`[]`) are left out.
+ * The components of a unit per pass: its records of the operation that consumes the BOM's
+ * components (`COMPONENTS_OPERATION`, OP30), each with its lots as reported (`null`: not reported,
+ * `[]`: none). Other operations (the washer's `null` rows among them) stay in the operations table.
  */
 export function componentPasses(
   unit: TraceUnitDto,
 ): readonly { readonly record: TraceRecordDto; readonly lots: readonly LotRefDto[] | null }[] {
   return unit.records
-    .filter(
-      (record) =>
-        record.operation !== BLANK_OPERATION && (record.lots === null || record.lots.length > 0),
-    )
+    .filter((record) => record.operation === COMPONENTS_OPERATION)
     .map((record) => ({ record, lots: record.lots }));
 }
 

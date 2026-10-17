@@ -1,5 +1,6 @@
 import {
   BLANK_OPERATION,
+  COMPONENTS_OPERATION,
   type SerialTraceDto,
   type TraceRecordDto,
   type TraceUnitDto,
@@ -21,7 +22,6 @@ import {
   operatorText,
   overLimit,
   serialMoving,
-  tracePoll,
   unitKey,
 } from '../domain/trace.ts';
 import { formatPlantTime } from '../domain/time.ts';
@@ -39,6 +39,7 @@ import {
   cell,
   linkClass,
   plantTime,
+  tracePolling,
   unitStatus,
 } from './trace-common.tsx';
 
@@ -188,7 +189,7 @@ function Materials({ unit }: { readonly unit: TraceUnitDto }) {
       <Facts items={[['Blank lot', <BlankLots key="blank" unit={unit} />]]} />
       {components.length === 0 ? (
         <p className="mt-1 text-sm" data-testid="unit-components-empty">
-          No component consumed yet (no later record reported a lot).
+          No component consumed yet (no {COMPONENTS_OPERATION} record).
         </p>
       ) : (
         <ul className="mt-1 flex flex-col gap-1 text-sm" data-testid="unit-components">
@@ -299,11 +300,7 @@ function SerialTrace({ serial, unit }: { readonly serial: string; readonly unit?
   const read = useQuery({
     queryKey: queryKeys.traceSerial(serial),
     queryFn: ({ signal }) => getSerialTrace(serial, signal),
-    refetchInterval: (query) =>
-      tracePoll(
-        query.state.status === 'error',
-        query.state.data === undefined || serialMoving(query.state.data),
-      ),
+    refetchInterval: tracePolling(serialMoving),
   });
   const missing = read.error instanceof ApiError && read.error.status === 404;
   const trace = read.data;

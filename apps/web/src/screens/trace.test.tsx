@@ -1,8 +1,10 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../api/client.ts';
 import { sessionOf } from '../test/fixtures.ts';
 import { order } from '../test/order-fixtures.ts';
 import { renderApp, settle } from '../test/render-app.tsx';
+import { tracePolling } from './trace-common.tsx';
 import {
   HOLD_ID,
   cartonTrace,
@@ -24,6 +26,18 @@ const subscribed = (app: Awaited<ReturnType<typeof renderApp>>) =>
   app.factory.last.sent.filter((m) => m.type === 'subscribe').map((m) => m.topic);
 
 const SERIAL_PATH = '/api/v1/trace/serials/VB-100-000042';
+
+describe('trace polling', () => {
+  it('keeps polling after a failed background read with an answer on screen, not after a 4xx', () => {
+    const poll = tracePolling((moving: boolean) => moving);
+    expect(poll({ state: { data: true, error: null } })).toBe(5_000);
+    expect(poll({ state: { data: false, error: null } })).toBe(30_000);
+    expect(poll({ state: { data: true, error: new ApiError('down', 0) } })).toBe(5_000);
+    expect(poll({ state: { data: true, error: new ApiError('busy', 503) } })).toBe(5_000);
+    expect(poll({ state: { data: true, error: new ApiError('gone', 404) } })).toBe(false);
+    expect(poll({ state: { data: undefined, error: new ApiError('down', 0) } })).toBe(false);
+  });
+});
 
 describe('trace search', () => {
   it('finds serials, lots, cartons and orders by the start of their id and links to each', async () => {
@@ -118,8 +132,8 @@ describe('serial page (backward trace)', () => {
     expect(screen.getByTestId('unit-components-OP30-1').textContent).toContain('SK1-2610-01');
     expect(screen.getByTestId('unit-components-OP30-1').textContent).toContain('SP100-2610-01');
     expect(screen.getByTestId('unit-components-OP30-2').textContent).toContain('SK1-2610-02');
-    // OP20's fact reported no lot field: listed as not reported, never dropped.
-    expect(screen.getByTestId('unit-components-OP20-1').textContent).toContain('Not reported');
+    // The washer's lots (not reported) stay in the operations table, not among the components.
+    expect(screen.queryByTestId('unit-components-OP20-1')).toBeNull();
     expect(screen.getByTestId('trace-records').dataset.count).toBe('6');
     // Lots: not reported (null) and none ([]) are told apart.
     const washer = screen.getByTestId('record-OP20-1');
@@ -318,20 +332,41 @@ describe('serial page (backward trace)', () => {
     expect(screen.getByTestId('unit-components-OP30-1').textContent).toContain('SK1-2610-01');
   });
 
-  it('shows No component consumed yet only when every later record reported none', async () => {
+  it('shows components only for the components operation, not reported where so', async () => {
     const server = traceMes(
       traceState({
         serials: {
           'VB-100-000042': serialTrace({
-            units: [unit({ records: [record(), record({ operation: 'OP20', lots: [] })] })],
+            units: [
+              unit({
+                status: 'wip',
+                records: [record(), record({ operation: 'OP20', equipment: 'WSH-01', lots: null })],
+              }),
+            ],
+          }),
+          'VB-100-000043': serialTrace({
+            serial: 'VB-100-000043',
+            units: [
+              unit({
+                serial: 'VB-100-000043',
+                records: [record(), record({ operation: 'OP30', equipment: 'ASM-01', lots: null })],
+              }),
+            ],
           }),
         },
       }),
     );
     vi.stubGlobal('fetch', server.fetch);
-    await renderApp('/trace/serials/VB-100-000042');
+    const app = await renderApp('/trace/serials/VB-100-000042');
+    // Before OP30: no component yet, whatever the washer reported.
     expect(await screen.findByTestId('unit-components-empty')).toBeTruthy();
     expect(screen.queryByTestId('unit-components')).toBeNull();
+    // An OP30 record without a lot field: its components are not reported.
+    await settle(() => {
+      app.history.push('/trace/serials/VB-100-000043');
+    });
+    const assembly = await screen.findByTestId('unit-components-OP30-1');
+    expect(assembly.textContent).toContain('Not reported');
   });
 
   it('round-trips ids with ?, # and % through links, the URL and the API path', async () => {

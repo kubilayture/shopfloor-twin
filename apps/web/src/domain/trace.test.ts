@@ -1,3 +1,4 @@
+import type { TraceRecordDto } from '@shopfloor/contracts/mes-api';
 import { describe, expect, it } from 'vitest';
 import { holdRef, record, unit } from '../test/trace-fixtures.ts';
 import {
@@ -42,11 +43,17 @@ describe('trace helpers (#202)', () => {
     expect(UNIT_KEY.test('3/42')).toBe(false);
   });
 
-  it('polls a moving answer faster than a settled one, and never after a failed read', () => {
-    expect(tracePoll(false, true)).toBe(TRACE_POLL_MOVING_MS);
-    expect(tracePoll(false, false)).toBe(TRACE_POLL_SETTLED_MS);
-    expect(tracePoll(true, true)).toBe(false);
-    expect(tracePoll(true, false)).toBe(false);
+  it('polls while it has an answer, faster while moving; never without one or after a 4xx', () => {
+    expect(tracePoll(true, undefined)).toBe(TRACE_POLL_MOVING_MS);
+    expect(tracePoll(false, undefined)).toBe(TRACE_POLL_SETTLED_MS);
+    // No answer (a first read failed or still pending): never.
+    expect(tracePoll(undefined, undefined)).toBe(false);
+    expect(tracePoll(undefined, 503)).toBe(false);
+    // A refusal stops it; a background read that failed otherwise keeps it going.
+    expect(tracePoll(true, 404)).toBe(false);
+    expect(tracePoll(false, 400)).toBe(false);
+    expect(tracePoll(true, 0)).toBe(TRACE_POLL_MOVING_MS);
+    expect(tracePoll(false, 503)).toBe(TRACE_POLL_SETTLED_MS);
     expect(serialMoving({ final: true, units: [unit()] })).toBe(false);
     expect(serialMoving({ final: false, units: [unit()] })).toBe(true);
     expect(serialMoving({ final: true, units: [unit({ status: 'wip' })] })).toBe(true);
@@ -73,18 +80,17 @@ describe('trace helpers (#202)', () => {
     expect(blankLots(unit({ records: [later, record()] }))).toHaveLength(1);
   });
 
-  it('keeps components not reported and leaves out records that reported none', () => {
+  it('lists components from the components operation only, each pass as reported', () => {
     const passes = componentPasses(unit());
-    // OP20 (WSH-01) reported no lot field; the OP40 records reported none.
-    expect(passes.map(({ record: r }) => operationText(r))).toEqual([
-      'OP20',
-      'OP30',
-      'OP30 (pass 2)',
-    ]);
-    expect(passes[0]?.lots).toBeNull();
-    expect(passes[1]?.lots).toHaveLength(2);
-    const none = unit({ records: [record(), record({ operation: 'OP20', lots: [] })] });
-    expect(componentPasses(none)).toEqual([]);
+    // OP20 (the washer, lots not reported) and OP40 stay in the operations table.
+    expect(passes.map(({ record: r }) => operationText(r))).toEqual(['OP30', 'OP30 (pass 2)']);
+    expect(passes[0]?.lots).toHaveLength(2);
+    const assembly = (lots: TraceRecordDto['lots']) =>
+      unit({ records: [record(), record({ operation: 'OP30', lots })] });
+    expect(componentPasses(assembly(null))[0]?.lots).toBeNull();
+    expect(componentPasses(assembly([]))[0]?.lots).toEqual([]);
+    const washer = unit({ records: [record(), record({ operation: 'OP20', lots: null })] });
+    expect(componentPasses(washer)).toEqual([]);
   });
 
   it('tells operators apart: an id, none, or not reported', () => {

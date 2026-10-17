@@ -1,5 +1,6 @@
 import type { HoldRefDto, LotRefDto } from '@shopfloor/contracts/mes-api';
 import { Link } from '@tanstack/react-router';
+import { ApiError } from '../api/client.ts';
 import type { ReactNode } from 'react';
 import {
   HOLDS_HREF,
@@ -7,12 +8,29 @@ import {
   SUBJECT_TEXT,
   UNIT_STATUS_TEXT,
   holdHref,
+  tracePoll,
   unitKey,
 } from '../domain/trace.ts';
 import { formatPlantTime } from '../domain/time.ts';
 
 // Parts shared by the trace pages (#202): sections, tables, the finality notice, holds and links
 // between serials, lots, cartons and orders.
+
+/**
+ * A trace page's `refetchInterval` (`tracePoll`): polled while it has an answer, at the pace
+ * `moving` gives it; stopped without an answer or after a 4xx.
+ */
+export function tracePolling<T>(
+  moving: (data: T) => boolean,
+): (query: {
+  readonly state: { readonly data: T | undefined; readonly error: unknown };
+}) => number | false {
+  return ({ state }) =>
+    tracePoll(
+      state.data === undefined ? undefined : moving(state.data),
+      state.error instanceof ApiError ? state.error.status : undefined,
+    );
+}
 
 export const cell = 'px-2 py-1.5 align-top';
 const head = `${cell} font-semibold`;

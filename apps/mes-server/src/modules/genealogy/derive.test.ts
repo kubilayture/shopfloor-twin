@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { BLANK_OPERATION } from '@shopfloor/contracts/mes-api';
+import { BLANK_OPERATION, COMPONENTS_OPERATION } from '@shopfloor/contracts/mes-api';
 import { loadPlantConfig } from '@shopfloor/plant-config';
 import { describe, expect, it } from 'vitest';
 import {
@@ -255,12 +255,13 @@ describe('finality (#199)', () => {
   });
 });
 
-describe('BLANK_OPERATION (#202)', () => {
-  it('is the first operation of the plant configuration’s routing', async () => {
+describe('BLANK_OPERATION and COMPONENTS_OPERATION (#202)', () => {
+  it('are the routing’s first operation and the components operation of the plant', async () => {
     const loaded = await loadPlantConfig(
       resolve(import.meta.dirname, '../../../../../config/plant'),
     );
     if (!loaded.ok) throw new Error('plant config');
     expect(loaded.config.products.operations[0]).toBe(BLANK_OPERATION);
+    expect(loaded.config.products.componentsOperation).toBe(COMPONENTS_OPERATION);
   });
 });

@@ -428,12 +428,6 @@ export function resetLiveOrders(queryClient: QueryClient): void {
 }
 
 /**
- * Reads of one order a push makes stale: the push carries the order and its commands, not the
- * deliveries, results, confirmations, ERP messages, history or execution (no execution push yet),
- * so the order's open screen reads them again (only active queries refetch). Prefixes of
- * `queryKeys` in api/queries.ts, which imports this module.
- */
-/**
  * Every read of the orders screens (prefixes of `queryKeys.orders`, `order`, `orderExecution`,
  * `orderScrap` and `executionIncidents` in api/queries.ts, which imports this module).
  */
@@ -445,6 +439,12 @@ export const ORDER_READS = [
   'execution-incidents',
 ] as const;
 
+/**
+ * Reads of one order a push makes stale: the push carries the order and its commands, not the
+ * deliveries, results, confirmations, ERP messages, history or execution (no execution push yet),
+ * so the order's open screen reads them again (only active queries refetch). Prefixes of
+ * `queryKeys` in api/queries.ts, which imports this module.
+ */
 function orderReadsStale(queryClient: QueryClient, orderId: string): void {
   for (const prefix of ['order', 'order-execution', 'order-scrap', 'execution-incidents']) {
     void queryClient.invalidateQueries({ queryKey: [prefix, orderId] });

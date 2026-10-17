@@ -31,7 +31,11 @@
     },
     "quality": {
       "type": "string",
-      "enum": ["good", "uncertain", "bad"],
+      "enum": [
+        "good",
+        "uncertain",
+        "bad"
+      ],
       "description": "OPC UA-style quality: bad means the value must not be used"
     },
     "source": {
@@ -44,11 +48,18 @@
         },
         "protocol": {
           "type": "string",
-          "enum": ["opcua", "modbus", "internal"],
+          "enum": [
+            "opcua",
+            "modbus",
+            "internal"
+          ],
           "description": "Where the gateway got it"
         }
       },
-      "required": ["id", "protocol"],
+      "required": [
+        "id",
+        "protocol"
+      ],
       "additionalProperties": false
     },
     "unit": {

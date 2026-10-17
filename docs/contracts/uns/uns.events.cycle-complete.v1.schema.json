@@ -31,7 +31,11 @@
     },
     "quality": {
       "type": "string",
-      "enum": ["good", "uncertain", "bad"],
+      "enum": [
+        "good",
+        "uncertain",
+        "bad"
+      ],
       "description": "OPC UA-style quality: bad means the value must not be used"
     },
     "source": {
@@ -44,11 +48,18 @@
         },
         "protocol": {
           "type": "string",
-          "enum": ["opcua", "modbus", "internal"],
+          "enum": [
+            "opcua",
+            "modbus",
+            "internal"
+          ],
           "description": "Where the gateway got it"
         }
       },
-      "required": ["id", "protocol"],
+      "required": [
+        "id",
+        "protocol"
+      ],
       "additionalProperties": false
     },
     "scope": {
@@ -72,10 +83,17 @@
         },
         "result": {
           "type": "string",
-          "enum": ["good", "scrap", "rework"]
+          "enum": [
+            "good",
+            "scrap",
+            "rework"
+          ]
         },
         "reason": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "measurement": {
           "anyOf": [
@@ -97,7 +115,12 @@
                   "type": "number"
                 }
               },
-              "required": ["characteristic", "value", "unit", "upperLimit"],
+              "required": [
+                "characteristic",
+                "value",
+                "unit",
+                "upperLimit"
+              ],
               "additionalProperties": false
             },
             {
@@ -125,7 +148,10 @@
                 "description": "Lot id, e.g. BL100-2610-01"
               }
             },
-            "required": ["material", "lot"],
+            "required": [
+              "material",
+              "lot"
+            ],
             "additionalProperties": false
           }
         },
@@ -143,7 +169,14 @@
           ]
         }
       },
-      "required": ["product", "partId", "serial", "result", "reason", "measurement"],
+      "required": [
+        "product",
+        "partId",
+        "serial",
+        "result",
+        "reason",
+        "measurement"
+      ],
       "additionalProperties": false
     }
   },

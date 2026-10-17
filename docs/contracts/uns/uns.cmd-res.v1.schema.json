@@ -32,11 +32,18 @@
         },
         "protocol": {
           "type": "string",
-          "enum": ["opcua", "modbus", "internal"],
+          "enum": [
+            "opcua",
+            "modbus",
+            "internal"
+          ],
           "description": "Where the gateway got it"
         }
       },
-      "required": ["id", "protocol"],
+      "required": [
+        "id",
+        "protocol"
+      ],
       "additionalProperties": false,
       "description": "The equipment, protocol opcua"
     },
@@ -415,7 +422,15 @@
       ]
     }
   },
-  "required": ["schema", "scope", "epoch", "seq", "source", "respondedAt", "value"],
+  "required": [
+    "schema",
+    "scope",
+    "epoch",
+    "seq",
+    "source",
+    "respondedAt",
+    "value"
+  ],
   "additionalProperties": false,
   "title": "uns.cmd-res/1",
   "description": "The gateway's answer to one command delivery (QoS 1, not retained)"

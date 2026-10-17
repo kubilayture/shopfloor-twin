@@ -33,7 +33,11 @@
         },
         "quality": {
           "type": "string",
-          "enum": ["good", "uncertain", "bad"],
+          "enum": [
+            "good",
+            "uncertain",
+            "bad"
+          ],
           "description": "OPC UA-style quality: bad means the value must not be used"
         },
         "source": {
@@ -46,11 +50,18 @@
             },
             "protocol": {
               "type": "string",
-              "enum": ["opcua", "modbus", "internal"],
+              "enum": [
+                "opcua",
+                "modbus",
+                "internal"
+              ],
               "description": "Where the gateway got it"
             }
           },
-          "required": ["id", "protocol"],
+          "required": [
+            "id",
+            "protocol"
+          ],
           "additionalProperties": false
         },
         "kind": {
@@ -81,10 +92,16 @@
             },
             "cause": {
               "description": "Failure code, CHANGEOVER A→B, MATERIAL:SK-1, …",
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
-          "required": ["state", "cause"],
+          "required": [
+            "state",
+            "cause"
+          ],
           "additionalProperties": false
         }
       },
@@ -134,7 +151,11 @@
         },
         "quality": {
           "type": "string",
-          "enum": ["good", "uncertain", "bad"],
+          "enum": [
+            "good",
+            "uncertain",
+            "bad"
+          ],
           "description": "OPC UA-style quality: bad means the value must not be used"
         },
         "source": {
@@ -147,11 +168,18 @@
             },
             "protocol": {
               "type": "string",
-              "enum": ["opcua", "modbus", "internal"],
+              "enum": [
+                "opcua",
+                "modbus",
+                "internal"
+              ],
               "description": "Where the gateway got it"
             }
           },
-          "required": ["id", "protocol"],
+          "required": [
+            "id",
+            "protocol"
+          ],
           "additionalProperties": false
         },
         "kind": {
@@ -189,10 +217,16 @@
             },
             "cause": {
               "description": "Failure code, CHANGEOVER A→B, MATERIAL:SK-1, …",
-              "type": ["string", "null"]
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
-          "required": ["state", "cause"],
+          "required": [
+            "state",
+            "cause"
+          ],
           "additionalProperties": false
         }
       },

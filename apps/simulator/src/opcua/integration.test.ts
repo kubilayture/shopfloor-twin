@@ -1,5 +1,3 @@
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import {
   OPCUA_ALARM_FOLDER,
   OPCUA_EVENT_FIELDS,
@@ -30,6 +28,7 @@ import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import type { PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
+import { onFreeOpcuaPorts, temporaryPki } from '../testing.ts';
 import { PlantServers, alarmCodes } from './plant-servers.ts';
 import {
   connect,
@@ -41,16 +40,19 @@ import {
 
 // Monday 06:00 Istanbul: the scripted shift is the first morning shift of the week.
 const T0 = Date.UTC(2026, 9, 12, 3);
-const OFFSET = 300;
+let offset: number;
 const SPEED = 60;
 let config: PlantConfig;
 let servers: PlantServers;
 let run: LiveRun;
 let clock: ManualClock;
+/** Set once the servers have started, so that `afterAll` stops only what `beforeAll` started. */
+let started: { readonly servers: PlantServers; readonly run: LiveRun } | undefined;
+let removePki: (() => Promise<void>) | undefined;
 const plantEvents: PlantEvent[] = [];
 
 const port = (machineId: string): number =>
-  (OPCUA_MACHINES.find((m) => m.id === machineId)?.port ?? 0) + OFFSET;
+  (OPCUA_MACHINES.find((m) => m.id === machineId)?.port ?? 0) + offset;
 
 /** Advances wall time in 1 s ticks so that the servers publish between bursts, as in a real run. */
 async function play(wallMs: number): Promise<void> {
@@ -64,33 +66,43 @@ async function play(wallMs: number): Promise<void> {
 
 beforeAll(async () => {
   config = await loadDefaultConfig();
-  clock = new ManualClock();
-  servers = new PlantServers({
-    config,
-    start: T0,
-    portOffset: OFFSET,
-    pkiFolder: join(tmpdir(), 'shopfloor-twin-integration-pki'),
-  });
-  run = createLiveRun({
-    config,
-    seed: 20261012,
-    start: T0,
-    speed: SPEED,
-    clock,
-    onEvent: (event) => {
-      plantEvents.push(event);
-      servers.record(event);
-    },
-  });
-  servers.attach(run);
-  await servers.start();
+  const pki = await temporaryPki('integration');
+  removePki = pki.remove;
+  ({ portOffset: offset } = await onFreeOpcuaPorts((portOffset) => {
+    clock = new ManualClock();
+    plantEvents.length = 0;
+    servers = new PlantServers({
+      config,
+      start: T0,
+      portOffset,
+      pkiFolder: pki.folder,
+    });
+    run = createLiveRun({
+      config,
+      seed: 20261012,
+      start: T0,
+      speed: SPEED,
+      clock,
+      onEvent: (event) => {
+        plantEvents.push(event);
+        servers.record(event);
+      },
+    });
+    servers.attach(run);
+    return servers;
+  }));
+  started = { servers, run };
   run.pacer.start();
   run.pacer.pause();
 }, 60_000);
 
 afterAll(async () => {
-  run.pacer.stop();
-  await servers.stop();
+  try {
+    started?.run.pacer.stop();
+    await started?.servers.stop();
+  } finally {
+    await removePki?.();
+  }
 });
 
 const DATA_TYPES: Record<DocumentedVariable['type'], number> = {

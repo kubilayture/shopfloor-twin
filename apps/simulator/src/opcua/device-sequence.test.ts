@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { HOUR } from '@shopfloor/sim-core';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { scenarioOptions } from '../headless/golden.ts';
 import { createLiveRun } from '../live/run.ts';
+import { temporaryPki } from '../testing.ts';
 import { PlantServers } from './plant-servers.ts';
 
 /**
@@ -20,13 +19,24 @@ const RECORDED = {
   sha256: 'af5f4164e261eafec27b63a0590783ad46629359ce469ebef64a08965be083fe',
 };
 
+// The servers here are never started (no port is bound); they still get a folder of their own.
+let pki: Awaited<ReturnType<typeof temporaryPki>>;
+
+beforeAll(async () => {
+  pki = await temporaryPki('sequence');
+});
+
+afterAll(async () => {
+  await pki.remove();
+});
+
 describe('device sequence (ADR-0009, ADR-0033)', () => {
   it("keeps every OPC UA event's (machine, seq, type) of a scripted shift", async () => {
     const options = await scenarioOptions('orders-01');
     const servers = new PlantServers({
       config: options.config,
       start: options.start,
-      pkiFolder: join(tmpdir(), 'shopfloor-twin-sequence-pki'),
+      pkiFolder: pki.folder,
       production: 'orders',
     });
     const lines: string[] = [];
@@ -65,7 +75,7 @@ describe('device sequence (ADR-0009, ADR-0033)', () => {
     const servers = new PlantServers({
       config: options.config,
       start: options.start,
-      pkiFolder: join(tmpdir(), 'shopfloor-twin-sequence-pki'),
+      pkiFolder: pki.folder,
     });
     const drifts: number[] = [];
     const run = createLiveRun({

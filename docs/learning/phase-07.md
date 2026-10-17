@@ -66,7 +66,7 @@ In PostgreSQL the **owner** of a table can do anything to it: `ALTER TABLE … D
 - **`SET ROLE`** switches the current role inside a session to one the session's user is a member of; `RESET ROLE` switches back. `mes_app` is a member of `mes_cagg` with `INHERIT FALSE`: it has none of `mes_cagg`'s rights until it explicitly does `SET ROLE mes_cagg`.
 - **Why the aggregates need their own owner:** TimescaleDB lets only an aggregate's owner refresh it, and `refresh_continuous_aggregate()` can't run inside a function, a `SECURITY DEFINER` procedure or a transaction block (all probed). So the usual trick, a definer function owned by a privileged role, is impossible. The refresher therefore runs `SET ROLE mes_cagg`, the `CALL`, `RESET ROLE` on its own connection, outside a transaction.
 - **The accepted cost:** as `mes_cagg`, the MES could drop the two aggregates. They are derived data a refresh rebuilds. The audit tables belong to `mes_owner`, of which `mes_app` is not a member, so they stay out of reach. A test asserts both halves.
-- **Older databases:** `REASSIGN OWNED BY postgres` fails (objects "required by the database system"), so `migrate` moves each object with its own `ALTER … OWNER TO`, once, recorded like a migration.
+- **Older databases:** `REASSIGN OWNED BY` the bootstrap superuser `DB_USER` (`shopfloor` by default) fails with SQLSTATE 2BP01 (objects "required by the database system"), so `migrate` moves each object with its own `ALTER … OWNER TO`, once, recorded like a migration.
 
 ### Passwords with scrypt, and sessions in a cookie
 
@@ -179,7 +179,7 @@ Dedup prevents doubles, not reordering. If commands A and B were both in flight 
 
 **9. Why is the MES's `failed` an incident and not a final result?**
 
-`failed` means "no answer within the margin", which is ignorance, not knowledge. The job may exist on the device with its fact held in a gateway outbox (exit criterion 3's hardest case). Treating `failed` as "no job" would allow a re-dispatch and a second job. So `failed` alerts the supervisor and blocks the CNC, and the command is settled only by a definitive answer, by received-through passing `seqAfterExpiry`, or by its run ending.
+`failed` means "no answer within the margin", which is ignorance, not knowledge. The job may exist on the device with its fact held in a gateway outbox (exit criterion 3's hardest case). Treating `failed` as "no job" would allow a re-dispatch and a second job. So `failed` alerts the supervisor and blocks the CNC, and the command is settled only by a definitive answer, by received-through reaching (at or above) `seqAfterExpiry`, or by its run ending.
 
 **10. The MES owned its tables and had append-only triggers. What was wrong with that?**
 

@@ -20,6 +20,7 @@ import {
   type LoadOrderCommand,
 } from '@shopfloor/contracts';
 import {
+  erpDatasetSchema,
   expandErpDataset,
   routingAndBom,
   statusKey,
@@ -770,18 +771,10 @@ describe('supervisor writes (#174)', () => {
 describe('the dispatch rule (plan "Orders", ADR-0030)', () => {
   it("reproduces orders-01's dispatches from its released orders in planned-start order", async () => {
     const h = await harness('rule');
-    const raw = JSON.parse(await readFile(resolve(GOLDEN, 'orders.json'), 'utf8')) as {
-      orders: {
-        feed: number;
-        number: string;
-        revision: number;
-        product: string;
-        quantity: number;
-        plannedStart: string;
-        dueDate: string;
-        priority: number;
-      }[];
-    };
+    // The ERP dataset schema the ERP mock serves (#175 fixed the file's format).
+    const raw = erpDatasetSchema.parse(
+      JSON.parse(await readFile(resolve(GOLDEN, 'orders.json'), 'utf8')),
+    );
     const scenario = JSON.parse(await readFile(resolve(GOLDEN, 'scenario.json'), 'utf8')) as {
       erp: { release: string[] };
       dispatches: {
@@ -793,19 +786,7 @@ describe('the dispatch rule (plan "Orders", ADR-0030)', () => {
         notBefore: string;
       }[];
     };
-    h.erp.entries = dataset(
-      [...raw.orders]
-        .sort((a, b) => a.feed - b.feed)
-        .map((o) => ({
-          orderNumber: o.number,
-          revision: o.revision,
-          product: o.product,
-          quantity: o.quantity,
-          plannedStart: o.plannedStart,
-          dueDate: o.dueDate,
-          priority: o.priority,
-        })),
-    );
+    h.erp.entries = dataset(raw.orders);
     await h.orders.importNow();
     // Both CNCs are attached and idle at the start time: their runs are known.
     await stateAt(h, 'cnc-01', 1);

@@ -1,9 +1,7 @@
 {
-  "description": "ERP dataset of the golden scenario orders-01 (#172): every order version in feed order. The lots are config/plant/stock.yaml's, served by the ERP mock and stocked by the simulator.",
   "orders": [
     {
-      "feed": 1,
-      "number": "PO-2610-001",
+      "orderNumber": "PO-2610-001",
       "revision": 1,
       "product": "VB-100",
       "quantity": 12,
@@ -12,8 +10,7 @@
       "priority": 2
     },
     {
-      "feed": 2,
-      "number": "PO-2610-002",
+      "orderNumber": "PO-2610-002",
       "revision": 1,
       "product": "VB-200",
       "quantity": 10,
@@ -22,8 +19,7 @@
       "priority": 2
     },
     {
-      "feed": 3,
-      "number": "PO-2610-003",
+      "orderNumber": "PO-2610-003",
       "revision": 1,
       "product": "VB-200",
       "quantity": 8,
@@ -32,8 +28,7 @@
       "priority": 2
     },
     {
-      "feed": 4,
-      "number": "PO-2610-004",
+      "orderNumber": "PO-2610-004",
       "revision": 1,
       "product": "VB-100",
       "quantity": 12,
@@ -42,8 +37,7 @@
       "priority": 2
     },
     {
-      "feed": 5,
-      "number": "PO-2610-005",
+      "orderNumber": "PO-2610-005",
       "revision": 1,
       "product": "VB-100",
       "quantity": 150,
@@ -52,8 +46,7 @@
       "priority": 3
     },
     {
-      "feed": 6,
-      "number": "PO-2610-006",
+      "orderNumber": "PO-2610-006",
       "revision": 1,
       "product": "VB-100",
       "quantity": 5,
@@ -62,8 +55,7 @@
       "priority": 1
     },
     {
-      "feed": 7,
-      "number": "PO-2610-007",
+      "orderNumber": "PO-2610-007",
       "revision": 1,
       "product": "VB-200",
       "quantity": 20,
@@ -72,8 +64,7 @@
       "priority": 2
     },
     {
-      "feed": 8,
-      "number": "PO-2610-008",
+      "orderNumber": "PO-2610-008",
       "revision": 1,
       "product": "VB-200",
       "quantity": 30,
@@ -82,8 +73,7 @@
       "priority": 3
     },
     {
-      "feed": 9,
-      "number": "PO-2610-009",
+      "orderNumber": "PO-2610-009",
       "revision": 1,
       "product": "VB-200",
       "quantity": 200,
@@ -92,8 +82,7 @@
       "priority": 3
     },
     {
-      "feed": 10,
-      "number": "PO-2610-006",
+      "orderNumber": "PO-2610-006",
       "revision": 2,
       "product": "VB-100",
       "quantity": 6,

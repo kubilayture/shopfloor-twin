@@ -79,6 +79,27 @@ describe('dataset', () => {
     expect(dataset.lots).toEqual([{ id: 'BL200-X', material: 'BLANK-200', quantity: 3 }]);
   });
 
+  it("serves the golden scenario orders-01's dataset as it is (#175)", async () => {
+    // orders-01's orders.json is in the dataset schema, so the ERP mock serves it unchanged.
+    const golden = await loadDataset(
+      join(REPO, 'apps/simulator/golden/orders-01/orders.json'),
+      PLANT,
+    );
+    expect(golden.feed.map((e) => [e.feedSeq, e.order.orderNumber, e.order.revision])).toEqual([
+      [1, 'PO-2610-001', 1],
+      [2, 'PO-2610-002', 1],
+      [3, 'PO-2610-003', 1],
+      [4, 'PO-2610-004', 1],
+      [5, 'PO-2610-005', 1],
+      [6, 'PO-2610-006', 1],
+      [7, 'PO-2610-007', 1],
+      [8, 'PO-2610-008', 1],
+      [9, 'PO-2610-009', 1],
+      [10, 'PO-2610-006', 2],
+    ]);
+    expect(golden.lots).toEqual((await plant()).stock.lots);
+  });
+
   it('names the file and the entry of an invalid dataset', async () => {
     const path = file('bad.yaml', 'orders:\n  - { orderNumber: X-1 }\n');
     await expect(loadDataset(path, PLANT)).rejects.toThrow(/bad\.yaml:\n {2}orders\.0\.revision/);

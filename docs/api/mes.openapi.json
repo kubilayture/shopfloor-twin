@@ -12,7 +12,7 @@
         "properties": {
           "type": {
             "type": "string",
-            "description": "about:blank (the status says it all), or a stable URI a client tells apart: urn:shopfloor:handover-closed, urn:shopfloor:handover-not-open, urn:shopfloor:note-stale, urn:shopfloor:note-limit, urn:shopfloor:coding-stale, urn:shopfloor:shelf-stale, urn:shopfloor:host-not-allowed, urn:shopfloor:write-origin, urn:shopfloor:writes-off, urn:shopfloor:write-not-json, urn:shopfloor:write-rate, urn:shopfloor:unauthenticated, urn:shopfloor:forbidden, urn:shopfloor:password-change-required, urn:shopfloor:password-rejected, urn:shopfloor:user-exists, urn:shopfloor:login-rate, urn:shopfloor:order-stale, urn:shopfloor:order-state, urn:shopfloor:commands-unsettled"
+            "description": "about:blank (the status says it all), or a stable URI a client tells apart: urn:shopfloor:handover-closed, urn:shopfloor:handover-not-open, urn:shopfloor:note-stale, urn:shopfloor:note-limit, urn:shopfloor:coding-stale, urn:shopfloor:shelf-stale, urn:shopfloor:host-not-allowed, urn:shopfloor:write-origin, urn:shopfloor:writes-off, urn:shopfloor:write-not-json, urn:shopfloor:write-rate, urn:shopfloor:unauthenticated, urn:shopfloor:forbidden, urn:shopfloor:password-change-required, urn:shopfloor:password-rejected, urn:shopfloor:user-exists, urn:shopfloor:login-rate, urn:shopfloor:order-stale, urn:shopfloor:order-state, urn:shopfloor:commands-unsettled, urn:shopfloor:scrap-stale"
           },
           "title": {
             "type": "string"
@@ -4700,7 +4700,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6076,12 +6076,144 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "propertyNames": {
-                          "type": "string"
+                        "properties": {
+                          "operation": {
+                            "type": "string"
+                          },
+                          "n": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "1 for the final confirmation, 2 and above for corrections"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "final",
+                              "correction"
+                            ]
+                          },
+                          "revision": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "yield": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "scrap": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "reworkPasses": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "material": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "totals": {
+                            "type": "object",
+                            "properties": {
+                              "yield": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "scrap": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "reworkPasses": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "material": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              }
+                            },
+                            "required": [
+                              "yield",
+                              "scrap",
+                              "reworkPasses",
+                              "material"
+                            ],
+                            "additionalProperties": false,
+                            "description": "Every confirmation up to this one summed"
+                          },
+                          "confirmedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "Plant time the operation was complete"
+                          },
+                          "idempotencyKey": {
+                            "type": "string",
+                            "description": "confirmationKey: {order}~{operation}~conf~{n}"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "messageStatus": {
+                            "type": "string",
+                            "description": "Of its outbound message: pending, sent, conflict, refused"
+                          }
                         },
-                        "additionalProperties": {}
+                        "required": [
+                          "operation",
+                          "n",
+                          "kind",
+                          "revision",
+                          "yield",
+                          "scrap",
+                          "reworkPasses",
+                          "material",
+                          "totals",
+                          "confirmedAt",
+                          "idempotencyKey",
+                          "createdAt",
+                          "messageStatus"
+                        ],
+                        "additionalProperties": false,
+                        "description": "A confirmation sent to the ERP: counts are deltas in a correction"
                       },
-                      "description": "Confirmations sent to the ERP (#175; empty until then)"
+                      "description": "Confirmations sent to the ERP (#175), by operation and number"
                     },
                     "erpMessages": {
                       "type": "array",
@@ -7121,7 +7253,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7749,7 +7881,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8377,7 +8509,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9011,7 +9143,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9641,7 +9773,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -10264,7 +10396,1332 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected; a dispatch to equipment that is not a CNC or has no known device run, or a re-dispatch beyond the remaining blanks)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/execution/units": {
+      "get": {
+        "summary": "Units tracked through the routing, with their operation records",
+        "tags": [
+          "execution"
+        ],
+        "description": "By (epoch, partId); at most 1000, `truncated` when more matched. A unit is keyed (device epoch, partId) and attributed to an order by the job facts (ADR-0031). Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
+            },
+            "in": "query",
+            "name": "orderId",
+            "required": false,
+            "description": "Only the units of this order"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{1,15}$"
+            },
+            "in": "query",
+            "name": "epoch",
+            "required": false,
+            "description": "Only the units of this device epoch"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z-]+(,[a-z-]+)*$"
+            },
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "description": "Only these statuses (wip, packed, scrapped, lost)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "units": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The device epoch: units are keyed (epoch, partId)"
+                          },
+                          "partId": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "serial": {
+                            "description": "Given by OP10; unique only within an epoch",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "product": {
+                            "type": "string"
+                          },
+                          "orderId": {
+                            "description": "By the job facts; null while unattributed",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "commandId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "wip",
+                              "packed",
+                              "scrapped",
+                              "lost"
+                            ]
+                          },
+                          "position": {
+                            "type": "string",
+                            "description": "after:OPxx (buffer, Blocked machine or next cycle), rework:OP30, or done"
+                          },
+                          "lastAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "terminalAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "violation": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "missing-predecessor",
+                                  "repeated",
+                                  "after-terminal"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "records": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "operation": {
+                                  "type": "string"
+                                },
+                                "equipment": {
+                                  "type": "string"
+                                },
+                                "pass": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "1, or 2 at OP30 and OP40 after a leak-test failure sent the unit back"
+                                },
+                                "at": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                  "description": "Plant time the cycle completed (cycle facts carry no start)"
+                                },
+                                "result": {
+                                  "type": "string",
+                                  "enum": [
+                                    "good",
+                                    "scrap",
+                                    "rework"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "seq": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "The cycle fact in the machine’s device sequence"
+                                }
+                              },
+                              "required": [
+                                "operation",
+                                "equipment",
+                                "pass",
+                                "at",
+                                "result",
+                                "reason",
+                                "seq"
+                              ],
+                              "additionalProperties": false,
+                              "description": "One cycle of a unit: (unit, operation, pass)"
+                            }
+                          }
+                        },
+                        "required": [
+                          "epoch",
+                          "partId",
+                          "serial",
+                          "product",
+                          "orderId",
+                          "commandId",
+                          "status",
+                          "position",
+                          "lastAt",
+                          "terminalAt",
+                          "violation",
+                          "records"
+                        ],
+                        "additionalProperties": false,
+                        "description": "A part of one simulator run with its operation records"
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean",
+                      "description": "More than 1000 matched"
+                    }
+                  },
+                  "required": [
+                    "units",
+                    "truncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/execution": {
+      "get": {
+        "summary": "An order’s quantities, backflushed material, units, WIP and completion",
+        "tags": [
+          "execution"
+        ],
+        "description": "Per routing operation: in, good, scrap by reason, rework, material backflushed at cycle completion, and when no unit can come back to it (plan H1). WIP per position; blanks a CNC holds whose OP10 cycle has not completed. Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The ERP order number"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "orderId": {
+                      "type": "string"
+                    },
+                    "operations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "operation": {
+                            "type": "string"
+                          },
+                          "workCenter": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "in": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Completed cycles, every pass"
+                          },
+                          "good": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "scrap": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "description": "Scrap per reason"
+                          },
+                          "rework": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Cycles that sent a unit back (leak-test failures)"
+                          },
+                          "material": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "description": "Backflushed at cycle completion: standard lines on a first pass, rework lines on a later one"
+                          },
+                          "completedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "When no unit can come back to it (plan H1); null until then"
+                          }
+                        },
+                        "required": [
+                          "operation",
+                          "workCenter",
+                          "in",
+                          "good",
+                          "scrap",
+                          "rework",
+                          "material",
+                          "completedAt"
+                        ],
+                        "additionalProperties": false,
+                        "description": "One operation of an order as execution sees it"
+                      }
+                    },
+                    "units": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "wip": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "packed": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "scrapped": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "lost": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "total",
+                        "wip",
+                        "packed",
+                        "scrapped",
+                        "lost"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "wip": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "description": "Units in WIP per position: after:OPxx, rework:OPxx, at:{equipment}"
+                    },
+                    "inMachine": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "description": "Blanks a CNC holds for the order whose OP10 cycle has not completed, per CNC"
+                    },
+                    "reworkPasses": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "scrap": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "description": "Scrap per operation and reason"
+                    },
+                    "packedGood": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "completedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "orderId",
+                    "operations",
+                    "units",
+                    "wip",
+                    "inMachine",
+                    "reworkPasses",
+                    "scrap",
+                    "packedGood",
+                    "completedAt"
+                  ],
+                  "additionalProperties": false,
+                  "description": "An order’s quantities, material, units, WIP and completion"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note, order or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/scrap-records": {
+      "get": {
+        "summary": "Scrap records, newest first",
+        "tags": [
+          "execution"
+        ],
+        "description": "At most 500. Every machine scrap (OP10 DIMENSIONAL, OP40 second LEAK) with its coding, if any. Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
+            },
+            "in": "query",
+            "name": "orderId",
+            "required": false,
+            "description": "Only the scrap records of this order"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "in": "query",
+            "name": "uncoded",
+            "required": false,
+            "description": "Only the records not coded yet"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "records": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "equipment": {
+                            "type": "string"
+                          },
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seq": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "partId": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "serial": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "orderId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "operation": {
+                            "type": "string"
+                          },
+                          "pass": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "scrappedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "machineReason": {
+                            "type": "string",
+                            "description": "The cycle fact’s reason (DIMENSIONAL, LEAK)"
+                          },
+                          "codedReason": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "comment": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "codedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "codedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Wall time"
+                          },
+                          "version": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Names the version a coding must send"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "equipment",
+                          "epoch",
+                          "seq",
+                          "partId",
+                          "serial",
+                          "orderId",
+                          "operation",
+                          "pass",
+                          "scrappedAt",
+                          "machineReason",
+                          "codedReason",
+                          "comment",
+                          "codedBy",
+                          "codedAt",
+                          "version"
+                        ],
+                        "additionalProperties": false,
+                        "description": "A machine scrap a person codes with a detailed reason"
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "records",
+                    "truncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/scrap-reasons": {
+      "get": {
+        "summary": "The scrap reason tree",
+        "tags": [
+          "execution"
+        ],
+        "description": "Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "reasons": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The path in the tree, e.g. LEAK/POROSITY"
+                          },
+                          "parent": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "active": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "parent",
+                          "name",
+                          "active"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Parents before children"
+                    }
+                  },
+                  "required": [
+                    "reasons"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/execution-incidents": {
+      "get": {
+        "summary": "Incidents of the execution module, newest first",
+        "tags": [
+          "execution"
+        ],
+        "description": "Routing violations: a unit seen without its predecessor once that operation’s machines are final through its time, repeated, or after it was packed or scrapped. Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "in": "query",
+            "name": "open",
+            "required": false,
+            "description": "Only the incidents still open"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "incidents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "routing-violation"
+                            ]
+                          },
+                          "epoch": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "partId": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "orderId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "equipment": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "detectedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "closedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "resolution": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "type",
+                          "epoch",
+                          "partId",
+                          "orderId",
+                          "equipment",
+                          "message",
+                          "detectedAt",
+                          "closedAt",
+                          "resolution"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "incidents"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/scrap-records/{id}/coding": {
+      "put": {
+        "summary": "Codes a scrap record with a detailed reason",
+        "tags": [
+          "execution"
+        ],
+        "description": "The record's machine reason or a reason below it in the active scrap tree (422 otherwise); names the record's `version` (409 urn:shopfloor:scrap-stale when it is not the current one); audited with the session's user. Coding never changes a quantity or a confirmation. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `scrap:code` (MES_AUTH=on; ADR-0026).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991,
+                    "description": "The record version read; 409 when it is not the current one"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "pattern": "^[A-Z0-9]+(-[A-Z0-9]+)*(\\/[A-Z0-9]+(-[A-Z0-9]+)*){0,7}$",
+                    "description": "An active scrap reason: the machine reason or one below it"
+                  },
+                  "comment": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "version",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "Codes a scrap record (never changes a quantity)"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{1,15}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The scrap record id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "equipment": {
+                      "type": "string"
+                    },
+                    "epoch": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "seq": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "partId": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "serial": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "orderId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation": {
+                      "type": "string"
+                    },
+                    "pass": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "scrappedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "machineReason": {
+                      "type": "string",
+                      "description": "The cycle fact’s reason (DIMENSIONAL, LEAK)"
+                    },
+                    "codedReason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "comment": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "codedBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "codedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Wall time"
+                    },
+                    "version": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Names the version a coding must send"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "equipment",
+                    "epoch",
+                    "seq",
+                    "partId",
+                    "serial",
+                    "orderId",
+                    "operation",
+                    "pass",
+                    "scrappedAt",
+                    "machineReason",
+                    "codedReason",
+                    "comment",
+                    "codedBy",
+                    "codedAt",
+                    "version"
+                  ],
+                  "additionalProperties": false,
+                  "description": "A machine scrap a person codes with a detailed reason"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note, order or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13887,7 +15344,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14323,7 +15780,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -18890,7 +20347,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -19230,7 +20687,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -20621,7 +22078,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -20851,7 +22308,7 @@
             }
           },
           "409": {
-            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale)",
             "content": {
               "application/problem+json": {
                 "schema": {

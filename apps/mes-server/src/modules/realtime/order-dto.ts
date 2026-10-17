@@ -2,6 +2,7 @@ import type {
   CommandDetailDto,
   CommandDto,
   CommandResultDto,
+  ConfirmationDto,
   ErpMessageDto,
   OrderDetail,
   OrderDto,
@@ -12,6 +13,7 @@ import type { StoredAuditEntry } from '../identity/index.ts';
 import type { StoredCommandResult } from '../ingest/index.ts';
 import type {
   CommandRecord,
+  ConfirmationRecord,
   ErpMessageRecord,
   OrderDetailRecord,
   OrderIncident,
@@ -147,6 +149,29 @@ function historyDto(entry: StoredAuditEntry): OrderHistoryEntryDto {
   };
 }
 
+export function confirmationDto(c: ConfirmationRecord): ConfirmationDto {
+  return {
+    operation: c.operation,
+    n: c.n,
+    kind: c.kind,
+    revision: c.revision,
+    yield: c.yield,
+    scrap: { ...c.scrap },
+    reworkPasses: c.reworkPasses,
+    material: { ...c.material },
+    totals: {
+      yield: c.totals.yield,
+      scrap: { ...c.totals.scrap },
+      reworkPasses: c.totals.reworkPasses,
+      material: { ...c.totals.material },
+    },
+    confirmedAt: iso(c.confirmedAt),
+    idempotencyKey: c.idempotencyKey,
+    createdAt: iso(c.createdAt),
+    messageStatus: c.messageStatus,
+  };
+}
+
 export function orderDetailDto(detail: OrderDetailRecord): OrderDetail {
   return {
     order: orderDto(detail.order),
@@ -165,7 +190,7 @@ export function orderDetailDto(detail: OrderDetailRecord): OrderDetail {
       })),
       results: command.results.map(commandResultDto),
     })),
-    confirmations: [],
+    confirmations: detail.confirmations.map(confirmationDto),
     erpMessages: detail.erpMessages.map(erpMessageDto),
     incidents: detail.incidents.map(orderIncidentDto),
     history: detail.history.map(historyDto),

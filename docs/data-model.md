@@ -19,6 +19,7 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `master_data.reason_code`
   - `master_data.routing`
   - `master_data.routing_operation`
+  - `master_data.scrap_reason`
   - `master_data.shift_pattern`
   - `master_data.site`
   - `master_data.work_center`
@@ -63,12 +64,18 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `identity.user_role`
 - [`orders`](#schema-orders)
   - `orders.command_attempt`
+  - `orders.confirmation`
   - `orders.dispatch_command`
   - `orders.erp_cursor`
   - `orders.erp_message_log`
   - `orders.order_incident`
   - `orders.order_operation`
   - `orders.production_order`
+- [`execution`](#schema-execution)
+  - `execution.execution_incident`
+  - `execution.operation_record`
+  - `execution.scrap_record`
+  - `execution.unit`
 - [`public`](#schema-public)
   - `public.schema_migrations`
 
@@ -113,6 +120,11 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `equipment.equipment_state_interval` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE | SELECT |
 | `equipment.interval_source` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `equipment.state_hourly` | `mes_cagg` | SELECT |  |
+| `execution` | `mes_owner` | USAGE |  |
+| `execution.execution_incident` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `execution.operation_record` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `execution.scrap_record` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `execution.unit` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `identity` | `mes_owner` | USAGE |  |
 | `identity.audit_log` | `mes_owner` | INSERT, SELECT |  |
 | `identity.role` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
@@ -142,11 +154,13 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `master_data.reason_code` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.routing` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.routing_operation` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.scrap_reason` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.shift_pattern` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.site` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.work_center` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `orders` | `mes_owner` | USAGE |  |
 | `orders.command_attempt` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `orders.confirmation` | `mes_owner` | INSERT, SELECT |  |
 | `orders.dispatch_command` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `orders.erp_cursor` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `orders.erp_message_log` | `mes_owner` | INSERT, SELECT, UPDATE |  |
@@ -206,6 +220,10 @@ erDiagram
     text operation PK
     text work_center_id FK
   }
+  scrap_reason {
+    text id PK
+    text parent_id FK
+  }
   site {
     text id PK
   }
@@ -224,6 +242,7 @@ erDiagram
   product ||--o{ routing : "product_id"
   routing ||--o{ routing_operation : "product_id"
   work_center ||--o{ routing_operation : "work_center_id"
+  scrap_reason |o--o{ scrap_reason : "parent_id"
   area ||--o{ work_center : "area_id"
 ```
 
@@ -306,6 +325,11 @@ erDiagram
     text command_id FK, PK
     integer attempt PK
   }
+  confirmation {
+    text order_id FK, PK
+    text operation PK
+    integer n PK
+  }
   dispatch_command {
     text command_id PK
     text order_id FK
@@ -318,15 +342,33 @@ erDiagram
     text id PK
   }
   dispatch_command ||--o{ command_attempt : "command_id"
+  production_order ||--o{ confirmation : "order_id"
   production_order ||--o{ dispatch_command : "order_id"
   production_order ||--o{ order_operation : "order_id"
+```
+
+Schema execution:
+
+```mermaid
+erDiagram
+  operation_record {
+    text equipment PK
+    bigint epoch FK, PK
+    bigint seq PK
+    bigint part_id FK
+  }
+  unit {
+    bigint epoch PK
+    bigint part_id PK
+  }
+  unit ||--o{ operation_record : "epoch, part_id"
 ```
 
 The other schemas have no foreign keys; their references are by value, as described above.
 
 ## Schema master_data
 
-Owner: master-data. The ISA-95 equipment hierarchy, products, the shift pattern, the downtime reason tree and the alarm definitions and operator positions, seeded from `config/plant`.
+Owner: master-data. The ISA-95 equipment hierarchy, products, the shift pattern, the downtime and scrap reason trees, routings with their BOMs, and the alarm definitions and operator positions, seeded from `config/plant`.
 
 ### master_data.alarm_definition
 
@@ -502,6 +544,24 @@ The operations of a routing in order, the work center of the equipment that runs
 | Check | `routing_operation_ideal_cycle_ms_check` | `CHECK ((ideal_cycle_ms > 0))` |
 | Check | `routing_operation_operation_check` | `CHECK ((operation ~ '^OP[0-9]{2}$'::text))` |
 | Check | `routing_operation_position_check` | `CHECK (("position" >= 0))` |
+
+### master_data.scrap_reason
+
+The scrap reason tree from `scrap.yaml`: each machine scrap reason (DIMENSIONAL, LEAK) a top node, the detailed reasons below it; retired ones kept inactive (#175).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `text` | not null |  |
+| `parent_id` | `text` | null |  |
+| `name` | `text` | not null |  |
+| `position` | `integer` | not null |  |
+| `active` | `boolean` | not null | `true` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `scrap_reason_pkey` | `PRIMARY KEY (id)` |
+| Foreign key | `scrap_reason_parent_id_fkey` | `FOREIGN KEY (parent_id) REFERENCES master_data.scrap_reason(id)` |
+| Check | `scrap_reason_check` | `CHECK ((((parent_id IS NULL) AND (POSITION(('/'::text) IN (id)) = 0)) OR ((parent_id IS NOT NULL) AND (id = ((parent_id \|\| '/'::text) \|\| split_part(id, '/'::text, '-1'::integer))))))` |
 
 ### master_data.shift_pattern
 
@@ -707,6 +767,7 @@ TimescaleDB hypertable, partitioned by `source_time` in chunks of 7 days.
 | Check | `equipment_event_event_type_check` | `CHECK ((event_type = ANY (ARRAY['state'::text, 'cycle'::text, 'alarm'::text, 'job'::text])))` |
 | Check | `equipment_event_quality_check` | `CHECK ((quality = ANY (ARRAY['good'::text, 'uncertain'::text, 'bad'::text])))` |
 | Index | `equipment_event_alarm` | `ingest.equipment_event USING btree (equipment, epoch, seq) WHERE (event_type = 'alarm'::text)` |
+| Index | `equipment_event_cycle_part` | `ingest.equipment_event USING btree (epoch, ((((payload -> 'value'::text) ->> 'partId'::text))::bigint)) WHERE (event_type = 'cycle'::text)` |
 | Index | `equipment_event_job_command` | `ingest.equipment_event USING btree ((((payload -> 'value'::text) ->> 'commandId'::text)), equipment, epoch) WHERE (event_type = 'job'::text)` |
 | Index | `equipment_event_source_time_idx` | `ingest.equipment_event USING btree (source_time DESC)` |
 
@@ -1456,7 +1517,7 @@ The roles of each user, one or more (#168).
 
 ## Schema orders
 
-Owner: orders. Production orders imported from the ERP’s change feed with their routing, the dispatch commands to the CNCs (a transactional outbox, every delivery published) and their reading from the gateway’s results and the device’s job facts, the ERP message log (feed entries in, status messages out through a second outbox) and the module’s incidents (#174, ADR-0028, ADR-0029).
+Owner: orders. Production orders imported from the ERP’s change feed with their routing, the dispatch commands to the CNCs (a transactional outbox, every delivery published) and their reading from the gateway’s results and the device’s job facts, the ERP message log (feed entries in, status messages and confirmations out through a second outbox), the confirmations sent (final and corrections, #175) and the module’s incidents (#174, ADR-0028, ADR-0029).
 
 ### orders.command_attempt
 
@@ -1478,6 +1539,36 @@ Every delivery of a command published, with its own expiresAt and the command en
 | Primary key | `command_attempt_pkey` | `PRIMARY KEY (command_id, attempt)` |
 | Foreign key | `command_attempt_command_id_fkey` | `FOREIGN KEY (command_id) REFERENCES orders.dispatch_command(command_id)` |
 | Check | `command_attempt_attempt_check` | `CHECK ((attempt >= 1))` |
+
+### orders.confirmation
+
+Confirmations sent to the ERP per order operation: the final one (n = 1, totals) and corrections (n ≥ 2, signed deltas against the sum of the earlier ones), each with the totals it sums to; written with its outbound message, append-only by grants (#175).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `order_id` | `text` | not null |  |
+| `operation` | `text` | not null |  |
+| `n` | `integer` | not null |  |
+| `kind` | `text` | not null |  |
+| `revision` | `integer` | not null |  |
+| `yield` | `integer` | not null |  |
+| `scrap` | `jsonb` | not null |  |
+| `rework_passes` | `integer` | not null |  |
+| `material` | `jsonb` | not null |  |
+| `totals` | `jsonb` | not null |  |
+| `confirmed_at` | `timestamp with time zone` | not null |  |
+| `idempotency_key` | `text` | not null |  |
+| `created_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `confirmation_pkey` | `PRIMARY KEY (order_id, operation, n)` |
+| Unique | `confirmation_idempotency_key_key` | `UNIQUE (idempotency_key)` |
+| Foreign key | `confirmation_order_id_fkey` | `FOREIGN KEY (order_id) REFERENCES orders.production_order(id)` |
+| Check | `confirmation_check` | `CHECK (((kind = 'final'::text) = (n = 1)))` |
+| Check | `confirmation_kind_check` | `CHECK ((kind = ANY (ARRAY['final'::text, 'correction'::text])))` |
+| Check | `confirmation_n_check` | `CHECK ((n >= 1))` |
+| Check | `confirmation_operation_check` | `CHECK ((operation ~ '^OP[0-9]{2}$'::text))` |
 
 ### orders.dispatch_command
 
@@ -1672,6 +1763,130 @@ One row per ERP order number at the revision held: product, quantity, planned st
 | Check | `production_order_version_check` | `CHECK ((version >= 1))` |
 | Index | `production_order_planned` | `orders.production_order USING btree (planned_start, id)` |
 | Index | `production_order_status` | `orders.production_order USING btree (status, planned_start)` |
+
+## Schema execution
+
+Owner: execution. Every part tracked through the routing from the device’s cycle facts (#175, ADR-0031): units keyed (device epoch, partId) and attributed to an order by the job facts, one operation record per cycle with its rework pass, the scrap records an operator or quality user codes, and routing-violation incidents. Units and records are derived and rebuilt from facts; quantities, material and completion are computed on read.
+
+### execution.execution_incident
+
+Routing-violation incidents of the execution module (a predecessor missing or an operation repeated once the expected machine is final through it, a record after the terminal one), open at most once per key (#175).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `type` | `text` | not null |  |
+| `key` | `text` | not null |  |
+| `epoch` | `bigint` | null |  |
+| `part_id` | `bigint` | null |  |
+| `order_id` | `text` | null |  |
+| `equipment` | `text` | null |  |
+| `message` | `text` | not null |  |
+| `detected_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `closed_at` | `timestamp with time zone` | null |  |
+| `resolution` | `text` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `execution_incident_pkey` | `PRIMARY KEY (id)` |
+| Check | `execution_incident_check` | `CHECK (((closed_at IS NULL) = (resolution IS NULL)))` |
+| Check | `execution_incident_type_check` | `CHECK ((type = 'routing-violation'::text))` |
+| Index | `execution_incident_open` | `execution.execution_incident USING btree (key) WHERE (closed_at IS NULL)` |
+
+### execution.operation_record
+
+One record per cycle fact of a unit: operation, pass (2 at OP30 and OP40 after a leak-test rework), machine, completion time, result and reason; keyed by the fact, replaced when its unit is rebuilt (#175).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `seq` | `bigint` | not null |  |
+| `part_id` | `bigint` | not null |  |
+| `operation` | `text` | not null |  |
+| `pass` | `integer` | not null |  |
+| `completed_at` | `timestamp with time zone` | not null |  |
+| `result` | `text` | not null |  |
+| `reason` | `text` | null |  |
+| `order_id` | `text` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `operation_record_pkey` | `PRIMARY KEY (equipment, epoch, seq)` |
+| Foreign key | `operation_record_epoch_part_id_fkey` | `FOREIGN KEY (epoch, part_id) REFERENCES execution.unit(epoch, part_id)` |
+| Check | `operation_record_operation_check` | `CHECK ((operation ~ '^OP[0-9]{2}$'::text))` |
+| Check | `operation_record_pass_check` | `CHECK ((pass >= 1))` |
+| Check | `operation_record_result_check` | `CHECK ((result = ANY (ARRAY['good'::text, 'scrap'::text, 'rework'::text])))` |
+| Index | `operation_record_order` | `execution.operation_record USING btree (order_id, operation)` |
+| Index | `operation_record_unit` | `execution.operation_record USING btree (epoch, part_id)` |
+
+### execution.scrap_record
+
+Every machine scrap (OP10 DIMENSIONAL, OP40 second LEAK) with the coding a person gives it from the scrap reason tree (version per record, audited in identity.audit_log); kept, never deleted (#175).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `seq` | `bigint` | not null |  |
+| `part_id` | `bigint` | not null |  |
+| `serial` | `text` | null |  |
+| `order_id` | `text` | null |  |
+| `operation` | `text` | not null |  |
+| `pass` | `integer` | not null |  |
+| `scrapped_at` | `timestamp with time zone` | not null |  |
+| `machine_reason` | `text` | not null |  |
+| `coded_reason` | `text` | null |  |
+| `comment` | `text` | null |  |
+| `coded_by` | `text` | null |  |
+| `coded_at` | `timestamp with time zone` | null |  |
+| `version` | `integer` | not null | `1` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `scrap_record_pkey` | `PRIMARY KEY (id)` |
+| Unique | `scrap_record_equipment_epoch_seq_key` | `UNIQUE (equipment, epoch, seq)` |
+| Check | `scrap_record_check` | `CHECK (((coded_reason IS NULL) = (coded_at IS NULL)))` |
+| Check | `scrap_record_pass_check` | `CHECK ((pass >= 1))` |
+| Check | `scrap_record_version_check` | `CHECK ((version >= 1))` |
+| Index | `scrap_record_order` | `execution.scrap_record USING btree (order_id, id)` |
+| Index | `scrap_record_uncoded` | `execution.scrap_record USING btree (id) WHERE (coded_reason IS NULL)` |
+
+### execution.unit
+
+Units: one part of one simulator run, keyed (device epoch, partId), with its serial, the order its OP10 cycle’s job gives, status (wip, packed, scrapped, lost), position in WIP and any routing suspect or violation; derived and rebuilt from cycle and job facts (#175).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `epoch` | `bigint` | not null |  |
+| `part_id` | `bigint` | not null |  |
+| `serial` | `text` | null |  |
+| `product` | `text` | not null |  |
+| `order_id` | `text` | null |  |
+| `command_id` | `text` | null |  |
+| `status` | `text` | not null |  |
+| `position` | `text` | not null |  |
+| `last_at` | `timestamp with time zone` | not null |  |
+| `terminal_at` | `timestamp with time zone` | null |  |
+| `suspect` | `text` | null |  |
+| `suspect_operation` | `text` | null |  |
+| `suspect_before` | `timestamp with time zone` | null |  |
+| `violation` | `text` | null |  |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `unit_pkey` | `PRIMARY KEY (epoch, part_id)` |
+| Check | `unit_check` | `CHECK (((status = ANY (ARRAY['packed'::text, 'scrapped'::text])) = (terminal_at IS NOT NULL)))` |
+| Check | `unit_check1` | `CHECK (((suspect IS NULL) = (suspect_operation IS NULL)))` |
+| Check | `unit_check2` | `CHECK (((suspect IS NULL) = (suspect_before IS NULL)))` |
+| Check | `unit_part_id_check` | `CHECK ((part_id >= 1))` |
+| Check | `unit_status_check` | `CHECK ((status = ANY (ARRAY['wip'::text, 'packed'::text, 'scrapped'::text, 'lost'::text])))` |
+| Check | `unit_suspect_check` | `CHECK ((suspect = ANY (ARRAY['missing-predecessor'::text, 'repeated'::text])))` |
+| Check | `unit_violation_check` | `CHECK ((violation = ANY (ARRAY['missing-predecessor'::text, 'repeated'::text, 'after-terminal'::text])))` |
+| Index | `unit_order` | `execution.unit USING btree (order_id, status)` |
+| Index | `unit_suspect` | `execution.unit USING btree (epoch) WHERE (suspect IS NOT NULL)` |
 
 ## Schema public
 

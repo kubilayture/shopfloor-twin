@@ -114,6 +114,8 @@ export interface MasterDataTables {
   'master_data.routing': RoutingTable;
   'master_data.routing_operation': RoutingOperationTable;
   'master_data.bom_item': BomItemTable;
+  /** The scrap reason tree (#175), from config/plant/scrap.yaml: same shape as reason_code. */
+  'master_data.scrap_reason': ReasonCodeTable;
 }
 
 export const MASTER_DATA_COLUMNS = {
@@ -145,4 +147,5 @@ export const MASTER_DATA_COLUMNS = {
     'ideal_cycle_ms',
   ],
   'master_data.bom_item': ['product_id', 'material', 'operation', 'quantity_per_unit', 'usage'],
+  'master_data.scrap_reason': ['id', 'parent_id', 'name', 'position', 'active'],
 } as const;

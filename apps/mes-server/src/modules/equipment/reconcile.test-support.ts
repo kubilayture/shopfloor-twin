@@ -10,11 +10,13 @@
  * with flood episodes and bad actors (#142, `alarms`, sim-summary/3).
  */
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { EquipmentPath, MachineState } from '@shopfloor/contracts';
+import { confirmationKey, expandErpDataset, type FeedEntry } from '@shopfloor/contracts/erp-api';
 import { HOUR, availabilityLoss, oeeFromTotals, sumTotals } from '@shopfloor/oee-core';
 import { UNCODED, idealCycleMs, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import { NO_SHIFT, shiftBuckets, shiftInstances, shiftSegments } from '@shopfloor/shift-calendar';
@@ -31,9 +33,18 @@ import {
 import type { Database } from '../../db/database.ts';
 import { startDatabase } from '../../testing.ts';
 import { Alarms, type AlarmKpiBucket, type AlarmScope } from '../alarms/index.ts';
+import { Execution } from '../execution/index.ts';
+import { Identity, type WriteBy } from '../identity/index.ts';
 import { Ingest } from '../ingest/index.ts';
-import { MasterData } from '../master-data/index.ts';
+import { MasterData, erpMasterData } from '../master-data/index.ts';
 import { Oee, pareto, type OeeBucket } from '../oee/index.ts';
+import {
+  Orders,
+  type CommandPublisher,
+  type ErpApi,
+  type FeedPage,
+  type PostOutcome,
+} from '../orders/index.ts';
 import {
   alarmKpiDto,
   badActorDto,
@@ -77,9 +88,17 @@ interface SimEvent {
     upperLimit: number;
   };
   readonly code?: string;
-  readonly transition?: 'active' | 'cleared';
+  readonly transition?: 'active' | 'cleared' | 'accepted' | 'started' | 'completed';
   readonly severity?: number;
+  /** Orders mode (#172): job facts and material taken. */
+  readonly commandId?: string;
+  readonly orderId?: string;
+  readonly quantity?: number;
+  readonly material?: string;
 }
+
+/** Device facts: every one takes the machine's next sequence number (job facts in orders mode). */
+const DEVICE_FACTS = ['state', 'cycle-complete', 'alarm', 'job'];
 
 type StateMs = Record<string, number>;
 
@@ -127,6 +146,32 @@ interface GroundTruth {
     >;
     readonly workCenters: Record<string, { readonly shifts: Record<string, unknown> }>;
   };
+  /** The order part (#172, sim-summary/4): empty in schedule mode. */
+  readonly orders: OrdersTruth;
+}
+
+/** One order of the ground truth (#172, ADR-0030). */
+interface OrderTruth {
+  readonly product: string;
+  readonly jobs: readonly string[];
+  readonly quantity: number;
+  readonly started: number;
+  readonly scrap: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  readonly reworkPasses: number;
+  readonly packedGood: number;
+  readonly wip: Readonly<Record<string, number>>;
+  readonly completedAt: string | null;
+  readonly operations: Readonly<
+    Record<string, { in: number; good: number; scrap: number; rework: number }>
+  >;
+  readonly material: Readonly<Record<string, number>>;
+  readonly materialInProcess: Readonly<Record<string, number>>;
+}
+
+interface OrdersTruth {
+  readonly jobs: readonly { readonly commandId: string; readonly orderId: string }[];
+  readonly orders: Readonly<Record<string, OrderTruth>>;
+  readonly units: { readonly count: number; readonly sha256: string };
 }
 
 interface Run {
@@ -208,18 +253,29 @@ function unsMessages(run: Run): { facts: Delivery[]; anchors: Delivery[]; end: D
   const facts: Delivery[] = [];
   for (const event of run.events) {
     const machine = event.machineId;
-    if (!machine || !['state', 'cycle-complete', 'alarm'].includes(event.type)) continue;
+    if (!machine || !DEVICE_FACTS.includes(event.type)) continue;
     const seq = (seqs.get(machine) ?? 0) + 1;
     seqs.set(machine, seq);
     const at = Date.parse(event.at);
     if (event.type === 'state') {
       facts.push(feed.state(machine, EPOCH, seq, at, event.to ?? 'Idle', event.cause ?? null));
+    } else if (event.type === 'job') {
+      facts.push(
+        feed.job(machine, EPOCH, seq, at, {
+          transition: (event.transition ?? 'accepted') as 'accepted' | 'started' | 'completed',
+          commandId: event.commandId ?? '',
+          orderId: event.orderId ?? '',
+          product: event.product ?? '',
+          quantity: event.quantity ?? 0,
+        }),
+      );
     } else if (event.type === 'cycle-complete') {
       facts.push(
         feed.cycle(machine, EPOCH, seq, at, {
           product: event.product ?? '',
           partId: event.partId ?? 0,
-          serial: event.serial ?? '',
+          // WSH-01, a legacy washer, reads no serial (its register map): the gateway sends none.
+          serial: machine.startsWith('wsh') ? '' : (event.serial ?? ''),
           result: event.result ?? 'good',
           reason: event.reason ?? null,
           measurement: event.measurement ?? null,
@@ -233,7 +289,7 @@ function unsMessages(run: Run): { facts: Delivery[]; anchors: Delivery[]; end: D
           seq,
           at,
           event.code ?? '',
-          event.transition ?? 'active',
+          event.transition === 'cleared' ? 'cleared' : 'active',
           event.severity ?? 1,
         ),
       );
@@ -557,7 +613,7 @@ async function expectOee(
 function lastFacts(run: Run): Map<string, number> {
   const last = new Map<string, number>();
   for (const event of run.events) {
-    if (event.machineId && ['state', 'cycle-complete', 'alarm'].includes(event.type)) {
+    if (event.machineId && DEVICE_FACTS.includes(event.type)) {
       last.set(event.machineId, Date.parse(event.at));
     }
   }
@@ -981,7 +1037,7 @@ async function expectInsideBuckets(db: Kysely<Database>, run: Run): Promise<numb
 async function expectFinality(equipment: Equipment, db: Kysely<Database>, run: Run) {
   const settled = new Map<string, number>();
   for (const event of run.events) {
-    if (event.machineId && ['state', 'cycle-complete', 'alarm'].includes(event.type)) {
+    if (event.machineId && DEVICE_FACTS.includes(event.type)) {
       settled.set(event.machineId, Date.parse(event.at));
     }
   }
@@ -1049,11 +1105,11 @@ function lossRecords(run: Run): {
 } {
   const segments = shiftSegments(plant.shifts, run.start, run.end);
   const records: { equipment: string; start: number; end: number; shiftKey: string }[] = [];
-  const byMachine = new Map<string, { at: number; state: string }[]>();
+  const byMachine = new Map<string, { at: number; state: string; cause: string | null }[]>();
   for (const event of run.events) {
     if (event.type !== 'state' || !event.machineId) continue;
-    const list = byMachine.get(event.machineId) ?? [{ at: run.start, state: 'Off' }];
-    list.push({ at: Date.parse(event.at), state: event.to ?? 'Idle' });
+    const list = byMachine.get(event.machineId) ?? [{ at: run.start, state: 'Off', cause: null }];
+    list.push({ at: Date.parse(event.at), state: event.to ?? 'Idle', cause: event.cause ?? null });
     byMachine.set(event.machineId, list);
   }
   let lossIntervals = 0;
@@ -1061,6 +1117,14 @@ function lossRecords(run: Run): {
     points.forEach((point, i) => {
       const end = points[i + 1]?.at ?? run.end;
       if (end <= point.at) return;
+      // Under `scheduledTime: orders`, Idle NO-ORDER is outside planned busy time (#175).
+      if (
+        plant.oee.scheduledTime === 'orders' &&
+        point.state === 'Idle' &&
+        point.cause === 'NO-ORDER'
+      ) {
+        return;
+      }
       if (!availabilityLoss(point.state, end - point.at, plant.oee.microStopThresholdMs)) return;
       // Inside planned time only: the no-shift bucket has none, so nothing is lost there.
       const pieces = segments
@@ -1098,6 +1162,541 @@ async function expectRecords(db: Kysely<Database>, run: Run) {
   return { lossIntervals, records: stored.length };
 }
 
+// ---- Orders mode (#175): the orders and execution modules against the order ground truth ----
+
+/** The ERP serving a scenario's dataset (`@shopfloor/contracts/erp-api`), storing every post. */
+class GoldenErp implements ErpApi {
+  readonly feedId = 'b'.repeat(32);
+  readonly posts: { kind: 'status' | 'confirmation'; key: string; body: unknown }[] = [];
+  readonly #entries: readonly FeedEntry[];
+
+  constructor(entries: readonly FeedEntry[]) {
+    this.#entries = entries;
+  }
+
+  feed(after: number, limit: number): Promise<FeedPage> {
+    const entries = this.#entries.slice(after, after + limit);
+    return Promise.resolve({
+      kind: 'page',
+      page: {
+        feedId: this.feedId,
+        entries: [...entries],
+        cursor: entries.at(-1)?.feedSeq ?? after,
+        more: after + entries.length < this.#entries.length,
+      },
+    });
+  }
+
+  post(kind: 'status' | 'confirmation', key: string, body: unknown): Promise<PostOutcome> {
+    const replay = this.posts.find((p) => p.key === key);
+    if (replay && JSON.stringify(replay.body) !== JSON.stringify(body)) {
+      return Promise.resolve({ kind: 'conflict', status: 409, detail: `${key}: another body` });
+    }
+    if (!replay) this.posts.push({ kind, key, body });
+    return Promise.resolve({
+      kind: 'stored',
+      status: replay ? 200 : 201,
+      receipt: {
+        idempotencyKey: key,
+        kind,
+        orderNumber: key.split('~')[0] ?? '',
+        receivedSeq: this.posts.findIndex((p) => p.key === key) + 1,
+        receivedAt: new Date(0).toISOString(),
+      },
+    });
+  }
+}
+
+/** The broker as the command outbox sees it: records every publish. */
+class CommandSink implements CommandPublisher {
+  readonly connected = true;
+  readonly published: string[] = [];
+
+  publish(topic: string): Promise<void> {
+    this.published.push(topic);
+    return Promise.resolve();
+  }
+}
+
+interface ScenarioFile {
+  readonly erp: { readonly dataset: string; readonly release: readonly string[] };
+  readonly dispatches: readonly {
+    readonly commandId: string;
+    readonly machine: string;
+    readonly orderId: string;
+    readonly product: string;
+    readonly quantity: number;
+    readonly notBefore: string;
+  }[];
+}
+
+interface OrdersStack {
+  readonly orders: Orders;
+  readonly execution: Execution;
+  readonly erp: GoldenErp;
+  readonly scenario: ScenarioFile;
+  readonly by: { readonly by: WriteBy; readonly requestId: string };
+}
+
+/**
+ * The orders and execution modules over a reconciliation's database, with the scenario's ERP
+ * dataset behind a fake ERP and a recording command sink in place of the broker. Commands live
+ * for an hour (wall time), so a slow replay never declares one failed.
+ */
+async function ordersStack(
+  m: { db: Kysely<Database>; ingest: Ingest; masterData: MasterData; equipment: Equipment },
+  dir: string,
+  run: Run,
+): Promise<OrdersStack> {
+  const scenario = JSON.parse(await readFile(join(dir, 'scenario.json'), 'utf8')) as ScenarioFile;
+  const dataset: unknown = JSON.parse(await readFile(join(dir, scenario.erp.dataset), 'utf8'));
+  const expanded = expandErpDataset(dataset, erpMasterData(plant));
+  if (!expanded.ok) throw new Error(expanded.issues.join('\n'));
+  const erp = new GoldenErp(expanded.feed);
+  const user = await new Identity({
+    db: m.db,
+    sweepMs: 0,
+    hashParams: { N: 1024, r: 8, p: 1 },
+  }).createUser(
+    {
+      username: 'supervisor',
+      roles: ['supervisor'],
+      password: 'a-long-test-password',
+      mustChangePassword: false,
+    },
+    { system: 'test' },
+  );
+  const clock = () => m.equipment.watermark(EPOCH) ?? new Date(run.start);
+  const orders = new Orders({
+    db: m.db,
+    ingest: m.ingest,
+    masterData: m.masterData,
+    publisher: new CommandSink(),
+    erp,
+    clock,
+    tickMs: 0,
+    erpPollMs: 0,
+    erpPostMs: 0,
+    timings: { ttlMs: 3_600_000, failMarginMs: 3_600_000 },
+  });
+  await orders.start();
+  const execution = new Execution({
+    db: m.db,
+    ingest: m.ingest,
+    masterData: m.masterData,
+    orders,
+    rework: {
+      test: plant.process.leakTest.operation,
+      back: plant.process.leakTest.reworkOperation,
+    },
+    clock,
+    tickMs: 0,
+  });
+  await execution.start();
+  orders.useBlankCounter(execution);
+  return {
+    orders,
+    execution,
+    erp,
+    scenario,
+    by: {
+      by: { userId: user.id, username: 'supervisor', roles: ['supervisor'] },
+      requestId: 'golden',
+    },
+  };
+}
+
+/**
+ * Plan "Golden": the MES imports every order (none rejected), and dispatching the released orders
+ * in planned-start order at the start time reproduces the scenario's `dispatches` exactly (ids,
+ * machines, quantities, `notBefore`). Both CNCs' runs are known from their first facts.
+ */
+async function dispatchScenario(stack: OrdersStack): Promise<void> {
+  const { orders, scenario, by } = stack;
+  await orders.importNow();
+  const all = (await orders.list()).orders;
+  expect(all.filter((o) => o.status === 'rejected')).toEqual([]);
+  for (const id of scenario.erp.release) {
+    const found = all.find((o) => o.id === id);
+    await orders.release(id, { version: found?.version ?? 0 }, by);
+  }
+  for (const order of (await orders.list({ status: ['released'] })).orders) {
+    await orders.dispatch(order.id, { version: order.version }, by);
+  }
+  expect(
+    (await orders.commands()).map((c) => ({
+      commandId: c.commandId,
+      machine: c.equipment,
+      orderId: c.orderId,
+      product: c.product,
+      quantity: c.quantity,
+      notBefore: c.notBefore.toISOString(),
+    })),
+  ).toEqual(scenario.dispatches);
+}
+
+/** A run's facts before its first job fact (the machines' first states) and from it on. */
+function splitAtFirstJob(facts: readonly Delivery[]): {
+  before: Delivery[];
+  after: Delivery[];
+} {
+  const at = facts.findIndex((d) => d.topic.endsWith('/events/job'));
+  return at < 0
+    ? { before: [...facts], after: [] }
+    : { before: facts.slice(0, at), after: facts.slice(at) };
+}
+
+/** Brings commands, units, completion and confirmations up to date, then posts the ERP outbox. */
+async function settleOrders(stack: OrdersStack): Promise<void> {
+  for (let round = 0; round < 2; round++) {
+    await stack.orders.tick();
+    await stack.execution.tick();
+  }
+  while ((await stack.orders.postNow()) > 0) {
+    // Posts the outbox in batches until nothing is pending.
+  }
+}
+
+/** A unit as the ground truth hashes it (`unitsDocument`, sim-summary/4). */
+interface TruthUnit {
+  readonly partId: number;
+  readonly serial: string;
+  readonly orderId: string;
+  readonly records: readonly {
+    readonly operation: string;
+    readonly equipment: string;
+    readonly pass: number;
+    readonly at: string;
+    readonly result: string;
+    readonly reason?: string;
+  }[];
+}
+
+/** Canonical JSON, keys sorted (the simulator's `stableStringify`; apps never import each other). */
+function canonicalJson(value: unknown): string {
+  const canonical = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(canonical);
+    if (item !== null && typeof item === 'object') {
+      return Object.fromEntries(
+        Object.entries(item as Record<string, unknown>)
+          .filter(([, v]) => v !== undefined)
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([k, v]) => [k, canonical(v)]),
+      );
+    }
+    return item;
+  };
+  return JSON.stringify(canonical(value));
+}
+
+/**
+ * Every unit with its operation records, derived from the event log alone (plan "Golden": the full
+ * list, as the ground truth hashes it): a part belongs to the job whose `started` event is the
+ * latest on its CNC before its blank was taken; passes follow leak-test reworks. Also each unit's
+ * expected WIP position (`after:OPxx`, `rework:OPxx`, or `at:{machine}` when its machine ends
+ * Blocked holding it), and whether a CNC still holds its blank with no cycle yet.
+ */
+function eventLogUnits(run: Run): {
+  units: TruthUnit[];
+  positions: Map<number, string>;
+} {
+  const operationOf = new Map<string, string>();
+  for (const area of plant.plant.areas) {
+    for (const wc of area.workCenters) {
+      for (const item of wc.equipment) operationOf.set(item.id, item.operation);
+    }
+  }
+  const first = plant.products.operations[0] ?? 'OP10';
+  const last = plant.products.operations.at(-1) ?? 'OP50';
+  const reworkOps = new Set([
+    plant.process.leakTest.operation,
+    plant.process.leakTest.reworkOperation,
+  ]);
+  const current = new Map<string, string>();
+  const jobs = new Map<string, string>();
+  const units = new Map<
+    number,
+    { serial: string; orderId: string; records: TruthUnit['records'][number][]; reworks: number }
+  >();
+  const lastCycle = new Map<string, number>();
+  const lastState = new Map<string, string>();
+  const unitOf = (machine: string, partId: number) => {
+    const known = units.get(partId);
+    if (known) return known;
+    if (operationOf.get(machine) !== first) return undefined;
+    const orderId = jobs.get(current.get(machine) ?? '');
+    if (orderId === undefined) return undefined;
+    const unit = { serial: '', orderId, records: [], reworks: 0 };
+    units.set(partId, unit);
+    return unit;
+  };
+  for (const event of run.events) {
+    const machine = event.machineId ?? '';
+    if (event.type === 'job') {
+      if (event.transition === 'accepted') jobs.set(event.commandId ?? '', event.orderId ?? '');
+      if (event.transition === 'started') current.set(machine, event.commandId ?? '');
+    } else if (event.type === 'state') {
+      lastState.set(machine, event.to ?? '');
+    } else if (event.type === 'material-consumed') {
+      unitOf(machine, event.partId ?? 0);
+    } else if (event.type === 'cycle-complete') {
+      lastCycle.set(machine, event.partId ?? 0);
+      const unit = unitOf(machine, event.partId ?? 0);
+      if (!unit) continue;
+      const operation = operationOf.get(machine) ?? '';
+      if (event.serial !== undefined && event.serial !== '') unit.serial = event.serial;
+      unit.records.push({
+        operation,
+        equipment: machine,
+        pass: reworkOps.has(operation) ? unit.reworks + 1 : 1,
+        at: new Date(Date.parse(event.at)).toISOString(),
+        result: event.result ?? 'good',
+        ...(event.reason === undefined ? {} : { reason: event.reason }),
+      });
+      if (event.result === 'rework') unit.reworks++;
+    }
+  }
+  const positions = new Map<number, string>();
+  for (const [partId, unit] of units) {
+    const record = unit.records.at(-1);
+    if (!record) continue;
+    const terminal =
+      record.result === 'scrap' || (record.result === 'good' && record.operation === last);
+    if (terminal) continue;
+    if (record.result === 'rework') {
+      positions.set(partId, `rework:${plant.process.leakTest.reworkOperation}`);
+    } else if (
+      lastState.get(record.equipment) === 'Blocked' &&
+      lastCycle.get(record.equipment) === partId
+    ) {
+      positions.set(partId, `at:${record.equipment}`);
+    } else {
+      positions.set(partId, `after:${record.operation}`);
+    }
+  }
+  return {
+    units: [...units]
+      .sort(([a], [b]) => a - b)
+      .map(([partId, unit]) => ({
+        partId,
+        serial: unit.serial,
+        orderId: unit.orderId,
+        records: unit.records,
+      })),
+    positions,
+  };
+}
+
+/**
+ * Plan "Golden" and exit criterion 2 (#175): every command is confirmed by exactly one `accepted`
+ * fact, with no command, job or routing incident; every unit's operation records equal the ground
+ * truth's (the event log's list, whose hash is `units.sha256`); per order and operation the
+ * quantities, scrap by reason, rework passes, backflushed material (booked at cycle completion;
+ * material in process not compared), packed good, completion time and WIP equal the ground truth;
+ * the confirmations equal those computed from it, none a correction; completed orders are
+ * `completed` (`short` when packed good < quantity). Returns the comparison counts.
+ */
+async function expectOrders(
+  stack: OrdersStack,
+  ingest: Ingest,
+  run: Run,
+): Promise<{ units: number; confirmations: number; orders: number }> {
+  const truth = run.truth.orders;
+  const { orders, execution, erp } = stack;
+  // Commands: one accepted fact each, all confirmed; no incident of either module.
+  const commands = await orders.commands();
+  expect(commands.map((c) => c.commandId).sort()).toEqual(
+    truth.jobs.map((j) => j.commandId).sort(),
+  );
+  for (const command of commands) {
+    const accepted = (await ingest.jobFacts({ commandIds: [command.commandId] })).filter(
+      (f) => f.transition === 'accepted',
+    );
+    expect([command.commandId, accepted.length, command.state, command.confirmed]).toEqual([
+      command.commandId,
+      1,
+      'accepted',
+      true,
+    ]);
+  }
+  expect(await orders.incidents()).toEqual([]);
+  expect(await execution.incidents()).toEqual([]);
+
+  // Units: the event log's list hashes to the ground truth's; the MES's equals it but for blanks
+  // still in a CNC (no cycle fact yet), which it counts per order instead.
+  const derived = eventLogUnits(run);
+  expect(derived.units).toHaveLength(truth.units.count);
+  expect(createHash('sha256').update(canonicalJson(derived.units)).digest('hex')).toBe(
+    truth.units.sha256,
+  );
+  const seen = derived.units.filter((u) => u.records.length > 0);
+  const stored = (await execution.units({ epoch: EPOCH, limit: 100_000 })).units;
+  expect(
+    stored.map((u) => ({
+      partId: u.partId,
+      serial: u.serial ?? '',
+      orderId: u.orderId,
+      records: u.records.map((r) => ({
+        operation: r.operation,
+        equipment: r.equipment,
+        pass: r.pass,
+        at: r.at.toISOString(),
+        result: r.result,
+        ...(r.reason === null ? {} : { reason: r.reason }),
+      })),
+    })),
+  ).toEqual(seen);
+  const blanks = new Map<string, number>();
+  for (const unit of derived.units.filter((u) => u.records.length === 0)) {
+    blanks.set(unit.orderId, (blanks.get(unit.orderId) ?? 0) + 1);
+  }
+
+  // Per order: quantities, scrap, rework, material, packed, completion, WIP; and its status.
+  let confirmations = 0;
+  for (const [id, order] of Object.entries(truth.orders)) {
+    const mes = await execution.orderExecution(id);
+    if (!mes) throw new Error(`no order ${id}`);
+    const operations = Object.fromEntries(
+      mes.operations
+        .filter((op) => op.in > 0)
+        .map((op) => [
+          op.operation,
+          {
+            in: op.in,
+            good: op.good,
+            scrap: Object.values(op.scrap).reduce((sum, n) => sum + n, 0),
+            rework: op.rework,
+          },
+        ]),
+    );
+    const material: Record<string, number> = {};
+    for (const op of mes.operations) {
+      for (const [item, n] of Object.entries(op.material))
+        material[item] = (material[item] ?? 0) + n;
+    }
+    const wipTotal = mes.units.wip + Object.values(mes.inMachine).reduce((s, n) => s + n, 0);
+    expect({
+      id,
+      operations,
+      scrap: mes.scrap,
+      reworkPasses: mes.reworkPasses,
+      packedGood: mes.packedGood,
+      material: Object.fromEntries(Object.entries(material).sort(([a], [b]) => (a < b ? -1 : 1))),
+      completedAt: mes.completedAt?.toISOString() ?? null,
+      wip: wipTotal,
+      started: mes.units.total + Object.values(mes.inMachine).reduce((s, n) => s + n, 0),
+      inMachine: Object.values(mes.inMachine).reduce((s, n) => s + n, 0),
+    }).toEqual({
+      id,
+      operations: order.operations,
+      scrap: order.scrap,
+      reworkPasses: order.reworkPasses,
+      packedGood: order.packedGood,
+      material: order.material,
+      completedAt: order.completedAt,
+      wip: Object.values(order.wip).reduce((s, n) => s + n, 0),
+      started: order.started,
+      inMachine: blanks.get(id) ?? 0,
+    });
+    // A CNC's place in the ground truth's WIP is a blank in it, or the part it holds Blocked.
+    for (const [cnc, n] of Object.entries(mes.inMachine)) {
+      expect([id, cnc, n + (mes.wip[`at:${cnc}`] ?? 0)]).toEqual([id, cnc, order.wip[cnc]]);
+    }
+    // Positions in WIP: as the event log places each unit.
+    const expected: Record<string, number> = {};
+    for (const unit of seen.filter((u) => u.orderId === id)) {
+      const position = derived.positions.get(unit.partId);
+      if (position !== undefined) expected[position] = (expected[position] ?? 0) + 1;
+    }
+    expect([id, mes.wip]).toEqual([
+      id,
+      Object.fromEntries(Object.entries(expected).sort(([a], [b]) => (a < b ? -1 : 1))),
+    ]);
+    // Status and confirmations: computed from the ground truth for a complete order, none else.
+    const record = await orders.order(id);
+    const sent = await orders.confirmations(id);
+    if (order.completedAt === null) {
+      expect([id, record?.status, sent]).toEqual([id, 'in-progress', []]);
+      continue;
+    }
+    expect([id, record?.status, record?.short]).toEqual([
+      id,
+      'completed',
+      order.packedGood < (record?.quantity ?? 0),
+    ]);
+    const bom = record?.bom ?? [];
+    const want = plant.products.operations.map((operation) => {
+      const materials = new Set(
+        bom.filter((b) => b.operation === operation).map((b) => b.material),
+      );
+      return {
+        key: confirmationKey(id, operation, 1),
+        kind: 'final',
+        yield: order.operations[operation]?.good ?? 0,
+        scrap: order.scrap[operation] ?? {},
+        reworkPasses: order.operations[operation]?.rework ?? 0,
+        material: Object.fromEntries(
+          Object.entries(order.material).filter(([item]) => materials.has(item)),
+        ),
+        messageStatus: 'sent',
+      };
+    });
+    expect([
+      id,
+      sent.map((c) => ({
+        key: c.idempotencyKey,
+        kind: c.kind,
+        yield: c.yield,
+        scrap: c.scrap,
+        reworkPasses: c.reworkPasses,
+        material: c.material,
+        messageStatus: c.messageStatus,
+      })),
+    ]).toEqual([id, want]);
+    confirmations += sent.length;
+  }
+  // What the ERP received: exactly these confirmations, none a correction.
+  const posted = erp.posts.filter((p) => p.kind === 'confirmation');
+  expect(posted).toHaveLength(confirmations);
+  expect(posted.filter((p) => (p.body as { kind: string }).kind !== 'final')).toEqual([]);
+  return { units: stored.length, confirmations, orders: Object.keys(truth.orders).length };
+}
+
+/** Rows of the execution and confirmation tables without wall-clock columns, in key order. */
+async function storedExecution(db: Kysely<Database>) {
+  return {
+    units: await db
+      .selectFrom('execution.unit')
+      .select(['epoch', 'part_id', 'serial', 'order_id', 'command_id', 'status', 'position'])
+      .select(['last_at', 'terminal_at', 'suspect', 'violation'])
+      .orderBy('epoch')
+      .orderBy('part_id')
+      .execute(),
+    records: await db
+      .selectFrom('execution.operation_record')
+      .selectAll()
+      .orderBy('equipment')
+      .orderBy('epoch')
+      .orderBy('seq')
+      .execute(),
+    scrap: await db
+      .selectFrom('execution.scrap_record')
+      .select(['equipment', 'epoch', 'seq', 'part_id', 'order_id', 'operation', 'pass'])
+      .select(['scrapped_at', 'machine_reason', 'version'])
+      .orderBy('equipment')
+      .orderBy('seq')
+      .execute(),
+    confirmations: await db
+      .selectFrom('orders.confirmation')
+      .select(['order_id', 'operation', 'n', 'kind', 'yield', 'scrap', 'rework_passes'])
+      .select(['material', 'confirmed_at', 'idempotency_key'])
+      .orderBy('order_id')
+      .orderBy('operation')
+      .orderBy('n')
+      .execute(),
+  };
+}
+
 /**
  * Per-test limits: the golden week takes about 70 s in order and 125 s shuffled locally. Both
  * limits together (10 min) leave the end-to-end job (20 min, with the gateway's test and the
@@ -1127,12 +1726,30 @@ export interface Scenario {
     readonly final: number;
     readonly compared: number;
   };
+  /**
+   * Orders mode (#175): the scenario's ERP dataset and dispatches go through the orders and
+   * execution modules, reconciled per order, operation and unit; the pinned comparison counts.
+   */
+  readonly orders?: OrdersPins;
+}
+
+/** What an orders-mode reconciliation compares, pinned (#175). */
+export interface OrdersPins {
+  /** Units with operation records (the ground truth's units minus blanks still in a CNC). */
+  readonly units: number;
+  /** Final confirmations (orders complete × operations). */
+  readonly confirmations: number;
+  /** Orders the ground truth has, each compared by operation. */
+  readonly orders: number;
 }
 
 /** A golden scenario of apps/simulator/golden by name. */
 export async function golden(
   name: string,
-  pinned: Pick<Scenario, 'oeeBuckets' | 'alarmComparisons' | 'settledToEnd' | 'shifts'> = {},
+  pinned: Pick<
+    Scenario,
+    'oeeBuckets' | 'alarmComparisons' | 'settledToEnd' | 'shifts' | 'orders'
+  > = {},
 ): Promise<Scenario> {
   const dir = join(GOLDENS, name);
   const scenario = JSON.parse(await readFile(join(dir, 'scenario.json'), 'utf8')) as Scenario;
@@ -1215,7 +1832,18 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const { facts, anchors, end } = unsMessages(run);
         const { db, equipment, ingest, masterData, alarms, send } = await mes();
         reference = db;
-        await send([...anchors, ...facts, end]);
+        let stack: OrdersStack | undefined;
+        if (span.orders !== undefined && span.golden !== undefined) {
+          // Orders mode (#175, B3): the machines' first facts, then the MES dispatches the released
+          // orders while the CNCs are idle at the start time, then the rest of the run.
+          const { before, after } = splitAtFirstJob(facts);
+          await send([...anchors, ...before]);
+          stack = await ordersStack({ db, ingest, masterData, equipment }, span.golden, run);
+          await dispatchScenario(stack);
+          await send([...after, end]);
+        } else {
+          await send([...anchors, ...facts, end]);
+        }
         await alarms.flush();
         expect(equipment.watermark(EPOCH)).toEqual(new Date(run.end));
         expect(await totals(equipment, db)).toEqual(expected(run.truth));
@@ -1244,6 +1872,16 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           `${title}: in order, ${String(alarmed.compared)} alarm comparisons equal the ground truth; ${String(alarmed.final)} KPI buckets final, not final (no fact after them): ${alarmed.open.join(', ') || 'none'}`,
         );
         await checkReports('in order', { db, equipment, ingest, masterData, alarms });
+        if (stack && span.orders) {
+          await settleOrders(stack);
+          const counts = await expectOrders(stack, ingest, run);
+          expect(counts).toEqual(span.orders);
+          console.log(
+            `${title}: in order, ${String(counts.units)} units, ${String(counts.orders)} orders and ${String(counts.confirmations)} confirmations equal the ground truth`,
+          );
+          await stack.execution.stop();
+          await stack.orders.stop();
+        }
         await alarms.stop();
         await equipment.stop();
         await ingest.stop();
@@ -1256,11 +1894,32 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
       async () => {
         const { facts, anchors, end } = unsMessages(run);
         const next = random(2026);
-        const copies = facts.filter(() => next() < 0.1);
-        const mixed = shuffle([...anchors, ...facts, ...copies], next);
         const { db, equipment, ingest, masterData, alarms, send } = await mes();
-        // Telemetry flows all along; the last sample, after every fact, ends the observation.
-        await send([...mixed, end, ...mixed.slice(0, 500)]);
+        let stack: OrdersStack | undefined;
+        if (span.orders !== undefined && span.golden !== undefined) {
+          // Orders mode (#175): dispatched at the idle start as in order, then the rest shuffled
+          // with 10 % duplicates, units, completion and confirmations brought up to date every 400
+          // deliveries, so they are judged on partial, reordered data all along (a confirmation
+          // read too early would show as a correction).
+          const { before, after } = splitAtFirstJob(facts);
+          await send([...anchors, ...before]);
+          stack = await ordersStack({ db, ingest, masterData, equipment }, span.golden, run);
+          await dispatchScenario(stack);
+          const copies = after.filter(() => next() < 0.1);
+          const mixed = shuffle([...after, ...copies], next);
+          for (let i = 0; i < mixed.length; i += 400) {
+            await send(mixed.slice(i, i + 400));
+            await stack.orders.tick();
+            await stack.execution.tick();
+            await stack.orders.postNow();
+          }
+          await send([end, ...mixed.slice(0, 500)]);
+        } else {
+          const copies = facts.filter(() => next() < 0.1);
+          const mixed = shuffle([...anchors, ...facts, ...copies], next);
+          // Telemetry flows all along; the last sample, after every fact, ends the observation.
+          await send([...mixed, end, ...mixed.slice(0, 500)]);
+        }
         await equipment.flush();
         await alarms.flush();
         expect(await storedPieces(db)).toEqual(await storedPieces(reference));
@@ -1282,6 +1941,17 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           `${title}: shuffled, ${String(alarmed.compared)} alarm comparisons equal the ground truth`,
         );
         await checkReports('shuffled', { db, equipment, ingest, masterData, alarms });
+        if (stack && span.orders) {
+          await settleOrders(stack);
+          expect(await expectOrders(stack, ingest, run)).toEqual(span.orders);
+          // The very units, records, scrap records and confirmations as delivered in order.
+          expect(await storedExecution(db)).toEqual(await storedExecution(reference));
+          console.log(
+            `${title}: shuffled, units, records and confirmations equal the in-order run`,
+          );
+          await stack.execution.stop();
+          await stack.orders.stop();
+        }
         await alarms.stop();
         await equipment.stop();
         await ingest.stop();

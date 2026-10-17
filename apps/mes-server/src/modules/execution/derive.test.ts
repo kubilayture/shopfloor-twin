@@ -1,0 +1,262 @@
+import fc from 'fast-check';
+import { describe, expect, it } from 'vitest';
+import {
+  buildUnit,
+  completion,
+  holdsBlank,
+  orderTotals,
+  type CompletionUnit,
+  type JobStart,
+  type RoutingModel,
+  type UnitFact,
+} from './derive.ts';
+
+const MODEL: RoutingModel = {
+  operations: ['OP10', 'OP20', 'OP30', 'OP40', 'OP50'],
+  test: 'OP40',
+  back: 'OP30',
+};
+const OPERATION: Record<string, string> = {
+  'cnc-01': 'OP10',
+  'cnc-02': 'OP10',
+  'wsh-01': 'OP20',
+  'asm-01': 'OP30',
+  'lkt-01': 'OP40',
+  'pck-01': 'OP50',
+};
+const operationOf = (equipment: string) => OPERATION[equipment];
+
+let seqs: Record<string, number> = {};
+const fact = (
+  equipment: string,
+  at: number,
+  result: 'good' | 'scrap' | 'rework' = 'good',
+  extra: Partial<UnitFact> = {},
+): UnitFact => {
+  seqs[equipment] = (seqs[equipment] ?? 0) + 10;
+  return {
+    equipment,
+    epoch: 1,
+    seq: seqs[equipment] ?? 0,
+    at,
+    product: 'VB-100',
+    partId: 7,
+    serial: equipment.startsWith('cnc') ? 'VB-100-000007' : '',
+    result,
+    reason:
+      result === 'scrap'
+        ? equipment === 'lkt-01'
+          ? 'LEAK'
+          : 'DIMENSIONAL'
+        : result === 'rework'
+          ? 'LEAK'
+          : null,
+    ...extra,
+  };
+};
+
+const starts = (list: JobStart[]) => (equipment: string) => (equipment === 'cnc-01' ? list : []);
+
+describe('buildUnit (#175, ADR-0031)', () => {
+  it('numbers passes after a leak-test rework, attributes the order by the latest started fact below the OP10 cycle and reads status and position', () => {
+    seqs = {};
+    const facts = [
+      fact('cnc-01', 100),
+      fact('wsh-01', 200),
+      fact('asm-01', 300),
+      fact('lkt-01', 400, 'rework'),
+      fact('asm-01', 500),
+      fact('lkt-01', 600),
+      fact('pck-01', 700),
+    ];
+    const jobs: JobStart[] = [
+      { seq: 1, commandId: 'A~OP10~1', orderId: 'A' },
+      { seq: 5, commandId: 'B~OP10~1', orderId: 'B' },
+      { seq: 15, commandId: 'C~OP10~1', orderId: 'C' },
+    ];
+    // Delivered in any order, the unit is the same.
+    fc.assert(
+      fc.property(fc.shuffledSubarray(facts, { minLength: facts.length }), (shuffled) => {
+        const unit = buildUnit(shuffled, operationOf, starts(jobs), MODEL);
+        expect(unit.records.map((r) => [r.operation, r.pass, r.result])).toEqual([
+          ['OP10', 1, 'good'],
+          ['OP20', 1, 'good'],
+          ['OP30', 1, 'good'],
+          ['OP40', 1, 'rework'],
+          ['OP30', 2, 'good'],
+          ['OP40', 2, 'good'],
+          ['OP50', 1, 'good'],
+        ]);
+        expect([unit.orderId, unit.commandId, unit.serial]).toEqual([
+          'B',
+          'B~OP10~1',
+          'VB-100-000007',
+        ]);
+        expect([unit.status, unit.position, unit.terminalAt, unit.suspect, unit.violation]).toEqual(
+          ['packed', 'done', 700, null, null],
+        );
+      }),
+    );
+  });
+
+  it('places a unit in WIP after its last good operation, or back at OP30 after a rework', () => {
+    seqs = {};
+    const a = buildUnit([fact('cnc-01', 1), fact('wsh-01', 2)], operationOf, starts([]), MODEL);
+    expect([a.status, a.position, a.orderId]).toEqual(['wip', 'after:OP20', null]);
+    const b = buildUnit(
+      [fact('cnc-01', 1), fact('wsh-01', 2), fact('asm-01', 3), fact('lkt-01', 4, 'rework')],
+      operationOf,
+      starts([]),
+      MODEL,
+    );
+    expect(b.position).toBe('rework:OP30');
+    const scrapped = buildUnit([fact('cnc-01', 1, 'scrap')], operationOf, starts([]), MODEL);
+    expect([scrapped.status, scrapped.terminalAt, scrapped.position]).toEqual([
+      'scrapped',
+      1,
+      'done',
+    ]);
+  });
+
+  it('suspects a missing predecessor or a repeat (judged later) and proves a record after the terminal one at once', () => {
+    seqs = {};
+    const gap = buildUnit([fact('cnc-01', 1), fact('asm-01', 3)], operationOf, starts([]), MODEL);
+    expect(gap.suspect).toEqual({ kind: 'missing-predecessor', operation: 'OP20', before: 3 });
+    // A second OP30 pass without the leak test's rework (still on its way, or never).
+    const repeat = buildUnit(
+      [fact('cnc-01', 1), fact('wsh-01', 2), fact('asm-01', 3), fact('asm-01', 5)],
+      operationOf,
+      starts([]),
+      MODEL,
+    );
+    expect(repeat.suspect).toEqual({ kind: 'repeated', operation: 'OP40', before: 5 });
+    const after = buildUnit(
+      [fact('cnc-01', 1, 'scrap'), fact('wsh-01', 2)],
+      operationOf,
+      starts([]),
+      MODEL,
+    );
+    expect([after.violation, after.status]).toEqual(['after-terminal', 'scrapped']);
+  });
+});
+
+describe('holdsBlank (ADR-0031)', () => {
+  it('reads the last decisive state after the last OP10 cycle', () => {
+    expect(holdsBlank([])).toBe(true);
+    expect(holdsBlank([{ state: 'Running', cause: null }])).toBe(true);
+    expect(holdsBlank([{ state: 'Starved', cause: 'MATERIAL-BLANK-100' }])).toBe(false);
+    expect(holdsBlank([{ state: 'Blocked', cause: null }])).toBe(false);
+    expect(holdsBlank([{ state: 'Idle', cause: 'NO-ORDER' }])).toBe(false);
+    expect(holdsBlank([{ state: 'Setup', cause: 'CHANGEOVER VB-100→VB-200' }])).toBe(false);
+    // Breaks, shift ends, failures and a missing operator keep what the machine held.
+    expect(
+      holdsBlank([
+        { state: 'Running', cause: null },
+        { state: 'PlannedStop', cause: 'BREAK' },
+        { state: 'Off', cause: null },
+        { state: 'Down', cause: 'SPINDLE-OVERLOAD' },
+        { state: 'Idle', cause: 'NO-OPERATOR' },
+      ]),
+    ).toBe(true);
+    expect(
+      holdsBlank([
+        { state: 'Starved', cause: null },
+        { state: 'PlannedStop', cause: 'BREAK' },
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe('orderTotals (H2)', () => {
+  it('counts every pass and backflushes standard lines on a first pass, rework lines on a later one', () => {
+    const bom = [
+      { material: 'BLANK-100', operation: 'OP10', quantityPerUnit: 1, usage: 'standard' as const },
+      { material: 'SK-1', operation: 'OP30', quantityPerUnit: 1, usage: 'standard' as const },
+      { material: 'SP-100', operation: 'OP30', quantityPerUnit: 1, usage: 'standard' as const },
+      { material: 'SK-1', operation: 'OP30', quantityPerUnit: 1, usage: 'rework' as const },
+    ];
+    const totals = orderTotals(
+      [
+        { operation: 'OP10', pass: 1, result: 'good', reason: null },
+        { operation: 'OP10', pass: 1, result: 'scrap', reason: 'DIMENSIONAL' },
+        { operation: 'OP30', pass: 1, result: 'good', reason: null },
+        { operation: 'OP40', pass: 1, result: 'rework', reason: 'LEAK' },
+        { operation: 'OP30', pass: 2, result: 'good', reason: null },
+        { operation: 'OP40', pass: 2, result: 'scrap', reason: 'LEAK' },
+      ],
+      bom,
+      MODEL.operations,
+    );
+    expect(totals.find((t) => t.operation === 'OP10')).toEqual({
+      operation: 'OP10',
+      in: 2,
+      good: 1,
+      scrap: { DIMENSIONAL: 1 },
+      rework: 0,
+      material: { 'BLANK-100': 2 },
+    });
+    expect(totals.find((t) => t.operation === 'OP30')?.material).toEqual({
+      'SK-1': 2,
+      'SP-100': 1,
+    });
+    expect(totals.find((t) => t.operation === 'OP40')).toMatchObject({
+      in: 2,
+      good: 0,
+      rework: 1,
+      scrap: { LEAK: 1 },
+    });
+  });
+});
+
+describe('completion (H1)', () => {
+  const record = (operation: string, at: number, result: 'good' | 'scrap' | 'rework' = 'good') => ({
+    equipment: operation,
+    epoch: 1,
+    seq: at,
+    operation,
+    at,
+    result,
+  });
+  const packed: CompletionUnit = {
+    status: 'packed',
+    records: [
+      record('OP10', 1),
+      record('OP20', 2),
+      record('OP30', 3),
+      record('OP40', 4),
+      record('OP50', 5),
+    ],
+  };
+  const reworked: CompletionUnit = {
+    status: 'wip',
+    records: [record('OP10', 2), record('OP20', 3), record('OP30', 4), record('OP40', 6, 'rework')],
+  };
+  const all = () => true;
+
+  it('keeps OP30 and OP40 open while a unit with one leak failure can come back, OP20 complete', () => {
+    const done = completion([packed, reworked], true, all, MODEL);
+    expect(Object.fromEntries(done)).toEqual({
+      OP10: 2,
+      OP20: 3,
+      OP30: null,
+      OP40: null,
+      OP50: null,
+    });
+  });
+
+  it('completes every operation once every unit is packed or scrapped, at the latest record', () => {
+    const scrappedAgain: CompletionUnit = {
+      status: 'scrapped',
+      records: [...reworked.records, record('OP30', 8), record('OP40', 9, 'scrap')],
+    };
+    const done = completion([packed, scrappedAgain], true, all, MODEL);
+    expect(Object.fromEntries(done)).toEqual({ OP10: 2, OP20: 3, OP30: 9, OP40: 9, OP50: 9 });
+  });
+
+  it('waits for the jobs and for every record to be at or below its machine’s final-through', () => {
+    expect(completion([packed], false, all, MODEL).get('OP50')).toBeNull();
+    const notOp50 = (r: { equipment: string }) => r.equipment !== 'OP50';
+    const done = completion([packed], true, notOp50, MODEL);
+    expect([done.get('OP40'), done.get('OP50')]).toEqual([4, null]);
+  });
+});

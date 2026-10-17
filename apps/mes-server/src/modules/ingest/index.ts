@@ -61,6 +61,11 @@
  *   received up to it) and `settledSeq` (ADR-0018's final-through) with its time;
  *   `newestDeviceEpochs()`; `componentStatuses(component)` (the gateway's `_sys` status);
  *   `cyclesBetween(equipment, epoch, afterSeq, beforeSeq)`.
+ *
+ * For execution (#175, ADR-0031):
+ * - `Ingest.cycleFacts({ epoch, partIds?, equipment?, seqs?, afterSeq?, beforeSeq? })`: cycle
+ *   facts with their part, by device epoch and part id across machines (an expression index), or
+ *   of one equipment by `seq`; `cycleFactCounts()` per (equipment, epoch) for the catch-up.
  */
 export { INGEST_TOPICS, Ingest, baselineState } from './ingest.ts';
 export { resolveAlarmBaseline } from './alarm-baseline.ts';
@@ -69,6 +74,7 @@ export type {
   AlarmBaseline,
   AlarmFactCount,
   CycleCount,
+  CycleFact,
   CycleHour,
   DeviceProgress,
   FactSummary,

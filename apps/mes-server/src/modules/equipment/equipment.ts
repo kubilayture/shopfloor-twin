@@ -1,3 +1,4 @@
+import { CAUSES } from '@shopfloor/contracts';
 import { HOUR, availabilityLoss, type AvailabilityLoss, type Millis } from '@shopfloor/oee-core';
 import { UNCODED } from '@shopfloor/plant-config';
 import { shiftCuts, type ShiftPattern } from '@shopfloor/shift-calendar';
@@ -242,6 +243,19 @@ export interface StopPiece {
 export interface OeeInputs {
   readonly hours: readonly StateHour[];
   readonly stops: readonly StopPiece[];
+  /**
+   * Idle time with cause `NO-ORDER` per (equipment, epoch, hour) (#175, ADR-0021 amendment),
+   * summed from the stored pieces (the hourly aggregate has no cause).
+   */
+  readonly noOrder: readonly NoOrderHour[];
+}
+
+/** Idle `NO-ORDER` ms of one (equipment, epoch, hour), from the stored pieces (#175). */
+export interface NoOrderHour {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly hour: Date;
+  readonly ms: number;
 }
 
 /** Sent after any write to the stored pieces of one (equipment, epoch) (#118). */
@@ -521,6 +535,7 @@ export class Equipment {
       .execute(async (trx) => {
         const hours: StateHour[] = [];
         const stops: StopPiece[] = [];
+        const noOrder: NoOrderHour[] = [];
         // One equipment at a time keeps every query on its index; all inside the same snapshot.
         for (const equipment of options.equipment ?? [undefined]) {
           const scope = {
@@ -529,8 +544,9 @@ export class Equipment {
           };
           hours.push(...(await this.#stateHourly(trx, from, to, scope)));
           stops.push(...(await this.#stopPieces(trx, from, to, scope)));
+          noOrder.push(...(await this.#noOrderHours(trx, from, to, scope)));
         }
-        return { hours, stops };
+        return { hours, stops, noOrder };
       });
   }
 
@@ -616,6 +632,36 @@ export class Equipment {
         open,
       };
     });
+  }
+
+  /**
+   * Idle `NO-ORDER` ms per (equipment, epoch, hour) in [from, to) from the stored pieces (#175):
+   * the part of Idle the `orders` scheduled-time rule excludes (ADR-0021 amendment). Pieces lie in
+   * one hour each, so a sum per piece hour is exact.
+   */
+  async #noOrderHours(
+    db: Kysely<Database>,
+    from: Date,
+    to: Date,
+    options: { readonly equipment?: string; readonly epoch?: number },
+  ): Promise<NoOrderHour[]> {
+    let query = db
+      .selectFrom('equipment.equipment_state_interval')
+      .select(['equipment', 'epoch', 'hour'])
+      .select(sql<string>`sum((extract(epoch FROM end_time - start_time) * 1000)::bigint)`.as('ms'))
+      .where('state', '=', 'Idle')
+      .where('cause', '=', CAUSES.noOrder)
+      .where('start_time', '>=', from)
+      .where('start_time', '<', to);
+    if (options.equipment !== undefined) query = query.where('equipment', '=', options.equipment);
+    if (options.epoch !== undefined) query = query.where('epoch', '=', options.epoch);
+    const rows = await query.groupBy(['equipment', 'epoch', 'hour']).execute();
+    return rows.map((row) => ({
+      equipment: row.equipment,
+      epoch: row.epoch,
+      hour: row.hour,
+      ms: Number(row.ms),
+    }));
   }
 
   async #stateHourly(

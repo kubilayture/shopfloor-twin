@@ -14,7 +14,7 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
     name: 'master_data',
     owner: 'master-data',
     about:
-      'The ISA-95 equipment hierarchy, products, the shift pattern, the downtime reason tree and the alarm definitions and operator positions, seeded from `config/plant`.',
+      'The ISA-95 equipment hierarchy, products, the shift pattern, the downtime and scrap reason trees, routings with their BOMs, and the alarm definitions and operator positions, seeded from `config/plant`.',
   },
   {
     name: 'ingest',
@@ -50,7 +50,13 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
     name: 'orders',
     owner: 'orders',
     about:
-      'Production orders imported from the ERP’s change feed with their routing, the dispatch commands to the CNCs (a transactional outbox, every delivery published) and their reading from the gateway’s results and the device’s job facts, the ERP message log (feed entries in, status messages out through a second outbox) and the module’s incidents (#174, ADR-0028, ADR-0029).',
+      'Production orders imported from the ERP’s change feed with their routing, the dispatch commands to the CNCs (a transactional outbox, every delivery published) and their reading from the gateway’s results and the device’s job facts, the ERP message log (feed entries in, status messages and confirmations out through a second outbox), the confirmations sent (final and corrections, #175) and the module’s incidents (#174, ADR-0028, ADR-0029).',
+  },
+  {
+    name: 'execution',
+    owner: 'execution',
+    about:
+      'Every part tracked through the routing from the device’s cycle facts (#175, ADR-0031): units keyed (device epoch, partId) and attributed to an order by the job facts, one operation record per cycle with its rework pass, the scrap records an operator or quality user codes, and routing-violation incidents. Units and records are derived and rebuilt from facts; quantities, material and completion are computed on read.',
   },
   {
     name: 'public',
@@ -85,6 +91,8 @@ const TABLES: Readonly<Record<string, string>> = {
     'The operations of a routing in order, the work center of the equipment that runs each and the product’s ideal cycle there; built by `routingAndBom` like the ERP’s (#174).',
   'master_data.bom_item':
     'Materials an operation consumes per unit: the blank at OP10, components and rework components at OP30 (`standard` or `rework`) (#174).',
+  'master_data.scrap_reason':
+    'The scrap reason tree from `scrap.yaml`: each machine scrap reason (DIMENSIONAL, LEAK) a top node, the detailed reasons below it; retired ones kept inactive (#175).',
   'ingest.equipment_event':
     'Device facts (state changes, cycles, alarm transitions, job transitions from #174), one stream per equipment; deduplicated by the unique key.',
   'ingest.command_result':
@@ -164,6 +172,16 @@ const TABLES: Readonly<Record<string, string>> = {
     'Feed entries imported (in) and messages to the ERP (out, an outbox with its Idempotency-Key, attempts, last error and the ERP’s receipt); a 409 is an incident and never retried (#174, ADR-0028).',
   'orders.order_incident':
     'Incidents of the orders module (ERP feed changed, ERP conflict or refusal, command failed or unconfirmed, unknown or duplicate job, dispatch lost), open at most once per key (#174).',
+  'orders.confirmation':
+    'Confirmations sent to the ERP per order operation: the final one (n = 1, totals) and corrections (n ≥ 2, signed deltas against the sum of the earlier ones), each with the totals it sums to; written with its outbound message, append-only by grants (#175).',
+  'execution.unit':
+    'Units: one part of one simulator run, keyed (device epoch, partId), with its serial, the order its OP10 cycle’s job gives, status (wip, packed, scrapped, lost), position in WIP and any routing suspect or violation; derived and rebuilt from cycle and job facts (#175).',
+  'execution.operation_record':
+    'One record per cycle fact of a unit: operation, pass (2 at OP30 and OP40 after a leak-test rework), machine, completion time, result and reason; keyed by the fact, replaced when its unit is rebuilt (#175).',
+  'execution.scrap_record':
+    'Every machine scrap (OP10 DIMENSIONAL, OP40 second LEAK) with the coding a person gives it from the scrap reason tree (version per record, audited in identity.audit_log); kept, never deleted (#175).',
+  'execution.execution_incident':
+    'Routing-violation incidents of the execution module (a predecessor missing or an operation repeated once the expected machine is final through it, a record after the terminal one), open at most once per key (#175).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

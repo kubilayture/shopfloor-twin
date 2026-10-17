@@ -2,6 +2,7 @@ import {
   SYS_SEGMENT,
   UNS_ROOT,
   type Alarm,
+  type CycleComplete,
   type JobEvent,
   type MachineState,
 } from '@shopfloor/contracts';
@@ -157,6 +158,20 @@ export interface DeviceProgress {
   readonly seen: readonly (readonly [number, number])[];
   readonly settledSeq: number | null;
   readonly settledTime: Date | null;
+}
+
+/** A cycle fact with its part (#175): what the execution module builds units from. */
+export interface CycleFact {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly seq: number;
+  readonly sourceTime: Date;
+  readonly product: string;
+  readonly partId: number;
+  /** Empty before OP10 gives one and on WSH-01, which reads none. */
+  readonly serial: string;
+  readonly result: 'good' | 'scrap' | 'rework';
+  readonly reason: string | null;
 }
 
 /** Per (equipment, device epoch): what `factSummary` reports. */
@@ -996,6 +1011,75 @@ export class Ingest {
     if (beforeSeq !== null) query = query.where('seq', '<', beforeSeq);
     const row = await query.executeTakeFirstOrThrow();
     return Number(row.n);
+  }
+
+  /**
+   * Cycle facts with their part (#175, the execution module): of one device epoch, by part ids
+   * (across machines, `ingest.equipment_event_cycle_part`), or of one equipment by `seq` (a list,
+   * or a window `afterSeq`..`beforeSeq`, both exclusive). By equipment, then `seq`.
+   */
+  async cycleFacts(
+    options: {
+      readonly epoch: number;
+      readonly partIds?: readonly number[];
+      readonly equipment?: string;
+      readonly seqs?: readonly number[];
+      readonly afterSeq?: number;
+      readonly beforeSeq?: number;
+    },
+    db: Kysely<Database> = this.#options.db,
+  ): Promise<CycleFact[]> {
+    if (options.partIds?.length === 0 || options.seqs?.length === 0) return [];
+    let query = db
+      .selectFrom('ingest.equipment_event')
+      .select(['equipment', 'epoch', 'seq', 'source_time', 'payload'])
+      .where('event_type', '=', 'cycle')
+      .where('epoch', '=', options.epoch);
+    if (options.partIds !== undefined) {
+      query = query.where(sql<number>`(payload -> 'value' ->> 'partId')::bigint`, 'in', [
+        ...options.partIds,
+      ]);
+    }
+    if (options.equipment !== undefined) query = query.where('equipment', '=', options.equipment);
+    if (options.seqs !== undefined) query = query.where('seq', 'in', [...options.seqs]);
+    if (options.afterSeq !== undefined) query = query.where('seq', '>', options.afterSeq);
+    if (options.beforeSeq !== undefined) query = query.where('seq', '<', options.beforeSeq);
+    const rows = await query.orderBy('equipment').orderBy('seq').execute();
+    return rows.map((row) => {
+      const value = (row.payload as CycleComplete).value;
+      return {
+        equipment: row.equipment,
+        epoch: row.epoch,
+        seq: row.seq,
+        sourceTime: row.source_time,
+        product: value.product,
+        partId: value.partId,
+        serial: value.serial,
+        result: value.result,
+        reason: value.reason,
+      };
+    });
+  }
+
+  /**
+   * Per (equipment, device epoch): its cycle facts, their highest `seq` (#175: the execution
+   * module's catch-up compares them with its records).
+   */
+  async cycleFactCounts(): Promise<
+    { readonly equipment: string; readonly epoch: number; readonly facts: number }[]
+  > {
+    const rows = await this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select(['equipment', 'epoch'])
+      .select((eb) => eb.fn.countAll<string>().as('facts'))
+      .where('event_type', '=', 'cycle')
+      .groupBy(['equipment', 'epoch'])
+      .execute();
+    return rows.map((row) => ({
+      equipment: row.equipment,
+      epoch: row.epoch,
+      facts: Number(row.facts),
+    }));
   }
 
   /** The anchor of every (equipment, device epoch) that has one (see `anchor`). */

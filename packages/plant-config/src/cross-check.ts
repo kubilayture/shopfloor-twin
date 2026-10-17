@@ -1,6 +1,7 @@
 import { MAX_MODBUS_ALARMS } from '@shopfloor/contracts';
 import { checkAlarms, plantAlarms } from './alarms.ts';
 import { checkReasons, plantCauses } from './reasons.ts';
+import { checkScrap } from './scrap.ts';
 import type { PlantConfig } from './schema.ts';
 
 export interface ConfigIssue {
@@ -278,6 +279,9 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
   for (const issue of checkReasons(config.reasons, plantCauses(config))) {
     report('reasons', issue.path, issue.message);
   }
+
+  // Scrap reason codes (#175): a tree with every machine scrap reason as a node.
+  for (const issue of checkScrap(config.scrap)) report('scrap', issue.path, issue.message);
 
   // Alarm definitions, positions and KPI thresholds (#139, ADR-0024).
   const workCenters = new Map(

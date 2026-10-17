@@ -1,3 +1,4 @@
+import { CAUSES } from '@shopfloor/contracts';
 import { availabilityLoss, type AvailabilityLoss, type Millis } from '@shopfloor/oee-core';
 import { classifyCause, type PlantConfig } from '@shopfloor/plant-config';
 import { NO_SHIFT } from '@shopfloor/shift-calendar';
@@ -8,13 +9,25 @@ export interface DowntimeRules {
   readonly microStopThresholdMs: Millis;
   /** The auto reason of (state, cause): the first matching rule of `reasons.yaml`, else UNCODED. */
   readonly classify: (state: string, cause: string | null) => string;
+  /**
+   * Time outside planned busy time though in a shift (#175, ADR-0021 amendment): under
+   * `scheduledTime: orders`, Idle with cause `NO-ORDER`. Never a loss, so never a record.
+   */
+  readonly unplanned?: (state: string, cause: string | null) => boolean;
 }
 
-/** The rules of a plant configuration: `oee.yaml`'s threshold, `reasons.yaml`'s rules. */
+/** The rules of a plant configuration: `oee.yaml`'s threshold and rule, `reasons.yaml`'s rules. */
 export const downtimeRules = (config: Pick<PlantConfig, 'oee' | 'reasons'>): DowntimeRules => ({
   microStopThresholdMs: config.oee.microStopThresholdMs,
   classify: (state, cause) => classifyCause(config.reasons.rules, state, cause),
+  ...(config.oee.scheduledTime === 'orders'
+    ? { unplanned: (state: string, cause: string | null) => isNoOrderIdle(state, cause) }
+    : {}),
 });
+
+/** Idle for want of a startable order (ADR-0030): what the `orders` rule leaves unplanned. */
+export const isNoOrderIdle = (state: string, cause: string | null): boolean =>
+  state === 'Idle' && cause === CAUSES.noOrder;
 
 /** One downtime record as the module derives it. */
 export interface DerivedRecord {
@@ -55,6 +68,7 @@ export function deriveRecords(
     const first = parts[0];
     const last = parts.at(-1);
     if (!first || !last) continue;
+    if (rules.unplanned?.(first.state, first.cause) === true) continue;
     const loss = availabilityLoss(first.state, last.to - start, rules.microStopThresholdMs);
     if (!loss) continue;
     const reason = rules.classify(first.state, first.cause);

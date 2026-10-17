@@ -1,0 +1,21 @@
+# Scrap reason codes (#175, ADR-0031). Not a simulation input and not part of any golden summary.
+#
+# reasons: the tree an operator or quality user codes a scrap record with, seeded into
+# master_data.scrap_reason. An id is its path in the tree (LEAK/POROSITY); its parent is the path
+# before the last "/" and must be listed first. The machines scrap with a coarse reason, the cycle
+# fact's `reason`: DIMENSIONAL (OP10, tool wear) and LEAK (the second failed leak test). Each is a
+# top-level node, and a coding names the record's machine reason or a reason below it. Coding never
+# changes a quantity or a confirmation.
+
+reasons:
+  - { id: DIMENSIONAL, name: Dimensional }
+  - { id: DIMENSIONAL/OVERSIZE, name: Oversize }
+  - { id: DIMENSIONAL/UNDERSIZE, name: Undersize }
+  - { id: DIMENSIONAL/SURFACE, name: Surface finish }
+  - { id: DIMENSIONAL/TOOL-WEAR, name: Tool wear }
+  - { id: DIMENSIONAL/OTHER, name: 'Dimensional, other' }
+  - { id: LEAK, name: Leak }
+  - { id: LEAK/SEAL, name: Seal defect }
+  - { id: LEAK/POROSITY, name: Casting porosity }
+  - { id: LEAK/ASSEMBLY, name: Assembly fault }
+  - { id: LEAK/OTHER, name: 'Leak, other' }

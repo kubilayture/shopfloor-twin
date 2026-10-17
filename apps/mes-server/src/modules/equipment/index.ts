@@ -25,8 +25,10 @@
  *
  * For OEE (#120, ADR-0021):
  * - `Equipment.oeeInputs(from, to, { equipment?, epoch? })`: the hourly state rows (with their
- *   incidents) and the Stopped pieces with their whole interval's length, in one REPEATABLE READ
- *   snapshot; `stopPieces(...)` reads the latter alone.
+ *   incidents), the Stopped pieces with their whole interval's length and the Idle `NO-ORDER` ms
+ *   per hour (#175, the `orders` scheduled-time rule), in one REPEATABLE READ snapshot;
+ *   `stopPieces(...)` reads the Stopped pieces alone. Under `scheduledTime: orders` Idle
+ *   `NO-ORDER` makes no downtime record (`downtimeRules`, ADR-0021 amendment).
  *
  * For downtime (#119, #120):
  * - `Equipment.downtimeLoss({ from, to, equipment?, epoch? })`: the records' time per reason,
@@ -78,6 +80,7 @@ export type {
   EquipmentChange,
   EquipmentLog,
   EquipmentOptions,
+  NoOrderHour,
   OeeInputs,
   PiecesChanged,
   ShiftTotal,

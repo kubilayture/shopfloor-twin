@@ -38,6 +38,7 @@ export const DECLARED_GRANTS: {
       shifts: ['USAGE'],
       identity: ['USAGE'],
       orders: ['USAGE'],
+      execution: ['USAGE'],
     },
     mes_cagg: { ingest: ['USAGE'], equipment: ['USAGE'] },
   },
@@ -57,6 +58,7 @@ export const DECLARED_GRANTS: {
       'master_data.routing': ALL,
       'master_data.routing_operation': ALL,
       'master_data.bom_item': ALL,
+      'master_data.scrap_reason': ALL,
       'ingest.equipment_event': ALL,
       'ingest.telemetry_sample': ALL,
       'ingest.source_cursor': ALL,
@@ -104,6 +106,13 @@ export const DECLARED_GRANTS: {
       'orders.command_attempt': KEEP,
       'orders.erp_message_log': KEEP,
       'orders.order_incident': KEEP,
+      // Confirmations sent are never changed (#175).
+      'orders.confirmation': APPEND,
+      // Units and their records are derived and rebuilt; scrap records and incidents are kept (#175).
+      'execution.unit': ALL,
+      'execution.operation_record': ALL,
+      'execution.scrap_record': KEEP,
+      'execution.execution_incident': KEEP,
     },
     // The aggregates' sources, which a refresh reads; the aggregates themselves it owns.
     mes_cagg: {

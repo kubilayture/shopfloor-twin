@@ -8,7 +8,11 @@
  * - `Orders.start()` / `stop()`; `onChange(listener)`: order and command upserts (push `orders`).
  * - Reads: `list(query)`, `order(id)`, `detail(id)`, `commands(filter)`, `incidents(query)`.
  * - Writes (a version per order, 409 `order-stale`; audited through `Identity.audit`): `release`,
- *   `dispatch`, `cancel`, `redispatch`, `close`; `complete(id, { short, at })` is #175's seam.
+ *   `dispatch`, `cancel`, `redispatch`, `close`; `complete(id, { short, at })` and
+ *   `confirm(id, operation, totals, at)` are the execution module's seams (#175): the order's
+ *   completion, and a final confirmation or a correction with the deltas through the ERP outbox;
+ *   `confirmations(id)` reads them back; `useBlankCounter(counter)` counts a lost job's blanks from
+ *   the execution module's units.
  * - `importNow()`, `postNow()`, `tick()`: one round of the ERP feed, the ERP outbox and the
  *   commands (the timers call them; tests call them directly).
  * - `readCommand` (pure): ADR-0029's reading of a command; `chooseCnc`/`estimateFinish` (pure):
@@ -23,13 +27,16 @@ export { ErpClient } from './erp-client.ts';
 export type { ErpApi, ErpClientOptions, FeedPage, PostOutcome } from './erp-client.ts';
 export { AUDIT_ENTITY, DEFAULT_TIMINGS, OrderError, Orders } from './orders.ts';
 export type {
+  BlankCounter,
   CommandRecord,
+  ConfirmationRecord,
   CommandTimings,
   ErpMessageRecord,
   OrderChange,
   OrderDetailRecord,
   OrderErrorKind,
   OrderIncident,
+  OperationConfirmation,
   OrderQuery,
   OrderRecord,
   OrdersIngest,

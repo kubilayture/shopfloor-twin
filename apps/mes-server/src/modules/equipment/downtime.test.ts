@@ -210,6 +210,33 @@ describe('deriving downtime records (#119)', () => {
       ['09:00:00', '09:30:00', 'Down', SHIFT_A, 'own', 'UNCODED', false],
     ]);
   });
+
+  it('makes no record of Idle NO-ORDER under `scheduledTime: orders`, one under shift-calendar (#175)', () => {
+    const points = [
+      { at: at('09:00'), state: 'Idle', cause: 'NO-ORDER' },
+      { at: at('09:20'), state: 'Idle', cause: 'NO-OPERATOR' },
+      { at: at('09:30'), state: 'Running' },
+    ];
+    // oee.yaml's rule is `orders`: the NO-ORDER part is outside planned busy time, not a loss.
+    expect(plant.oee.scheduledTime).toBe('orders');
+    expect(derive(points, at('10:00'))).toEqual([
+      ['09:20:00', '09:30:00', 'Idle', SHIFT_A, 'own', 'ORGANISATION/NO-OPERATOR', false],
+    ]);
+    const calendar = downtimeRules({
+      ...plant,
+      oee: { ...plant.oee, scheduledTime: 'shift-calendar' },
+    });
+    const pieces = cutPieces(
+      points.map((p, i) => ({ at: p.at, state: p.state, cause: p.cause ?? null, seq: i + 1 })),
+      at('10:00'),
+      plant.shifts,
+      Infinity,
+    );
+    expect(deriveRecords(pieces, calendar, undefined).map((r) => r.reason)).toEqual([
+      'PLANNED/NO-ORDER',
+      'ORGANISATION/NO-OPERATOR',
+    ]);
+  });
 });
 
 describe('downtime records in the equipment module (#119)', () => {

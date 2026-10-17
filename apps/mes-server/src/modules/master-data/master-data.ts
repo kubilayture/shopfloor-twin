@@ -242,9 +242,55 @@ export class MasterData {
           )
           .execute();
       }
+      // The scrap reason tree (#175), the same way: a coded scrap record may name a retired one.
+      const scrap = config.scrap.reasons;
+      await trx
+        .updateTable('master_data.scrap_reason')
+        .set({ active: false })
+        .where(
+          'id',
+          'not in',
+          scrap.map((reason) => reason.id),
+        )
+        .execute();
+      for (const [position, reason] of scrap.entries()) {
+        await trx
+          .insertInto('master_data.scrap_reason')
+          .values({
+            id: reason.id,
+            parent_id: parentReason(reason.id),
+            name: reason.name,
+            position,
+            active: true,
+          })
+          .onConflict((c) =>
+            c.column('id').doUpdateSet((eb) => ({
+              parent_id: eb.ref('excluded.parent_id'),
+              name: eb.ref('excluded.name'),
+              position: eb.ref('excluded.position'),
+              active: true,
+            })),
+          )
+          .execute();
+      }
       await seedAlarms(trx, config);
       await seedRoutings(trx, config);
     });
+  }
+
+  /**
+   * The scrap reason tree (#175), in configuration order; retired reasons only with `inactive`.
+   */
+  async scrapReasons(options: { readonly inactive?: boolean } = {}): Promise<ReasonCode[]> {
+    let query = this.#db.selectFrom('master_data.scrap_reason').selectAll();
+    if (options.inactive !== true) query = query.where('active', '=', true);
+    const rows = await query.orderBy('active', 'desc').orderBy('position').orderBy('id').execute();
+    return rows.map((row) => ({
+      id: row.id,
+      parent: row.parent_id,
+      name: row.name,
+      active: row.active,
+    }));
   }
 
   /** Every product's routing and BOM (#174), by product id. */

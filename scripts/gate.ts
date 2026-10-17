@@ -19,7 +19,9 @@
  *
  * Usage: pnpm gate. Environment: GATE_STEPS (comma list of the jobs above, default all, for a rerun
  * after a later commit: runbook "Merge gate"), GATE_PROJECT (Compose project of the smoke, default
- * shopfloor-gate), GATE_TAG (image tag, default gate), GATE_KEEP_IMAGES=1 (keep the images).
+ * shopfloor-gate), GATE_TAG (image tag of the smoke and the reconciliation, default gate),
+ * RECONCILE_PROJECT (the reconciliation's project prefix, default <GATE_PROJECT>-reconcile),
+ * GATE_KEEP_IMAGES=1 (keep the images).
  * A failed job stops the gate; the cleanup and the record still run.
  */
 import { execFileSync, spawn } from 'node:child_process';
@@ -138,7 +140,7 @@ const commands: Readonly<Record<Step, [string, string[], NodeJS.ProcessEnv]>> = 
     ['test:reconcile'],
     {
       RECONCILE_TAG: tag,
-      RECONCILE_PROJECT: `${project}-reconcile`,
+      RECONCILE_PROJECT: process.env.RECONCILE_PROJECT ?? `${project}-reconcile`,
       // The smoke built the images under the same tag; without the smoke the run builds them.
       ...(selected.includes('smoke') ? { RECONCILE_SKIP_BUILD: '1' } : {}),
     },

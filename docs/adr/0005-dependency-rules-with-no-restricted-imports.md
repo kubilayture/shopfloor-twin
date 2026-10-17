@@ -27,6 +27,8 @@ The pure-package rule is an allowlist: `sim-core` and `oee-core` source files ma
 
 _Amended by ADR-0024 (#139):_ the pure packages are now `sim-core`, `oee-core`, `shift-calendar` and `alarm-core`, and a pure package may also import another pure package by its exact name (`@shopfloor/oee-core`), never a subpath, a non-pure workspace package or an app. Purity stays transitive.
 
+_Amended by ADR-0032 (#195):_ `spc-core` and `trace-core` join the pure packages (`spc-core` imports `oee-core` for its fractions, `trace-core` imports `spc-core`), with failing and passing cases for both in `dependency-rules.test.ts`.
+
 ### Consequences
 
 - Good: no extra dependencies; the rules are readable regular expressions with plain-language messages that cite the plan.

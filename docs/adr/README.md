@@ -35,3 +35,4 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0029](0029-command-path-at-least-once-with-device-dedup-and-settled-outcomes.md) | Command path: at-least-once delivery, device dedup and settled outcomes                              | accepted           |
 | [0030](0030-order-driven-simulator-loadorder-and-job-facts.md)                    | Order-driven simulator: production mode `orders`, idempotent `LoadOrder` and job facts               | accepted           |
 | [0031](0031-execution-units-completion-and-confirmations.md)                      | Execution: units from cycle facts, completion when no unit can return, confirmations from final data | accepted           |
+| [0032](0032-spc-charts-frozen-limits-nelson-rules-and-episodes.md)                | SPC: I-MR and X̄-R on first passes, frozen limit versions, Nelson rules and signal episodes           | accepted           |

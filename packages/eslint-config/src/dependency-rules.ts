@@ -2,7 +2,14 @@ import type { Linter } from 'eslint';
 
 export const APPS = ['simulator', 'edge-gateway', 'mes-server', 'erp-mock', 'web'] as const;
 
-export const PURE_PACKAGES = ['sim-core', 'oee-core', 'shift-calendar', 'alarm-core'] as const;
+export const PURE_PACKAGES = [
+  'sim-core',
+  'oee-core',
+  'shift-calendar',
+  'alarm-core',
+  'spc-core',
+  'trace-core',
+] as const;
 
 export const MES_MODULES = [
   'master-data',

@@ -204,11 +204,14 @@ export function readCommand(
     input.device.epoch === input.deviceEpoch &&
     through >= seqAfterExpiry;
   const exhausted = input.attempts.filter((a) => a.published).length >= policy.maxAttempts;
-  // Deliveries the broker never acknowledged (refused, or a crash before the PUBACK) are capped
-  // too (at `maxAttempts`, at least 3: a crash before one publish must not end the command), so a
-  // refusing broker can't make one every tick forever.
-  const unpublishedCapped =
-    input.attempts.filter((a) => !a.published).length >= Math.max(3, policy.maxAttempts);
+  // Deliveries the broker never acknowledged (refused, or a crash before the PUBACK) back off: the
+  // n-th unpublished one in a row waits resendMs × 2^(n-1), at most × 8, so a refusing broker
+  // can't make one every tick, and the command recovers by itself once the ACL is fixed.
+  let unpublishedRun = 0;
+  for (let i = input.attempts.length - 1; i >= 0 && input.attempts[i]?.published === false; i--) {
+    unpublishedRun++;
+  }
+  const unpublishedWait = policy.resendMs * Math.min(8, 2 ** Math.max(0, unpublishedRun - 1));
   // `failed` counts from the first delivery nobody answered: resends (published or not) never
   // move it later.
   const answered = (expiresAt: number) =>
@@ -231,15 +234,16 @@ export function readCommand(
     state,
   );
   const answeredLatest = forLatest.length > 0;
-  // Every resend waits `resendMs` after the latest delivery was written, published or not.
+  // A resend waits `resendMs` after the latest published delivery, the backoff after an
+  // unpublished one.
   const send =
     !settled &&
     !exhausted &&
-    !unpublishedCapped &&
     state !== 'conflict' &&
     (latest === undefined ||
       expiredLatest ||
-      ((!latest.published || !answeredLatest) && now - latest.issuedAt >= policy.resendMs));
+      (!latest.published && now - latest.issuedAt >= unpublishedWait) ||
+      (latest.published && !answeredLatest && now - latest.issuedAt >= policy.resendMs));
   const unconfirmed =
     sticky !== undefined &&
     acceptedFacts.length === 0 &&

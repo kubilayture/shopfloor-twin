@@ -198,14 +198,13 @@ describe('reading a command (ADR-0029)', () => {
     const refused = { attempts: [attempt(0), attempt(1), attempt(2, false)] };
     expect(read(refused, T0 + 30_000)).toMatchObject({ state: 'sent', send: false });
     expect(read(refused, T0 + 45_000)).toMatchObject({ state: 'sent', send: true });
-    // A broker that refuses every delivery: capped at maxAttempts unpublished ones, and failed
-    // from the first one's expiresAt (resends never move it later).
+    // A broker that refuses every delivery: unpublished ones back off (the third in a row waits
+    // 4 × resendMs), and failed counts from the first one's expiresAt (resends never move it).
     const never = { attempts: [attempt(0, false), attempt(1, false), attempt(2, false)] };
     expect(read(never, T0 + 60_000)).toMatchObject({ send: false });
-    expect(read(never, attempt(0).expiresAt + 30_000)).toMatchObject({
-      state: 'failed',
-      send: false,
-    });
+    expect(read(never, T0 + 89_999)).toMatchObject({ send: false });
+    expect(read(never, T0 + 90_000)).toMatchObject({ send: true });
+    expect(read(never, attempt(0).expiresAt + 30_000)).toMatchObject({ state: 'failed' });
   });
 
   it('is rejected for good (no job), but not by a command-conflict after an acceptance', () => {

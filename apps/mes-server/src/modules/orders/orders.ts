@@ -314,6 +314,11 @@ export class Orders {
   readonly #sequences = new Map<string, number>();
   /** Keys of the open incidents (loaded at start, kept with every change). */
   readonly #openIncidents = new Set<string>();
+  /**
+   * Incident keys opened and closed inside the transaction running now (a tick's, a write's):
+   * applied to `#openIncidents` only once it committed, dropped if it rolled back.
+   */
+  #pending: { opened: string[]; closed: string[] } | undefined;
   /** Job facts heard of, to check against the commands at the next tick. */
   readonly #heardJobs: JobFact[] = [];
   readonly #published: Counter | undefined;
@@ -964,7 +969,9 @@ export class Orders {
   async tick(): Promise<void> {
     if (!this.#started || this.#stopping) return;
     await this.#serial(async () => {
-      const evaluated = await this.#db.transaction().execute((trx) => this.#evaluate(trx, {}));
+      const evaluated = await this.#deferringIncidents(() =>
+        this.#db.transaction().execute((trx) => this.#evaluate(trx, {})),
+      );
       await this.#emitAfter(evaluated.orders, evaluated.commands);
       await this.#checkJobs();
       await this.#publish(evaluated.readings);
@@ -1493,6 +1500,18 @@ export class Orders {
       .where('command_id', '=', row.command_id)
       .where('attempt', '=', attempt)
       .execute();
+    // The broker takes the command's deliveries again (the ACL was fixed): no refusal open.
+    if (this.#openIncidents.has(`command-publish-refused:${row.command_id}`)) {
+      await this.#db
+        .transaction()
+        .execute((trx) =>
+          this.#closeIncidents(
+            trx,
+            { key: `command-publish-refused:${row.command_id}` },
+            'published',
+          ),
+        );
+    }
     this.#published?.inc();
     this.#log.info(
       { command: row.command_id, equipment: row.equipment, expiresAt: message.expiresAt },
@@ -1516,6 +1535,23 @@ export class Orders {
         .map((e) => [e.id, e]),
     );
     this.#routings = new Map(routings.map((r) => [r.product, r]));
+  }
+
+  /**
+   * Runs a transaction whose incident keys count only once it committed (#174 review): opened and
+   * closed keys are collected meanwhile, applied after, dropped when it throws.
+   */
+  async #deferringIncidents<T>(transaction: () => Promise<T>): Promise<T> {
+    const pending = { opened: [] as string[], closed: [] as string[] };
+    this.#pending = pending;
+    try {
+      const result = await transaction();
+      for (const key of pending.opened) this.#openIncidents.add(key);
+      for (const key of pending.closed) this.#openIncidents.delete(key);
+      return result;
+    } finally {
+      this.#pending = undefined;
+    }
   }
 
   #serial<T>(work: () => Promise<T>): Promise<T> {
@@ -1563,40 +1599,42 @@ export class Orders {
   ): Promise<{ order: OrderRecord; command: CommandRecord | undefined }> {
     if (!this.#started) throw new OrderError('conflict', 'the orders module is starting');
     const done = await this.#serial(() =>
-      this.#db.transaction().execute(async (trx) => {
-        const row = await this.#lock(trx, id);
-        if (row.version !== version) {
-          throw new OrderError(
-            'conflict',
-            `order ${id} changed: version is ${String(row.version)}, not ${String(version)}`,
-            PROBLEM_TYPES.orderStale,
-          );
-        }
-        const plantAt = this.#plantNow();
-        const result = await change(trx, row, plantAt);
-        const after = await trx
-          .updateTable('orders.production_order')
-          .set({
-            ...result.set,
-            version: row.version + 1,
-            updated_at: sql<Date>`clock_timestamp()`,
-          })
-          .where('id', '=', id)
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        await Identity.audit(trx, {
-          actor: auditActor(context.by),
-          authenticated: isAuthenticated(context.by),
-          action,
-          entityType: AUDIT_ENTITY,
-          entityId: id,
-          before: { status: row.status, version: row.version },
-          after: { status: after.status, version: after.version, ...result.audit },
-          requestId: context.requestId,
-          plantAt,
-        });
-        return { command: result.command, touched: result.touched ?? [] };
-      }),
+      this.#deferringIncidents(() =>
+        this.#db.transaction().execute(async (trx) => {
+          const row = await this.#lock(trx, id);
+          if (row.version !== version) {
+            throw new OrderError(
+              'conflict',
+              `order ${id} changed: version is ${String(row.version)}, not ${String(version)}`,
+              PROBLEM_TYPES.orderStale,
+            );
+          }
+          const plantAt = this.#plantNow();
+          const result = await change(trx, row, plantAt);
+          const after = await trx
+            .updateTable('orders.production_order')
+            .set({
+              ...result.set,
+              version: row.version + 1,
+              updated_at: sql<Date>`clock_timestamp()`,
+            })
+            .where('id', '=', id)
+            .returningAll()
+            .executeTakeFirstOrThrow();
+          await Identity.audit(trx, {
+            actor: auditActor(context.by),
+            authenticated: isAuthenticated(context.by),
+            action,
+            entityType: AUDIT_ENTITY,
+            entityId: id,
+            before: { status: row.status, version: row.version },
+            after: { status: after.status, version: after.version, ...result.audit },
+            requestId: context.requestId,
+            plantAt,
+          });
+          return { command: result.command, touched: result.touched ?? [] };
+        }),
+      ),
     );
     await this.#emitAfter([], done.touched);
     const order = await this.#emitOrder(id, 'updated');
@@ -2028,6 +2066,7 @@ export class Orders {
     if (!row) return;
     if (incident.close === undefined) {
       if (incident.deferred) incident.deferred.push(incident.key);
+      else if (this.#pending) this.#pending.opened.push(incident.key);
       else this.#openIncidents.add(incident.key);
     }
     this.#incidentCounter?.inc({ type: incident.type });
@@ -2053,7 +2092,10 @@ export class Orders {
     if (which.type !== undefined) update = update.where('type', '=', which.type);
     if (which.commandId !== undefined) update = update.where('command_id', '=', which.commandId);
     const closed = await update.returning('key').execute();
-    for (const row of closed) this.#openIncidents.delete(row.key);
+    for (const row of closed) {
+      if (this.#pending) this.#pending.closed.push(row.key);
+      else this.#openIncidents.delete(row.key);
+    }
   }
 
   #plantNow(): Date {

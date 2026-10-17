@@ -1204,7 +1204,7 @@ describe('reading commands safely (#174 review)', () => {
     });
   });
 
-  it('raises command-publish-refused when the broker refuses a delivery, paces and caps the retries, and fails', async () => {
+  it('raises command-publish-refused when the broker refuses a delivery, backs off, fails, and recovers once the ACL is fixed', async () => {
     const h = await harness('refused', { timings: { maxAttempts: 2 } });
     await stateAt(h, 'cnc-01', 1);
     h.sink.refuseWith = 0x87;
@@ -1221,7 +1221,7 @@ describe('reading commands safely (#174 review)', () => {
       await h.orders.tick();
     }
     const [after] = await h.orders.commands({ orderId: 'RF-1' });
-    // Capped at three unpublished deliveries; failed from the first one's expiresAt.
+    // Backed off (15 s, 30 s, 60 s, …, at most 120 s apart); failed from the first one's expiresAt.
     expect(after?.attempts).toHaveLength(3);
     expect(after?.attempts.every((a) => a.publishedAt === null)).toBe(true);
     expect(after).toMatchObject({ state: 'failed', failed: true, settled: false });
@@ -1229,6 +1229,26 @@ describe('reading commands safely (#174 review)', () => {
       'command-failed',
       'command-publish-refused',
     ]);
+    // The ACL is fixed: the next delivery after the backoff goes out, the refusal closes.
+    h.sink.refuseWith = undefined;
+    // The third unpublished delivery (at +45 s) waits 60 s: none before +105 s.
+    h.clock.now += 14_000;
+    await h.orders.tick();
+    expect(h.sink.of(command.commandId)).toEqual([]);
+    h.clock.now += 1_000;
+    await h.orders.tick();
+    const [delivery] = h.sink.of(command.commandId);
+    if (!delivery) throw new Error('not published after the backoff');
+    expect((await h.orders.incidents({ open: true })).map((i) => i.type)).toEqual([
+      'command-failed',
+    ]);
+    await result(h, delivery, 'cnc-01', { result: 'accepted', acceptedSeq: 2 });
+    await h.orders.tick();
+    expect((await h.orders.commands({ orderId: 'RF-1' }))[0]).toMatchObject({
+      state: 'accepted',
+      settled: true,
+    });
+    expect(await h.orders.incidents({ open: true })).toEqual([]);
   });
 
   it('counts one blank for a lost job accepted at the head of its CNC, none once the CNC went Idle for want of an order', async () => {

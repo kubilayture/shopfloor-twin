@@ -136,4 +136,4 @@ Project board: https://github.com/users/kubilayture/projects/1
 - Tests: 1,333 in `pnpm turbo run test --force` (Phase 5: 988), plus `pnpm test:e2e` (gateway; golden reconciliations of `week-01` and `alarms-01`: intervals, aggregates, records, OEE, 112 and 129 alarm comparisons, 255 and 102 shift report comparisons) and `pnpm test:reconcile` (live `alarms-01` shift A with 14 injections, OEE, alarm and dashboard latency, UI actions and notes).
 - Coverage (lines / branches): `sim-core` 99.4 / 98.3 (floor 95 / 90), `oee-core` 100 / 99.1 (floor 95 / 90), `alarm-core` 100 / 96.4 (floor 95 / 90), `shift-calendar` 100 / 91.4, `plant-config` 99.7 / 95.1 (floor 90 / 85), simulator 87.2 / 81.9, `edge-gateway` 92.2 / 78.5, `mes-server` 96.2 / 85.6, `erp-mock` 99.3 / 92.7 (#171) and web 96.2 / 87.0 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
 - Golden scenarios `week-01` and `alarms-01`: green locally (`pnpm test:golden`, `pnpm test:e2e`).
-- Open bugs: 0.
+- Open bugs: 0 (#192, the alarm revision span found by the Phase 7 closing gate, is fixed).

@@ -87,6 +87,8 @@ Notation: times are UTC in the week of Monday 2026-10-12 (`Mon 10:00:00.000`), d
 | 22   | cnc-02/COOLANT-PRESSURE | medium   | 1   | Mon 10:00:00.000 | 9 × 60 000           | +1 000                    |
 | 22   | wsh-01/HEATER-FAULT     | high     | 1   | Mon 10:09:30.000 | –                    | +1 000                    |
 | 22   | cnc-01/SPINDLE-OVERLOAD | high     | 50  | Mon 10:09:30.000 | –                    | +1 000                    |
+| 23   | cnc-01/COOLANT-PRESSURE | medium   | 1   | Mon 10:59:59.979 | –                    | +500                      |
+| 23   | cnc-01/COOLANT-PRESSURE | medium   | 2   | Mon 11:00:00.000 | –                    | +500                      |
 
 ## Horizons
 
@@ -114,6 +116,7 @@ Notation: times are UTC in the week of Monday 2026-10-12 (`Mon 10:00:00.000`), d
 | 20   | Mon 14:00:00.000 | –                |
 | 21   | Mon 12:00:00.000 | –                |
 | 22   | Mon 12:00:00.000 | –                |
+| 23   | Mon 12:00:00.000 | –                |
 
 ## Expected buckets
 
@@ -152,6 +155,8 @@ Notation: times are UTC in the week of Monday 2026-10-12 (`Mon 10:00:00.000`), d
 | 21   | Mon 10:00–11:00 | 11 (9/2/0)     | 11/6            | 1.8333      | 11      | 1 of 6        | Mon 10:59:00.000 wsh-01/HEATER-FAULT: 60 000 ms, peak 11, ended Mon 11:00:00.000 (peak 11, raises 1)      | 0             | –                                            | 0                           | 0               | 11 000     | –           |
 | 21   | Mon 11:00–12:00 | 1 (0/1/0)      | 1/6             | 0.1667      | 1       | 0 of 6        | –                                                                                                         | 0             | –                                            | 0                           | 0               | 1 000      | –           |
 | 22   | Mon 10:00–11:00 | 11 (2/9/0)     | 11/6            | 1.8333      | 11      | 1 of 6        | Mon 10:09:30.000 wsh-01/HEATER-FAULT: 30 000 ms, peak 11, ended Mon 10:10:00.000 (peak 11, raises 1)      | 0             | –                                            | 0                           | 0               | 11 000     | –           |
+| 23   | Mon 10:00–11:00 | 1 (0/1/0)      | 1/6             | 0.1667      | 1       | 0 of 6        | –                                                                                                         | 0             | –                                            | 0                           | 0               | 21         | –           |
+| 23   | Mon 11:00–12:00 | 1 (0/1/0)      | 1/6             | 0.1667      | 1       | 0 of 6        | –                                                                                                         | 0             | –                                            | 0                           | 1               | 500        | –           |
 
 ## Expected flood episodes
 
@@ -185,6 +190,7 @@ Notation: times are UTC in the week of Monday 2026-10-12 (`Mon 10:00:00.000`), d
 | 18   | raise wsh-01/HEATER-FAULT Mon 10:55:00.000 cleared +30 000            | Mon 10:00; Mon 11:00                       |
 | 19   | end raised Mon 10:40:00.000 from – to Mon 12:20:00.000                | Mon 10:00; Mon 11:00; Mon 12:00; Mon 13:00 |
 | 20   | raise wsh-01/HEATER-FAULT Mon 12:05:30.000 cleared +1 000             | Mon 11:00; Mon 12:00; Mon 13:00            |
+| 23   | raise cnc-01/COOLANT-PRESSURE Mon 11:00:00.000 cleared +500           | Mon 10:00; Mon 11:00                       |
 
 ## Worked cases
 
@@ -210,3 +216,4 @@ Notation: times are UTC in the week of Monday 2026-10-12 (`Mon 10:00:00.000`), d
 20. **A late raise that joins two flood episodes.** A steady raise every minute from 11:00 keeps the count at exactly 10. `PRINTER-FAULT` at 11:55:30 makes 11 until it leaves at 12:05:30; then five `PRINTER-FAULT` raises from 12:15:30, 10 minutes apart, keep the count at 11 from 12:15:30 to 13:05:30. Without the late raise there are two episodes, the second starting at 12:15:30 (`pck-01/PRINTER-FAULT`). `HEATER-FAULT` at 12:05:30 arrives late: at 12:05:30 the first `PRINTER-FAULT` leaves and it arrives, and at 12:15:30 it leaves and the second `PRINTER-FAULT` arrives, so the count never drops to 10: one episode, 11:55:30 to 13:05:30, 77 raises. Hour 13 now lists that episode instead of the second one, although it lies beyond [12:05:30, 12:15:30]; the episode's span gives hours 11, 12 and 13. Hour 12 is in flood throughout (3 600 000 ms, 11 raises in every window).
 21. **A flood that ends as a raise arrives.** Two raises at 10:50:00 and nine from 10:51 to 10:59: the ninth, 10:59:00, makes 11 and starts a flood. At 11:00:00 both 10:50 raises leave (9) and `PRESS-FAULT` arrives (10): the count is back at 10, so the flood ends at 11:00:00, in hour 10 (60 000 ms, peak 11, raises 1). The raise at 11:00:00 belongs to hour 11 and was never in flood: it is not one of the episode's raises, and hour 11 lists no episode.
 22. **Raises of two devices in one millisecond.** Nine raises of `cnc-02` from 10:00 to 10:08, then `wsh-01#1` and `cnc-01#50` at 10:09:30.000. Equipment orders them (`cnc-01` before `wsh-01`), not their sequence numbers, which are per device: `cnc-01` sees 10 and `wsh-01` 11, so the flood starts at `wsh-01/HEATER-FAULT`. It ends at 10:10:00, when 10:00 leaves.
+23. **A late raise on the hour that supersedes an occurrence of the hour before** (#192, the revision property test's counterexample). `COOLANT-PRESSURE` raised at 10:59:59.979, cleared after 500 ms: alone, it is fleeting in hour 10 and active at 11:00:00.000, the hour's end. A raise of the same point at exactly 11:00:00.000 arrives late and supersedes it there: it ends at 11:00:00.000 without a device clear, so it is no longer fleeting, no longer active at the end of hour 10, and active 21 ms. Hour 10 changes although the late raise lies in hour 11, so the superseded occurrence's revision span starts at its own raise, 10:59:59.979 (to its clear, 11:00:00.479), not at the late raise. The late raise clears after 500 ms: fleeting in hour 11. Hours 10 and 11.

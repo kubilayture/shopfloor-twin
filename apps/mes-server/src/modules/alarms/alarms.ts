@@ -2155,12 +2155,14 @@ export class Alarms {
       if (at !== null && at < earliest) earliest = at;
     }
     if (!Number.isFinite(earliest)) return;
-    // The end of each scope's last final hour, as it was before this change.
+    // The end of each scope's last final hour, as it was before this change. An effect at that
+    // end instant is late too: the hour's state at its end (active, standing, open floods) is
+    // taken there (#192).
     const finalEnds = new Map<Scope, Millis>();
     for (const scope of this.#scopesOf(track.equipment)) {
       const frontier = this.#frontier(scope.members, track.epoch, bound);
       const end = hourStart(frontier - this.#config.fleetingMs);
-      if (Number.isFinite(frontier) ? end > earliest : frontier === Infinity) {
+      if (Number.isFinite(frontier) ? end >= earliest : frontier === Infinity) {
         finalEnds.set(scope, frontier === Infinity ? Infinity : end);
       }
     }

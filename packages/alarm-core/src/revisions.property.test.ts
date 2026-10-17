@@ -94,6 +94,44 @@ const scenarioArb = fc
   })
   .filter((scenario) => scenario.occurrences.length >= 2);
 
+type Scenario = typeof scenarioArb extends fc.Arbitrary<infer T> ? T : never;
+
+/**
+ * The shrunk counterexample of seed -527283026 (#192): a late raise at 06:00:00.000 supersedes an
+ * occurrence of its point raised at 05:59:59.979, which changes hour 05:00.
+ */
+const SEED_527283026: Scenario = {
+  closed: null,
+  base: 21_599_979,
+  raises: [
+    { equipment: 'a', code: 'X', offset: 0, duration: 500 },
+    { equipment: 'a', code: 'X', offset: 21, duration: 500 },
+    { equipment: 'a', code: 'X', offset: 7_200_022, duration: 500 },
+  ],
+  pick: 1_396_686_825,
+  late: 'raise',
+  moved: null,
+  limit: SPAN,
+  occurrences: [
+    {
+      equipment: 'a',
+      code: 'X',
+      priority: 'high',
+      seq: 1,
+      raisedAt: 21_599_979,
+      clearedAt: 21_600_479,
+    },
+    {
+      equipment: 'a',
+      code: 'X',
+      priority: 'high',
+      seq: 2,
+      raisedAt: 21_600_000,
+      clearedAt: 21_600_500,
+    },
+  ],
+};
+
 describe('revision completeness', () => {
   it('revises every hour and range a late fact changes, in every scope', () => {
     fc.assert(
@@ -133,7 +171,7 @@ describe('revision completeness', () => {
           }
         }
       }),
-      { numRuns: 1_000 },
+      { numRuns: 1_000, examples: [[SEED_527283026]] },
     );
     // Each run recomputes every hour twice; on a loaded CI runner 1,000 runs take several seconds.
   }, 60_000);

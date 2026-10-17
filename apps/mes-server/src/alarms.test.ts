@@ -466,6 +466,27 @@ describe('lost clears, late facts and revisions (#142, ADR-0024 "Revisions")', (
     expect(hours.get(HOUR5)).toBeUndefined();
   });
 
+  it('revises the final hour that ends where a late raise supersedes an occurrence (#192)', async () => {
+    const mes = await setup();
+    // COOLANT-PRESSURE raised 03:30, still open; its next raise at 04:00:00.000 (seq 3) is lost in
+    // a gap. Final through 04:02: only 03:00 is final, and it shows the alarm active at its end.
+    await mes.send(state(E1, 1, t(0)), raise(E1, 2, t(30)), state(E1, 4, t(62)));
+    await writeOff(mes);
+    let hours = await equipmentHours(mes.alarms);
+    expect([hours.get(HOUR3)?.final, hours.get(HOUR3)?.kpis.activeAtEnd]).toEqual([true, 1]);
+    expect(hours.get(HOUR4)?.final).toBe(false);
+    // The raise arrives late and supersedes the first occurrence at 04:00:00.000, the end of
+    // 03:00: the change's earliest effect is 03:00's end instant, so 03:00 is revised.
+    await mes.send(raise(E1, 3, t(60)));
+    expect(await occurrences(mes.alarms)).toEqual([
+      [2, CP, 'fact', t(30), t(60), 'superseded'],
+      [3, CP, 'fact', t(60), null, null],
+    ]);
+    hours = await equipmentHours(mes.alarms);
+    expect([hours.get(HOUR3)?.kpis.activeAtEnd, hours.get(HOUR3)?.revision]).toEqual([0, 1]);
+    expect(await revisions(mes.db)).toEqual([['equipment:cnc-01', HOUR3, 1]]);
+  });
+
   it('revises every final hour a late clear spanning three hours changes (reference case 19)', async () => {
     const mes = await setup();
     // SPINDLE-OVERLOAD raised 10:40, its clear at 12:20 (seq 3) lost in a gap; final through 14:05.

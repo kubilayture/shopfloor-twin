@@ -19,6 +19,8 @@ export interface GatewayHttpOptions {
     readonly calls: number;
     /** Settle calls answered as a new acceptance (clock skew). */
     readonly settleAcceptances?: number;
+    /** Calls whose deadline passed without an answer (#178). */
+    readonly callTimeouts?: number;
     readonly results: ReadonlyMap<string, number>;
     readonly queued: number;
     readonly settling: number;
@@ -102,6 +104,14 @@ export function buildGatewayHttp({
       registers: [registry],
       collect() {
         this.set(commands().calls);
+      },
+    });
+    new Gauge({
+      name: 'gateway_command_call_timeouts',
+      help: 'LoadOrder calls whose deadline (GATEWAY_CALL_DEADLINE_MS) passed without an answer',
+      registers: [registry],
+      collect() {
+        this.set(commands().callTimeouts ?? 0);
       },
     });
     new Gauge({

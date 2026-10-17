@@ -69,6 +69,11 @@ export interface ExecutionIngest {
     window?: { readonly fromSeq?: number; readonly toSeq?: number },
   ): Promise<readonly Pick<StateFact, 'seq' | 'state' | 'cause'>[]>;
   deviceProgress(equipment: string): Promise<DeviceProgress>;
+  /**
+   * `deviceProgress` of several equipment once every fact it counts has been announced (#178):
+   * what each round judges with.
+   */
+  announcedProgress(equipment: readonly string[]): Promise<Map<string, DeviceProgress>>;
   newestDeviceEpochs(): Promise<Map<string, number>>;
   cyclesBetween(
     equipment: string,
@@ -365,6 +370,15 @@ export class Execution implements BlankCounter {
   async tick(): Promise<void> {
     if (!this.#started || this.#stopping) return;
     await this.#serial(async () => {
+      // Every machine's progress first, before the pending facts are taken and the units rebuilt
+      // (#178): the round judges suspects and completion only against facts its units hold. Read
+      // after the rebuild, a washer cycle stored in between made its unit's later record look like
+      // a skipped OP20 (a false routing violation in the live reconciliation), and could make an
+      // operation look complete without its last cycle. Read in ingest's queue, every fact the
+      // progress counts has been announced, so it is in the pending sets taken below (or was
+      // handled in an earlier round).
+      const machines = [...this.#operationOf.keys()];
+      const progress = await this.#ingest.announcedProgress(machines);
       // What this round handles is taken out of the pending sets, and put back if the round
       // fails, so a failed tick (a lost connection, a deadlock) loses no fact heard of.
       const cycles = [...this.#pendingCycles];
@@ -372,7 +386,6 @@ export class Execution implements BlankCounter {
       const starts = this.#pendingStarts.splice(0);
       const orders = [...this.#dirtyOrders];
       try {
-        const progress = new Map<string, DeviceProgress>();
         const dirty = await this.#collectDirty(cycles, starts);
         for (const [epoch, parts] of dirty) await this.#rebuild(epoch, [...parts]);
         await this.#markLost();

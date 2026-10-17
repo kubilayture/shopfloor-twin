@@ -457,10 +457,11 @@ export class Ingest {
    * Records sequence holes older than the grace period as incidents. Runs in the message queue,
    * so it never interleaves with a message's transaction; listeners hear of each device stream
    * whose gaps were recorded (`gaps`, #113) in that queue too. Returns the incidents recorded.
+   * `graceMs` overrides the configured grace for this sweep (tests that must not wait for it).
    */
-  async sweep(): Promise<number> {
+  async sweep(graceMs = this.#options.gapGraceMs ?? 30_000): Promise<number> {
     const recorded = await this.#enqueue(async () => {
-      const result = await this.#store.sweep(this.#now(), this.#options.gapGraceMs ?? 30_000);
+      const result = await this.#store.sweep(this.#now(), graceMs);
       for (const history of result.history) {
         this.#history?.inc();
         this.#log.warn(
@@ -952,6 +953,19 @@ export class Ingest {
       settledSeq,
       settledTime: time?.source_time ?? null,
     };
+  }
+
+  /**
+   * `deviceProgress` of several equipment, read in the message queue (#178): every fact the
+   * answer counts has been stored and announced to the listeners, so a listener that keeps what it
+   * hears (the execution module's pending cycles) already holds each of them when this resolves.
+   */
+  async announcedProgress(equipment: readonly string[]): Promise<Map<string, DeviceProgress>> {
+    return this.#enqueue(async () => {
+      const progress = new Map<string, DeviceProgress>();
+      for (const id of equipment) progress.set(id, await this.deviceProgress(id));
+      return progress;
+    });
   }
 
   /**

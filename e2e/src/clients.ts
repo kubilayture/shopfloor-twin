@@ -26,7 +26,18 @@ import {
   shiftRecordSchema,
   shiftReportSchema,
   shiftTotalsSchema,
+  orderDetailSchema,
+  orderExecutionSchema,
+  orderListSchema,
+  scrapRecordListSchema,
+  terminalViewSchema,
 } from '@shopfloor/contracts/mes-api';
+import {
+  confirmationListSchema,
+  erpOrderViewSchema,
+  orderFeedSchema,
+  statusMessageListSchema,
+} from '@shopfloor/contracts/erp-api';
 import { z } from 'zod';
 
 const stateMs = z.record(z.string(), z.number().int());
@@ -52,6 +63,49 @@ const oeeTruthSchema = z.object({
   ),
   workCenters: z.record(z.string(), z.object({ shifts: z.record(z.string(), oeeResultSchema) })),
 });
+
+const count = z.number().int().min(0);
+const operationQuantities = z.object({ in: count, good: count, scrap: count, rework: count });
+
+/**
+ * The ground truth's orders (sim-summary/4, control API 1.4, #172): the jobs in acceptance order,
+ * per order its quantities per operation, scrap, rework, packed good, WIP and material booked at
+ * cycle completion. Empty in schedule mode.
+ */
+export const ordersTruthSchema = z.object({
+  jobs: z.array(
+    z.object({
+      commandId: z.string(),
+      orderId: z.string(),
+      machine: z.string(),
+      product: z.string(),
+      quantity: count,
+      acceptedAt: z.string(),
+      startedAt: z.string().nullable(),
+      completedAt: z.string().nullable(),
+    }),
+  ),
+  orders: z.record(
+    z.string(),
+    z.object({
+      product: z.string(),
+      jobs: z.array(z.string()),
+      quantity: count,
+      started: count,
+      scrap: z.record(z.string(), z.record(z.string(), count)),
+      reworkPasses: count,
+      packedGood: count,
+      wip: z.record(z.string(), count),
+      lastTerminalAt: z.string().nullable(),
+      completedAt: z.string().nullable(),
+      operations: z.record(z.string(), operationQuantities),
+      material: z.record(z.string(), count),
+      materialInProcess: z.record(z.string(), count),
+    }),
+  ),
+  units: z.object({ count, sha256: z.string() }),
+});
+export type OrdersTruth = z.infer<typeof ordersTruthSchema>;
 
 /** `GET /api/v1/ground-truth` of the simulator (docs/contracts/simulator-control-api.md). */
 export const groundTruthSchema = z.object({
@@ -89,6 +143,7 @@ export const groundTruthSchema = z.object({
       }),
     ),
   }),
+  orders: ordersTruthSchema,
 });
 export type GroundTruth = z.infer<typeof groundTruthSchema>;
 
@@ -170,6 +225,16 @@ export class SimulatorClient {
         body: JSON.stringify({ code, at, ...(repairMs === undefined ? {} : { repairMs }) }),
       },
     ).then(({ injection }) => injection);
+  }
+
+  /** Processes exactly one simulation event while paused (control API 1.1); false at the end. */
+  async step(): Promise<boolean> {
+    const { stepped } = await request(
+      `${this.base}/api/v1/step`,
+      z.object({ stepped: z.boolean() }),
+      { method: 'POST' },
+    );
+    return stepped;
   }
 
   async injections(): Promise<Injection[]> {
@@ -373,11 +438,93 @@ export class MesClient {
   audit(id: string) {
     return this.#get(`/api/v1/downtime/${encodeURIComponent(id)}/audit`, downtimeAuditSchema);
   }
+
+  // Orders, execution and the terminal (#174–#177).
+
+  orders() {
+    return this.#get(`/api/v1/orders`, orderListSchema);
+  }
+
+  order(id: string) {
+    return this.#get(`/api/v1/orders/${encodeURIComponent(id)}`, orderDetailSchema);
+  }
+
+  orderExecution(id: string) {
+    return this.#get(`/api/v1/orders/${encodeURIComponent(id)}/execution`, orderExecutionSchema);
+  }
+
+  scrapRecords(orderId: string) {
+    const query = new URLSearchParams({ orderId });
+    return this.#get(`/api/v1/scrap-records?${query.toString()}`, scrapRecordListSchema);
+  }
+
+  terminal(workCenter: string) {
+    return this.#get(`/api/v1/terminal/${encodeURIComponent(workCenter)}`, terminalViewSchema);
+  }
+}
+
+/** The ERP mock's REST API (ADR-0028) with the run's bearer token (never logged). */
+export class ErpClient {
+  readonly base: string;
+  readonly #token: string;
+
+  constructor(base: string, token: string) {
+    this.base = base;
+    this.#token = token;
+  }
+
+  #get<T>(path: string, schema: z.ZodType<T>): Promise<T> {
+    return request(`${this.base}${path}`, schema, {
+      headers: { authorization: `Bearer ${this.#token}` },
+    });
+  }
+
+  /** The order change feed from its start (every order version the ERP holds). */
+  feed() {
+    return this.#get(`/api/v1/orders?after=0&limit=500`, orderFeedSchema);
+  }
+
+  order(orderNumber: string) {
+    return this.#get(`/api/v1/orders/${encodeURIComponent(orderNumber)}`, erpOrderViewSchema);
+  }
+
+  /** The confirmations received, of one order or of all. */
+  confirmations(orderNumber?: string) {
+    const query =
+      orderNumber === undefined ? '' : `?orderNumber=${encodeURIComponent(orderNumber)}`;
+    return this.#get(`/api/v1/confirmations${query}`, confirmationListSchema);
+  }
+
+  /**
+   * The ERP's `erp_message_posts_total` summed over the message kinds (`/metrics`): posts stored
+   * (`created`), answered from the store (`replayed`), and every other outcome.
+   */
+  async postCounts(): Promise<{ created: number; replayed: number; other: number }> {
+    const response = await fetch(`${this.base}/metrics`, { signal: AbortSignal.timeout(5_000) });
+    const text = await response.text();
+    const counts = { created: 0, replayed: 0, other: 0 };
+    for (const match of text.matchAll(
+      /^erp_message_posts_total\{kind="[^"]*",outcome="([^"]*)"\} (\d+)$/gm,
+    )) {
+      const outcome = match[1] === 'created' || match[1] === 'replayed' ? match[1] : 'other';
+      counts[outcome] += Number(match[2]);
+    }
+    return counts;
+  }
+
+  /** The status messages received, of one order or of all. */
+  statusMessages(orderNumber?: string) {
+    const query =
+      orderNumber === undefined ? '' : `?orderNumber=${encodeURIComponent(orderNumber)}`;
+    return this.#get(`/api/v1/order-status${query}`, statusMessageListSchema);
+  }
 }
 
 /**
  * One HTTP request with exactly these headers (fetch adds or drops some, such as `Origin`):
- * resolves with the status and body.
+ * resolves with the status and body. Each on a connection of its own (`agent: false`) and with the
+ * body's Content-Length: Node frames no body of a DELETE by itself, so on a kept-alive connection
+ * the server would read it as the start of the next request (#178).
  */
 export function rawRequest(
   method: string,
@@ -386,18 +533,30 @@ export function rawRequest(
   body?: string,
 ): Promise<{ status: number; text: string; setCookie: readonly string[] }> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest(new URL(url), { method, headers, timeout: 5_000 }, (response) => {
-      let text = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk: string) => (text += chunk));
-      response.on('end', () => {
-        resolve({
-          status: response.statusCode ?? 0,
-          text,
-          setCookie: response.headers['set-cookie'] ?? [],
+    const req = httpRequest(
+      new URL(url),
+      {
+        method,
+        headers: {
+          ...headers,
+          ...(body === undefined ? {} : { 'content-length': String(Buffer.byteLength(body)) }),
+        },
+        timeout: 5_000,
+        agent: false,
+      },
+      (response) => {
+        let text = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => (text += chunk));
+        response.on('end', () => {
+          resolve({
+            status: response.statusCode ?? 0,
+            text,
+            setCookie: response.headers['set-cookie'] ?? [],
+          });
         });
-      });
-    });
+      },
+    );
     req.on('timeout', () => req.destroy(new Error(`${method} ${url}: timed out`)));
     req.on('error', reject);
     req.end(body);
@@ -432,8 +591,13 @@ export async function mesLogin(
   base: string,
   username: string,
   password: string,
+  kind?: 'desk' | 'terminal',
 ): Promise<{ cookie: string; mustChangePassword: boolean }> {
-  const answer = await mesWrite(base, 'POST', '/api/v1/session', { username, password });
+  const answer = await mesWrite(base, 'POST', '/api/v1/session', {
+    username,
+    password,
+    ...(kind === undefined ? {} : { kind }),
+  });
   if (answer.status !== 200) {
     throw new Error(`login as ${username}: ${String(answer.status)} ${answer.text}`);
   }

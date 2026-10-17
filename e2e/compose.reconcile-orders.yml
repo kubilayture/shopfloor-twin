@@ -1,0 +1,12 @@
+# Override for the reconciliation's orders pass (#178), after docker-compose.yml and
+# e2e/compose.reconcile.yml, used only by e2e/src/reconcile.ts: the ERP mock serves the golden
+# scenario orders-01's dataset (apps/simulator/golden/orders-01/orders.json, already in the ERP's
+# schema) instead of config/erp/orders.yaml. The simulator's production mode (SIM_PRODUCTION=orders)
+# and the MES's ERP poll interval come from the run's env file.
+
+services:
+  erp:
+    environment:
+      ERP_DATASET: /app/golden/orders-01/orders.json
+    volumes:
+      - ./apps/simulator/golden/orders-01/orders.json:/app/golden/orders-01/orders.json:ro

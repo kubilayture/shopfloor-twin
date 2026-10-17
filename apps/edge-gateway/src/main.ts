@@ -191,6 +191,7 @@ const http = buildGatewayHttp({
     received: commandLink.received,
     calls: executor.calls,
     settleAcceptances: executor.settleAcceptances,
+    callTimeouts: executor.callTimeouts,
     results: executor.results,
     ...executor.pending,
   }),

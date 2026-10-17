@@ -89,9 +89,12 @@ function run(
   args: readonly string[],
   env: NodeJS.ProcessEnv = {},
 ): Promise<number> {
+  // Its own process group, so a signal reaches the whole job (pnpm, turbo and every test
+  // runner), never pnpm alone with orphans left running.
   const child = spawn(command, args, {
     cwd: REPO,
     stdio: 'inherit',
+    detached: true,
     env: { ...process.env, ...env },
   });
   const exited = new Promise<number>((done) => {
@@ -193,9 +196,9 @@ function cleanup(): Promise<void> {
   return cleaned;
 }
 
-// Ctrl+C (the job gets the SIGINT too, from the terminal) or a SIGTERM (passed on to the job):
-// wait for the job to end (the reconciliation removes its own projects), then clean up and exit
-// 130 or 143. A second signal while that runs changes nothing.
+// Ctrl+C or SIGTERM: passed on to the running job's process group, then wait for the job to end
+// (the reconciliation removes its own projects), clean up and exit 130 or 143. A second signal
+// while that runs changes nothing.
 /** Set by a signal (an object: TypeScript can't see a closure assign a plain `let`). */
 const signals = { stopping: false };
 const stop = (signal: NodeJS.Signals) => {
@@ -203,7 +206,13 @@ const stop = (signal: NodeJS.Signals) => {
   signals.stopping = true;
   console.error(`\n${signal}: waiting for the running job, then cleaning up`);
   const running = current;
-  if (running && signal === 'SIGTERM') running.child.kill('SIGTERM');
+  if (running?.child.pid !== undefined) {
+    try {
+      process.kill(-running.child.pid, signal);
+    } catch {
+      // the job ended meanwhile
+    }
+  }
   void (running?.exited ?? Promise.resolve(0))
     .then(() => cleanup())
     .catch((error: unknown) => {

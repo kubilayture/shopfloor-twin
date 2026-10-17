@@ -125,7 +125,7 @@ describe('runHeadless (plan section 4, headless mode)', () => {
     expect(configHash(structuredClone(config))).toBe(configHash(config));
   });
 
-  it('hashes only the simulation sections: OEE, reason and alarm configuration do not change it (ADR-0021, ADR-0024)', async () => {
+  it('hashes only the simulation sections: OEE, reason, scrap and alarm configuration do not change it (ADR-0021, ADR-0024, #175)', async () => {
     const changed = structuredClone(config);
     changed.oee.microStopThresholdMs = 1;
     changed.reasons.rules.reverse();
@@ -133,9 +133,10 @@ describe('runHeadless (plan section 4, headless mode)', () => {
     changed.alarms.kpi.floodThreshold = 3;
     changed.alarms.definitions.reverse();
     changed.alarms.positions.pop();
+    changed.scrap.reasons.reverse();
     expect(configHash(changed)).toBe(configHash(config));
     const simulationOnly = Object.fromEntries(
-      Object.entries(config).filter(([k]) => k !== 'oee' && k !== 'reasons' && k !== 'alarms'),
+      Object.entries(config).filter(([k]) => !['oee', 'reasons', 'alarms', 'scrap'].includes(k)),
     );
     expect(createHash('sha256').update(stableStringify(simulationOnly)).digest('hex')).toBe(
       configHash(config),

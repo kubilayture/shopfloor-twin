@@ -139,6 +139,23 @@ export interface OrderIncidentTable {
   resolution: string | null;
 }
 
+/** A confirmation sent to the ERP (#175): final (n = 1) or a correction with deltas. */
+export interface ConfirmationTable {
+  order_id: string;
+  operation: string;
+  n: number;
+  kind: 'final' | 'correction';
+  revision: number;
+  yield: number;
+  scrap: ColumnType<unknown, string, string>;
+  rework_passes: number;
+  material: ColumnType<unknown, string, string>;
+  totals: ColumnType<unknown, string, string>;
+  confirmed_at: Timestamp;
+  idempotency_key: string;
+  created_at: DefaultTimestamp;
+}
+
 export interface OrdersTables {
   'orders.erp_cursor': ErpCursorTable;
   'orders.production_order': ProductionOrderTable;
@@ -147,6 +164,7 @@ export interface OrdersTables {
   'orders.command_attempt': CommandAttemptTable;
   'orders.erp_message_log': ErpMessageLogTable;
   'orders.order_incident': OrderIncidentTable;
+  'orders.confirmation': ConfirmationTable;
 }
 
 export const ORDERS_COLUMNS = {
@@ -246,5 +264,20 @@ export const ORDERS_COLUMNS = {
     'detected_at',
     'closed_at',
     'resolution',
+  ],
+  'orders.confirmation': [
+    'order_id',
+    'operation',
+    'n',
+    'kind',
+    'revision',
+    'yield',
+    'scrap',
+    'rework_passes',
+    'material',
+    'totals',
+    'confirmed_at',
+    'idempotency_key',
+    'created_at',
   ],
 } as const;

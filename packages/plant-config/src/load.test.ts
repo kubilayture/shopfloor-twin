@@ -414,10 +414,12 @@ describe('OEE configuration (ADR-0021)', () => {
     expect(sections).not.toHaveProperty('oee');
     expect(sections).not.toHaveProperty('reasons');
     expect(sections).not.toHaveProperty('alarms');
+    expect(sections).not.toHaveProperty('scrap');
     expect(Object.keys(PLANT_FILES)).toEqual([
       ...Object.keys(SIMULATION_FILES),
       'oee',
       'reasons',
+      'scrap',
       'alarms',
     ]);
   });

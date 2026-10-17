@@ -5,6 +5,7 @@ import type { EquipmentTables } from '../modules/equipment/index.ts';
 import type { IdentityTables } from '../modules/identity/index.ts';
 import type { IngestTables } from '../modules/ingest/index.ts';
 import type { MasterDataTables } from '../modules/master-data/index.ts';
+import type { ExecutionTables } from '../modules/execution/index.ts';
 import type { OrdersTables } from '../modules/orders/index.ts';
 import type { ShiftsTables } from '../modules/shifts/index.ts';
 
@@ -27,7 +28,8 @@ export type Database = PublicTables &
   AlarmsTables &
   ShiftsTables &
   IdentityTables &
-  OrdersTables;
+  OrdersTables &
+  ExecutionTables;
 
 /**
  * BIGINT columns (epochs, sequence numbers, ids, counts) are read as numbers, not strings: every

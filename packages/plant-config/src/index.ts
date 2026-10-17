@@ -14,6 +14,8 @@ export {
   plantCauses,
 } from './reasons.ts';
 export type { CausePattern, ReasonRule, ReasonsConfig } from './reasons.ts';
+export { MACHINE_SCRAP_REASONS, checkScrap, scrapRoot } from './scrap.ts';
+export type { ScrapConfig } from './scrap.ts';
 export {
   MAX_REPAIR_MS,
   checkInjections,

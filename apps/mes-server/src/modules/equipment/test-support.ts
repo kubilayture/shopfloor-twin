@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import {
   alarmTopic,
   cycleTopic,
+  jobTopic,
   stateTopic,
   telemetryTopic,
   type EquipmentPath,
@@ -140,6 +141,28 @@ export class UnsFeed {
       scope: 'device',
       ...this.#common(equipment, epoch, seq, at),
       value: { code, transition, severity },
+    });
+  }
+
+  /** A job fact of a CNC (#174, `uns.events.job/1`) in the machine's shared sequence. */
+  job(
+    equipment: string,
+    epoch: number,
+    seq: number,
+    at: number,
+    value: {
+      readonly transition: 'accepted' | 'started' | 'completed';
+      readonly commandId: string;
+      readonly orderId: string;
+      readonly product: string;
+      readonly quantity: number;
+    },
+  ): Delivery {
+    return this.#deliver(jobTopic(this.path(equipment)), {
+      schema: 'uns.events.job/1',
+      scope: 'device',
+      ...this.#common(equipment, epoch, seq, at),
+      value: { ...value },
     });
   }
 

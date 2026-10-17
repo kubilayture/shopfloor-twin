@@ -5,7 +5,9 @@ import {
   type LoadOrderCommand,
 } from '@shopfloor/contracts';
 import {
+  confirmationKey,
   statusKey,
+  type ConfirmationRequest,
   type FeedEntry,
   type OrderStatusMessage,
   type StatusMessageRequest,
@@ -45,6 +47,7 @@ import { chooseCnc, type CncQueue, type ProductTimes } from './dispatch-rule.ts'
 import type { ErpApi } from './erp-client.ts';
 import type { CommandPublisher } from './publisher.ts';
 import type {
+  ConfirmationTable,
   DispatchCommandTable,
   ErpMessageLogTable,
   OrderIncidentTable,
@@ -89,6 +92,20 @@ export interface OrdersIngest {
     afterSeq: number,
     beforeSeq: number | null,
   ): Promise<number>;
+}
+
+/**
+ * What the orders module reads of the execution module's units (#175, ADR-0031): the blanks a job
+ * started, exactly; undefined when its units are not all known yet.
+ */
+export interface BlankCounter {
+  blanksStarted(job: {
+    readonly commandId: string;
+    readonly equipment: string;
+    readonly deviceEpoch: number;
+    readonly quantity: number;
+    readonly startedSeq: number;
+  }): Promise<number | undefined>;
 }
 
 export interface OrdersLog {
@@ -236,6 +253,32 @@ export interface ErpMessageRecord {
   readonly payload: unknown;
 }
 
+/** The totals of an order operation as a confirmation carries them (#175). */
+export interface OperationConfirmation {
+  readonly yield: number;
+  /** Scrap per reason. */
+  readonly scrap: Readonly<Record<string, number>>;
+  readonly reworkPasses: number;
+  /** Backflushed material per material id. */
+  readonly material: Readonly<Record<string, number>>;
+}
+
+/** A confirmation sent to the ERP (#175): its counts (deltas in a correction) and the totals. */
+export interface ConfirmationRecord extends OperationConfirmation {
+  readonly orderId: string;
+  readonly operation: string;
+  readonly n: number;
+  readonly kind: 'final' | 'correction';
+  readonly revision: number;
+  /** Every confirmation up to this one summed. */
+  readonly totals: OperationConfirmation;
+  readonly confirmedAt: Date;
+  readonly idempotencyKey: string;
+  readonly createdAt: Date;
+  /** Of its outbound message: pending, sent, conflict or refused. */
+  readonly messageStatus: string;
+}
+
 export interface OrderIncident {
   readonly id: number;
   readonly type: OrderIncidentType;
@@ -252,6 +295,8 @@ export interface OrderDetailRecord {
   readonly order: OrderRecord;
   readonly commands: readonly (CommandRecord & { readonly results: StoredCommandResult[] })[];
   readonly erpMessages: readonly ErpMessageRecord[];
+  /** Confirmations sent to the ERP (#175), by operation and number. */
+  readonly confirmations: readonly ConfirmationRecord[];
   readonly incidents: readonly OrderIncident[];
   readonly history: readonly StoredAuditEntry[];
 }
@@ -333,6 +378,7 @@ export class Orders {
   #posting = false;
   #kick: NodeJS.Timeout | undefined;
   #unsubscribe: (() => void) | undefined;
+  #blanks: BlankCounter | undefined;
 
   constructor(options: OrdersOptions) {
     this.#options = options;
@@ -363,6 +409,11 @@ export class Orders {
         registers,
       });
     }
+  }
+
+  /** Counts a lost job's blanks from the execution module's units from now on (#175). */
+  useBlankCounter(counter: BlankCounter): void {
+    this.#blanks = counter;
   }
 
   /** Listens for order and command changes (push); returns an unsubscribe. */
@@ -484,6 +535,7 @@ export class Orders {
         results: results.filter((r) => r.value.commandId === command.commandId),
       })),
       erpMessages: messages.map(toMessage),
+      confirmations: await this.confirmations(id),
       incidents: incidents.map(toIncident),
       history,
     };
@@ -786,6 +838,116 @@ export class Orders {
     return order;
   }
 
+  // ---- confirmations (#175, ADR-0028, ADR-0031) ----
+
+  /**
+   * Confirms an order operation to the ERP from its final totals (#175's execution module calls
+   * it once the operation is complete, plan H1): the first time a final confirmation (n = 1) with
+   * the totals; later, only when the totals differ from the sum of every confirmation sent, a
+   * correction (n + 1) with the signed deltas, judged against what was confirmed before the change.
+   * Written with its outbound message (key `confirmationKey`) in one transaction; posted by the
+   * outbox. Returns the confirmation written, or undefined when nothing changed.
+   */
+  async confirm(
+    id: string,
+    operation: string,
+    totals: OperationConfirmation,
+    at: Date,
+  ): Promise<ConfirmationRecord | undefined> {
+    const written = await this.#serial(() =>
+      this.#db.transaction().execute(async (trx) => {
+        const row = await this.#lock(trx, id);
+        expectStatus(row, ['dispatched', 'in-progress', 'completed', 'closed'], 'confirm');
+        const earlier = await trx
+          .selectFrom('orders.confirmation')
+          .selectAll()
+          .where('order_id', '=', id)
+          .where('operation', '=', operation)
+          .orderBy('n', 'desc')
+          .limit(1)
+          .executeTakeFirst();
+        const confirmed = earlier ? (earlier.totals as OperationConfirmation) : undefined;
+        const delta = confirmed ? difference(totals, confirmed) : totals;
+        if (confirmed && isZero(delta)) return undefined;
+        const n = (earlier?.n ?? 0) + 1;
+        const kind = n === 1 ? 'final' : 'correction';
+        const key = confirmationKey(id, operation, n);
+        const body: ConfirmationRequest = {
+          orderNumber: id,
+          revision: row.revision,
+          operation,
+          kind,
+          confirmation: n,
+          yield: delta.yield,
+          scrap: lines(delta.scrap).map(([reason, quantity]) => ({ reason, quantity })),
+          reworkPasses: delta.reworkPasses,
+          material: lines(delta.material).map(([material, quantity]) => ({ material, quantity })),
+          confirmedAt: at.toISOString(),
+        };
+        const stored = await trx
+          .insertInto('orders.confirmation')
+          .values({
+            order_id: id,
+            operation,
+            n,
+            kind,
+            revision: row.revision,
+            yield: delta.yield,
+            scrap: JSON.stringify(delta.scrap),
+            rework_passes: delta.reworkPasses,
+            material: JSON.stringify(delta.material),
+            totals: JSON.stringify(canonicalTotals(totals)),
+            confirmed_at: at,
+            idempotency_key: key,
+          })
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        await trx
+          .insertInto('orders.erp_message_log')
+          .values({
+            direction: 'out',
+            kind: 'confirmation',
+            order_id: id,
+            revision: row.revision,
+            idempotency_key: key,
+            feed_id: null,
+            feed_seq: null,
+            payload: JSON.stringify(body),
+            status: 'pending',
+            detail: null,
+            receipt: null,
+          })
+          .execute();
+        return toConfirmation(stored, 'pending');
+      }),
+    );
+    if (written) {
+      this.#log.info(
+        { order: id, operation, n: written.n, kind: written.kind },
+        'order operation confirmed',
+      );
+      await this.#emitOrder(id, 'updated');
+    }
+    return written;
+  }
+
+  /** The confirmations sent for an order, by operation and number, with their message status. */
+  async confirmations(
+    id: string,
+    db: Kysely<Database> = this.#readDb,
+  ): Promise<ConfirmationRecord[]> {
+    const rows = await db
+      .selectFrom('orders.confirmation as c')
+      .leftJoin('orders.erp_message_log as m', 'm.idempotency_key', 'c.idempotency_key')
+      .selectAll('c')
+      .select('m.status as message_status')
+      .where('c.order_id', '=', id)
+      .orderBy('c.operation')
+      .orderBy('c.n')
+      .execute();
+    return rows.map((row) => toConfirmation(row, row.message_status ?? 'pending'));
+  }
+
   // ---- ERP import (ADR-0028) ----
 
   /**
@@ -1083,15 +1245,23 @@ export class Orders {
       readings.set(row.command_id, { row, reading });
       // Final once its run's facts are refused (a newer epoch reached the device stream), or its
       // job completed and was confirmed: nothing can change it any more.
+      // A lost job's blanks: the exact count from the execution module's units wins once known
+      // (#175 review); until then the running maximum of the conservative count, and the command
+      // stays live so that the exact count can still replace it.
+      const counted =
+        reading.job === 'lost' && device ? await this.#lostStarted(row, reading, device) : null;
+      const lostStarted =
+        counted === null
+          ? null
+          : counted.exact
+            ? counted.count
+            : Math.max(row.lost_started ?? 0, counted.count);
       const final =
-        (device?.epoch !== null &&
+        ((device?.epoch !== null &&
           device?.epoch !== undefined &&
           device.epoch > row.device_epoch) ||
-        (reading.job === 'completed' && reading.confirmed);
-      const lostStarted =
-        reading.job === 'lost' && device
-          ? Math.max(row.lost_started ?? 0, await this.#lostStarted(row, reading, device))
-          : null;
+          (reading.job === 'completed' && reading.confirmed)) &&
+        counted?.pending !== true;
       const record = { ...reading, final, lostStarted };
       if (this.#differs(row, record)) changed.push({ row, reading: record });
     }
@@ -1192,15 +1362,18 @@ export class Orders {
    *   stream (while the run's epoch is still the stream's) or as a gap incident of the run;
    * - else none if it never started, or its OP10 cycles before the next job's `started` fact,
    *   plus one that may have been in the machine, at most its quantity.
-   * The caller keeps the running maximum while late facts may still arrive (#175's units can tell
-   * it exactly).
+   * Exact (`exact`) from the execution module's units once every OP10 cycle of the job is a unit
+   * (#175); `pending` while they are still being built, so the caller keeps the command live and
+   * lets the exact count replace the conservative one. Otherwise the caller keeps the running
+   * maximum.
    */
   async #lostStarted(
     row: CommandRow,
     reading: CommandReading,
     device: DeviceProgress,
-  ): Promise<number> {
-    if (!reading.confirmed || reading.accepted === null) return row.quantity;
+  ): Promise<{ count: number; exact: boolean; pending: boolean }> {
+    const sure = (count: number) => ({ count, exact: false, pending: false });
+    if (!reading.confirmed || reading.accepted === null) return sure(row.quantity);
     const from = reading.started?.seq ?? reading.accepted.seq;
     let known: boolean;
     if (device.epoch === row.device_epoch) {
@@ -1210,7 +1383,7 @@ export class Orders {
       const { incidents } = await this.#ingest.settled(row.equipment, row.device_epoch);
       known = !incidents.some((incident) => incident.seqTo >= from);
     }
-    if (!known) return row.quantity;
+    if (!known) return sure(row.quantity);
     if (reading.started === null) {
       // Accepted, never started: one blank may have been taken without its `started` fact
       // having been raised yet only if it was the CNC's head job (an earlier job not completed
@@ -1227,7 +1400,7 @@ export class Orders {
           .map((f) => f.commandId),
       );
       for (const f of jobs) if (f.transition === 'completed') earlier.delete(f.commandId);
-      if (earlier.size > 0) return 0;
+      if (earlier.size > 0) return sure(0);
       const movedOn =
         jobs.some(
           (f) =>
@@ -1238,9 +1411,21 @@ export class Orders {
             fromSeq: acceptedSeq + 1,
           })
         ).some((f) => f.state === 'Idle' && f.cause === 'NO-ORDER');
-      return movedOn ? 0 : Math.min(1, row.quantity);
+      return sure(movedOn ? 0 : Math.min(1, row.quantity));
     }
     const started = reading.started;
+    // #175: the execution module's units count the job's blanks exactly (its OP10 units, plus one
+    // only if the CNC's states show it still held one); without them, the conservative count.
+    const exact = await this.#blanks?.blanksStarted({
+      commandId: row.command_id,
+      equipment: row.equipment,
+      deviceEpoch: row.device_epoch,
+      quantity: row.quantity,
+      startedSeq: started.seq,
+    });
+    if (exact !== undefined) {
+      return { count: Math.min(row.quantity, exact), exact: true, pending: false };
+    }
     const later = (
       await this.#ingest.jobFacts({ equipment: row.equipment, epoch: row.device_epoch })
     )
@@ -1252,7 +1437,12 @@ export class Orders {
       started.seq,
       later?.seq ?? null,
     );
-    return Math.min(row.quantity, cycles + 1);
+    // Pending while a blank counter is attached: its units are still being built.
+    return {
+      count: Math.min(row.quantity, cycles + 1),
+      exact: false,
+      pending: this.#blanks !== undefined,
+    };
   }
 
   /** Incidents and order changes that follow from a command's new reading. */
@@ -2264,6 +2454,73 @@ function toCommand(
       expiresAt: a.expires_at,
       publishedAt: a.published_at,
     })),
+  };
+}
+
+type Counts = Readonly<Record<string, number>>;
+
+/** Signed per-key difference of two count maps, zero entries dropped. */
+function diffCounts(a: Counts, b: Counts): Record<string, number> {
+  const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
+  const out: Record<string, number> = {};
+  for (const key of keys) {
+    const value = (a[key] ?? 0) - (b[key] ?? 0);
+    if (value !== 0) out[key] = value;
+  }
+  return out;
+}
+
+/** What the totals add to what was confirmed: the correction's deltas. */
+function difference(
+  totals: OperationConfirmation,
+  confirmed: OperationConfirmation,
+): OperationConfirmation {
+  return {
+    yield: totals.yield - confirmed.yield,
+    scrap: diffCounts(totals.scrap, confirmed.scrap),
+    reworkPasses: totals.reworkPasses - confirmed.reworkPasses,
+    material: diffCounts(totals.material, confirmed.material),
+  };
+}
+
+const isZero = (delta: OperationConfirmation): boolean =>
+  delta.yield === 0 &&
+  delta.reworkPasses === 0 &&
+  Object.values(delta.scrap).every((v) => v === 0) &&
+  Object.values(delta.material).every((v) => v === 0);
+
+/** Count lines by key, zero ones dropped (a final confirmation lists only what happened). */
+const lines = (counts: Counts): [string, number][] =>
+  Object.entries(counts)
+    .filter(([, n]) => n !== 0)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+const canonicalTotals = (totals: OperationConfirmation): OperationConfirmation => ({
+  yield: totals.yield,
+  scrap: Object.fromEntries(lines(totals.scrap)),
+  reworkPasses: totals.reworkPasses,
+  material: Object.fromEntries(lines(totals.material)),
+});
+
+function toConfirmation(
+  row: Selectable<ConfirmationTable>,
+  messageStatus: string,
+): ConfirmationRecord {
+  return {
+    orderId: row.order_id,
+    operation: row.operation,
+    n: row.n,
+    kind: row.kind,
+    revision: row.revision,
+    yield: row.yield,
+    scrap: row.scrap as Counts,
+    reworkPasses: row.rework_passes,
+    material: row.material as Counts,
+    totals: row.totals as OperationConfirmation,
+    confirmedAt: row.confirmed_at,
+    idempotencyKey: row.idempotency_key,
+    createdAt: row.created_at,
+    messageStatus,
   };
 }
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { confirmationDtoSchema } from './execution-api.ts';
 import { COMMAND_REJECTIONS, COMMAND_RESULTS } from './uns/commands.ts';
 
 // The MES's `orders` API (#174, Phase 7 plan "Orders"): production orders imported from the ERP,
@@ -266,8 +267,8 @@ export const orderDetailSchema = z
     ),
     commands: z.array(commandDetailSchema),
     confirmations: z
-      .array(z.record(z.string(), z.unknown()))
-      .describe('Confirmations sent to the ERP (#175; empty until then)'),
+      .array(confirmationDtoSchema)
+      .describe('Confirmations sent to the ERP (#175), by operation and number'),
     erpMessages: z.array(erpMessageSchema),
     incidents: z.array(orderIncidentSchema),
     history: z.array(orderHistoryEntrySchema).describe('The audit, newest first'),

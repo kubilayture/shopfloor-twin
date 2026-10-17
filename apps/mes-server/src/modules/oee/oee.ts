@@ -124,6 +124,8 @@ interface HourCell {
   readonly stateMs: Partial<Record<OeeState, number>>;
   readonly stops: { ms: number; wholeMs: number; open: boolean }[];
   readonly cycles: Map<string, number>;
+  /** Idle `NO-ORDER` ms of the hour (#175), from the stored pieces. */
+  noOrderMs: number;
   /** Rows of `state_hourly` were read for the hour. */
   rows: boolean;
   /** Every row final (a `bucket_finality` row and `state_hourly` refreshed through it). */
@@ -549,6 +551,7 @@ export class Oee {
           stateMs: {},
           stops: [],
           cycles: new Map(),
+          noOrderMs: 0,
           rows: false,
           rowsFinal: true,
           cyclesRefreshed: this.#options.ingest.cyclesRefreshed(new Date(hour)),
@@ -568,6 +571,9 @@ export class Oee {
         wholeMs: stop.wholeMs,
         open: stop.open,
       });
+    }
+    for (const idle of inputs.noOrder) {
+      cellOf(idle.equipment, idle.epoch, idle.hour.getTime()).noOrderMs += idle.ms;
     }
     for (const count of cycles.flat()) {
       const target = cellOf(count.equipment, count.epoch, count.hour.getTime()).cycles;
@@ -601,6 +607,11 @@ export class Oee {
       {
         scheduled: cell.shiftKey !== NO_SHIFT,
         stateMs: cell.stateMs,
+        // ADR-0021 amendment (#175): excluded from planned busy time under `scheduledTime:
+        // orders`; never more than the hour's Idle (the aggregate may lag the pieces by a refresh).
+        ...(cell.noOrderMs > 0
+          ? { noOrderIdleMs: Math.min(cell.noOrderMs, cell.stateMs.Idle ?? 0) }
+          : {}),
         stops: cell.stops,
         cycles: cycleList(cell.cycles),
         operation: member.operation,

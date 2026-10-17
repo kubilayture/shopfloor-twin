@@ -9,6 +9,7 @@ import {
 } from './identity.ts';
 import { ORDERS_TOPIC, orderPushMessages } from './orders-api.ts';
 
+export * from './execution-api.ts';
 export * from './orders-api.ts';
 
 // The MES API's responses and WebSocket messages (#97, ADR-0019), shared by `mes-server`, which
@@ -134,6 +135,8 @@ export const PROBLEM_TYPES = {
    * the CNC's facts have not reached its `seqAfterExpiry`), ADR-0029.
    */
   commandsUnsettled: 'urn:shopfloor:commands-unsettled',
+  /** 409 (#175): the scrap record's `version` sent is not its current one. */
+  scrapStale: 'urn:shopfloor:scrap-stale',
 } as const;
 
 export type ProblemType = (typeof PROBLEM_TYPES)[keyof typeof PROBLEM_TYPES];

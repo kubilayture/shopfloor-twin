@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { CAUSES } from '@shopfloor/contracts';
+import { erpDatasetSchema } from '@shopfloor/contracts/erp-api';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { readScenario, scenarioOptions } from './golden.ts';
 import { unitsHash, type UnitJson } from './order-truth.ts';
@@ -26,8 +27,7 @@ interface Logged {
 }
 
 interface ErpOrder {
-  readonly feed: number;
-  readonly number: string;
+  readonly orderNumber: string;
   readonly revision: number;
   readonly product: string;
   readonly quantity: number;
@@ -50,9 +50,10 @@ beforeAll(async () => {
   const result = runHeadless({ ...options, checkInvariants: true }, (line) => lines.push(line));
   orders = { lines, result };
   events = lines.slice(1).map((line) => JSON.parse(line) as LoggedEvent);
-  dataset = JSON.parse(await readFile(resolve(GOLDEN, 'orders-01/orders.json'), 'utf8')) as {
-    orders: ErpOrder[];
-  };
+  // The ERP mock's dataset schema (#175): the file the ERP mock and the MES's golden harness serve.
+  dataset = erpDatasetSchema.parse(
+    JSON.parse(await readFile(resolve(GOLDEN, 'orders-01/orders.json'), 'utf8')),
+  );
 }, 60_000);
 
 const scenario = () => readScenario('orders-01');
@@ -84,14 +85,15 @@ describe('golden scenario orders-01 (#172)', () => {
     const { erp } = scenario();
     expect(erp?.dataset).toBe('orders.json');
     const latest = new Map<string, ErpOrder>();
-    for (const order of [...dataset.orders].sort((a, b) => a.feed - b.feed)) {
-      latest.set(order.number, order);
+    for (const order of dataset.orders) {
+      latest.set(order.orderNumber, order);
     }
     const released = [...latest.values()]
-      .filter((order) => erp?.release.includes(order.number))
+      .filter((order) => erp?.release.includes(order.orderNumber))
       .sort(
         (a, b) =>
-          Date.parse(a.plannedStart) - Date.parse(b.plannedStart) || (a.number < b.number ? -1 : 1),
+          Date.parse(a.plannedStart) - Date.parse(b.plannedStart) ||
+          (a.orderNumber < b.orderNumber ? -1 : 1),
       );
     const ideal: Record<string, number> = { 'VB-100': 240_000, 'VB-200': 330_000 };
     const changeover = 25 * MINUTE;
@@ -122,9 +124,9 @@ describe('golden scenario orders-01 (#172)', () => {
       );
       queues.get(machine)?.push(job);
       return {
-        commandId: `${order.number}~OP10~1`,
+        commandId: `${order.orderNumber}~OP10~1`,
         machine,
-        orderId: order.number,
+        orderId: order.orderNumber,
         product: order.product,
         quantity: order.quantity,
         notBefore: new Date(job.notBefore).toISOString(),
@@ -186,10 +188,10 @@ describe('golden scenario orders-01 (#172)', () => {
     expect(Object.values(open[0]?.[1].wip ?? {}).reduce((s, n) => s + n, 0)).toBeGreaterThan(0);
     expect(truth.jobs.find((j) => j.orderId === 'PO-2610-009')?.completedAt).toBeNull();
     // The ERP dataset: a revision before release, and an order never released.
-    const revised = dataset.orders.filter((o) => o.revision > 1).map((o) => o.number);
+    const revised = dataset.orders.filter((o) => o.revision > 1).map((o) => o.orderNumber);
     expect(revised).toEqual(['PO-2610-006']);
     expect(scenario().erp?.release).toContain('PO-2610-006');
-    const unreleased = [...new Set(dataset.orders.map((o) => o.number))].filter(
+    const unreleased = [...new Set(dataset.orders.map((o) => o.orderNumber))].filter(
       (n) => !scenario().erp?.release.includes(n),
     );
     expect(unreleased).toEqual(['PO-2610-008']);
@@ -226,7 +228,7 @@ describe('golden scenario orders-01 (#172)', () => {
       const order = e.orderId as string;
       perOrder.set(order, (perOrder.get(order) ?? 0) + (e.quantity as number));
     }
-    const latest = new Map(dataset.orders.map((o) => [o.number, o.quantity]));
+    const latest = new Map(dataset.orders.map((o) => [o.orderNumber, o.quantity]));
     for (const [order, quantity] of perOrder) {
       expect(quantity).toBeLessThanOrEqual(latest.get(order) ?? 0);
     }

@@ -12,6 +12,7 @@ import { Identity, type IdentityLog } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 import { DowntimeFeed, Oee } from './modules/oee/index.ts';
+import { Execution } from './modules/execution/index.ts';
 import { ErpClient, MqttCommandPublisher, Orders } from './modules/orders/index.ts';
 import { Shifts } from './modules/shifts/index.ts';
 
@@ -72,6 +73,7 @@ let coding: DowntimeCoding | undefined;
 let alarms: Alarms | undefined;
 let shifts: Shifts | undefined;
 let orders: Orders | undefined;
+let execution: Execution | undefined;
 let publisher: MqttCommandPublisher | undefined;
 
 const { app, registry, realtime } = await buildMesHttp({
@@ -124,6 +126,7 @@ async function shutdown(signal: string): Promise<void> {
   for (const close of [
     () => app.close(),
     async () => ingest?.stop(),
+    async () => execution?.stop(),
     async () => orders?.stop(),
     async () => publisher?.close(),
     async () => shifts?.stop(),
@@ -322,6 +325,25 @@ try {
   if (env.ERP_URL === undefined) {
     log.warn('ERP_URL is not set: no orders are imported and nothing is posted to the ERP');
   }
+  // Execution (#175): units from the cycle facts, completion and confirmations through orders; a
+  // lost job's blanks are counted from its units from here on.
+  const executionModule = new Execution({
+    db,
+    readDb,
+    ingest,
+    masterData,
+    orders: ordersModule,
+    rework: {
+      test: plant.config.process.leakTest.operation,
+      back: plant.config.process.leakTest.reworkOperation,
+    },
+    clock: () => equipmentModule.watermarks()[0]?.watermark,
+    registry,
+    log: log.child({ module: 'execution' }),
+  });
+  execution = executionModule;
+  await executionModule.start();
+  ordersModule.useBlankCounter(executionModule);
   // The API and push follow the modules from here; until then they answer 503.
   await realtime.attach({
     masterData: apiMasterData,
@@ -336,6 +358,7 @@ try {
     alarms,
     shifts: shiftsModule,
     orders: ordersModule,
+    execution: executionModule,
   });
   log.info({ writes: env.MES_WRITES }, 'operator writes (downtime coding, alarms, handover notes)');
   await ingest.start();

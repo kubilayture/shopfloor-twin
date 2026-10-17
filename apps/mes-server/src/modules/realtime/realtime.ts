@@ -59,6 +59,7 @@ import {
   transitionDto,
 } from './alarm-dto.ts';
 import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
+import { executionRoutes, type ExecutionApi } from './execution-routes.ts';
 import { orderRoutes, type OrdersApi } from './order-routes.ts';
 import {
   handoverAuditDto,
@@ -223,6 +224,8 @@ export interface ApiSources {
   >;
   /** Production orders and their commands (#174); the order routes answer 503 without it. */
   readonly orders?: OrdersApi & Pick<Orders, 'onChange'>;
+  /** Units, an order's execution and scrap records (#175); the execution routes answer 503 without it. */
+  readonly execution?: ExecutionApi;
 }
 
 export interface RealtimeOptions {
@@ -1403,6 +1406,16 @@ export async function registerRealtime(
           const orders = ready().sources.orders;
           if (!orders) throw new HttpProblem(503, 'orders are not available');
           return orders;
+        },
+        writer: (request) => Promise.resolve(writeBy(request)),
+      });
+
+      // ---- Execution (#175): units, an order's execution, scrap records and coding ----
+      executionRoutes(api, {
+        execution: () => {
+          const execution = ready().sources.execution;
+          if (!execution) throw new HttpProblem(503, 'execution is not available');
+          return execution;
         },
         writer: (request) => Promise.resolve(writeBy(request)),
       });

@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DuplicateConfirmationError, ErpStore, canonicalJson } from './store.ts';
+import {
+  DuplicateConfirmationError,
+  DuplicateTransitionError,
+  ErpStore,
+  canonicalJson,
+} from './store.ts';
 
 const dirs: string[] = [];
 const stores: ErpStore[] = [];
@@ -61,7 +66,7 @@ describe('ErpStore', () => {
     expect(
       store.receive('confirmation', 'A~status~accepted', 'A', { s: 1, t: 2 }, t1).outcome,
     ).toBe('conflict');
-    expect(store.counts()).toEqual({ confirmation: 0, status: 1 });
+    expect(store.counts()).toEqual({ confirmation: 0, status: 1, 'quality-notification': 0 });
   });
 
   it('refuses a second confirmation of one order, operation and number under another key', () => {
@@ -82,7 +87,48 @@ describe('ErpStore', () => {
     store.insert('status', 's2', 'A', { n: 7 }, t1);
     expect(store.hasConfirmation('A', op10)).toBe(true);
     expect(store.hasConfirmation('A', { operation: 'OP30', confirmation: 1 })).toBe(false);
-    expect(store.counts()).toEqual({ confirmation: 4, status: 2 });
+    expect(store.counts()).toEqual({ confirmation: 4, status: 2, 'quality-notification': 0 });
+  });
+
+  it('keeps quality notifications by hold, one per transition number, keys unique across kinds', () => {
+    const store = open(':memory:');
+    const opened = { holdId: 'H1', transitionNo: 1 };
+    const receipt = store.insertNotification('H1~opened~1', opened, { b: 1, a: 2 }, t0);
+    expect(receipt).toEqual({
+      idempotencyKey: 'H1~opened~1',
+      kind: 'quality-notification',
+      holdId: 'H1',
+      receivedSeq: 1,
+      receivedAt: t0.toISOString(),
+    });
+    expect(store.lookup('quality-notification', 'H1~opened~1', { a: 2, b: 1 })).toEqual({
+      outcome: 'replayed',
+      receipt,
+    });
+    // The key of a notification used for another kind: a conflict, never a second message.
+    expect(store.lookup('status', 'H1~opened~1', { a: 2, b: 1 })?.outcome).toBe('conflict');
+    expect(() => store.insertNotification('other-key', opened, {}, t1)).toThrow(
+      DuplicateTransitionError,
+    );
+    expect(() =>
+      store.insertNotification('H1~opened~1', { holdId: 'H2', transitionNo: 1 }, {}, t1),
+    ).toThrow(/UNIQUE/);
+    store.insert('status', 's1', 'A', { n: 1 }, t1);
+    store.insertNotification('H2~opened~1', { holdId: 'H2', transitionNo: 1 }, { n: 2 }, t1);
+    store.insertNotification('H1~released~2', { holdId: 'H1', transitionNo: 2 }, { n: 3 }, t1);
+    expect(store.notifications().map((n) => n.receipt.idempotencyKey)).toEqual([
+      'H1~opened~1',
+      'H2~opened~1',
+      'H1~released~2',
+    ]);
+    expect(store.notifications('H1').map((n) => [n.receipt.receivedSeq, n.body])).toEqual([
+      [1, { a: 2, b: 1 }],
+      [4, { n: 3 }],
+    ]);
+    expect(store.notifications('H9')).toEqual([]);
+    // Notifications are not messages of an order.
+    expect(store.messages('status').map((m) => m.receipt.idempotencyKey)).toEqual(['s1']);
+    expect(store.counts()).toEqual({ confirmation: 0, status: 1, 'quality-notification': 3 });
   });
 
   it('upgrades a store of the first schema, keeping its messages', () => {
@@ -109,6 +155,11 @@ describe('ErpStore', () => {
     expect(() => store.insert('confirmation', 'c2', 'A', {}, t0, op10)).toThrow(
       DuplicateConfirmationError,
     );
+    // The quality notification columns are added too.
+    const h1 = { holdId: 'H1', transitionNo: 1 };
+    store.insertNotification('H1~opened~1', h1, {}, t0);
+    expect(() => store.insertNotification('n2', h1, {}, t0)).toThrow(DuplicateTransitionError);
+    expect(store.notifications('H1')).toHaveLength(1);
   });
 
   it('keeps one store id for its life', () => {

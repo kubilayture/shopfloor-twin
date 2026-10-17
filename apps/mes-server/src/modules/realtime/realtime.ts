@@ -2455,13 +2455,16 @@ export async function registerRealtime(
    */
   let memo: { source: unknown; memoized: NonNullable<TerminalApi['execution']> } | undefined;
   const executionMemo = (
-    execution: NonNullable<TerminalApi['execution']>,
+    execution: NonNullable<TerminalApi['execution']> & Partial<Pick<Execution, 'onChange'>>,
   ): NonNullable<TerminalApi['execution']> => {
     if (memo?.source !== execution) {
-      memo = {
-        source: execution,
-        memoized: memoizeOrderExecution(execution, options.push?.terminalMs ?? 500),
-      };
+      const memoized = memoizeOrderExecution(execution, options.push?.terminalMs ?? 500);
+      // Every change of the execution module drops what was kept (#190 re-review): the topics it
+      // marks dirty are then computed from fresh reads, not from the window's memo.
+      execution.onChange?.(() => {
+        memoized.clear();
+      });
+      memo = { source: execution, memoized };
     }
     return memo.memoized;
   };

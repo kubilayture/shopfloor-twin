@@ -46,6 +46,7 @@ import {
   type PostOutcome,
 } from './modules/orders/index.ts';
 import type { ApiSources, PushSocket } from './modules/realtime/index.ts';
+import { memoizeOrderExecution } from './modules/realtime/terminal-view.ts';
 import {
   ShiftError,
   Shifts,
@@ -832,6 +833,96 @@ describe('crews at the edges (#177 review)', () => {
     });
     expect(now).toMatchObject({ shiftKey: '2026-10-12/B', to: null });
   });
+});
+
+describe('the terminal view after a change (#190 re-review)', () => {
+  it('drops the kept order execution on a change, so a view computed in the same pace window is fresh', async () => {
+    let reads = 0;
+    let clock = 0;
+    const memo = memoizeOrderExecution(
+      {
+        orderExecution: () => Promise.resolve({ orderId: 'X', read: ++reads } as unknown as never),
+        scrapRecords: () => Promise.resolve({ records: [], truncated: false }),
+      },
+      1_000,
+      () => clock,
+    );
+    await memo.orderExecution('X');
+    await memo.orderExecution('X');
+    expect(reads).toBe(1);
+    memo.clear();
+    await memo.orderExecution('X');
+    expect(reads).toBe(2);
+    clock = 1_000;
+    await memo.orderExecution('X');
+    expect(reads).toBe(3);
+  });
+
+  it('pushes the counts of a change within a pace with terminalMs > 0, also after the last cycle', async () => {
+    const h = await harness('memo');
+    await h.shifts.tick();
+    await started(h, 'M-1');
+    const http = await buildMesHttp({
+      ready: () => Promise.resolve(true),
+      identity: h.identity,
+      auth: true,
+      push: { heartbeatMs: 3_600_000, clockMs: 3_600_000, terminalMs: 2_000 },
+    });
+    cleanups.push(() => http.app.close());
+    const none = () => () => undefined;
+    await http.realtime.attach({
+      masterData: new MasterData(h.db),
+      equipment: {
+        currentStates: () => [],
+        currentState: () => undefined,
+        onChange: none,
+        watermark: () => undefined,
+        watermarks: () => [],
+      },
+      ingest: { onStored: none, telemetryMetrics: () => Promise.resolve([]) },
+      oee: { workCenters: () => Promise.resolve([]), onChange: none },
+      coding: {},
+      orders: h.orders,
+      execution: h.execution,
+      shifts: h.shifts,
+    } as unknown as ApiSources);
+    const sent: ServerMessage[] = [];
+    const emitter = new EventEmitter();
+    const socket = Object.assign(emitter, {
+      bufferedAmount: 0,
+      send: (data: string) => {
+        sent.push(serverMessageSchema.parse(JSON.parse(data)));
+      },
+      ping: () => undefined,
+      close: () => undefined,
+      terminate: () => undefined,
+    }) as unknown as PushSocket;
+    http.realtime.push.connect(socket);
+    const subscribe = (topic: string) => {
+      emitter.emit('message', Buffer.from(JSON.stringify({ type: 'subscribe', topic })), false);
+    };
+    const until = async (check: () => boolean, ms: number) => {
+      for (let deadline = Date.now() + ms; !check();) {
+        if (Date.now() > deadline) throw new Error('timed out');
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    const scrapAtCell = (m: ServerMessage) =>
+      'view' in m &&
+      m.topic === 'terminal:cell-m1' &&
+      m.view.orders[0]?.operations[0]?.counts.scrap === 1;
+    // Cell M1's view first; a pace later Line A1's, which keeps the order's execution in the memo.
+    subscribe('terminal:cell-m1');
+    await until(() => sent.some((m) => m.type === 'snapshot'), 5_000);
+    await new Promise((r) => setTimeout(r, 2_100));
+    subscribe('terminal:line-a1');
+    await until(() => sent.filter((m) => m.type === 'snapshot').length === 2, 5_000);
+    expect(sent.some(scrapAtCell)).toBe(false);
+    // The order's last cycle (a scrap at OP10), inside Line A1's window: Cell M1 is due at once
+    // and must not read the kept execution. Nothing changes afterwards.
+    await finished(h, 'M-1', 1);
+    await until(() => sent.some(scrapAtCell), 1_500);
+  }, 30_000);
 });
 
 describe('the terminal API and push (#177)', () => {

@@ -398,7 +398,7 @@ describe('the operator terminal (#177)', () => {
     const mes = terminalMes();
     vi.stubGlobal('fetch', mes.fetch);
     mes.refuseNext('/api/v1/terminal/line-a1/sign-on', PROBLEM_TYPES.noShift, 'no shift');
-    await renderApp('/terminal/line-a1', { session: 'fetch' });
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
     await signOnAs('olga');
     expect(screen.getByTestId('terminal-user').parentElement?.textContent).toMatch(
       /not signed on here/,
@@ -416,6 +416,15 @@ describe('the operator terminal (#177)', () => {
     });
     // Not signed on: no operation write is offered.
     expect(screen.queryByTestId('terminal-start-O-1-OP30')).toBeNull();
+    // A shift runs again: signed on, and the refusal kept from the login is gone.
+    fireEvent.click(screen.getByTestId('terminal-join'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('terminal-join')).toBeNull();
+    });
+    expect(
+      app.queryClient.getQueryData(['terminal', 'olga', 'line-a1', 'refusal']),
+    ).toBeUndefined();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('when operator A idles out, operator B signs on to a screen with none of A’s drafts or reads', async () => {

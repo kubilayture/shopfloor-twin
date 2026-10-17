@@ -334,12 +334,15 @@ export async function terminalWrite(
         .where('n', '=', 1)
         .executeTakeFirst();
       if (!confirmed) return state('not complete yet (no unit may come back to it first)');
+      // Locked in id order, as every bulk closure does, so two never deadlock (40P01).
       const others = await trx
         .selectFrom('orders.operation_activity')
         .select('id')
         .where('order_id', '=', orderId)
         .where('operation', '=', operation)
         .where('to_at', 'is', null)
+        .orderBy('id')
+        .forUpdate()
         .execute();
       await close(
         others.map((o) => o.id),
@@ -391,16 +394,43 @@ export async function endActivities(
   who: { readonly userId: number; readonly workCenter: string; readonly until: Date },
   plantAt: Date,
 ): Promise<{ orderId: string; operation: string }[]> {
-  const rows = await db
+  return db.transaction().execute(async (trx) => {
+    const ids = await trx
+      .selectFrom('orders.operation_activity')
+      .select('id')
+      .where('user_id', '=', who.userId)
+      .where('work_center', '=', who.workCenter)
+      .where('from_at', '<=', who.until)
+      .where('to_at', 'is', null)
+      .orderBy('id')
+      .forUpdate()
+      .execute();
+    return closeLocked(
+      trx,
+      ids.map((r) => r.id),
+      plantAt,
+    );
+  });
+}
+
+/**
+ * Closes intervals (`crew-ended`) the caller locked in id order in this transaction; those another
+ * transaction closed meanwhile keep their end. Returns the operations of those it closed.
+ */
+async function closeLocked(
+  trx: Transaction<Database>,
+  ids: readonly number[],
+  plantAt: Date,
+): Promise<{ orderId: string; operation: string }[]> {
+  if (ids.length === 0) return [];
+  const rows = await trx
     .updateTable('orders.operation_activity')
     .set({
       to_at: sql<Date>`clock_timestamp()`,
       to_plant_at: plantAt,
       end_reason: 'crew-ended',
     })
-    .where('user_id', '=', who.userId)
-    .where('work_center', '=', who.workCenter)
-    .where('from_at', '<=', who.until)
+    .where('id', 'in', [...ids])
     .where('to_at', 'is', null)
     .returning(['order_id', 'operation'])
     .execute();
@@ -427,19 +457,24 @@ export async function endOrphanedActivities(
     .execute();
   const orphans = open.filter((a) => !signedOn.has(`${String(a.user_id)}|${a.work_center}`));
   if (orphans.length === 0) return [];
-  await db
-    .updateTable('orders.operation_activity')
-    .set({
-      to_at: sql<Date>`clock_timestamp()`,
-      to_plant_at: plantAt,
-      end_reason: 'crew-ended',
-    })
-    .where(
-      'id',
-      'in',
-      orphans.map((a) => a.id),
-    )
-    .where('to_at', 'is', null)
-    .execute();
-  return orphans.map((a) => ({ orderId: a.order_id, operation: a.operation }));
+  return db.transaction().execute(async (trx) => {
+    // Locked in id order (no deadlock with a sign-off's or a crew end's closure, 40P01).
+    const locked = await trx
+      .selectFrom('orders.operation_activity')
+      .select('id')
+      .where(
+        'id',
+        'in',
+        orphans.map((a) => a.id),
+      )
+      .where('to_at', 'is', null)
+      .orderBy('id')
+      .forUpdate()
+      .execute();
+    return closeLocked(
+      trx,
+      locked.map((r) => r.id),
+      plantAt,
+    );
+  });
 }

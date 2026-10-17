@@ -123,15 +123,20 @@ function wipHere(
 
 /**
  * `orderExecution` read at most once per order within `ttlMs` (#177 review, MEDIUM-2): every
- * terminal topic and read in one pace window shares it. A failed read is not kept.
+ * terminal topic and read in one pace window shares it. A failed read is not kept, and `clear()`
+ * (on every change of the execution module, which also marks the topics dirty) drops everything,
+ * so a topic computed again after a change never reads what was kept before it.
  */
 export function memoizeOrderExecution(
   execution: NonNullable<TerminalViewSources['execution']>,
   ttlMs: number,
   now: () => number = Date.now,
-): NonNullable<TerminalViewSources['execution']> {
+): NonNullable<TerminalViewSources['execution']> & { clear(): void } {
   const kept = new Map<string, { at: number; value: Promise<OrderExecutionRecord | undefined> }>();
   return {
+    clear: () => {
+      kept.clear();
+    },
     scrapRecords: (query) => execution.scrapRecords(query),
     orderExecution: (id) => {
       const at = now();

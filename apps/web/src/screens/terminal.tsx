@@ -335,6 +335,11 @@ function TerminalWork({
     mutationFn: () => signOn(workCenter),
     onSuccess: () => {
       setMessage(undefined);
+      // Signed on now: the refusal kept from the login is no longer true (#190 re-review).
+      queryClient.removeQueries({
+        queryKey: terminalKeys.refusal(user.username, workCenter),
+        exact: true,
+      });
       void queryClient.invalidateQueries({ queryKey: key });
     },
     onError: (error) => {

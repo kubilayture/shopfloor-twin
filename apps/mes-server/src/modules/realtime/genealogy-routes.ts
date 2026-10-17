@@ -230,7 +230,14 @@ export function genealogyRoutes(
       description: `At most ${String(GENEALOGY_LIMITS.search)} of each kind, by id.`,
       tags: ['genealogy'],
       query: z.strictObject({
-        q: z.string().min(1).max(GENEALOGY_LIMITS.id).describe('The start of an id'),
+        q: z
+          .string()
+          .min(1)
+          .max(GENEALOGY_LIMITS.id)
+          // No id holds U+0000 (PostgreSQL text can't): refused, 400.
+          // eslint-disable-next-line no-control-regex -- U+0000 is exactly what is refused
+          .regex(/^[^\u0000]+$/u, 'no U+0000')
+          .describe('The start of an id'),
       }),
       response: traceSearchSchema,
       errors: [400, 503],

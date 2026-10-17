@@ -235,6 +235,28 @@ export class Genealogy {
    * operation's machine not final through it): rebuilt every round until it is.
    */
   readonly #unjudged = new Map<number, Set<number>>();
+  /**
+   * Units whose rebuild failed on their own (review of PR #219, round 2): retried in later rounds
+   * with a backoff (`wait` rounds skipped, doubling up to 31); while one is pending, the processed
+   * watermark stays below its facts (`#capped`).
+   */
+  readonly #failed = new Map<
+    string,
+    { readonly epoch: number; readonly partId: number; attempts: number; wait: number }
+  >();
+  /**
+   * Units with a good packing cycle whose order is not final yet (`#attributionFinal`), by unit:
+   * no order's pack is placed at or after the earliest of them (a late job fact could still move
+   * that unit into any order, also one of another CNC).
+   */
+  readonly #unattributed = new Map<
+    string,
+    {
+      readonly epoch: number;
+      readonly pack: { readonly at: number; readonly seq: number; readonly partId: number };
+      readonly records: readonly { operation: string; equipment: string; seq: number }[];
+    }
+  >();
   readonly #rebuilt: Counter | undefined;
   readonly #incidents: Counter | undefined;
   /** Every machine's progress as the execution round genealogy last caught up with read it. */
@@ -355,6 +377,10 @@ export class Genealogy {
       // Read before the units are taken: every unit the execution round changed up to this
       // progress was announced before it completed, so it is in the set taken below (#199).
       const watermark = this.#options.execution.processedThrough();
+      for (const failed of this.#failed.values()) {
+        if (failed.wait > 0) failed.wait--;
+        else this.#mark(failed.epoch, [failed.partId]);
+      }
       for (const [epoch, parts] of this.#unjudged) {
         const pending = this.#dirty.get(epoch) ?? new Set<number>();
         for (const id of parts) pending.add(id);
@@ -368,8 +394,9 @@ export class Genealogy {
         for (const [epoch, parts] of dirty) await this.#rebuild(epoch, parts, watermark);
         orders = [...new Set([...this.#dirtyOrders, ...this.#unsettled])].sort();
         this.#dirtyOrders.clear();
-        for (const id of orders) await this.#placeOrder(id, watermark);
-        this.#processed = watermark;
+        const cutoff = this.#placementCutoff(watermark);
+        for (const id of orders) await this.#placeOrder(id, watermark, cutoff);
+        this.#processed = await this.#capped(watermark);
       } catch (error) {
         // What this round took is put back, so a failed round (a lost connection, a deadlock)
         // loses no unit or order it heard of.
@@ -690,6 +717,8 @@ export class Genealogy {
    * `*_prefix` indexes serve (review M6).
    */
   async search(q: string, limit = 20): Promise<{ kind: SearchKind; id: string }[]> {
+    // PostgreSQL text holds no U+0000: no id can start with it (the API refuses it with 400).
+    if (q.includes('\u0000')) return [];
     const upper = prefixUpperBound(q);
     const range = (column: string) =>
       upper === null
@@ -940,11 +969,22 @@ export class Genealogy {
     for (const { unit, error: cause } of failed) await this.#rebuildFailed(epoch, unit, cause);
   }
 
+  /**
+   * A unit whose rebuild failed on its own: kept in the retry set (retried next round, then after
+   * 1, 3, 7, … rounds, at most 31), the watermark held below its facts meanwhile; a second failure
+   * in a row raises `rebuild-failed` (a transient failure retried at once raises none).
+   */
   async #rebuildFailed(epoch: number, unit: UnitRecord, error: unknown): Promise<void> {
+    const key = `${String(epoch)}/${String(unit.partId)}`;
+    const failed = this.#failed.get(key) ?? { epoch, partId: unit.partId, attempts: 0, wait: 0 };
+    failed.attempts++;
+    failed.wait = Math.min(2 ** (failed.attempts - 1) - 1, 31);
+    this.#failed.set(key, failed);
     this.#log.error(
-      { err: error, epoch, partId: unit.partId },
-      'genealogy: rebuilding a unit failed; its rows are kept as they were',
+      { err: error, epoch, partId: unit.partId, attempts: failed.attempts },
+      'genealogy: rebuilding a unit failed; its rows are kept as they were, and it is retried',
     );
+    if (failed.attempts < 2) return;
     const raised = await this.#db.transaction().execute((trx) =>
       this.#raise(trx, {
         type: 'rebuild-failed',
@@ -953,7 +993,7 @@ export class Genealogy {
         epoch,
         part_id: unit.partId,
         equipment: null,
-        message: `unit ${String(epoch)}/${String(unit.partId)}${unit.serial ? ` (${unit.serial})` : ''}: its genealogy could not be rebuilt (${error instanceof Error ? error.message : String(error)}); its rows are kept as they were until it is rebuilt`,
+        message: `unit ${String(epoch)}/${String(unit.partId)}${unit.serial ? ` (${unit.serial})` : ''}: its genealogy could not be rebuilt (${error instanceof Error ? error.message : String(error)}); its rows are kept as they were and it is retried, while genealogy's watermark stays below its facts`,
       }),
     );
     if (raised) this.#incidents?.inc({ type: 'rebuild-failed' });
@@ -1186,6 +1226,89 @@ export class Genealogy {
       }
     });
     for (const type of raised) this.#incidents?.inc({ type });
+    for (const { unit, records } of built) {
+      const key = `${String(epoch)}/${String(unit.partId)}`;
+      this.#failed.delete(key);
+      const pack = records.find(
+        (r) => r.operation === this.#options.packing.operation && r.result === 'good',
+      );
+      if (pack && !this.#attributionFinal(epoch, records, watermark)) {
+        this.#unattributed.set(key, {
+          epoch,
+          pack: { at: pack.at.getTime(), seq: pack.seq, partId: unit.partId },
+          records: records.map((r) => ({
+            operation: r.operation,
+            equipment: r.equipment,
+            seq: r.seq,
+          })),
+        });
+      } else {
+        this.#unattributed.delete(key);
+      }
+    }
+  }
+
+  /**
+   * The progress genealogy may call processed: the round's, held below the facts of every unit
+   * whose rebuild is still failing (on each of their machines, the final-through just below the
+   * unit's first fact there and the final-through time just before it), so a close guard sees
+   * `genealogy-pending` (#201) rather than links that miss the unit. A failing unit of an older
+   * epoch than its machine's keeps that machine's previous processed progress.
+   */
+  async #capped(
+    watermark: ReadonlyMap<string, DeviceProgress>,
+  ): Promise<ReadonlyMap<string, DeviceProgress>> {
+    if (this.#failed.size === 0) return watermark;
+    const capped = new Map(watermark);
+    const byEpoch = new Map<number, number[]>();
+    for (const f of this.#failed.values()) {
+      byEpoch.set(f.epoch, [...(byEpoch.get(f.epoch) ?? []), f.partId]);
+    }
+    for (const [epoch, parts] of byEpoch) {
+      for (const fact of await this.#options.ingest.cycleFacts({ epoch, partIds: parts })) {
+        const device = capped.get(fact.equipment);
+        if (device?.epoch === null || device?.epoch === undefined) continue;
+        if (device.epoch !== epoch) {
+          const previous = this.#processed.get(fact.equipment);
+          if (previous) capped.set(fact.equipment, previous);
+          else capped.delete(fact.equipment);
+          continue;
+        }
+        const below = fact.seq - 1;
+        const before = new Date(fact.sourceTime.getTime() - 1);
+        capped.set(fact.equipment, {
+          ...device,
+          receivedThrough:
+            device.receivedThrough === null ? null : Math.min(device.receivedThrough, below),
+          settledSeq: device.settledSeq === null ? null : Math.min(device.settledSeq, below),
+          settledTime:
+            device.settledTime === null || device.settledTime.getTime() <= before.getTime()
+              ? device.settledTime
+              : before,
+        });
+      }
+    }
+    return capped;
+  }
+
+  /**
+   * The earliest packing cycle, of any order or none, whose unit's order is not final yet (review
+   * of PR #219, round 2: an order dispatched to two CNCs could gain a unit that packs before one
+   * already placed); no order's pack is placed at or after it. Units now final leave the set.
+   */
+  #placementCutoff(
+    watermark: ReadonlyMap<string, DeviceProgress>,
+  ): { epoch: number; at: number; seq: number; partId: number } | null {
+    let cutoff: { epoch: number; at: number; seq: number; partId: number } | null = null;
+    for (const [key, unit] of this.#unattributed) {
+      if (this.#attributionFinal(unit.epoch, unit.records, watermark)) {
+        this.#unattributed.delete(key);
+        continue;
+      }
+      const pack = { epoch: unit.epoch, ...unit.pack };
+      if (cutoff === null || comparePackKeys(pack, cutoff) < 0) cutoff = pack;
+    }
+    return cutoff;
   }
 
   /**
@@ -1246,6 +1369,7 @@ export class Genealogy {
   async #placeOrder(
     orderId: string,
     watermark: ReadonlyMap<string, DeviceProgress>,
+    cutoff: { epoch: number; at: number; seq: number; partId: number } | null = null,
   ): Promise<void> {
     const order = await this.#options.orders.order(orderId);
     if (!order) {
@@ -1283,6 +1407,11 @@ export class Genealogy {
       at: p.completed_at.getTime(),
       seq: p.seq,
       final:
+        (cutoff === null ||
+          comparePackKeys(
+            { epoch: p.epoch, at: p.completed_at.getTime(), seq: p.seq, partId: p.part_id },
+            cutoff,
+          ) < 0) &&
         finalThrough(watermark.get(p.equipment), { epoch: p.epoch, seq: p.seq }) &&
         (firstOf.get(`${String(p.epoch)}/${String(p.part_id)}`) ?? []).length > 0 &&
         this.#attributionFinal(
@@ -1636,6 +1765,12 @@ export function prefixUpperBound(q: string): string | null {
   }
   return null;
 }
+
+/** The packing rule's order of packs (trace-core's): plant time, epoch, sequence, part. */
+const comparePackKeys = (
+  a: { epoch: number; at: number; seq: number; partId: number },
+  b: { epoch: number; at: number; seq: number; partId: number },
+): number => a.at - b.at || a.epoch - b.epoch || a.seq - b.seq || a.partId - b.partId;
 
 function uniqueUnits(
   rows: readonly { epoch: number; part_id: number }[],

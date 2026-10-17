@@ -185,6 +185,28 @@ describe('placeCartons (#199): the packing rule on final data', () => {
     ]);
   });
 
+  it('orders packs by plant time first: a reworked lower part packing later goes after a higher one', () => {
+    // Part 1 was reworked and packs at minute 9, not final yet; parts 2 and 3 packed at minutes 6
+    // and 7. Ordered by part id first, part 1 would come first and cut the placement before
+    // them; in plant-time order they fill the first carton and part 1 waits.
+    const placed = placeCartons(
+      { ...order, completedAt: null },
+      [pack(1, 9, false), pack(2, 6), pack(3, 7)],
+      capacity,
+    );
+    expect([placed.placed, placed.complete]).toEqual([2, false]);
+    expect(placed.cartons.map((c) => [c.members.map((m) => m.partId), c.status])).toEqual([
+      [[2, 3], 'closed'],
+    ]);
+    // Final, part 1 goes after them.
+    const all = placeCartons(
+      { ...order, completedAt: null },
+      [pack(1, 9), pack(2, 6), pack(3, 7)],
+      capacity,
+    );
+    expect(all.cartons.map((c) => c.members.map((m) => m.partId))).toEqual([[2, 3], [1]]);
+  });
+
   it('closes the last partial carton at the order’s completion only once every pack is placed', () => {
     const pending = placeCartons(order, [pack(1, 1), pack(2, 2), pack(3, 3, false)], capacity);
     expect(pending.cartons.map((c) => [c.status, c.closedAt])).toEqual([

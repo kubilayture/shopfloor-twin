@@ -798,6 +798,8 @@ describe('the trace API (#199)', () => {
     expect((await get('/api/v1/trace/lots/NOPE')).status).toBe(404);
     expect((await get('/api/v1/trace/cartons/NOPE')).status).toBe(404);
     expect((await get('/api/v1/trace/search')).status).toBe(400);
+    expect((await get('/api/v1/trace/search?q=B%00')).status).toBe(400);
+    expect(await h.genealogy.search('B\u0000')).toEqual([]);
     expect((await get('/api/v1/genealogy-incidents?type=other')).status).toBe(400);
   });
 });
@@ -981,11 +983,103 @@ describe('genealogy on partial data (#199 review)', () => {
     await settle(h);
     expect((await h.genealogy.lot('B1'))?.units.map((u) => u.partId)).toEqual([1, 3]);
     expect(await incidents(h)).toEqual([['rebuild-failed', null, 'open']]);
-    expect(h.genealogy.processedThrough('cnc-02', E1)).toBe(l.seq('cnc-02'));
-    // Rebuilt by a sound module, the incident closes.
+    // The watermark holds below unit 2's fact (seq 2 on CNC-02): a close guard would answer
+    // genealogy-pending (#201) while the unit keeps failing, and its answers are not final.
+    expect(h.genealogy.processedThrough('cnc-02', E1)).toBe(1);
+    expect(h.genealogy.covers([{ equipment: 'cnc-02', epoch: E1, seq: 2 }])).toBe(false);
+    expect((await h.genealogy.serial('VB-100-000003'))?.notFinal).toContain('cnc-02');
+    // Further rounds retry it with a backoff, still failing: the watermark keeps holding.
+    await settle(h);
+    await settle(h);
+    expect(h.genealogy.processedThrough('cnc-02', E1)).toBe(1);
+    // Rebuilt by a sound module, the incident closes and the watermark moves on.
     await h.restart();
     await settle(h);
     expect((await h.genealogy.lot('B1'))?.units.map((u) => u.partId)).toEqual([1, 2, 3]);
     expect(await incidents(h)).toEqual([['rebuild-failed', null, 'closed']]);
+    expect(h.genealogy.processedThrough('cnc-02', E1)).toBe(l.seq('cnc-02'));
+  });
+
+  it('retries a unit whose single-unit round failed once, and the watermark moves on once it is rebuilt (PROBE4)', async () => {
+    const h = await harness('transient');
+    const l = h.line;
+    let fail = false;
+    const flaky: GenealogyExecution = {
+      onUnits: (listener) => h.execution.onUnits(listener),
+      processedThrough: () => h.execution.processedThrough(),
+      unitStates: () => h.execution.unitStates(),
+      units: async (query) => {
+        const found = await h.execution.units(query);
+        if (!fail) return found;
+        fail = false;
+        return { units: found.units.map((u) => ({ ...u, status: 'bogus' as never })) };
+      },
+    };
+    await h.restart(flaky);
+    await send(h, [
+      l.cycle('cnc-02', 1, { lots: [{ material: 'BLANK-100', lot: 'B1' }] }),
+      l.state('cnc-02'),
+    ]);
+    await settle(h);
+    fail = true;
+    const unit2 = l.cycle('cnc-02', 2, { lots: [{ material: 'BLANK-100', lot: 'B2' }] });
+    await send(h, [unit2, l.state('cnc-02')]);
+    // The round that rebuilds unit 2 alone fails once: the watermark stays below its fact.
+    await h.execution.tick();
+    await h.genealogy.tick();
+    const seq = (JSON.parse(unit2.payload) as { seq: number }).seq;
+    expect(h.genealogy.processedThrough('cnc-02', E1)).toBe(seq - 1);
+    expect(h.genealogy.covers([{ equipment: 'cnc-02', epoch: E1, seq }])).toBe(false);
+    // The next round retries it, and it is rebuilt: no incident, the watermark moves on.
+    await settle(h);
+    expect((await h.genealogy.lot('B2'))?.units.map((u) => u.partId)).toEqual([2]);
+    expect(h.genealogy.processedThrough('cnc-02', E1)).toBe(l.seq('cnc-02'));
+    expect(h.genealogy.covers([{ equipment: 'cnc-02', epoch: E1, seq }])).toBe(true);
+    expect(await incidents(h)).toEqual([]);
+  });
+
+  it('places no order’s pack at or after a pack whose unit’s order is not final, of any order (two CNCs)', async () => {
+    const h = await harness('cutoff', { capacity: { 'VB-100': 2, 'VB-200': 2 } });
+    await dispatched(h, 'X-1', 2);
+    const l = h.line;
+    await send(h, [l.state('cnc-02')]);
+    // A fact of CNC-02 is missing: its unit 3's order is not final (a job fact may be on its way).
+    const missing = l.state('cnc-02');
+    const jobs = [l.job('cnc-01', 'accepted', 'X-1', 2), l.job('cnc-01', 'started', 'X-1', 2)];
+    const u1 = l.unit(1, { blank: 'B1', kit: 'K1' });
+    // Unit 3 runs on CNC-02 and packs between units 1 and 2.
+    const u3 = [
+      l.cycle('cnc-02', 3, { lots: [{ material: 'BLANK-100', lot: 'B1' }] }),
+      l.cycle('wsh-01', 3),
+      l.cycle('asm-01', 3, {
+        lots: [
+          { material: 'SK-1', lot: 'K1' },
+          { material: 'SP-100', lot: 'P1' },
+        ],
+        operator: 'op-ayse',
+      }),
+      l.cycle('lkt-01', 3, { measurement: READING }),
+      l.cycle('pck-01', 3),
+    ];
+    const u2 = l.unit(2, { blank: 'B1', kit: 'K1' });
+    await send(h, [
+      ...jobs,
+      ...u1,
+      ...u3,
+      ...u2,
+      l.job('cnc-01', 'completed', 'X-1', 2),
+      ...l.settleAll(),
+    ]);
+    await settle(h);
+    const members = async () =>
+      Object.fromEntries(
+        [...(await h.genealogy.cartonMembers())].map(([id, m]) => [id, m.map((x) => x.partId)]),
+      );
+    // Unit 2 packs after unit 3, whose order is not final: not placed yet.
+    expect(await members()).toEqual({ 'X-1-C01': [1] });
+    await send(h, [missing]);
+    await settle(h);
+    expect(await members()).toEqual({ 'X-1-C01': [1, 2] });
+    expect((await h.genealogy.cartons({ orderId: 'X-1' }))[0]?.status).toBe('closed');
   });
 });

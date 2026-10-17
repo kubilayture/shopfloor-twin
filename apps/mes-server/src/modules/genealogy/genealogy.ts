@@ -336,18 +336,22 @@ export class Genealogy {
       this.#unjudged.clear();
       const dirty = [...this.#dirty].map(([epoch, parts]) => [epoch, [...parts]] as const);
       this.#dirty.clear();
+      let orders: string[] = [];
       try {
         for (const [epoch, parts] of dirty) await this.#rebuild(epoch, parts, watermark);
-        const orders = new Set([...this.#dirtyOrders, ...this.#unsettled]);
+        orders = [...new Set([...this.#dirtyOrders, ...this.#unsettled])].sort();
         this.#dirtyOrders.clear();
-        for (const id of [...orders].sort()) await this.#placeOrder(id, watermark);
+        for (const id of orders) await this.#placeOrder(id, watermark);
         this.#processed = watermark;
       } catch (error) {
+        // What this round took is put back, so a failed round (a lost connection, a deadlock)
+        // loses no unit or order it heard of.
         for (const [epoch, parts] of dirty) {
           const pending = this.#dirty.get(epoch) ?? new Set<number>();
           for (const id of parts) pending.add(id);
           this.#dirty.set(epoch, pending);
         }
+        for (const id of orders) this.#dirtyOrders.add(id);
         throw error;
       }
     });

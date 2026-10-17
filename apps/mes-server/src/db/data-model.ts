@@ -191,13 +191,13 @@ const TABLES: Readonly<Record<string, string>> = {
   'execution.execution_incident':
     'Routing-violation incidents of the execution module (a predecessor missing or an operation repeated once the expected machine is final through it, a record after the terminal one), open at most once per key (#175).',
   'quality.characteristic':
-    'SPC characteristics seeded from `quality.yaml` (the leak test’s unit, resolution and upper specification from process.yaml), with the version a limit write names and the `baseline-changed` notice (#200).',
+    'SPC characteristics seeded from `quality.yaml` (the leak test’s unit, resolution and upper specification from process.yaml), with the version a limit write names (it rises with each limit write and each notice raised), the `baseline-changed` notice and the basis (hash) of the re-estimate that raised it, kept when the notice is cleared (#200).',
   'quality.measurement':
     'One reading per cycle fact of the characteristic’s machine, keyed by the fact, with its pass (1, 2 after a rework) and its value in resolution steps; derived and rebuilt per part (#200).',
   'quality.control_limit':
-    'Control limit versions as append-only events: `created` (frozen limits, window and the first position it applies to) and `ended`; a trigger refuses UPDATE, DELETE and TRUNCATE for every role (#200, ADR-0032).',
+    'Control limit versions as append-only events: `created` (frozen limits, window and the first position it applies to) and `ended`; a trigger refuses UPDATE, DELETE and TRUNCATE to every role, the owner included (only the owner or a superuser could disable it, in a migration) (#200, ADR-0032).',
   'quality.spc_signal':
-    'Signal episodes keyed (characteristic, limit version, chart, rule, first triggering point) with their extent, `provisional` until the tester is final through the triggering point, `final`, or `withdrawn` with a reason; the acknowledgement stays on the episode (#200, ADR-0032).',
+    'Signal episodes keyed (characteristic, limit version, chart, rule, first triggering point) with their extent and whether it is final, `provisional` until the tester is final through the triggering point, `final`, or `withdrawn` with a reason; the acknowledgement stays on the episode (#200, ADR-0032).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

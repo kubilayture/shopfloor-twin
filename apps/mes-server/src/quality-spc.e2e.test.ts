@@ -353,10 +353,18 @@ const identity = (e: TruthEpisode): string =>
  * version 1; every episode marked final is one of the truth's (chart, rule, version, triggering
  * point, baseline); nothing is withdrawn (no gap is written off); no baseline notice.
  */
-async function expectPartial(m: Mes, run: Run): Promise<{ v1: boolean; final: number }> {
+async function expectPartial(
+  m: Mes,
+  run: Run,
+): Promise<{
+  v1: boolean;
+  final: number;
+  provisional: number;
+  signals: ReturnType<typeof spcChartDto>['signals'];
+}> {
   const view = await m.quality.chart(CHARACTERISTIC);
   if (!view) throw new Error('no characteristic');
-  const dto = spcChartDto(view);
+  const dto = spcChartDto(view, { all: true });
   const truth = new Set(run.spc.episodes.map(identity));
   expect(dto.limits.map(versionShape)).toEqual(run.spc.limits.slice(0, dto.limits.length));
   const final = dto.signals.filter((s) => s.status === 'final');
@@ -364,7 +372,12 @@ async function expectPartial(m: Mes, run: Run): Promise<{ v1: boolean; final: nu
     expect(truth, identity(episodeShape(signal))).toContain(identity(episodeShape(signal)));
   expect(dto.signals.filter((s) => s.status === 'withdrawn')).toEqual([]);
   expect(dto.characteristic.notice).toBeNull();
-  return { v1: dto.limits.length > 0, final: final.length };
+  return {
+    v1: dto.limits.length > 0,
+    final: final.length,
+    provisional: dto.signals.filter((s) => s.status === 'provisional').length,
+    signals: dto.signals,
+  };
 }
 
 /** The first-pass readings of the chart with their positions, in chart order. */
@@ -379,7 +392,7 @@ const firstPassOf = (view: NonNullable<Awaited<ReturnType<Quality['chart']>>>) =
 async function expectSpc(m: Mes, run: Run): Promise<{ points: number; episodes: number }> {
   const view = await m.quality.chart(CHARACTERISTIC);
   if (!view) throw new Error('no characteristic');
-  const dto = spcChartDto(view);
+  const dto = spcChartDto(view, { all: true });
   expect(dto.readings).toEqual(run.spc.readings);
   expect(dto.limits.map(versionShape)).toEqual(run.spc.limits);
   let points = 0;
@@ -521,8 +534,8 @@ const ms = (value: number): string => value.toFixed(1);
 /** In order and shuffled for one golden scenario, with the pinned comparison counts. */
 function spcSuite(name: string, pinned: { points: number; episodes: number }): void {
   describe(`golden SPC reconciliation: ${name} (#200)`, () => {
-    let run: Run;
-    let reference: Mes;
+    let run: Run | undefined;
+    let reference: Mes | undefined;
 
     it('in order, ticked every 50 facts: limits, points, subgroups and episodes equal trace.json', async () => {
       run = await headless(name);
@@ -544,7 +557,100 @@ function spcSuite(name: string, pinned: { points: number; episodes: number }): v
       );
     }, 300_000);
 
+    it('bounded disorder, blocks held back: provisional episodes on partial data, no final one withdrawn or changed', async () => {
+      // Plan "Finality and late facts" (#200 review H2): facts in windows of 30–60, each window
+      // shuffled and delivered in chunks of 10–20 with a tick after each (gaps of a few facts at
+      // every tick); now and then a block of 20–40 held back and released 2–5 windows later, and
+      // single facts held back for 1–3 windows, so gaps keep later readings provisional while
+      // episodes form on them. Every tick: version 1 (once there) is the truth's, every final
+      // episode is one of the truth's, nothing is withdrawn, and an episode once final stays final
+      // with its identity.
+      run ??= await headless(name);
+      const truth = run;
+      const { anchor, facts } = testerMessages(truth);
+      const next = random(2_000);
+      const m = await mes(`spc_${name.replace('-', '_')}_bounded`);
+      await m.send([anchor]);
+      const held: { block: Delivery[]; release: number }[] = [];
+      const finals = new Map<number, string>();
+      let ticks = 0;
+      let windows = 0;
+      let provisionalTicks = 0;
+      let provisionalMax = 0;
+      let heldBlocks = 0;
+      const tickAndCheck = async () => {
+        await m.quality.tick();
+        ticks++;
+        const partial = await expectPartial(m, truth);
+        if (partial.provisional > 0) provisionalTicks++;
+        provisionalMax = Math.max(provisionalMax, partial.provisional);
+        const byId = new Map(partial.signals.map((sig) => [sig.id, sig]));
+        for (const [id, was] of finals) {
+          const now = byId.get(id);
+          expect([id, now?.status, now ? identity(episodeShape(now)) : null]).toEqual([
+            id,
+            'final',
+            was,
+          ]);
+        }
+        for (const sig of partial.signals) {
+          if (sig.status === 'final' && !finals.has(sig.id)) {
+            finals.set(sig.id, identity(episodeShape(sig)));
+          }
+        }
+      };
+      for (let i = 0; i < facts.length || held.length > 0; windows++) {
+        const size = 30 + Math.floor(next() * 31);
+        let window = facts.slice(i, i + size);
+        i += size;
+        if (window.length > 40 && next() < 0.2) {
+          const length = 20 + Math.floor(next() * 21);
+          held.push({
+            block: window.slice(0, length),
+            release: windows + 2 + Math.floor(next() * 4),
+          });
+          window = window.slice(length);
+          heldBlocks++;
+        }
+        if (window.length > 4 && next() < 0.5) {
+          const count = 1 + Math.floor(next() * 4);
+          for (let k = 0; k < count; k++) {
+            const at = Math.floor(next() * window.length);
+            held.push({
+              block: window.splice(at, 1),
+              release: windows + 1 + Math.floor(next() * 3),
+            });
+          }
+        }
+        for (let h = held.length - 1; h >= 0; h--) {
+          const entry = held[h];
+          if (entry && (entry.release <= windows || i >= facts.length)) {
+            window = [...window, ...entry.block];
+            held.splice(h, 1);
+          }
+        }
+        const mixed = shuffle(window, next);
+        for (let c = 0; c < mixed.length;) {
+          const chunk = 10 + Math.floor(next() * 11);
+          await m.send(mixed.slice(c, c + chunk));
+          c += chunk;
+          await tickAndCheck();
+        }
+      }
+      expect(heldBlocks).toBeGreaterThan(0);
+      expect(provisionalTicks).toBeGreaterThan(0);
+      expect(await expectSpc(m, truth)).toEqual(pinned);
+      if (reference !== undefined) {
+        expect(await storedRows(m.db)).toEqual(await storedRows(reference.db));
+      }
+      console.log(
+        `${name}: bounded disorder, ${String(ticks)} ticks, ${String(heldBlocks)} blocks held back: provisional episodes on ${String(provisionalTicks)} ticks (at most ${String(provisionalMax)} at once), no final episode withdrawn or changed; equal trace.json and the in-order run`,
+      );
+      await m.stop();
+    }, 300_000);
+
     it('shuffled with 10 % duplicates, ticked every 97 deliveries: equal trace.json and the in-order run', async () => {
+      if (!run || !reference) throw new Error('runs after the in-order test');
       const { anchor, facts } = testerMessages(run);
       const next = random(200);
       const mixed = shuffle([anchor, ...facts, ...facts.filter(() => next() < 0.1)], next);
@@ -611,6 +717,33 @@ describe('probe P3: SPC rebuild cost on a week of readings (#200)', () => {
       .signals;
     // The very charts and episodes as delivered in order.
     expect(await expectSpc(m, run)).toEqual({ points: 2189 + 2188 + 437 + 437, episodes: 36 });
+    // The read path (#200 review M5): the chart route's body from the derivation in memory, the
+    // whole week and the default recent window, and ten reads at once.
+    const read = async (all: boolean): Promise<{ ms: number; bytes: number }> => {
+      const t0 = performance.now();
+      const view = await m.quality.chart(CHARACTERISTIC);
+      if (!view) throw new Error('no chart');
+      const body = JSON.stringify(spcChartDto(view, { all }));
+      return { ms: performance.now() - t0, bytes: body.length };
+    };
+    const reads = { all: [] as number[], recent: [] as number[], bytesAll: 0, bytesRecent: 0 };
+    for (let i = 0; i < 20; i++) {
+      const whole = await read(true);
+      const recent = await read(false);
+      reads.all.push(whole.ms);
+      reads.recent.push(recent.ms);
+      reads.bytesAll = whole.bytes;
+      reads.bytesRecent = recent.bytes;
+    }
+    reads.all.sort((a, b) => a - b);
+    reads.recent.sort((a, b) => a - b);
+    const parallel0 = performance.now();
+    await Promise.all(Array.from({ length: 10 }, () => read(false)));
+    const parallel = performance.now() - parallel0;
+    console.log(
+      `P3 read path: chart body (whole week, ${String(reads.bytesAll)} bytes) p50 ${ms(quantile(reads.all, 0.5))} ms, max ${ms(reads.all.at(-1) ?? 0)} ms; ` +
+        `default recent window (${String(reads.bytesRecent)} bytes) p50 ${ms(quantile(reads.recent, 0.5))} ms, max ${ms(reads.recent.at(-1) ?? 0)} ms; 10 concurrent ${ms(parallel)} ms`,
+    );
     perReading.sort((a, b) => a - b);
     const p50 = quantile(perReading, 0.5);
     const p95 = quantile(perReading, 0.95);

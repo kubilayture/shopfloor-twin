@@ -18,6 +18,11 @@ export const QUALITY_LIMITS = {
   signals: 500,
   /** Measurements one `GET /quality/characteristics/{id}/measurements` answers at most. */
   measurements: 5_000,
+  /**
+   * First-pass readings whose points `GET …/chart` answers by default: the most recent ones;
+   * `all=true` (or a `from`/`to` range) answers more.
+   */
+  chartRecent: 500,
 } as const;
 
 /** The charts of a characteristic, as `spc-core` names them. */
@@ -129,6 +134,11 @@ export const spcSignalSchema = z
     last: readingRef.describe('The episode’s last triggering point'),
     points: int.describe('Triggering points in it'),
     closedBy: readingRef.nullable().describe('The point that ended it; null while open'),
+    extentFinal: z
+      .boolean()
+      .describe(
+        'The tester is final through its closing point (open: its last point): `last`, `points` and `closedBy` stay as they are but for a fact from a written-off gap',
+      ),
     baseline: z
       .boolean()
       .describe('Its first point lies in its version’s window: created with the version'),
@@ -250,6 +260,11 @@ export const spcChartSchema = z
       pending: int.describe('The last segment’s readings waiting for their subgroup'),
       dropped: int.describe('Earlier segments’ trailing readings that never fill one'),
     }),
+    pointsFrom: time
+      .nullable()
+      .describe(
+        'Points before this plant time were left out (the default recent window, or `from`); null: every point up to `to`',
+      ),
     retests: z.array(spcMeasurementSchema).describe('Shown apart, never charted'),
     signals: z.array(spcSignalSchema).describe('Every episode, withdrawn ones included'),
   })

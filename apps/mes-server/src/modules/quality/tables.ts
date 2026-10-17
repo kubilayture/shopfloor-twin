@@ -65,6 +65,7 @@ export interface CharacteristicTable {
   notice_kind: 'baseline-changed' | null;
   notice_at: NullableTimestamp;
   notice_detail: string | null;
+  notice_basis: string | null;
   updated_at: DefaultTimestamp;
 }
 
@@ -121,6 +122,7 @@ export interface SpcSignalTable {
   closed_at: NullableTimestamp;
   closed_seq: number | null;
   baseline: boolean;
+  extent_final: boolean;
   status: SignalStatus;
   detected_at: DefaultTimestamp;
   detected_plant_at: NullableTimestamp;
@@ -157,6 +159,7 @@ export const QUALITY_COLUMNS = {
     'notice_kind',
     'notice_at',
     'notice_detail',
+    'notice_basis',
     'updated_at',
   ],
   'quality.measurement': [
@@ -210,6 +213,7 @@ export const QUALITY_COLUMNS = {
     'closed_at',
     'closed_seq',
     'baseline',
+    'extent_final',
     'status',
     'detected_at',
     'detected_plant_at',

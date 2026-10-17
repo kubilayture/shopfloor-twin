@@ -31,6 +31,7 @@ export {
   versionsOf,
   WITHDRAWN_FINAL,
   WITHDRAWN_PROVISIONAL,
+  WITHDRAWN_VERSION,
 } from './derive.ts';
 export type {
   DerivedSignal,
@@ -41,6 +42,7 @@ export type {
   SignalPlan,
   StoredSignal,
   VersionRecord,
+  WithdrawalCause,
 } from './derive.ts';
 export {
   LIMIT_AUDIT_ENTITY,

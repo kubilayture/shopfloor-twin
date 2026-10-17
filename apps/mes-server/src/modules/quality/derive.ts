@@ -187,6 +187,8 @@ export function versionsOf(events: readonly LimitEvent[]): VersionRecord[] {
 export interface Progress {
   readonly epoch: number | null;
   readonly settledSeq: number | null;
+  /** Plant time of the last device fact up to `settledSeq`, when known. */
+  readonly settledTime?: Date | null;
 }
 
 /**
@@ -220,6 +222,7 @@ export interface StoredSignal {
   readonly points: number;
   readonly closedBy: PointRef | null;
   readonly baseline: boolean;
+  readonly extentFinal: boolean;
   readonly status: SignalStatus;
   readonly acknowledged: boolean;
 }
@@ -234,7 +237,13 @@ export interface DerivedSignal {
   readonly points: number;
   readonly closedBy: PointRef | null;
   readonly baseline: boolean;
+  /** The tester is final through the triggering point: the episode exists for good. */
   readonly final: boolean;
+  /**
+   * The tester is final through the closing point (while open, the last point): the extent (last
+   * point, count, closing point) won't change but by a fact from a written-off gap.
+   */
+  readonly extentFinal: boolean;
 }
 
 /** An episode's identity: (limit version, chart, rule, first triggering point). */
@@ -258,17 +267,22 @@ export function derivedSignals(
     const { partId, pass } = keyParts(key);
     return { epoch: p.epoch, partId, pass, at: p.at, seq: p.seq };
   };
-  return episodes.map((e) => ({
-    version: e.version,
-    chart: e.chart,
-    rule: e.rule,
-    first: ref(e.key),
-    last: ref(e.lastKey),
-    points: e.points,
-    closedBy: e.closedBy === null ? null : ref(e.closedBy),
-    baseline: e.baseline,
-    final: isFinal(e.position, progress),
-  }));
+  return episodes.map((e) => {
+    const last = ref(e.lastKey);
+    const closedBy = e.closedBy === null ? null : ref(e.closedBy);
+    return {
+      version: e.version,
+      chart: e.chart,
+      rule: e.rule,
+      first: ref(e.key),
+      last,
+      points: e.points,
+      closedBy,
+      baseline: e.baseline,
+      final: isFinal(e.position, progress),
+      extentFinal: isFinal(closedBy ?? last, progress),
+    };
+  });
 }
 
 const sameRef = (a: PointRef | null, b: PointRef | null): boolean =>
@@ -298,10 +312,16 @@ export interface SignalPlan {
   readonly deletes: readonly number[];
 }
 
+/** Why an episode was withdrawn (shown with it). */
 export const WITHDRAWN_FINAL =
-  'withdrawn: a late reading from a written-off gap re-derived the chart';
+  'A late reading from a written-off gap changed the chart; this signal no longer occurs';
 export const WITHDRAWN_PROVISIONAL =
-  'withdrawn: a late reading re-derived the chart before the signal was final';
+  'A late reading changed the chart before this signal was final; it no longer occurs';
+export const WITHDRAWN_VERSION =
+  'A limit version was created or ended; judged by the limits now in force, this signal no longer occurs';
+
+/** The reasons a plan gives its withdrawals: late readings, or a limit version change. */
+export type WithdrawalCause = 'reading' | 'version';
 
 /**
  * The plan from the stored episodes to the derived ones (plan "Finality and late facts"): a new
@@ -312,6 +332,7 @@ export const WITHDRAWN_PROVISIONAL =
 export function planSignals(
   derived: readonly DerivedSignal[],
   stored: readonly StoredSignal[],
+  cause: WithdrawalCause = 'reading',
 ): SignalPlan {
   const byKey = new Map(stored.map((s) => [signalKey(s), s]));
   const seen = new Set<string>();
@@ -332,6 +353,7 @@ export function planSignals(
       row.points !== signal.points ||
       !sameRef(row.closedBy, signal.closedBy) ||
       row.baseline !== signal.baseline ||
+      row.extentFinal !== signal.extentFinal ||
       !sameRef(row.first, signal.first);
     if (statusChanged || extentChanged) {
       updates.push({
@@ -348,9 +370,15 @@ export function planSignals(
   const deletes: number[] = [];
   for (const row of stored) {
     if (seen.has(signalKey(row)) || row.status === 'withdrawn') continue;
-    if (row.status === 'final') withdrawals.push({ id: row.id, reason: WITHDRAWN_FINAL });
-    else if (row.acknowledged) withdrawals.push({ id: row.id, reason: WITHDRAWN_PROVISIONAL });
-    else deletes.push(row.id);
+    if (row.status === 'final' || row.acknowledged) {
+      const reason =
+        cause === 'version'
+          ? WITHDRAWN_VERSION
+          : row.status === 'final'
+            ? WITHDRAWN_FINAL
+            : WITHDRAWN_PROVISIONAL;
+      withdrawals.push({ id: row.id, reason });
+    } else deletes.push(row.id);
   }
   return { inserts, updates, withdrawals, deletes };
 }

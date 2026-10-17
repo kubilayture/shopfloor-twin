@@ -5739,6 +5739,10 @@
                   ],
                   "description": "The point that ended it; null while open"
                 },
+                "extentFinal": {
+                  "type": "boolean",
+                  "description": "The tester is final through its closing point (open: its last point): `last`, `points` and `closedBy` stay as they are but for a fact from a written-off gap"
+                },
                 "baseline": {
                   "type": "boolean",
                   "description": "Its first point lies in its version’s window: created with the version"
@@ -5866,6 +5870,7 @@
                 "last",
                 "points",
                 "closedBy",
+                "extentFinal",
                 "baseline",
                 "status",
                 "detectedAt",

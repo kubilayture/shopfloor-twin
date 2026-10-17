@@ -2,20 +2,22 @@ import { formatFraction, type Fraction } from '@shopfloor/oee-core';
 import {
   CHARTS,
   RULE_TEXT,
+  comparePositions,
   type ChartLimits,
   type Point,
   type Position,
   type Rule,
 } from '@shopfloor/spc-core';
-import type {
-  CharacteristicDto,
-  LimitVersionDto,
-  SpcChartDto,
-  SpcMeasurementDto,
-  SpcPointDto,
-  SpcPositionDto,
-  SpcSignalDto,
-  SpcValueDto,
+import {
+  QUALITY_LIMITS,
+  type CharacteristicDto,
+  type LimitVersionDto,
+  type SpcChartDto,
+  type SpcMeasurementDto,
+  type SpcPointDto,
+  type SpcPositionDto,
+  type SpcSignalDto,
+  type SpcValueDto,
 } from '@shopfloor/contracts/mes-api';
 import {
   keyParts,
@@ -121,6 +123,7 @@ export function signalDto(s: SignalRecord): SpcSignalDto {
     last: pointRef(s.last),
     points: s.points,
     closedBy: s.closedBy === null ? null : pointRef(s.closedBy),
+    extentFinal: s.extentFinal,
     baseline: s.baseline,
     status: s.status,
     detectedAt: s.detectedAt.toISOString(),
@@ -178,11 +181,26 @@ function pointDto(p: Point, resolution: number, final: (p: Position) => boolean)
  * The charts of a characteristic, optionally only the points whose plant time lies in [from, to)
  * (the limits, counts and signals stay whole).
  */
-export function spcChartDto(view: ChartView, range: { from?: Date; to?: Date } = {}): SpcChartDto {
+export function spcChartDto(
+  view: ChartView,
+  range: { from?: Date; to?: Date; all?: boolean } = {},
+): SpcChartDto {
   const resolution = view.characteristic.resolution;
+  // Without a range and without `all`, the points of the most recent first-pass readings only
+  // (#200 review M5): a week's chart is several megabytes of JSON.
+  const recent =
+    range.all === true || range.from !== undefined || range.to !== undefined
+      ? undefined
+      : view.chart.firstPass.at(-QUALITY_LIMITS.chartRecent);
+  const cut =
+    recent === undefined || view.chart.firstPass.length <= QUALITY_LIMITS.chartRecent
+      ? undefined
+      : recent;
   const inRange = (p: Point): boolean =>
+    (cut === undefined || comparePositions(p.position, cut) >= 0) &&
     (range.from === undefined || p.position.at >= range.from.getTime()) &&
     (range.to === undefined || p.position.at < range.to.getTime());
+  const pointsFrom = cut !== undefined ? iso(cut.at) : range.from ? iso(range.from) : null;
   const points = (chart: (typeof CHARTS)[number]) =>
     view.chart.points[chart].filter(inRange).map((p) => pointDto(p, resolution, view.final));
   return {
@@ -202,6 +220,7 @@ export function spcChartDto(view: ChartView, range: { from?: Date; to?: Date } =
       pending: view.chart.pending.length,
       dropped: view.chart.dropped.length,
     },
+    pointsFrom,
     retests: view.retests.map(measurementDto),
     signals: view.signals.map(signalDto),
   };

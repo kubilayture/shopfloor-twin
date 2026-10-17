@@ -161,6 +161,14 @@ export const PROBLEM_TYPES = {
   limitsStale: 'urn:shopfloor:limits-stale',
   /** 409 (#200): the signal's `version` sent is not its current one (an acknowledgement). */
   signalStale: 'urn:shopfloor:signal-stale',
+  /** 409 (#200): a limit write before limit version 1 exists (it is estimated automatically). */
+  limitsV1Missing: 'urn:shopfloor:limits-v1-missing',
+  /** 409 (#200): the limit version is ended already. */
+  limitsEnded: 'urn:shopfloor:limits-ended',
+  /** 409 (#200): the signal is acknowledged already (once per episode). */
+  signalAcknowledged: 'urn:shopfloor:signal-acknowledged',
+  /** 409 (#200): the signal is withdrawn; it can't be acknowledged. */
+  signalWithdrawn: 'urn:shopfloor:signal-withdrawn',
 } as const;
 
 export type ProblemType = (typeof PROBLEM_TYPES)[keyof typeof PROBLEM_TYPES];

@@ -35,6 +35,7 @@ import {
   QualityError,
   WITHDRAWN_FINAL,
   WITHDRAWN_PROVISIONAL,
+  WITHDRAWN_VERSION,
   characteristicsOf,
   passesOf,
   planSignals,
@@ -310,6 +311,10 @@ describe('quality: measurements, limit version 1 and episodes on final data (#20
       withdrawnReason: WITHDRAWN_PROVISIONAL,
       acknowledged: { by: 'quinn' },
     });
+    const withdrawn = await h.quality
+      .acknowledge(after[3]?.id ?? 0, { version: after[3]?.rowVersion ?? 0, comment: 'x' }, h.by)
+      .catch((error: unknown) => error);
+    expect(withdrawn).toMatchObject({ type: PROBLEM_TYPES.signalWithdrawn });
     // Unacknowledged provisional episodes that go away are simply deleted: without seq 12 the
     // subgroup (11, 13) and the run 10, 11, 13 signal rule 5 (and the X̄ episode at 10 goes on);
     // with it, nothing new does.
@@ -319,8 +324,9 @@ describe('quality: measurements, limit version 1 and episodes on final data (#20
       ['I', 5, 13, 'provisional', null],
       ['Xbar', 5, 13, 'provisional', null],
     ]);
+    // Final as an episode, but its extent runs over provisional points: not final yet.
     expect((await h.signals()).find((s) => s.chart === 'Xbar' && s.first.seq === 10)).toMatchObject(
-      { points: 2, last: { seq: 13 }, closedBy: null },
+      { points: 2, last: { seq: 13 }, closedBy: null, status: 'final', extentFinal: false },
     );
     await h.cycle(12, 2.0);
     await h.cycle(14, 2.0);
@@ -333,7 +339,7 @@ describe('quality: measurements, limit version 1 and episodes on final data (#20
         .sort(),
     ).toEqual(['I 5', 'Xbar 5']);
     expect((await h.signals()).find((s) => s.chart === 'Xbar' && s.first.seq === 10)).toMatchObject(
-      { points: 1, last: { seq: 10 }, closedBy: { seq: 12 } },
+      { points: 1, last: { seq: 10 }, closedBy: { seq: 12 }, extentFinal: true },
     );
   });
 
@@ -376,6 +382,12 @@ describe('quality: measurements, limit version 1 and episodes on final data (#20
     const characteristic = await h.quality.characteristic('leak-rate');
     expect(characteristic?.notice).toMatchObject({ kind: 'baseline-changed' });
     expect(characteristic?.notice?.detail).toContain('version 1 stays');
+    // Raising the notice moved the characteristic's version (a limit write must have seen it).
+    expect(characteristic?.version).toBe(3);
+    // A restart re-reads every reading: the same re-estimate raises nothing new.
+    await h.restart();
+    await h.tick();
+    expect((await h.quality.characteristic('leak-rate'))?.version).toBe(3);
     expect((await h.signals()).map(shape)).toContainEqual(['Xbar', 1, 8, 'final', 10]);
     // A quality user decides: version 2 from the whole window clears the notice.
     h.clock.now = T0 + 20 * MINUTE;
@@ -391,6 +403,12 @@ describe('quality: measurements, limit version 1 and episodes on final data (#20
     );
     expect(created.limits).toMatchObject({ version: 2, createdBy: 'quinn' });
     expect(created.characteristic.notice).toBeNull();
+    // Resolved: a restart (the same re-estimate) doesn't raise it again (#200 review H1).
+    await h.restart();
+    await h.tick();
+    const after2 = await h.quality.characteristic('leak-rate');
+    expect(after2?.notice, 'notice after restart').toBeNull();
+    expect(after2?.version).toBe(created.characteristic.version);
   });
 });
 
@@ -408,7 +426,7 @@ describe('quality: limit writes and acknowledgements (#200)', () => {
         h.by,
       )
       .catch((error: unknown) => error);
-    expect(early).toMatchObject({ kind: 'conflict' });
+    expect(early).toMatchObject({ kind: 'conflict', type: PROBLEM_TYPES.limitsV1Missing });
     for (const [i, value] of BASELINE.entries()) if (i > 1) await h.cycle(i + 1, value);
     for (let seq = 7; seq <= 12; seq++) await h.cycle(seq, 2.0 + (seq % 2) * 0.05);
     await h.tick();
@@ -449,7 +467,9 @@ describe('quality: limit writes and acknowledgements (#200)', () => {
       )
       .catch((error: unknown) => error);
     expect(one).toMatchObject({ kind: 'invalid' });
-    h.clock.now = T0 + 12 * MINUTE + 30_000;
+    // The plant clock equals the newest reading's time (#200 review M3): that reading keeps
+    // version 1; version 2 starts after every reading received, at (epoch, clock, last seq + 1).
+    h.clock.now = T0 + 12 * MINUTE;
     const created = await h.quality.createLimits(
       'leak-rate',
       {
@@ -463,7 +483,7 @@ describe('quality: limit writes and acknowledgements (#200)', () => {
     expect(created.limits).toMatchObject({
       version: 2,
       createdAt: h.clock.now,
-      from: { epoch: E1, at: h.clock.now, seq: 0 },
+      from: { epoch: E1, at: h.clock.now, seq: 13 },
       comment: 'new process',
     });
     expect(created.limits.limits.counts).toEqual({ readings: 6, movingRanges: 5, subgroups: 3 });
@@ -483,11 +503,16 @@ describe('quality: limit writes and acknowledgements (#200)', () => {
       { version: created.characteristic.version, comment: 'back to 1' },
       h.by,
     );
-    expect(ended.limits).toMatchObject({ version: 2, endedAt: h.clock.now, endedBy: 'quinn' });
+    expect(ended.limits).toMatchObject({
+      version: 2,
+      endedAt: h.clock.now,
+      endedBy: 'quinn',
+      until: { epoch: E1, at: h.clock.now, seq: 14 },
+    });
     const again = await h.quality
       .endLimits('leak-rate', 2, { version: ended.characteristic.version, comment: 'x' }, h.by)
       .catch((error: unknown) => error);
-    expect(again).toMatchObject({ kind: 'conflict' });
+    expect(again).toMatchObject({ kind: 'conflict', type: PROBLEM_TYPES.limitsEnded });
     const unknown = await h.quality
       .endLimits('leak-rate', 9, { version: ended.characteristic.version, comment: 'x' }, h.by)
       .catch((error: unknown) => error);
@@ -540,7 +565,7 @@ describe('quality: limit writes and acknowledgements (#200)', () => {
     const twice = await h.quality
       .acknowledge(signal.id, { version: acked.rowVersion, comment: 'again' }, h.by)
       .catch((error: unknown) => error);
-    expect(twice).toMatchObject({ kind: 'conflict' });
+    expect(twice).toMatchObject({ kind: 'conflict', type: PROBLEM_TYPES.signalAcknowledged });
     await expect(
       h.quality.acknowledge(999, { version: 1, comment: 'x' }, h.by),
     ).rejects.toMatchObject({ kind: 'not-found' });
@@ -651,6 +676,20 @@ describe('quality: the API (#200)', () => {
       ),
     );
     expect(cut.points.I.map((p) => p.partId)).toEqual([7]);
+    expect([chart.pointsFrom, cut.pointsFrom]).toEqual([
+      null,
+      new Date(T0 + 7 * MINUTE).toISOString(),
+    ]);
+    // The chart is served from the derivation in memory with an entity tag (#200 review M5).
+    const tagged = await request('GET', '/api/v1/quality/characteristics/leak-rate/chart?all=true');
+    const etag = String(tagged.headers.etag);
+    expect(etag).toMatch(/^"[0-9a-f]{8}-leak-rate-\d+"$/);
+    const again = await http.app.inject({
+      method: 'GET',
+      url: '/api/v1/quality/characteristics/leak-rate/chart',
+      headers: { ...headers, cookie, 'if-none-match': etag },
+    });
+    expect([again.statusCode, again.body]).toEqual([304, '']);
     const measurements = measurementListSchema.parse(
       await get('/api/v1/quality/characteristics/leak-rate/measurements'),
     );
@@ -781,6 +820,7 @@ describe('quality: pure parts (#200)', () => {
     closedBy: null,
     baseline: false,
     final,
+    extentFinal: final,
     ...extra,
   });
 
@@ -813,6 +853,12 @@ describe('quality: pure parts (#200)', () => {
       { id: 4, reason: WITHDRAWN_FINAL },
     ]);
     expect(plan.deletes).toEqual([2]);
+    // A limit version change gives its withdrawals their own reason.
+    expect(planSignals([], stored, 'version').withdrawals).toEqual([
+      { id: 1, reason: WITHDRAWN_VERSION },
+      { id: 3, reason: WITHDRAWN_VERSION },
+      { id: 4, reason: WITHDRAWN_VERSION },
+    ]);
   });
 
   it('folds limit events into versions and refuses an end without its version', () => {

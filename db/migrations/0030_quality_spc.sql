@@ -8,8 +8,10 @@ GRANT USAGE ON SCHEMA quality TO mes_app;
 
 -- A characteristic, seeded at start-up from quality.yaml (the specification limit and the
 -- resolution from process.yaml's leak test). `version` rises with every limit write (409
--- limits-stale); the notice is a late reading inside limit version 1's window (from a written-off
--- gap): version 1 is never re-derived, a quality user decides on a new version.
+-- limits-stale, and with each notice raised); the notice is a late reading inside limit version 1's
+-- window (from a written-off gap): version 1 is never re-derived, a quality user decides on a new
+-- version. `notice_basis` is the SHA-256 of the re-estimate that raised the last notice: kept when
+-- the notice is cleared, so the same re-estimate (after a restart, say) never raises it again.
 CREATE TABLE quality.characteristic (
   id TEXT PRIMARY KEY CHECK (id ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
   name TEXT NOT NULL,
@@ -26,6 +28,7 @@ CREATE TABLE quality.characteristic (
   notice_kind TEXT CHECK (notice_kind IN ('baseline-changed')),
   notice_at TIMESTAMPTZ,
   notice_detail TEXT,
+  notice_basis TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CHECK ((notice_kind IS NULL) = (notice_at IS NULL)),
   CHECK ((notice_kind IS NULL) = (notice_detail IS NULL))
@@ -56,7 +59,8 @@ CREATE INDEX measurement_chart ON quality.measurement (characteristic, epoch, me
 -- Control limit versions as append-only events (ADR-0032): `created` (a version with its frozen
 -- limits, window and the first position it applies to; version 1 by `system` at its baseline's
 -- last reading) and `ended` (the first position it no longer applies to). Never updated or
--- deleted, whoever connects: a trigger refuses it.
+-- deleted: a trigger refuses it to every role, the owner included (only the owner or a superuser
+-- could disable the trigger, in a migration).
 CREATE TABLE quality.control_limit (
   characteristic TEXT NOT NULL REFERENCES quality.characteristic (id),
   -- The event's number per characteristic, from 1.
@@ -126,6 +130,9 @@ CREATE TABLE quality.spc_signal (
   closed_at TIMESTAMPTZ,
   closed_seq BIGINT,
   baseline BOOLEAN NOT NULL,
+  -- The tester is final through its closing point (or, while open, its last point): its extent
+  -- (last point, count, closing point) won't change but by a fact from a written-off gap.
+  extent_final BOOLEAN NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('provisional', 'final', 'withdrawn')),
   detected_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   detected_plant_at TIMESTAMPTZ,

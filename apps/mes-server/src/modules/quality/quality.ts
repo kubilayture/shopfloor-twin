@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { PROBLEM_TYPES, type ProblemType } from '@shopfloor/contracts/mes-api';
 import type { PlantConfig } from '@shopfloor/plant-config';
 import {
@@ -39,6 +40,7 @@ import {
   type Progress,
   type StoredSignal,
   type VersionRecord,
+  type WithdrawalCause,
 } from './derive.ts';
 import type {
   ControlLimitTable,
@@ -154,6 +156,8 @@ export interface SignalRecord {
   readonly points: number;
   readonly closedBy: PointRef | null;
   readonly baseline: boolean;
+  /** The tester is final through its closing point (open: its last point). */
+  readonly extentFinal: boolean;
   readonly status: SignalStatus;
   readonly detectedAt: Date;
   readonly detectedPlantAt: Date | null;
@@ -202,6 +206,8 @@ export interface ChartView {
   } | null;
   readonly retests: readonly MeasurementRecord[];
   readonly signals: readonly SignalRecord[];
+  /** The entity tag of this answer when served from the derivation in memory, else null. */
+  readonly tag: string | null;
 }
 
 /** Who writes and which request (the audit's). */
@@ -251,6 +257,12 @@ interface State {
   signals: Selectable<SpcSignalTable>[] | null;
   /** A `readings` summary is due for push. */
   summaryDue: boolean;
+  /** The measurement rows by reading key, in step with `readings` (the retests on read). */
+  readonly rows: Map<string, Selectable<MeasurementTable>>;
+  /** The chart as last derived and the progress it was judged with: what reads serve. */
+  view: { readonly chart: SpcChart; readonly progress: Progress } | null;
+  /** Rises with every derivation, write and acknowledgement: the chart's entity tag. */
+  revision: number;
 }
 
 /**
@@ -278,6 +290,8 @@ export class Quality {
   #timer: NodeJS.Timeout | undefined;
   #kick: NodeJS.Timeout | undefined;
   #queue: Promise<unknown> = Promise.resolve();
+  /** Tells this process's chart tags from another start's. */
+  readonly #instance = randomUUID().slice(0, 8);
   /** The `readings` summaries being read for push, off the derivation's path. */
   #summaries: Promise<void> = Promise.resolve();
   #started = false;
@@ -301,6 +315,9 @@ export class Quality {
         progress: '',
         signals: null,
         summaryDue: false,
+        rows: new Map(),
+        view: null,
+        revision: 0,
       });
     }
     const registers = options.registry ? [options.registry] : [];
@@ -426,6 +443,39 @@ export class Quality {
     if (!state) return undefined;
     const config = state.config;
     const db = this.#readDb;
+    const view = state.view;
+    if (view !== null) {
+      // The derivation in memory (#200 review M5): no reading or chart is derived per request;
+      // only the episodes (acknowledgements) and the summary are read.
+      const tag = this.chartTag(id) ?? '';
+      const [signals, characteristic] = await Promise.all([
+        this.signals({ characteristic: id, withdrawn: true, limit: 100_000 }),
+        this.#summary(config, db),
+      ]);
+      const p = view.progress;
+      const final = (position: Position): boolean => isFinal(position, p);
+      return {
+        characteristic,
+        limits: state.versions.map((v) => withCapability(v, config)),
+        chart: view.chart,
+        final,
+        finalThrough:
+          p.epoch === null || p.settledSeq === null
+            ? null
+            : { epoch: p.epoch, seq: p.settledSeq, at: p.settledTime ?? null },
+        retests: [...state.rows.values()]
+          .filter((r) => r.pass > 1)
+          .sort(
+            (a, b) =>
+              a.epoch - b.epoch ||
+              a.measured_at.getTime() - b.measured_at.getTime() ||
+              a.seq - b.seq,
+          )
+          .map((r) => toMeasurement(r, final)),
+        signals: signals.signals,
+        tag,
+      };
+    }
     const [rows, versions, progress, signals, characteristic] = await Promise.all([
       this.#measurementRows(id, db),
       this.#versions(id, db),
@@ -453,7 +503,17 @@ export class Quality {
           : { epoch: progress.epoch, seq: progress.settledSeq, at: progress.settledTime },
       retests: rows.filter((r) => r.pass > 1).map((r) => toMeasurement(r, final)),
       signals: signals.signals,
+      tag: null,
     };
+  }
+
+  /**
+   * The chart's entity tag while it is served from memory: it changes with every derivation,
+   * limit write and acknowledgement, and with each MES start. Null before the first derivation.
+   */
+  chartTag(id: string): string | null {
+    const state = this.#states.get(id);
+    return state?.view ? `"${this.#instance}-${id}-${String(state.revision)}"` : null;
   }
 
   /** A characteristic's measurements in chart order (every pass); at most `limit`. */
@@ -527,11 +587,12 @@ export class Quality {
 
   /**
    * Estimates a new limit version from the final first-pass readings whose plant time lies in
-   * [from, to] (`spc:limits`, plan "Control limits, versioned"): it applies from the plant clock
-   * on, in the tester's newest epoch; the characteristic's version read (409 `limits-stale`);
-   * refused while version 1 doesn't exist yet (it is estimated automatically) and for a window
-   * without a moving range or a complete subgroup (422). Clears a `baseline-changed` notice.
-   * Audited with the session's user.
+   * [from, to] (`spc:limits`, plan "Control limits, versioned"): it applies to the readings after
+   * the plant clock W, `from` = (newest epoch, W, last seq received + 1), so a reading already
+   * received at exactly W keeps its version; the characteristic's version read (409
+   * `limits-stale`); refused while version 1 doesn't exist yet (409 `limits-v1-missing`: it is
+   * estimated automatically), checked before the estimate, and for a window without a moving
+   * range or a complete subgroup (422). Clears a `baseline-changed` notice. Audited.
    */
   async createLimits(
     id: string,
@@ -546,7 +607,15 @@ export class Quality {
     const state = this.#state(id);
     const config = state.config;
     return this.#serial(async () => {
-      const progress = progressOf(await this.#ingest.deviceProgress(config.equipment));
+      if (!state.versions.some((v) => v.version === 1)) {
+        throw new QualityError(
+          'conflict',
+          'limit version 1 is estimated automatically once the baseline is final; none exists yet',
+          PROBLEM_TYPES.limitsV1Missing,
+        );
+      }
+      const device = await this.#ingest.deviceProgress(config.equipment);
+      const progress = progressOf(device);
       const final = (p: Position): boolean => isFinal(p, progress);
       const ordered = firstPass([...state.readings.values()].filter(final));
       const inside = ordered.filter(
@@ -568,18 +637,11 @@ export class Quality {
         throw new QualityError('invalid', (error as Error).message);
       }
       const plantAt = this.#plantNow(state);
-      const epoch = progress.epoch ?? last.epoch;
+      const from = boundary(device, plantAt, last.epoch);
       const created = await this.#db.transaction().execute(async (trx) => {
         const row = await this.#lockCharacteristic(trx, id, request.version);
         const events = await this.#events(id, trx);
-        if (!events.some((e) => e.kind === 'created')) {
-          throw new QualityError(
-            'conflict',
-            'limit version 1 is estimated automatically once the baseline is final; none exists yet',
-          );
-        }
         const version = Math.max(...events.map((e) => e.version)) + 1;
-        const from: Position = { epoch, at: plantAt, seq: 0 };
         await this.#appendEvent(trx, {
           characteristic: id,
           n: events.length + 1,
@@ -614,7 +676,7 @@ export class Quality {
         return version;
       });
       await this.#reloadVersions(state);
-      await this.#derive(state, progress, true);
+      await this.#derive(state, progress, 'version');
       const characteristic = await this.#summary(config, this.#db);
       this.#emit({ type: 'characteristic', event: 'limits', characteristic });
       const record = state.versions.find((v) => v.version === created);
@@ -637,7 +699,8 @@ export class Quality {
     const state = this.#state(id);
     const config = state.config;
     return this.#serial(async () => {
-      const progress = progressOf(await this.#ingest.deviceProgress(config.equipment));
+      const device = await this.#ingest.deviceProgress(config.equipment);
+      const progress = progressOf(device);
       const plantAt = this.#plantNow(state);
       await this.#db.transaction().execute(async (trx) => {
         const row = await this.#lockCharacteristic(trx, id, request.version);
@@ -646,13 +709,13 @@ export class Quality {
           throw new QualityError('not-found', `no limit version ${String(version)} of ${id}`);
         }
         if (events.some((e) => e.kind === 'ended' && e.version === version)) {
-          throw new QualityError('conflict', `limit version ${String(version)} is ended already`);
+          throw new QualityError(
+            'conflict',
+            `limit version ${String(version)} is ended already`,
+            PROBLEM_TYPES.limitsEnded,
+          );
         }
-        const until: Position = {
-          epoch: progress.epoch ?? state.versions.at(-1)?.limits.window.to.epoch ?? 0,
-          at: plantAt,
-          seq: 0,
-        };
+        const until = boundary(device, plantAt, state.versions.at(-1)?.limits.window.to.epoch ?? 0);
         await this.#appendEvent(trx, {
           characteristic: id,
           n: events.length + 1,
@@ -682,7 +745,7 @@ export class Quality {
         });
       });
       await this.#reloadVersions(state);
-      await this.#derive(state, progress, true);
+      await this.#derive(state, progress, 'version');
       const characteristic = await this.#summary(config, this.#db);
       this.#emit({ type: 'characteristic', event: 'limits', characteristic });
       const record = state.versions.find((v) => v.version === version);
@@ -717,14 +780,19 @@ export class Quality {
             PROBLEM_TYPES.signalStale,
           );
         }
+        if (row.status === 'withdrawn') {
+          throw new QualityError(
+            'conflict',
+            `signal ${String(id)} is withdrawn`,
+            PROBLEM_TYPES.signalWithdrawn,
+          );
+        }
         if (row.ack_by !== null) {
           throw new QualityError(
             'conflict',
             `signal ${String(id)} is acknowledged already by ${row.ack_by}`,
+            PROBLEM_TYPES.signalAcknowledged,
           );
-        }
-        if (row.status === 'withdrawn') {
-          throw new QualityError('conflict', `signal ${String(id)} is withdrawn`);
         }
         const plantAt = this.#options.clock?.() ?? null;
         const updated = await trx
@@ -758,7 +826,10 @@ export class Quality {
           plantAt: plantAt ?? undefined,
         });
         const state = this.#states.get(row.characteristic);
-        if (state) state.signals = null;
+        if (state) {
+          state.signals = null;
+          state.revision += 1;
+        }
         return toSignal(updated);
       }),
     );
@@ -838,6 +909,7 @@ export class Quality {
     for (const state of this.#states.values()) {
       await this.#reloadVersions(state);
       state.readings.clear();
+      state.rows.clear();
       state.signals = null;
       for (const count of counts.filter((c) => c.equipment === state.config.equipment)) {
         const facts = await this.#ingest.cycleFacts({
@@ -848,7 +920,9 @@ export class Quality {
       }
       // Rows of an epoch whose facts are gone (none expected) are left to the next rebuild.
       for (const row of await this.#measurementRows(state.config.id, this.#db)) {
-        state.readings.set(readingKey(row.epoch, row.part_id, row.pass), toReading(row));
+        const key = readingKey(row.epoch, row.part_id, row.pass);
+        state.readings.set(key, toReading(row));
+        state.rows.set(key, row);
       }
       state.dirty = true;
     }
@@ -944,8 +1018,15 @@ export class Quality {
           .execute();
       }
     });
-    for (const reading of before) state.readings.delete(reading.key);
-    for (const reading of after) state.readings.set(reading.key, reading);
+    for (const reading of before) {
+      state.readings.delete(reading.key);
+      state.rows.delete(reading.key);
+    }
+    for (const row of rows) {
+      const key = readingKey(row.epoch, row.part_id, row.pass);
+      state.readings.set(key, toReading(row));
+      state.rows.set(key, row);
+    }
     if (before.length === 0 && after.length === 0) return;
     state.dirty = true;
     state.readingsChanged = true;
@@ -961,9 +1042,9 @@ export class Quality {
    * progress moved: version 1 once the baseline is final, the `baseline-changed` notice, then the
    * episodes brought in line with the chart (`planSignals`) in one transaction.
    */
-  async #derive(state: State, progress: Progress, force = false): Promise<void> {
+  async #derive(state: State, progress: Progress, cause?: WithdrawalCause): Promise<void> {
     const signature = `${String(progress.epoch)}:${String(progress.settledSeq)}`;
-    if (!force && !state.dirty && state.progress === signature) return;
+    if (cause === undefined && !state.dirty && state.progress === signature) return;
     const started = performance.now();
     const config = state.config;
     const final = (p: Position): boolean => isFinal(p, progress);
@@ -985,7 +1066,11 @@ export class Quality {
     });
     const positions = new Map(chart.firstPass.map((r) => [r.key, positionOf(r)]));
     const derived = derivedSignals(chart.episodes, positions, progress);
-    await this.#writeSignals(state, derived);
+    await this.#writeSignals(state, derived, cause ?? 'reading');
+    // The chart as derived now serves reads (#200 review M5), tagged by a revision that rises
+    // with every derivation, write and acknowledgement.
+    state.view = { chart, progress };
+    state.revision += 1;
     const readingsChanged = state.readingsChanged;
     state.dirty = false;
     state.readingsChanged = false;
@@ -1075,6 +1160,11 @@ export class Quality {
   ): Promise<void> {
     const now = firstVersion(finalReadings, state.config);
     if (now !== null && sameLimits(now.limits, v1.limits)) return;
+    // The basis of the notice: the re-estimate itself. The same re-estimate (after a restart, or
+    // once a quality user resolved the notice) never raises it again (#200 review H1).
+    const basis = createHash('sha256')
+      .update(now === null ? 'incomplete' : JSON.stringify(storeLimits(now.limits)))
+      .digest('hex');
     const detail =
       now === null
         ? 'a reading of the baseline window changed: the baseline is no longer complete'
@@ -1085,16 +1175,19 @@ export class Quality {
           )} (version 1: X̄ ${String(
             inUnit(v1.limits.statistics.mean, state.config.resolution),
           )}, M̄R ${String(inUnit(v1.limits.statistics.movingRange, state.config.resolution))}); version 1 stays until a quality user creates a new version`;
+    // Raising a notice is a change a limit write must have seen: the version rises (review M6).
     const updated = await this.#db
       .updateTable('quality.characteristic')
-      .set({
+      .set((eb) => ({
         notice_kind: 'baseline-changed',
         notice_at: sql<Date>`clock_timestamp()`,
         notice_detail: detail,
+        notice_basis: basis,
+        version: eb('version', '+', 1),
         updated_at: sql<Date>`clock_timestamp()`,
-      })
+      }))
       .where('id', '=', state.config.id)
-      .where((eb) => eb.or([eb('notice_detail', 'is', null), eb('notice_detail', '<>', detail)]))
+      .where((eb) => eb.or([eb('notice_basis', 'is', null), eb('notice_basis', '<>', basis)]))
       .executeTakeFirst();
     if (Number(updated.numUpdatedRows) === 0) return;
     this.#log.warn({ characteristic: state.config.id, detail }, 'quality: baseline changed');
@@ -1106,7 +1199,11 @@ export class Quality {
   }
 
   /** Brings the stored episodes in line with the derived ones, in one transaction. */
-  async #writeSignals(state: State, derived: ReturnType<typeof derivedSignals>): Promise<void> {
+  async #writeSignals(
+    state: State,
+    derived: ReturnType<typeof derivedSignals>,
+    cause: WithdrawalCause,
+  ): Promise<void> {
     const id = state.config.id;
     // The stored rows as the last write left them: every write to them goes through this
     // module's queue, which drops the copy.
@@ -1115,7 +1212,7 @@ export class Quality {
       .selectAll()
       .where('characteristic', '=', id)
       .execute();
-    const plan = planSignals(derived, state.signals.map(toStored));
+    const plan = planSignals(derived, state.signals.map(toStored), cause);
     if (
       plan.inserts.length === 0 &&
       plan.updates.length === 0 &&
@@ -1137,6 +1234,10 @@ export class Quality {
           .execute();
         for (const row of removed) {
           changes.push({ type: 'signal', event: 'removed', signal: toSignal(row) });
+          this.#log.info(
+            { characteristic: id, key: signalKey(toStored(row)) },
+            'quality: a provisional signal was re-derived away and removed',
+          );
         }
       }
       for (const w of plan.withdrawals) {
@@ -1391,9 +1492,19 @@ export class Quality {
 const progressOf = (progress: DeviceProgress | undefined): Progress => ({
   epoch: progress?.epoch ?? null,
   settledSeq: progress?.settledSeq ?? null,
+  settledTime: progress?.settledTime ?? null,
 });
 
 const positionOf = (r: Position): Position => ({ epoch: r.epoch, at: r.at, seq: r.seq });
+
+/**
+ * Where a limit version starts or ends when written at plant time `at` (#200 review M3): after
+ * every reading received so far, `(newest epoch, at, last seq + 1)`, so a reading already received
+ * at exactly `at` keeps the version it was judged by, and every later one takes the change.
+ */
+function boundary(device: DeviceProgress, at: number, fallbackEpoch: number): Position {
+  return { epoch: device.epoch ?? fallbackEpoch, at, seq: (device.lastSeq ?? 0) + 1 };
+}
 
 function toReading(row: Selectable<MeasurementTable>): Reading {
   return {
@@ -1467,6 +1578,7 @@ function extent(s: ReturnType<typeof derivedSignals>[number]) {
     closed_at: s.closedBy === null ? null : new Date(s.closedBy.at),
     closed_seq: s.closedBy?.seq ?? null,
     baseline: s.baseline,
+    extent_final: s.extentFinal,
   };
 }
 
@@ -1499,6 +1611,7 @@ function toStored(row: Selectable<SpcSignalTable>): StoredSignal {
     points: row.points,
     closedBy: closedRef(row),
     baseline: row.baseline,
+    extentFinal: row.extent_final,
     status: row.status,
     acknowledged: row.ack_by !== null,
   };
@@ -1517,6 +1630,7 @@ function toSignal(row: Selectable<SpcSignalTable>): SignalRecord {
     points: row.points,
     closedBy: stored.closedBy,
     baseline: row.baseline,
+    extentFinal: row.extent_final,
     status: row.status,
     detectedAt: row.detected_at,
     detectedPlantAt: row.detected_plant_at,

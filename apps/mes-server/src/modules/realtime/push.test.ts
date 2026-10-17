@@ -439,6 +439,7 @@ describe('the quality topic (#200)', () => {
     points: 1,
     closedBy: null,
     baseline: false,
+    extentFinal: true,
     status,
     detectedAt: new Date(T0),
     detectedPlantAt: null,

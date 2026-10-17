@@ -21,5 +21,6 @@ Each folder holds a scenario (`scenario.json`: seed, start, days, configuration 
 ## `orders-01`
 
 - #172: created (`events.sha256` `ebd1e4aaf49f74ddca14f7b3a4767ade51627cf388d32ece86bcb4ac602aa893`, 6,622 lines).
+- #175: `orders.json` rewritten in the ERP mock's dataset schema (`erpDatasetSchema` of `@shopfloor/contracts/erp-api`: `orderNumber`, the feed number its position) instead of `number`/`feed`; the same order versions in the same order. It is not a simulation input, so `events.sha256` (unchanged, above) and `summary.json` are untouched.
 
 Earlier changes are recorded in the changelog (#53, #73, #126).

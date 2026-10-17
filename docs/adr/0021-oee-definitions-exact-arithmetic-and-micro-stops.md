@@ -170,3 +170,8 @@ Master plan section 7 says that from Phase 7 "Idle without a dispatched order is
 - **Ground truth:** the simulator keeps the `NO-ORDER` time per UTC hour and shift bucket from the state events' causes, as `noOrderIdleMs` of the bucket inputs (only when above 0, so schedule-mode summaries keep their bytes but for the rule's name).
 - **MES:** its hourly aggregate `equipment.state_hourly` has no cause, so the MES passes no `noOrderIdleMs` yet and applies the rule from #175, where `orders-01`'s OEE is reconciled; until then only schedule-mode runs reach it, which have no `NO-ORDER` time, so its results are unchanged.
 - **Reference cases** 20–25 in `docs/oee-reference-cases.md`: `NO-ORDER` inside a shift (and the same hour under `shift-calendar`), across an hour boundary, in `no-shift`, and `SCHEDULE-COMPLETE` and `NO-OPERATOR` unchanged.
+
+### Note (#175): the MES applies the `orders` rule
+
+- **OEE:** `Equipment.oeeInputs` also reads the Idle `NO-ORDER` milliseconds per (equipment, epoch, hour) from the stored pieces (which keep the cause; the hourly aggregate does not), in the same snapshot as the hourly rows, and the `oee` module passes them as `noOrderIdleMs` (at most the hour's Idle). `orders-01`'s OEE equals the ground truth per machine and work center, shift and hour (golden reconciliation).
+- **Downtime records:** under `scheduledTime: orders` an Idle `NO-ORDER` interval is outside planned busy time, so it is no availability loss and makes no downtime record (`DowntimeRules.unplanned`); the Pareto of a shift still sums to its availability losses. Under `shift-calendar` it would be a `PLANNED/NO-ORDER` record as before. Schedule-mode runs have no `NO-ORDER`, so nothing changes for them.

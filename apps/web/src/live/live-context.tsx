@@ -25,6 +25,12 @@ import {
   type LiveTelemetry,
 } from './live-cache.ts';
 import type { LiveClient, LiveStatus } from './live-client.ts';
+import {
+  QUALITY_READS,
+  liveQualityKey,
+  resetLiveQuality,
+  type LiveQuality,
+} from './live-quality.ts';
 
 const LiveContext = createContext<LiveClient | undefined>(undefined);
 
@@ -161,6 +167,30 @@ export function useTraceTopics(): void {
     void queryClient.invalidateQueries({ queryKey: TRACE_READS });
     return client.subscribe(QUALITY_TOPIC);
   }, [client, queryClient]);
+}
+
+/**
+ * Holds the `quality` topic for the SPC, holds and order screens (#203), as `useOrdersTopic`: no
+ * snapshot, so the pushed episodes, holds and characteristics are emptied and the quality reads
+ * read again before subscribing, and emptied again when the screen lets go.
+ */
+export function useQualityTopic(): void {
+  const client = useLiveClient();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    resetLiveQuality(queryClient);
+    for (const queryKey of QUALITY_READS) void queryClient.invalidateQueries({ queryKey });
+    const release = client.subscribe(QUALITY_TOPIC);
+    return () => {
+      release();
+      resetLiveQuality(queryClient);
+    };
+  }, [client, queryClient]);
+}
+
+/** Pushed episodes, holds and characteristics (hold the topic with `useQualityTopic`). */
+export function useLiveQuality(): LiveQuality | undefined {
+  return useQuery<LiveQuality>({ queryKey: liveQualityKey, queryFn: skipToken }).data;
 }
 
 /** Pushed orders and commands (hold the topic with `useOrdersTopic`). */

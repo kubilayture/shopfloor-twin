@@ -1,4 +1,5 @@
 import type {
+  HoldDto,
   OrderDetail,
   OrderDto,
   OrderExecutionDto,
@@ -22,12 +23,14 @@ export interface OrderState {
   details: Record<string, OrderDetail>;
   executions: Record<string, OrderExecutionDto>;
   executionIncidents: z.output<typeof executionIncidentListSchema>['incidents'];
+  /** Quality holds (#203): `GET /quality/holds` answers those of the asked subject. */
+  holds: HoldDto[];
 }
 
 export type Write = (method: string, path: string, body: unknown) => Response;
 
 export function orderState(orders: OrderDto[], overrides: Partial<OrderState> = {}): OrderState {
-  return { orders, details: {}, executions: {}, executionIncidents: [], ...overrides };
+  return { orders, details: {}, executions: {}, executionIncidents: [], holds: [], ...overrides };
 }
 
 /** The MES as the orders screens see it; `write` answers the POSTs. */
@@ -56,6 +59,15 @@ export function orderMes(state: OrderState, write: Write = () => json({})) {
           incidents: state.executionIncidents.filter(
             (incident) => orderId === null || incident.orderId === orderId,
           ),
+        }),
+      );
+    }
+    if (path === '/api/v1/quality/holds') {
+      const id = url.searchParams.get('subjectId');
+      return Promise.resolve(
+        json({
+          holds: state.holds.filter((h) => id === null || h.subject.id === id),
+          truncated: false,
         }),
       );
     }

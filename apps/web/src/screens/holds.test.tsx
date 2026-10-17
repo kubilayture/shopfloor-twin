@@ -1,0 +1,329 @@
+import { PROBLEM_TYPES, type HoldDto, type HoldOpenRequest } from '@shopfloor/contracts/mes-api';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { json, problem, sessionOf } from '../test/fixtures.ts';
+import { HOLD_ID, HOLD_ID_2, hold, holdDetail, suggestion } from '../test/quality-fixtures.ts';
+import { qualityMes, qualityState, type Write } from '../test/quality-mes.ts';
+import { renderApp, settle } from '../test/render-app.tsx';
+
+vi.mock('../chart/echarts-view.tsx', () => ({ EChartsView: () => null }));
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+const QUALITY = sessionOf(['quality'], { username: 'quinn' });
+
+describe('quality hold list', () => {
+  it('lists holds with filters and follows pushes by id', async () => {
+    const released = hold({
+      id: HOLD_ID_2,
+      subject: { kind: 'order', id: 'PO-1002' },
+      state: 'released',
+      openedAt: '2026-10-15T05:00:00.000Z',
+      version: 2,
+    });
+    const state = qualityState({ holds: [hold(), released] });
+    const server = qualityMes(state);
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/quality/holds');
+    await app.open();
+    const row = await screen.findByTestId(`hold-row-${HOLD_ID}`);
+    expect(row.dataset.state).toBe('open');
+    expect(within(row).getByTestId('hold-subject').getAttribute('href')).toBe('/trace/lots/K1');
+    expect(
+      within(screen.getByTestId(`hold-row-${HOLD_ID_2}`))
+        .getByTestId('hold-subject')
+        .getAttribute('href'),
+    ).toBe('/orders/PO-1002');
+    expect(screen.getByTestId('hold-open-link')).toBeTruthy();
+    // A scope change pushed at the same version applies; an older version does not.
+    await app.push({
+      type: 'quality-hold',
+      event: 'scope',
+      hold: hold({ scope: { units: 5, cartons: 2, orders: 1 } }),
+    });
+    expect(screen.getByTestId(`hold-row-${HOLD_ID}`).dataset.units).toBe('5');
+    // A hold opened elsewhere appears.
+    const third = '0f0e0d0c-0b0a-4900-8800-000000000003';
+    await app.push({
+      type: 'quality-hold',
+      event: 'opened',
+      hold: hold({ id: third, subject: { kind: 'carton', id: 'PO-1001-C01' } }),
+    });
+    expect(screen.getByTestId(`hold-row-${third}`)).toBeTruthy();
+    // The state filter goes to the MES and applies to pushed holds.
+    fireEvent.change(screen.getByTestId('hold-filter-state'), { target: { value: 'released' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('hold-list').dataset.count).toBe('1');
+    });
+    expect(server.calls.some((c) => c.path === '/api/v1/quality/holds?state=released')).toBe(true);
+    // The subject filter.
+    fireEvent.change(screen.getByTestId('hold-filter-kind'), { target: { value: 'order' } });
+    fireEvent.change(screen.getByTestId('hold-filter-id'), { target: { value: 'no such id!' } });
+    fireEvent.click(screen.getByTestId('hold-filter-apply'));
+    expect(screen.getByTestId('hold-filter-problem')).toBeTruthy();
+    fireEvent.change(screen.getByTestId('hold-filter-id'), { target: { value: 'PO-1002' } });
+    fireEvent.click(screen.getByTestId('hold-filter-apply'));
+    await waitFor(() => {
+      expect(
+        server.calls.some(
+          (c) =>
+            c.path === '/api/v1/quality/holds?state=released&subjectKind=order&subjectId=PO-1002',
+        ),
+      ).toBe(true);
+    });
+    fireEvent.click(screen.getByTestId('hold-filter-clear'));
+    await waitFor(() => {
+      expect(app.history.location.search).not.toContain('kind');
+    });
+  });
+
+  it('says when no hold matches, and shows no open link to an operator', async () => {
+    vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
+    await renderApp('/quality/holds', { session: sessionOf(['operator']) });
+    expect(await screen.findByTestId('holds-empty')).toBeTruthy();
+    expect(screen.queryByTestId('hold-open-link')).toBeNull();
+  });
+});
+
+describe('opening a hold', () => {
+  it('opens a hold on a subject from the URL and goes to its detail', async () => {
+    const opened = hold({
+      subject: { kind: 'serial', id: 'VB-100-000007' },
+      scope: { units: 1, cartons: 0, orders: 1 },
+    });
+    const state = qualityState({ details: { [HOLD_ID]: holdDetail(opened) } });
+    const write: Write = (_method, path, body) => {
+      if (path === '/api/v1/quality/holds') {
+        state.holds = [opened];
+        return json({ ...opened, subject: (body as HoldOpenRequest).subject });
+      }
+      return problem(404, 'Not Found', 'no route', path);
+    };
+    const server = qualityMes(state, write);
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/quality/holds/new?kind=serial&id=VB-100-000007');
+    await screen.findByTestId('hold-open-form');
+    expect(screen.getByTestId<HTMLSelectElement>('open-kind').value).toBe('serial');
+    expect(screen.getByTestId<HTMLInputElement>('open-id').value).toBe('VB-100-000007');
+    await waitFor(() => {
+      expect(screen.getByTestId<HTMLSelectElement>('open-reason').value).toBe('SUSPECT-LOT');
+    });
+    fireEvent.change(screen.getByTestId('open-comment'), { target: { value: 'scratched' } });
+    fireEvent.click(screen.getByTestId('open-submit'));
+    await waitFor(() => {
+      expect(app.history.location.pathname).toBe(`/quality/holds/${HOLD_ID}`);
+    });
+    expect(server.posts().map((p) => p.body)).toEqual([
+      {
+        subject: { kind: 'serial', id: 'VB-100-000007' },
+        reason: 'SUSPECT-LOT',
+        comment: 'scratched',
+      },
+    ]);
+    expect(await screen.findByTestId('hold-detail')).toBeTruthy();
+  });
+
+  it('checks the subject before sending, and shows a refusal', async () => {
+    const write: Write = (_method, path) =>
+      problem(404, 'Not Found', 'no lot K9 imported from the ERP', path);
+    const server = qualityMes(qualityState(), write);
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/quality/holds/new', { session: QUALITY });
+    await screen.findByTestId('hold-open-form');
+    fireEvent.click(screen.getByTestId('open-submit'));
+    expect(screen.getByTestId('open-invalid').textContent).toContain('valid id');
+    expect(server.posts()).toEqual([]);
+    fireEvent.change(screen.getByTestId('open-id'), { target: { value: 'K9' } });
+    fireEvent.click(screen.getByTestId('open-submit'));
+    const result = await screen.findByTestId('open-result-lot-K9');
+    expect(result.dataset.kind).toBe('invalid');
+    expect(within(result).getByTestId('open-message').textContent).toContain('no lot K9');
+  });
+
+  it('holds subjects from a signal’s suggested scope, one hold each', async () => {
+    const state = qualityState({ suggestions: { 2: suggestion() } });
+    let n = 0;
+    const write: Write = (_method, _path, body) => {
+      n += 1;
+      const request = body as HoldOpenRequest;
+      if (request.subject.kind === 'carton') {
+        return problem(409, 'Conflict', 'busy', '/api/v1/quality/holds');
+      }
+      return json(
+        hold({
+          id: `0f0e0d0c-0b0a-4900-8800-00000000010${String(n)}`,
+          subject: request.subject,
+        }),
+      );
+    };
+    const server = qualityMes(state, write);
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/quality/holds/new?signal=2', { session: QUALITY });
+    const panel = await screen.findByTestId('hold-suggestion');
+    expect(panel.dataset.final).toBe('false');
+    expect(screen.getByTestId('hold-suggestion-provisional')).toBeTruthy();
+    // No subject chosen: nothing is sent.
+    fireEvent.click(screen.getByTestId('open-submit'));
+    expect(screen.getByTestId('open-invalid').textContent).toContain('at least one');
+    fireEvent.click(screen.getByTestId('suggest-order-PO-1001'));
+    fireEvent.click(screen.getByTestId('suggest-carton-PO-1001-C02'));
+    fireEvent.click(screen.getByTestId('suggest-serial-VB-100-000102'));
+    fireEvent.click(screen.getByTestId('suggest-serial-VB-100-000102'));
+    expect(screen.getByTestId('open-submit').textContent).toBe('Open 2 holds');
+    fireEvent.change(screen.getByTestId('open-reason'), { target: { value: 'SPC-SIGNAL' } });
+    fireEvent.click(screen.getByTestId('open-submit'));
+    expect((await screen.findByTestId('open-result-order-PO-1001')).dataset.kind).toBe('opened');
+    expect(screen.getByTestId('open-result-carton-PO-1001-C02').dataset.kind).toBe('conflict');
+    expect(server.posts().map((p) => p.body)).toEqual([
+      { subject: { kind: 'order', id: 'PO-1001' }, reason: 'SPC-SIGNAL' },
+      { subject: { kind: 'carton', id: 'PO-1001-C02' }, reason: 'SPC-SIGNAL' },
+    ]);
+  });
+
+  it('says when the signal suggests nothing (unknown or withdrawn)', async () => {
+    vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
+    await renderApp('/quality/holds/new?signal=9', { session: QUALITY });
+    expect(await screen.findByTestId('hold-suggestion-missing')).toBeTruthy();
+  });
+
+  it('refuses the form to a role without quality:hold', async () => {
+    vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
+    await renderApp('/quality/holds/new?kind=lot&id=K1', { session: sessionOf(['operator']) });
+    expect(await screen.findByTestId('hold-open-forbidden')).toBeTruthy();
+  });
+});
+
+describe('a hold’s detail', () => {
+  it('shows scope, transitions with notifications and incidents, live', async () => {
+    const state = qualityState({ details: { [HOLD_ID]: holdDetail() } });
+    const server = qualityMes(state);
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp(`/quality/holds/${HOLD_ID}`);
+    await app.open();
+    const summary = await screen.findByTestId('hold-summary');
+    expect(summary.dataset.state).toBe('open');
+    expect(screen.getByTestId('hold-scope-counts').dataset.units).toBe('2');
+    expect(screen.getByTestId('hold-unit-1-7')).toBeTruthy();
+    expect(screen.getByTestId('hold-transition-1').dataset.notification).toBe('sent');
+    expect(screen.getByTestId('hold-incident-4')).toBeTruthy();
+    expect(screen.getByTestId('hold-consumed').textContent).toBe('0');
+    // A scope push applies at once and reads the detail again.
+    const reads = server.reads(`/api/v1/quality/holds/${HOLD_ID}`).length;
+    state.details[HOLD_ID] = {
+      ...holdDetail(hold({ scope: { units: 3, cartons: 1, orders: 1 } })),
+    };
+    await app.push({
+      type: 'quality-hold',
+      event: 'scope',
+      hold: hold({ scope: { units: 3, cartons: 1, orders: 1 } }),
+    });
+    expect(screen.getByTestId('hold-scope-counts').dataset.units).toBe('3');
+    await waitFor(() => {
+      expect(server.reads(`/api/v1/quality/holds/${HOLD_ID}`).length).toBeGreaterThan(reads);
+    });
+    // A supervisor comments but cannot release or reject.
+    expect(screen.getByTestId('hold-action-comment')).toBeTruthy();
+    expect(screen.queryByTestId('hold-action-release')).toBeNull();
+  });
+
+  it('releases with a reason and the version read; a push that moves the hold makes the draft stale', async () => {
+    const state = qualityState({ details: { [HOLD_ID]: holdDetail() } });
+    const write: Write = (_method, path, body) => {
+      const request = body as { version: number; reason: string };
+      if (request.version !== 2) {
+        return problem(409, 'Conflict', 'stale', path, PROBLEM_TYPES.holdStale);
+      }
+      const answer: HoldDto = hold({
+        state: 'released',
+        version: 3,
+        decidedBy: 'quinn',
+        decidedAt: '2026-10-15T06:00:00.000Z',
+        decisionReason: request.reason,
+        transitions: 3,
+      });
+      state.details[HOLD_ID] = holdDetail(answer);
+      return json(answer);
+    };
+    const server = qualityMes(state, write);
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp(`/quality/holds/${HOLD_ID}`, { session: QUALITY });
+    await app.open();
+    fireEvent.click(await screen.findByTestId('hold-action-release'));
+    const form = screen.getByTestId('hold-form-release');
+    expect(form.dataset.version).toBe('1');
+    await waitFor(() => {
+      expect(screen.getByTestId<HTMLSelectElement>('hold-reason').value).toBe('CONFORMS');
+    });
+    // Someone comments meanwhile: version 2.
+    await app.push({
+      type: 'quality-hold',
+      event: 'commented',
+      hold: hold({ version: 2, transitions: 2 }),
+    });
+    expect(screen.getByTestId('hold-stale').dataset.version).toBe('2');
+    expect(screen.getByTestId<HTMLButtonElement>('hold-submit').disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('hold-restart'));
+    fireEvent.change(screen.getByTestId('hold-comment'), { target: { value: 'retested fine' } });
+    fireEvent.click(screen.getByTestId('hold-submit'));
+    expect((await screen.findByTestId('hold-done')).textContent).toContain('released');
+    expect(screen.getByTestId('hold-summary').dataset.state).toBe('released');
+    expect(screen.queryByTestId('hold-action-release')).toBeNull();
+    expect(server.posts().map((p) => [p.path, p.body])).toEqual([
+      [
+        `/api/v1/quality/holds/${HOLD_ID}/release`,
+        { version: 2, reason: 'CONFORMS', comment: 'retested fine' },
+      ],
+    ]);
+  });
+
+  it('shows a decision refused because the hold was decided meanwhile, and reads it again', async () => {
+    const state = qualityState({ details: { [HOLD_ID]: holdDetail() } });
+    const write: Write = (_method, path) => {
+      state.details[HOLD_ID] = holdDetail(
+        hold({ state: 'rejected', version: 2, decisionReason: 'NONCONFORMING' }),
+      );
+      return problem(409, 'Conflict', 'decided', path, PROBLEM_TYPES.holdDecided);
+    };
+    vi.stubGlobal('fetch', qualityMes(state, write).fetch);
+    await renderApp(`/quality/holds/${HOLD_ID}`, { session: QUALITY });
+    fireEvent.click(await screen.findByTestId('hold-action-reject'));
+    fireEvent.click(screen.getByTestId('hold-submit'));
+    const message = await screen.findByTestId('hold-message');
+    expect(message.dataset.kind).toBe('decided');
+    await waitFor(() => {
+      expect(screen.getByTestId('hold-summary').dataset.state).toBe('rejected');
+    });
+    expect(screen.getByTestId('hold-stale')).toBeTruthy();
+  });
+
+  it('needs a comment for a comment', async () => {
+    const state = qualityState({ details: { [HOLD_ID]: holdDetail() } });
+    const server = qualityMes(state, () => json(hold({ version: 2, transitions: 2 })));
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp(`/quality/holds/${HOLD_ID}`, { session: QUALITY });
+    fireEvent.click(await screen.findByTestId('hold-action-comment'));
+    fireEvent.click(screen.getByTestId('hold-submit'));
+    expect(screen.getByTestId('hold-invalid')).toBeTruthy();
+    fireEvent.change(screen.getByTestId('hold-comment'), { target: { value: 'sorting started' } });
+    fireEvent.click(screen.getByTestId('hold-submit'));
+    expect(await screen.findByTestId('hold-done')).toBeTruthy();
+    expect(server.posts()[0]?.body).toEqual({ version: 1, comment: 'sorting started' });
+  });
+
+  it('is read-only for an operator and answers an unknown hold', async () => {
+    const state = qualityState({ details: { [HOLD_ID]: holdDetail() } });
+    vi.stubGlobal('fetch', qualityMes(state).fetch);
+    const app = await renderApp(`/quality/holds/${HOLD_ID}`, { session: sessionOf(['operator']) });
+    expect(await screen.findByTestId('hold-read-only')).toBeTruthy();
+    await settle(() => {
+      app.history.push(`/quality/holds/${HOLD_ID_2}`);
+    });
+    expect(await screen.findByTestId('hold-missing')).toBeTruthy();
+    await settle(() => {
+      app.history.push('/quality/holds/not-a-hold');
+    });
+    expect(await screen.findByTestId('hold-missing')).toBeTruthy();
+  });
+});

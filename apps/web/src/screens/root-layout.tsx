@@ -18,6 +18,8 @@ const NAV = [
   { id: 'shifts', to: '/shifts', label: 'Shift reports' },
   { id: 'orders', to: '/orders', label: 'Orders' },
   { id: 'trace', to: '/trace', label: 'Traceability' },
+  { id: 'spc', to: '/quality/spc', label: 'SPC' },
+  { id: 'holds', to: '/quality/holds', label: 'Holds' },
 ] as const;
 
 /** Who is logged in, the account page and the logout (#170). */

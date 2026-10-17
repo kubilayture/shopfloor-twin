@@ -17,6 +17,8 @@ import {
   getOrderScrap,
 } from '../api/orders.ts';
 import { queryKeys } from '../api/queries.ts';
+import { getHolds, holdFilterKey, qualityKeys, type HoldFilter } from '../api/quality.ts';
+import { useCan } from '../auth/auth.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { CommandStateBadge, OrderFlags, OrderStatusBadge } from '../components/order-badges.tsx';
 import { QueryError } from '../components/query-error.tsx';
@@ -33,7 +35,14 @@ import {
   type ActionDraft,
 } from '../domain/orders.ts';
 import { formatPlantTime } from '../domain/time.ts';
-import { useLiveOrders, useOrdersTopic } from '../live/live-context.tsx';
+import { mergeHolds } from '../domain/quality.ts';
+import {
+  useLiveOrders,
+  useLiveQuality,
+  useOrdersTopic,
+  useQualityTopic,
+} from '../live/live-context.tsx';
+import { HoldTable } from './holds.tsx';
 import {
   ActionForm,
   buttonClass,
@@ -716,6 +725,55 @@ function History({ detail }: { readonly detail: OrderDetailDto }) {
 }
 
 /** One order (#176): what it is, its actions, operations, commands, incidents and confirmations. */
+/**
+ * The holds on this order as a subject (#203), live, and the way to open one. Holds on a lot,
+ * serial or carton that cover units of the order are named when a close is refused for them.
+ */
+function OrderHolds({ id }: { readonly id: string }) {
+  const canHold = useCan('quality:hold');
+  const filter: HoldFilter = { states: [], subject: { kind: 'order', id } };
+  const read = useQuery({
+    queryKey: qualityKeys.holds(holdFilterKey(filter)),
+    queryFn: ({ signal }) => getHolds(filter, signal),
+  });
+  const live = useLiveQuality();
+  const holds = read.data ? mergeHolds(read.data.holds, live, filter) : [];
+  return (
+    <Section id="order-holds" title="Quality holds">
+      <p className="text-sm text-slate-700">
+        An open hold refuses the close (409 quality-hold): on the order itself, or on a lot, serial
+        or carton with units in it. A close may also wait briefly while the genealogy catches up
+        with the order's last facts (409 genealogy-pending, retryable).
+      </p>
+      {canHold ? (
+        <p className="mt-2">
+          <Link
+            to="/quality/holds/new"
+            search={{ kind: 'order', id }}
+            data-testid="order-hold-open"
+            className={buttonClass}
+          >
+            Hold this order
+          </Link>
+        </p>
+      ) : null}
+      {read.isError ? (
+        <div className="mt-2">
+          <QueryError what="the holds" error={read.error} onRetry={() => void read.refetch()} />
+        </div>
+      ) : read.data && holds.length === 0 ? (
+        <p className="mt-2 text-sm" data-testid="order-holds-empty">
+          No hold is on this order itself.
+        </p>
+      ) : holds.length > 0 ? (
+        <div className="mt-2">
+          <HoldTable holds={holds} testId="order-hold-list" caption="Holds on this order" />
+        </div>
+      ) : null}
+    </Section>
+  );
+}
+
 function OrderDetail({ id }: { readonly id: string }) {
   const heading = useHeadingFocus<HTMLHeadingElement>();
   const queryClient = useQueryClient();
@@ -797,6 +855,7 @@ function OrderDetail({ id }: { readonly id: string }) {
               setOpen(draftFor('abandon', order, commandId));
             }}
           />
+          <OrderHolds id={id} />
           <Incidents detail={detail} execution={executionIncidents.data?.incidents ?? []} />
           <Confirmations confirmations={detail.confirmations} />
           <Scrap id={id} />
@@ -815,6 +874,7 @@ function OrderDetail({ id }: { readonly id: string }) {
 export function OrderDetailRoute() {
   const { id } = useParams({ from: '/orders/$id' });
   useOrdersTopic();
+  useQualityTopic();
   if (!ORDER_ID.test(id)) {
     return (
       <section>

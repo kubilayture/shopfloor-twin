@@ -333,11 +333,22 @@ export function draftProblems(draft: ActionDraft, order: OrderDto): string[] {
 
 /** A failed order write: the kinds of `writeFailure` and the orders module's 409s. */
 export interface OrderFailure {
-  readonly kind: WriteFailure['kind'] | 'stale' | 'state' | 'unsettled' | 'sign-off';
+  readonly kind:
+    | WriteFailure['kind']
+    | 'stale'
+    | 'state'
+    | 'unsettled'
+    | 'sign-off'
+    | 'quality-hold'
+    | 'genealogy-pending';
   readonly text: string;
   /** The problem type the MES answered, shown as is (`urn:shopfloor:…`). */
   readonly type: string | undefined;
+  /** The open holds a close was refused for (`quality-hold`, #203), each linked. */
+  readonly holds?: readonly string[];
 }
+
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 export function orderFailure(error: unknown): OrderFailure {
   const type =
@@ -366,6 +377,24 @@ export function orderFailure(error: unknown): OrderFailure {
         kind: 'sign-off',
         type,
         text: `Not closed: not every operation is signed off at its terminal yet (409, ${detail}). Operators sign off each completed operation at their work center's terminal; then close again.`,
+      };
+    }
+    if (type === PROBLEM_TYPES.qualityHold) {
+      // #201, #203: the detail names the open holds that cover a unit of the order (or the order).
+      const holds = [...new Set([...detail.matchAll(UUID)].map((m) => m[0].toLowerCase()))];
+      return {
+        kind: 'quality-hold',
+        type,
+        holds,
+        text: `Not closed: ${holds.length === 1 ? 'an open quality hold covers' : 'open quality holds cover'} units of this order or the order itself (409). Quality releases or rejects ${holds.length === 1 ? 'it' : 'them'} first; a hold never changes quantities. Then close again.`,
+      };
+    }
+    if (type === PROBLEM_TYPES.genealogyPending) {
+      // #201: retryable; genealogy catches up within about a second.
+      return {
+        kind: 'genealogy-pending',
+        type,
+        text: `Not closed yet: the genealogy has not processed every fact of the order's units, so the MES cannot tell whether a held lot went into it (409, retryable). Try again in ${String(error.retryAfter ?? 2)} s. (${detail})`,
       };
     }
     if (type === PROBLEM_TYPES.commandsUnsettled) {

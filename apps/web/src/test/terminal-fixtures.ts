@@ -132,6 +132,7 @@ export function viewOf(overrides: Partial<TerminalViewDto> = {}): TerminalViewDt
     queue: [{ order: orderOf('O-2', { status: 'released', dispatchedAt: null }), equipment: null }],
     scrapRecords: [scrapOf(11)],
     truncated: false,
+    quality: { holds: [], signals: [], lots: [], truncated: false },
     ...overrides,
   };
 }

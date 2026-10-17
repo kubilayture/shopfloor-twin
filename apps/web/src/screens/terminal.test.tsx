@@ -11,6 +11,7 @@ import { timed } from '../test/timing.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EQUIPMENT, json, problem, sessionOf } from '../test/fixtures.ts';
 import { renderApp } from '../test/render-app.tsx';
+import { at, hold, signal } from '../test/quality-fixtures.ts';
 import { operationOf, orderOf, viewOf, withoutCounts } from '../test/terminal-fixtures.ts';
 
 afterEach(() => {
@@ -345,6 +346,70 @@ describe('the operator terminal (#177)', () => {
       path: '/api/v1/scrap-records/11/coding',
       body: { version: 1, reason: 'LEAK/POROSITY', comment: 'pores at the seam' },
     });
+  });
+
+  it('shows quality banners from the view, read-only, and follows them live (#203)', async () => {
+    const mes = terminalMes();
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
+    await signOnAs('olga');
+    await app.open();
+    // Nothing to say: no banner.
+    expect(screen.queryByTestId('terminal-quality')).toBeNull();
+    const held = hold({ subject: { kind: 'lot', id: 'K1' } });
+    const view = viewOf({
+      crew: mes.view.crew,
+      quality: {
+        holds: [{ hold: held, orders: ['O-1'] }],
+        signals: [
+          signal(4, { status: 'final' }),
+          signal(3, {
+            closedBy: signal(3).last,
+            acknowledged: { by: 'quinn', at: at(120), plantAt: null, comment: 'ok' },
+          }),
+        ],
+        lots: [
+          {
+            equipment: 'asm-01',
+            operation: 'OP30',
+            epoch: 1,
+            partId: 7,
+            serial: 'VB-100-000007',
+            pass: 1,
+            at: at(105),
+            lots: [
+              { lot: 'K1', material: 'SK-1' },
+              { lot: 'P1', material: 'SP-100' },
+            ],
+          },
+        ],
+        truncated: true,
+      },
+    });
+    await app.push({ type: 'terminal', topic: 'terminal:line-a1', view });
+    const banner = screen.getByTestId(`terminal-hold-${held.id}`);
+    expect(banner.dataset.subject).toBe('lot:K1');
+    expect(banner.textContent).toContain('orders here: O-1');
+    const open = screen.getByTestId('terminal-signal-4');
+    expect([open.dataset.status, open.dataset.open, open.dataset.acknowledged]).toEqual([
+      'final',
+      'true',
+      'false',
+    ]);
+    expect(screen.getByTestId('terminal-signal-3').dataset.acknowledged).toBe('true');
+    expect(screen.getByTestId('terminal-lots-asm-01').textContent).toContain('VB-100-000007');
+    expect(screen.getByTestId('terminal-lot-K1').dataset.held).toBe('true');
+    expect(screen.getByTestId('terminal-lot-P1').dataset.held).toBe('false');
+    expect(screen.getByTestId('terminal-quality-truncated')).toBeTruthy();
+    // Read-only: no write control in the banners.
+    expect(within(screen.getByTestId('terminal-quality')).queryAllByRole('button')).toEqual([]);
+    // The hold is released: the next view drops it.
+    await app.push({
+      type: 'terminal',
+      topic: 'terminal:line-a1',
+      view: { ...view, quality: { ...view.quality, holds: [] } },
+    });
+    expect(screen.queryByTestId(`terminal-hold-${held.id}`)).toBeNull();
   });
 
   it('on sign-off ends the session and forgets everything: the next operator sees none of the drafts', async () => {

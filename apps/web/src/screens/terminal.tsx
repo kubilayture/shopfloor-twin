@@ -39,6 +39,7 @@ import {
   withOperation,
   withoutScrapRecord,
 } from '../domain/terminal.ts';
+import { CHART_TEXT, SIGNAL_STATUS_TEXT, isOpenEpisode, subjectText } from '../domain/quality.ts';
 import { formatPlantTime } from '../domain/time.ts';
 import { liveKeys } from '../live/live-cache.ts';
 import { useLiveTerminal } from '../live/live-context.tsx';
@@ -420,6 +421,7 @@ function TerminalWork({
           {message}
         </p>
       ) : null}
+      <QualityBanners view={view} />
       <Machines view={view} />
       <Crew view={view} />
       <section aria-labelledby="terminal-orders">
@@ -459,6 +461,114 @@ function TerminalWork({
         <p className="text-sm text-slate-700">More orders or scrap records exist than are shown.</p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * What quality says about this work center (#203, plan "Operator terminal"), read-only: open
+ * holds that touch its orders, SPC episodes of its machines that are open or not yet
+ * acknowledged, and the lots of each machine's last cycle. Announced politely as they change.
+ */
+function QualityBanners({ view }: { readonly view: TerminalViewDto }) {
+  const { holds, signals, lots, truncated } = view.quality;
+  const heldLots = new Set(
+    holds.filter((h) => h.hold.subject.kind === 'lot').map((h) => h.hold.subject.id),
+  );
+  if (holds.length === 0 && signals.length === 0 && lots.length === 0) return null;
+  return (
+    <section
+      aria-labelledby="terminal-quality"
+      aria-live="polite"
+      data-testid="terminal-quality"
+      className="flex flex-col gap-3"
+    >
+      <h2 id="terminal-quality" className="sr-only">
+        Quality
+      </h2>
+      {holds.length > 0 ? (
+        <ul className="flex flex-col gap-2" data-testid="terminal-holds">
+          {holds.map(({ hold, orders }) => (
+            <li
+              key={hold.id}
+              data-testid={`terminal-hold-${hold.id}`}
+              data-subject={`${hold.subject.kind}:${hold.subject.id}`}
+              className="rounded-lg border-4 border-red-800 bg-red-50 p-4 text-red-950"
+            >
+              <p className="text-xl font-bold">Quality hold: {subjectText(hold.subject)}</p>
+              <p className="text-lg">
+                {hold.reason} · orders here: {orders.join(', ')} · {hold.scope.units} unit
+                {hold.scope.units === 1 ? '' : 's'} held so far · opened by {hold.openedBy}{' '}
+                {formatPlantTime(hold.openedAt)}
+              </p>
+              <p className="text-base">
+                Keep the held goods apart; quality releases or rejects the hold. The order cannot be
+                closed while it is open.
+              </p>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {signals.length > 0 ? (
+        <ul className="flex flex-col gap-2" data-testid="terminal-signals">
+          {signals.map((signal) => (
+            <li
+              key={signal.id}
+              data-testid={`terminal-signal-${String(signal.id)}`}
+              data-status={signal.status}
+              data-open={String(isOpenEpisode(signal))}
+              data-acknowledged={String(signal.acknowledged !== null)}
+              className="rounded-lg border-4 border-amber-700 bg-amber-50 p-4 text-amber-950"
+            >
+              <p className="text-xl font-bold">
+                SPC signal on {signal.characteristic}: {CHART_TEXT[signal.chart].short} chart, rule{' '}
+                {signal.rule}
+              </p>
+              <p className="text-lg">
+                {signal.ruleText} · since part {signal.first.partId},{' '}
+                {formatPlantTime(signal.first.at)} · {SIGNAL_STATUS_TEXT[signal.status]}
+                {isOpenEpisode(signal) ? ', still firing' : ', ended'} ·{' '}
+                {signal.acknowledged
+                  ? `acknowledged by ${signal.acknowledged.by}`
+                  : 'not acknowledged yet'}
+              </p>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {lots.length > 0 ? (
+        <div className="rounded-lg bg-white p-4 shadow" data-testid="terminal-lots">
+          <h3 className="text-lg font-bold">Lots in use</h3>
+          <ul className="mt-1 flex flex-col gap-1 text-base">
+            {lots.map((l) => (
+              <li key={l.equipment} data-testid={`terminal-lots-${l.equipment}`}>
+                <span className="font-semibold">{l.equipment}</span> ({l.operation}), last cycle
+                part {l.partId}
+                {l.serial ? ` (${l.serial})` : ''} at {formatPlantTime(l.at)}:{' '}
+                {l.lots.map((x, i) => (
+                  <span
+                    key={`${x.lot}-${String(i)}`}
+                    data-testid={`terminal-lot-${x.lot}`}
+                    data-held={String(heldLots.has(x.lot))}
+                  >
+                    {i > 0 ? ', ' : ''}
+                    {x.material ? `${x.material} ` : ''}
+                    <span className="font-mono">{x.lot}</span>
+                    {heldLots.has(x.lot) ? (
+                      <strong className="text-red-900"> (on hold)</strong>
+                    ) : null}
+                  </span>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {truncated ? (
+        <p className="text-sm text-slate-700" data-testid="terminal-quality-truncated">
+          More holds or signals exist than are shown here.
+        </p>
+      ) : null}
+    </section>
   );
 }
 

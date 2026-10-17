@@ -21,6 +21,7 @@ import { instanceKey, isNewerShift } from '../domain/shifts.ts';
 import { appendSample, type LiveSample } from '../domain/series.ts';
 import { isNewer, isNewerClock } from '../domain/states.ts';
 import type { LiveClient } from './live-client.ts';
+import { QUALITY_READS, applyQualityMessage, resetLiveQuality } from './live-quality.ts';
 
 /** The pushed equipment states and plant clock, kept in the query cache. */
 export interface LiveStates {
@@ -574,17 +575,14 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       // The list shows the order's `dispatched`: read it again too (#176 review H1).
       void queryClient.invalidateQueries({ queryKey: ['orders'] });
       return;
-    // The `quality` topic (#200, holds #201): no SPC or holds screen subscribes yet (#203);
-    // whatever reads quality data is read again.
+    // The `quality` topic (#200, holds #201; screens #203): upserts by id (live-quality.ts).
     case 'spc-signal':
     case 'spc-characteristic':
-      void queryClient.invalidateQueries({ queryKey: ['quality'] });
-      return;
     case 'quality-hold':
-      void queryClient.invalidateQueries({ queryKey: ['quality'] });
+      applyQualityMessage(queryClient, message);
       // A hold opened, decided or its scope grew: the trace pages name holds on every node and
       // a carton's `held` (#202).
-      traceReadsStale(queryClient);
+      if (message.type === 'quality-hold') traceReadsStale(queryClient);
       return;
     case 'subscribed':
       // `orders` has no snapshot: a change between the screen's read and the subscription taking
@@ -595,6 +593,10 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       }
       // Nor has `quality`: a hold change before the subscription took effect is read again.
       if (message.topic === 'quality' || message.topic === 'orders') traceReadsStale(queryClient);
+      // `quality` has no snapshot either (#203).
+      if (message.topic === 'quality') {
+        for (const queryKey of QUALITY_READS) void queryClient.invalidateQueries({ queryKey });
+      }
       return;
     case 'unsubscribed':
     case 'error':
@@ -624,6 +626,8 @@ export function connectLiveToCache(client: LiveClient, queryClient: QueryClient)
       resetLiveShifts(queryClient);
       // And for orders and commands (#176): the `orders` topic has no snapshot either.
       resetLiveOrders(queryClient);
+      // And for SPC episodes, holds and characteristics (#203).
+      resetLiveQuality(queryClient);
       void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'live' });
     }
   });

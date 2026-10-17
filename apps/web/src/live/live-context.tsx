@@ -1,14 +1,17 @@
-import { ALARMS_TOPIC, SHIFTS_TOPIC } from '@shopfloor/contracts/mes-api';
+import { ALARMS_TOPIC, ORDERS_TOPIC, SHIFTS_TOPIC } from '@shopfloor/contracts/mes-api';
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, use, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import {
   liveKeys,
   resetLiveAlarms,
+  ORDER_READS,
+  resetLiveOrders,
   resetLiveShifts,
   type LiveAlarmKpi,
   type LiveAlarms,
   type LiveDowntime,
   type LiveOee,
+  type LiveOrders,
   type LiveShifts,
   type LiveStates,
   type LiveTelemetry,
@@ -89,6 +92,32 @@ export function useShiftsTopic(): void {
       resetLiveShifts(queryClient);
     };
   }, [client, queryClient]);
+}
+
+/**
+ * Holds the `orders` topic for the orders screens (#176), as `useAlarmsTopic`: the topic has no
+ * snapshot, so the pushed orders and commands are emptied and the order reads (list, detail,
+ * execution) read again before subscribing, and emptied again when the screen lets go.
+ */
+export function useOrdersTopic(): void {
+  const client = useLiveClient();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    resetLiveOrders(queryClient);
+    for (const prefix of ORDER_READS) {
+      void queryClient.invalidateQueries({ queryKey: [prefix] });
+    }
+    const release = client.subscribe(ORDERS_TOPIC);
+    return () => {
+      release();
+      resetLiveOrders(queryClient);
+    };
+  }, [client, queryClient]);
+}
+
+/** Pushed orders and commands (hold the topic with `useOrdersTopic`). */
+export function useLiveOrders(): LiveOrders | undefined {
+  return useQuery<LiveOrders>({ queryKey: liveKeys.orders, queryFn: skipToken }).data;
 }
 
 /** Pushed shift instances and handover notes (hold the topic with `useShiftsTopic`). */

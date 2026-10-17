@@ -3,16 +3,19 @@ import type {
   AlarmOccurrenceDto,
   AlarmPointDto,
   Clock,
+  CommandDto,
   CurrentStateDto,
   DowntimeRecordDto,
   FloodEpisodeDto,
   HandoverNoteDto,
   OeeBucketDto,
+  OrderDto,
   ServerMessage,
   ShiftRecordDto,
 } from '@shopfloor/contracts/mes-api';
 import type { QueryClient } from '@tanstack/react-query';
 import { newerOccurrence, newerPoint, pointKey } from '../domain/alarms.ts';
+import { isNewerCommand, isNewerOrder } from '../domain/orders.ts';
 import { instanceKey, isNewerShift } from '../domain/shifts.ts';
 import { appendSample, type LiveSample } from '../domain/series.ts';
 import { isNewer, isNewerClock } from '../domain/states.ts';
@@ -90,7 +93,18 @@ export const liveKeys = {
   /** `plant`, `position:<id>` or `equipment:<id>`: the topic without `alarm-kpi:`. */
   alarmKpi: (scope: string) => ['live', 'alarm-kpi', scope] as const,
   shifts: ['live', 'shifts'] as const,
+  orders: ['live', 'orders'] as const,
 };
+
+/**
+ * Pushed orders and dispatch commands by id (upserts on the `orders` topic, #176), since the topic
+ * was taken, and a counter that moves with every message.
+ */
+export interface LiveOrders {
+  readonly orders: Readonly<Record<string, OrderDto>>;
+  readonly commands: Readonly<Record<string, CommandDto>>;
+  readonly seq: number;
+}
 
 /**
  * Pushed shift instances by `instanceKey` (epoch, shift key) and handover notes by id (upserts
@@ -367,6 +381,76 @@ export function resetLiveShifts(queryClient: QueryClient): void {
   }));
 }
 
+const NO_ORDERS: LiveOrders = { orders: {}, commands: {}, seq: 0 };
+
+/** An order upsert: kept only when at least as new (`version`, then `updatedAt`). */
+function mergeOrder(live: LiveOrders | undefined, order: OrderDto): LiveOrders {
+  const base = live ?? NO_ORDERS;
+  const known = base.orders[order.id];
+  if (known && !isNewerOrder(order, known)) return { ...base, seq: base.seq + 1 };
+  return { ...base, orders: { ...base.orders, [order.id]: order }, seq: base.seq + 1 };
+}
+
+/** A command upsert: kept only when at least as new (`updatedAt`). */
+function mergeCommand(live: LiveOrders | undefined, command: CommandDto): LiveOrders {
+  const base = live ?? NO_ORDERS;
+  const known = base.commands[command.commandId];
+  if (known && !isNewerCommand(command, known)) return { ...base, seq: base.seq + 1 };
+  return {
+    ...base,
+    commands: { ...base.commands, [command.commandId]: command },
+    seq: base.seq + 1,
+  };
+}
+
+/** An order the app learned from a write's answer, merged like a pushed one. */
+export function upsertOrder(queryClient: QueryClient, order: OrderDto): void {
+  queryClient.setQueryData<LiveOrders>(liveKeys.orders, (live) => mergeOrder(live, order));
+}
+
+/** A command the app learned from a write's answer, merged like a pushed one. */
+export function upsertCommand(queryClient: QueryClient, command: CommandDto): void {
+  queryClient.setQueryData<LiveOrders>(liveKeys.orders, (live) => mergeCommand(live, command));
+}
+
+/**
+ * Forgets every pushed order and command. The `orders` topic has no snapshot (the client reads
+ * first, then applies upserts, #174): pushed copies are only current while the topic is held, so
+ * a screen starts from an empty set and its REST reads when it subscribes, and drops the set when
+ * it lets go (the lesson of #145 and #146).
+ */
+export function resetLiveOrders(queryClient: QueryClient): void {
+  if (queryClient.getQueryData(liveKeys.orders) === undefined) return;
+  queryClient.setQueryData<LiveOrders>(liveKeys.orders, (live) => ({
+    ...NO_ORDERS,
+    seq: (live?.seq ?? 0) + 1,
+  }));
+}
+
+/**
+ * Every read of the orders screens (prefixes of `queryKeys.orders`, `order`, `orderExecution`,
+ * `orderScrap` and `executionIncidents` in api/queries.ts, which imports this module).
+ */
+export const ORDER_READS = [
+  'orders',
+  'order',
+  'order-execution',
+  'order-scrap',
+  'execution-incidents',
+] as const;
+
+/**
+ * Reads of one order a push makes stale: the push carries the order and its commands, not the
+ * deliveries, results, confirmations, ERP messages, history or execution (no execution push yet),
+ * so the order's open screen reads them again (only active queries refetch). Prefixes of
+ * `queryKeys` in api/queries.ts, which imports this module.
+ */
+function orderReadsStale(queryClient: QueryClient, orderId: string): void {
+  for (const prefix of ['order', 'order-execution', 'order-scrap', 'execution-incidents']) {
+    void queryClient.invalidateQueries({ queryKey: [prefix, orderId] });
+  }
+}
+
 /**
  * Options of the `['live', …]` queries. Pushed data changes many times a second: structural
  * sharing would compare whole sample buffers on every message (and, as buffers are appended in
@@ -447,11 +531,25 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
     case 'handover-note':
       upsertNote(queryClient, message.note);
       return;
-    // The `orders` topic (#174): the web subscribes to it from #176.
+    // The `orders` topic (#174, #176): upserts, and the open order's other reads again.
     case 'order':
+      upsertOrder(queryClient, message.order);
+      orderReadsStale(queryClient, message.order.id);
+      return;
     case 'command':
+      upsertCommand(queryClient, message.command);
+      orderReadsStale(queryClient, message.command.orderId);
+      // The list shows the order's `dispatched`: read it again too (#176 review H1).
+      void queryClient.invalidateQueries({ queryKey: ['orders'] });
       return;
     case 'subscribed':
+      // `orders` has no snapshot: a change between the screen's read and the subscription taking
+      // effect would never arrive, so the order reads are read again once it has (#176 review).
+      if (message.topic === 'orders') {
+        for (const prefix of ORDER_READS)
+          void queryClient.invalidateQueries({ queryKey: [prefix] });
+      }
+      return;
     case 'unsubscribed':
     case 'error':
       return;
@@ -478,6 +576,8 @@ export function connectLiveToCache(client: LiveClient, queryClient: QueryClient)
       resetLiveAlarms(queryClient);
       // The same for shift instances and notes (#146): no snapshot, so missed pushes are lost.
       resetLiveShifts(queryClient);
+      // And for orders and commands (#176): the `orders` topic has no snapshot either.
+      resetLiveOrders(queryClient);
       void queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'live' });
     }
   });

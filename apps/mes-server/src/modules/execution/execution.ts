@@ -506,10 +506,11 @@ export class Execution implements BlankCounter {
 
   /** The module's incidents, newest first (`open`: only those not closed). */
   async incidents(
-    query: { readonly open?: boolean; readonly limit?: number } = {},
+    query: { readonly open?: boolean; readonly orderId?: string; readonly limit?: number } = {},
   ): Promise<ExecutionIncident[]> {
     let select = this.#readDb.selectFrom('execution.execution_incident').selectAll();
     if (query.open === true) select = select.where('closed_at', 'is', null);
+    if (query.orderId !== undefined) select = select.where('order_id', '=', query.orderId);
     const rows = await select
       .orderBy('id', 'desc')
       .limit(query.limit ?? 500)

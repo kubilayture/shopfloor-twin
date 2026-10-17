@@ -69,6 +69,7 @@ const scrapParams = z.strictObject({
     .describe('The scrap record id'),
 });
 const incidentQuery = z.strictObject({
+  orderId: orderParams.shape.id.optional().describe('Only the incidents of this order'),
   open: z
     .enum(['true', 'false'])
     .optional()
@@ -269,7 +270,11 @@ export function executionRoutes(
     },
     async ({ query }) => ({
       incidents: (
-        await deps.execution().incidents({ open: query.open, limit: EXECUTION_LIMITS.incidents })
+        await deps.execution().incidents({
+          open: query.open,
+          ...(query.orderId === undefined ? {} : { orderId: query.orderId }),
+          limit: EXECUTION_LIMITS.incidents,
+        })
       ).map(incidentDto),
     }),
   );

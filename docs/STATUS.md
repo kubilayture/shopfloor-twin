@@ -116,7 +116,7 @@
 
 ## Next up
 
-- Phase 8 wave A (facts and truth, plan "Phase size and waves"): #192 (`alarm-core` revision spans), #195 (`spc-core` and `trace-core`), #196 (simulator: lots and operator on cycle facts, `leak-drift`, scenario stock, `trace.json`, golden `quality-01`), #197 (gateway and ingest, UNS contract 1.4), #198 (ERP mock: stock and quality notifications). Probes P1–P4 before the plan's first review round. Then wave B (#199–#201) and wave C (#202–#204), close #205.
+- Phase 8 wave A (facts and truth, plan "Phase size and waves"): #192 (`alarm-core` revision spans), #195 (`spc-core` and `trace-core`), #196 (simulator: lots and operator on cycle facts, bounded `leak-drift`, scenario stock), #208 (simulator: `trace.json` with counterfactual readings, golden `quality-01`), #197 (gateway and ingest, UNS contract 1.4), #198 (ERP mock: stock and quality notifications). Probes P1–P4 before the plan's first review round. Then wave B (#199–#201) and wave C (#202–#204), close #205.
 
 ## Blockers and open questions for the owner
 

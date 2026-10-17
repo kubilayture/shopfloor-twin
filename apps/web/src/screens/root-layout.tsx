@@ -86,8 +86,16 @@ function useFocusOnNavigation() {
 export function RootLayout() {
   useLiveSubscription(STATES_TOPIC);
   useFocusOnNavigation();
-  const admin = useAuth().can('user:admin');
-  const nav = admin ? [...NAV, { id: 'users', to: '/admin/users', label: 'Users' } as const] : NAV;
+  const auth = useAuth();
+  const nav = [
+    ...NAV,
+    ...(auth.can('terminal:operate')
+      ? [{ id: 'terminal', to: '/terminal', label: 'Terminal' } as const]
+      : []),
+    ...(auth.can('user:admin')
+      ? [{ id: 'users', to: '/admin/users', label: 'Users' } as const]
+      : []),
+  ];
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 print:min-h-0 print:bg-white">
       <a

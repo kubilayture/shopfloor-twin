@@ -25,15 +25,19 @@ const buttonClass =
  * Every route but `/login` needs a session whose password needs no change (#170): without one the
  * app goes to `/login` and comes back to the page afterwards. A session lost while the page holds
  * unsaved input keeps the page mounted (inert, covered) under a login for the same user, so no
- * draft is silently dropped.
+ * draft is silently dropped. A work center's terminal screen (#177) stands alone: it signs its
+ * operators on itself and never keeps one operator's page for the next.
  */
 export function Shell() {
   // By the matched route, not the location: during a navigation the location changes before the
   // matches, and the outlet must never render a protected screen without the check.
-  const login = useRouterState({
-    select: (state) => state.matches.some((match) => match.routeId === '/login'),
+  const standalone = useRouterState({
+    select: (state) =>
+      state.matches.some(
+        (match) => match.routeId === '/login' || match.routeId === '/terminal/$workCenter',
+      ),
   });
-  if (login) return <Outlet />;
+  if (standalone) return <Outlet />;
   return <Protected />;
 }
 
@@ -107,7 +111,7 @@ function SignedIn({ session }: { readonly session: SessionDto | null }) {
  * pushed messages and background refreshes don't (ADR-0026). Two minutes before the end a warning
  * offers to stay; at the end the session is logged out at the MES too.
  */
-function IdleWatch({ session }: { readonly session: SessionDto }) {
+export function IdleWatch({ session }: { readonly session: SessionDto }) {
   const auth = useAuth();
   const { refresh, sessionLost } = auth;
   // The last input and the last keepalive: written by input handlers, read by the 1 s tick.

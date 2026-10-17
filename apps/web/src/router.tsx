@@ -5,6 +5,7 @@ import { oeeRoutes } from './routes/oee.ts';
 import { plantRoutes } from './routes/plant.ts';
 import { rootRoute } from './routes/root.tsx';
 import { shiftRoutes } from './routes/shifts.ts';
+import { terminalRoutes } from './routes/terminal.ts';
 
 export type { AlarmKpiSearch, AlarmSearch } from './routes/alarms.ts';
 export type { LoginSearch } from './routes/identity.ts';
@@ -20,6 +21,7 @@ const routeTree = rootRoute.addChildren([
   ...alarmRoutes,
   ...shiftRoutes,
   ...identityRoutes,
+  ...terminalRoutes,
 ]);
 
 export function createAppRouter(history?: RouterHistory) {

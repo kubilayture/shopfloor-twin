@@ -133,6 +133,7 @@ export function report(overrides: Partial<ShiftReportDto> = {}): ShiftReportDto 
         })),
     },
     notes: [],
+    crew: [],
     ...overrides,
   };
 }

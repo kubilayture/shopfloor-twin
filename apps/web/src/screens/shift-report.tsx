@@ -60,6 +60,7 @@ import {
   useLiveSubscriptions,
   useShiftsTopic,
 } from '../live/live-context.tsx';
+import { CREW_END_LABELS } from '../domain/terminal.ts';
 import { HandoverNotes } from './handover-notes.tsx';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -979,6 +980,57 @@ function AlarmSection({
   );
 }
 
+/** Who signed on at a terminal during the shift (#177), per work center. */
+function CrewSection({ report }: { readonly report: ShiftReportDto }) {
+  return (
+    <section
+      aria-labelledby="report-crew-title"
+      data-testid="report-crew"
+      className="report-section"
+    >
+      <h2 id="report-crew-title" className="text-xl font-semibold">
+        Crew
+      </h2>
+      {report.crew.length === 0 ? (
+        <p className="text-sm text-slate-700">Nobody signed on at a terminal during this shift.</p>
+      ) : (
+        <table className="mt-2 w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-slate-400">
+              <th scope="col" className="py-1 pr-3">
+                Work center
+              </th>
+              <th scope="col" className="py-1 pr-3">
+                Operator
+              </th>
+              <th scope="col" className="py-1 pr-3">
+                Signed on
+              </th>
+              <th scope="col" className="py-1 pr-3">
+                Until
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.crew.map((row) => (
+              <tr key={row.id} className="border-b border-slate-200">
+                <td className="py-1 pr-3 font-mono">{row.workCenter}</td>
+                <td className="py-1 pr-3">{row.username}</td>
+                <td className="py-1 pr-3">{formatPlantTime(row.fromPlant)}</td>
+                <td className="py-1 pr-3">
+                  {row.toPlant === null
+                    ? 'still signed on'
+                    : `${formatPlantTime(row.toPlant)}${row.endReason ? ` (${CREW_END_LABELS[row.endReason]})` : ''}`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
 // ---- The page ----
 
 function ReportBody({
@@ -1035,6 +1087,7 @@ function ReportBody({
         <ProductionSection report={report} order={order} bucketOf={bucketOf} />
         <DowntimeSection report={report} reasons={reasons.data} names={order.names} />
         <AlarmSection report={report} pushed={pushedAlarms} />
+        <CrewSection report={report} />
         <HandoverNotes report={report} shift={{ ...shift, epoch: report.epoch }} />
       </div>
     </>

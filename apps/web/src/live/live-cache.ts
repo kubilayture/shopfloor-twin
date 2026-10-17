@@ -10,6 +10,7 @@ import type {
   OeeBucketDto,
   ServerMessage,
   ShiftRecordDto,
+  TerminalViewDto,
 } from '@shopfloor/contracts/mes-api';
 import type { QueryClient } from '@tanstack/react-query';
 import { newerOccurrence, newerPoint, pointKey } from '../domain/alarms.ts';
@@ -90,6 +91,8 @@ export const liveKeys = {
   /** `plant`, `position:<id>` or `equipment:<id>`: the topic without `alarm-kpi:`. */
   alarmKpi: (scope: string) => ['live', 'alarm-kpi', scope] as const,
   shifts: ['live', 'shifts'] as const,
+  /** A work center's terminal view as last pushed on `terminal:<id>` (#177). */
+  terminal: (workCenter: string) => ['live', 'terminal', workCenter] as const,
 };
 
 /**
@@ -382,6 +385,14 @@ export function setLiveQueryDefaults(queryClient: QueryClient): void {
   queryClient.setQueryDefaults(liveKeys.telemetryAll, { gcTime: TELEMETRY_GC_MS });
 }
 
+/** A pushed terminal view replaces what the topic held: it is the whole view (#177). */
+function applyTerminal(queryClient: QueryClient, topic: string, view: TerminalViewDto): void {
+  queryClient.setQueryData<TerminalViewDto>(
+    liveKeys.terminal(topic.slice('terminal:'.length)),
+    view,
+  );
+}
+
 /** Applies one server message to the query cache; newer data always wins over older. */
 export function applyMessage(queryClient: QueryClient, message: ServerMessage): void {
   switch (message.type) {
@@ -396,6 +407,8 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
           shift: message.shift,
           floods: message.floods,
         });
+      } else if ('view' in message) {
+        applyTerminal(queryClient, message.topic, message.view);
       } else if ('hour' in message) {
         applyOee(queryClient, message.topic, message.hour, message.shift);
       } else if ('samples' in message && message.samples.length > 0) {
@@ -446,6 +459,9 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       return;
     case 'handover-note':
       upsertNote(queryClient, message.note);
+      return;
+    case 'terminal':
+      applyTerminal(queryClient, message.topic, message.view);
       return;
     // The `orders` topic (#174): the web subscribes to it from #176.
     case 'order':

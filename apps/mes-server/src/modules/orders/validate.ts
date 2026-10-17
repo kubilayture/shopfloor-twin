@@ -16,6 +16,11 @@ export function validateErpOrder(
   if (routing === undefined || routing.operations.length === 0) {
     return `unknown product ${order.product} (no routing in master data)`;
   }
+  const operations = order.routing.map((step) => step.operation);
+  const repeated = operations.filter((op, i) => operations.indexOf(op) !== i);
+  if (repeated.length > 0) {
+    return `routing repeats ${[...new Set(repeated)].join(', ')}`;
+  }
   const expected = routing.operations.map((op) => `${op.operation}@${op.workCenter}`);
   const got = order.routing.map((step) => `${step.operation}@${step.workCenter}`);
   if (expected.join(',') !== got.join(',')) {

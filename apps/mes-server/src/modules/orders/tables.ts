@@ -70,6 +70,7 @@ export interface DispatchCommandTable {
   updated_at: DefaultTimestamp;
   state: Defaulted<CommandState>;
   settled: Defaulted<boolean>;
+  final: Defaulted<boolean>;
   failed: Defaulted<boolean>;
   accepted_by: 'fact' | 'result' | null;
   accepted_seq: number | null;
@@ -90,6 +91,7 @@ export interface CommandAttemptTable {
   expires_at: Timestamp;
   mes_epoch: number;
   mes_seq: number;
+  published_at: NullableTimestamp;
 }
 
 export type ErpMessageStatus =
@@ -190,6 +192,7 @@ export const ORDERS_COLUMNS = {
     'updated_at',
     'state',
     'settled',
+    'final',
     'failed',
     'accepted_by',
     'accepted_seq',
@@ -209,6 +212,7 @@ export const ORDERS_COLUMNS = {
     'expires_at',
     'mes_epoch',
     'mes_seq',
+    'published_at',
   ],
   'orders.erp_message_log': [
     'id',

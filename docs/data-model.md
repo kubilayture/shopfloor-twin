@@ -146,7 +146,7 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `master_data.site` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.work_center` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `orders` | `mes_owner` | USAGE |  |
-| `orders.command_attempt` | `mes_owner` | INSERT, SELECT |  |
+| `orders.command_attempt` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `orders.dispatch_command` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `orders.erp_cursor` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `orders.erp_message_log` | `mes_owner` | INSERT, SELECT, UPDATE |  |
@@ -1470,6 +1470,7 @@ Every delivery of a command published, with its own expiresAt and the command en
 | `expires_at` | `timestamp with time zone` | not null |  |
 | `mes_epoch` | `bigint` | not null |  |
 | `mes_seq` | `bigint` | not null |  |
+| `published_at` | `timestamp with time zone` | null |  |
 
 | Kind | Name | Definition |
 | --- | --- | --- |
@@ -1496,6 +1497,7 @@ The command outbox: one `cmd/load-order` per dispatch (`{order}~OP10~{n}`) with 
 | `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
 | `state` | `text` | not null | `'queued'::text` |
 | `settled` | `boolean` | not null | `false` |
+| `final` | `boolean` | not null | `false` |
 | `failed` | `boolean` | not null | `false` |
 | `accepted_by` | `text` | null |  |
 | `accepted_seq` | `bigint` | null |  |
@@ -1522,8 +1524,8 @@ The command outbox: one `cmd/load-order` per dispatch (`{order}~OP10~{n}`) with 
 | Check | `dispatch_command_lost_started_check` | `CHECK ((lost_started >= 0))` |
 | Check | `dispatch_command_n_check` | `CHECK ((n >= 1))` |
 | Check | `dispatch_command_quantity_check` | `CHECK (((quantity >= 1) AND (quantity <= 100000)))` |
-| Check | `dispatch_command_state_check` | `CHECK ((state = ANY (ARRAY['queued'::text, 'sent'::text, 'unknown'::text, 'failed'::text, 'accepted'::text, 'rejected'::text, 'expired'::text, 'not-accepted'::text, 'epoch-ended'::text])))` |
-| Index | `dispatch_command_open` | `orders.dispatch_command USING btree (equipment, queue_position) WHERE ((settled = false) OR (job = ANY (ARRAY['accepted'::text, 'started'::text])))` |
+| Check | `dispatch_command_state_check` | `CHECK ((state = ANY (ARRAY['queued'::text, 'sent'::text, 'unknown'::text, 'failed'::text, 'accepted'::text, 'rejected'::text, 'expired'::text, 'not-accepted'::text, 'epoch-ended'::text, 'conflict'::text, 'abandoned'::text])))` |
+| Index | `dispatch_command_live` | `orders.dispatch_command USING btree (queue_position) WHERE (final = false)` |
 
 ### orders.erp_cursor
 
@@ -1601,7 +1603,7 @@ Incidents of the orders module (ERP feed changed, ERP conflict or refusal, comma
 | --- | --- | --- |
 | Primary key | `order_incident_pkey` | `PRIMARY KEY (id)` |
 | Check | `order_incident_check` | `CHECK (((closed_at IS NULL) = (resolution IS NULL)))` |
-| Check | `order_incident_type_check` | `CHECK ((type = ANY (ARRAY['erp-feed-changed'::text, 'erp-conflict'::text, 'erp-refused'::text, 'command-failed'::text, 'command-unconfirmed'::text, 'unknown-job'::text, 'duplicate-job'::text, 'dispatch-lost'::text])))` |
+| Check | `order_incident_type_check` | `CHECK ((type = ANY (ARRAY['erp-feed-changed'::text, 'erp-conflict'::text, 'erp-refused'::text, 'command-failed'::text, 'command-unconfirmed'::text, 'unknown-job'::text, 'duplicate-job'::text, 'command-conflict'::text, 'erp-invalid-entry'::text, 'dispatch-lost'::text])))` |
 | Index | `order_incident_open` | `orders.order_incident USING btree (key) WHERE (closed_at IS NULL)` |
 | Index | `order_incident_order` | `orders.order_incident USING btree (order_id, id)` |
 

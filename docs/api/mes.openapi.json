@@ -5727,7 +5727,9 @@
                               "rejected",
                               "expired",
                               "not-accepted",
-                              "epoch-ended"
+                              "epoch-ended",
+                              "conflict",
+                              "abandoned"
                             ]
                           },
                           "settled": {
@@ -5804,7 +5806,7 @@
                             "type": "integer",
                             "minimum": -9007199254740991,
                             "maximum": 9007199254740991,
-                            "description": "Deliveries published (the first and resends)"
+                            "description": "Deliveries written (published or not; see `attemptList`)"
                           },
                           "lastExpiresAt": {
                             "anyOf": [
@@ -5872,7 +5874,20 @@
                                   "type": "string",
                                   "format": "date-time",
                                   "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
-                                  "description": "Wall time of the publish"
+                                  "description": "Wall time the delivery was written, just before its publish"
+                                },
+                                "publishedAt": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "Wall time the broker acknowledged it (PUBACK); null: never published"
                                 },
                                 "expiresAt": {
                                   "type": "string",
@@ -5884,6 +5899,7 @@
                               "required": [
                                 "attempt",
                                 "issuedAt",
+                                "publishedAt",
                                 "expiresAt"
                               ],
                               "additionalProperties": false
@@ -6180,6 +6196,8 @@
                               "command-unconfirmed",
                               "unknown-job",
                               "duplicate-job",
+                              "command-conflict",
+                              "erp-invalid-entry",
                               "dispatch-lost"
                             ]
                           },
@@ -6430,6 +6448,8 @@
                               "command-unconfirmed",
                               "unknown-job",
                               "duplicate-job",
+                              "command-conflict",
+                              "erp-invalid-entry",
                               "dispatch-lost"
                             ]
                           },
@@ -6550,7 +6570,7 @@
         "tags": [
           "orders"
         ],
-        "description": "imported → released; posts `released` to the ERP. 409 urn:shopfloor:order-state in another status. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user (with MES_AUTH=off and no session: anonymous, unauthenticated). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:release` (MES_AUTH=on; ADR-0026).",
+        "description": "imported → released; posts `released` to the ERP. 409 urn:shopfloor:order-state in another status. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user; a write needs a session also with MES_AUTH=off (401). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:release` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -6875,7 +6895,9 @@
                                 "rejected",
                                 "expired",
                                 "not-accepted",
-                                "epoch-ended"
+                                "epoch-ended",
+                                "conflict",
+                                "abandoned"
                               ]
                             },
                             "settled": {
@@ -6952,7 +6974,7 @@
                               "type": "integer",
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
-                              "description": "Deliveries published (the first and resends)"
+                              "description": "Deliveries written (published or not; see `attemptList`)"
                             },
                             "lastExpiresAt": {
                               "anyOf": [
@@ -7171,7 +7193,7 @@
         "tags": [
           "orders"
         ],
-        "description": "released → dispatched: the whole order goes to the CNC the dispatch rule chooses (the queue finishing first by ideal time, NotBefore waits and changeovers counted, ties to the lower id), or the one named; the command is published by the outbox (ADR-0029). 422 for an unknown CNC or one with no known device run. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user (with MES_AUTH=off and no session: anonymous, unauthenticated). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:dispatch` (MES_AUTH=on; ADR-0026).",
+        "description": "released → dispatched: the whole order goes to the CNC the dispatch rule chooses (the queue finishing first by ideal time, NotBefore waits and changeovers counted, ties to the lower id), or the one named; the command is published by the outbox (ADR-0029). 422 for an unknown CNC or one with no known device run. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user; a write needs a session also with MES_AUTH=off (401). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:dispatch` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -7501,7 +7523,9 @@
                                 "rejected",
                                 "expired",
                                 "not-accepted",
-                                "epoch-ended"
+                                "epoch-ended",
+                                "conflict",
+                                "abandoned"
                               ]
                             },
                             "settled": {
@@ -7578,7 +7602,7 @@
                               "type": "integer",
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
-                              "description": "Deliveries published (the first and resends)"
+                              "description": "Deliveries written (published or not; see `attemptList`)"
                             },
                             "lastExpiresAt": {
                               "anyOf": [
@@ -7797,7 +7821,7 @@
         "tags": [
           "orders"
         ],
-        "description": "imported or released → cancelled; posts `cancelled` to the ERP. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user (with MES_AUTH=off and no session: anonymous, unauthenticated). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:cancel` (MES_AUTH=on; ADR-0026).",
+        "description": "imported or released → cancelled; posts `cancelled` to the ERP. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user; a write needs a session also with MES_AUTH=off (401). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:cancel` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -8127,7 +8151,9 @@
                                 "rejected",
                                 "expired",
                                 "not-accepted",
-                                "epoch-ended"
+                                "epoch-ended",
+                                "conflict",
+                                "abandoned"
                               ]
                             },
                             "settled": {
@@ -8204,7 +8230,7 @@
                               "type": "integer",
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
-                              "description": "Deliveries published (the first and resends)"
+                              "description": "Deliveries written (published or not; see `attemptList`)"
                             },
                             "lastExpiresAt": {
                               "anyOf": [
@@ -8423,7 +8449,7 @@
         "tags": [
           "orders"
         ],
-        "description": "Only when every earlier command of the order is settled (409 urn:shopfloor:commands-unsettled otherwise: a re-dispatch could make a second job), and at most the order quantity minus the blanks the device accepted (422 when nothing remains). Clears the flags dispatch-failed and dispatch-lost. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user (with MES_AUTH=off and no session: anonymous, unauthenticated). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:redispatch` (MES_AUTH=on; ADR-0026).",
+        "description": "Only when every earlier command of the order is settled (409 urn:shopfloor:commands-unsettled otherwise: a re-dispatch could make a second job), and at most the order quantity minus the blanks the device accepted (422 when nothing remains). Clears the flags dispatch-failed and dispatch-lost. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user; a write needs a session also with MES_AUTH=off (401). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:redispatch` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -8759,7 +8785,9 @@
                                 "rejected",
                                 "expired",
                                 "not-accepted",
-                                "epoch-ended"
+                                "epoch-ended",
+                                "conflict",
+                                "abandoned"
                               ]
                             },
                             "settled": {
@@ -8836,7 +8864,637 @@
                               "type": "integer",
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
-                              "description": "Deliveries published (the first and resends)"
+                              "description": "Deliveries written (published or not; see `attemptList`)"
+                            },
+                            "lastExpiresAt": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "job": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "accepted",
+                                    "started",
+                                    "completed",
+                                    "lost"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "startedAt": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "completedAt": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "commandId",
+                            "orderId",
+                            "n",
+                            "equipment",
+                            "product",
+                            "quantity",
+                            "notBefore",
+                            "deviceEpoch",
+                            "createdAt",
+                            "updatedAt",
+                            "state",
+                            "settled",
+                            "failed",
+                            "confirmed",
+                            "acceptedBy",
+                            "acceptedSeq",
+                            "acceptedAt",
+                            "rejection",
+                            "seqAfterExpiry",
+                            "attempts",
+                            "lastExpiresAt",
+                            "job",
+                            "startedAt",
+                            "completedAt"
+                          ],
+                          "additionalProperties": false,
+                          "description": "A dispatch command (`cmd/load-order`) and the job it made"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The command a dispatch or re-dispatch created"
+                    }
+                  },
+                  "required": [
+                    "order",
+                    "command"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note, order or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than 16 KiB",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected; a dispatch to equipment that is not a CNC or has no known device run, or a re-dispatch beyond the remaining blanks)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{id}/abandon-command": {
+      "post": {
+        "summary": "Writes off a command of the order whose device run has ended",
+        "tags": [
+          "orders"
+        ],
+        "description": "The command becomes `abandoned` (settled, its incidents closed) and its whole quantity counts as dispatched, so the order can end short, never over. 409 urn:shopfloor:order-state while its device run goes on, or when it is abandoned already; 404 for a command of another order. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user; a write needs a session also with MES_AUTH=off (401). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:abandon` (MES_AUTH=on; ADR-0026).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991,
+                    "description": "The order version read; 409 when it is not the current one"
+                  },
+                  "commandId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "A command of the order"
+                  }
+                },
+                "required": [
+                  "version",
+                  "commandId"
+                ],
+                "additionalProperties": false,
+                "description": "Writes off a command whose device run has ended: settled as `abandoned`, counted as started"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "The ERP order number"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "order": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "The ERP order number"
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The ERP revision the MES holds"
+                        },
+                        "product": {
+                          "type": "string"
+                        },
+                        "quantity": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Units to produce (blanks to machine: no allowance for scrap)"
+                        },
+                        "priority": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "1 most urgent"
+                        },
+                        "plannedStart": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "Plant time; the jobs are dispatched with it as `notBefore`"
+                        },
+                        "dueDate": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        "erpStatus": {
+                          "type": "string",
+                          "enum": [
+                            "open",
+                            "cancelled"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "imported",
+                            "rejected",
+                            "released",
+                            "dispatched",
+                            "in-progress",
+                            "completed",
+                            "closed",
+                            "cancelled"
+                          ]
+                        },
+                        "flags": {
+                          "type": "object",
+                          "properties": {
+                            "short": {
+                              "type": "boolean",
+                              "description": "Completed with packed good below the quantity"
+                            },
+                            "dispatchFailed": {
+                              "type": "boolean",
+                              "description": "A command failed or ended without a job: re-dispatch the remainder"
+                            },
+                            "dispatchLost": {
+                              "type": "boolean",
+                              "description": "A device run ended with jobs of the order open: re-dispatch the remainder"
+                            }
+                          },
+                          "required": [
+                            "short",
+                            "dispatchFailed",
+                            "dispatchLost"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "rejection": {
+                          "description": "Why the import refused the version (`rejected`)",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "dispatched": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Blanks of the order's jobs the device accepted; a lost job counts the blanks it started"
+                        },
+                        "remaining": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Blanks a re-dispatch may still send: quantity − dispatched"
+                        },
+                        "version": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Raised by every change; a write sends the version it read (409 else)"
+                        },
+                        "importedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        "releasedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "dispatchedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "startedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Plant time of the first job started"
+                        },
+                        "completedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "closedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "cancelledAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "revision",
+                        "product",
+                        "quantity",
+                        "priority",
+                        "plannedStart",
+                        "dueDate",
+                        "erpStatus",
+                        "status",
+                        "flags",
+                        "rejection",
+                        "dispatched",
+                        "remaining",
+                        "version",
+                        "importedAt",
+                        "updatedAt",
+                        "releasedAt",
+                        "dispatchedAt",
+                        "startedAt",
+                        "completedAt",
+                        "closedAt",
+                        "cancelledAt"
+                      ],
+                      "additionalProperties": false,
+                      "description": "A production order"
+                    },
+                    "command": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "commandId": {
+                              "type": "string",
+                              "description": "{orderId}~OP10~{n}"
+                            },
+                            "orderId": {
+                              "type": "string"
+                            },
+                            "n": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Dispatch number of the order: 1, then 2 after a re-dispatch"
+                            },
+                            "equipment": {
+                              "type": "string"
+                            },
+                            "product": {
+                              "type": "string"
+                            },
+                            "quantity": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Blanks to machine"
+                            },
+                            "notBefore": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                              "description": "Plant time"
+                            },
+                            "deviceEpoch": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "The simulator run the command was meant for"
+                            },
+                            "createdAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            "updatedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "queued",
+                                "sent",
+                                "unknown",
+                                "failed",
+                                "accepted",
+                                "rejected",
+                                "expired",
+                                "not-accepted",
+                                "epoch-ended",
+                                "conflict",
+                                "abandoned"
+                              ]
+                            },
+                            "settled": {
+                              "type": "boolean",
+                              "description": "Whether a job exists is known for good; a re-dispatch needs every one settled"
+                            },
+                            "failed": {
+                              "type": "boolean",
+                              "description": "Declared failed at least once (an incident was raised)"
+                            },
+                            "confirmed": {
+                              "type": "boolean",
+                              "description": "Its `accepted` job fact arrived (the proof of execution)"
+                            },
+                            "acceptedBy": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "fact",
+                                    "result"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "acceptedSeq": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "Device sequence number of the job's acceptance"
+                            },
+                            "acceptedAt": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "Plant time of the acceptance"
+                            },
+                            "rejection": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "seqAfterExpiry": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "attempts": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Deliveries written (published or not; see `attemptList`)"
                             },
                             "lastExpiresAt": {
                               "anyOf": [
@@ -9055,7 +9713,7 @@
         "tags": [
           "orders"
         ],
-        "description": "completed → closed; posts `closed` to the ERP. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user (with MES_AUTH=off and no session: anonymous, unauthenticated). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:close` (MES_AUTH=on; ADR-0026).",
+        "description": "completed → closed; posts `closed` to the ERP. Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user; a write needs a session also with MES_AUTH=off (401). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:close` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -9380,7 +10038,9 @@
                                 "rejected",
                                 "expired",
                                 "not-accepted",
-                                "epoch-ended"
+                                "epoch-ended",
+                                "conflict",
+                                "abandoned"
                               ]
                             },
                             "settled": {
@@ -9457,7 +10117,7 @@
                               "type": "integer",
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
-                              "description": "Deliveries published (the first and resends)"
+                              "description": "Deliveries written (published or not; see `attemptList`)"
                             },
                             "lastExpiresAt": {
                               "anyOf": [
@@ -19186,6 +19846,7 @@
                               "order:cancel",
                               "order:redispatch",
                               "order:close",
+                              "order:abandon",
                               "user:admin"
                             ]
                           }
@@ -19370,6 +20031,7 @@
                               "order:cancel",
                               "order:redispatch",
                               "order:close",
+                              "order:abandon",
                               "user:admin"
                             ]
                           }

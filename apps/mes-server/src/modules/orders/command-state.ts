@@ -13,8 +13,15 @@ export interface CommandInputs {
   readonly commandId: string;
   readonly equipment: string;
   readonly deviceEpoch: number;
-  /** Every delivery published, in order (wall times in ms). */
-  readonly attempts: readonly { readonly issuedAt: number; readonly expiresAt: number }[];
+  /**
+   * Every delivery written, in order (wall times in ms); `published` once the broker acknowledged
+   * it. Only published ones count towards `maxAttempts`; an unpublished latest one is resent.
+   */
+  readonly attempts: readonly {
+    readonly issuedAt: number;
+    readonly expiresAt: number;
+    readonly published: boolean;
+  }[];
   /** Every `cmd-res` stored for the command id (any equipment and device epoch). */
   readonly results: readonly { readonly equipment: string; readonly value: CommandResultValue }[];
   /** Every job fact stored for the command id (any equipment and epoch). */
@@ -26,6 +33,12 @@ export interface CommandInputs {
     readonly transition: JobTransition;
   }[];
   /** The command's CNC: how far its device stream has arrived (`Ingest.deviceProgress`). */
+  /**
+   * What the command was read as before (its stored state). Settled without a job is final but
+   * for its own `accepted` fact: a later reading (another policy after a restart, an answer of
+   * another kind) never reopens it, never resends it.
+   */
+  readonly previous?: { readonly state: CommandState; readonly settled: boolean };
   readonly device: {
     /** The device stream's current epoch (its cursor), null before any fact. */
     readonly epoch: number | null;
@@ -33,6 +46,14 @@ export interface CommandInputs {
     readonly newestEpoch: number | null;
     /** Every number from the stream's first one up to here has arrived. */
     readonly receivedThrough: number | null;
+    /** The numbers seen in the stream's epoch, as sorted ranges (a reported gap is not seen). */
+    readonly seen?: readonly (readonly [number, number])[];
+    /**
+     * The highest number of the command's run the MES had stored before its first delivery was
+     * written: the device emitted it before the command existed, so the command's acceptance has
+     * a higher number. Null when none.
+     */
+    readonly before?: number | null;
     /** ADR-0018's final-through (a gap written off as an incident counts as closed). */
     readonly settledSeq: number | null;
     /** Plant time of the fact at `settledSeq` (ms). */
@@ -41,7 +62,7 @@ export interface CommandInputs {
 }
 
 export interface CommandPolicy {
-  /** Deliveries at most: the first and the resends (5). */
+  /** Published deliveries at most: the first and the resends (5). */
   readonly maxAttempts: number;
   /** A delivery with no answer this long is resent with a new `expiresAt` (15 s). */
   readonly resendMs: number;
@@ -117,15 +138,20 @@ export function readCommand(
     : sticky
       ? { by: 'result' as const, seq: sticky.acceptedSeq, at: Date.parse(sticky.acceptedAt) }
       : null;
-  // `rejected` (a `command-conflict` after an acceptance aside) is final for the command id.
-  const rejected = accepted
-    ? undefined
-    : results.find(
+  // `rejected` is final for the command id, but `command-conflict` is no refusal of this job: the
+  // device holds another job under the id, so nothing is settled until its run ends.
+  const refusals = accepted
+    ? []
+    : results.filter(
         (v): v is Extract<CommandResultValue, { result: 'rejected' }> => v.result === 'rejected',
       );
+  const rejected = refusals.find((v) => v.code !== 'command-conflict');
+  const conflict = refusals.find((v) => v.code === 'command-conflict');
   const newest = Math.max(input.device.newestEpoch ?? -1, input.device.epoch ?? -1);
   const epochEnded = newest > input.deviceEpoch;
-  const latest = input.attempts.reduce<{ issuedAt: number; expiresAt: number } | undefined>(
+  const latest = input.attempts.reduce<
+    { issuedAt: number; expiresAt: number; published: boolean } | undefined
+  >(
     (last, attempt) => (last === undefined || attempt.expiresAt >= last.expiresAt ? attempt : last),
     undefined,
   );
@@ -162,17 +188,26 @@ export function readCommand(
     : null;
   // Every acceptance happened before `expiresAt` on the device's clock, so its fact has a number
   // at most `seqAfterExpiry`: once every number up to it arrived without one, there is no job.
+  // "Every number up to it": from the stream's start (`receivedThrough`, a stream received from
+  // 1), or from a number the device emitted before the command existed (`before`): the
+  // acceptance can only lie above that one. A gap written off as an incident is not received.
+  const before = input.device.before ?? null;
+  const receivedFrom =
+    before === null
+      ? null
+      : (input.device.seen?.find(([lo, hi]) => lo <= before && before <= hi)?.[1] ?? null);
+  const through = Math.max(input.device.receivedThrough ?? -1, receivedFrom ?? -1);
   const settledBySeq =
     seqAfterExpiry !== null &&
     !expiredLatest &&
     input.device.epoch === input.deviceEpoch &&
-    input.device.receivedThrough !== null &&
-    input.device.receivedThrough >= seqAfterExpiry;
-  const exhausted = input.attempts.length >= policy.maxAttempts;
+    through >= seqAfterExpiry;
+  const exhausted = input.attempts.filter((a) => a.published).length >= policy.maxAttempts;
   let state: CommandState;
   if (accepted) state = 'accepted';
   else if (rejected) state = 'rejected';
   else if (epochEnded) state = 'epoch-ended';
+  else if (conflict) state = 'conflict';
   else if (latest === undefined) state = 'queued';
   else if (expiredLatest && exhausted) state = 'expired';
   else if (settledBySeq) state = 'not-accepted';
@@ -186,7 +221,9 @@ export function readCommand(
   const send =
     !settled &&
     !exhausted &&
+    state !== 'conflict' &&
     (latest === undefined ||
+      !latest.published ||
       expiredLatest ||
       (!answeredLatest && now - latest.issuedAt >= policy.resendMs));
   const unconfirmed =
@@ -198,6 +235,26 @@ export function readCommand(
         input.device.settledSeq >= sticky.acceptedSeq &&
         input.device.settledTime !== null &&
         input.device.settledTime >= Date.parse(sticky.acceptedAt)));
+  const prior = input.previous;
+  if (prior?.settled === true && prior.state !== 'accepted' && accepted === null) {
+    state = prior.state;
+    return {
+      state,
+      settled: true,
+      accepted,
+      confirmed: false,
+      acceptedFacts: 0,
+      job: null,
+      started: null,
+      completedAt: null,
+      rejection: rejected ? rejected.code : conflict ? conflict.code : null,
+      seqAfterExpiry,
+      failed: false,
+      unconfirmed: false,
+      epochEnded,
+      send: false,
+    };
+  }
   return {
     state,
     settled,
@@ -207,7 +264,7 @@ export function readCommand(
     job,
     started: started ? { seq: started.seq, at: started.sourceTime } : null,
     completedAt: completed ? completed.sourceTime : null,
-    rejection: rejected ? rejected.code : null,
+    rejection: rejected ? rejected.code : conflict ? conflict.code : null,
     seqAfterExpiry,
     failed: state === 'failed',
     unconfirmed,

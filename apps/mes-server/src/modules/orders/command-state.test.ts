@@ -15,7 +15,11 @@ const ID = 'PO-1~OP10~1';
 const policy: CommandPolicy = { maxAttempts: 3, resendMs: 15_000, failMarginMs: 30_000 };
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-const attempt = (k: number) => ({ issuedAt: T0 + k * 15_000, expiresAt: T0 + k * 15_000 + 60_000 });
+const attempt = (k: number, published = true) => ({
+  issuedAt: T0 + k * 15_000,
+  expiresAt: T0 + k * 15_000 + 60_000,
+  published,
+});
 
 const base: CommandInputs = {
   commandId: ID,
@@ -163,6 +167,40 @@ describe('reading a command (ADR-0029)', () => {
         'expired',
       );
     }
+  });
+
+  it('never reopens a command settled without a job (another policy, other answers), but for its own fact', () => {
+    const settledBefore = {
+      attempts: [attempt(0), attempt(1)],
+      results: [expired(attempt(1).expiresAt)],
+      previous: { state: 'expired' as const, settled: true },
+    };
+    // Read again with more attempts allowed (a restarted MES): still expired, no resend.
+    const reread = readCommand({ ...base, ...settledBefore }, T0 + 200_000, {
+      ...policy,
+      maxAttempts: 5,
+    });
+    expect(reread).toMatchObject({ state: 'expired', settled: true, send: false, failed: false });
+    expect(read({ ...settledBefore, facts: [fact('accepted', 11)] })).toMatchObject({
+      state: 'accepted',
+      job: 'accepted',
+    });
+    // A conflict is no settlement and a reading of one stays open.
+    expect(
+      read({ attempts: [attempt(0)], results: [rejected('command-conflict')] }, T0 + 500_000),
+    ).toMatchObject({
+      state: 'conflict',
+      settled: false,
+      send: false,
+      rejection: 'command-conflict',
+    });
+    // An unpublished latest delivery is resent and doesn't count.
+    expect(
+      read({ attempts: [attempt(0), attempt(1), attempt(2, false)] }, T0 + 30_000),
+    ).toMatchObject({
+      state: 'sent',
+      send: true,
+    });
   });
 
   it('is rejected for good (no job), but not by a command-conflict after an acceptance', () => {
@@ -329,6 +367,112 @@ describe('reading a command (ADR-0029)', () => {
           }
         },
       ),
+    );
+  });
+
+  it('never settles a command without a job when the device accepted it (safety property)', () => {
+    // A device trace: which delivery (if any) the device accepted, at which sequence number, and
+    // for every delivery the gateway's answer, consistent with that trace but possibly lost or
+    // held (none), unknown, or definitive; the stream received through any number. A delivery
+    // marked unpublished may still have reached the device (a crash after its PUBACK).
+    const trace = fc.record({
+      n: fc.integer({ min: 1, max: 4 }),
+      acceptedAt: fc.option(fc.integer({ min: 0, max: 3 }), { nil: undefined }),
+      A: fc.integer({ min: 2, max: 30 }),
+      received: fc.integer({ min: 0, max: 45 }),
+      published: fc.array(fc.boolean(), { minLength: 4, maxLength: 4 }),
+      answers: fc.array(
+        fc.record({
+          kind: fc.constantFrom('none', 'unknown', 'definitive'),
+          s: fc.option(fc.integer({ min: 0, max: 45 }), { nil: null }),
+        }),
+        { minLength: 4, maxLength: 4 },
+      ),
+      lateFact: fc.boolean(),
+      // The MES joined the stream late: received only from a number stored before the command.
+      joinedLate: fc.boolean(),
+      before: fc.integer({ min: 1, max: 29 }),
+      now: fc.integer({ min: 0, max: 200_000 }),
+    });
+    fc.assert(
+      fc.property(trace, (raw) => {
+        const at =
+          raw.acceptedAt !== undefined && raw.acceptedAt < raw.n ? raw.acceptedAt : undefined;
+        const attempts = Array.from({ length: raw.n }, (_, k) =>
+          attempt(k, raw.published[k] ?? true),
+        );
+        const latest = raw.n - 1;
+        const results: { equipment: string; value: CommandResultValue }[] = [];
+        for (let k = 0; k < raw.n; k++) {
+          const answer = raw.answers[k];
+          const expiresAt = attempts[k]?.expiresAt ?? 0;
+          if (!answer || answer.kind === 'none') continue;
+          const after = at !== undefined && k >= at;
+          if (answer.kind === 'definitive') {
+            if (after) {
+              const answered = accepted(expiresAt, k === at ? 'accepted' : 'duplicate');
+              if (answered.value.result === 'accepted' || answered.value.result === 'duplicate') {
+                answered.value.acceptedSeq = raw.A;
+              }
+              results.push(answered);
+            } else {
+              // Expired: read after this delivery's expiry, before any later acceptance.
+              const s =
+                answer.s === null
+                  ? null
+                  : at === undefined
+                    ? answer.s
+                    : Math.min(answer.s, raw.A - 1);
+              results.push(expired(expiresAt, s));
+            }
+          } else {
+            // Unknown: the latest delivery's seqAfterExpiry is read after every acceptance.
+            const s =
+              answer.s === null
+                ? null
+                : at !== undefined && k === latest
+                  ? Math.max(answer.s, raw.A)
+                  : answer.s;
+            results.push(unknown(expiresAt, s));
+          }
+        }
+        // The accepted fact arrived if every number through it arrived, or out of order.
+        const facts =
+          at !== undefined && (raw.A <= raw.received || raw.lateFact)
+            ? [fact('accepted', raw.A)]
+            : [];
+        const reading = readCommand(
+          {
+            ...base,
+            attempts,
+            results,
+            facts,
+            device: raw.joinedLate
+              ? {
+                  ...base.device,
+                  receivedThrough: null,
+                  // Emitted before the command existed, so below any acceptance.
+                  before: at === undefined ? raw.before : Math.min(raw.before, raw.A - 1),
+                  seen:
+                    raw.received >= raw.before
+                      ? [
+                          [
+                            at === undefined ? raw.before : Math.min(raw.before, raw.A - 1),
+                            raw.received,
+                          ],
+                        ]
+                      : [],
+                  settledSeq: raw.received,
+                }
+              : { ...base.device, receivedThrough: raw.received, settledSeq: raw.received },
+          },
+          T0 + raw.now,
+          policy,
+        );
+        if (reading.settled && reading.job === null) expect(at).toBeUndefined();
+        if (at === undefined) expect(reading.job).toBeNull();
+      }),
+      { numRuns: 3_000 },
     );
   });
 });

@@ -27,6 +27,7 @@ const PLAN: Record<Permission, string> = {
   'order:cancel': '···✓·',
   'order:redispatch': '···✓·',
   'order:close': '···✓·',
+  'order:abandon': '···✓·',
   'user:admin': '····✓',
 };
 

@@ -5367,7 +5367,9 @@
                     "rejected",
                     "expired",
                     "not-accepted",
-                    "epoch-ended"
+                    "epoch-ended",
+                    "conflict",
+                    "abandoned"
                   ]
                 },
                 "settled": {
@@ -5444,7 +5446,7 @@
                   "type": "integer",
                   "minimum": -9007199254740991,
                   "maximum": 9007199254740991,
-                  "description": "Deliveries published (the first and resends)"
+                  "description": "Deliveries written (published or not; see `attemptList`)"
                 },
                 "lastExpiresAt": {
                   "anyOf": [

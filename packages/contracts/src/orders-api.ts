@@ -46,9 +46,13 @@ export type OrderStatus = (typeof ORDER_STATUSES)[number];
  * - `failed`: the MES's own state, no final answer after the last `expiresAt` plus the margin (not
  *   final: an incident and the order flag `dispatch-failed`);
  * - `accepted`: the job exists (an `accepted` fact, or an `accepted`/`duplicate` result);
- * - `rejected`, `expired` (every attempt), `not-accepted` (`unknown`/`failed`, settled once the
- *   CNC's facts arrived through `seqAfterExpiry` without its `accepted` fact) and `epoch-ended`
- *   (the device run ended first): no job.
+ * - `rejected`, `expired` (every published attempt), `not-accepted` (`unknown`/`failed`, settled
+ *   once the CNC's facts arrived through `seqAfterExpiry` without its `accepted` fact) and
+ *   `epoch-ended` (the device run ended first): no job;
+ * - `conflict`: the device answered `command-conflict`, so it holds another job under this id. Not
+ *   settled (an incident) until the device run ends;
+ * - `abandoned`: written off by a supervisor after its device run ended (`order:abandon`); its
+ *   quantity counts as started unless the facts prove otherwise.
  */
 export const COMMAND_STATES = [
   'queued',
@@ -60,6 +64,8 @@ export const COMMAND_STATES = [
   'expired',
   'not-accepted',
   'epoch-ended',
+  'conflict',
+  'abandoned',
 ] as const;
 export type CommandState = (typeof COMMAND_STATES)[number];
 
@@ -81,8 +87,15 @@ export const ORDER_INCIDENT_TYPES = [
   'command-unconfirmed',
   /** A job fact of a command id the MES never issued. */
   'unknown-job',
-  /** More than one `accepted` fact for one command id: exactly-once broken on the device. */
+  /**
+   * More than one `accepted` fact for one command id, or an `accepted` fact for a command settled
+   * without a job: exactly-once broken, or a reading proven wrong.
+   */
   'duplicate-job',
+  /** The device answered `command-conflict`: it holds another job under this command id. */
+  'command-conflict',
+  /** A feed entry the database could not store: recorded as rejected, the page committed. */
+  'erp-invalid-entry',
   /** A device run ended with jobs of the order not completed, or commands not answered. */
   'dispatch-lost',
 ] as const;
@@ -151,7 +164,7 @@ export const commandSchema = z
     acceptedAt: time.nullable().describe('Plant time of the acceptance'),
     rejection: z.string().nullable(),
     seqAfterExpiry: int.nullable(),
-    attempts: int.describe('Deliveries published (the first and resends)'),
+    attempts: int.describe('Deliveries written (published or not; see `attemptList`)'),
     lastExpiresAt: time.nullable(),
     job: z.enum(JOB_STATES).nullable(),
     startedAt: time.nullable(),
@@ -161,7 +174,10 @@ export const commandSchema = z
 
 export const commandAttemptSchema = z.object({
   attempt: int,
-  issuedAt: time.describe('Wall time of the publish'),
+  issuedAt: time.describe('Wall time the delivery was written, just before its publish'),
+  publishedAt: time
+    .nullable()
+    .describe('Wall time the broker acknowledged it (PUBACK); null: never published'),
   expiresAt: time.describe('Wall time; the device refuses the delivery after it'),
 });
 
@@ -296,6 +312,15 @@ export const redispatchRequestSchema = z
   })
   .describe('Dispatches the remainder again with a new command (n + 1)');
 
+export const abandonRequestSchema = z
+  .strictObject({
+    version,
+    commandId: z.string().min(1).max(128).describe('A command of the order'),
+  })
+  .describe(
+    'Writes off a command whose device run has ended: settled as `abandoned`, counted as started',
+  );
+
 export const orderWriteResultSchema = z.object({
   order: orderSchema,
   command: commandSchema.nullable().describe('The command a dispatch or re-dispatch created'),
@@ -332,4 +357,5 @@ export type OrderWriteRequest = z.infer<typeof orderWriteRequestSchema>;
 export type DispatchRequest = z.infer<typeof dispatchRequestSchema>;
 export type CancelRequest = z.infer<typeof cancelRequestSchema>;
 export type RedispatchRequest = z.infer<typeof redispatchRequestSchema>;
+export type AbandonRequest = z.infer<typeof abandonRequestSchema>;
 export type OrderWriteResult = z.infer<typeof orderWriteResultSchema>;

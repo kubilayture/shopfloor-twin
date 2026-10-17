@@ -107,10 +107,15 @@ CREATE TABLE orders.dispatch_command (
       'rejected',
       'expired',
       'not-accepted',
-      'epoch-ended'
+      'epoch-ended',
+      'conflict',
+      'abandoned'
     )
   ),
   settled BOOLEAN NOT NULL DEFAULT false,
+  -- Nothing can change the reading any more (its device run's facts are refused as stale, or its
+  -- job completed and confirmed): no longer read on every tick.
+  final BOOLEAN NOT NULL DEFAULT false,
   -- Declared failed at least once (an incident was raised).
   failed BOOLEAN NOT NULL DEFAULT false,
   -- The job's acceptance: by its `accepted` fact (confirmed) or, before it, by a result.
@@ -122,7 +127,8 @@ CREATE TABLE orders.dispatch_command (
   -- Plant times of the job's started and completed facts.
   started_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
-  -- Blanks a lost job started (its run ended first): what it counts against the order.
+  -- Blanks a lost job started (its run ended first): what it counts against the order; the whole
+  -- quantity while its facts are not fully known, a running maximum while late facts may come.
   lost_started INTEGER CHECK (lost_started >= 0),
   rejection TEXT,
   seq_after_expiry BIGINT,
@@ -131,11 +137,12 @@ CREATE TABLE orders.dispatch_command (
   CHECK ((accepted_by IS NULL) = (job IS NULL)),
   CHECK ((job = 'lost') = (lost_started IS NOT NULL))
 );
-CREATE INDEX dispatch_command_open ON orders.dispatch_command (equipment, queue_position)
-  WHERE settled = false OR job IN ('accepted', 'started');
+CREATE INDEX dispatch_command_live ON orders.dispatch_command (queue_position)
+  WHERE final = false;
 
--- Every delivery of a command published: the first and each resend, with its own expiresAt.
--- Written before the publish, so a crash after the commit is a delivery that never left (resent).
+-- Every delivery of a command: the first and each resend, with its own expiresAt. Written before
+-- the publish, `published_at` set once the broker acknowledged it: a delivery that never left
+-- (a crash or a refused publish) doesn't count towards the attempts and is resent.
 CREATE TABLE orders.command_attempt (
   command_id TEXT NOT NULL REFERENCES orders.dispatch_command (command_id),
   attempt INTEGER NOT NULL CHECK (attempt >= 1),
@@ -145,6 +152,7 @@ CREATE TABLE orders.command_attempt (
   -- The MES process's epoch and its sequence number on the command topic (the command envelope).
   mes_epoch BIGINT NOT NULL,
   mes_seq BIGINT NOT NULL,
+  published_at TIMESTAMPTZ,
   PRIMARY KEY (command_id, attempt)
 );
 
@@ -202,6 +210,8 @@ CREATE TABLE orders.order_incident (
       'command-unconfirmed',
       'unknown-job',
       'duplicate-job',
+      'command-conflict',
+      'erp-invalid-entry',
       'dispatch-lost'
     )
   ),
@@ -219,8 +229,9 @@ CREATE UNIQUE INDEX order_incident_open ON orders.order_incident (key) WHERE clo
 CREATE INDEX order_incident_order ON orders.order_incident (order_id, id);
 
 -- Orders and commands are never deleted (their history stays); routing operations are replaced
--- with a new revision of an order only imported; command attempts are append-only.
+-- with a new revision of an order only imported; a command attempt is updated once, when the
+-- broker acknowledged it.
 GRANT SELECT, INSERT, UPDATE ON orders.erp_cursor, orders.production_order,
-  orders.dispatch_command, orders.erp_message_log, orders.order_incident TO mes_app;
+  orders.dispatch_command, orders.command_attempt, orders.erp_message_log, orders.order_incident
+  TO mes_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON orders.order_operation TO mes_app;
-GRANT SELECT, INSERT ON orders.command_attempt TO mes_app;

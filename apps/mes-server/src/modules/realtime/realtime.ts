@@ -683,9 +683,9 @@ export async function registerRealtime(
   const tokenOf = (request: FastifyRequest): Buffer | undefined =>
     parseToken(cookieValue(request.headers.cookie, cookieName));
   /**
-   * Who a write without a typed actor field is by (#174, session-first): the session's user;
-   * with `MES_AUTH=off` the user of a session the request still carries, else `anonymous`
-   * (recorded unauthenticated). New write routes take no actor field (#170 removes the old ones).
+   * Who a write without a typed actor field is by (#174, session-first, as #170 makes every
+   * write): the session's user; with `MES_AUTH=off` the user of the session the request carries.
+   * Without a session: 401 in both modes. New write routes take no actor field.
    */
   const sessionWriteBy = async (request: FastifyRequest): Promise<WriteBy> => {
     const principal = principals.get(request);
@@ -699,7 +699,7 @@ export async function registerRealtime(
         ? await identity.authenticate(token, { touch: true })
         : undefined;
     if (found) return { userId: found.userId, username: found.username, roles: found.roles };
-    return 'anonymous';
+    throw new HttpProblem(401, 'a session is needed', PROBLEM_TYPES.unauthenticated);
   };
   const accessOf = (request: FastifyRequest): Access =>
     (request.routeOptions.config as Partial<RouteConfig> | undefined)?.access ?? 'read';

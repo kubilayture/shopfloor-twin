@@ -1,5 +1,6 @@
 import {
   MES_API_LIMITS as LIMITS,
+  abandonRequestSchema,
   ORDER_LIMITS,
   ORDER_STATUSES,
   cancelRequestSchema,
@@ -21,7 +22,15 @@ import { HttpProblem, getRoute, writeRoute, type ErrorStatus } from './routes.ts
 /** What the order routes use of the orders module (#174). */
 export type OrdersApi = Pick<
   Orders,
-  'list' | 'detail' | 'incidents' | 'release' | 'dispatch' | 'cancel' | 'redispatch' | 'close'
+  | 'list'
+  | 'detail'
+  | 'incidents'
+  | 'release'
+  | 'dispatch'
+  | 'cancel'
+  | 'redispatch'
+  | 'close'
+  | 'abandon'
 >;
 
 const ORDER_STATUS = { 'not-found': 404, conflict: 409, invalid: 422 } as const;
@@ -71,7 +80,7 @@ export function orderRoutes(
   deps: {
     /** The orders module, or 503 while the MES starts. */
     readonly orders: () => OrdersApi;
-    /** Who writes (#169): the session's user; `MES_AUTH=off` without a session: anonymous. */
+    /** Who writes: the session's user; 401 without a session, whatever `MES_AUTH` says. */
     readonly writer: (request: FastifyRequest) => Promise<WriteBy>;
   },
 ): void {
@@ -139,7 +148,7 @@ export function orderRoutes(
   );
 
   const write = (
-    action: 'release' | 'dispatch' | 'cancel' | 'redispatch' | 'close',
+    action: 'release' | 'dispatch' | 'cancel' | 'redispatch' | 'close' | 'abandon',
     summary: string,
     description: string,
     body: z.ZodType,
@@ -157,12 +166,12 @@ export function orderRoutes(
       api,
       {
         method: 'POST',
-        url: `/orders/:id/${action}`,
+        url: action === 'abandon' ? '/orders/:id/abandon-command' : `/orders/:id/${action}`,
         access: `order:${action}`,
         summary,
         description:
           `${description} Names the order's \`version\` (409 urn:shopfloor:order-stale when it is not the current one); ` +
-          'audited with the session’s user (with MES_AUTH=off and no session: anonymous, unauthenticated). ' +
+          'audited with the session’s user; a write needs a session also with MES_AUTH=off (401). ' +
           'Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023).',
         tags: ['orders'],
         params: orderParams,
@@ -220,6 +229,15 @@ export function orderRoutes(
     redispatchRequestSchema,
     async (orders, id, body: z.output<typeof redispatchRequestSchema>, context) =>
       orders.redispatch(id, body, context),
+  );
+  write(
+    'abandon',
+    'Writes off a command of the order whose device run has ended',
+    'The command becomes `abandoned` (settled, its incidents closed) and its whole quantity counts as dispatched, so the order can end short, never over. 409 urn:shopfloor:order-state while its device run goes on, or when it is abandoned already; 404 for a command of another order.',
+    abandonRequestSchema,
+    async (orders, id, body: z.output<typeof abandonRequestSchema>, context) => ({
+      order: await orders.abandon(id, body, context),
+    }),
   );
   write(
     'close',

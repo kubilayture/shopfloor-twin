@@ -160,6 +160,7 @@ export function orderDetailDto(detail: OrderDetailRecord): OrderDetail {
       attemptList: command.attempts.map((a) => ({
         attempt: a.attempt,
         issuedAt: iso(a.issuedAt),
+        publishedAt: isoOrNull(a.publishedAt),
         expiresAt: iso(a.expiresAt),
       })),
       results: command.results.map(commandResultDto),

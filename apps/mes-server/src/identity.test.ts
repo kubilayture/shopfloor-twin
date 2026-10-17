@@ -725,6 +725,7 @@ const ROUTES: Readonly<Record<string, Permission | 'session' | 'public'>> = {
   'POST /api/v1/orders/{id}/cancel': 'order:cancel',
   'POST /api/v1/orders/{id}/redispatch': 'order:redispatch',
   'POST /api/v1/orders/{id}/close': 'order:close',
+  'POST /api/v1/orders/{id}/abandon-command': 'order:abandon',
 };
 
 /** Path parameters filled in so the route matches (the handler may still answer 400 or 404). */
@@ -818,7 +819,7 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     );
     const api = routes.filter((route) => route.includes(' /api/v1/'));
     expect(api.sort()).toEqual(Object.keys(ROUTES).sort());
-    expect(api).toHaveLength(54);
+    expect(api).toHaveLength(55);
     expect(routes.filter((r) => !r.includes(' /api/v1/')).sort()).toEqual([
       'GET /health/live',
       'GET /health/ready',

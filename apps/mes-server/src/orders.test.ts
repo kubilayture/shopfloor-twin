@@ -190,7 +190,10 @@ const gatewaySeq = new Map<string, number>();
 
 async function harness(
   name: string,
-  options: { readonly timings?: ConstructorParameters<typeof Orders>[0]['timings'] } = {},
+  options: {
+    readonly timings?: ConstructorParameters<typeof Orders>[0]['timings'];
+    readonly beforePublish?: (commandId: string) => Promise<void>;
+  } = {},
 ): Promise<Harness> {
   const db = await freshDatabase(serverUrl, `orders_${name}`);
   cleanups.push(() => db.destroy());
@@ -229,6 +232,7 @@ async function harness(
       erpPollMs: 0,
       erpPostMs: 0,
       mesEpoch: 1_800_000_000,
+      ...(options.beforePublish ? { beforePublish: options.beforePublish } : {}),
       timings: {
         ttlMs: 60_000,
         resendMs: 15_000,
@@ -584,20 +588,59 @@ describe('ERP import (ADR-0028)', () => {
     expect(await h.orders.incidents({ open: true })).toEqual([]);
   });
 
-  it('commits the cursor with the page: a page that fails to import moves nothing', async () => {
+  it('records an entry the database refuses as rejected with an incident, and commits the page', async () => {
     const h = await harness('cursor');
     h.erp.entries = dataset([order('C-1'), order('C-2')]);
     const [first] = h.erp.entries;
     if (!first) throw new Error('no entry');
-    // A version the database refuses (priority out of range, as no ERP would send).
+    // A version the database refuses (priority out of range, as no ERP would send): not even its
+    // rejected row can be stored, so the log, the status message and the incident hold it.
     h.erp.poison = { ...first, order: { ...first.order, priority: 0 } };
-    await expect(h.orders.importNow()).rejects.toThrow();
-    expect(
-      await h.db.selectFrom('orders.erp_cursor').selectAll().executeTakeFirst(),
-    ).toBeUndefined();
+    expect(await h.orders.importNow()).toBe(1);
+    expect(await h.db.selectFrom('orders.erp_cursor').selectAll().executeTakeFirst()).toMatchObject(
+      { cursor: 2 },
+    );
     expect((await h.orders.list()).orders).toEqual([]);
-    h.erp.poison = undefined;
-    expect(await h.orders.importNow()).toBe(2);
+    const inbound = (await messages(h, 'C-1')).filter((m) => m.direction === 'in');
+    expect(inbound).toMatchObject([{ status: 'rejected', feed_seq: 1 }]);
+    expect(inbound[0]?.detail).toMatch(/could not be stored/);
+    expect(await h.orders.incidents({ open: true })).toMatchObject([{ type: 'erp-invalid-entry' }]);
+    expect((await messages(h, 'C-1')).map((m) => m.idempotency_key).filter(Boolean)).toEqual([
+      statusKey('C-1', 1, 'rejected'),
+    ]);
+  });
+
+  it('rejects a routing with an operation twice and keeps importing (no operation rows)', async () => {
+    const h = await harness('dup_ops');
+    const [base] = dataset([order('Q-1')]);
+    if (!base) throw new Error('no entry');
+    h.erp.entries = [
+      {
+        ...base,
+        order: {
+          ...base.order,
+          routing: [...base.order.routing, ...base.order.routing.slice(0, 1)],
+        },
+      },
+      ...dataset([order('Q-1', { revision: 2 }), order('Q-2')]).map((e, i) => ({
+        ...e,
+        feedSeq: i + 2,
+      })),
+    ];
+    expect(await h.orders.importNow()).toBe(3);
+    expect(await h.orders.order('Q-2')).toMatchObject({ status: 'imported' });
+    const q1 = await h.orders.order('Q-1');
+    expect(q1).toMatchObject({ status: 'imported', revision: 2 });
+    expect(q1?.routing.map((r) => r.operation)).toEqual(['OP10', 'OP20', 'OP30', 'OP40', 'OP50']);
+    const log = await messages(h, 'Q-1');
+    expect(log[0]).toMatchObject({ status: 'rejected' });
+    expect(log[0]?.detail).toMatch(/routing repeats OP10/);
+    // A version only refused leaves no operation rows behind.
+    h.erp.entries = [h.erp.entries[0] ?? base];
+    const lone = await harness('dup_ops_alone');
+    lone.erp.entries = [h.erp.entries[0] ?? base];
+    await lone.orders.importNow();
+    expect(await lone.orders.order('Q-1')).toMatchObject({ status: 'rejected', routing: [] });
   });
 });
 
@@ -696,7 +739,7 @@ describe('supervisor writes (#174)', () => {
     });
     const completed = await h.orders.complete('W-3', { short: true, at: PLANT_T0 });
     expect(completed).toMatchObject({ status: 'completed', short: true, version: d3.version + 1 });
-    const closed = await h.orders.close('W-3', { version: completed.version }, { by: 'anonymous' });
+    const closed = await h.orders.close('W-3', { version: completed.version }, BY);
     expect(closed.status).toBe('closed');
     const keys = (await messages(h, 'W-3')).map((m) => m.idempotency_key).filter(Boolean);
     expect(keys.slice(-2)).toEqual([
@@ -708,11 +751,7 @@ describe('supervisor writes (#174)', () => {
         ?.payload,
     ).toMatchObject({ short: true });
     const close = (await Identity.auditEntries(h.db, 'production_order', ['W-3']))[0];
-    expect(close).toMatchObject({
-      action: 'order.close',
-      username: 'anonymous',
-      authenticated: false,
-    });
+    expect(close).toMatchObject({ action: 'order.close', username: 'sam', authenticated: true });
   });
 });
 
@@ -1119,8 +1158,174 @@ describe('the command outbox and the reading of commands (ADR-0029)', () => {
   });
 });
 
+describe('reading commands safely (#174 review)', () => {
+  it('keeps a command-conflict unsettled with an incident until its run ends, then counts its quantity', async () => {
+    const h = await harness('conflict');
+    await stateAt(h, 'cnc-01', 1);
+    const { command } = await dispatched(h, 'CF-1', { quantity: 3 });
+    await h.orders.tick();
+    const [delivery] = h.sink.of(command.commandId);
+    if (!delivery) throw new Error('not published');
+    await result(h, delivery, 'cnc-01', { result: 'rejected', code: 'command-conflict' });
+    await h.orders.tick();
+    expect((await h.orders.commands({ orderId: 'CF-1' }))[0]).toMatchObject({
+      state: 'conflict',
+      settled: false,
+      rejection: 'command-conflict',
+    });
+    expect(await h.orders.incidents({ open: true })).toMatchObject([
+      { type: 'command-conflict', commandId: command.commandId },
+    ]);
+    const order = await h.orders.order('CF-1');
+    expect(order).toMatchObject({ dispatchFailed: true, dispatched: 3 });
+    await expect(
+      h.orders.redispatch('CF-1', { version: order?.version ?? 0 }, BY),
+    ).rejects.toMatchObject({ type: PROBLEM_TYPES.commandsUnsettled });
+    // No resend while it conflicts.
+    h.clock.now += 60_000;
+    await h.orders.tick();
+    expect(h.sink.of(command.commandId)).toHaveLength(1);
+    // The run ends: settled, but the job under its id counts (short, never over).
+    await stateAt(h, 'cnc-01', 1, E1 + 9);
+    await h.orders.tick();
+    expect((await h.orders.commands({ orderId: 'CF-1' }))[0]).toMatchObject({
+      state: 'epoch-ended',
+      settled: true,
+    });
+    const after = await h.orders.order('CF-1');
+    await expect(h.orders.redispatch('CF-1', { version: after?.version ?? 0 }, BY)).rejects.toThrow(
+      /nothing to dispatch/,
+    );
+    expect(await h.orders.incidents({ open: true })).toMatchObject([{ type: 'dispatch-lost' }]);
+  });
+
+  it('turns a command settled without a job into an acceptance when its accepted fact arrives (duplicate-job)', async () => {
+    const h = await harness('late_fact', { timings: { maxAttempts: 1 } });
+    await stateAt(h, 'cnc-01', 1);
+    const { command } = await dispatched(h, 'LF-1', { quantity: 2 });
+    await h.orders.tick();
+    const [delivery] = h.sink.of(command.commandId);
+    if (!delivery) throw new Error('not published');
+    // A wrong answer (as a defect could give): expired, settled without a job.
+    await result(h, delivery, 'cnc-01', { result: 'expired', seqAfterExpiry: 1 });
+    await h.orders.tick();
+    expect((await h.orders.commands({ orderId: 'LF-1' }))[0]?.state).toBe('expired');
+    expect(await h.orders.order('LF-1')).toMatchObject({ dispatched: 0 });
+    await job(h, delivery.value, 'cnc-01', 2, 'accepted');
+    await h.orders.tick();
+    expect((await h.orders.commands({ orderId: 'LF-1' }))[0]).toMatchObject({
+      state: 'accepted',
+      job: 'accepted',
+    });
+    expect(await h.orders.order('LF-1')).toMatchObject({ dispatched: 2 });
+    expect(await h.orders.incidents({ open: true })).toMatchObject([
+      { type: 'duplicate-job', commandId: command.commandId },
+    ]);
+  });
+
+  it('counts a lost job whole while its facts are not fully known, and as a running maximum', async () => {
+    const h = await harness('lost_unknown');
+    await stateAt(h, 'cnc-01', 1);
+    await stateAt(h, 'cnc-02', 1);
+    const one = await dispatched(h, 'LU-1', { quantity: 5 }, 'cnc-01');
+    const two = await dispatched(h, 'LU-2', { quantity: 4 }, 'cnc-02');
+    await h.orders.tick();
+    const [d1] = h.sink.of(one.command.commandId);
+    const [d2] = h.sink.of(two.command.commandId);
+    if (!d1 || !d2) throw new Error('not published');
+    // LU-1: accepted by the gateway's answer only (its fact never came).
+    await result(h, d1, 'cnc-01', { result: 'accepted', acceptedSeq: 2 });
+    // LU-2: accepted and started, then a hole after its start (seq 4 missing).
+    await job(h, d2.value, 'cnc-02', 2, 'accepted');
+    await job(h, d2.value, 'cnc-02', 3, 'started');
+    await stateAt(h, 'cnc-02', 5);
+    // Both runs end (snapshots of new runs; the old streams are still current).
+    await deliver(h, h.feed.snapshot('cnc-01', E1 + 3, PLANT_T0.getTime(), 'Idle'));
+    await deliver(h, h.feed.snapshot('cnc-02', E1 + 3, PLANT_T0.getTime(), 'Idle'));
+    await h.orders.tick();
+    expect((await h.orders.commands({ orderId: 'LU-1' }))[0]).toMatchObject({
+      job: 'lost',
+      lostStarted: 5,
+    });
+    expect((await h.orders.commands({ orderId: 'LU-2' }))[0]).toMatchObject({
+      job: 'lost',
+      lostStarted: 4,
+    });
+    // The missing fact arrives (a cycle): known now, but the count never goes down.
+    await deliver(h, h.feed.cycle('cnc-02', E1, 4, PLANT_T0.getTime() + 4_000));
+    await h.orders.tick();
+    expect((await h.orders.commands({ orderId: 'LU-2' }))[0]?.lostStarted).toBe(4);
+    const order = await h.orders.order('LU-2');
+    await expect(h.orders.redispatch('LU-2', { version: order?.version ?? 0 }, BY)).rejects.toThrow(
+      /nothing to dispatch/,
+    );
+  });
+
+  it('resends a delivery that was never published, without counting it', async () => {
+    let refuse = true;
+    const h = await harness('unpublished', {
+      timings: { maxAttempts: 1 },
+      beforePublish: () => {
+        if (!refuse) return Promise.resolve();
+        refuse = false;
+        return Promise.reject(new Error('crash before the publish'));
+      },
+    });
+    await stateAt(h, 'cnc-01', 1);
+    const { command } = await dispatched(h, 'UP-1');
+    await h.orders.tick();
+    expect(h.sink.of(command.commandId)).toEqual([]);
+    const [written] = await h.orders.commands({ orderId: 'UP-1' });
+    expect(written?.attempts).toMatchObject([{ attempt: 1, publishedAt: null }]);
+    await h.orders.tick();
+    expect(h.sink.of(command.commandId)).toHaveLength(1);
+    const [after] = await h.orders.commands({ orderId: 'UP-1' });
+    expect(after?.attempts.map((a) => a.publishedAt !== null)).toEqual([false, true]);
+    // One published delivery is maxAttempts: no more.
+    h.clock.now += 20_000;
+    await h.orders.tick();
+    expect(h.sink.of(command.commandId)).toHaveLength(1);
+  });
+
+  it('abandons a command only after its run ended, audited, counting its quantity', async () => {
+    const h = await harness('abandon');
+    await stateAt(h, 'cnc-01', 1);
+    const { command, order } = await dispatched(h, 'AB-1', { quantity: 3 });
+    await h.orders.tick();
+    await expect(
+      h.orders.abandon('AB-1', { version: order.version, commandId: command.commandId }, BY),
+    ).rejects.toMatchObject({ type: PROBLEM_TYPES.orderState });
+    await expect(
+      h.orders.abandon('AB-1', { version: order.version, commandId: 'AB-1~OP10~9' }, BY),
+    ).rejects.toMatchObject({ kind: 'not-found' });
+    await deliver(h, h.feed.snapshot('cnc-01', E1 + 4, PLANT_T0.getTime(), 'Idle'));
+    await h.orders.tick();
+    const current = await h.orders.order('AB-1');
+    const abandoned = await h.orders.abandon(
+      'AB-1',
+      { version: current?.version ?? 0, commandId: command.commandId },
+      BY,
+    );
+    expect(abandoned).toMatchObject({ dispatched: 3, dispatchLost: true });
+    expect((await h.orders.commands({ orderId: 'AB-1' }))[0]).toMatchObject({
+      state: 'abandoned',
+      settled: true,
+    });
+    expect(await h.orders.incidents({ open: true })).toEqual([]);
+    await expect(
+      h.orders.abandon('AB-1', { version: abandoned.version, commandId: command.commandId }, BY),
+    ).rejects.toMatchObject({ type: PROBLEM_TYPES.orderState });
+    const [entry] = await Identity.auditEntries(h.db, 'production_order', ['AB-1']);
+    expect(entry).toMatchObject({
+      action: 'order.abandon-command',
+      username: 'sam',
+      after: { commandId: command.commandId, counted: 3 },
+    });
+  });
+});
+
 describe('the orders API and push (#174)', () => {
-  it('writes as `anonymous` (unauthenticated) with MES_AUTH=off and no session; 503 without the module', async () => {
+  it('refuses a write without a session also with MES_AUTH=off (401) and audits a session user; 503 without the module', async () => {
     const h = await harness('api_off');
     h.erp.entries = dataset([order('K-1')]);
     await h.orders.importNow();
@@ -1149,21 +1354,42 @@ describe('the orders API and push (#174)', () => {
     expect(
       (await without.app.inject({ method: 'GET', url: '/api/v1/orders', headers })).statusCode,
     ).toBe(503);
-    const http = await buildMesHttp({ ready: () => Promise.resolve(true) });
+    const identity = new Identity({ db: h.db, sweepMs: 0, hashParams: { N: 1024, r: 8, p: 1 } });
+    await identity.start();
+    cleanups.push(() => {
+      identity.stop();
+      return Promise.resolve();
+    });
+    const http = await buildMesHttp({ ready: () => Promise.resolve(true), identity, auth: false });
     cleanups.push(() => http.app.close());
     await http.realtime.attach({ ...sources, orders: h.orders } as unknown as ApiSources);
-    const response = await http.app.inject({
+    const release = (cookie?: string) =>
+      http.app.inject({
+        method: 'POST',
+        url: '/api/v1/orders/K-1/release',
+        headers: { ...headers, ...(cookie === undefined ? {} : { cookie }) },
+        payload: JSON.stringify({ version: 1 }),
+      });
+    // No session: refused, as #170 makes every write (no anonymous actor).
+    const anonymous = await release();
+    expect(anonymous.statusCode).toBe(401);
+    expect(anonymous.json()).toMatchObject({ type: PROBLEM_TYPES.unauthenticated });
+    expect((await h.orders.order('K-1'))?.status).toBe('imported');
+    const login = await http.app.inject({
       method: 'POST',
-      url: '/api/v1/orders/K-1/release',
+      url: '/api/v1/session',
       headers,
-      payload: JSON.stringify({ version: 1 }),
+      payload: { username: 'sam', password: 'a-long-test-password' },
     });
+    expect(login.statusCode, login.body).toBe(200);
+    const cookie = String(login.headers['set-cookie']).split(';')[0] ?? '';
+    const response = await release(cookie);
     expect(response.statusCode, response.body).toBe(200);
     const [entry] = await Identity.auditEntries(h.db, 'production_order', ['K-1']);
     expect(entry).toMatchObject({
       action: 'order.release',
-      username: 'anonymous',
-      authenticated: false,
+      username: 'sam',
+      authenticated: true,
     });
     expect(entry?.requestId).toBe(response.headers['x-request-id']);
   });

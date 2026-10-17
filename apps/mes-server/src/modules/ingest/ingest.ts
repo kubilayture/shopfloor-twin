@@ -151,6 +151,10 @@ export interface DeviceProgress {
   readonly equipment: string;
   readonly epoch: number | null;
   readonly receivedThrough: number | null;
+  /** The highest number seen in the epoch. */
+  readonly lastSeq: number | null;
+  /** The numbers seen in the epoch, as sorted ranges (a reported gap is not seen). */
+  readonly seen: readonly (readonly [number, number])[];
   readonly settledSeq: number | null;
   readonly settledTime: Date | null;
 }
@@ -888,7 +892,8 @@ export class Ingest {
    * `receivedThrough`, the highest `seq` with every number from the stream's first one up to it
    * received (a gap written off as an incident does not count as received); `settledSeq`, the
    * final-through of ADR-0018 (a reported gap counts as closed), and the source time of the fact
-   * at or below it with the highest `seq`. Null fields when the stream has no cursor.
+   * at or below it with the highest `seq`; `lastSeq`, the highest number seen. Null fields when the
+   * stream has no cursor; `receivedThrough` is null for a stream first seen above 1.
    */
   async deviceProgress(equipment: string): Promise<DeviceProgress> {
     const cursor = await this.#options.db
@@ -901,6 +906,8 @@ export class Ingest {
         equipment,
         epoch: null,
         receivedThrough: null,
+        lastSeq: null,
+        seen: [],
         settledSeq: null,
         settledTime: null,
       };
@@ -918,10 +925,15 @@ export class Ingest {
             .orderBy('seq', 'desc')
             .limit(1)
             .executeTakeFirst();
+    // Only a stream received from its start (1, or the new epoch's sentinel 0): a stream the MES
+    // joined late may miss any number below its first one.
+    const first = cursor.seen[0];
     return {
       equipment,
       epoch: cursor.epoch,
-      receivedThrough: cursor.seen[0]?.[1] ?? null,
+      receivedThrough: first !== undefined && first[0] <= 1 ? first[1] : null,
+      lastSeq: cursor.seen.at(-1)?.[1] ?? null,
+      seen: cursor.seen,
       settledSeq,
       settledTime: time?.source_time ?? null,
     };
@@ -946,6 +958,21 @@ export class Ingest {
       ) known
       GROUP BY equipment`.execute(this.#options.db);
     return new Map(result.rows.map((row) => [row.equipment, row.epoch]));
+  }
+
+  /**
+   * The highest `seq` of one equipment's device epoch stored before a wall time (#174): a number
+   * the device emitted before then. Null when none.
+   */
+  async seqStoredBefore(equipment: string, epoch: number, at: Date): Promise<number | null> {
+    const row = await this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select((eb) => eb.fn.max<number | null>('seq').as('seq'))
+      .where('equipment', '=', equipment)
+      .where('epoch', '=', epoch)
+      .where('ingested_at', '<', at)
+      .executeTakeFirstOrThrow();
+    return row.seq;
   }
 
   /**

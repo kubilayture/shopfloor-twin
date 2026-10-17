@@ -100,8 +100,8 @@ export const DECLARED_GRANTS: {
       // Replaced with a new revision of an order only imported.
       'orders.order_operation': ALL,
       'orders.dispatch_command': KEEP,
-      // Every delivery published, append-only.
-      'orders.command_attempt': APPEND,
+      // Every delivery; `published_at` set once acknowledged.
+      'orders.command_attempt': KEEP,
       'orders.erp_message_log': KEEP,
       'orders.order_incident': KEEP,
     },

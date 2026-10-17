@@ -28,6 +28,7 @@ import {
   type SimEvent,
 } from '@shopfloor/test-kit/processes';
 import type { Kysely } from 'kysely';
+import mqtt, { type MqttClient } from 'mqtt';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Database } from './db/database.ts';
@@ -121,6 +122,9 @@ const pastRuns: SimEvent[][] = [];
 const quantities = new Map<string, number>();
 const dir = mkdtempSync(join(tmpdir(), 'mes-orders-e2e-'));
 let by: { userId: number; username: string; roles: 'supervisor'[] };
+/** A client of the test's own: `mes` reads every command published (to deliver one twice). */
+let listener: MqttClient;
+const deliveries: { topic: string; payload: string }[] = [];
 
 const gatewayEnv = {
   MQTT_URL: `mqtt://127.0.0.1:${String(GATEWAY_MQTT)}`,
@@ -146,6 +150,7 @@ async function gatewayReady(): Promise<boolean> {
 async function startOrders(
   timings: Partial<CommandTimings>,
   withPublisher = true,
+  beforePublish?: (commandId: string) => Promise<void>,
 ): Promise<Orders> {
   await orders.stop();
   orders = new Orders({
@@ -153,6 +158,7 @@ async function startOrders(
     ingest,
     masterData,
     ...(withPublisher ? { publisher } : {}),
+    ...(beforePublish ? { beforePublish } : {}),
     erp,
     tickMs: 200,
     erpPollMs: 0,
@@ -270,9 +276,20 @@ beforeAll(async () => {
     return epochs.has('cnc-01') && epochs.has('cnc-02');
   });
   await until('the command connection', () => publisher.connected);
+  listener = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+    username: 'mes',
+    password: TEST_PASSWORDS.mes,
+    protocolVersion: 5,
+    clientId: 'mes-orders-e2e-listener',
+  });
+  listener.on('message', (topic, payload) => {
+    deliveries.push({ topic, payload: payload.toString() });
+  });
+  await listener.subscribeAsync('orbis/gebze/+/+/+/cmd/#', { qos: 1 });
 }, 240_000);
 
 afterAll(async () => {
+  await listener.endAsync(true).catch(() => undefined);
   await orders.stop().catch(() => undefined);
   await publisher.close().catch(() => undefined);
   await ingest.stop().catch(() => undefined);
@@ -477,6 +494,149 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
     expect(deviceAccepted(sent.commandId)).toBe(1);
   }, 180_000);
 
+  it('settles not-accepted when the CNC’s facts pass seqAfterExpiry without the acceptance; the re-dispatch makes the one job', async () => {
+    await startOrders({ ttlMs: 4_000, resendMs: 20_000, maxAttempts: 1, failMarginMs: 3_000 });
+    proxy('cnc-02').setDown(true); // the device is out of the gateway's reach: never accepted
+    try {
+      const sent = await dispatch('VB-200', 2, 'cnc-02');
+      await until('published', async () => (await command(sent.commandId)).attempts.length === 1);
+      const [delivery] = (await command(sent.commandId)).attempts;
+      // The gateway's settle call read seqAfterExpiry and then failed: an `unknown` with it (the
+      // gateway's own message, as `gw-01`, on its stream with a number of its own).
+      // As the gateway does it: after the delivery's expiresAt plus a second (the device refuses
+      // it from then on), read the device's sequence, then the settle call fails.
+      const expiresAt = delivery?.expiresAt.getTime() ?? 0;
+      await until('past the expiry', () => Date.now() > expiresAt + 1_500, 30_000);
+      // Read after the expiry: every number up to it stored (the MES saw these before the command).
+      const progress = await ingest.deviceProgress('cnc-02');
+      expect(progress.lastSeq).not.toBeNull();
+      const [last] = (await ingest.commandResults([`${sent.orderId}~OP10~1`])).slice(-1);
+      const known = await db
+        .selectFrom('ingest.command_result')
+        .select(['epoch'])
+        .where('equipment', '=', 'cnc-02')
+        .orderBy('arrival', 'desc')
+        .limit(1)
+        .executeTakeFirst();
+      expect(last === undefined || last.value.result === 'unknown').toBe(true);
+      const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+        username: 'gw-01',
+        password: TEST_PASSWORDS['gw-01'],
+        protocolVersion: 5,
+        clientId: 'mes-orders-e2e-gateway-voice',
+      });
+      try {
+        await injector.publishAsync(
+          'orbis/gebze/machining/cell-m1/cnc-02/cmd-res/load-order',
+          JSON.stringify({
+            schema: 'uns.cmd-res/1',
+            scope: 'topic',
+            epoch: known?.epoch ?? Math.floor(Date.now() / 1000),
+            seq: 1_000_000,
+            source: { id: 'cnc-02', protocol: 'opcua' },
+            respondedAt: new Date().toISOString(),
+            value: {
+              result: 'unknown',
+              commandId: sent.commandId,
+              orderId: sent.orderId,
+              deviceEpoch: sent.deviceEpoch,
+              expiresAt: delivery?.expiresAt.toISOString(),
+              statusCode: null,
+              seqAfterExpiry: progress.lastSeq ?? 0,
+              reason: 'settle call failed after reading the sequence',
+            },
+          }),
+          { qos: 1 },
+        );
+      } finally {
+        await injector.endAsync(true);
+      }
+      await until(
+        'not-accepted',
+        async () => (await command(sent.commandId)).state === 'not-accepted',
+        60_000,
+      );
+      expect(deviceAccepted(sent.commandId)).toBe(0);
+      const order = await orders.order(sent.orderId);
+      expect(order).toMatchObject({ dispatchFailed: true, dispatched: 0 });
+      const again = await orders.redispatch(sent.orderId, { version: order?.version ?? 0 }, { by });
+      proxy('cnc-02').setDown(false);
+      await until(
+        'the re-dispatch confirmed',
+        async () => (await command(again.command.commandId)).confirmed,
+        90_000,
+      );
+      expect(deviceAccepted(again.command.commandId)).toBe(1);
+      expect(deviceAccepted(sent.commandId)).toBe(0);
+    } finally {
+      proxy('cnc-02').setDown(false);
+    }
+    await until('gateway ready again', gatewayReady, 60_000);
+  }, 240_000);
+
+  it('gets the job once after a gateway restart between the call and its result', async () => {
+    await startOrders({ ttlMs: 30_000, resendMs: 20_000, maxAttempts: 3, failMarginMs: 5_000 });
+    proxy('cnc-02').hold();
+    const sent = await dispatch('VB-200', 1, 'cnc-02');
+    await until('accepted on the device', () => deviceAccepted(sent.commandId) === 1);
+    await gateway.stop('SIGKILL');
+    proxy('cnc-02').cut();
+    gateway = await startGateway(gatewayEnv);
+    await until('the gateway ready again', gatewayReady, 60_000);
+    await until(
+      'accepted after the restart',
+      async () => (await command(sent.commandId)).state === 'accepted',
+      90_000,
+    );
+    expect(deviceAccepted(sent.commandId)).toBe(1);
+    const results = (await ingest.commandResults([sent.commandId])).map((r) => r.value.result);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.every((r) => r === 'accepted' || r === 'duplicate' || r === 'unknown')).toBe(
+      true,
+    );
+  }, 180_000);
+
+  it('answers a duplicated delivery from the gateway’s table: one job', async () => {
+    await startOrders({ ttlMs: 30_000, resendMs: 20_000, maxAttempts: 3, failMarginMs: 5_000 });
+    const sent = await dispatch('VB-100', 1, 'cnc-01');
+    await until('confirmed', async () => (await command(sent.commandId)).confirmed, 60_000);
+    const copy = deliveries.find((d) => d.payload.includes(`"${sent.commandId}"`));
+    if (!copy) throw new Error('the delivery was not seen');
+    await listener.publishAsync(copy.topic, copy.payload, { qos: 1 }); // the broker's duplicate
+    await until(
+      'both deliveries answered',
+      async () => (await ingest.commandResults([sent.commandId])).length >= 2,
+      60_000,
+    );
+    expect(deviceAccepted(sent.commandId)).toBe(1);
+    expect((await command(sent.commandId)).state).toBe('accepted');
+  }, 120_000);
+
+  it('resends a delivery written but never published when the MES crashed before the publish', async () => {
+    let crash = true;
+    await startOrders(
+      { ttlMs: 30_000, resendMs: 20_000, maxAttempts: 1, failMarginMs: 5_000 },
+      true,
+      () => {
+        if (!crash) return Promise.resolve();
+        crash = false;
+        return Promise.reject(new Error('crash between the attempt row and the publish'));
+      },
+    );
+    const sent = await dispatch('VB-100', 1, 'cnc-01');
+    await until(
+      'the attempt written',
+      async () => (await command(sent.commandId)).attempts.length >= 1,
+    );
+    // The restarted MES finds an unpublished delivery: it doesn't count, and is sent again.
+    await startOrders({ ttlMs: 30_000, resendMs: 20_000, maxAttempts: 1, failMarginMs: 5_000 });
+    await until('confirmed', async () => (await command(sent.commandId)).confirmed, 60_000);
+    const attempts = (await command(sent.commandId)).attempts;
+    expect(attempts[0]?.publishedAt).toBeNull();
+    expect(attempts.filter((a) => a.publishedAt !== null)).toHaveLength(1);
+    expect(deviceAccepted(sent.commandId)).toBe(1);
+  }, 120_000);
+
   it('re-dispatches to the new run after a simulator restart: the old job lost, one job in the new run', async () => {
     await startOrders({ ttlMs: 20_000, resendMs: 10_000, maxAttempts: 3, failMarginMs: 5_000 });
     const sent = await dispatch('VB-200', 3, 'cnc-01');
@@ -509,26 +669,35 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
     expect(deviceAccepted(again.command.commandId, 'current')).toBe(1);
   }, 240_000);
 
-  it('ends exactly once: per run at most the order quantity accepted, at most one accepted fact per command', async () => {
-    for (const run of [...pastRuns, simulator.events]) {
-      const perOrder = new Map<string, number>();
-      const perCommand = new Map<string, number>();
+  it('ends exactly once per order across runs and per command: never more blanks than the order', async () => {
+    // Per order, across every run: the blanks of the jobs accepted in the current run, plus those
+    // of jobs of ended runs that started (a job that never started there made nothing).
+    const perOrder = new Map<string, number>();
+    const perCommand = new Map<string, number>();
+    const runs = [...pastRuns, simulator.events];
+    for (const [index, run] of runs.entries()) {
+      const current = index === runs.length - 1;
+      const started = new Set(
+        run
+          .filter((e) => e.type === 'job' && e.transition === 'started')
+          .map((e) => String(e.commandId)),
+      );
       for (const e of run) {
         if (e.type !== 'job' || e.transition !== 'accepted') continue;
-        perOrder.set(
-          String(e.orderId),
-          (perOrder.get(String(e.orderId)) ?? 0) + Number(e.quantity),
-        );
         perCommand.set(String(e.commandId), (perCommand.get(String(e.commandId)) ?? 0) + 1);
+        if (current || started.has(String(e.commandId))) {
+          const order = String(e.orderId);
+          perOrder.set(order, (perOrder.get(order) ?? 0) + Number(e.quantity));
+        }
       }
-      for (const [order, quantity] of perOrder) {
-        expect(quantity, order).toBeLessThanOrEqual(quantities.get(order) ?? 0);
-      }
-      for (const [id, count] of perCommand) expect(count, id).toBe(1);
     }
+    for (const [order, quantity] of perOrder) {
+      expect(quantity, order).toBeLessThanOrEqual(quantities.get(order) ?? 0);
+    }
+    for (const [id, count] of perCommand) expect(count, id).toBe(1);
     // The MES's reading agrees with the device: a command it holds accepted was accepted there.
     for (const c of await orders.commands()) {
-      expect(c.job !== null, c.commandId).toBe(deviceAccepted(c.commandId) === 1);
+      expect(c.job !== null, `${c.commandId} ${c.state}`).toBe(deviceAccepted(c.commandId) === 1);
     }
     expect(
       (await orders.incidents()).filter(

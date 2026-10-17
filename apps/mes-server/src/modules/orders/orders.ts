@@ -68,6 +68,13 @@ export interface OrdersIngest {
     component: string,
   ): Promise<readonly { readonly instance: string; readonly status: 'online' | 'offline' }[]>;
   deviceProgress(equipment: string): Promise<DeviceProgress>;
+  seqStoredBefore(equipment: string, epoch: number, at: Date): Promise<number | null>;
+  settled(
+    equipment: string,
+    epoch: number,
+  ): Promise<{
+    readonly incidents: readonly { readonly seqFrom: number; readonly seqTo: number }[];
+  }>;
   newestDeviceEpochs(): Promise<Map<string, number>>;
   cyclesBetween(
     equipment: string,
@@ -122,6 +129,8 @@ export interface OrdersOptions {
   readonly mesEpoch?: number;
   readonly registry?: Registry;
   readonly log?: OrdersLog;
+  /** Test seam: runs after a delivery's attempt row is committed, before its publish. */
+  readonly beforePublish?: (commandId: string) => Promise<void>;
 }
 
 export type OrderErrorKind = 'not-found' | 'conflict' | 'invalid';
@@ -200,6 +209,7 @@ export interface CommandRecord {
     readonly attempt: number;
     readonly issuedAt: Date;
     readonly expiresAt: Date;
+    readonly publishedAt: Date | null;
   }[];
 }
 
@@ -271,6 +281,8 @@ const silent: OrdersLog = { info: () => undefined, warn: () => undefined, error:
 const time = (date: Date | null): number | null => (date === null ? null : date.getTime());
 
 type OrderRow = Selectable<ProductionOrderTable>;
+/** A reading with what is recorded beside it. */
+type Recorded = CommandReading & { readonly final: boolean; readonly lostStarted: number | null };
 type CommandRow = Selectable<DispatchCommandTable>;
 
 /**
@@ -360,7 +372,10 @@ export class Orders {
       .where('closed_at', 'is', null)
       .execute();
     for (const row of open) this.#openIncidents.add(row.key);
-    this.#heardJobs.push(...(await this.#ingest.jobFacts()));
+    // Job facts of the runs still going (an older run's commands are all settled by its end).
+    for (const [equipment, epoch] of await this.#ingest.newestDeviceEpochs()) {
+      this.#heardJobs.push(...(await this.#ingest.jobFacts({ equipment, epoch })));
+    }
     this.#unsubscribe = this.#ingest.onStored((notice) => {
       this.#onNotice(notice);
     });
@@ -663,6 +678,71 @@ export class Orders {
   }
 
   /**
+   * Writes off a command of the order whose device run has ended (`order:abandon`, #174 review):
+   * it becomes `abandoned` (settled and final; its incidents closed) and its whole quantity counts
+   * as dispatched, unless it is already final with what its facts proved. A run's end settles
+   * its commands by itself; this is the supervisor's explicit sign-off for one whose facts will
+   * never be fully known, so that the CNC's queue and the order's books move on knowingly.
+   * Refused (409 `order-state`) while its run goes on.
+   */
+  async abandon(
+    id: string,
+    request: { readonly version: number; readonly commandId: string },
+    context: WriteContext,
+  ): Promise<OrderRecord> {
+    return this.#write(id, request.version, context, 'order.abandon-command', async (trx, row) => {
+      expectStatus(row, ['dispatched', 'in-progress'], 'abandon a command');
+      const command = await trx
+        .selectFrom('orders.dispatch_command')
+        .selectAll()
+        .where('command_id', '=', request.commandId)
+        .where('order_id', '=', id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!command) {
+        throw new OrderError('not-found', `no command ${request.commandId} of order ${id}`);
+      }
+      if (command.state === 'abandoned') {
+        throw new OrderError(
+          'conflict',
+          `${request.commandId} is abandoned already`,
+          PROBLEM_TYPES.orderState,
+        );
+      }
+      const newest = (await this.#ingest.newestDeviceEpochs()).get(command.equipment);
+      if (newest === undefined || newest <= command.device_epoch) {
+        throw new OrderError(
+          'conflict',
+          `${request.commandId}: its device run ${String(command.device_epoch)} has not ended; only a command of an ended run may be abandoned`,
+          PROBLEM_TYPES.orderState,
+        );
+      }
+      await trx
+        .updateTable('orders.dispatch_command')
+        .set({
+          state: 'abandoned',
+          settled: true,
+          final: true,
+          updated_at: sql<Date>`clock_timestamp()`,
+        })
+        .where('command_id', '=', request.commandId)
+        .execute();
+      await this.#closeIncidents(trx, { orderId: id, commandId: request.commandId }, 'abandoned');
+      return {
+        set: { dispatch_lost: true },
+        touched: [request.commandId],
+        audit: {
+          commandId: request.commandId,
+          stateBefore: command.state,
+          job: command.job,
+          deviceEpoch: command.device_epoch,
+          counted: command.quantity,
+        },
+      };
+    }).then((r) => r.order);
+  }
+
+  /**
    * The order is completed (#175's seam: execution decides it from final data, plan H1);
    * `short` when packed good < quantity. Posts `completed`.
    */
@@ -743,7 +823,17 @@ export class Orders {
             }
             const orders = new Map<string, 'imported' | 'updated'>();
             for (const entry of page.entries) {
-              const change = await this.#importEntry(trx, entry, page.feedId);
+              // One entry the database refuses must not poison the page (nor every later import):
+              // it is undone to its savepoint and recorded as rejected, the page commits.
+              await sql`SAVEPOINT erp_entry`.execute(trx);
+              let change: 'imported' | 'updated' | undefined;
+              try {
+                change = await this.#importEntry(trx, entry, page.feedId);
+                await sql`RELEASE SAVEPOINT erp_entry`.execute(trx);
+              } catch (error) {
+                await sql`ROLLBACK TO SAVEPOINT erp_entry`.execute(trx);
+                change = await this.#invalidEntry(trx, entry, page.feedId, error);
+              }
               if (change && orders.get(entry.order.orderNumber) !== 'imported') {
                 orders.set(entry.order.orderNumber, change);
               }
@@ -914,19 +1004,7 @@ export class Orders {
     orders: string[];
     commands: string[];
   }> {
-    let select = trx
-      .selectFrom('orders.dispatch_command')
-      .selectAll()
-      .where('state', 'not in', ['rejected', 'expired', 'not-accepted'])
-      .where((eb) =>
-        eb.or([
-          eb('job', 'is', null),
-          eb.and([
-            eb('job', '<>', 'lost'),
-            eb.or([eb('job', '<>', 'completed'), eb('confirmed', '=', false)]),
-          ]),
-        ]),
-      );
+    let select = trx.selectFrom('orders.dispatch_command').selectAll().where('final', '=', false);
     if (filter.orderId !== undefined) select = select.where('order_id', '=', filter.orderId);
     const rows = await select.orderBy('queue_position').execute();
     const readings = new Map<string, { row: CommandRow; reading: CommandReading }>();
@@ -948,17 +1026,36 @@ export class Orders {
       progress.set(equipment, await this.#ingest.deviceProgress(equipment));
     }
     const now = this.#now();
-    const changed: { row: CommandRow; reading: CommandReading }[] = [];
+    const changed: { row: CommandRow; reading: Recorded }[] = [];
     for (const row of rows) {
       const device = progress.get(row.equipment);
+      const mine = attempts.filter((a) => a.command_id === row.command_id);
+      const first = mine[0];
+      // Only needed to settle by `seqAfterExpiry`: read when an answer carries one.
+      const before =
+        first !== undefined &&
+        !row.settled &&
+        results.some(
+          (r) =>
+            r.value.commandId === row.command_id &&
+            (r.value.result === 'unknown' || r.value.result === 'expired') &&
+            r.value.seqAfterExpiry !== null,
+        )
+          ? await this.#ingest.seqStoredBefore(row.equipment, row.device_epoch, first.issued_at)
+          : null;
       const reading = readCommand(
         {
           commandId: row.command_id,
           equipment: row.equipment,
           deviceEpoch: row.device_epoch,
+          previous: { state: row.state, settled: row.settled },
           attempts: attempts
             .filter((a) => a.command_id === row.command_id)
-            .map((a) => ({ issuedAt: a.issued_at.getTime(), expiresAt: a.expires_at.getTime() })),
+            .map((a) => ({
+              issuedAt: a.issued_at.getTime(),
+              expiresAt: a.expires_at.getTime(),
+              published: a.published_at !== null,
+            })),
           results: results.filter((r) => r.value.commandId === row.command_id),
           facts: facts
             .filter((f) => f.commandId === row.command_id)
@@ -967,6 +1064,8 @@ export class Orders {
             epoch: device?.epoch ?? null,
             newestEpoch: newest.get(row.equipment) ?? null,
             receivedThrough: device?.receivedThrough ?? null,
+            seen: device?.seen ?? [],
+            before,
             settledSeq: device?.settledSeq ?? null,
             settledTime: time(device?.settledTime ?? null),
           },
@@ -975,7 +1074,19 @@ export class Orders {
         this.#timings,
       );
       readings.set(row.command_id, { row, reading });
-      if (this.#differs(row, reading)) changed.push({ row, reading });
+      // Final once its run's facts are refused (a newer epoch reached the device stream), or its
+      // job completed and was confirmed: nothing can change it any more.
+      const final =
+        (device?.epoch !== null &&
+          device?.epoch !== undefined &&
+          device.epoch > row.device_epoch) ||
+        (reading.job === 'completed' && reading.confirmed);
+      const lostStarted =
+        reading.job === 'lost' && device
+          ? Math.max(row.lost_started ?? 0, await this.#lostStarted(row, reading, device))
+          : null;
+      const record = { ...reading, final, lostStarted };
+      if (this.#differs(row, record)) changed.push({ row, reading: record });
     }
     const orders = new Set<string>();
     const commands = new Set<string>();
@@ -1015,9 +1126,11 @@ export class Orders {
     return { readings, orders: [...orders], commands: [...commands] };
   }
 
-  #differs(row: CommandRow, reading: CommandReading): boolean {
+  #differs(row: CommandRow, reading: Recorded): boolean {
     const accepted = reading.accepted;
     return (
+      row.final !== reading.final ||
+      row.lost_started !== reading.lostStarted ||
       row.state !== reading.state ||
       row.settled !== reading.settled ||
       (reading.failed && !row.failed) ||
@@ -1038,15 +1151,14 @@ export class Orders {
   async #record(
     trx: Transaction<Database>,
     row: CommandRow,
-    reading: CommandReading,
+    reading: Recorded,
   ): Promise<CommandRow> {
-    const lostStarted =
-      reading.job === 'lost' ? (row.lost_started ?? (await this.#lostStarted(row, reading))) : null;
     return trx
       .updateTable('orders.dispatch_command')
       .set({
         state: reading.state,
         settled: reading.settled,
+        final: reading.final,
         failed: row.failed || reading.failed,
         accepted_by: reading.accepted?.by ?? null,
         accepted_seq: reading.accepted?.seq ?? null,
@@ -1055,7 +1167,7 @@ export class Orders {
         job: reading.job,
         started_at: reading.started ? new Date(reading.started.at) : null,
         completed_at: reading.completedAt === null ? null : new Date(reading.completedAt),
-        lost_started: lostStarted,
+        lost_started: reading.lostStarted,
         rejection: reading.rejection,
         seq_after_expiry: reading.seqAfterExpiry,
         updated_at: sql<Date>`clock_timestamp()`,
@@ -1066,13 +1178,32 @@ export class Orders {
   }
 
   /**
-   * The blanks a lost job started (its run ended before `completed`): none if it never started;
-   * else its OP10 cycles completed before the next job's `started` fact on the CNC, plus one for
-   * a blank that may have been in the machine when the run ended, at most its quantity. The plus
-   * one errs towards a short order, never towards more blanks than the order's quantity; #175's
-   * units can tell it exactly.
+   * The blanks a lost job started (its run ended before `completed`), erring towards a short
+   * order, never towards more blanks than the order's quantity:
+   * - its whole quantity while its facts are not fully known: accepted only by a result (no fact),
+   *   or a number after its `started` fact (or, without one, its acceptance) missing, in the
+   *   stream (while the run's epoch is still the stream's) or as a gap incident of the run;
+   * - else none if it never started, or its OP10 cycles before the next job's `started` fact,
+   *   plus one that may have been in the machine, at most its quantity.
+   * The caller keeps the running maximum while late facts may still arrive (#175's units can tell
+   * it exactly).
    */
-  async #lostStarted(row: CommandRow, reading: CommandReading): Promise<number> {
+  async #lostStarted(
+    row: CommandRow,
+    reading: CommandReading,
+    device: DeviceProgress,
+  ): Promise<number> {
+    if (!reading.confirmed || reading.accepted === null) return row.quantity;
+    const from = reading.started?.seq ?? reading.accepted.seq;
+    let known: boolean;
+    if (device.epoch === row.device_epoch) {
+      const range = device.seen.find(([lo, hi]) => lo <= from && from <= hi);
+      known = range !== undefined && device.lastSeq !== null && range[1] >= device.lastSeq;
+    } else {
+      const { incidents } = await this.#ingest.settled(row.equipment, row.device_epoch);
+      known = !incidents.some((incident) => incident.seqTo >= from);
+    }
+    if (!known) return row.quantity;
     if (reading.started === null) return 0;
     const started = reading.started;
     const later = (
@@ -1122,6 +1253,25 @@ export class Orders {
     }
     if (reading.settled) {
       await this.#closeIncidents(trx, { key: `command-failed:${id}` }, reading.state);
+      await this.#closeIncidents(trx, { key: `command-conflict:${id}` }, reading.state);
+    }
+    if (reading.state === 'conflict' && row.state !== 'conflict') {
+      await this.#incident(trx, {
+        ...base,
+        type: 'command-conflict',
+        key: `command-conflict:${id}`,
+        message: `${id}: the device holds another job under this command id (command-conflict); nothing is settled until its run ends, and its quantity counts as dispatched`,
+      });
+      flags.dispatch_failed = true;
+    }
+    if (row.settled && row.job === null && reading.job !== null) {
+      // A reading proven wrong: the order may now hold more than its quantity on the device.
+      await this.#incident(trx, {
+        ...base,
+        type: 'duplicate-job',
+        key: `duplicate-job:late:${id}`,
+        message: `${id}: an accepted fact arrived for a command settled without a job (${row.state}); its quantity now counts as dispatched`,
+      });
     }
     if (reading.settled && !row.settled && reading.job === null) {
       if (reading.state === 'epoch-ended') flags.dispatch_lost = true;
@@ -1255,17 +1405,18 @@ export class Orders {
         deviceEpoch: row.device_epoch,
       },
     });
-    await this.#db.transaction().execute(async (trx) => {
+    const attempt = await this.#db.transaction().execute(async (trx) => {
       const last = await trx
         .selectFrom('orders.command_attempt')
         .select((eb) => eb.fn.max('attempt').as('attempt'))
         .where('command_id', '=', row.command_id)
         .executeTakeFirst();
+      const number = (last?.attempt ?? 0) + 1;
       await trx
         .insertInto('orders.command_attempt')
         .values({
           command_id: row.command_id,
-          attempt: (last?.attempt ?? 0) + 1,
+          attempt: number,
           issued_at: new Date(issuedAt),
           expires_at: new Date(expiresAt),
           mes_epoch: this.#mesEpoch,
@@ -1278,8 +1429,17 @@ export class Orders {
         .where('command_id', '=', row.command_id)
         .where('state', '=', 'queued')
         .execute();
+      return number;
     });
+    await this.#options.beforePublish?.(row.command_id);
     await publisher.publish(topic, JSON.stringify(message));
+    // Acknowledged by the broker: only now does the delivery count towards the attempts.
+    await this.#db
+      .updateTable('orders.command_attempt')
+      .set({ published_at: new Date(this.#now()) })
+      .where('command_id', '=', row.command_id)
+      .where('attempt', '=', attempt)
+      .execute();
     this.#published?.inc();
     this.#log.info(
       { command: row.command_id, equipment: row.equipment, expiresAt: message.expiresAt },
@@ -1580,7 +1740,8 @@ export class Orders {
         .values({ id: erp.orderNumber, ...values })
         .execute();
     }
-    if (erp.routing.length > 0) {
+    // Operations only for an order the MES will run (a refused routing may not even be one).
+    if (status === 'imported' && erp.routing.length > 0) {
       await trx
         .insertInto('orders.order_operation')
         .values(
@@ -1618,6 +1779,87 @@ export class Orders {
       plantAt,
     });
     return existing ? 'updated' : 'imported';
+  }
+
+  /**
+   * A feed entry the database refused (#174 review): recorded as rejected where it can be (the
+   * order row if none exists yet, the inbound log and a `rejected` status message, each under a
+   * savepoint of its own), with an `erp-invalid-entry` incident; the page then commits.
+   */
+  async #invalidEntry(
+    trx: Transaction<Database>,
+    entry: FeedEntry,
+    feedId: string,
+    error: unknown,
+  ): Promise<'imported' | undefined> {
+    const erp = entry.order;
+    const reason = `the entry could not be stored: ${(error instanceof Error ? error.message : String(error)).slice(0, 300)}`;
+    const attempt = async (work: () => Promise<unknown>): Promise<boolean> => {
+      await sql`SAVEPOINT erp_invalid`.execute(trx);
+      try {
+        await work();
+        await sql`RELEASE SAVEPOINT erp_invalid`.execute(trx);
+        return true;
+      } catch {
+        await sql`ROLLBACK TO SAVEPOINT erp_invalid`.execute(trx);
+        return false;
+      }
+    };
+    const stored = await attempt(async () => {
+      const row = await trx
+        .insertInto('orders.production_order')
+        .values({
+          id: erp.orderNumber,
+          revision: erp.revision,
+          feed_seq: entry.feedSeq,
+          product: erp.product,
+          quantity: erp.quantity,
+          priority: erp.priority,
+          planned_start: erp.plannedStart,
+          due_date: erp.dueDate,
+          erp_status: erp.status,
+          status: 'rejected',
+          rejection: reason,
+          routing: JSON.stringify(erp.routing),
+          bom: JSON.stringify(erp.bom),
+        })
+        .onConflict((c) => c.column('id').doNothing())
+        .returning('id')
+        .executeTakeFirst();
+      return row;
+    });
+    await attempt(async () => {
+      await trx
+        .insertInto('orders.erp_message_log')
+        .values({
+          direction: 'in',
+          kind: 'feed-entry',
+          order_id: erp.orderNumber,
+          revision: erp.revision,
+          idempotency_key: null,
+          feed_id: feedId,
+          feed_seq: entry.feedSeq,
+          payload: JSON.stringify(entry),
+          status: 'rejected',
+          detail: reason,
+          receipt: null,
+        })
+        .execute();
+      await this.#statusMessage(
+        trx,
+        { id: erp.orderNumber, revision: erp.revision },
+        'rejected',
+        this.#plantNow(),
+        { reason },
+      );
+    });
+    await this.#incident(trx, {
+      type: 'erp-invalid-entry',
+      key: `erp-invalid-entry:${feedId}:${String(entry.feedSeq)}`,
+      orderId: null,
+      message: `ERP feed entry ${String(entry.feedSeq)} (${erp.orderNumber} revision ${String(erp.revision)}) recorded as rejected: ${reason}`,
+    });
+    return stored ? 'imported' : undefined;
   }
 
   async #cursor(): Promise<{ feedId: string | null; cursor: number }> {
@@ -1731,7 +1973,12 @@ export class Orders {
 
   async #closeIncidents(
     trx: Transaction<Database>,
-    which: { readonly key?: string; readonly orderId?: string; readonly type?: OrderIncidentType },
+    which: {
+      readonly key?: string;
+      readonly orderId?: string;
+      readonly commandId?: string;
+      readonly type?: OrderIncidentType;
+    },
     resolution: string,
   ): Promise<void> {
     let update = trx
@@ -1741,6 +1988,7 @@ export class Orders {
     if (which.key !== undefined) update = update.where('key', '=', which.key);
     if (which.orderId !== undefined) update = update.where('order_id', '=', which.orderId);
     if (which.type !== undefined) update = update.where('type', '=', which.type);
+    if (which.commandId !== undefined) update = update.where('command_id', '=', which.commandId);
     const closed = await update.returning('key').execute();
     for (const row of closed) this.#openIncidents.delete(row.key);
   }
@@ -1755,7 +2003,7 @@ export class Orders {
     const [commands, operations] = await Promise.all([
       db
         .selectFrom('orders.dispatch_command')
-        .select(['order_id', 'quantity', 'job', 'lost_started', 'settled'])
+        .select(['order_id', 'quantity', 'job', 'lost_started', 'settled', 'state', 'rejection'])
         .where('order_id', 'in', ids)
         .execute(),
       db
@@ -1848,7 +2096,14 @@ function countedBlanks(command: {
   readonly job: JobState | null;
   readonly quantity: number;
   readonly lost_started: number | null;
+  readonly state: CommandState;
+  readonly rejection: string | null;
 }): number {
+  // A job under its id that isn't its own (command-conflict), or a command written off without
+  // knowing: its quantity counts, so the order can end short but never over.
+  if (command.state === 'abandoned' || command.rejection === 'command-conflict') {
+    return command.quantity;
+  }
   if (command.job === null) return 0;
   if (command.job === 'lost') return command.lost_started ?? command.quantity;
   return command.quantity;
@@ -1866,7 +2121,12 @@ function commandAudit(command: CommandRow): Record<string, unknown> {
 
 function toCommand(
   row: CommandRow,
-  attempts: readonly { attempt: number; issued_at: Date; expires_at: Date }[],
+  attempts: readonly {
+    attempt: number;
+    issued_at: Date;
+    expires_at: Date;
+    published_at: Date | null;
+  }[],
 ): CommandRecord {
   return {
     commandId: row.command_id,
@@ -1897,6 +2157,7 @@ function toCommand(
       attempt: a.attempt,
       issuedAt: a.issued_at,
       expiresAt: a.expires_at,
+      publishedAt: a.published_at,
     })),
   };
 }

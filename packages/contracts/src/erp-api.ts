@@ -370,7 +370,7 @@ export const qualityNotificationReceiptSchema = z.strictObject({
 });
 
 /** The answer to any message post, told apart by `kind`. */
-export const messageReceiptSchema = z.union([
+export const messageReceiptSchema = z.discriminatedUnion('kind', [
   orderMessageReceiptSchema,
   qualityNotificationReceiptSchema,
 ]);

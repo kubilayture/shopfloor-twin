@@ -165,19 +165,22 @@ export class Erp {
   }
 
   /**
-   * Why a new quality notification can't be stored, or undefined: a lot or order subject the ERP
-   * doesn't hold, a decision on a hold whose `opened` it hasn't received (or received for another
-   * subject), a second decision on a hold.
+   * Why a new quality notification can't be stored, or undefined: an opening on a lot or order
+   * the ERP doesn't hold, a decision on a hold whose `opened` it hasn't received (or received for
+   * another subject), a second decision on a hold.
    */
   notificationRefusal(body: QualityNotificationRequest): NotificationRefusal | undefined {
     const { subject } = body;
-    if (subject.kind === 'lot' && !this.#lotById.has(subject.id)) {
-      return { reason: 'unknown-subject', detail: `lot ${subject.id} is not in the lot list` };
+    if (body.transition === 'opened') {
+      if (subject.kind === 'lot' && !this.#lotById.has(subject.id)) {
+        return { reason: 'unknown-subject', detail: `lot ${subject.id} is not in the lot list` };
+      }
+      if (subject.kind === 'order' && this.revisions(subject.id).length === 0) {
+        return { reason: 'unknown-subject', detail: `order ${subject.id} is unknown` };
+      }
+      return undefined;
     }
-    if (subject.kind === 'order' && this.revisions(subject.id).length === 0) {
-      return { reason: 'unknown-subject', detail: `order ${subject.id} is unknown` };
-    }
-    if (body.transition === 'opened') return undefined;
+    // A decision is judged against its hold's opening, whose subject was checked then.
     const stored = this.#store
       .notifications(body.holdId)
       .map((n) => n.body as QualityNotificationRequest);

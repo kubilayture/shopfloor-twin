@@ -760,13 +760,36 @@ describe('quality notifications and the lot view (Phase 8)', () => {
     const released = notification('released');
     const early = await problem(await notify(base, released), 422);
     expect(early.type).toBe(ERP_PROBLEM_TYPES.holdSequence);
-    expect((await notify(base, notification('opened'))).status).toBe(201);
+    const openedResponse = await notify(base, notification('opened'));
+    expect(openedResponse.status).toBe(201);
+    const openedReceipt = messageReceiptSchema.parse(await openedResponse.json());
     const elsewhere = notification('released', { subject: { kind: 'lot', id: 'SK2-2610-01' } });
     const moved = await problem(await notify(base, elsewhere), 422);
     expect(moved.type).toBe(ERP_PROBLEM_TYPES.holdSequence);
     expect(moved.detail).toContain('was opened on lot SK1-2610-01');
-    expect((await notify(base, released)).status).toBe(201);
-    expect((await notify(base, released)).status).toBe(200);
+    // A decision on a subject the ERP doesn't hold is judged against the opening, not the lot list.
+    const unknownLot = notification('released', { subject: { kind: 'lot', id: 'SK1-9999-99' } });
+    expect((await problem(await notify(base, unknownLot), 422)).type).toBe(
+      ERP_PROBLEM_TYPES.holdSequence,
+    );
+    const releasedResponse = await notify(base, released);
+    expect(releasedResponse.status).toBe(201);
+    const releasedReceipt = messageReceiptSchema.parse(await releasedResponse.json());
+    // The outbox replaying both after the decision: the stored answers, no second hold.
+    const openedAgain = await notify(base, notification('opened'));
+    expect(openedAgain.status).toBe(200);
+    expect(await openedAgain.json()).toEqual(openedReceipt);
+    const releasedAgain = await notify(base, released);
+    expect(releasedAgain.status).toBe(200);
+    expect(await releasedAgain.json()).toEqual(releasedReceipt);
+    const view = await lotView(base, 'SK1-2610-01');
+    expect(view.holds).toHaveLength(1);
+    expect(view.holds[0]).toMatchObject({
+      holdId: 'H-1',
+      state: 'released',
+      notifications: [1, 2],
+    });
+    expect(view.blocked).toBe(false);
     // A second decision: under its own key (another transition or number) it is refused.
     for (const second of [
       notification('rejected'),

@@ -185,9 +185,29 @@ describe('revisions', () => {
       clearedAt: null,
     } as const;
     expect(revisionSpans(fact, set)).toContainEqual({ from: T0 + 2 * HOUR, to: T0 + 3 * HOUR + 5 });
-    expect(revisedHours(fact, set)).toEqual([T0 + 2 * HOUR, T0 + 3 * HOUR]);
+    // The superseded occurrence's span starts at its own raise (#192): hour T0 + 1 h showed it
+    // active at its end, T0 + 2 h, where it now ends.
+    expect(revisionSpans(fact, set)).toContainEqual({ from: T0, to: T0 + 3 * HOUR + 5 });
+    expect(revisedHours(fact, set)).toEqual([T0, T0 + HOUR, T0 + 2 * HOUR, T0 + 3 * HOUR]);
     const end = { kind: 'end', raisedAt: T0, before: null, after: null } as const;
     expect(revisedHours(end, set)).toEqual([T0, T0 + HOUR, T0 + 2 * HOUR, T0 + 3 * HOUR]);
+  });
+
+  it('revises the hour of a superseded occurrence raised just before a late raise on the hour (#192)', () => {
+    // The property test's counterexample (seed -527283026): a raised 10:59:59.979, cleared 500 ms
+    // later; a late raise of the same point at 11:00:00.000 supersedes it.
+    const first = occ('a', 'X', 1, T0 + HOUR - 21, T0 + HOUR + 479);
+    const late = occ('a', 'X', 2, T0 + HOUR, T0 + HOUR + 500);
+    const horizon = { asOf: T0 + 2 * HOUR };
+    const hour = { from: T0, to: T0 + HOUR };
+    const was = bucketKpis([first], [hour], horizon, CONFIG)[0];
+    const now = bucketKpis([first, late], [hour], horizon, CONFIG)[0];
+    expect([was?.activeAtEnd, was?.fleeting]).toEqual([1, 1]);
+    expect([now?.activeAtEnd, now?.fleeting]).toEqual([0, 0]);
+    const set = prepare([first, late], horizon, CONFIG);
+    const fact = { kind: 'raise', ...late } as const;
+    expect(revisionSpans(fact, set)).toContainEqual({ from: T0 + HOUR - 21, to: T0 + HOUR + 479 });
+    expect(revisedHours(fact, set)).toEqual([T0, T0 + HOUR]);
   });
 });
 

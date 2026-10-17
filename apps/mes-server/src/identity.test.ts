@@ -1092,12 +1092,8 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     expect(forKim).toEqual(['user.create', 'user.update', 'user.password-reset']);
     expect(audit.some((r) => r.action === 'session.login')).toBe(true);
     for (const row of audit) {
-      expect([row.action, row.roles, row.authenticated, typeof row.request_id]).toEqual([
-        row.action,
-        ['admin'],
-        true,
-        'string',
-      ]);
+      expect([row.action, row.roles, row.authenticated]).toEqual([row.action, ['admin'], true]);
+      expect(row.request_id).toMatch(/\S/);
     }
   });
 

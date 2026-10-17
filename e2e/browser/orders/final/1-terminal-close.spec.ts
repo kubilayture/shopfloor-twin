@@ -13,7 +13,9 @@ import { MesClient } from '../../../src/clients.ts';
  * 2. the operator signs on at Cell M1, starts coding the scrap record (a reason chosen, a comment
  *    typed) and signs off without saving: a draft;
  * 3. a second operator signs on at the same page and sees none of it (no reason chosen, an empty
- *    comment), codes the scrap record, signs off the order's OP10 and OP20 at Cell M1 and signs off;
+ *    comment) and signs off; the first operator signs on again and sees their draft gone too;
+ * 4. the second operator codes the scrap record (the saved comment is exactly theirs), signs off
+ *    the order's OP10 and OP20 at Cell M1 and signs off;
  * then the supervisor closes the order through `/orders/<id>` (every operation is signed off at
  * both work centers). The reconciliation checks the ERP's `closed` and the audit log.
  */
@@ -73,24 +75,43 @@ test('operators sign off a completed order at both terminals, a second operator 
   await expect(tablet.getByTestId('terminal-username')).toHaveValue('');
   await expect(tablet.getByTestId('terminal-password')).toHaveValue('');
 
-  // 3. The second operator on the same page: none of the draft, then the coding, OP10 and OP20.
+  /** The scrap record shows no draft: no reason chosen, an empty comment, no draft text. */
+  const noDraft = async () => {
+    await expect(tablet.getByTestId(`terminal-scrap-${scrapId}`)).toBeVisible({ timeout: 30_000 });
+    await expect(tablet.getByTestId(`terminal-scrap-comment-${scrapId}`)).toHaveValue('');
+    await expect(
+      tablet.locator(`[data-testid^="terminal-scrap-reason-${scrapId}-"][aria-pressed="true"]`),
+    ).toHaveCount(0);
+    await expect(tablet.getByText(DRAFT_COMMENT)).toHaveCount(0);
+  };
+  // 3. The second operator on the same page sees none of it, and signs off.
+  await signOnAtTerminal(tablet, 'cell-m1', second);
+  await noDraft();
+  await tablet.getByTestId('terminal-sign-off').click();
+  await expect(tablet.getByTestId('terminal-username')).toHaveValue('');
+  // 4. The first operator back: their own draft is gone too (sign-off discards it).
+  await signOnAtTerminal(tablet, 'cell-m1', first);
+  await noDraft();
+  await tablet.getByTestId('terminal-sign-off').click();
+  await expect(tablet.getByTestId('terminal-username')).toHaveValue('');
+  // 5. The second operator codes the scrap, then signs off the order's Cell M1 operations.
   const secondCookie = await signOnAtTerminal(tablet, 'cell-m1', second);
-  await expect(tablet.getByTestId(`terminal-scrap-${scrapId}`)).toBeVisible({ timeout: 30_000 });
-  await expect(tablet.getByTestId(`terminal-scrap-comment-${scrapId}`)).toHaveValue('');
-  await expect(
-    tablet.locator(`[data-testid^="terminal-scrap-reason-${scrapId}-"][aria-pressed="true"]`),
-  ).toHaveCount(0);
-  await expect(tablet.getByText(DRAFT_COMMENT)).toHaveCount(0);
+  await noDraft();
+  const comment = 'coded at the Cell M1 terminal';
   await tablet.getByTestId(`terminal-scrap-reason-${scrapId}-${reason}`).click();
-  await tablet
-    .getByTestId(`terminal-scrap-comment-${scrapId}`)
-    .fill('coded at the Cell M1 terminal');
+  await tablet.getByTestId(`terminal-scrap-comment-${scrapId}`).fill(comment);
   await tablet.getByTestId(`terminal-scrap-code-${scrapId}`).click();
   await expect(tablet.getByTestId(`terminal-scrap-${scrapId}`)).toHaveCount(0);
   const coded = (await new MesClient(mesUrl, secondCookie).scrapRecords(scrapOrder)).records.find(
     (r) => r.id === record.id,
   );
-  expect([coded?.codedReason, coded?.codedBy]).toEqual([reason, second.username]);
+  // Exactly what the second operator typed: nothing of the first one's draft leaked into it.
+  expect([coded?.codedReason, coded?.codedBy, coded?.comment]).toEqual([
+    reason,
+    second.username,
+    comment,
+  ]);
+  expect(coded?.comment ?? '').not.toContain(DRAFT_COMMENT);
   for (const operation of CELL_OPERATIONS) {
     const id = `${closeOrder}-${operation}`;
     await expect(tablet.getByTestId(`terminal-op-state-${id}`)).toContainText('Complete');

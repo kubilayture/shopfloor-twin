@@ -243,13 +243,17 @@ export async function checkOrdersAfterDrain(
   if (!once || Object.keys(facts).length !== truth.orders.jobs.length) {
     ctx.fail(`after the drain, accepted job facts per command: ${JSON.stringify(facts)}`);
   }
-  for (const [id, order] of Object.entries(truth.orders.orders)) {
+  for (const id of Object.keys(truth.orders.orders)) {
     const accepted = truth.orders.jobs
       .filter((j) => j.orderId === id)
       .reduce((s, j) => s + j.quantity, 0);
+    // Against the dataset's quantity (the ERP's latest revision), which the MES must hold too.
+    const ordered = (await ctx.erp.order(id)).order.quantity;
     const detail = await ctx.mes.order(id);
-    if (accepted > detail.order.quantity || order.quantity !== accepted) {
-      ctx.fail(`${id}: jobs accepted ${String(accepted)}, order ${String(detail.order.quantity)}`);
+    if (accepted > ordered || detail.order.quantity !== ordered) {
+      ctx.fail(
+        `${id}: jobs accepted ${String(accepted)}, ERP order ${String(ordered)}, MES order ${String(detail.order.quantity)}`,
+      );
     }
   }
   const incidents = await ctx.stack.sqlJson<unknown[]>(
@@ -264,9 +268,19 @@ export async function checkOrdersAfterDrain(
     .filter(([, o]) => o.completedAt !== null && Date.parse(o.completedAt) < shiftEnd)
     .map(([id]) => id)
     .sort();
+  // The scenario's promise (at least three), and exactly the golden run's set (five in orders-01).
   if (completed.length < 3) {
     ctx.fail(
       `${String(completed.length)} orders completed in shift A, not at least 3: ${completed.join(', ')}`,
+    );
+  }
+  const goldenCompleted = Object.entries(golden.orders)
+    .filter(([, o]) => o.completedAt !== null && Date.parse(o.completedAt) < shiftEnd)
+    .map(([id]) => id)
+    .sort();
+  if (JSON.stringify(completed) !== JSON.stringify(goldenCompleted)) {
+    ctx.fail(
+      `orders completed in shift A: live ${completed.join(', ')}, golden ${goldenCompleted.join(', ')}`,
     );
   }
   // The ERP has every completed order's confirmations and status (the outbox posts with backoff).
@@ -408,8 +422,9 @@ export async function checkOrdersAfterDrain(
       const t = erpView.operations.find((o) => o.operation === op);
       return {
         operation: op,
+        // The view counts messages (1: the final one alone); it carries no confirmation number,
+        // so `n` is left out on both sides.
         kind: t?.confirmations === 1 ? 'final' : `${String(t?.confirmations)} confirmations`,
-        n: 1,
         yield: t?.yield,
         scrap: lines(t?.scrap ?? []),
         reworkPasses: t?.reworkPasses,
@@ -419,7 +434,10 @@ export async function checkOrdersAfterDrain(
     const confirmationDiffs = [
       ...jsonDifferences(expected, mesConfirmations).map((d) => `MES confirmation: ${d}`),
       ...jsonDifferences(expected, erpConfirmations).map((d) => `ERP confirmation: ${d}`),
-      ...jsonDifferences(expected, erpTotals).map((d) => `ERP totals: ${d}`),
+      ...jsonDifferences(
+        expected.map((e) => ({ ...e, n: undefined })),
+        erpTotals,
+      ).map((d) => `ERP totals: ${d}`),
       ...(sentAll ? [] : ['an MES confirmation is not sent']),
       ...(erpView.status === 'completed' ? [] : [`ERP status ${String(erpView.status)}`]),
       ...(erpView.short === order.packedGood < detail.order.quantity ? [] : ['ERP short flag']),
@@ -611,6 +629,9 @@ export async function checkRefusals(
   return { refusals: results, versions: before };
 }
 
+/** The most events one stepping may take (the report sets each stepping's count against it). */
+export const MAX_STEPS = 5_000;
+
 /**
  * Steps the paused simulator event by event (control API `step`) until `done` holds, checked every
  * 20 events, with 10 ms between events. At each check the MES must have caught up: every machine's
@@ -623,7 +644,7 @@ export async function stepUntil(
   ctx: PassContext,
   what: string,
   done: () => Promise<boolean>,
-  maxSteps = 5_000,
+  maxSteps = MAX_STEPS,
 ): Promise<number> {
   let steps = 0;
   for (;;) {
@@ -683,7 +704,13 @@ export async function stepToScrap(ctx: PassContext, order: string) {
     },
     60_000,
   );
-  return { steps, simTime: status.simTime, wallMs: Date.now() - startedAt, records };
+  return {
+    steps,
+    maxSteps: MAX_STEPS,
+    simTime: status.simTime,
+    wallMs: Date.now() - startedAt,
+    records,
+  };
 }
 
 /**
@@ -734,21 +761,22 @@ export async function checkAuditAndClose(
   };
   const expected: Record<string, Record<string, number>> = {
     // At least: live sign-on, start, pause, resume, sign-off; three operation sign-offs at Line A1;
-    // the scrap draft at Cell M1 (sign-on and sign-off, no coding).
+    // the scrap draft at Cell M1 and the return to it (sign-on and sign-off each, no coding).
     [users.operator]: {
-      'session.login': 3,
-      'crew.sign-on': 3,
+      'session.login': 4,
+      'crew.sign-on': 4,
       'operation.start': 1,
       'operation.pause': 1,
       'operation.resume': 1,
       'operation.sign-off': 3,
-      'crew.sign-off': 3,
+      'crew.sign-off': 4,
     },
+    // The refusals' sign-on, the look at the draft, the coding and the Cell M1 sign-offs.
     [users.operator2]: {
-      'crew.sign-on': 1,
+      'crew.sign-on': 3,
       'scrap.code': 1,
       'operation.sign-off': 2,
-      'crew.sign-off': 1,
+      'crew.sign-off': 3,
     },
     [users.supervisor]: { 'order.release': 8, 'order.dispatch': 8, 'order.close': 1 },
   };
@@ -814,14 +842,28 @@ async function erpState(erp: ErpClient, ids: readonly string[]) {
  * byte-identical to before.
  */
 export async function repostOutbox(ctx: PassContext, ids: readonly string[]) {
+  const unsent = () =>
+    ctx.stack.sqlJson<number>(
+      `SELECT count(*) FROM orders.erp_message_log WHERE direction = 'out' AND status <> 'sent'`,
+    );
+  // Nothing on its way first, so the snapshot is the ERP's state after every message.
+  await until(
+    'the outbox drained before the snapshot',
+    async () => (await unsent()) === 0,
+    120_000,
+  );
   const before = await erpState(ctx.erp, ids);
+  const postsBefore = await ctx.erp.postCounts();
+  // As after a crash between the ERP's answer and the MES's commit: the MES stopped, every sent
+  // message pending again, the MES started.
+  await ctx.stack.compose(['stop', 'mes']);
   const reset = await ctx.stack.sqlJson<number>(
     `WITH t AS (UPDATE orders.erp_message_log SET status = 'pending', next_attempt_at = NULL
        WHERE direction = 'out' AND status = 'sent' RETURNING 1) SELECT count(*) FROM t`,
   );
   if (reset === 0) ctx.fail('no sent message in the outbox to post again');
-  ctx.log(`set ${String(reset)} sent messages back to pending; restarting the MES`);
-  await ctx.stack.compose(['restart', 'mes']);
+  ctx.log(`set ${String(reset)} sent messages back to pending; starting the MES again`);
+  await ctx.stack.compose(['start', 'mes']);
   // The restarted container gets a new ephemeral host port (e2e/compose.reconcile.yml).
   const restarted = new MesClient(await ctx.stack.url('mes', 4700));
   await until('MES ready after the restart', () => restarted.ready(), 120_000);
@@ -842,6 +884,16 @@ export async function repostOutbox(ctx: PassContext, ids: readonly string[]) {
     `SELECT count(*) FROM orders.erp_message_log WHERE direction = 'out' AND attempts >= 2`,
   );
   const after = await erpState(ctx.erp, ids);
+  const postsAfter = await ctx.erp.postCounts();
+  // The ERP's own count of what the posts did: every message posted again was a replay, none new.
+  const posts = {
+    replayed: postsAfter.replayed - postsBefore.replayed,
+    created: postsAfter.created - postsBefore.created,
+    other: postsAfter.other - postsBefore.other,
+  };
+  if (posts.replayed !== reset || posts.created !== 0 || posts.other !== 0) {
+    ctx.fail(`ERP posts while the outbox was posted again: ${JSON.stringify({ reset, posts })}`);
+  }
   const diffs = jsonDifferences(before, after);
   if (diffs.length > 0) {
     ctx.fail(
@@ -856,5 +908,6 @@ export async function repostOutbox(ctx: PassContext, ids: readonly string[]) {
     confirmations: after.confirmations.length,
     statusMessages: after.statusMessages.length,
     erpUnchanged: diffs.length === 0,
+    erpPosts: posts,
   };
 }

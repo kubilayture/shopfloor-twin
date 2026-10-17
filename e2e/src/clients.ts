@@ -495,6 +495,23 @@ export class ErpClient {
     return this.#get(`/api/v1/confirmations${query}`, confirmationListSchema);
   }
 
+  /**
+   * The ERP's `erp_message_posts_total` summed over the message kinds (`/metrics`): posts stored
+   * (`created`), answered from the store (`replayed`), and every other outcome.
+   */
+  async postCounts(): Promise<{ created: number; replayed: number; other: number }> {
+    const response = await fetch(`${this.base}/metrics`, { signal: AbortSignal.timeout(5_000) });
+    const text = await response.text();
+    const counts = { created: 0, replayed: 0, other: 0 };
+    for (const match of text.matchAll(
+      /^erp_message_posts_total\{kind="[^"]*",outcome="([^"]*)"\} (\d+)$/gm,
+    )) {
+      const outcome = match[1] === 'created' || match[1] === 'replayed' ? match[1] : 'other';
+      counts[outcome] += Number(match[2]);
+    }
+    return counts;
+  }
+
   /** The status messages received, of one order or of all. */
   statusMessages(orderNumber?: string) {
     const query =

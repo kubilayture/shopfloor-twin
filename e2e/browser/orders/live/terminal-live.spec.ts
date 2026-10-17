@@ -145,7 +145,12 @@ test('the terminal shows the order counts within 2 s of the cycles; an operator 
     await sleep(POLL_MS);
   }
   const until = Date.now();
+  // Sampling stayed inside the shift the operator signed on in (the paced clock at its end).
+  const shiftEnd = Date.parse(view.shift?.end ?? '');
+  const sampledUntil = (await sim.status()).simTime;
   const log = (await page.evaluate(() => window.__countLog)) ?? [];
+  // A count the page showed for a key the truth never had (an order or operation of nothing).
+  const unknownKeys = [...new Set(log.map((s) => s.key))].filter((key) => !truth.has(key));
   const keys = [...truth.keys()].filter((key) => log.some((s) => s.key === key));
   const shown = new Map<string, Change[]>(
     keys.map((key) => [
@@ -203,6 +208,9 @@ test('the terminal shows the order counts within 2 s of the cycles; an operator 
     limitMs: LIMIT_MS,
     keys,
     missing,
+    unknownKeys,
+    shiftEnd: view.shift?.end ?? null,
+    sampledUntil,
     changes: result.measured.length,
     unjudged: result.unjudged,
     latencyMs:
@@ -232,6 +240,8 @@ test('the terminal shows the order counts within 2 s of the cycles; an operator 
   }
 
   expect(missing, 'orders of the truth missing on the terminal').toEqual([]);
+  expect(unknownKeys, 'terminal counts of keys the truth never had').toEqual([]);
+  expect(Date.parse(sampledUntil)).toBeLessThan(shiftEnd);
   expect(result.violations, 'count changes the terminal did not show within 2 s').toEqual([]);
   expect(activity, 'the terminal did not follow the changes').toEqual([]);
   expect(result.measured.length).toBeGreaterThanOrEqual(MIN_CHANGES);

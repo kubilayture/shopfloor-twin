@@ -70,10 +70,10 @@ export interface ExecutionIngest {
   ): Promise<readonly Pick<StateFact, 'seq' | 'state' | 'cause'>[]>;
   deviceProgress(equipment: string): Promise<DeviceProgress>;
   /**
-   * `deviceProgress` of several equipment once every fact it counts has been announced (#178);
-   * without it the module reads `deviceProgress` one by one.
+   * `deviceProgress` of several equipment once every fact it counts has been announced (#178):
+   * what each round judges with.
    */
-  announcedProgress?(equipment: readonly string[]): Promise<Map<string, DeviceProgress>>;
+  announcedProgress(equipment: readonly string[]): Promise<Map<string, DeviceProgress>>;
   newestDeviceEpochs(): Promise<Map<string, number>>;
   cyclesBetween(
     equipment: string,
@@ -378,10 +378,7 @@ export class Execution implements BlankCounter {
       // progress counts has been announced, so it is in the pending sets taken below (or was
       // handled in an earlier round).
       const machines = [...this.#operationOf.keys()];
-      const progress = this.#ingest.announcedProgress
-        ? await this.#ingest.announcedProgress(machines)
-        : new Map<string, DeviceProgress>();
-      for (const machine of machines) await this.#progress(progress, machine);
+      const progress = await this.#ingest.announcedProgress(machines);
       // What this round handles is taken out of the pending sets, and put back if the round
       // fails, so a failed tick (a lost connection, a deadlock) loses no fact heard of.
       const cycles = [...this.#pendingCycles];

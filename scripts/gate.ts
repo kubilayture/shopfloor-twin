@@ -22,9 +22,11 @@
  * shopfloor-gate), GATE_TAG (image tag of the smoke and the reconciliation, default gate),
  * RECONCILE_PROJECT (the reconciliation's project prefix, default <GATE_PROJECT>-reconcile),
  * GATE_KEEP_IMAGES=1 (keep the images).
- * A failed job stops the gate; the cleanup and the record still run.
+ * A failed job stops the gate; the cleanup and the record still run. On SIGINT or SIGTERM it waits
+ * for the running job, cleans up the same way and exits 130 or 143. It refuses GATE_PROJECT
+ * `shopfloor-twin` (the dev stack's) and GATE_TAG `dev`.
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -52,6 +54,16 @@ const selected = (process.env.GATE_STEPS ?? STEPS.join(','))
   .filter((s): s is Step => (STEPS as readonly string[]).includes(s));
 const project = process.env.GATE_PROJECT ?? 'shopfloor-gate';
 const tag = process.env.GATE_TAG ?? 'gate';
+// The gate removes its project's volumes and its tag's images: never the dev stack's (the Compose
+// file's own name, `shopfloor-twin`, and the default tag `dev`).
+if (!/^[a-z0-9][a-z0-9_-]*$/.test(project) || project === 'shopfloor-twin') {
+  console.error(`GATE_PROJECT must name a disposable Compose project, not "${project}"`);
+  process.exit(2);
+}
+if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(tag) || tag === 'dev') {
+  console.error(`GATE_TAG must name images of the gate's own, not "${tag}"`);
+  process.exit(2);
+}
 
 interface JobRecord {
   readonly job: Step;
@@ -68,24 +80,32 @@ const output = (command: string, args: readonly string[]): string => {
   }
 };
 
+/** The job running now, so a signal can wait for it (and pass a SIGTERM on). */
+let current: { child: ChildProcess; exited: Promise<number> } | undefined;
+
 /** Runs a command with inherited output; resolves with its exit code. */
 function run(
   command: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv = {},
 ): Promise<number> {
-  return new Promise((done) => {
-    const child = spawn(command, args, {
-      cwd: REPO,
-      stdio: 'inherit',
-      env: { ...process.env, ...env },
-    });
+  const child = spawn(command, args, {
+    cwd: REPO,
+    stdio: 'inherit',
+    env: { ...process.env, ...env },
+  });
+  const exited = new Promise<number>((done) => {
     child.on('error', () => {
       done(1);
     });
     child.on('exit', (code) => {
       done(code ?? 1);
     });
+  });
+  const running = { child, exited };
+  current = running;
+  return exited.finally(() => {
+    if (current === running) current = undefined;
   });
 }
 
@@ -150,10 +170,57 @@ const commands: Readonly<Record<Step, [string, string[], NodeJS.ProcessEnv]>> = 
 const compose = (...args: string[]) =>
   run('docker', ['compose', '--env-file', env, ...args], { COMPOSE_PROJECT_NAME: project });
 
+let cleaned: Promise<void> | undefined;
+/** The project down with its volumes, the tag's images removed, the env file deleted; once. */
+function cleanup(): Promise<void> {
+  cleaned ??= (async () => {
+    try {
+      if (selected.includes('smoke')) {
+        await compose('down', '--volumes', '--remove-orphans', '--timeout', '15');
+      }
+      if (
+        process.env.GATE_KEEP_IMAGES !== '1' &&
+        (selected.includes('smoke') || selected.includes('reconcile'))
+      ) {
+        for (const service of SERVICES) {
+          await run('docker', ['image', 'rm', '--force', `shopfloor-twin/${service}:${tag}`]);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  })();
+  return cleaned;
+}
+
+// Ctrl+C (the job gets the SIGINT too, from the terminal) or a SIGTERM (passed on to the job):
+// wait for the job to end (the reconciliation removes its own projects), then clean up and exit
+// 130 or 143. A second signal while that runs changes nothing.
+/** Set by a signal (an object: TypeScript can't see a closure assign a plain `let`). */
+const signals = { stopping: false };
+const stop = (signal: NodeJS.Signals) => {
+  if (signals.stopping) return;
+  signals.stopping = true;
+  console.error(`\n${signal}: waiting for the running job, then cleaning up`);
+  const running = current;
+  if (running && signal === 'SIGTERM') running.child.kill('SIGTERM');
+  void (running?.exited ?? Promise.resolve(0))
+    .then(() => cleanup())
+    .catch((error: unknown) => {
+      console.error('cleanup failed', error);
+    })
+    .finally(() => {
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    });
+};
+process.on('SIGINT', stop);
+process.on('SIGTERM', stop);
+
 try {
   for (const job of STEPS) {
     const [command, args, extra] = commands[job];
     const text = [command, ...args].join(' ');
+    if (signals.stopping) await new Promise(() => undefined); // the signal handler owns the exit
     if (failed || !selected.includes(job)) {
       jobs.push({ job, command: text, result: 'skipped', seconds: 0 });
       continue;
@@ -161,6 +228,7 @@ try {
     console.log(`\n=== gate: ${job} (${text}) ===`);
     const started = Date.now();
     const code = await run(command, args, extra);
+    if (signals.stopping) await new Promise(() => undefined); // the signal handler owns the rest
     if (job === 'smoke') {
       images = digests();
       await compose('down', '--volumes', '--remove-orphans', '--timeout', '15');
@@ -171,17 +239,8 @@ try {
     if (code !== 0) failed = true;
   }
 } finally {
-  if (selected.includes('smoke'))
-    await compose('down', '--volumes', '--remove-orphans', '--timeout', '15');
-  if (
-    process.env.GATE_KEEP_IMAGES !== '1' &&
-    (selected.includes('smoke') || selected.includes('reconcile'))
-  ) {
-    for (const service of SERVICES) {
-      await run('docker', ['image', 'rm', '--force', `shopfloor-twin/${service}:${tag}`]);
-    }
-  }
-  rmSync(dir, { recursive: true, force: true });
+  if (signals.stopping) await new Promise(() => undefined); // the signal handler owns the exit
+  await cleanup();
 }
 
 const record = {

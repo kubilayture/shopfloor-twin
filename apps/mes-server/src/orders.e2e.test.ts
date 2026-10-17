@@ -227,6 +227,47 @@ const proxy = (machine: string): TcpProxy => {
   return p;
 };
 
+/** A gauge of the gateway's `/metrics`, optionally of one `result` label; NaN when absent. */
+async function gatewayMetric(name: string, result?: string): Promise<number> {
+  const text = await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`);
+  const label = result === undefined ? '' : `\\{result="${result}"\\}`;
+  const found = new RegExp(`^${name}${label} (\\S+)$`, 'm').exec(text)?.[1];
+  return found === undefined ? Number.NaN : Number(found);
+}
+
+let injected = 0;
+/** Publishes a `cmd-res` as the gateway's own user (`gw-01`), as its settle step would. */
+async function injectResult(message: {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly seq: number;
+  readonly value: Record<string, unknown>;
+}): Promise<void> {
+  const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+    username: 'gw-01',
+    password: TEST_PASSWORDS['gw-01'],
+    protocolVersion: 5,
+    clientId: `mes-orders-e2e-gateway-voice-${String(message.seq)}`,
+  });
+  try {
+    await injector.publishAsync(
+      `orbis/gebze/machining/cell-m1/${message.equipment}/cmd-res/load-order`,
+      JSON.stringify({
+        schema: 'uns.cmd-res/1',
+        scope: 'topic',
+        epoch: message.epoch,
+        seq: message.seq,
+        source: { id: message.equipment, protocol: 'opcua' },
+        respondedAt: new Date().toISOString(),
+        value: message.value,
+      }),
+      { qos: 1 },
+    );
+  } finally {
+    await injector.endAsync(true);
+  }
+}
+
 beforeAll(async () => {
   const loaded = await loadPlantConfig(PLANT_CONFIG);
   if (!loaded.ok) throw new Error('plant config');
@@ -493,6 +534,186 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
     ).rejects.toThrow(/nothing to dispatch/);
     expect(deviceAccepted(sent.commandId)).toBe(1);
   }, 180_000);
+
+  // Exit criterion 3's last case, both ways out (#178 review): a call that times out on the
+  // gateway but executes on the device, its `accepted` fact and `cmd-res` held in the gateway's
+  // outbox (broker down) past the MES's failure margin. The re-dispatch stays refused until the
+  // settle call answers `duplicate` (a) or the CNC's final-through reaches `seqAfterExpiry` (b);
+  // the held fact then counts the job, and no second one is made. Each case runs three times.
+  it.each([1, 2, 3])(
+    '(a, round %i) a call timed out on the gateway, executed on the device, fact and answer held: refused until the settle call answers duplicate, then no second job',
+    async () => {
+      await startOrders({ ttlMs: 4_000, resendMs: 60_000, maxAttempts: 1, failMarginMs: 2_000 });
+      await until('gateway ready', gatewayReady, 60_000);
+      const timeouts = await gatewayMetric('gateway_command_call_timeouts');
+      const duplicates = await gatewayMetric('gateway_command_results', 'duplicate');
+      proxy('cnc-02').hold(); // the call reaches the device; its answer waits in the proxy
+      try {
+        const sent = await dispatch('VB-200', 1, 'cnc-02');
+        await until('accepted on the device', () => deviceAccepted(sent.commandId) === 1);
+        await wait(DEADLINE_MS + 500);
+        await until(
+          'the gateway counted the call timeout',
+          async () => (await gatewayMetric('gateway_command_call_timeouts')) > timeouts,
+        );
+        brokerProxy.setDown(true); // the gateway loses the broker; the MES stays connected
+        proxy('cnc-02').release(); // the fact and every later answer go to the gateway's outbox
+        await until(
+          'failed past the margin',
+          async () => (await command(sent.commandId)).state === 'failed',
+          60_000,
+        );
+        for (let refusal = 0; refusal < 2; refusal++) {
+          const order = await orders.order(sent.orderId);
+          await expect(
+            orders.redispatch(sent.orderId, { version: order?.version ?? 0 }, { by }),
+          ).rejects.toMatchObject({ type: PROBLEM_TYPES.commandsUnsettled });
+          await wait(500);
+        }
+        await until(
+          'the device answered the gateway Duplicate',
+          async () => (await gatewayMetric('gateway_command_results', 'duplicate')) > duplicates,
+          90_000,
+        );
+        expect(await ingest.commandResults([sent.commandId])).toEqual([]); // still held
+        brokerProxy.setDown(false);
+        await until(
+          'the duplicate heard',
+          async () =>
+            (await ingest.commandResults([sent.commandId])).some(
+              (r) => r.value.result === 'duplicate',
+            ),
+          90_000,
+        );
+        await until(
+          'confirmed by the held fact',
+          async () => (await command(sent.commandId)).confirmed,
+          90_000,
+        );
+        expect(await command(sent.commandId)).toMatchObject({
+          state: 'accepted',
+          confirmed: true,
+          failed: true,
+        });
+        expect(deviceAccepted(sent.commandId)).toBe(1);
+        await until('gateway ready again', gatewayReady, 60_000);
+        const after = await orders.order(sent.orderId);
+        await expect(
+          orders.redispatch(sent.orderId, { version: after?.version ?? 0 }, { by }),
+        ).rejects.toThrow(/nothing to dispatch/);
+        expect(deviceAccepted(sent.commandId)).toBe(1);
+      } finally {
+        proxy('cnc-02').release();
+        brokerProxy.setDown(false);
+      }
+    },
+    240_000,
+  );
+
+  it.each([
+    [1, 'above'],
+    [2, 'above'],
+    [3, 'above'],
+    [1, 'equal'],
+    [2, 'equal'],
+    [3, 'equal'],
+  ] as const)(
+    '(b, round %i, seqAfterExpiry %s the held fact) refused while final-through is below seqAfterExpiry; the held fact fills the gap and counts the job, no second job',
+    async (_round, position) => {
+      await startOrders({ ttlMs: 4_000, resendMs: 60_000, maxAttempts: 1, failMarginMs: 2_000 });
+      await until('gateway ready', gatewayReady, 60_000);
+      // The simulator is idle: the acceptance is cnc-02's next device fact.
+      // Final-through at the newest number first (numbers below the stream's first one, from
+      // before the MES joined, are written off by ingest's sweep after its grace period).
+      let before = await ingest.deviceProgress('cnc-02');
+      await until(
+        'cnc-02 final through its newest fact',
+        async () => {
+          before = await ingest.deviceProgress('cnc-02');
+          return before.settledSeq !== null && before.settledSeq === before.lastSeq;
+        },
+        120_000,
+      );
+      const held = (before.lastSeq ?? 0) + 1;
+      proxy('cnc-02').hold();
+      try {
+        const sent = await dispatch('VB-200', 1, 'cnc-02');
+        await until('accepted on the device', () => deviceAccepted(sent.commandId) === 1);
+        brokerProxy.setDown(true);
+        proxy('cnc-02').release(); // the fact (number `held`) and the answers wait in the outbox
+        await until(
+          'failed past the margin',
+          async () => (await command(sent.commandId)).state === 'failed',
+          60_000,
+        );
+        const [delivery] = (await command(sent.commandId)).attempts;
+        // The gateway's settle result, as gw-01 on its own stream: the device's sequence read
+        // after the expiry (`above`: a number beyond the held fact; `equal`: the held fact's own,
+        // which the CNC's final-through reaches exactly once the fact arrives).
+        const seqAfterExpiry = position === 'above' ? held + 1 : held;
+        const known = await db
+          .selectFrom('ingest.command_result')
+          .select(['epoch'])
+          .where('equipment', '=', 'cnc-02')
+          .orderBy('arrival', 'desc')
+          .limit(1)
+          .executeTakeFirst();
+        await injectResult({
+          equipment: 'cnc-02',
+          epoch: known?.epoch ?? Math.floor(Date.now() / 1000),
+          seq: 2_000_000 + injected++,
+          value: {
+            result: 'unknown',
+            commandId: sent.commandId,
+            orderId: sent.orderId,
+            deviceEpoch: sent.deviceEpoch,
+            expiresAt: delivery?.expiresAt.toISOString(),
+            statusCode: null,
+            seqAfterExpiry,
+            reason: 'settle call failed after reading the sequence',
+          },
+        });
+        await until('the unknown heard', async () =>
+          (await ingest.commandResults([sent.commandId])).some((r) => r.value.result === 'unknown'),
+        );
+        // Final-through is below the held fact: no re-dispatch, twice, a while apart.
+        for (let refusal = 0; refusal < 2; refusal++) {
+          const progress = await ingest.deviceProgress('cnc-02');
+          expect(progress.settledSeq ?? 0).toBeLessThan(seqAfterExpiry);
+          const order = await orders.order(sent.orderId);
+          await expect(
+            orders.redispatch(sent.orderId, { version: order?.version ?? 0 }, { by }),
+          ).rejects.toMatchObject({ type: PROBLEM_TYPES.commandsUnsettled });
+          await wait(1_000);
+        }
+        brokerProxy.setDown(false); // the held fact fills the gap
+        await until(
+          'confirmed by the held fact',
+          async () => (await command(sent.commandId)).confirmed,
+          90_000,
+        );
+        const [fact] = (await ingest.jobFacts({ commandIds: [sent.commandId] })).filter(
+          (f) => f.transition === 'accepted',
+        );
+        expect(fact?.seq).toBe(held);
+        expect((await ingest.deviceProgress('cnc-02')).settledSeq ?? 0).toBeGreaterThanOrEqual(
+          held,
+        );
+        expect((await command(sent.commandId)).state).toBe('accepted');
+        expect(deviceAccepted(sent.commandId)).toBe(1);
+        await until('gateway ready again', gatewayReady, 60_000);
+        const after = await orders.order(sent.orderId);
+        await expect(
+          orders.redispatch(sent.orderId, { version: after?.version ?? 0 }, { by }),
+        ).rejects.toThrow(/nothing to dispatch/);
+        expect(deviceAccepted(sent.commandId)).toBe(1);
+      } finally {
+        proxy('cnc-02').release();
+        brokerProxy.setDown(false);
+      }
+    },
+    240_000,
+  );
 
   it('settles not-accepted when the CNC’s facts pass seqAfterExpiry without the acceptance; the re-dispatch makes the one job', async () => {
     await startOrders({ ttlMs: 4_000, resendMs: 20_000, maxAttempts: 1, failMarginMs: 3_000 });

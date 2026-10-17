@@ -118,6 +118,7 @@ import {
   repostOutbox,
   stepToScrap,
   stepUntil,
+  MAX_STEPS,
   type PassContext,
   type ScenarioDispatch,
 } from './orders-pass.ts';
@@ -414,6 +415,16 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
     report.failures.push(message);
     console.error(`FAIL: ${message}`);
   };
+  /**
+   * A report a Playwright check of the orders pass writes at its end (#178 review): missing means
+   * the check was skipped or stopped early, which is a failure, never a pass.
+   */
+  const requiredJson = async (name: string): Promise<unknown> => {
+    const value = await readJson(join(RESULTS_DIR, name));
+    if (value === undefined)
+      fail(`${name} is missing: its Playwright check did not run to its end`);
+    return value;
+  };
   let phaseStart = Date.now();
   const phase = (name: string) => {
     const now = Date.now();
@@ -636,8 +647,8 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             RECONCILE_ROLE_ORDER: scenario.erp?.release[0] ?? '',
             ...browserLogin,
           });
-          ordersReport.roles = await readJson(join(RESULTS_DIR, 'roles.json'));
-          ordersReport.dispatchTimings = await readJson(join(RESULTS_DIR, 'dispatch.json'));
+          ordersReport.roles = await requiredJson('roles.json');
+          ordersReport.dispatchTimings = await requiredJson('dispatch.json');
           if (exitCode !== 0) {
             throw new Error(
               `the roles or the release and dispatch through the UI failed (Playwright exit ${String(exitCode)})`,
@@ -753,7 +764,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             // same events as paced, without minutes of waiting.
             if (orders && ctx) {
               await sim.pause();
-              ordersReport.silentSteps = await stepUntil(
+              const silentSteps = await stepUntil(
                 ctx,
                 'a fact of every machine after the shift end',
                 async () => {
@@ -761,6 +772,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
                   return machines.every((id) => afterEnd[id] !== undefined);
                 },
               );
+              ordersReport.silentSteps = { steps: silentSteps, maxSteps: MAX_STEPS };
               break;
             }
             // Its own wall budget too: twice its nominal wall time, plus a minute.
@@ -1260,9 +1272,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             report: await readJson(join(RESULTS_DIR, 'overview-latency.json')),
             oee: await readJson(join(RESULTS_DIR, 'oee-latency.json')),
             alarms: await readJson(join(RESULTS_DIR, 'alarms-latency.json')),
-            ...(orders
-              ? { terminal: await readJson(join(RESULTS_DIR, 'terminal-latency.json')) }
-              : {}),
+            ...(orders ? { terminal: await requiredJson('terminal-latency.json') } : {}),
           };
           if (exitCode !== 0) {
             fail(
@@ -1313,7 +1323,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             RECONCILE_SCRAP_ORDER: SCRAP_ORDER,
             ...browserLogin,
           });
-          ordersReport.terminal = await readJson(join(RESULTS_DIR, 'terminal-close.json'));
+          ordersReport.terminal = await requiredJson('terminal-close.json');
           if (exitCode !== 0) {
             fail(
               `the terminal sign-off, scrap coding or close failed (Playwright exit ${String(exitCode)})`,

@@ -111,6 +111,7 @@ export class CommandExecutor {
   readonly #drains = new Set<Promise<void>>();
   #pruneTimer: ReturnType<typeof setInterval> | undefined;
   #settleAcceptances = 0;
+  #callTimeouts = 0;
   readonly #stop = new AbortController();
   #calls = 0;
   readonly #results = new Map<CommandResultKind, number>();
@@ -123,6 +124,11 @@ export class CommandExecutor {
   /** `LoadOrder` calls made (settle calls included). */
   get calls(): number {
     return this.#calls;
+  }
+
+  /** `LoadOrder` calls whose deadline passed without an answer (outcome unknown, #178). */
+  get callTimeouts(): number {
+    return this.#callTimeouts;
   }
 
   /** Settle calls answered as a new acceptance (clock skew between gateway and device). */
@@ -379,6 +385,8 @@ export class CommandExecutor {
       );
       return interpret(result);
     } catch (error) {
+      // The collector's DeadlineError (by name: this module needs no OPC UA client import).
+      if (error instanceof Error && error.name === 'DeadlineError') this.#callTimeouts++;
       return {
         kind: 'unknown',
         reason: error instanceof Error ? error.message : String(error),

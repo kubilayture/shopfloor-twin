@@ -707,6 +707,29 @@ describe('execution: units, completion and confirmations (#175)', () => {
       ['OP10', 'OP20', 'OP30'],
     ]);
   });
+
+  it('answers announcedProgress only after every fact it counts was announced to the listeners (#178)', async () => {
+    const h = await harness('announced');
+    const l = h.line;
+    const heard: string[] = [];
+    // A slow listener: the announcement waits for it before the queue moves on.
+    const unsubscribe = h.ingest.onStored(async (notice) => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      if (notice.type === 'cycle')
+        heard.push(`${notice.cycle.equipment}/${String(notice.cycle.seq)}`);
+    });
+    try {
+      const cycle = l.cycle('cnc-01', 4);
+      const delivering = h.ingest.deliver(cycle.topic, cycle.payload); // not awaited
+      const progress = await h.ingest.announcedProgress(['cnc-01']);
+      // The fact the progress counts was already heard, before the delivery was awaited.
+      expect(progress.get('cnc-01')?.lastSeq).toBe(1);
+      expect(heard).toEqual(['cnc-01/1']);
+      await delivering;
+    } finally {
+      unsubscribe();
+    }
+  });
 });
 
 describe('the execution API (#175)', () => {
@@ -998,6 +1021,7 @@ describe('execution on final data: gaps, ended runs, restarts and failures (#175
       jobFacts: (options) => real.jobFacts(options),
       stateFacts: (equipment, epoch, window) => real.stateFacts(equipment, epoch, window),
       deviceProgress: (equipment) => real.deviceProgress(equipment),
+      announcedProgress: (equipment) => real.announcedProgress(equipment),
       newestDeviceEpochs: () => real.newestDeviceEpochs(),
       cyclesBetween: (equipment, epoch, after, before) =>
         real.cyclesBetween(equipment, epoch, after, before),

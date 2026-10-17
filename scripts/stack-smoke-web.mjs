@@ -298,6 +298,10 @@ for (const begun = Date.now(); ;) {
 }
 const orderPath = (action) => `/api/v1/orders/${encodeURIComponent(imported.id)}/${action}`;
 if (imported === undefined) {
+  // A disposable stack (SMOKE_WRITES=1) is fresh: every order of the ERP mock is still imported.
+  if (process.env.SMOKE_WRITES === '1') {
+    fail('no imported order on a disposable stack (SMOKE_WRITES=1): the order checks must run');
+  }
   console.log('skipped: the order refusals (no order of the ERP mock is still imported)');
 } else {
   for (const action of ['release', 'dispatch', 'close']) {

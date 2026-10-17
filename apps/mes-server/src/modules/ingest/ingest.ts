@@ -457,10 +457,11 @@ export class Ingest {
    * Records sequence holes older than the grace period as incidents. Runs in the message queue,
    * so it never interleaves with a message's transaction; listeners hear of each device stream
    * whose gaps were recorded (`gaps`, #113) in that queue too. Returns the incidents recorded.
+   * `graceMs` overrides the configured grace for this sweep (tests that must not wait for it).
    */
-  async sweep(): Promise<number> {
+  async sweep(graceMs = this.#options.gapGraceMs ?? 30_000): Promise<number> {
     const recorded = await this.#enqueue(async () => {
-      const result = await this.#store.sweep(this.#now(), this.#options.gapGraceMs ?? 30_000);
+      const result = await this.#store.sweep(this.#now(), graceMs);
       for (const history of result.history) {
         this.#history?.inc();
         this.#log.warn(

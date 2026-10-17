@@ -22,9 +22,10 @@
  * shopfloor-gate), GATE_TAG (image tag of the smoke and the reconciliation, default gate),
  * RECONCILE_PROJECT (the reconciliation's project prefix, default <GATE_PROJECT>-reconcile),
  * GATE_KEEP_IMAGES=1 (keep the images).
- * A failed job stops the gate; the cleanup and the record still run. On SIGINT or SIGTERM it waits
- * for the running job, cleans up the same way and exits 130 or 143. It refuses GATE_PROJECT
- * `shopfloor-twin` (the dev stack's) and GATE_TAG `dev`.
+ * A failed job stops the gate; the cleanup and the record still run. On SIGINT, SIGTERM or SIGHUP it
+ * passes the signal to the running job's process group, waits for it, cleans up the same way and
+ * exits 130, 143 or 129; a second signal kills the job's group (SIGKILL); none reaches the
+ * cleanup. It refuses GATE_PROJECT `shopfloor-twin` (the dev stack's) and GATE_TAG `dev`.
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -196,34 +197,50 @@ function cleanup(): Promise<void> {
   return cleaned;
 }
 
-// Ctrl+C or SIGTERM: passed on to the running job's process group, then wait for the job to end
-// (the reconciliation removes its own projects), clean up and exit 130 or 143. A second signal
-// while that runs changes nothing.
+// Ctrl+C, SIGTERM or SIGHUP: passed on to the running job's process group (never once the
+// cleanup has started: its own `docker compose` and `docker image rm` must finish), then wait for
+// the job to end (the reconciliation removes its own projects), clean up and exit 128 + the
+// signal's number (130, 143, 129). A second signal while the job still runs kills its process
+// group (SIGKILL); a signal during the cleanup changes nothing.
+const EXIT_CODES: Readonly<Partial<Record<NodeJS.Signals, number>>> = {
+  SIGINT: 130,
+  SIGTERM: 143,
+  SIGHUP: 129,
+};
 /** Set by a signal (an object: TypeScript can't see a closure assign a plain `let`). */
 const signals = { stopping: false };
+/** Sends `signal` to the running job's process group, unless the cleanup has started. */
+const signalJob = (signal: NodeJS.Signals): void => {
+  const pid = current?.child.pid;
+  if (cleaned !== undefined || pid === undefined) return;
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // the job ended meanwhile
+  }
+};
 const stop = (signal: NodeJS.Signals) => {
-  if (signals.stopping) return;
+  if (signals.stopping) {
+    if (cleaned === undefined) {
+      console.error(`\n${signal} again: killing the running job`);
+      signalJob('SIGKILL');
+    }
+    return;
+  }
   signals.stopping = true;
   console.error(`\n${signal}: waiting for the running job, then cleaning up`);
-  const running = current;
-  if (running?.child.pid !== undefined) {
-    try {
-      process.kill(-running.child.pid, signal);
-    } catch {
-      // the job ended meanwhile
-    }
-  }
+  const running = cleaned === undefined ? current : undefined;
+  signalJob(signal);
   void (running?.exited ?? Promise.resolve(0))
     .then(() => cleanup())
     .catch((error: unknown) => {
       console.error('cleanup failed', error);
     })
     .finally(() => {
-      process.exit(signal === 'SIGINT' ? 130 : 143);
+      process.exit(EXIT_CODES[signal] ?? 1);
     });
 };
-process.on('SIGINT', stop);
-process.on('SIGTERM', stop);
+for (const signal of Object.keys(EXIT_CODES) as NodeJS.Signals[]) process.on(signal, stop);
 
 try {
   for (const job of STEPS) {

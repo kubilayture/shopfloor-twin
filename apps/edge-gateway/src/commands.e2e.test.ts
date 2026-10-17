@@ -39,8 +39,9 @@ import {
   type SimEvent,
 } from './testing.ts';
 
-const SIM = { opcuaOffset: 3600, modbusPort: 8620, controlPort: 8400 };
-const PROXY_OFFSET = 3650;
+// The simulator's ports, the OPC UA proxies' block and the broker proxy's port are chosen at
+// runtime (#212); the broker keeps its port across restarts (`startBroker` retries).
+const SIM_ENV = { SIM_PRODUCTION: 'orders' };
 const DEADLINE_MS = 1_500;
 const NOT_BEFORE = '2026-10-12T03:00:00.000Z';
 const PATHS = {
@@ -50,7 +51,6 @@ const PATHS = {
 type Cnc = keyof typeof PATHS;
 
 const BROKER_PORT = await freePort();
-const GATEWAY_MQTT = await freePort();
 const GATEWAY_HTTP = await freePort();
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -82,17 +82,17 @@ let simulator: RunningSimulator;
 let broker: StartedTestContainer;
 let gateway: RunningGateway;
 let mes: MqttClient;
-let opcua: Map<string, TcpProxy>;
+let opcua = new Map<string, TcpProxy>();
 let brokerProxy: TcpProxy;
 const pastRuns: SimEvent[][] = [];
 const dir = mkdtempSync(join(tmpdir(), 'gateway-commands-e2e-'));
 const env = {
-  MQTT_URL: `mqtt://127.0.0.1:${String(GATEWAY_MQTT)}`,
+  MQTT_URL: '', // the broker proxy's, once it listens
   MQTT_PASSWORD: TEST_PASSWORDS['gw-01'],
   OPCUA_HOST: 'localhost',
-  OPCUA_PORT_OFFSET: String(PROXY_OFFSET),
+  OPCUA_PORT_OFFSET: '', // the OPC UA proxies' block, once chosen
   OPCUA_PKI_DIR: join(dir, 'pki'),
-  MODBUS_PORT: String(SIM.modbusPort),
+  MODBUS_PORT: '', // the simulator's, once started
   BUFFER_PATH: join(dir, 'buffer', 'gateway.db'),
   HTTP_PORT: String(GATEWAY_HTTP),
   GATEWAY_CALL_DEADLINE_MS: String(DEADLINE_MS),
@@ -182,10 +182,14 @@ function proxy(machine: string): TcpProxy {
 }
 
 beforeAll(async () => {
-  simulator = await startSimulator(SIM, { SIM_PRODUCTION: 'orders' });
-  opcua = await opcuaProxies(OPCUA_MACHINES, PROXY_OFFSET, SIM.opcuaOffset);
+  simulator = await startSimulator(undefined, SIM_ENV);
+  const block = await opcuaProxies(OPCUA_MACHINES, simulator.opcuaOffset);
+  opcua = block.proxies;
   broker = (await startBroker({ hostPort: BROKER_PORT })).container;
-  brokerProxy = await TcpProxy.start(GATEWAY_MQTT, { host: '127.0.0.1', port: BROKER_PORT });
+  brokerProxy = await TcpProxy.start(0, { host: '127.0.0.1', port: BROKER_PORT });
+  env.MQTT_URL = `mqtt://127.0.0.1:${String(brokerProxy.port)}`;
+  env.OPCUA_PORT_OFFSET = String(block.offset);
+  env.MODBUS_PORT = String(simulator.modbusPort);
   mes = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
     username: 'mes',
     password: TEST_PASSWORDS.mes,
@@ -219,13 +223,14 @@ beforeAll(async () => {
   await startTheGateway();
 }, 180_000);
 
+// Also after a failed beforeAll: whatever was started is stopped (#212).
 afterAll(async () => {
-  await gateway.stop('SIGKILL').catch(() => undefined);
-  await mes.endAsync(true);
-  await brokerProxy.close();
+  await (gateway as RunningGateway | undefined)?.stop('SIGKILL').catch(() => undefined);
+  await (mes as MqttClient | undefined)?.endAsync(true);
+  await (brokerProxy as TcpProxy | undefined)?.close();
   for (const p of opcua.values()) await p.close();
-  await broker.stop().catch(() => undefined);
-  await simulator.stop();
+  await (broker as StartedTestContainer | undefined)?.stop().catch(() => undefined);
+  await (simulator as RunningSimulator | undefined)?.stop();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -391,9 +396,10 @@ describe('commands exactly once through Mosquitto, the gateway and the simulator
     await send(c);
     await until('the device accepted it', () => deviceAccepted(c) === 1);
     pastRuns.push(simulator.events);
+    const ports = simulator.ports;
     await simulator.stop();
     await wait(1_100); // a new run, a new epoch
-    simulator = await startSimulator(SIM, { SIM_PRODUCTION: 'orders' });
+    simulator = await startSimulator(ports, SIM_ENV); // where the gateway left it
     for (const p of opcua.values()) p.cut();
     await until('answered', () => answers(c).length === 1, 90_000);
     expect(answers(c)[0]).toMatchObject({

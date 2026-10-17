@@ -936,6 +936,9 @@ importers:
 
   packages/test-kit:
     dependencies:
+      '@shopfloor/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       testcontainers:
         specifier: 'catalog:'
         version: 12.2.0(supports-color@7.2.0)

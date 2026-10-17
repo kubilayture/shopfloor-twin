@@ -7,7 +7,9 @@
     ".": "./src/index.ts",
     "./docker": "./src/docker.ts",
     "./broker": "./src/broker.ts",
-    "./processes": "./src/processes.ts"
+    "./processes": "./src/processes.ts",
+    "./ports": "./src/ports.ts",
+    "./timing": "./src/timing.ts"
   },
   "scripts": {
     "typecheck": "tsc",
@@ -23,6 +25,7 @@
     "vitest": "catalog:"
   },
   "dependencies": {
+    "@shopfloor/contracts": "workspace:*",
     "testcontainers": "catalog:"
   }
 }

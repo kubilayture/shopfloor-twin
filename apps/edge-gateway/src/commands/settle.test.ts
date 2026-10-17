@@ -28,7 +28,7 @@ const dir = mkdtempSync(join(tmpdir(), 'gateway-settle-'));
 const PATH = { area: 'machining', workCenter: 'cell-m1', equipment: 'cnc-01' } as const;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function until(what: string, condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+async function until(what: string, condition: () => boolean, timeoutMs = 30_000): Promise<void> {
   for (const deadline = Date.now() + timeoutMs; !condition();) {
     if (Date.now() > deadline) throw new Error(`timed out: ${what}`);
     await wait(10);

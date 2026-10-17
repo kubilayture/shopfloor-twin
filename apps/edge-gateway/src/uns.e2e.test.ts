@@ -23,9 +23,7 @@ import {
   type SimEvent,
 } from './testing.ts';
 
-// Simulator ports clear of the Compose stack and of the other test files (the OPC UA servers take
-// a block of consecutive ports, so these stay fixed).
-const SIM = { opcuaOffset: 3300, modbusPort: 8320, controlPort: 8100 };
+// The simulator's ports are chosen at runtime by `startSimulator`, its OPC UA block included (#212).
 // The broker and gateway HTTP ports are chosen at runtime, so a parallel run cannot clash; the
 // broker keeps its port across restarts (`startBroker` retries until the port is released).
 const BROKER_PORT = await freePort();
@@ -177,9 +175,9 @@ const gatewayEnv = {
   MQTT_URL: `mqtt://127.0.0.1:${String(BROKER_PORT)}`,
   MQTT_PASSWORD: TEST_PASSWORDS['gw-01'],
   OPCUA_HOST: 'localhost',
-  OPCUA_PORT_OFFSET: String(SIM.opcuaOffset),
+  OPCUA_PORT_OFFSET: '', // the simulator's, once started
   OPCUA_PKI_DIR: join(bufferDir, 'pki'),
-  MODBUS_PORT: String(SIM.modbusPort),
+  MODBUS_PORT: '', // the simulator's, once started
   BUFFER_PATH: join(bufferDir, 'buffer', 'gateway.db'),
   HTTP_PORT: String(GATEWAY_HTTP),
   TELEMETRY_SAMPLING_MS: '500',
@@ -197,18 +195,21 @@ const allConnected = async (): Promise<boolean> => {
 };
 
 beforeAll(async () => {
-  simulator = await startSimulator(SIM);
+  simulator = await startSimulator();
+  gatewayEnv.OPCUA_PORT_OFFSET = String(simulator.opcuaOffset);
+  gatewayEnv.MODBUS_PORT = String(simulator.modbusPort);
   broker = (await startBroker({ hostPort: BROKER_PORT })).container;
   await consumer.connect();
   gateway = await startGateway(gatewayEnv);
   await until('every machine connected to the gateway', allConnected, 60_000);
 }, 180_000);
 
+// Also after a failed beforeAll: whatever was started is stopped (#212).
 afterAll(async () => {
-  await gateway.stop('SIGKILL').catch(() => undefined);
+  await (gateway as RunningGateway | undefined)?.stop('SIGKILL').catch(() => undefined);
   await consumer.close();
-  await broker.stop().catch(() => undefined);
-  await simulator.stop();
+  await (broker as StartedTestContainer | undefined)?.stop().catch(() => undefined);
+  await (simulator as RunningSimulator | undefined)?.stop();
   rmSync(bufferDir, { recursive: true, force: true });
 });
 

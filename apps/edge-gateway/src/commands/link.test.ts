@@ -23,7 +23,7 @@ const dir = mkdtempSync(join(tmpdir(), 'gateway-command-link-'));
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function until(what: string, condition: () => boolean, timeoutMs = 10_000): Promise<void> {
+async function until(what: string, condition: () => boolean, timeoutMs = 30_000): Promise<void> {
   for (const deadline = Date.now() + timeoutMs; !condition();) {
     if (Date.now() > deadline) throw new Error(`timed out after ${String(timeoutMs)} ms: ${what}`);
     await wait(20);
@@ -171,7 +171,7 @@ describe('command session (#173, ADR-0029)', () => {
     await until('subscribed', () => l.subscribed);
     const mes = await client('mes');
     expect(await publish(mes, CMD, '{"n":3}')).toBe('acknowledged');
-    await until('recorded after two refusals', () => received.length === 1, 15_000);
+    await until('recorded after two refusals', () => received.length === 1, 30_000);
     expect(failures).toBe(0);
     expect(real.pending().map((e) => e.payload)).toEqual(['{"n":3}']);
     await wait(500);

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { TopicSequences } from '../identity.ts';
 import { MqttLink, NotConnectedError } from '../mqtt-link.ts';
 import type { UnsPublication } from '../publisher.ts';
-import { TEST_PASSWORDS, freePort, startBroker } from '../testing.ts';
+import { TEST_PASSWORDS, TcpProxy, startBroker } from '../testing.ts';
 import { Outbox, type Transport } from './outbox.ts';
 
 const dirs: string[] = [];
@@ -262,16 +262,21 @@ describe('store-and-forward outbox (#78, ADR-0014)', () => {
 
 describe('store-and-forward with the real broker (#78)', () => {
   it('delivers everything stored during a broker outage after the broker comes back', async () => {
-    // A host port chosen at runtime (no clash with a parallel run), then kept across the restart,
-    // so the gateway finds the restarted broker where it left it. `startBroker` retries the start
-    // while the port of the stopped container is not released yet.
-    const PORT = await freePort();
-    const brokerAt = async (what: string) =>
-      (await within(what, 60_000, startBroker({ hostPort: PORT }))).container;
-    const url = `mqtt://127.0.0.1:${String(PORT)}`;
-    let broker = await brokerAt(`starting the broker on port ${String(PORT)}`);
+    // Each broker on a port Docker picks (no clash with a parallel run, #212). The gateway reaches
+    // it through a proxy on a port the OS picks, which stays where the gateway left it across the
+    // restart, and keeps the gateway off the restarted broker until the subscriber is back: a
+    // fresh broker has no session to catch a late subscriber up, so a message the gateway sent
+    // (or MQTT.js re-sent) before the subscription would be lost to the test, not by the gateway.
+    const brokerAt = (what: string) => within(what, 120_000, startBroker());
+    const target = (brokerUrl: string) => {
+      const parsed = new URL(brokerUrl);
+      return { host: parsed.hostname, port: Number(parsed.port) };
+    };
+    let started = await brokerAt('starting the broker');
+    let broker = started.container;
+    const proxy = await TcpProxy.start(0, target(started.url));
     const link = new MqttLink({
-      url,
+      url: `mqtt://127.0.0.1:${String(proxy.port)}`,
       username: 'gw-01',
       password: TEST_PASSWORDS['gw-01'],
       gatewayId: 'gw-01',
@@ -298,49 +303,81 @@ describe('store-and-forward with the real broker (#78)', () => {
     };
     const { outbox } = open(file(), transport);
     link.start();
-    await until(() => link.connected, 15_000, 'the gateway link to connect to the first broker');
+    await until(() => link.connected, 60_000, 'the gateway link to connect to the first broker');
     const received: number[] = [];
+    // A just-started broker can accept a TCP connection (Docker's port forward) and never answer
+    // it, and a client without reconnects then waits forever (#212): each attempt gets 10 s, and
+    // a failed one is closed and tried again.
     const subscribe = async () => {
-      const mes = await mqtt.connectAsync(url, {
-        username: 'mes',
-        password: TEST_PASSWORDS.mes,
-        protocolVersion: 5,
-        reconnectPeriod: 0,
-      });
-      mes.on('message', (_topic, payload) => {
-        received.push((JSON.parse(payload.toString()) as { seq: number }).seq);
-      });
-      await mes.subscribeAsync(message(1).topic, { qos: 1 });
-      return mes;
+      for (let attempt = 1; ; attempt++) {
+        const mes = mqtt.connect(started.url, {
+          username: 'mes',
+          password: TEST_PASSWORDS.mes,
+          protocolVersion: 5,
+          reconnectPeriod: 0,
+          connectTimeout: 5_000,
+        });
+        try {
+          await within(
+            `subscriber connection, attempt ${String(attempt)}`,
+            10_000,
+            new Promise((resolve, reject) => {
+              mes.once('connect', resolve);
+              mes.once('error', reject);
+              mes.once('close', () => {
+                reject(new Error('connection closed'));
+              });
+            }),
+          );
+          mes.on('message', (_topic, payload) => {
+            received.push((JSON.parse(payload.toString()) as { seq: number }).seq);
+          });
+          await within(
+            'the subscription',
+            10_000,
+            mes.subscribeAsync(message(1).topic, { qos: 1 }),
+          );
+          return mes;
+        } catch (error) {
+          mes.end(true);
+          if (attempt >= 10) throw error;
+          await wait(500);
+        }
+      }
     };
-    let mes = await within('subscribing to the first broker', 15_000, subscribe());
+    let mes = await within('subscribing to the first broker', 150_000, subscribe());
     await within(
       'publishing messages 1–50',
-      15_000,
+      60_000,
       (async () => {
         for (let i = 1; i <= 50; i++) await outbox.publish(message(i));
       })(),
     );
-    await until(() => received.length >= 50, 15_000, 'messages 1–50 at the subscriber');
+    await until(() => received.length >= 50, 60_000, 'messages 1–50 at the subscriber');
 
     // Messages 51–100 are on their way when the broker dies: in flight across the outage.
     for (let i = 51; i <= 100; i++) void outbox.publish(message(i));
     // A graceful stop: a broker killed outright also loses what it had acknowledged but not yet
     // passed on, which is the broker's durability, not the gateway's.
-    await within('stopping the first broker', 30_000, broker.stop()); // outage
+    await within('stopping the first broker', 60_000, broker.stop()); // outage
     firstBroker = false;
-    await within('closing the first subscriber', 5_000, mes.endAsync(true));
-    await until(() => !link.connected, 15_000, 'the gateway link to notice the outage');
+    proxy.setDown(true); // the gateway finds no broker until the restarted one is ready
+    await within('closing the first subscriber', 15_000, mes.endAsync(true));
+    await until(() => !link.connected, 60_000, 'the gateway link to notice the outage');
     for (let i = 101; i <= 300; i++) void outbox.publish(message(i));
-    await until(() => outbox.depth >= 200, 10_000, 'messages 101–300 stored in the outbox');
+    await until(() => outbox.depth >= 200, 60_000, 'messages 101–300 stored in the outbox');
 
-    broker = await brokerAt(`restarting the broker on port ${String(PORT)}`);
-    mes = await within('subscribing to the restarted broker', 15_000, subscribe());
-    await until(() => outbox.depth === 0, 30_000, 'the outbox to drain after the restart');
-    await until(() => received.includes(300), 10_000, 'message 300 at the subscriber');
-    await within('closing the second subscriber', 5_000, mes.endAsync(true));
-    await within('closing the gateway link', 5_000, link.close());
-    await within('stopping the restarted broker', 30_000, broker.stop());
+    started = await brokerAt('restarting the broker');
+    broker = started.container;
+    proxy.retarget(target(started.url));
+    mes = await within('subscribing to the restarted broker', 150_000, subscribe());
+    proxy.setDown(false); // the broker is back for the gateway
+    await until(() => outbox.depth === 0, 60_000, 'the outbox to drain after the restart');
+    await until(() => received.includes(300), 60_000, 'message 300 at the subscriber');
+    await within('closing the second subscriber', 15_000, mes.endAsync(true));
+    await within('closing the gateway link', 15_000, link.close());
+    await proxy.close();
+    await within('stopping the restarted broker', 60_000, broker.stop());
 
     // The gateway's contract: every message reached a subscriber, or the broker acknowledged it
     // before its outage (what a stopped broker had not passed on yet is the broker's durability).
@@ -353,5 +390,5 @@ describe('store-and-forward with the real broker (#78)', () => {
     const afterOutage = received.filter((seq) => seq > 100);
     expect([...new Set(afterOutage)]).toEqual(Array.from({ length: 200 }, (_, i) => 101 + i));
     // Above the sum of the step limits, so a hang fails with the name of its step.
-  }, 360_000);
+  }, 1_000_000);
 });

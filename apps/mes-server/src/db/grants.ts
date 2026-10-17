@@ -108,6 +108,8 @@ export const DECLARED_GRANTS: {
       'orders.order_incident': KEEP,
       // Confirmations sent are never changed (#175).
       'orders.confirmation': APPEND,
+      // Activity intervals are closed, never deleted (#177).
+      'orders.operation_activity': KEEP,
       // Units and their records are derived and rebuilt; scrap records and incidents are kept (#175).
       'execution.unit': ALL,
       'execution.operation_record': ALL,

@@ -68,6 +68,7 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `orders.dispatch_command`
   - `orders.erp_cursor`
   - `orders.erp_message_log`
+  - `orders.operation_activity`
   - `orders.order_incident`
   - `orders.order_operation`
   - `orders.production_order`
@@ -164,6 +165,7 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `orders.dispatch_command` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `orders.erp_cursor` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `orders.erp_message_log` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `orders.operation_activity` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `orders.order_incident` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `orders.order_operation` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `orders.production_order` | `mes_owner` | INSERT, SELECT, UPDATE |  |
@@ -334,6 +336,11 @@ erDiagram
     text command_id PK
     text order_id FK
   }
+  operation_activity {
+    bigint id PK
+    text order_id FK
+    text operation FK
+  }
   order_operation {
     text order_id FK, PK
     text operation PK
@@ -344,6 +351,7 @@ erDiagram
   dispatch_command ||--o{ command_attempt : "command_id"
   production_order ||--o{ confirmation : "order_id"
   production_order ||--o{ dispatch_command : "order_id"
+  order_operation ||--o{ operation_activity : "order_id, operation"
   production_order ||--o{ order_operation : "order_id"
 ```
 
@@ -1275,7 +1283,7 @@ Owner: shifts. Shift instances as records per (plant epoch, shift key), with the
 
 ### shifts.crew_assignment
 
-Who is signed on at a work center during a shift instance: user, work center, the terminal session, wall and plant time of sign-on and end, and why it ended (sign-off, session end, shift end); at most one open row per user and work center (#169; written from #177).
+Who is signed on at a work center during a shift instance: user, work center, the terminal session, wall and plant time of sign-on and end, and why it ended (sign-off, session end, shift end, replaced by a sign-on from another session); at most one open row per user and work center (#169; written from the terminal since #177).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |
@@ -1299,7 +1307,7 @@ Who is signed on at a work center during a shift instance: user, work center, th
 | Check | `crew_assignment_check` | `CHECK (((to_at IS NULL) = (end_reason IS NULL)))` |
 | Check | `crew_assignment_check1` | `CHECK (((to_at IS NULL) = (to_plant_at IS NULL)))` |
 | Check | `crew_assignment_check2` | `CHECK (((to_at IS NULL) OR (to_at >= from_at)))` |
-| Check | `crew_assignment_end_reason_check` | `CHECK ((end_reason = ANY (ARRAY['sign-off'::text, 'session-ended'::text, 'shift-ended'::text])))` |
+| Check | `crew_assignment_end_reason_check` | `CHECK ((end_reason = ANY (ARRAY['sign-off'::text, 'session-ended'::text, 'shift-ended'::text, 'replaced'::text])))` |
 | Check | `crew_assignment_session_id_check` | `CHECK ((session_id ~ '^[0-9a-f]{64}$'::text))` |
 | Check | `crew_assignment_username_check` | `CHECK (((length(username) >= 1) AND (length(username) <= 64)))` |
 | Index | `crew_assignment_instance` | `shifts.crew_assignment USING btree (epoch, shift_key, work_center)` |
@@ -1674,6 +1682,45 @@ Feed entries imported (in) and messages to the ERP (out, an outbox with its Idem
 | Index | `erp_message_log_order` | `orders.erp_message_log USING btree (order_id, id)` |
 | Index | `erp_message_log_pending` | `orders.erp_message_log USING btree (id) WHERE (status = 'pending'::text)` |
 
+### orders.operation_activity
+
+Operator activity on an order operation: intervals of work (from a start or resume) and pause (with its reason), per user, with wall and plant times and why each ended (paused, resumed, the operation signed off, the operator’s crew row ended); the operator’s time, never the machine’s; at most one open interval per user and operation (#177).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `order_id` | `text` | not null |  |
+| `operation` | `text` | not null |  |
+| `work_center` | `text` | not null |  |
+| `user_id` | `bigint` | not null |  |
+| `username` | `text` | not null |  |
+| `kind` | `text` | not null |  |
+| `reason` | `text` | null |  |
+| `comment` | `text` | null |  |
+| `from_at` | `timestamp with time zone` | not null |  |
+| `from_plant_at` | `timestamp with time zone` | not null |  |
+| `to_at` | `timestamp with time zone` | null |  |
+| `to_plant_at` | `timestamp with time zone` | null |  |
+| `end_reason` | `text` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `operation_activity_pkey` | `PRIMARY KEY (id)` |
+| Foreign key | `operation_activity_order_id_operation_fkey` | `FOREIGN KEY (order_id, operation) REFERENCES orders.order_operation(order_id, operation)` |
+| Check | `operation_activity_check` | `CHECK (((kind = 'pause'::text) = (reason IS NOT NULL)))` |
+| Check | `operation_activity_check1` | `CHECK (((comment IS NULL) OR (kind = 'pause'::text)))` |
+| Check | `operation_activity_check2` | `CHECK (((to_at IS NULL) = (end_reason IS NULL)))` |
+| Check | `operation_activity_check3` | `CHECK (((to_at IS NULL) = (to_plant_at IS NULL)))` |
+| Check | `operation_activity_check4` | `CHECK (((to_at IS NULL) OR (to_at >= from_at)))` |
+| Check | `operation_activity_comment_check` | `CHECK ((length(comment) <= 500))` |
+| Check | `operation_activity_end_reason_check` | `CHECK ((end_reason = ANY (ARRAY['paused'::text, 'resumed'::text, 'signed-off'::text, 'crew-ended'::text])))` |
+| Check | `operation_activity_kind_check` | `CHECK ((kind = ANY (ARRAY['work'::text, 'pause'::text])))` |
+| Check | `operation_activity_reason_check` | `CHECK ((reason ~ '^[a-z]+(-[a-z]+)*$'::text))` |
+| Check | `operation_activity_username_check` | `CHECK (((length(username) >= 1) AND (length(username) <= 64)))` |
+| Index | `operation_activity_open` | `orders.operation_activity USING btree (user_id, order_id, operation) WHERE (to_at IS NULL)` |
+| Index | `operation_activity_open_work_center` | `orders.operation_activity USING btree (work_center) WHERE (to_at IS NULL)` |
+| Index | `operation_activity_operation` | `orders.operation_activity USING btree (order_id, operation, id)` |
+
 ### orders.order_incident
 
 Incidents of the orders module (ERP feed changed, ERP conflict or refusal, command failed or unconfirmed, unknown or duplicate job, dispatch lost), open at most once per key (#174).
@@ -1701,7 +1748,7 @@ Incidents of the orders module (ERP feed changed, ERP conflict or refusal, comma
 
 ### orders.order_operation
 
-The routing operations of an order with their work centers; rebuilt when a new revision replaces an order only imported (#174; #175 adds its tracking).
+The routing operations of an order with their work centers; rebuilt when a new revision replaces an order only imported (#174; #175 adds its tracking); a version raised by every terminal write on it and the operator’s sign-off (user, wall and plant time), allowed once the operation has its final confirmation (#177).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |
@@ -1709,6 +1756,11 @@ The routing operations of an order with their work centers; rebuilt when a new r
 | `operation` | `text` | not null |  |
 | `position` | `integer` | not null |  |
 | `work_center` | `text` | not null |  |
+| `version` | `integer` | not null | `1` |
+| `signed_off_user_id` | `bigint` | null |  |
+| `signed_off_by` | `text` | null |  |
+| `signed_off_at` | `timestamp with time zone` | null |  |
+| `signed_off_plant_at` | `timestamp with time zone` | null |  |
 
 | Kind | Name | Definition |
 | --- | --- | --- |
@@ -1716,6 +1768,8 @@ The routing operations of an order with their work centers; rebuilt when a new r
 | Foreign key | `order_operation_order_id_fkey` | `FOREIGN KEY (order_id) REFERENCES orders.production_order(id)` |
 | Check | `order_operation_operation_check` | `CHECK ((operation ~ '^OP[0-9]{2}$'::text))` |
 | Check | `order_operation_position_check` | `CHECK (("position" >= 0))` |
+| Check | `order_operation_signed_off` | `CHECK ((((signed_off_at IS NULL) = (signed_off_by IS NULL)) AND ((signed_off_at IS NULL) = (signed_off_user_id IS NULL)) AND ((signed_off_at IS NULL) = (signed_off_plant_at IS NULL))))` |
+| Check | `order_operation_version_check` | `CHECK ((version >= 1))` |
 
 ### orders.production_order
 

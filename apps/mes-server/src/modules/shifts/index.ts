@@ -12,7 +12,12 @@
  *   what it read.
  * - `Shifts.notes(...)`, `note(id)`, `noteAudit(id)`, `createNote(...)`, `editNote(...)`:
  *   handover notes (`ShiftError` 'conflict' for a stale version or outside the handover window).
- * - `Shifts.onChange(listener)`: instance created, status and revision changes, note upserts.
+ * - `Shifts.onChange(listener)`: instance created, status and revision changes, note upserts,
+ *   crew rows opened and ended (#177).
+ * - Crews (#177): `currentInstance()`, `crew(query)`, `signOn(workCenter, user, sessionId)`
+ *   (409 `no-shift` outside a shift), `signOff(workCenter, user)` (409 `not-signed-on`),
+ *   `endCrewForSessions(ids)`; the tick ends rows at their shift's end and, with `sessions`, when
+ *   their terminal session is no longer live. The report has a crew section.
  * - The shift calendar's functions (`shiftInstances`, `shiftBuckets`, …) are in the pure
  *   `@shopfloor/shift-calendar`, shared with `oee` (no module cycle).
  */
@@ -45,5 +50,13 @@ export type {
   ShiftsOptions,
   ShiftsSources,
 } from './shifts.ts';
+export { CREW_AUDIT_ENTITY } from './crew.ts';
+export type { CrewQuery, CrewRecord } from './crew.ts';
 export { SHIFTS_COLUMNS } from './tables.ts';
-export type { InputRevisions, NoteContent, ShiftStatus, ShiftsTables } from './tables.ts';
+export type {
+  CrewEndReason,
+  InputRevisions,
+  NoteContent,
+  ShiftStatus,
+  ShiftsTables,
+} from './tables.ts';

@@ -752,10 +752,20 @@ describe('supervisor writes (#174)', () => {
     });
     const completed = await h.orders.complete('W-3', { short: true, at: PLANT_T0 });
     expect(completed).toMatchObject({ status: 'completed', short: true, version: d3.version + 1 });
+    // #177: a close needs every operation signed off at its terminal, and a sign-off needs the
+    // operation complete (its final confirmation, #175).
+    await expect(h.orders.close('W-3', { version: completed.version }, BY)).rejects.toMatchObject({
+      type: PROBLEM_TYPES.signOffMissing,
+    });
+    for (const operation of ['OP10', 'OP20', 'OP30', 'OP40', 'OP50']) {
+      const totals = { yield: 0, scrap: {}, reworkPasses: 0, material: {} };
+      await h.orders.confirm('W-3', operation, totals, PLANT_T0);
+      await h.orders.signOff('W-3', operation, { version: 1 }, BY);
+    }
     const closed = await h.orders.close('W-3', { version: completed.version }, BY);
     expect(closed.status).toBe('closed');
     const keys = (await messages(h, 'W-3')).map((m) => m.idempotency_key).filter(Boolean);
-    expect(keys.slice(-2)).toEqual([
+    expect(keys.filter((k) => k?.includes('~status~')).slice(-2)).toEqual([
       statusKey('W-3', 1, 'completed'),
       statusKey('W-3', 1, 'closed'),
     ]);

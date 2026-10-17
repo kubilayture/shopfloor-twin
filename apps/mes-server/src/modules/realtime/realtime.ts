@@ -43,6 +43,7 @@ import {
 } from '../identity/index.ts';
 import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
+import type { Execution } from '../execution/index.ts';
 import type { Orders } from '../orders/index.ts';
 import { pareto, type DowntimeFeed, type Oee, type OeeScope } from '../oee/index.ts';
 import { ShiftError, type ShiftRecord, type Shifts } from '../shifts/index.ts';
@@ -61,6 +62,8 @@ import {
 import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
 import { executionRoutes, type ExecutionApi } from './execution-routes.ts';
 import { orderRoutes, type OrdersApi } from './order-routes.ts';
+import { terminalRoutes, workCentersOf, type TerminalApi } from './terminal-routes.ts';
+import { terminalView } from './terminal-view.ts';
 import {
   handoverAuditDto,
   handoverNoteDto,
@@ -221,11 +224,25 @@ export interface ApiSources {
   readonly shifts?: Pick<
     Shifts,
     'instance' | 'report' | 'notes' | 'note' | 'noteAudit' | 'createNote' | 'editNote' | 'onChange'
-  >;
+  > &
+    Partial<Pick<Shifts, 'crew' | 'currentInstance' | 'signOn' | 'signOff'>>;
   /** Production orders and their commands (#174); the order routes answer 503 without it. */
-  readonly orders?: OrdersApi & Pick<Orders, 'onChange'>;
+  readonly orders?: OrdersApi &
+    Pick<Orders, 'onChange'> &
+    Partial<
+      Pick<
+        Orders,
+        | 'operations'
+        | 'commands'
+        | 'startWork'
+        | 'pauseWork'
+        | 'resumeWork'
+        | 'signOff'
+        | 'endActivities'
+      >
+    >;
   /** Units, an order's execution and scrap records (#175); the execution routes answer 503 without it. */
-  readonly execution?: ExecutionApi;
+  readonly execution?: ExecutionApi & Partial<Pick<Execution, 'onChange'>>;
 }
 
 export interface RealtimeOptions {
@@ -1410,6 +1427,16 @@ export async function registerRealtime(
         writer: (request) => Promise.resolve(writeBy(request)),
       });
 
+      // ---- The operator terminal (#177): view, crew, start, pause, resume, sign-off ----
+      terminalRoutes(api, {
+        terminal: () => {
+          const found = terminalSources(ready());
+          if (!found) throw new HttpProblem(503, 'the terminal is not available');
+          return found;
+        },
+        principal: principalOf,
+      });
+
       // ---- Execution (#175): units, an order's execution, scrap records and coding ----
       executionRoutes(api, {
         execution: () => {
@@ -2422,6 +2449,33 @@ export async function registerRealtime(
     { prefix: API_PREFIX },
   );
 
+  /** What the terminal needs, once the orders and shifts modules are attached with it (#177). */
+  function terminalSources(found: Attached): TerminalApi | undefined {
+    const { orders, shifts, execution, equipment } = found.sources;
+    if (
+      !orders?.operations ||
+      !orders.commands ||
+      !orders.startWork ||
+      !orders.pauseWork ||
+      !orders.resumeWork ||
+      !orders.signOff ||
+      !orders.endActivities ||
+      !shifts?.crew ||
+      !shifts.currentInstance ||
+      !shifts.signOn ||
+      !shifts.signOff
+    ) {
+      return undefined;
+    }
+    return {
+      equipment,
+      orders: orders as TerminalApi['orders'],
+      shifts: shifts as TerminalApi['shifts'],
+      ...(execution ? { execution } : {}),
+      catalog: found.catalog,
+    };
+  }
+
   return {
     push,
     async attach(sources) {
@@ -2430,6 +2484,7 @@ export async function registerRealtime(
       const catalog = new Map(equipment.map((info) => [info.id, info]));
       attached = { sources, catalog, shifts: new Set(pattern.shifts.map((shift) => shift.id)) };
       const workCenters = await sources.oee.workCenters();
+      const terminal = terminalSources(attached);
       push.attach({
         equipment: sources.equipment,
         ingest: sources.ingest,
@@ -2448,6 +2503,26 @@ export async function registerRealtime(
         ...(sources.downtime ? { downtime: sources.downtime } : {}),
         ...(sources.shifts ? { shifts: sources.shifts } : {}),
         ...(sources.orders ? { orders: sources.orders } : {}),
+        ...(sources.execution?.onChange
+          ? { execution: { onChange: sources.execution.onChange.bind(sources.execution) } }
+          : {}),
+        ...(terminal
+          ? {
+              terminal: {
+                topics: new Map(
+                  [...workCentersOf(catalog).values()].map((wc) => [
+                    wc.id,
+                    { members: wc.equipment },
+                  ]),
+                ),
+                view: (id: string) => {
+                  const wc = workCentersOf(catalog).get(id);
+                  if (!wc) throw new Error(`no work center ${id}`);
+                  return terminalView(terminal, wc, catalog);
+                },
+              },
+            }
+          : {}),
         ...(sources.alarms
           ? {
               alarms: sources.alarms,

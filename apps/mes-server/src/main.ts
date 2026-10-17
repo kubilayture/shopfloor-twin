@@ -286,6 +286,8 @@ try {
     alarms,
     coding: codingModule,
     shiftPattern: await masterData.shiftPattern(),
+    // Crew rows end with their terminal session (#177): idle and absolute expiry.
+    sessions: identity,
     log: log.child({ module: 'shifts' }),
   });
   shifts = shiftsModule;
@@ -344,6 +346,27 @@ try {
   execution = executionModule;
   await executionModule.start();
   ordersModule.useBlankCounter(executionModule);
+  // The operator terminal (#177): a session that ends (logout, a disabled user, a password
+  // change, a new login) ends its crew rows; a crew row that ends closes its operator's activity
+  // intervals at that work center; intervals left open while the MES was down are closed now.
+  const terminalLog = log.child({ module: 'terminal' });
+  identity.onSessionsEnded((ended) => {
+    shiftsModule.endCrewForSessions(ended.ids).catch((error: unknown) => {
+      terminalLog.error({ err: error }, 'ending the crew rows of ended sessions failed');
+    });
+  });
+  shiftsModule.onChange((change) => {
+    if (change.type !== 'crew' || change.event !== 'ended') return;
+    ordersModule
+      .endActivities({ userId: change.crew.userId, workCenter: change.crew.workCenter })
+      .catch((error: unknown) => {
+        terminalLog.error({ err: error }, 'closing the activities of an ended crew row failed');
+      });
+  });
+  const signedOn = await shiftsModule.crew({ open: true });
+  await ordersModule.endOrphanedActivities(
+    new Set(signedOn.map((row) => `${String(row.userId)}|${row.workCenter}`)),
+  );
   // The API and push follow the modules from here; until then they answer 503.
   await realtime.attach({
     masterData: apiMasterData,

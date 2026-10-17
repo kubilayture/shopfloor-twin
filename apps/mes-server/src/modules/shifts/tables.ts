@@ -83,6 +83,12 @@ export interface HandoverAuditTable {
   version: number;
 }
 
+/**
+ * Why a crew row ended: signed off at the terminal, the terminal session ended, the shift ended,
+ * or a new sign-on of the same user there from another session replaced it (#177).
+ */
+export type CrewEndReason = 'sign-off' | 'session-ended' | 'shift-ended' | 'replaced';
+
 /** Who is signed on at a work center during a shift instance (#169; written from #177). */
 export interface CrewAssignmentTable {
   id: Generated<number>;
@@ -96,7 +102,7 @@ export interface CrewAssignmentTable {
   from_plant_at: Timestamp;
   to_at: Date | null;
   to_plant_at: Date | null;
-  end_reason: 'sign-off' | 'session-ended' | 'shift-ended' | null;
+  end_reason: CrewEndReason | null;
 }
 
 export interface ShiftsTables {

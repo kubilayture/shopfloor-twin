@@ -2,7 +2,9 @@
  * DTOs of the shifts API (#144, ADR-0025): shift instances, the shift report and handover notes,
  * shaped by the shared schemas of `@shopfloor/contracts` (ADR-0020).
  */
+import type { CrewMemberDto } from '@shopfloor/contracts/mes-api';
 import type {
+  CrewRecord,
   HandoverAuditEntry,
   HandoverNote,
   ShiftRecord,
@@ -136,5 +138,23 @@ export function shiftReportDto(report: ShiftReport, generatedAt: Date): ShiftRep
       })),
     },
     notes: notesDto(report.notes),
+    crew: report.crew.map(crewDto),
+  };
+}
+
+/** A crew row (#177): the shift report's crew section and the terminal's. */
+export function crewDto(crew: CrewRecord): CrewMemberDto {
+  return {
+    id: crew.id,
+    userId: crew.userId,
+    username: crew.username,
+    workCenter: crew.workCenter,
+    epoch: crew.epoch,
+    shiftKey: crew.shiftKey,
+    from: iso(crew.from),
+    fromPlant: iso(crew.fromPlant),
+    to: crew.to === null ? null : iso(crew.to),
+    toPlant: crew.toPlant === null ? null : iso(crew.toPlant),
+    endReason: crew.endReason,
   };
 }

@@ -767,6 +767,15 @@ const ROUTES: Readonly<Record<string, Permission | 'session' | 'public'>> = {
   'GET /api/v1/scrap-reasons': 'read',
   'GET /api/v1/execution-incidents': 'read',
   'PUT /api/v1/scrap-records/{id}/coding': 'scrap:code',
+  'GET /api/v1/terminal/{workCenter}': 'read',
+  'POST /api/v1/terminal/{workCenter}/sign-on': 'terminal:operate',
+  'POST /api/v1/terminal/{workCenter}/sign-off': 'terminal:operate',
+  'POST /api/v1/terminal/{workCenter}/orders/{id}/operations/{operation}/start': 'terminal:operate',
+  'POST /api/v1/terminal/{workCenter}/orders/{id}/operations/{operation}/pause': 'terminal:operate',
+  'POST /api/v1/terminal/{workCenter}/orders/{id}/operations/{operation}/resume':
+    'terminal:operate',
+  'POST /api/v1/terminal/{workCenter}/orders/{id}/operations/{operation}/sign-off':
+    'terminal:operate',
 };
 
 /** Path parameters filled in so the route matches (the handler may still answer 400 or 404). */
@@ -778,6 +787,8 @@ const PARAMS: Readonly<Record<string, string>> = {
   equipment: 'CNC-01',
   code: 'X',
   username: 'nobody',
+  workCenter: 'line-a1',
+  operation: 'OP30',
 };
 
 describe('authentication on every route (MES_AUTH=on, #168)', () => {
@@ -860,7 +871,7 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     );
     const api = routes.filter((route) => route.includes(' /api/v1/'));
     expect(api.sort()).toEqual(Object.keys(ROUTES).sort());
-    expect(api).toHaveLength(61);
+    expect(api).toHaveLength(68);
     expect(routes.filter((r) => !r.includes(' /api/v1/')).sort()).toEqual([
       'GET /health/live',
       'GET /health/ready',

@@ -1,0 +1,238 @@
+import {
+  TERMINAL_LIMITS,
+  type ActivityDto,
+  type TerminalMachineDto,
+  type TerminalOperationDto,
+  type TerminalOrderDto,
+  type TerminalViewDto,
+} from '@shopfloor/contracts/mes-api';
+import type { CurrentState } from '../equipment/index.ts';
+import type { Execution, OrderExecutionRecord } from '../execution/index.ts';
+import type { EquipmentInfo } from '../master-data/index.ts';
+import type { ActivityRecord, OperationRecord, OrderRecord, Orders } from '../orders/index.ts';
+import type { Shifts } from '../shifts/index.ts';
+import { scrapRecordDto } from './execution-routes.ts';
+import { orderDto } from './order-dto.ts';
+import { crewDto } from './shift-dto.ts';
+
+// The operator terminal's view of a work center (#177, plan "Operator terminal: Shows"): per
+// machine its state and current job; the active orders with, per operation at this work center,
+// in, good, scrap and rework, completion, sign-off and who works on it, and the order's WIP here;
+// the queue of released and dispatched orders; the uncoded scrap records of its operations; who
+// is signed on. The same content is `GET /terminal/{workCenter}` and the push topic
+// `terminal:<workCenter>`.
+
+/** What the view reads of the modules. */
+export interface TerminalViewSources {
+  readonly equipment: { currentStates(): CurrentState[] };
+  readonly orders: Pick<Orders, 'list' | 'operations' | 'commands'>;
+  readonly execution?: Pick<Execution, 'orderExecution' | 'scrapRecords'>;
+  readonly shifts?: Pick<Shifts, 'crew' | 'currentInstance'>;
+}
+
+const iso = (date: Date): string => date.toISOString();
+const isoOrNull = (date: Date | null): string | null => (date === null ? null : iso(date));
+
+export function activityDto(activity: ActivityRecord): ActivityDto {
+  return {
+    id: activity.id,
+    orderId: activity.orderId,
+    operation: activity.operation,
+    workCenter: activity.workCenter,
+    userId: activity.userId,
+    username: activity.username,
+    kind: activity.kind,
+    reason: activity.reason,
+    comment: activity.comment,
+    from: iso(activity.from),
+    fromPlant: iso(activity.fromPlant),
+    to: isoOrNull(activity.to),
+    toPlant: isoOrNull(activity.toPlant),
+    endReason: activity.endReason,
+  };
+}
+
+export function operationDto(operation: OperationRecord): TerminalOperationDto {
+  return {
+    orderId: operation.orderId,
+    operation: operation.operation,
+    workCenter: operation.workCenter,
+    version: operation.version,
+    complete: operation.completedAt !== null,
+    completedAt: isoOrNull(operation.completedAt),
+    signedOff: operation.signedOff && {
+      username: operation.signedOff.username,
+      at: iso(operation.signedOff.at),
+      plantAt: iso(operation.signedOff.plantAt),
+    },
+    activities: operation.activities.map(activityDto),
+  };
+}
+
+/**
+ * Where a unit in WIP waits or works, by its position (`after:OPxx`, `rework:OPxx`,
+ * `at:{equipment}`): the operation it goes to next, so its work center.
+ */
+export function nextOperation(
+  position: string,
+  routing: readonly string[],
+  machines: ReadonlyMap<string, EquipmentInfo>,
+): string | undefined {
+  const [kind, value] = position.split(':', 2);
+  if (value === undefined) return undefined;
+  if (kind === 'rework') return value;
+  if (kind === 'at') return machines.get(value)?.operation;
+  if (kind === 'after') {
+    const index = routing.indexOf(value);
+    return index >= 0 ? routing[index + 1] : undefined;
+  }
+  return undefined;
+}
+
+/** The order's units in WIP at this work center's stations, and per machine the orders there. */
+function wipHere(
+  execution: OrderExecutionRecord | undefined,
+  order: OrderRecord,
+  workCenter: string,
+  machines: ReadonlyMap<string, EquipmentInfo>,
+): { count: number; atMachines: Set<string> } {
+  const atMachines = new Set<string>();
+  if (!execution) return { count: 0, atMachines };
+  const routing = order.routing.map((r) => r.operation);
+  const centerOf = new Map(order.routing.map((r) => [r.operation, r.workCenter]));
+  let count = 0;
+  for (const [position, units] of Object.entries(execution.wip)) {
+    if (units <= 0) continue;
+    const next = nextOperation(position, routing, machines);
+    if (next === undefined || centerOf.get(next) !== workCenter) continue;
+    count += units;
+    for (const machine of machines.values()) {
+      if (machine.workCenter.id === workCenter && machine.operation === next) {
+        atMachines.add(machine.id);
+      }
+    }
+  }
+  for (const [machine, blanks] of Object.entries(execution.inMachine)) {
+    if (blanks > 0 && machines.get(machine)?.workCenter.id === workCenter) {
+      count += blanks;
+      atMachines.add(machine);
+    }
+  }
+  return { count, atMachines };
+}
+
+/** The terminal view of a work center from the modules' current data. */
+export async function terminalView(
+  sources: TerminalViewSources,
+  workCenter: { readonly id: string; readonly name: string },
+  catalog: ReadonlyMap<string, EquipmentInfo>,
+): Promise<TerminalViewDto> {
+  const machines = [...catalog.values()]
+    .filter((m) => m.workCenter.id === workCenter.id)
+    .sort((a, b) => a.position - b.position);
+  const states = new Map(sources.equipment.currentStates().map((s) => [s.equipment, s]));
+  const { orders } = await sources.orders.list({
+    status: ['released', 'dispatched', 'in-progress', 'completed'],
+  });
+  const here = orders
+    .filter((o) => o.routing.some((r) => r.workCenter === workCenter.id))
+    .sort((a, b) => a.plannedStart.getTime() - b.plannedStart.getTime() || (a.id < b.id ? -1 : 1));
+  const candidates = here.filter((o) => o.status !== 'released');
+  const executions = new Map<string, OrderExecutionRecord>();
+  if (sources.execution) {
+    for (const order of candidates.slice(0, TERMINAL_LIMITS.orders * 2)) {
+      const found = await sources.execution.orderExecution(order.id);
+      if (found) executions.set(order.id, found);
+    }
+  }
+  const active = candidates.filter(
+    (o) =>
+      o.status === 'in-progress' ||
+      o.status === 'completed' ||
+      (executions.get(o.id)?.units.total ?? 0) > 0,
+  );
+  const activeIds = new Set(active.map((o) => o.id));
+  const queued = here.filter((o) => !activeIds.has(o.id));
+  const shown = active.slice(0, TERMINAL_LIMITS.orders);
+  const operations = await sources.orders.operations({
+    orderIds: shown.map((o) => o.id),
+    workCenter: workCenter.id,
+  });
+  const ordersAt = new Map<string, string[]>(machines.map((m) => [m.id, []]));
+  const commands = await sources.orders.commands();
+  const started = commands.filter((c) => c.job === 'started');
+  const terminalOrders: TerminalOrderDto[] = shown.map((order) => {
+    const execution = executions.get(order.id);
+    const wip = wipHere(execution, order, workCenter.id, catalog);
+    for (const machine of wip.atMachines) ordersAt.get(machine)?.push(order.id);
+    return {
+      order: orderDto(order),
+      operations: operations
+        .filter((op) => op.orderId === order.id)
+        .map((op) => {
+          const counts = execution?.operations.find((o) => o.operation === op.operation);
+          return {
+            ...operationDto(op),
+            counts: {
+              operation: op.operation,
+              in: counts?.in ?? 0,
+              good: counts?.good ?? 0,
+              scrap: Object.values(counts?.scrap ?? {}).reduce((sum, n) => sum + n, 0),
+              rework: counts?.rework ?? 0,
+            },
+          };
+        }),
+      wip: wip.count,
+    };
+  });
+  const lastCommand = new Map<string, string>();
+  for (const command of commands) lastCommand.set(command.orderId, command.equipment);
+  const machineDtos: TerminalMachineDto[] = machines.map((m) => {
+    const state = states.get(m.id);
+    const job = started.filter((c) => c.equipment === m.id).at(-1);
+    return {
+      id: m.id,
+      name: m.name,
+      operation: m.operation,
+      state: state ? { state: state.state, cause: state.cause, since: iso(state.since) } : null,
+      job: job ? { commandId: job.commandId, orderId: job.orderId, product: job.product } : null,
+      orders: ordersAt.get(m.id) ?? [],
+    };
+  });
+  const operationsHere = new Set(machines.map((m) => m.operation));
+  let scrapTruncated = false;
+  const scrap = sources.execution
+    ? await sources.execution.scrapRecords({ uncoded: true, limit: 500 }).then((found) => {
+        const mine = found.records.filter((r) => operationsHere.has(r.operation));
+        scrapTruncated = found.truncated || mine.length > TERMINAL_LIMITS.scrapRecords;
+        return mine.slice(0, TERMINAL_LIMITS.scrapRecords);
+      })
+    : [];
+  const instance = sources.shifts?.currentInstance();
+  const crew = sources.shifts
+    ? await sources.shifts.crew({ workCenter: workCenter.id, open: true })
+    : [];
+  return {
+    workCenter: { id: workCenter.id, name: workCenter.name },
+    shift: instance
+      ? {
+          epoch: instance.epoch,
+          key: instance.key,
+          start: iso(instance.start),
+          end: iso(instance.end),
+        }
+      : null,
+    machines: machineDtos,
+    crew: crew.map(crewDto),
+    orders: terminalOrders,
+    queue: queued.slice(0, TERMINAL_LIMITS.orders).map((order) => ({
+      order: orderDto(order),
+      equipment: lastCommand.get(order.id) ?? null,
+    })),
+    scrapRecords: scrap.map(scrapRecordDto),
+    truncated:
+      active.length > TERMINAL_LIMITS.orders ||
+      queued.length > TERMINAL_LIMITS.orders ||
+      scrapTruncated,
+  };
+}

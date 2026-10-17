@@ -11,7 +11,14 @@ import { UNCODED } from '@shopfloor/plant-config';
 import { nextShift, shiftInstances, type ShiftPattern } from '@shopfloor/shift-calendar';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
-import { Identity, auditActor, isAuthenticated, nameOf, type WriteBy } from '../identity/index.ts';
+import {
+  Identity,
+  auditActor,
+  isAuthenticated,
+  nameOf,
+  type SessionUser,
+  type WriteBy,
+} from '../identity/index.ts';
 import type {
   AlarmEvent,
   AlarmKpiBucket,
@@ -34,6 +41,14 @@ import {
   type OeeChange,
   type Pareto,
 } from '../oee/index.ts';
+import {
+  endCrew,
+  readCrew,
+  signOff as crewSignOff,
+  signOn as crewSignOn,
+  type CrewQuery,
+  type CrewRecord,
+} from './crew.ts';
 import type { HandoverNoteTable, InputRevisions, NoteContent, ShiftStatus } from './tables.ts';
 
 export const NOTE_CATEGORIES = ['safety', 'quality', 'equipment', 'material', 'general'] as const;
@@ -80,6 +95,14 @@ export interface ShiftsOptions extends ShiftsSources {
   readonly tickMs?: number;
   /** How often (wall ms) an ended report not yet final is checked again without a change (10 s). */
   readonly recheckMs?: number;
+  /**
+   * Whether a terminal session is still live (#177): a crew row whose session ended (logout,
+   * idle or absolute expiry, a disabled user) is closed. Without it only `endCrewForSessions`
+   * closes rows for a session's end.
+   */
+  readonly sessions?: { live(id: string): Promise<boolean> };
+  /** How often (wall ms) the open crew rows' sessions are checked (5 s). */
+  readonly crewCheckMs?: number;
   readonly log?: ShiftsLog;
 }
 
@@ -224,6 +247,8 @@ export interface ShiftReport {
   };
   readonly alarms: readonly ReportAlarmScope[];
   readonly notes: readonly { note: HandoverNote; history: HandoverAuditEntry[] }[];
+  /** Who signed on at a terminal during the shift (#177), by work center and sign-on. */
+  readonly crew: readonly CrewRecord[];
 }
 
 export type ShiftChange =
@@ -232,7 +257,13 @@ export type ShiftChange =
       readonly event: 'created' | 'status' | 'revised';
       readonly instance: ShiftRecord;
     }
-  | { readonly type: 'note'; readonly event: 'created' | 'edited'; readonly note: HandoverNote };
+  | { readonly type: 'note'; readonly event: 'created' | 'edited'; readonly note: HandoverNote }
+  | {
+      /** A crew row opened (sign-on) or ended (#177). */
+      readonly type: 'crew';
+      readonly event: 'signed-on' | 'ended';
+      readonly crew: CrewRecord;
+    };
 
 const silent: ShiftsLog = { info: () => undefined, error: () => undefined };
 
@@ -376,6 +407,9 @@ export class Shifts {
   #timer: NodeJS.Timeout | undefined;
   #queue: Promise<unknown> = Promise.resolve();
   #ticking = false;
+  readonly #sessions: { live(id: string): Promise<boolean> } | undefined;
+  readonly #crewCheckMs: number;
+  #crewCheckedAt = 0;
 
   constructor(options: ShiftsOptions) {
     this.#db = options.db;
@@ -385,6 +419,8 @@ export class Shifts {
     this.#log = options.log ?? silent;
     this.#tickMs = options.tickMs ?? 1_000;
     this.#recheckMs = options.recheckMs ?? 10_000;
+    this.#sessions = options.sessions;
+    this.#crewCheckMs = options.crewCheckMs ?? 5_000;
   }
 
   get shiftPattern(): ShiftPattern {
@@ -456,6 +492,10 @@ export class Shifts {
         const clocks = this.#sources.equipment.watermarks();
         const newest = clocks[0]?.epoch;
         for (const clock of clocks) await this.#ensure(clock.epoch, clock.watermark.getTime());
+        // Crews end with their shift (before its report can become final) and their session.
+        await this.#endCrews(newest).catch((error: unknown) => {
+          this.#log.error({ err: error }, 'shifts: ending crew rows failed; retrying');
+        });
         const now = Date.now();
         for (const tracked of this.#tracked.values()) {
           const { record } = tracked;
@@ -545,6 +585,7 @@ export class Shifts {
       ),
       this.notes(record.epoch, record.key, true),
     ]);
+    const crew = await readCrew(this.#readDb, { epoch: record.epoch, shiftKey: record.key });
     const inShift = records.filter((r) => r.shiftKey === record.key);
     const losses = await Promise.all(
       workCenters.map((wc) => oee.paretoInputs('work-center', wc.id, start, end, record.epoch)),
@@ -620,7 +661,138 @@ export class Shifts {
       },
       alarms: alarmScopes,
       notes,
+      crew,
     };
+  }
+
+  // ---- crews (#177) ----
+
+  /** The instance the newest epoch's plant clock is in, if any (sign-on needs one). */
+  currentInstance(): ShiftRecord | undefined {
+    const clock = this.#sources.equipment.watermarks()[0];
+    if (!clock) return undefined;
+    const at = clock.watermark.getTime();
+    for (const { record } of this.#tracked.values()) {
+      if (record.epoch !== clock.epoch) continue;
+      if (record.start.getTime() <= at && at < record.end.getTime()) return record;
+    }
+    return undefined;
+  }
+
+  /** Crew rows, by work center and sign-on. */
+  async crew(query: CrewQuery = {}): Promise<CrewRecord[]> {
+    return readCrew(this.#readDb, query);
+  }
+
+  /**
+   * Signs the user on at the work center for the terminal session, in the shift instance the plant
+   * clock is in (409 `no-shift` without one). Idempotent for the same session; a row of another
+   * session of the same user there is ended (`replaced`). Audited.
+   */
+  async signOn(
+    workCenter: string,
+    by: SessionUser,
+    sessionId: string,
+    requestId?: string,
+  ): Promise<CrewRecord> {
+    const instance = this.currentInstance();
+    const plantAt = this.#sources.equipment.watermarks()[0]?.watermark;
+    if (!instance || !plantAt) {
+      throw new ShiftError(
+        'conflict',
+        'the plant clock is in no shift: signing on needs a running shift',
+        PROBLEM_TYPES.noShift,
+      );
+    }
+    const result = await crewSignOn(this.#db, {
+      workCenter,
+      by,
+      sessionId,
+      epoch: instance.epoch,
+      shiftKey: instance.key,
+      plantAt,
+      requestId,
+    });
+    for (const ended of result.ended) this.#emit({ type: 'crew', event: 'ended', crew: ended });
+    if (result.created) this.#emit({ type: 'crew', event: 'signed-on', crew: result.crew });
+    return result.crew;
+  }
+
+  /** Signs the user off at the work center (their open row ends with `sign-off`). */
+  async signOff(workCenter: string, by: SessionUser, requestId?: string): Promise<CrewRecord> {
+    const plantAt = this.#sources.equipment.watermarks()[0]?.watermark ?? new Date();
+    const ended = await crewSignOff(this.#db, { workCenter, by, plantAt, requestId });
+    if (!ended) {
+      throw new ShiftError(
+        'conflict',
+        `${by.username} is not signed on at ${workCenter}`,
+        PROBLEM_TYPES.notSignedOn,
+      );
+    }
+    this.#emit({ type: 'crew', event: 'ended', crew: ended });
+    return ended;
+  }
+
+  /** Ends the open rows of these sessions (`session-ended`): logout, a disabled user, … */
+  async endCrewForSessions(sessionIds: readonly string[]): Promise<CrewRecord[]> {
+    if (sessionIds.length === 0) return [];
+    const open = await this.#db
+      .selectFrom('shifts.crew_assignment')
+      .select('id')
+      .where('to_at', 'is', null)
+      .where('session_id', 'in', [...sessionIds])
+      .execute();
+    return this.#endRows(
+      open.map((r) => r.id),
+      'session-ended',
+    );
+  }
+
+  async #endRows(ids: readonly number[], reason: 'session-ended' | 'shift-ended') {
+    const ended = await endCrew(this.#db, ids, reason, (row) => {
+      const record = this.#tracked.get(instanceKey(row.epoch, row.shiftKey))?.record;
+      const clock = this.#sources.equipment.watermark(row.epoch);
+      // A shift's end closes the row at the end of the shift; anything else at the plant clock.
+      if (reason === 'shift-ended' && record) return record.end;
+      if (clock && record) return new Date(Math.min(clock.getTime(), record.end.getTime()));
+      return clock ?? record?.end ?? row.fromPlant;
+    });
+    for (const crew of ended) this.#emit({ type: 'crew', event: 'ended', crew });
+    return ended;
+  }
+
+  /**
+   * Ends the open crew rows of instances that ended (`shift-ended`), and, every `crewCheckMs`,
+   * those whose terminal session is no longer live (`session-ended`: idle or absolute expiry).
+   */
+  async #endCrews(newest: number | undefined): Promise<void> {
+    const open = await this.#db
+      .selectFrom('shifts.crew_assignment')
+      .select(['id', 'epoch', 'shift_key', 'session_id'])
+      .where('to_at', 'is', null)
+      .execute();
+    if (open.length === 0) return;
+    const shiftEnded = open.filter((row) => {
+      const record = this.#tracked.get(instanceKey(row.epoch, row.shift_key))?.record;
+      return record ? this.#ended(record, newest) : false;
+    });
+    await this.#endRows(
+      shiftEnded.map((r) => r.id),
+      'shift-ended',
+    );
+    const sessions = this.#sessions;
+    const now = Date.now();
+    if (!sessions || now - this.#crewCheckedAt < this.#crewCheckMs) return;
+    this.#crewCheckedAt = now;
+    const gone = new Set(shiftEnded.map((r) => r.id));
+    const dead: number[] = [];
+    for (const row of open) {
+      if (gone.has(row.id)) continue;
+      if (row.session_id === null || !(await sessions.live(row.session_id))) {
+        dead.push(row.id);
+      }
+    }
+    await this.#endRows(dead, 'session-ended');
   }
 
   /** The notes of an instance, by creation, each with its history (newest first) if asked. */

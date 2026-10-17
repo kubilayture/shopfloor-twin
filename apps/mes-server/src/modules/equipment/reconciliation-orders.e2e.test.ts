@@ -18,5 +18,7 @@ reconciliationSuite(
       alarmComparisons: 60,
       shifts: { instances: 6, final: 5, compared: 102 },
       orders: { units: 402, confirmations: 35, orders: 8 },
+      // Measured without extra load (#218): 25 s and 116 s (three shuffled orderings).
+      quietMs: { inOrder: 25_000, shuffled: 115_000 },
     }),
 );

@@ -23,7 +23,7 @@ import { NO_SHIFT, shiftBuckets, shiftInstances, shiftSegments } from '@shopfloo
 import { attachConsumption } from '@shopfloor/trace-core';
 import type { Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import {
   cycleHourly,
   cycleHourlyRaw,
@@ -1850,6 +1850,44 @@ export interface Scenario {
    * execution modules, reconciled per order, operation and unit; the pinned comparison counts.
    */
   readonly orders?: OrdersPins;
+  /**
+   * How long each test takes on a quiet machine (ms), measured (#218): a run slower than
+   * `SLOW_FACTOR` times this is reported, never failed, so a slowdown shows despite the wide
+   * limits.
+   */
+  readonly quietMs?: { readonly inOrder: number; readonly shuffled: number };
+}
+
+/** A run slower than this many times its quiet baseline is reported with a warning (#218). */
+export const SLOW_FACTOR = 2.5;
+
+/**
+ * Logs how long a reconciliation test took and, past `SLOW_FACTOR` times its quiet baseline,
+ * warns (#218): a loaded machine, or a slowdown worth a look. Never fails the test; the limits
+ * above are for hangs.
+ */
+export function reportDuration(
+  title: string,
+  label: string,
+  tookMs: number,
+  quietMs: number | undefined,
+  warn: (line: string) => void = console.warn,
+): string {
+  const took = `${(tookMs / 1000).toFixed(1)} s`;
+  if (quietMs === undefined) {
+    const line = `${title}: ${label} took ${took} (no quiet baseline)`;
+    console.log(line);
+    return line;
+  }
+  const ratio = tookMs / quietMs;
+  const line = `${title}: ${label} took ${took}, ${ratio.toFixed(2)}× its quiet baseline of ${(quietMs / 1000).toFixed(0)} s`;
+  console.log(line);
+  if (ratio > SLOW_FACTOR) {
+    warn(
+      `SLOW (${SLOW_FACTOR.toFixed(1)}× quiet exceeded): ${line}. A loaded machine, or a slowdown: compare with an idle run.`,
+    );
+  }
+  return line;
 }
 
 /** What an orders-mode reconciliation compares, pinned (#175). */
@@ -1867,7 +1905,7 @@ export async function golden(
   name: string,
   pinned: Pick<
     Scenario,
-    'oeeBuckets' | 'alarmComparisons' | 'settledToEnd' | 'shifts' | 'orders'
+    'oeeBuckets' | 'alarmComparisons' | 'settledToEnd' | 'shifts' | 'orders' | 'quietMs'
   > = {},
 ): Promise<Scenario> {
   const dir = join(GOLDENS, name);
@@ -1898,6 +1936,9 @@ export async function goldenWeek(): Promise<Scenario> {
     // 15 shift reports (#144), all final but Friday's shift C: every machine shuts down exactly at
     // its end, so its alarm KPI buckets (end + fleetingMs) stay provisional.
     shifts: { instances: 15, final: 14, compared: 255 },
+    // Without extra load (other suites of the machine running, load 3 to 8): 74 s + 125 s,
+    // 125 s + 225 s, 157 s + 300 s (#218).
+    quietMs: { inOrder: 100_000, shuffled: 200_000 },
   };
 }
 
@@ -1942,6 +1983,15 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
     it(
       'in order: time per state, per machine and shift, equals the ground truth to the ms',
       async () => {
+        const startedAt = performance.now();
+        onTestFinished(() => {
+          reportDuration(
+            title,
+            'in order',
+            performance.now() - startedAt,
+            (span as Scenario | undefined)?.quietMs?.inOrder,
+          );
+        });
         span = await scenario();
         run = await headless(span);
         if (span.golden) {
@@ -2017,6 +2067,15 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
     it(
       'shuffled delivery with duplicates stores identical intervals',
       async () => {
+        const startedAt = performance.now();
+        onTestFinished(() => {
+          reportDuration(
+            title,
+            'shuffled',
+            performance.now() - startedAt,
+            (span as Scenario | undefined)?.quietMs?.shuffled,
+          );
+        });
         const { facts, anchors, end } = unsMessages(run);
         const next = random(2026);
         const { db, equipment, ingest, masterData, alarms, send } = await mes();

@@ -32,4 +32,6 @@ Each folder holds a scenario (`scenario.json`: seed, start, days, configuration 
 
 - #208: created (`events.sha256` `fce46549f8e8aae4662481cea655beef50b8407f0192db589af431ea99ec0cd7`, 12,605 lines), with `stock.yaml`, `orders.json` and `trace.json`. Probe P4's search (`apps/simulator/src/headless/drift-search.ts`): every drift start from 08:16Z to 09:40Z had a clean 60-reading counterfactual window; 44 of the 85 starts met every condition; 08:25Z also gives a leak scrap. N = 40, the plan's window: the N = 20 fallback is not used.
 
+- #199: no file changed. The MES's golden harness now runs `quality-01` too (`reconciliation-quality.e2e.test.ts`) and reconciles the genealogy of `week-01`, `orders-01` and `quality-01` against their `trace.json`.
+
 Earlier changes are recorded in the changelog (#53, #73, #126).

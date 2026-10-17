@@ -39,6 +39,7 @@ export const DECLARED_GRANTS: {
       identity: ['USAGE'],
       orders: ['USAGE'],
       execution: ['USAGE'],
+      genealogy: ['USAGE'],
       quality: ['USAGE'],
     },
     mes_cagg: { ingest: ['USAGE'], equipment: ['USAGE'] },
@@ -116,6 +117,14 @@ export const DECLARED_GRANTS: {
       'execution.operation_record': ALL,
       'execution.scrap_record': KEEP,
       'execution.execution_incident': KEEP,
+      // Lots and incidents are kept, never deleted (a lot no longer listed is retired; incidents
+      // as execution's, #199 review L7); everything else of the genealogy is derived and rebuilt.
+      'genealogy.material_lot': KEEP,
+      'genealogy.serial_unit': ALL,
+      'genealogy.unit_record': ALL,
+      'genealogy.genealogy_link': ALL,
+      'genealogy.carton': ALL,
+      'genealogy.genealogy_incident': KEEP,
       // SPC (#200): characteristics are seeded and kept; measurements and signal episodes are
       // derived and rebuilt; limit versions are append-only (a trigger refuses the rest).
       'quality.characteristic': KEEP,

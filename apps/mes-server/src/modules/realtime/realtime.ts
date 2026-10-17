@@ -62,6 +62,7 @@ import {
 } from './alarm-dto.ts';
 import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
 import { executionRoutes, type ExecutionApi } from './execution-routes.ts';
+import { genealogyRoutes, type GenealogyApi } from './genealogy-routes.ts';
 import { orderRoutes, type OrdersApi } from './order-routes.ts';
 import { qualityRoutes, type QualityApi } from './quality-routes.ts';
 import { terminalRoutes, workCentersOf, type TerminalApi } from './terminal-routes.ts';
@@ -245,6 +246,8 @@ export interface ApiSources {
     >;
   /** Units, an order's execution and scrap records (#175); the execution routes answer 503 without it. */
   readonly execution?: ExecutionApi & Partial<Pick<Execution, 'onChange'>>;
+  /** Lots, serials, cartons and the trace queries (#199); the trace routes answer 503 without it. */
+  readonly genealogy?: GenealogyApi;
   /** SPC characteristics, charts and signals (#200); the quality routes answer 503 without it. */
   readonly quality?: QualityApi & Partial<Pick<Quality, 'onChange'>>;
 }
@@ -1459,6 +1462,15 @@ export async function registerRealtime(
           return execution;
         },
         writer: (request) => Promise.resolve(writeBy(request)),
+      });
+
+      // ---- Genealogy (#199): backward and forward trace, cartons, search, incidents ----
+      genealogyRoutes(api, {
+        genealogy: () => {
+          const genealogy = ready().sources.genealogy;
+          if (!genealogy) throw new HttpProblem(503, 'genealogy is not available');
+          return genealogy;
+        },
       });
 
       // ---- Shifts: instances, report and handover notes (#144, ADR-0025) ----

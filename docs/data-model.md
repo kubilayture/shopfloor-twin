@@ -77,6 +77,13 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `execution.operation_record`
   - `execution.scrap_record`
   - `execution.unit`
+- [`genealogy`](#schema-genealogy)
+  - `genealogy.carton`
+  - `genealogy.genealogy_incident`
+  - `genealogy.genealogy_link`
+  - `genealogy.material_lot`
+  - `genealogy.serial_unit`
+  - `genealogy.unit_record`
 - [`quality`](#schema-quality)
   - `quality.characteristic`
   - `quality.control_limit`
@@ -131,6 +138,13 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `execution.operation_record` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `execution.scrap_record` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `execution.unit` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `genealogy` | `mes_owner` | USAGE |  |
+| `genealogy.carton` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `genealogy.genealogy_incident` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `genealogy.genealogy_link` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `genealogy.material_lot` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `genealogy.serial_unit` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `genealogy.unit_record` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `identity` | `mes_owner` | USAGE |  |
 | `identity.audit_log` | `mes_owner` | INSERT, SELECT |  |
 | `identity.role` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
@@ -380,6 +394,23 @@ erDiagram
     bigint part_id PK
   }
   unit ||--o{ operation_record : "epoch, part_id"
+```
+
+Schema genealogy:
+
+```mermaid
+erDiagram
+  serial_unit {
+    bigint epoch PK
+    bigint part_id PK
+  }
+  unit_record {
+    text equipment PK
+    bigint epoch FK, PK
+    bigint seq PK
+    bigint part_id FK
+  }
+  serial_unit ||--o{ unit_record : "epoch, part_id"
 ```
 
 Schema quality:
@@ -1979,6 +2010,171 @@ Units: one part of one simulator run, keyed (device epoch, partId), with its ser
 | Index | `unit_order` | `execution.unit USING btree (order_id, status)` |
 | Index | `unit_suspect` | `execution.unit USING btree (epoch) WHERE (suspect IS NOT NULL)` |
 | Index | `unit_wip` | `execution.unit USING btree (epoch) WHERE (status = 'wip'::text)` |
+
+## Schema genealogy
+
+Owner: genealogy. Lots imported from the ERP’s lot list, every unit (device epoch, partId) with its serial, the lots each of its cycles consumed per operation and pass, the device operator and reading per record, cartons formed by the packing rule on final data, and the module’s incidents (#199, ADR-0034). Everything but the lots is derived from the execution module’s units and the cycle facts and rebuilt per unit; the trace queries read it.
+
+### genealogy.carton
+
+Cartons per order by the packing rule (`packing.yaml`, `trace-core`), placed on final packing data: `{orderId}-C{nn}`, capacity, open or closed and when, members (#199).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `text` | not null |  |
+| `order_id` | `text` | not null |  |
+| `number` | `integer` | not null |  |
+| `product` | `text` | not null |  |
+| `capacity` | `integer` | not null |  |
+| `status` | `text` | not null |  |
+| `closed_at` | `timestamp with time zone` | null |  |
+| `members` | `integer` | not null |  |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `carton_pkey` | `PRIMARY KEY (id)` |
+| Unique | `carton_order_id_number_key` | `UNIQUE (order_id, number)` |
+| Check | `carton_capacity_check` | `CHECK ((capacity >= 1))` |
+| Check | `carton_check` | `CHECK (((members >= 0) AND (members <= capacity)))` |
+| Check | `carton_check1` | `CHECK (((status = 'closed'::text) = (closed_at IS NOT NULL)))` |
+| Check | `carton_number_check` | `CHECK ((number >= 1))` |
+| Check | `carton_status_check` | `CHECK ((status = ANY (ARRAY['open'::text, 'closed'::text])))` |
+| Index | `carton_open` | `genealogy.carton USING btree (order_id) WHERE (status = 'open'::text)` |
+| Index | `carton_prefix` | `genealogy.carton USING btree (id COLLATE "C")` |
+
+### genealogy.genealogy_incident
+
+Incidents of the genealogy module: `unknown-lot` (closed when the import lists it), `serial-reused` (one per pair of device epochs), `material-mismatch` (a lot the BOM doesn’t list for that operation and pass, or the ERP lists with another material) and `rebuild-failed` (a unit whose rebuild keeps failing; its rows kept, genealogy’s watermark held below its facts), open at most once per key, kept, never deleted (#199).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `type` | `text` | not null |  |
+| `key` | `text` | not null |  |
+| `lot` | `text` | null |  |
+| `epoch` | `bigint` | null |  |
+| `part_id` | `bigint` | null |  |
+| `equipment` | `text` | null |  |
+| `message` | `text` | not null |  |
+| `detected_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `closed_at` | `timestamp with time zone` | null |  |
+| `resolution` | `text` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `genealogy_incident_pkey` | `PRIMARY KEY (id)` |
+| Check | `genealogy_incident_check` | `CHECK (((closed_at IS NULL) = (resolution IS NULL)))` |
+| Check | `genealogy_incident_type_check` | `CHECK ((type = ANY (ARRAY['unknown-lot'::text, 'serial-reused'::text, 'material-mismatch'::text, 'rebuild-failed'::text])))` |
+| Index | `genealogy_incident_open` | `genealogy.genealogy_incident USING btree (key) WHERE (closed_at IS NULL)` |
+
+### genealogy.genealogy_link
+
+Typed edges: `lot-unit` (a lot reference of a cycle fact: lot, material, unit, operation, pass, machine, the fact’s key, its place in the list, time) and `unit-carton` (a unit’s place in its carton); rebuilt with units and cartons (#199).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `kind` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `part_id` | `bigint` | not null |  |
+| `at` | `timestamp with time zone` | not null |  |
+| `position` | `integer` | not null |  |
+| `lot` | `text` | null |  |
+| `material` | `text` | null |  |
+| `operation` | `text` | null |  |
+| `pass` | `integer` | null |  |
+| `equipment` | `text` | null |  |
+| `seq` | `bigint` | null |  |
+| `carton_id` | `text` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Check | `genealogy_link_check` | `CHECK ((((kind = 'lot-unit'::text) AND (lot IS NOT NULL) AND (material IS NOT NULL) AND (operation IS NOT NULL) AND (pass IS NOT NULL) AND (equipment IS NOT NULL) AND (seq IS NOT NULL) AND (carton_id IS NULL)) OR ((kind = 'unit-carton'::text) AND (carton_id IS NOT NULL) AND (lot IS NULL) AND (material IS NULL) AND (operation IS NULL) AND (pass IS NULL) AND (equipment IS NULL) AND (seq IS NULL))))` |
+| Check | `genealogy_link_kind_check` | `CHECK ((kind = ANY (ARRAY['lot-unit'::text, 'unit-carton'::text])))` |
+| Check | `genealogy_link_position_check` | `CHECK (("position" >= 0))` |
+| Index | `genealogy_link_carton` | `genealogy.genealogy_link USING btree (carton_id, "position") WHERE (kind = 'unit-carton'::text)` |
+| Index | `genealogy_link_fact` | `genealogy.genealogy_link USING btree (equipment, epoch, seq, "position") WHERE (kind = 'lot-unit'::text)` |
+| Index | `genealogy_link_lot` | `genealogy.genealogy_link USING btree (lot, epoch, part_id) WHERE (kind = 'lot-unit'::text)` |
+| Index | `genealogy_link_unit` | `genealogy.genealogy_link USING btree (epoch, part_id)` |
+| Index | `genealogy_link_unit_carton` | `genealogy.genealogy_link USING btree (epoch, part_id) WHERE (kind = 'unit-carton'::text)` |
+
+### genealogy.material_lot
+
+Lots from the ERP’s lot list (`GET /api/v1/lots`): material, quantity received, `active` or `retired` (no longer listed, kept), the feed it came with (#199).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `text` | not null |  |
+| `material` | `text` | not null |  |
+| `quantity` | `bigint` | not null |  |
+| `status` | `text` | not null |  |
+| `feed_id` | `text` | not null |  |
+| `imported_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `material_lot_pkey` | `PRIMARY KEY (id)` |
+| Check | `material_lot_id_check` | `CHECK (((length(id) >= 1) AND (length(id) <= 128)))` |
+| Check | `material_lot_quantity_check` | `CHECK ((quantity >= 0))` |
+| Check | `material_lot_status_check` | `CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text])))` |
+| Index | `material_lot_prefix` | `genealogy.material_lot USING btree (id COLLATE "C")` |
+
+### genealogy.serial_unit
+
+One row per unit (device epoch, partId) with its serial (not unique across runs, ADR-0034), product, order and status as execution has them, and its carton; rebuilt with the unit (#199).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `epoch` | `bigint` | not null |  |
+| `part_id` | `bigint` | not null |  |
+| `serial` | `text` | null |  |
+| `product` | `text` | not null |  |
+| `order_id` | `text` | null |  |
+| `status` | `text` | not null |  |
+| `carton_id` | `text` | null |  |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `serial_unit_pkey` | `PRIMARY KEY (epoch, part_id)` |
+| Check | `serial_unit_part_id_check` | `CHECK ((part_id >= 1))` |
+| Check | `serial_unit_status_check` | `CHECK ((status = ANY (ARRAY['wip'::text, 'packed'::text, 'scrapped'::text, 'lost'::text])))` |
+| Index | `serial_unit_carton` | `genealogy.serial_unit USING btree (carton_id) WHERE (carton_id IS NOT NULL)` |
+| Index | `serial_unit_order` | `genealogy.serial_unit USING btree (order_id) WHERE (order_id IS NOT NULL)` |
+| Index | `serial_unit_order_prefix` | `genealogy.serial_unit USING btree (order_id COLLATE "C") WHERE (order_id IS NOT NULL)` |
+| Index | `serial_unit_serial` | `genealogy.serial_unit USING btree (serial, epoch) WHERE (serial IS NOT NULL)` |
+| Index | `serial_unit_serial_prefix` | `genealogy.serial_unit USING btree (serial COLLATE "C") WHERE (serial IS NOT NULL)` |
+
+### genealogy.unit_record
+
+One row per operation record of a unit with what its cycle fact reported for traceability: whether it carried lots, the device operator (reported or not) and the measurement; replaced when its unit is rebuilt (#199).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `seq` | `bigint` | not null |  |
+| `part_id` | `bigint` | not null |  |
+| `operation` | `text` | not null |  |
+| `pass` | `integer` | not null |  |
+| `completed_at` | `timestamp with time zone` | not null |  |
+| `result` | `text` | not null |  |
+| `reason` | `text` | null |  |
+| `lots_reported` | `boolean` | not null |  |
+| `operator` | `text` | null |  |
+| `operator_reported` | `boolean` | not null |  |
+| `measurement` | `jsonb` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `unit_record_pkey` | `PRIMARY KEY (equipment, epoch, seq)` |
+| Foreign key | `unit_record_epoch_part_id_fkey` | `FOREIGN KEY (epoch, part_id) REFERENCES genealogy.serial_unit(epoch, part_id)` |
+| Check | `unit_record_check` | `CHECK ((operator_reported OR (operator IS NULL)))` |
+| Check | `unit_record_pass_check` | `CHECK ((pass >= 1))` |
+| Check | `unit_record_result_check` | `CHECK ((result = ANY (ARRAY['good'::text, 'scrap'::text, 'rework'::text])))` |
+| Index | `unit_record_operation` | `genealogy.unit_record USING btree (operation, result)` |
+| Index | `unit_record_unit` | `genealogy.unit_record USING btree (epoch, part_id)` |
 
 ## Schema quality
 

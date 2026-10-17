@@ -31,6 +31,8 @@ export {
   shiftRecordDto,
   shiftReportDto,
 } from './shift-dto.ts';
+export { cartonTraceDto, lotTraceDto, serialTraceDto, traceUnitDto } from './genealogy-routes.ts';
+export type { GenealogyApi } from './genealogy-routes.ts';
 export {
   characteristicDto,
   limitVersionDto,

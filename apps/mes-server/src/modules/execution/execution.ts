@@ -270,6 +270,9 @@ export class Execution implements BlankCounter {
   readonly #ingest: ExecutionIngest;
   readonly #log: ExecutionLog;
   readonly #listeners = new Set<(change: ExecutionChange) => void>();
+  readonly #unitListeners = new Set<(epoch: number, partIds: readonly number[]) => void>();
+  /** Every machine's progress the last round that completed judged with (#199). */
+  #processed: ReadonlyMap<string, DeviceProgress> = new Map();
   readonly #timers: NodeJS.Timeout[] = [];
   /** Cycle facts heard of, by `equipment␀epoch`. */
   readonly #pendingCycles = new Map<string, Set<number>>();
@@ -311,6 +314,25 @@ export class Execution implements BlankCounter {
         registers,
       });
     }
+  }
+
+  /**
+   * Listens for units rebuilt and stored (#199, the genealogy module): called after the commit
+   * with the device epoch and the units' part ids; returns an unsubscribe.
+   */
+  onUnits(listener: (epoch: number, partIds: readonly number[]) => void): () => void {
+    this.#unitListeners.add(listener);
+    return () => this.#unitListeners.delete(listener);
+  }
+
+  /**
+   * Every machine's progress (ADR-0018 `deviceProgress`) as the last completed round read it
+   * before taking its facts (#199): every fact up to a machine's `receivedThrough` in its epoch
+   * has been handled by then, and every unit it changed announced through `onUnits`. The genealogy
+   * module's processed watermark follows it.
+   */
+  processedThrough(): ReadonlyMap<string, DeviceProgress> {
+    return this.#processed;
   }
 
   /** Listens for order and scrap-record changes; returns an unsubscribe. */
@@ -379,6 +401,7 @@ export class Execution implements BlankCounter {
       // handled in an earlier round).
       const machines = [...this.#operationOf.keys()];
       const progress = await this.#ingest.announcedProgress(machines);
+      const snapshot = new Map(progress);
       // What this round handles is taken out of the pending sets, and put back if the round
       // fails, so a failed tick (a lost connection, a deadlock) loses no fact heard of.
       const cycles = [...this.#pendingCycles];
@@ -391,6 +414,7 @@ export class Execution implements BlankCounter {
         await this.#markLost();
         await this.#checkSuspects(progress);
         await this.#evaluateOrders(progress);
+        this.#processed = snapshot;
       } catch (error) {
         for (const [key, seqs] of cycles) {
           const pending = this.#pendingCycles.get(key) ?? new Set<number>();
@@ -411,6 +435,8 @@ export class Execution implements BlankCounter {
     query: {
       readonly orderId?: string;
       readonly epoch?: number;
+      /** With `epoch`: only these units (#199). */
+      readonly partIds?: readonly number[];
       readonly status?: readonly UnitStatus[];
       readonly limit?: number;
     } = {},
@@ -420,6 +446,10 @@ export class Execution implements BlankCounter {
     let select = db.selectFrom('execution.unit').selectAll();
     if (query.orderId !== undefined) select = select.where('order_id', '=', query.orderId);
     if (query.epoch !== undefined) select = select.where('epoch', '=', query.epoch);
+    if (query.partIds !== undefined) {
+      if (query.partIds.length === 0) return { units: [], truncated: false };
+      select = select.where('part_id', 'in', [...query.partIds]);
+    }
     if (query.status !== undefined && query.status.length > 0) {
       select = select.where('status', 'in', [...query.status]);
     }
@@ -430,6 +460,24 @@ export class Execution implements BlankCounter {
       .execute();
     const kept = rows.slice(0, limit);
     return { units: await this.#withRecords(db, kept), truncated: rows.length > limit };
+  }
+
+  /** Every unit's order and status, without records (#199: genealogy's catch-up compares them). */
+  async unitStates(
+    db: Kysely<Database> = this.#db,
+  ): Promise<{ epoch: number; partId: number; orderId: string | null; status: UnitStatus }[]> {
+    const rows = await db
+      .selectFrom('execution.unit')
+      .select(['epoch', 'part_id', 'order_id', 'status'])
+      .orderBy('epoch')
+      .orderBy('part_id')
+      .execute();
+    return rows.map((r) => ({
+      epoch: r.epoch,
+      partId: r.part_id,
+      orderId: r.order_id,
+      status: r.status,
+    }));
   }
 
   /** One order's execution (quantities, material, completion, units and WIP). */
@@ -954,6 +1002,18 @@ export class Execution implements BlankCounter {
       }
     });
     if (opened.length > 0) this.#violations?.inc(opened.length);
+    this.#announceUnits(epoch, ids);
+  }
+
+  /** Tells `onUnits` listeners which units changed (after the commit). */
+  #announceUnits(epoch: number, partIds: readonly number[]): void {
+    for (const listener of this.#unitListeners) {
+      try {
+        listener(epoch, partIds);
+      } catch (error) {
+        this.#log.error({ err: error }, 'execution unit listener failed');
+      }
+    }
   }
 
   async #refreshNewest(): Promise<void> {
@@ -974,9 +1034,13 @@ export class Execution implements BlankCounter {
       .set({ status: 'lost', updated_at: sql<Date>`clock_timestamp()` })
       .where('status', '=', 'wip')
       .where('epoch', '<', newest)
-      .returning('order_id')
+      .returning(['order_id', 'epoch', 'part_id'])
       .execute();
     for (const row of rows) if (row.order_id) this.#dirtyOrders.add(row.order_id);
+    const byEpoch = new Map<number, number[]>();
+    for (const row of rows)
+      byEpoch.set(row.epoch, [...(byEpoch.get(row.epoch) ?? []), row.part_id]);
+    for (const [epoch, parts] of byEpoch) this.#announceUnits(epoch, parts);
   }
 
   /**

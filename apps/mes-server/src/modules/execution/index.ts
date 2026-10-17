@@ -13,6 +13,9 @@
  *   `scrapAudit(id)`, `scrapReasons()`, `incidents(query)`.
  * - Writes: `codeScrap(id, { version, reason, comment }, context)` (`scrap:code`, audited).
  * - `blanksStarted(job)`: the orders module's `BlankCounter` (exact blank counts of a lost job).
+ * - For genealogy (#199): `onUnits(listener)` (units stored or marked lost, after the commit),
+ *   `processedThrough()` (every machine's progress as the last completed round read it before
+ *   taking its facts), and `units({ epoch, partIds })`.
  * - Pure (`derive.ts`): `buildUnit`, `holdsBlank`, `orderTotals`, `completion`.
  */
 export { buildUnit, completion, confirmationTotals, holdsBlank, orderTotals } from './derive.ts';

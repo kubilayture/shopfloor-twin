@@ -78,7 +78,7 @@
  *   what was dropped go to `rejected_message` as `trace-dropped` (the fact's own transaction).
  *
  * For quality (#200, ADR-0032):
- * - `CycleFact.measurement`: the reading a cycle carries (the leak test's), null when none.
+ * - `CycleFact.measurement`: the reading a cycle carries (the leak test's), null when none; genealogy's backward trace shows it too (#199).
  */
 export { INGEST_TOPICS, Ingest, baselineState } from './ingest.ts';
 export { resolveAlarmBaseline } from './alarm-baseline.ts';

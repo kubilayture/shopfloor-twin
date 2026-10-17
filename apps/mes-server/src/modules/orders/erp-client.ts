@@ -1,7 +1,9 @@
 import {
   ERP_PROBLEM_TYPES,
+  lotListSchema,
   messageReceiptSchema,
   orderFeedSchema,
+  type LotList,
   type MessageReceipt,
   type OrderFeed,
 } from '@shopfloor/contracts/erp-api';
@@ -89,6 +91,24 @@ export class ErpClient implements ErpApi {
     const parsed = orderFeedSchema.safeParse(await response.json());
     if (!parsed.success) throw new Error(`ERP feed: invalid page (${parsed.error.message})`);
     return { kind: 'page', page: parsed.data };
+  }
+
+  /**
+   * The ERP's lot list (`GET /api/v1/lots`, #198): the genealogy module imports it (#199). Throws
+   * on any failure; the import retries at its next poll.
+   */
+  async lots(): Promise<LotList> {
+    const response = await fetch(`${this.#url}/api/v1/lots`, {
+      headers: { authorization: `Bearer ${this.#token}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(this.#timeoutMs),
+    });
+    if (!response.ok) {
+      const problem = await problemOf(response);
+      throw new Error(`ERP lots: ${String(response.status)} ${problem.detail}`);
+    }
+    const parsed = lotListSchema.safeParse(await response.json());
+    if (!parsed.success) throw new Error(`ERP lots: invalid list (${parsed.error.message})`);
+    return parsed.data;
   }
 
   async post(

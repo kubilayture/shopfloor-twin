@@ -12,6 +12,7 @@ import { QUALITY_TOPIC, qualityPushMessages } from './quality-api.ts';
 import { crewMemberSchema, terminalPushMessages, terminalTopicSchema } from './terminal-api.ts';
 
 export * from './execution-api.ts';
+export * from './genealogy-api.ts';
 export * from './orders-api.ts';
 export * from './quality-api.ts';
 export * from './terminal-api.ts';

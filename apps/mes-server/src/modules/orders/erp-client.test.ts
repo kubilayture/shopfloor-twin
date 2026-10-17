@@ -140,4 +140,30 @@ describe('ErpClient (ADR-0028)', () => {
     const away = new ErpClient({ url: 'http://127.0.0.1:1', token: TOKEN, timeoutMs: 500 });
     expect((await away.post('status', 'k', {})).kind).toBe('retry');
   });
+
+  it('reads the lot list with the bearer token (#199) and refuses an invalid one', async () => {
+    const list = {
+      feedId: 'd'.repeat(32),
+      lots: [{ id: 'BL100-2610-01', material: 'BLANK-100', quantity: 900 }],
+    };
+    answer = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(list));
+    };
+    expect(await client().lots()).toEqual(list);
+    expect(requests.at(-1)).toMatchObject({
+      method: 'GET',
+      url: '/api/v1/lots',
+      auth: `Bearer ${TOKEN}`,
+    });
+    answer = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"lots":[]}');
+    };
+    await expect(client().lots()).rejects.toThrow(/invalid list/);
+    answer = (_req, res) => {
+      problem(res, 503, 'about:blank', 'down');
+    };
+    await expect(client().lots()).rejects.toThrow('ERP lots: 503 down');
+  });
 });

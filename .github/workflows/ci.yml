@@ -43,6 +43,7 @@ jobs:
   e2e:
     name: end to end
     runs-on: ubuntu-24.04
+    # Four golden reconciliations since #199 (quality-01 added; genealogy on three of them).
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -767,6 +767,11 @@ const ROUTES: Readonly<Record<string, Permission | 'session' | 'public'>> = {
   'GET /api/v1/scrap-reasons': 'read',
   'GET /api/v1/execution-incidents': 'read',
   'PUT /api/v1/scrap-records/{id}/coding': 'scrap:code',
+  'GET /api/v1/trace/serials/{serial}': 'read',
+  'GET /api/v1/trace/lots/{lot}': 'read',
+  'GET /api/v1/trace/cartons/{carton}': 'read',
+  'GET /api/v1/trace/search': 'read',
+  'GET /api/v1/genealogy-incidents': 'read',
   'GET /api/v1/terminal/{workCenter}': 'read',
   'POST /api/v1/terminal/{workCenter}/sign-on': 'terminal:operate',
   'POST /api/v1/terminal/{workCenter}/sign-off': 'terminal:operate',
@@ -797,6 +802,9 @@ const PARAMS: Readonly<Record<string, string>> = {
   username: 'nobody',
   workCenter: 'line-a1',
   operation: 'OP30',
+  serial: 'VB-100-000001',
+  lot: 'BL100-2610-01',
+  carton: 'PO-2610-101-C01',
   version: '1',
 };
 
@@ -880,7 +888,7 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     );
     const api = routes.filter((route) => route.includes(' /api/v1/'));
     expect(api.sort()).toEqual(Object.keys(ROUTES).sort());
-    expect(api).toHaveLength(76);
+    expect(api).toHaveLength(81);
     expect(routes.filter((r) => !r.includes(' /api/v1/')).sort()).toEqual([
       'GET /health/live',
       'GET /health/ready',

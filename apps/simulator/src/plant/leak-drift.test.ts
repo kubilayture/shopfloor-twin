@@ -208,6 +208,89 @@ describe('leak-drift injection (#196, ADR-0033)', () => {
     });
   });
 
+  it('adds overlapping drifts up, and one calibration ends them all', () => {
+    // A calibration every 1.2 hours; readings can't fail, so both runs make the same parts.
+    const config = structuredClone(defaults);
+    config.process.leakTest.calibrationIntervalDays = 0.05;
+    config.process.leakTest.upperLimit = 1_000;
+    const first = {
+      machine: 'lkt-01',
+      shift: 0.3,
+      at: START + 10 * MINUTE,
+      until: START + 5 * HOUR + 1,
+    };
+    const second = {
+      machine: 'lkt-01',
+      shift: 0.2,
+      at: START + 40 * MINUTE,
+      until: START + 5 * HOUR + 1,
+    };
+    const end = START + 3 * HOUR;
+    const plain = simulate(config, [], end);
+    const drifted = simulate(config, [first, second], end);
+    const lines = driftLines(drifted.events);
+    expect(lines.map((e) => [e.injection, e.transition, e.endedBy])).toEqual([
+      [1, 'applied', undefined],
+      [2, 'applied', undefined],
+      [1, 'ended', 'calibration'],
+      [2, 'ended', 'calibration'],
+    ]);
+    const calibration = lines[2]?.at ?? 0;
+    expect(lines[3]?.at).toBe(calibration);
+    expect(calibration).toBeLessThan(first.until);
+    const a = readings(plain.events);
+    const b = readings(drifted.events);
+    expect(b.length).toBe(a.length);
+    // The cycle that frees the tester for its calibration ends at the calibration's instant,
+    // before it starts, so its reading still carries the drift.
+    const expected = (at: number): number =>
+      at > calibration ? 0 : at >= second.at ? 500 : at >= first.at ? 300 : 0;
+    expect(b.filter((r) => r.at >= second.at && r.at < calibration).length).toBeGreaterThan(5);
+    b.forEach((reading, i) => {
+      const delta = steps(reading.measurement?.value ?? 0) - steps(a[i]?.measurement?.value ?? 0);
+      expect(delta).toBe(expected(reading.at));
+    });
+    expect(drifted.line.drifts().map((d) => [d.status, d.endedBy])).toEqual([
+      ['ended', 'calibration'],
+      ['ended', 'calibration'],
+    ]);
+  });
+
+  it('survives the calibration it is applied in, and ends at the next one', () => {
+    const config = structuredClone(defaults);
+    config.process.leakTest.calibrationIntervalDays = 0.05;
+    config.process.leakTest.upperLimit = 1_000;
+    const end = START + 5 * HOUR;
+    const plain = simulate(config, [], end);
+    const calibrations = plain.events.filter(
+      (e) => e.type === 'state' && e.machineId === 'lkt-01' && e.to === 'Maintenance',
+    );
+    const during = calibrations[0];
+    expect(during).toBeDefined();
+    // Five minutes into the first calibration (20 minutes long).
+    const at = (during?.at ?? 0) + 5 * MINUTE + 1;
+    const drifted = simulate(
+      config,
+      [{ machine: 'lkt-01', shift: 0.4, at, until: START + 7 * HOUR + 1 }],
+      end,
+    );
+    const lines = driftLines(drifted.events);
+    expect(lines.map((e) => [e.transition, e.endedBy])).toEqual([
+      ['applied', undefined],
+      ['ended', 'calibration'],
+    ]);
+    expect(lines[0]?.at).toBe(at);
+    const next = calibrations.find((c) => c.at > at);
+    expect(lines[1]?.at).toBe(next?.at);
+    const a = readings(plain.events);
+    const b = readings(drifted.events);
+    expect(b.filter((r) => r.at > at && r.at < (next?.at ?? 0)).length).toBeGreaterThan(5);
+    b.forEach((reading, i) => {
+      const delta = steps(reading.measurement?.value ?? 0) - steps(a[i]?.measurement?.value ?? 0);
+      expect(delta).toBe(reading.at >= at && reading.at <= (next?.at ?? 0) ? 400 : 0);
+    });
+  });
+
   it('numbers drifts with the failure injections, in acceptance order', () => {
     const line = new ProductionLine({
       config: defaults,

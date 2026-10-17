@@ -454,6 +454,8 @@ describe('control API (#54)', () => {
     const until = '2026-10-12T06:30:00Z';
 
     expect((await post('lkt-09', { shift: 0.6, until })).statusCode).toBe(404);
+    // The machine first: an unknown machine is 404 even with an invalid until.
+    expect((await post('lkt-09', { shift: 0.6, at, until: at })).statusCode).toBe(404);
     for (const [machine, body] of [
       ['asm-01', { shift: 0.6, until }],
       ['lkt-01', { shift: 0.0005, until }],
@@ -539,6 +541,30 @@ describe('control API (#54)', () => {
     const late = await post('lkt-01', { shift: 0.6, until: '2026-10-13T04:00:05Z' });
     expect(late.statusCode).toBe(409);
     expect(late.json<{ message: string }>().message).toBe('the run has finished');
+  });
+
+  it('injects a leak drift without at while the run is running: it starts at the current time', async () => {
+    const { app: served, run, clock } = await setup(true, false, true, 20261012);
+    await served.inject({ method: 'POST', url: '/api/v1/resume' });
+    clock.advance((90 * MINUTE) / 60);
+    expect(run.pacer.state).toBe('running');
+    const now = run.simulation.now;
+    const until = '2026-10-12T05:30:00.001Z';
+    const response = await served.inject({
+      method: 'POST',
+      url: '/api/v1/faults/drift/lkt-01',
+      payload: { shift: 0.6, until },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      drift: { id: 1, at: isoTime(now), until, status: 'scheduled' },
+    });
+    clock.advance((10 * MINUTE) / 60);
+    await served.inject({ method: 'POST', url: '/api/v1/pause' });
+    const listed = (await served.inject({ method: 'GET', url: '/api/v1/faults/drifts' })).json<{
+      drifts: { status: string; appliedAt?: string }[];
+    }>().drifts;
+    expect(listed).toMatchObject([{ status: 'active', appliedAt: isoTime(now) }]);
   });
 
   it('keeps the committed OpenAPI description in step with the routes', async () => {

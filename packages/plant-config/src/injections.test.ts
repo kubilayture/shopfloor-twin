@@ -131,6 +131,12 @@ describe('leak-drift injections (ADR-0033)', () => {
     expect(codes({ at: t + 0.5, until: t + 10, machine: 'lkt-01', shift: 0.1 })).toEqual([
       'invalid-time',
     ]);
+    // The machine is checked first, so an unknown machine is the first issue (404 in the API).
+    expect(codes({ at: t, until: t, machine: 'lkt-09', shift: 0 })).toEqual([
+      'unknown-machine',
+      'invalid-until',
+      'invalid-shift',
+    ]);
   });
 
   it('refuses at and until on a calendar boundary, until only inside the run', () => {

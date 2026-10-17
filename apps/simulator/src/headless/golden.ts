@@ -91,6 +91,14 @@ export async function scenarioOptions(name: string, folder = GOLDEN): Promise<He
   }
   const start = Temporal.Instant.from(scenario.start).epochMilliseconds;
   const instant = (iso: string): number => Temporal.Instant.from(iso).epochMilliseconds;
+  (scenario.injections ?? []).forEach((injection, index) => {
+    const kind: unknown = injection.kind;
+    if (kind !== undefined && kind !== 'leak-drift') {
+      throw new Error(
+        `${name}/scenario.json: injections[${String(index)}]: unknown kind ${JSON.stringify(kind)} (a failure injection has no kind; a drift is "leak-drift")`,
+      );
+    }
+  });
   const injections = (scenario.injections ?? []).map((injection): InjectionSpec =>
     injection.kind === 'leak-drift'
       ? {

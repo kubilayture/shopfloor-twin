@@ -137,17 +137,7 @@ export function driftIssues(
 ): DriftIssue[] {
   const issues: DriftIssue[] = [];
   const { at, until, machine, shift } = drift;
-  const timeOk = Number.isSafeInteger(at);
-  if (!timeOk) {
-    issues.push({ code: 'invalid-time', message: `time ${String(at)} is not integer ms` });
-  }
-  const untilOk = Number.isSafeInteger(until) && (!timeOk || until > at);
-  if (!untilOk) {
-    issues.push({
-      code: 'invalid-until',
-      message: `until must be integer ms after at, got ${String(until)}`,
-    });
-  }
+  // The machine first: an unknown machine is the first issue (404 in the control API).
   const equipment = config.plant.areas
     .flatMap((area) => area.workCenters.flatMap((workCenter) => workCenter.equipment))
     .find((e) => e.id === machine);
@@ -157,6 +147,17 @@ export function driftIssues(
     issues.push({
       code: 'not-a-leak-tester',
       message: `${machine} is not a leak tester (operation ${config.process.leakTest.operation})`,
+    });
+  }
+  const timeOk = Number.isSafeInteger(at);
+  if (!timeOk) {
+    issues.push({ code: 'invalid-time', message: `time ${String(at)} is not integer ms` });
+  }
+  const untilOk = Number.isSafeInteger(until) && (!timeOk || until > at);
+  if (!untilOk) {
+    issues.push({
+      code: 'invalid-until',
+      message: `until must be integer ms after at, got ${String(until)}`,
     });
   }
   const { resolution, unit } = config.process.leakTest;

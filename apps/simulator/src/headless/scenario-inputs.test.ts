@@ -184,6 +184,21 @@ describe('leak-drift in a scenario (#196)', () => {
     ]);
   });
 
+  it('refuses an injection kind it does not know', async () => {
+    await mkdir(join(folder, 'odd'));
+    await writeFile(
+      join(folder, 'odd', 'scenario.json'),
+      JSON.stringify({
+        ...scenario,
+        stock: undefined,
+        injections: [{ kind: 'pressure-drift', at: '2026-10-12T04:30:00Z', machine: 'lkt-01' }],
+      }),
+    );
+    await expect(scenarioOptions('odd', folder)).rejects.toThrow(
+      'odd/scenario.json: injections[0]: unknown kind "pressure-drift" (a failure injection has no kind; a drift is "leak-drift")',
+    );
+  });
+
   it('refuses a drift outside the run, and an until on a boundary inside it', async () => {
     const options = await scenarioOptions('small', folder);
     const drift = {

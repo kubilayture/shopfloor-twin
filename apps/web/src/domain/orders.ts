@@ -12,6 +12,7 @@ import {
   type OrderStatus,
 } from '@shopfloor/contracts/mes-api';
 import { ApiError } from '../api/client.ts';
+import { holdIdsIn } from './quality.ts';
 import { writeFailure, type WriteFailure } from './writes.ts';
 
 // What the orders screens (#176) show and decide, as pure functions: labels, the newest of a
@@ -348,8 +349,6 @@ export interface OrderFailure {
   readonly holds?: readonly string[];
 }
 
-const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-
 export function orderFailure(error: unknown): OrderFailure {
   const type =
     error instanceof ApiError && error.problem?.type !== 'about:blank'
@@ -381,7 +380,7 @@ export function orderFailure(error: unknown): OrderFailure {
     }
     if (type === PROBLEM_TYPES.qualityHold) {
       // #201, #203: the detail names the open holds that cover a unit of the order (or the order).
-      const holds = [...new Set([...detail.matchAll(UUID)].map((m) => m[0].toLowerCase()))];
+      const holds = holdIdsIn(detail);
       return {
         kind: 'quality-hold',
         type,

@@ -21,7 +21,6 @@ import {
   firstPass,
   retests,
   segments,
-  within,
   type Millis,
   type Position,
   type Reading,
@@ -35,12 +34,17 @@ import { checkRuleSet, runTriggers, type Rule, type RuleSet } from './rules.ts';
  */
 export interface LimitVersion {
   readonly version: number;
-  /** Plant time at which it was created (the ground truth: its window's last reading). */
+  /**
+   * Plant time at which it was created. Version 1 from {@link firstVersion}: its window's last
+   * reading (`window.to.at`); the MES (#200) must use the same instant for its own version 1.
+   */
   readonly createdAt: Millis;
   /** The first position it applies to; `null` from the first reading. */
   readonly from: Position | null;
   /** The first position it no longer applies to (the version was ended); `null` while open. */
   readonly until: Position | null;
+  /** Plant time at which it was ended (`until` set); `null` while open. */
+  readonly endedAt: Millis | null;
   readonly limits: ChartLimits;
 }
 
@@ -67,6 +71,7 @@ export function firstVersion(
     createdAt: window.to.at,
     from: null,
     until: null,
+    endedAt: null,
     limits: estimateLimits(ordered, window, config.subgroupSize),
   };
 }
@@ -95,7 +100,11 @@ export interface Point {
   readonly value: Fraction;
   /** The limit version judging it; `null` where no version applies (not judged). */
   readonly version: number | null;
-  /** Whether its version's estimate used it (all its readings inside the version's window). */
+  /**
+   * A baseline point: at or before the end of its version's window, so it existed when the
+   * version was created and was judged retroactively (review of PR #210: a point of an earlier
+   * epoch before the window counts too).
+   */
   readonly baseline: boolean;
   /** The enabled rules that fire at it. */
   readonly rules: readonly Rule[];
@@ -117,7 +126,7 @@ export interface Episode {
   /** Triggering points in it. */
   readonly points: number;
   readonly closedBy: string | null;
-  /** Its first point is a baseline point: created with the version, not latency-judged. */
+  /** Its first point is a baseline point (at or before the window's end): created with the version, not latency-judged. */
   readonly baseline: boolean;
 }
 
@@ -265,9 +274,7 @@ function judge(
         segment: p.segment,
         value: p.value,
         version: version?.version ?? null,
-        baseline:
-          version !== null &&
-          p.readings.every((r) => within(r, version.limits.window.from, version.limits.window.to)),
+        baseline: version !== null && comparePositions(p.position, version.limits.window.to) <= 0,
         rules: enabled.filter((rule) => fired.get(rule)?.[i] === true),
       });
     });

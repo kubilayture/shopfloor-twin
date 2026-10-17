@@ -12,18 +12,18 @@ Hand-calculated SPC cases for `spc-core` (Phase 8 plan, exit criterion 3; ADR-00
 - **X̄-R:** X̄ chart centre X̿ (mean of the subgroup means), limits X̿ ± A2·R̄; R chart centre R̄, limits D3·R̄ and D4·R̄. Only subgroups wholly inside the window count.
 - **Limit estimation from a window** [from, to] (both ends inclusive): I-MR from every first-pass reading in it and the moving ranges between consecutive ones of a segment; X̄-R from the complete subgroups inside it. **Version 1** is estimated from the first 20 complete subgroups (here: the case's baseline count), applies from the first reading (its baseline points are judged against it retroactively) and is never re-derived.
 - **Zones:** σ = (upper − centre) / 3 on each chart, the same on both sides of the centre. "Beyond kσ" is strictly more than kσ from the centre; "within 1σ" is strictly less. A point exactly on a zone line is neither beyond nor within; a point exactly on the centre line is on neither side.
-- **Rules** (Nelson), judged at a point when the run holds the rule's L points ending there; the rule fires at that point:
+- **Rules** (Nelson), judged at a point when the run holds the rule's L points ending there (rules 5 and 6: up to L, see below); the rule fires at that point:
   1. (L 1) the point is strictly above the upper or strictly below the lower limit (a point on a limit is inside);
   2. (L 9) nine points all strictly above or all strictly below the centre (a point on the centre ends the run);
   3. (L 6) six points whose five successive differences are all strictly positive or all strictly negative (an equal pair ends the run);
   4. (L 14) fourteen points whose thirteen successive differences are all non-zero and alternate in sign (an equal pair ends the run);
-  5. (L 3) of three points, at least two beyond 2σ on the same side (the third may be anywhere);
-  6. (L 5) of five points, at least four beyond 1σ on the same side;
+  5. (L 3) the point is beyond 2σ, and with it at least two of the last three points of the run are beyond 2σ on its side; at a run's start two of two suffice;
+  6. (L 5) the point is beyond 1σ, and with it at least four of the last five points of the run are beyond 1σ on its side; at a run's start four of four suffice;
   7. (L 15) fifteen points all within 1σ;
   8. (L 8) eight points all beyond 1σ, at least one above and one below the centre.
 - **Runs:** consecutive points of one chart, one segment and one limit version. A point with no version is not judged.
-- **Defaults:** rules 1, 2 and 5 on I and X̄, rule 1 on MR and R.
-- **Episodes:** an episode opens at the first point where a rule fires on a chart, takes every following point of the same run where the same rule fires, and is closed by the chart's next point that doesn't continue it (whatever its run); with none it is open. It is keyed by (characteristic, limit version, chart, rule, first triggering point). A **baseline episode** is one whose first point was used by its version's estimate (all its readings inside the window); it exists only once the version does and is not latency-judged.
+- **Defaults:** rules 1, 2 and 5 on I and X̄, rule 1 on R, none on MR (review of PR #210, ADR-0032). MR and R take rule 1 only.
+- **Episodes:** an episode opens at the first point where a rule fires on a chart, takes every following point of the same run where the same rule fires, and is closed by the chart's next point that doesn't continue it (whatever its run); with none it is open. It is keyed by (characteristic, limit version, chart, rule, first triggering point). A **baseline episode** is one whose first point lies at or before the end of its version's window (so it existed when the version was created, an earlier epoch's points before the window included); it exists only once the version does and is not latency-judged.
 - **Capability** (one-sided specification, an upper limit only): σ̂ = R̄ / d2, Cpu = (USL − X̿) / 3σ̂, and Cpk = min(Cpu, Cpl) = Cpu since there is no lower limit. Undefined (`–`) when R̄ = 0.
 
 Notation: readings are steps separated by spaces; `/` starts a new epoch; `rNN` is a retest of NN steps (pass 2). In chart cases, first-pass readings are named `p1`, `p2`, … and retests `r1`, … in order; each token is one minute after the previous one, the first epoch is 1. `v×k` stands for k values v. A minus sign is `−`. Fractions are `num/den`, reduced.
@@ -101,9 +101,11 @@ Each case is one run on a chart with lower −30, centre 0 and upper 30, so σ =
 | R4a  | 4    | 1 −1 1 −1 1 −1 1 −1 1 −1 1 −1 1 −1 1      | 14, 15    | 14–15 (open)             |
 | R4b  | 4    | 0 1 0 1 0 1 0 0 1 0 1 0 1 0 1 0 1 0 1 0 1 | 21        | 21–21 (open)             |
 | R5a  | 5    | 0 21 0 21 0 0 20 25                       | 4         | 4–4 (5)                  |
-| R5b  | 5    | 25 25 0 0 −25 0 −25                       | 3, 7      | 3–3 (4), 7–7 (open)      |
+| R5b  | 5    | 25 25 0 0 −25 0 −25                       | 2, 7      | 2–2 (3), 7–7 (open)      |
+| R5c  | 5    | 0 25 25 0                                 | 3         | 3–3 (4)                  |
 | R6a  | 6    | 11 11 11 10 11 0                          | 5         | 5–5 (6)                  |
 | R6b  | 6    | 11 11 −11 11 11                           | 5         | 5–5 (open)               |
+| R6c  | 6    | 11 11 11 11 0                             | 4         | 4–4 (5)                  |
 | R7   | 7    | 0×14 9 10 0×15                            | 15, 31    | 15–15 (16), 31–31 (open) |
 | R8   | 8    | 11 −11 11 −11 11 −11 11 −11 12 10 11×8    | 8, 9      | 8–9 (10)                 |
 
@@ -115,6 +117,7 @@ Version 1 from the baseline, the default rules.
 | ---- | -------------------------------------- | --- | ------------------ |
 | C1   | 10 10 10 10 10 20 11 12 r40 25 24 / 12 | 2   | 3                  |
 | C2   | 10 12 10 12 30 / 30 31 32              | 2   | 2                  |
+| C3   | 30 / 10 12 10 12 11                    | 2   | 2                  |
 
 ## Expected chart limits
 
@@ -122,6 +125,7 @@ Version 1 from the baseline, the default rules.
 | ---- | ------ | ------- | -------- | ------- | -------- | ---------- | ----------- | ---------- | -------- |
 | C1   | p1–p6  | 476/75  | 35/3     | 1274/75 | 3267/500 | 27/5       | 35/3        | 269/15     | 1089/100 |
 | C2   | p1–p4  | 142/25  | 11/1     | 408/25  | 3267/500 | 181/25     | 11/1        | 369/25     | 3267/500 |
+| C3   | p2–p5  | 142/25  | 11/1     | 408/25  | 3267/500 | 181/25     | 11/1        | 369/25     | 3267/500 |
 
 ## Expected chart points
 
@@ -129,6 +133,7 @@ Version 1 from the baseline, the default rules.
 | ---- | ------- | ------- | ------- | ------------------- | ------------------ | ---------- |
 | C1   | r1      | p11     | –       | 0 0 0 0 10 9 1 13 1 | 10 10 15 23/2 49/2 | 0 0 10 1 1 |
 | C2   | –       | p8      | p5      | 2 2 2 18 1 1        | 11 11 61/2         | 2 2 1      |
+| C3   | –       | p6      | p1      | 2 2 2 1             | 11 11              | 2 2        |
 
 ## Expected episodes
 
@@ -137,16 +142,14 @@ In the order `spc-core` lists them: by first point, then chart (I, MR, Xbar, R),
 | Case | Chart | Rule | Version | First | Last | Points | Closed by | Baseline |
 | ---- | ----- | ---- | ------- | ----- | ---- | ------ | --------- | -------- |
 | C1   | I     | 1    | 1       | p6    | p6   | 1      | p7        | yes      |
-| C1   | MR    | 1    | 1       | p6    | p7   | 2      | p8        | yes      |
 | C1   | I     | 1    | 1       | p9    | p10  | 2      | p11       | no       |
-| C1   | MR    | 1    | 1       | p9    | p9   | 1      | p10       | no       |
 | C1   | I     | 5    | 1       | p10   | p10  | 1      | p11       | no       |
 | C1   | Xbar  | 1    | 1       | p10   | p10  | 1      | open      | no       |
 | C2   | I     | 1    | 1       | p5    | p5   | 1      | p6        | no       |
-| C2   | MR    | 1    | 1       | p5    | p5   | 1      | p7        | no       |
 | C2   | I     | 1    | 1       | p6    | p8   | 3      | open      | no       |
+| C2   | I     | 5    | 1       | p7    | p8   | 2      | open      | no       |
 | C2   | Xbar  | 1    | 1       | p7    | p7   | 1      | open      | no       |
-| C2   | I     | 5    | 1       | p8    | p8   | 1      | open      | no       |
+| C3   | I     | 1    | 1       | p1    | p1   | 1      | p2        | yes      |
 
 ## Notes on the hand calculations
 
@@ -154,6 +157,7 @@ In the order `spc-core` lists them: by first point, then chart (I, MR, Xbar, R),
 - **L2:** two epochs. Moving ranges 2 1 in the first and 1 4 2 in the second (none across the `/`), M̄R = 10/5 = 2; X̄ = 80/7 over all seven readings. Subgroups of 2: (10 12), then 11 is dropped (its epoch ended), then (14 13) and (9 11): means 11, 27/2, 10 and ranges 2, 1, 2, so X̿ = (69/2)/3 = 23/2 and R̄ = 5/3. X̄: 23/2 ± 1.880·5/3 = ± 47/15. R upper 3.267·5/3 = 1089/200. σ̂ = (5/3) / 1.128 = 625/423; Cpu = 8.5 · 423 / 1875 = 2397/1250.
 - **L3:** no variation: every limit collapses on the centre, R̄ = 0, so σ̂ and Cpu are undefined.
 - **L4:** n = 7 has D3 = 0.076: R lower 0.076·6 = 0.456, upper 1.924·6 = 11.544; X̄: 4 ± 0.419·6 = ± 2.514. σ̂ = 6 / 2.704 = 375/169; Cpu = 6 / (3 · 375/169) = 338/375.
-- **R1a:** 30 and −30 lie on the limits, so they don't fire; 31 and −31 do. **R2a:** the 0 at point 11 is on the centre and ends the run, so the next nine fives fire only at point 20. **R3b:** the equal pair (3, 3) at points 3–4 ends the rise; points 4–9 rise five times, so only point 9 fires. **R4b:** the equal pair at points 7–8 ends the alternation; points 8–21 are fourteen alternating points. **R5a:** 20 is on the 2σ line, not beyond: at point 8 only 25 is beyond in (0, 20, 25). **R5b:** two beyond on opposite sides don't count together; (−25, 0, −25) fires at point 7. **R6a:** 10 is on the 1σ line, not beyond, yet (11 11 11 10 11) still has four beyond. **R7:** 10 is on the 1σ line, not within, so point 16 ends the run and points 17–31 make the next fifteen. **R8:** points 2–9 are beyond 1σ on both sides, so 9 fires too; 10 is on the line and ends it, and the eight 11s after it are all above, so they never fire.
-- **C1:** the baseline is p1–p6 (three subgroups of 2): X̄ = 70/6 = 35/3, moving ranges 0 0 0 0 10, M̄R = 2, I limits 35/3 ± 5.32; subgroups (10 10) (10 10) (10 20), X̿ = 35/3, R̄ = 10/3, X̄ limits 35/3 ± 1.88·10/3. The retest r1 (40) is not charted. p6 = 20 is above 1274/75 ≈ 16.99, judged retroactively: a baseline episode on I; its moving range 10 and p7's (9) exceed 6.534, so the MR episode p6–p7 is a baseline episode too (its first point used both baseline readings). p9 = 25 and p10 = 24 are above the I limit (one episode) and beyond 2σ = 35/3 + 2·5.32/3 ≈ 15.21, so rule 5 fires at p10 (p8, p9, p10). The subgroup (25 24) has mean 49/2 above 269/15 ≈ 17.93. p11 starts epoch 2: it has no moving range, closes the I episodes and waits alone for its subgroup; the X̄ episode stays open as no later X̄ point exists.
-- **C2:** p5 = 30 is above 408/25 = 16.32 and its moving range 18 above 6.534; p5 is dropped from X̄-R (epoch 1 ends after an odd count). p6 starts epoch 2: a new run, so p5's I episode is closed by p6 and a new one opens there, taking p7 and p8. The MR episode is closed by p7, the chart's next MR point (p6 has none). (30 31) is subgroup p7, mean 61/2 above 369/25; p8 is pending. Rule 5 fires at p8 only: p6–p8 is the first three-point window of epoch 2.
+- **R1a:** 30 and −30 lie on the limits, so they don't fire; 31 and −31 do. **R2a:** the 0 at point 11 is on the centre and ends the run, so the next nine fives fire only at point 20. **R3b:** the equal pair (3, 3) at points 3–4 ends the rise; points 4–9 rise five times, so only point 9 fires. **R4b:** the equal pair at points 7–8 ends the alternation; points 8–21 are fourteen alternating points. **R5a:** 20 is on the 2σ line, not beyond: at point 8 only 25 is beyond in (0, 20, 25). **R5b:** at the run's start (25, 25) is two of two beyond, so point 2 fires; point 3 (0) is not beyond itself, so it doesn't; two beyond on opposite sides don't count together; (−25, 0, −25) fires at point 7. **R5c:** point 3 completes (0, 25, 25); point 4 (0) is not beyond, so (25, 25, 0) doesn't fire there. **R6a:** 10 is on the 1σ line, not beyond, yet (11 11 11 10 11) still has four beyond, the newest among them. **R6c:** four of four at the run's start fire at point 4. **R7:** 10 is on the 1σ line, not within, so point 16 ends the run and points 17–31 make the next fifteen. **R8:** points 2–9 are beyond 1σ on both sides, so 9 fires too; 10 is on the line and ends it, and the eight 11s after it are all above, so they never fire.
+- **C1:** the baseline is p1–p6 (three subgroups of 2): X̄ = 70/6 = 35/3, moving ranges 0 0 0 0 10, M̄R = 2, I limits 35/3 ± 5.32; subgroups (10 10) (10 10) (10 20), X̿ = 35/3, R̄ = 10/3, X̄ limits 35/3 ± 1.88·10/3. The retest r1 (40) is not charted. p6 = 20 is above 1274/75 ≈ 16.99, judged retroactively: a baseline episode on I. The moving ranges 10 (p6), 9 (p7) and 13 (p9) exceed 6.534, but MR has no rule by default. p9 = 25 and p10 = 24 are above the I limit (one episode) and beyond 2σ = 35/3 + 2·5.32/3 ≈ 15.21, so rule 5 fires at p10 (p8, p9, p10, the newest beyond); at p9 only p9 is beyond in (p7, p8, p9). The subgroup (25 24) has mean 49/2 above 269/15 ≈ 17.93. p11 starts epoch 2: it has no moving range, closes the I episodes and waits alone for its subgroup; the X̄ episode stays open as no later X̄ point exists.
+- **C2:** p5 = 30 is above 408/25 = 16.32 (its moving range 18 is above 6.534, not judged by default); p5 is dropped from X̄-R (epoch 1 ends after an odd count). p6 starts epoch 2: a new run, so p5's I episode is closed by p6 and a new one opens there, taking p7 and p8. (30 31) is subgroup p7, mean 61/2 above 369/25; p8 is pending. Rule 5 fires at p7 (two of two beyond 2σ ≈ 14.55 at the start of epoch 2's run) and p8: one episode p7–p8; at p5, (10, 12, 30) has only one beyond.
+- **C3:** epoch 1 holds only p1 = 30, dropped from X̄-R; the baseline is epoch 2's first two subgroups, p2–p5, so p1 lies before the window, yet version 1 applies from the first reading: p1 is above 408/25 and its episode is a baseline episode (at or before the window's end), closed by p2, the first point of the next run. p6 is pending.

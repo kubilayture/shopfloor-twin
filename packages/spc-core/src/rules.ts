@@ -8,6 +8,10 @@
  * limits themselves (strictly above the upper, strictly below the lower), so a chart whose lower
  * limit is 0 (MR, R) never signals below it. A rule that looks at L points is judged at a point
  * only when the run holds L points ending there, and fires at the last point of the pattern.
+ * Rules 5 and 6 are the exception (review of PR #210): they fire at a point that is itself beyond
+ * 2σ (1σ) and has, with it, two of the last three (four of the last five) points of the run beyond
+ * on its side, so at a run's start two of two (four of four) suffice and the signal point is
+ * always one of the points beyond.
  */
 import { compare, multiply, type Fraction } from '@shopfloor/oee-core';
 import type { ChartName, Limits } from './limits.ts';
@@ -43,18 +47,30 @@ export const RULE_TEXT: Readonly<Record<Rule, string>> = {
 export type RuleSet = Readonly<Record<ChartName, readonly Rule[]>>;
 
 /**
- * The defaults (review of PR #207, probe P4b): rules 1, 2 and 5 on I and X̄, rule 1 on MR and R.
- * Their in-control false-alarm run length is recorded in ADR-0032.
+ * The defaults: rules 1, 2 and 5 on I and X̄, rule 1 on R, none on MR. The plan's review of
+ * PR #207 also had rule 1 on MR; the review of PR #210 dropped it (ADR-0032, "Deviation"): it
+ * nearly doubled the in-control episodes and adds nothing to the drift's detection.
  */
-export const DEFAULT_RULES: RuleSet = { I: [1, 2, 5], MR: [1], Xbar: [1, 2, 5], R: [1] };
+export const DEFAULT_RULES: RuleSet = { I: [1, 2, 5], MR: [], Xbar: [1, 2, 5], R: [1] };
 
-/** A rule set checked: known rules only, each once, in ascending order. */
+/** Charts of ranges, whose zones are not symmetric about their centre: rule 1 only. */
+const RANGE_CHARTS: readonly ChartName[] = ['MR', 'R'];
+
+/**
+ * A rule set checked: known rules only, each once, in ascending order; on MR and R only rule 1
+ * (a range has no meaningful side-of-centre or zone pattern).
+ */
 export function checkRuleSet(rules: RuleSet): RuleSet {
   for (const [chart, list] of Object.entries(rules)) {
     const seen = new Set<number>();
     for (const rule of list) {
       if (!(RULES as readonly number[]).includes(rule) || seen.has(rule)) {
         throw new RangeError(`rule ${String(rule)} on chart ${chart} is unknown or repeated`);
+      }
+      if (rule !== 1 && RANGE_CHARTS.includes(chart as ChartName)) {
+        throw new RangeError(
+          `rule ${String(rule)} on chart ${chart}: only rule 1 applies to MR and R`,
+        );
       }
       seen.add(rule);
     }
@@ -120,11 +136,14 @@ function fires(rule: Rule, z: readonly Zones[], values: readonly Fraction[]): bo
     }
     case 5:
     case 6: {
+      // The newest point is beyond on its side, and enough of the window with it.
       const beyond = (p: Zones): boolean => (rule === 5 ? p.beyond2 : p.beyond1);
       const needed = rule === 5 ? 2 : 4;
+      const newest = z.at(-1);
       return (
-        count(z, (p) => beyond(p) && p.side === 1) >= needed ||
-        count(z, (p) => beyond(p) && p.side === -1) >= needed
+        newest !== undefined &&
+        beyond(newest) &&
+        count(z, (p) => beyond(p) && p.side === newest.side) >= needed
       );
     }
     case 7:
@@ -155,7 +174,10 @@ export function runTriggers(
     rules.map((rule) => {
       const length = RULE_LENGTH[rule];
       const hits = values.map((_, i) => {
-        const start = i - length + 1;
+        // Rules 5 and 6 may complete inside a shorter window at the run's start.
+        const partial = rule === 5 || rule === 6;
+        const full = i - length + 1;
+        const start = partial && full < 0 ? 0 : full;
         return start >= 0 && fires(rule, z.slice(start, i + 1), values.slice(start, i + 1));
       });
       return [rule, hits];

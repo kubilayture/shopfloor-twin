@@ -128,6 +128,23 @@ describe('rules', () => {
     expect(checkRuleSet({ I: [5, 1, 2], MR: [1], Xbar: [], R: [] }).I).toEqual([1, 2, 5]);
     expect(() => checkRuleSet({ ...NONE, I: [1, 1] })).toThrow(/repeated/);
     expect(() => checkRuleSet({ ...NONE, MR: [9 as 1] })).toThrow(/unknown/);
+    expect(() => checkRuleSet({ ...NONE, MR: [2] })).toThrow(/only rule 1/);
+    expect(() => checkRuleSet({ ...NONE, R: [1, 5] })).toThrow(/only rule 1/);
+    expect(checkRuleSet({ ...NONE, Xbar: [8, 3] }).Xbar).toEqual([3, 8]);
+  });
+
+  it('fires rules 5 and 6 only at a point beyond, also at the start of a run', () => {
+    const limits = { lower: integer(-30), centre: integer(0), upper: integer(30) };
+    expect(ruleTriggers([25, 25, 0].map(integer), limits, 5)).toEqual([false, true, false]);
+    expect(ruleTriggers([25, -25].map(integer), limits, 5)).toEqual([false, false]);
+    expect(ruleTriggers([11, 11, 11, 11, 11, 0].map(integer), limits, 6)).toEqual([
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+    ]);
   });
 
   it('never judges a pattern longer than the run', () => {

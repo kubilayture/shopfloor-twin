@@ -7,6 +7,7 @@ import {
   forwardTrace,
   traceAsOf,
   unitStatus,
+  type Trace,
   type TraceInput,
 } from './trace.ts';
 
@@ -247,6 +248,21 @@ describe('traceAsOf', () => {
     expect(trace.spc.chart.episodes.find((e) => e.chart === 'I' && e.rule === 1)?.closedBy).toBe(
       '1/9/1',
     );
+  });
+
+  it('keeps a version ended at or after the cut open', () => {
+    const [v1] = trace.spc.limits;
+    if (!v1) throw new Error('no version 1');
+    const ended = buildTrace({
+      ...INPUT,
+      limits: [{ ...v1, until: { epoch: 1, at: at(94), seq: 0 }, endedAt: at(90) }],
+    });
+    expect(traceAsOf(ended, at(90)).spc.limits[0]).toMatchObject({ until: null, endedAt: null });
+    expect(traceAsOf(ended, at(91)).spc.limits[0]).toMatchObject({ endedAt: at(90) });
+    // Unit 9's reading (at 94) is past `until`: judged by no version once the end is known.
+    const point = (t: Trace) => t.spc.chart.points.I.find((p) => p.key === '1/9/1')?.version;
+    expect(point(ended)).toBeNull();
+    expect(point(traceAsOf(ended, at(95)))).toBeNull();
   });
 
   it('is the whole trace after the last record', () => {

@@ -91,6 +91,50 @@ function readings(text: string): Reading[] {
 
 const show = (f: Fraction): string => formatFraction(f);
 
+/** Asserts that `ids` holds every id of `expected` exactly once, and nothing else. */
+function once(table: string, ids: readonly string[], expected: readonly string[]): void {
+  const sorted = [...ids].sort();
+  if (sorted.join('|') !== [...expected].sort().join('|')) {
+    throw new Error(
+      `${table} lists ${sorted.join(', ')}; expected each of ${expected.join(', ')} once`,
+    );
+  }
+}
+
+describe('expectation tables (docs/spc-reference-cases.md)', () => {
+  const limitCases = table('Limit cases').map((row) => cell(row, 'Case'));
+  const chartCases = table('Chart cases').map((row) => cell(row, 'Case'));
+
+  it('lists each case once in every table keyed by case', () => {
+    expect(new Set(limitCases).size).toBe(limitCases.length);
+    expect(new Set(chartCases).size).toBe(chartCases.length);
+    const rules = table('Rule cases').map((row) => cell(row, 'Case'));
+    expect(new Set(rules).size).toBe(rules.length);
+    once(
+      'Expected statistics',
+      table('Expected statistics').map((r) => cell(r, 'Case')),
+      limitCases,
+    );
+    once(
+      'Expected limits',
+      table('Expected limits').map((r) => `${cell(r, 'Case')}/${cell(r, 'Chart')}`),
+      limitCases.flatMap((id) => CHARTS.map((chart) => `${id}/${chart}`)),
+    );
+    once(
+      'Expected chart limits',
+      table('Expected chart limits').map((r) => cell(r, 'Case')),
+      chartCases,
+    );
+    once(
+      'Expected chart points',
+      table('Expected chart points').map((r) => cell(r, 'Case')),
+      chartCases,
+    );
+    const withEpisodes = new Set(table('Expected episodes').map((r) => cell(r, 'Case')));
+    once('Expected episodes', [...withEpisodes], chartCases);
+  });
+});
+
 describe('constants (docs/spc-reference-cases.md)', () => {
   const rows = table('Constants');
 
@@ -203,6 +247,7 @@ function ruleVersion(lower: number, centre: number, upper: number): LimitVersion
     createdAt: 0,
     from: null,
     until: null,
+    endedAt: null,
     limits: {
       subgroupSize: 2,
       window: { from: before, to: before },

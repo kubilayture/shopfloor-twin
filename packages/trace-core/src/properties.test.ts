@@ -2,6 +2,7 @@
  * Property tests of the time cut (Phase 8 plan, exit criterion 5). fast-check prints the seed and
  * path of a failure; rerun one with `fc.assert(…, { seed, path })`.
  *
+ * - the cut equals the trace built from the facts before it (version 1 estimated again);
  * - cutting twice is cutting at the earlier time, and a cut after the last record changes nothing;
  * - a carton as of T holds a prefix of its final members, and one closed by T is final;
  * - an SPC episode closed by T is final, and one open at T is the start of a final episode.
@@ -84,6 +85,24 @@ const episodeId = (e: Trace['spc']['chart']['episodes'][number]): string =>
   `${e.chart}/${String(e.rule)}/${String(e.version)}/${e.key}`;
 
 describe('traceAsOf properties', () => {
+  it('equals the trace built from the facts before the cut, version 1 estimated again', () => {
+    fc.assert(
+      fc.property(inputArb, cutArb, (input, t) => {
+        const before: TraceInput = {
+          config: input.config,
+          units: input.units
+            .map((u) => ({ ...u, records: u.records.filter((r) => r.at < t) }))
+            .filter((u) => u.records.length > 0),
+          orders: input.orders.map((o) => ({
+            ...o,
+            completedAt: o.completedAt !== null && o.completedAt < t ? o.completedAt : null,
+          })),
+        };
+        expect(traceAsOf(buildTrace(input), t)).toEqual(buildTrace(before));
+      }),
+    );
+  });
+
   it('cuts twice as once, at the earlier time', () => {
     fc.assert(
       fc.property(inputArb, cutArb, cutArb, (input, t1, t2) => {

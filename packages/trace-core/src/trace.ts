@@ -91,7 +91,11 @@ export interface TraceUnit extends UnitInput {
 export interface TraceLot {
   readonly lot: string;
   readonly material: string;
-  /** Pieces consumed: one per record that names it. */
+  /**
+   * Pieces consumed: the number of lot references naming it, over every record of every unit
+   * (a record lists one reference per piece it consumed, so a record taking two pieces of one lot
+   * would count two).
+   */
   readonly consumed: number;
   readonly units: readonly UnitKey[];
   readonly orders: readonly string[];
@@ -260,7 +264,7 @@ function lotsOf(units: readonly TraceUnit[]): TraceLot[] {
  * The trace as it stood at plant time `t`: records completed before `t` (with their lots,
  * operators and readings; units without one are left out), orders complete before `t`, cartons
  * in their state as of `t` (members placed and closings before it), the limit versions created
- * before `t`, and the SPC points and episodes as they stand from the readings before it (an
+ * before `t` (one ended at or after `t` as still open), and the SPC points and episodes as they stand from the readings before it (an
  * episode still open at `t` stays open). Exit criterion 5 compares three projections through it.
  */
 export function traceAsOf(trace: Trace, t: Millis): Trace {
@@ -281,7 +285,12 @@ export function traceAsOf(trace: Trace, t: Millis): Trace {
       ...order,
       completedAt: order.completedAt !== null && order.completedAt < t ? order.completedAt : null,
     })),
-    limits: trace.spc.limits.filter((v) => v.createdAt < t),
+    // A version ended at or after the cut was still open then.
+    limits: trace.spc.limits
+      .filter((v) => v.createdAt < t)
+      .map((v) =>
+        v.endedAt !== null && v.endedAt >= t ? { ...v, until: null, endedAt: null } : v,
+      ),
   });
 }
 

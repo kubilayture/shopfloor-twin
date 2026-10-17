@@ -23,6 +23,8 @@ const [replications = 2000, seed = 195, horizon = 1000] = process.argv
 const BASELINE = 100;
 const DRIFT_AT = 120;
 const DRIFT_STEPS = 600;
+/** First-pass leak readings in a week (plan, probe P3). */
+const WEEK = 2200;
 
 /** mulberry32: a small seeded generator, so a run can be repeated exactly. */
 function generator(start: number): () => number {
@@ -74,7 +76,11 @@ function evaluate(values: readonly number[], rules: RuleSet): Outcome {
 }
 
 const RULE_SETS: [string, RuleSet][] = [
-  ['defaults: 1, 2, 5 on I and Xbar; 1 on MR and R', DEFAULT_RULES],
+  ['defaults: 1, 2, 5 on I and Xbar; 1 on R (none on MR)', DEFAULT_RULES],
+  [
+    'plan round 1: 1, 2, 5 on I and Xbar; 1 on MR and R',
+    { I: [1, 2, 5], MR: [1], Xbar: [1, 2, 5], R: [1] },
+  ],
   [
     "P4b's '1,2,5 on I and Xbar' (no MR or R chart), to cross-check the probe",
     { I: [1, 2, 5], MR: [], Xbar: [1, 2, 5], R: [] },
@@ -120,10 +126,10 @@ for (const [name, rules] of RULE_SETS) {
   const share = (n: number): string => (n / replications).toFixed(2);
   console.log(`\n${name}`);
   console.log(
-    `  run length to the first new episode (readings after the baseline): mean ${mean.toFixed(1)}, median ${String(quantile(0.5))}, 10 % ${String(quantile(0.1))}, 90 % ${String(quantile(0.9))}; censored at ${String(horizon)}: ${String(censored)} of ${String(replications)}`,
+    `  run length to the first new episode (readings after the baseline): mean ${mean.toFixed(1)} (${String(censored)} of ${String(replications)} censored at ${String(horizon)}, left out of the mean), median ${String(quantile(0.5))}, 10 % ${String(quantile(0.1))}, 90 % ${String(quantile(0.9))}`,
   );
   console.log(
-    `  per 1,000 in-control readings: ${perThousand(episodes)} new episodes, ${perThousand(signalling)} signalling readings`,
+    `  per 1,000 in-control readings: ${perThousand(episodes)} new episodes (${((WEEK * episodes) / (replications * horizon)).toFixed(0)} a week at ${String(WEEK)} first passes), ${perThousand(signalling)} signalling readings`,
   );
   console.log(
     `  P(no new episode within 20 readings) ${share(clean20)}, within 60 ${share(clean60)}`,

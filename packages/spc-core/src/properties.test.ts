@@ -5,7 +5,8 @@
  * - the chart depends on the readings, not on the order they arrive in (a late fact is a rebuild);
  * - rules only look back: the chart of a prefix of the readings judges every point as the full
  *   chart does, which is what `traceAsOf` and provisional points rely on;
- * - episodes are exactly the maximal stretches of consecutive firing points of a run.
+ * - episode invariants: every point of an episode fires, the run's points just before and after
+ *   it don't, episodes of one chart and rule never overlap, `closedBy` is the chart's next point.
  */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -48,9 +49,9 @@ const readingsArb = fc
 
 const rulesArb: fc.Arbitrary<RuleSet> = fc.record({
   I: fc.subarray([...RULES]),
-  MR: fc.subarray([...RULES]),
+  MR: fc.subarray([1] as const),
   Xbar: fc.subarray([...RULES]),
-  R: fc.subarray([...RULES]),
+  R: fc.subarray([1] as const),
 });
 
 const chartOf = (readings: readonly Reading[], rules: RuleSet, full = readings) => {
@@ -87,32 +88,43 @@ describe('spc-core properties', () => {
     );
   });
 
-  it('builds episodes from maximal stretches of firing points', () => {
+  it('keeps the episode invariants', () => {
     fc.assert(
       fc.property(readingsArb, rulesArb, (readings, rules) => {
         const chart = chartOf(readings, rules);
         for (const name of CHARTS) {
           const points = chart.points[name];
+          const index = new Map(points.map((p, i) => [p.key, i]));
+          const sameRun = (a: Point | undefined, b: Point | undefined): boolean =>
+            b !== undefined && a?.segment === b.segment && a.version === b.version;
           for (const rule of rules[name]) {
-            const expected: [string, string, number, string | null][] = [];
-            let open: [string, string, number] | null = null;
-            let prev: (typeof points)[number] | undefined;
-            for (const p of points) {
-              const same = prev?.segment === p.segment && prev.version === p.version;
-              const fires = p.rules.includes(rule);
-              prev = p;
-              if (open && fires && same) {
-                open = [open[0], p.key, open[2] + 1];
-                continue;
+            const episodes = chart.episodes.filter((e) => e.chart === name && e.rule === rule);
+            const covered = new Set<number>();
+            let previousLast = -1;
+            for (const e of episodes) {
+              const first = index.get(e.key) ?? -1;
+              const last = index.get(e.lastKey) ?? -1;
+              // Every point of an episode fires, in one run, and no two episodes overlap.
+              expect(first).toBeGreaterThan(previousLast);
+              expect(last - first + 1).toBe(e.points);
+              for (let i = first; i <= last; i += 1) {
+                expect(points[i]?.rules).toContain(rule);
+                expect(sameRun(points[i], points[first])).toBe(true);
+                covered.add(i);
               }
-              if (open) expected.push([...open, p.key]);
-              open = fires ? [p.key, p.key, 1] : null;
+              // The run's points just before and just after it don't fire.
+              const before = points[first - 1];
+              if (sameRun(before, points[first])) expect(before?.rules).not.toContain(rule);
+              const after = points[last + 1];
+              if (sameRun(after, points[last])) expect(after?.rules).not.toContain(rule);
+              // It is closed by the chart's next point, or open at the end.
+              expect(e.closedBy).toBe(after?.key ?? null);
+              previousLast = last;
             }
-            if (open) expected.push([...open, null]);
-            const got = chart.episodes
-              .filter((e) => e.chart === name && e.rule === rule)
-              .map((e) => [e.key, e.lastKey, e.points, e.closedBy]);
-            expect(got).toEqual(expected);
+            // Every firing point belongs to an episode.
+            points.forEach((p, i) => {
+              if (p.rules.includes(rule)) expect(covered.has(i)).toBe(true);
+            });
           }
         }
         const sorted = [...chart.episodes].sort((a, b) => comparePositions(a.position, b.position));

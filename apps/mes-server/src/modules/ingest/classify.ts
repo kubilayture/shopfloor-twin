@@ -3,13 +3,16 @@ import {
   SYS_SEGMENT,
   UNS_ROOT,
   parseEquipmentTopic,
+  parseUnsCommandMessage,
   parseUnsMessage,
   streamKey,
   unsName,
   type Alarm,
   type AlarmSnapshot,
+  type CommandResult,
   type CycleComplete,
   type Incident,
+  type JobEvent,
   type StateCurrent,
   type Status,
   type Telemetry,
@@ -27,8 +30,18 @@ export type Classified =
       readonly kind: 'event';
       readonly stream: string;
       readonly equipment: string;
-      readonly eventType: 'state' | 'cycle' | 'alarm';
-      readonly message: StateEvent | CycleComplete | Alarm;
+      readonly eventType: 'state' | 'cycle' | 'alarm' | 'job';
+      readonly message: StateEvent | CycleComplete | Alarm | JobEvent;
+    }
+  /**
+   * The gateway's answer to a command delivery (`cmd-res`, UNS contract 1.3, #174): a
+   * topic-scoped stream (the gateway's counter per topic), deduplicated like telemetry.
+   */
+  | {
+      readonly kind: 'command-result';
+      readonly stream: string;
+      readonly equipment: string;
+      readonly message: CommandResult;
     }
   | {
       readonly kind: 'telemetry';
@@ -66,6 +79,8 @@ type TopicInfo =
       readonly name: string;
       readonly expected: UnsSchemaName;
     }
+  /** `cmd-res/load-order` (#174): validated with the command registry, not the fact schemas. */
+  | { readonly type: 'command-result'; readonly equipment: string }
   | {
       readonly type: 'sys';
       readonly component: string;
@@ -85,17 +100,22 @@ function topicInfo(topic: string): TopicInfo | string {
       case 'telemetry':
         return { type: 'equipment', equipment, name, expected: 'uns.telemetry/1' };
       case 'events':
-        // Job facts (`events/job`, UNS contract 1.3) are published by the gateway from #173 but
-        // ingested only from #174 (ADR-0017 note there); until then they are refused here.
+        // Job facts (`events/job`, UNS contract 1.3) are device facts like cycles (#174,
+        // ADR-0017 note).
         return name === 'cycle-complete'
           ? { type: 'equipment', equipment, name, expected: 'uns.events.cycle-complete/1' }
-          : `no event topic "${name}" (only events/cycle-complete)`;
+          : name === 'job'
+            ? { type: 'equipment', equipment, name, expected: 'uns.events.job/1' }
+            : `no event topic "${name}" (only events/cycle-complete and events/job)`;
       case 'alarms':
         return name === ALARM_SNAPSHOT_NAME
           ? { type: 'equipment', equipment, name, expected: 'uns.alarm-snapshot/1' }
           : { type: 'equipment', equipment, name, expected: 'uns.alarms/1' };
-      case 'cmd':
       case 'cmd-res':
+        return name === 'load-order'
+          ? { type: 'command-result', equipment }
+          : `no command result topic "${name}" (only cmd-res/load-order)`;
+      case 'cmd':
       case 'mes':
         return `class "${parsed.topicClass}" is not ingested`;
     }
@@ -140,12 +160,24 @@ function badString(value: unknown): string | undefined {
 }
 
 /** A valid message the database could still not store, or that has an absurd timestamp. */
-function storableProblem(message: UnsMessage): string | undefined {
-  const times: [string, string][] = [
-    ['sourceTime', message.sourceTime],
-    ['receivedAt', message.receivedAt],
-  ];
+function storableProblem(message: UnsMessage | CommandResult): string | undefined {
+  const times: [string, string][] =
+    message.schema === 'uns.cmd-res/1'
+      ? [
+          ['respondedAt', message.respondedAt],
+          ['expiresAt', message.value.expiresAt],
+        ]
+      : [
+          ['sourceTime', message.sourceTime],
+          ['receivedAt', message.receivedAt],
+        ];
   if (message.schema === 'uns.sys.status/1') times.push(['startedAt', message.value.startedAt]);
+  if (
+    message.schema === 'uns.cmd-res/1' &&
+    (message.value.result === 'accepted' || message.value.result === 'duplicate')
+  ) {
+    times.push(['acceptedAt', message.value.acceptedAt]);
+  }
   for (const [field, time] of times) {
     const ms = Date.parse(time);
     if (!(ms >= TIME_RANGE.from && ms < TIME_RANGE.to)) {
@@ -175,6 +207,7 @@ export function classify(topic: string, text: string, retained: boolean): Classi
   } catch (error) {
     return rejected('invalid-json', error instanceof Error ? error.message : String(error));
   }
+  if (info.type === 'command-result') return commandResult(topic, json, retained, info.equipment);
   const parsed = parseUnsMessage(json);
   if (!parsed.ok) return rejected('invalid-payload', parsed.error);
   const message: UnsMessage = parsed.message;
@@ -246,8 +279,38 @@ export function classify(topic: string, text: string, retained: boolean): Classi
     case 'uns.alarm-snapshot/1':
       return { kind: 'alarm-snapshot', equipment, message };
     case 'uns.events.job/1':
+      if (retained) return { kind: 'retained', detail: 'retained job fact' };
+      return {
+        kind: 'event',
+        stream: streamKey(topic, message),
+        equipment,
+        eventType: 'job',
+        message,
+      };
     case 'uns.sys.status/1':
     case 'uns.sys.incident/1':
       throw new Error('unreachable: checked against the topic above');
   }
+}
+
+/** A `cmd-res` delivery (#174): `uns.cmd-res/1` from the equipment its topic names. */
+function commandResult(
+  topic: string,
+  json: unknown,
+  retained: boolean,
+  equipment: string,
+): Classified {
+  const parsed = parseUnsCommandMessage(json);
+  if (!parsed.ok) return rejected('invalid-payload', parsed.error);
+  const message = parsed.message;
+  if (message.schema !== 'uns.cmd-res/1') {
+    return rejected('topic-mismatch', `schema ${message.schema} on a topic for uns.cmd-res/1`);
+  }
+  const unstorable = storableProblem(message);
+  if (unstorable) return rejected('invalid-payload', unstorable);
+  if (message.source.id !== equipment) {
+    return rejected('topic-mismatch', `source ${message.source.id} on ${equipment}'s topic`);
+  }
+  if (retained) return { kind: 'retained', detail: 'retained command result' };
+  return { kind: 'command-result', stream: streamKey(topic, message), equipment, message };
 }

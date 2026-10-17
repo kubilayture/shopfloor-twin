@@ -47,6 +47,12 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
       'Users with their roles, scrypt password hashes, server-side sessions (only the SHA-256 of a cookie token) and failed-login state, and the append-only audit log (#168, ADR-0026). Every time in this schema is wall time, except the audit log’s `plant_at`.',
   },
   {
+    name: 'orders',
+    owner: 'orders',
+    about:
+      'Production orders imported from the ERP’s change feed with their routing, the dispatch commands to the CNCs (a transactional outbox, every delivery published) and their reading from the gateway’s results and the device’s job facts, the ERP message log (feed entries in, status messages out through a second outbox) and the module’s incidents (#174, ADR-0028, ADR-0029).',
+  },
+  {
     name: 'public',
     owner: 'the migration runner',
     about: 'Bookkeeping of the migration runner (ADR-0016).',
@@ -73,8 +79,16 @@ const TABLES: Readonly<Record<string, string>> = {
     'The position each work center belongs to; rewritten on every seed (#141).',
   'master_data.alarm_definition':
     'One alarm point per (equipment, code) from alarms.yaml: priority, operator text, consequence and response; inactive once the configuration drops it (#141, ADR-0024).',
+  'master_data.routing':
+    'Each product’s routing, with the changeover time to it for the dispatch rule (#174).',
+  'master_data.routing_operation':
+    'The operations of a routing in order, the work center of the equipment that runs each and the product’s ideal cycle there; built by `routingAndBom` like the ERP’s (#174).',
+  'master_data.bom_item':
+    'Materials an operation consumes per unit: the blank at OP10, components and rework components at OP30 (`standard` or `rework`) (#174).',
   'ingest.equipment_event':
-    'Device facts (state changes, cycles, alarm transitions), one stream per equipment; deduplicated by the unique key.',
+    'Device facts (state changes, cycles, alarm transitions, job transitions from #174), one stream per equipment; deduplicated by the unique key.',
+  'ingest.command_result':
+    'The gateway’s answers to command deliveries (`cmd-res`), a topic stream deduplicated by its cursor; several per command id, read with ADR-0029’s precedence by the orders module (#174).',
   'ingest.telemetry_sample': 'Sampled process values, one stream per telemetry topic.',
   'ingest.source_cursor':
     'Durable dedup and gap state per stream: current epoch, sequence ranges seen, gaps already reported.',
@@ -136,6 +150,20 @@ const TABLES: Readonly<Record<string, string>> = {
     'Login sessions by the SHA-256 of their cookie token: user, kind (desk or terminal), last use, idle and absolute expiry, and how it ended (#168).',
   'identity.audit_log':
     'The one audit log: every identity action (logins, failures, locks, logouts, user changes) and every module write (downtime coding, alarm operator transitions, handover notes; written in the write’s transaction): user and roles at that moment, `authenticated`, action, entity, before, after, request id; `legacy` rows were copied from the module audits by migration 0018; a trigger refuses UPDATE, DELETE and TRUNCATE and the MES may only read and add (#168, #169, ADR-0026, ADR-0027).',
+  'orders.erp_cursor':
+    'The ERP change feed’s cursor and feed id, committed with the page it imported; a changed feed id resets it to 0 (#174, ADR-0028).',
+  'orders.production_order':
+    'One row per ERP order number at the revision held: product, quantity, planned start and due date (plant time), status (imported, rejected, released, dispatched, in-progress, completed, closed, cancelled), the flags short, dispatch-failed and dispatch-lost, the ERP’s routing and BOM, and the version a supervisor write names (#174).',
+  'orders.order_operation':
+    'The routing operations of an order with their work centers; rebuilt when a new revision replaces an order only imported (#174; #175 adds its tracking).',
+  'orders.dispatch_command':
+    'The command outbox: one `cmd/load-order` per dispatch (`{order}~OP10~{n}`) with its CNC, job, notBefore and device epoch, its queue position, and its reading (state, settled, failed, acceptance and confirmation by the job fact, the job’s state and times, blanks a lost job started, seqAfterExpiry) (#174, ADR-0029).',
+  'orders.command_attempt':
+    'Every delivery of a command published, with its own expiresAt and the command envelope’s epoch and seq; written before the publish; append-only (#174).',
+  'orders.erp_message_log':
+    'Feed entries imported (in) and messages to the ERP (out, an outbox with its Idempotency-Key, attempts, last error and the ERP’s receipt); a 409 is an incident and never retried (#174, ADR-0028).',
+  'orders.order_incident':
+    'Incidents of the orders module (ERP feed changed, ERP conflict or refusal, command failed or unconfirmed, unknown or duplicate job, dispatch lost), open at most once per key (#174).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

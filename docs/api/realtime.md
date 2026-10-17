@@ -24,6 +24,7 @@
 | `{ "type": "subscribe", "topic": "alarms" }`                                         | Alarm occurrences as they are raised, cleared or change, and shelves (#142, #143) |
 | `{ "type": "subscribe", "topic": "alarm-kpi:position:cell-m1" }`                     | Alarm KPIs of a scope: current hour and shift and open floods, then changes       |
 | `{ "type": "subscribe", "topic": "shifts" }`                                         | Shift instances (created, status, revision) and handover notes (#144)             |
+| `{ "type": "subscribe", "topic": "orders" }`                                         | Production orders and their dispatch commands as they change (#174)               |
 
 `metric` applies to telemetry topics only. A client may hold up to 16 OEE topics and 16 alarm KPI topics (`too-many-subscriptions`) and up to 64 telemetry subscriptions, counted per metric (a whole equipment counts one), and read up to 4 snapshots at a time (`busy`). Subscribing again sends a fresh snapshot. A client subscribed to every metric of an equipment can't unsubscribe one of them: unsubscribe the topic and subscribe the metrics wanted.
 
@@ -44,6 +45,8 @@
 | `alarm-kpi`                      | `topic`, `hour`, `shift`, `floods` (as in the snapshot)                                                                                     | Its alarms or the plant clock changed: at most once a second per topic             |
 | `shift`                          | `event` (`created`, `status`, `revised`), `shift` (as in `GET /api/v1/shifts/{date}/{shift}`)                                               | The plant clock entered the shift, its status moved, or its report's revision rose |
 | `handover-note`                  | `event` (`created`, `edited`), `note` (as in `GET /api/v1/shifts/{date}/{shift}/notes`)                                                     | A note was written (its commit)                                                    |
+| `order`                          | `event` (`imported`, `updated`), `order` (as in `GET /api/v1/orders`)                                                                       | An order was imported or changed (status, flags, revision, quantities; its commit) |
+| `command`                        | `event` (`created`, `updated`), `command` (as in `GET /api/v1/orders/{id}`, without attempts and results)                                   | A dispatch created a command, or its reading changed (published, answered, a fact) |
 | `telemetry`                      | `equipment`, `metric`, `unit`, `t`, `value`                                                                                                 | A sample was stored                                                                |
 | `clock`                          | `epoch`, `watermark`                                                                                                                        | The plant clock moved (at most once a second, to `states` subscribers)             |
 | `error`                          | `code` (`invalid-message`, `unknown-equipment`, `too-many-subscriptions`, `unknown-topic`, `busy`, `rate-limited`, `unavailable`), `detail` | A request was refused; the connection stays open                                   |
@@ -69,6 +72,11 @@
 - `shifts` has no snapshot: read `GET /api/v1/shifts/{date}/{shift}/report` (or the instance, or its notes) first, then apply `shift` messages as upserts by (`shift.epoch`, `shift.key`) and `handover-note` messages as upserts by `note.id`. Deltas are keyed that way, so a slow client may get only the latest of each.
 - `created`: the plant clock entered the shift; `status`: `running` → `ended` → `final`; `revised`: `revision.inputs` (an input of a final report was revised) or `revision.content` (a note was written, or a recode inside a final shift) rose. A client showing a report reads it again when its instance's `status` or `revision` moves. `revision.contentAtFinal` (#163) is `content` at the moment the report became final, stored with it (null before): it is set by the `status` event that makes the instance final and never moves after, so it plays no part in ordering; `content - contentAtFinal` is how often the content changed after final.
 - There is no paced `shift-report:<key>` topic: while a shift runs, its live numbers come from `oee:<id>` and `alarm-kpi:<scope>`, already paced at one delta a second; recomputing a whole report every second would repeat them.
+
+### Orders topic (#174)
+
+- `orders` has no snapshot: read `GET /api/v1/orders` (and `GET /api/v1/orders/{id}` for an order shown in detail) first, then apply `order` messages as upserts by `order.id` and `command` messages as upserts by `command.commandId`; reset what you hold on every (re)subscribe and read again. Deltas are keyed that way, so a slow client may get only the latest of each.
+- A command's `state` is read from every delivery published, every `cmd-res` the gateway answered and the device's job facts (ADR-0029); `confirmed` turns true when its `accepted` fact arrived. A write (release, dispatch, cancel, re-dispatch, close) pushes the order after its commit, and a dispatch its new command (`created`).
 
 Telemetry deltas of an equipment that arrive while its snapshot is being read are sent after it (state deltas are not held); a snapshot is not sent if the client unsubscribed meanwhile; a delta may repeat a value the snapshot already holds, so clients keep the newest by time.
 

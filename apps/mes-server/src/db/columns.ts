@@ -4,6 +4,7 @@ import { EQUIPMENT_COLUMNS } from '../modules/equipment/index.ts';
 import { IDENTITY_COLUMNS } from '../modules/identity/index.ts';
 import { INGEST_COLUMNS } from '../modules/ingest/index.ts';
 import { MASTER_DATA_COLUMNS } from '../modules/master-data/index.ts';
+import { ORDERS_COLUMNS } from '../modules/orders/index.ts';
 import { SHIFTS_COLUMNS } from '../modules/shifts/index.ts';
 import type { Database } from './database.ts';
 
@@ -25,6 +26,7 @@ export const MES_SCHEMAS = [
   'alarms',
   'shifts',
   'identity',
+  'orders',
 ] as const;
 
 /** Tables and views that exist in the MES schemas, excluding TimescaleDB's own. */
@@ -64,4 +66,5 @@ export const DECLARED_COLUMNS: ColumnSpec = {
   ...ALARMS_COLUMNS,
   ...SHIFTS_COLUMNS,
   ...IDENTITY_COLUMNS,
+  ...ORDERS_COLUMNS,
 };

@@ -76,6 +76,30 @@ export interface AlarmDefinitionTable {
   active: ColumnType<boolean, boolean | undefined, boolean>;
 }
 
+/** A product's routing (#174): what the routing operations and BOM items hang on. */
+export interface RoutingTable {
+  product_id: string;
+  changeover_minutes: number;
+}
+
+/** One operation of a product's routing, with the work center that runs it (#174). */
+export interface RoutingOperationTable {
+  product_id: string;
+  operation: string;
+  position: number;
+  work_center_id: string;
+  ideal_cycle_ms: number;
+}
+
+/** A material an operation consumes per unit (#174). */
+export interface BomItemTable {
+  product_id: string;
+  material: string;
+  operation: string;
+  quantity_per_unit: number;
+  usage: 'standard' | 'rework';
+}
+
 export interface MasterDataTables {
   'master_data.site': SiteTable;
   'master_data.area': AreaTable;
@@ -87,6 +111,9 @@ export interface MasterDataTables {
   'master_data.alarm_position': AlarmPositionTable;
   'master_data.alarm_position_work_center': AlarmPositionWorkCenterTable;
   'master_data.alarm_definition': AlarmDefinitionTable;
+  'master_data.routing': RoutingTable;
+  'master_data.routing_operation': RoutingOperationTable;
+  'master_data.bom_item': BomItemTable;
 }
 
 export const MASTER_DATA_COLUMNS = {
@@ -109,4 +136,13 @@ export const MASTER_DATA_COLUMNS = {
     'position',
     'active',
   ],
+  'master_data.routing': ['product_id', 'changeover_minutes'],
+  'master_data.routing_operation': [
+    'product_id',
+    'operation',
+    'position',
+    'work_center_id',
+    'ideal_cycle_ms',
+  ],
+  'master_data.bom_item': ['product_id', 'material', 'operation', 'quantity_per_unit', 'usage'],
 } as const;

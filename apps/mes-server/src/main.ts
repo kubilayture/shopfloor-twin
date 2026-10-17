@@ -12,6 +12,7 @@ import { Identity, type IdentityLog } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 import { DowntimeFeed, Oee } from './modules/oee/index.ts';
+import { ErpClient, MqttCommandPublisher, Orders } from './modules/orders/index.ts';
 import { Shifts } from './modules/shifts/index.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -70,6 +71,8 @@ let downtime: DowntimeFeed | undefined;
 let coding: DowntimeCoding | undefined;
 let alarms: Alarms | undefined;
 let shifts: Shifts | undefined;
+let orders: Orders | undefined;
+let publisher: MqttCommandPublisher | undefined;
 
 const { app, registry, realtime } = await buildMesHttp({
   // Ready once migrated, the database answers and the UNS subscription is granted.
@@ -121,6 +124,8 @@ async function shutdown(signal: string): Promise<void> {
   for (const close of [
     () => app.close(),
     async () => ingest?.stop(),
+    async () => orders?.stop(),
+    async () => publisher?.close(),
     async () => shifts?.stop(),
     () => {
       oee?.stop();
@@ -282,6 +287,41 @@ try {
   });
   shifts = shiftsModule;
   await shiftsModule.start();
+  // Orders (#174): the ERP feed, the supervisor's writes and the command outbox. Commands go out
+  // on a connection of their own (client id `{MQTT_CLIENT_ID}-cmd`, never ingest's session).
+  publisher = new MqttCommandPublisher({
+    url: env.MQTT_URL,
+    username: env.MQTT_USERNAME,
+    password: env.MQTT_PASSWORD,
+    clientId: `${env.MQTT_CLIENT_ID}-cmd`,
+    log: log.child({ module: 'orders', part: 'publisher' }),
+  });
+  const equipmentModule = equipment;
+  const ordersModule = new Orders({
+    db,
+    readDb,
+    ingest,
+    masterData,
+    publisher,
+    ...(env.ERP_URL !== undefined && env.ERP_API_TOKEN !== undefined
+      ? { erp: new ErpClient({ url: env.ERP_URL, token: env.ERP_API_TOKEN }) }
+      : {}),
+    clock: () => equipmentModule.watermarks()[0]?.watermark,
+    erpPollMs: env.ERP_POLL_MS,
+    timings: {
+      ttlMs: env.COMMAND_TTL_MS,
+      resendMs: env.COMMAND_RESEND_MS,
+      maxAttempts: env.COMMAND_ATTEMPTS,
+      failMarginMs: env.COMMAND_FAIL_MARGIN_MS,
+    },
+    registry,
+    log: log.child({ module: 'orders' }),
+  });
+  orders = ordersModule;
+  await ordersModule.start();
+  if (env.ERP_URL === undefined) {
+    log.warn('ERP_URL is not set: no orders are imported and nothing is posted to the ERP');
+  }
   // The API and push follow the modules from here; until then they answer 503.
   await realtime.attach({
     masterData: apiMasterData,
@@ -295,6 +335,7 @@ try {
     },
     alarms,
     shifts: shiftsModule,
+    orders: ordersModule,
   });
   log.info({ writes: env.MES_WRITES }, 'operator writes (downtime coding, alarms, handover notes)');
   await ingest.start();

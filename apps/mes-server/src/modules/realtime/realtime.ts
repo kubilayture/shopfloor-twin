@@ -43,6 +43,7 @@ import {
 } from '../identity/index.ts';
 import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
+import type { Orders } from '../orders/index.ts';
 import { pareto, type DowntimeFeed, type Oee, type OeeScope } from '../oee/index.ts';
 import { ShiftError, type ShiftRecord, type Shifts } from '../shifts/index.ts';
 import {
@@ -58,6 +59,7 @@ import {
   transitionDto,
 } from './alarm-dto.ts';
 import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
+import { orderRoutes, type OrdersApi } from './order-routes.ts';
 import {
   handoverAuditDto,
   handoverNoteDto,
@@ -219,6 +221,8 @@ export interface ApiSources {
     Shifts,
     'instance' | 'report' | 'notes' | 'note' | 'noteAudit' | 'createNote' | 'editNote' | 'onChange'
   >;
+  /** Production orders and their commands (#174); the order routes answer 503 without it. */
+  readonly orders?: OrdersApi & Pick<Orders, 'onChange'>;
 }
 
 export interface RealtimeOptions {
@@ -1393,6 +1397,16 @@ export async function registerRealtime(
         },
       );
 
+      // ---- Orders (#174): list, detail, incidents and the supervisor's writes ----
+      orderRoutes(api, {
+        orders: () => {
+          const orders = ready().sources.orders;
+          if (!orders) throw new HttpProblem(503, 'orders are not available');
+          return orders;
+        },
+        writer: (request) => Promise.resolve(writeBy(request)),
+      });
+
       // ---- Shifts: instances, report and handover notes (#144, ADR-0025) ----
 
       const shiftsOf = () => {
@@ -2420,6 +2434,7 @@ export async function registerRealtime(
         ]),
         ...(sources.downtime ? { downtime: sources.downtime } : {}),
         ...(sources.shifts ? { shifts: sources.shifts } : {}),
+        ...(sources.orders ? { orders: sources.orders } : {}),
         ...(sources.alarms
           ? {
               alarms: sources.alarms,

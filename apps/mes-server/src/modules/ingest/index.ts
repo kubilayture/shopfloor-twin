@@ -49,6 +49,18 @@
  * - `Ingest.alarmFacts(equipment, epoch, { code?, fromSeq?, toSeq? })`, `alarmFactCounts()`,
  *   `alarmAnchors()`, `alarmSnapshots()` (stale ones only on request), and `alarmBaseline(equipment)`:
  *   the newest epoch's anchors and snapshot resolved by sequence (`resolveAlarmBaseline`).
+ *
+ * For orders (#174, UNS contract 1.3, ADR-0017 note):
+ * - job facts (`events/job`) are device facts in `equipment_event` (`event_type` `job`): a `sample`
+ *   notice (kind `job`) then a `job` notice with `settledSeq`; `Ingest.jobFacts({ commandIds?,
+ *   equipment?, epoch? })` reads them back.
+ * - command results (`cmd-res/load-order`) are a topic-scoped stream of the gateway, deduplicated
+ *   by its cursor and stored in `ingest.command_result`: a `command-result` notice per stored one;
+ *   `Ingest.commandResults(commandIds)` reads every one, in arrival order.
+ * - `Ingest.deviceProgress(equipment)`: the device stream's epoch, `receivedThrough` (every number
+ *   received up to it) and `settledSeq` (ADR-0018's final-through) with its time;
+ *   `newestDeviceEpochs()`; `componentStatuses(component)` (the gateway's `_sys` status);
+ *   `cyclesBetween(equipment, epoch, afterSeq, beforeSeq)`.
  */
 export { INGEST_TOPICS, Ingest, baselineState } from './ingest.ts';
 export { resolveAlarmBaseline } from './alarm-baseline.ts';
@@ -58,6 +70,7 @@ export type {
   AlarmFactCount,
   CycleCount,
   CycleHour,
+  DeviceProgress,
   FactSummary,
   IngestLog,
   IngestOptions,
@@ -68,6 +81,8 @@ export type {
   AlarmFact,
   GapIncident,
   IngestNotice,
+  JobFact,
+  StoredCommandResult,
   SettledState,
   StateAnchor,
   StateFact,

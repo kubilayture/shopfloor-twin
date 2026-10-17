@@ -41,3 +41,5 @@ Chosen option: 1 with (a), because a feed with a cursor gives exactly-once impor
 - Bad: the token is one shared secret without rotation or scopes; enough for a mock on loopback (Phase 9 hardens transport).
 - Good: a client can tell a cursor of another feed (`feedId`, 409 `erp-cursor-ahead`) instead of silently skipping or re-reading orders.
 - Bad: a changed dataset with added orders needs the store deleted; the mock says so at start.
+
+Note (#174, the MES's import): a new revision replaces only an order the MES holds as `imported` or `rejected`. After release it is refused (logged `revision-refused`, `rejected-revision` posted), and that includes a revision with ERP status `cancelled`: an ERP cancellation of a released order does not stop it; a supervisor cancels it in the MES before dispatch, and a dispatched order runs on (no cancel on the machine in Phase 7; runbook). A feed entry the MES's database refuses is undone to a savepoint of its own and recorded as rejected (an `erp-invalid-entry` incident), so the page and its cursor still commit and one entry can't block every later import; a routing that repeats an operation is refused at validation.

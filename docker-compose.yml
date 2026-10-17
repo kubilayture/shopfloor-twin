@@ -173,6 +173,16 @@ services:
       MES_AUTH: ${MES_AUTH:-on}
       # Optional, not required: without it the MES starts and has no admin until one is created.
       MES_BOOTSTRAP_ADMIN_PASSWORD: ${MES_BOOTSTRAP_ADMIN_PASSWORD:-}
+      # Orders (#174, ADR-0028): the MES pulls the ERP's order feed and posts status messages with
+      # the shared bearer token; it retries while the ERP is away (no start dependency).
+      ERP_URL: http://erp:4600
+      ERP_API_TOKEN: ${ERP_API_TOKEN:?Set ERP_API_TOKEN in .env (copy .env.example)}
+      ERP_POLL_MS: ${ERP_POLL_MS:-10000}
+      # The command path (#174, ADR-0029): delivery life, resend wait, deliveries, failure margin.
+      COMMAND_TTL_MS: ${COMMAND_TTL_MS:-60000}
+      COMMAND_RESEND_MS: ${COMMAND_RESEND_MS:-15000}
+      COMMAND_ATTEMPTS: ${COMMAND_ATTEMPTS:-5}
+      COMMAND_FAIL_MARGIN_MS: ${COMMAND_FAIL_MARGIN_MS:-30000}
       LOG_LEVEL: ${MES_LOG_LEVEL:-info}
     ports:
       - '127.0.0.1:${MES_HTTP_PORT:-4700}:4700'
@@ -185,7 +195,7 @@ services:
     restart: unless-stopped
 
   # ERP mock (#171, ADR-0028): orders, lots and the MES's confirmations and status messages over
-  # REST with a shared bearer token. Nothing depends on it yet; the MES pulls from it from #174.
+  # REST with a shared bearer token. The MES pulls orders from it and posts to it (#174).
   erp:
     build:
       context: .

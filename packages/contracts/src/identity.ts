@@ -23,6 +23,7 @@ export const PERMISSIONS = [
   'order:cancel',
   'order:redispatch',
   'order:close',
+  'order:abandon',
   'user:admin',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
@@ -64,6 +65,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'order:cancel',
     'order:redispatch',
     'order:close',
+    'order:abandon',
   ],
   admin: ['read', 'user:admin'],
 };

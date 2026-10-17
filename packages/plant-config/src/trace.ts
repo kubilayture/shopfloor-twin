@@ -16,6 +16,12 @@ export const packingSchema = z.strictObject({
 
 export type PackingConfig = z.infer<typeof packingSchema>;
 
+/**
+ * The name the leak tester gives its measurement (`characteristic` on the cycle fact): the id of
+ * the leak test's characteristic in `quality.yaml` must be this one.
+ */
+export const LEAK_TEST_CHARACTERISTIC = 'leak-rate';
+
 /** The charts of a characteristic, as `spc-core` names them. */
 export const SPC_CHARTS = ['I', 'MR', 'Xbar', 'R'] as const;
 
@@ -37,7 +43,7 @@ export const qualitySchema = z.strictObject({
         subgroupSize: z.number().int().min(2).max(10),
         /** Complete subgroups limit version 1 is estimated from. */
         baselineSubgroups: z.number().int().min(1).max(1_000),
-        /** Nelson rules enabled per chart. */
+        /** Nelson rules enabled per chart, each once, in ascending order. */
         rules: z.strictObject({ I: rules, MR: rules, Xbar: rules, R: rules }),
       }),
     )
@@ -73,8 +79,9 @@ export function checkPacking(
 }
 
 /**
- * The cross-check of `quality.yaml`: unique ids, the leak test's operation on a machine that runs
- * it (the only measured characteristic), and each rule once, only rule 1 on MR and R.
+ * The cross-check of `quality.yaml`: unique ids, one characteristic per operation, the leak test's
+ * operation on a machine that runs it and named as the tester names its measurement (the only
+ * measured characteristic), and rules in ascending order, each once, only rule 1 on MR and R.
  */
 export function checkQuality(
   quality: QualityConfig,
@@ -83,12 +90,26 @@ export function checkQuality(
 ): { path: string; message: string }[] {
   const issues: { path: string; message: string }[] = [];
   const ids = new Set<string>();
+  const operations = new Set<string>();
   quality.characteristics.forEach((characteristic, index) => {
     const path = `characteristics[${String(index)}]`;
     if (ids.has(characteristic.id)) {
       issues.push({ path, message: `duplicate characteristic "${characteristic.id}"` });
     }
     ids.add(characteristic.id);
+    if (operations.has(characteristic.operation)) {
+      issues.push({
+        path: `${path}.operation`,
+        message: `a second characteristic of ${characteristic.operation}`,
+      });
+    }
+    operations.add(characteristic.operation);
+    if (characteristic.id !== LEAK_TEST_CHARACTERISTIC) {
+      issues.push({
+        path: `${path}.id`,
+        message: `the leak tester's measurement is "${LEAK_TEST_CHARACTERISTIC}", got "${characteristic.id}"`,
+      });
+    }
     if (characteristic.operation !== measuredOperation) {
       issues.push({
         path: `${path}.operation`,
@@ -109,8 +130,11 @@ export function checkQuality(
     }
     for (const chart of SPC_CHARTS) {
       const list = characteristic.rules[chart];
-      if (new Set(list).size !== list.length) {
-        issues.push({ path: `${path}.rules.${chart}`, message: 'a rule is listed twice' });
+      if (list.some((rule, i) => i > 0 && rule <= (list[i - 1] ?? 0))) {
+        issues.push({
+          path: `${path}.rules.${chart}`,
+          message: 'rules must be listed in ascending order, each once',
+        });
       }
       if (RANGE_CHARTS.includes(chart) && list.some((rule) => rule !== 1)) {
         issues.push({ path: `${path}.rules.${chart}`, message: `only rule 1 applies to ${chart}` });

@@ -4,6 +4,7 @@
  * a drift only between its `applied` and `ended` lines in log order.
  */
 import type { PlantConfig } from '@shopfloor/plant-config';
+import { DEFAULT_RULES } from '@shopfloor/spc-core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
@@ -81,6 +82,8 @@ describe('trace configuration (#208)', () => {
         rules: { I: [1, 2, 5], MR: [], Xbar: [1, 2, 5], R: [1] },
       },
     });
+    // quality.yaml's rules are spc-core's defaults (ADR-0032).
+    expect(traceConfig.spc.rules).toEqual(DEFAULT_RULES);
     expect(traceConfigHash(traceConfig)).toMatch(/^[0-9a-f]{64}$/);
     const other = structuredClone(config);
     other.packing.capacity['VB-100'] = 25;

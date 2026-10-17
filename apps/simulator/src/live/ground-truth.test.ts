@@ -2,7 +2,7 @@ import type { PlantConfig } from '@shopfloor/plant-config';
 import { HOUR, RandomSource, Simulation } from '@shopfloor/sim-core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { runHeadless } from '../headless/run.ts';
-import { traceSection } from '../headless/trace-truth.ts';
+import { traceResultAsOf, traceSection } from '../headless/trace-truth.ts';
 import { GroundTruth } from '../headless/summary.ts';
 import { ProductionLine, type LineEvent, type PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
@@ -96,6 +96,17 @@ describe('live ground truth (#100)', () => {
     // The trace (#208) as a headless run ending now would write it, without schema and header.
     expect(live.trace).toEqual(traceSection(headlessRun.trace));
     expect(live.trace.units.count).toBeGreaterThan(100);
+    // Past a time cut (#208 review, `?asOf`): the trace as it stood then is what a run that ended
+    // then gives, and the other sections stay as of now.
+    const cut = T0 + 20 * HOUR + 12_345;
+    const atCut = runHeadless({ config, seed, start: T0, end: cut }, () => undefined);
+    const asOf = run.groundTruth(cut);
+    expect(asOf.trace).toEqual(traceSection(atCut.trace));
+    expect(asOf.trace).toEqual(traceSection(traceResultAsOf(headlessRun.trace, cut)));
+    expect(asOf.traceAsOf).toBe(new Date(cut).toISOString());
+    expect(asOf.machines).toEqual(live.machines);
+    expect(live.traceAsOf).toBeUndefined();
+    expect(() => run.groundTruth(until + 1)).toThrow(/must not be after the simulation time/);
     expect(live.currentBucket).toBe('2026-10-13/A');
     const complete = Object.entries(live.buckets)
       .filter(([, bucket]) => bucket.complete)

@@ -3,7 +3,12 @@ import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { isoTime } from '../headless/serialize.ts';
 import { applyDispatches, type DispatchSpec } from '../headless/run.ts';
 import { GroundTruth, type GroundTruthSummary } from '../headless/summary.ts';
-import { TraceTruth, traceSection, type TraceSection } from '../headless/trace-truth.ts';
+import {
+  TraceTruth,
+  traceResultAsOf,
+  traceSection,
+  type TraceSection,
+} from '../headless/trace-truth.ts';
 import {
   ProductionLine,
   type FailureInjection,
@@ -70,6 +75,8 @@ export interface LiveGroundTruth extends GroundTruthSummary {
    * orders not complete yet and episodes still open can change as the run goes on.
    */
   readonly trace: TraceSection;
+  /** Present when `trace` was cut at an earlier plant time (`?asOf`, control API 1.6). */
+  readonly traceAsOf?: string;
 }
 
 export interface LiveRun {
@@ -78,7 +85,12 @@ export interface LiveRun {
   readonly pacer: LivePacer<LineEvent>;
   readonly processValues: ProcessValues;
   /** The ground truth up to the simulation's current time; read-only, never moves the run. */
-  groundTruth(): LiveGroundTruth;
+  /**
+   * With `traceAsOf` (#208 review, control API 1.6), `trace` is the trace as it stood at that plant
+   * time (`trace-core`'s `traceAsOf`, counterfactual included), which must not be after `simTime`;
+   * every other section stays as of `simTime`.
+   */
+  groundTruth(traceAsOf?: SimTime): LiveGroundTruth;
   /**
    * Schedules a failure injection (#140) at `at`, or at the simulation's current time (the next
    * step) when left out, exactly as a headless run schedules a scenario's injections.
@@ -131,8 +143,13 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.onAdvance ? { onAdvance: options.onAdvance } : {}),
   });
-  const groundTruth = (): LiveGroundTruth => {
+  const groundTruth = (traceAsOf?: SimTime): LiveGroundTruth => {
     const now = simulation.now;
+    if (traceAsOf !== undefined && (!Number.isSafeInteger(traceAsOf) || traceAsOf > now)) {
+      throw new RangeError(
+        `asOf must not be after the simulation time ${isoTime(now)}, got ${String(traceAsOf)}`,
+      );
+    }
     const summary = truth.snapshot(now, line, lotIds);
     const currentBucket = truth.currentBucket;
     const keys = new Set([
@@ -155,7 +172,12 @@ export function createLiveRun(options: LiveOptions): LiveRun {
         ]),
       ),
       ...summary,
-      trace: traceSection(traceTruth.build(summary.orders)),
+      trace: traceSection(
+        traceAsOf === undefined
+          ? traceTruth.build(summary.orders)
+          : traceResultAsOf(traceTruth.build(summary.orders), traceAsOf),
+      ),
+      ...(traceAsOf === undefined ? {} : { traceAsOf: isoTime(traceAsOf) }),
     };
   };
   return {

@@ -14,7 +14,7 @@ export {
   plantCauses,
 } from './reasons.ts';
 export type { CausePattern, ReasonRule, ReasonsConfig } from './reasons.ts';
-export { SPC_CHARTS, checkPacking, checkQuality } from './trace.ts';
+export { LEAK_TEST_CHARACTERISTIC, SPC_CHARTS, checkPacking, checkQuality } from './trace.ts';
 export type { PackingConfig, QualityConfig } from './trace.ts';
 export { MACHINE_SCRAP_REASONS, checkScrap, scrapRoot } from './scrap.ts';
 export type { ScrapConfig } from './scrap.ts';

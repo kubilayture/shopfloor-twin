@@ -61,7 +61,12 @@ async function setup(ready = true, withGroundTruth = false, withFailure = false,
         }
       : {}),
     ...(withGroundTruth
-      ? { groundTruth: () => ({ epoch: 1_760_000_000, ...run.groundTruth() }) }
+      ? {
+          groundTruth: (traceAsOf?: number) => ({
+            epoch: 1_760_000_000,
+            ...run.groundTruth(traceAsOf),
+          }),
+        }
       : {}),
   });
   return { app, run, clock, hub, events };
@@ -207,6 +212,26 @@ describe('control API (#54)', () => {
     expect(paused.trace.drifts).toHaveLength(1);
     expect(paused.trace.drifts[0]?.window.readings.length).toBeGreaterThan(20);
     expect(paused.trace.spc.limits).toHaveLength(1);
+    // ?asOf (1.6): the trace cut at an earlier plant time, served whole; refused when invalid or
+    // after the simulation time.
+    const asOf = '2026-10-12T09:00:00.000Z';
+    const cut = await served.inject({ method: 'GET', url: `/api/v1/ground-truth?asOf=${asOf}` });
+    expect(cut.statusCode).toBe(200);
+    const cutBody = cut.json<GroundTruthReport>();
+    expect(cutBody.traceAsOf).toBe(asOf);
+    expect(cutBody.trace).toEqual(
+      JSON.parse(JSON.stringify(run.groundTruth(Date.parse(asOf)).trace)),
+    );
+    expect(cutBody.trace.units.count).toBeLessThan(paused.trace.units.count);
+    expect(cutBody.trace.drifts[0]).toMatchObject({ endedAt: null, endedBy: null });
+    expect(cutBody.machines).toEqual(paused.machines);
+    for (const bad of ['2026-10-12T09:00:00', 'yesterday', '2026-10-12T11:10:00.001Z']) {
+      const refused = await served.inject({
+        method: 'GET',
+        url: `/api/v1/ground-truth?asOf=${encodeURIComponent(bad)}`,
+      });
+      expect(refused.statusCode, bad).toBe(400);
+    }
   });
 
   it('refuses control until every OPC UA server listens, but reports status', async () => {

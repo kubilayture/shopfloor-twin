@@ -41,6 +41,7 @@ import {
 import {
   ConsumptionTracker,
   buildTrace,
+  traceAsOf,
   readingKey,
   type Carton,
   type OrderPacking,
@@ -310,6 +311,28 @@ export class TraceTruth {
       drifts: [...this.#drifts.values()],
     };
   }
+}
+
+/**
+ * The trace result as it stood at plant time `t` (#208 review, control API 1.6 `?asOf`): the tree
+ * through `trace-core`'s `traceAsOf`, the counterfactual and log order of the readings it keeps,
+ * and the drifts applied before `t`, one ended at or after `t` still active then. Equal to the
+ * result of a run that ended at `t` (tested with `quality-01`'s shift-A reference run).
+ */
+export function traceResultAsOf(result: TraceResult, t: SimTime): TraceResult {
+  const trace = traceAsOf(result.trace, t);
+  const kept = new Set(trace.spc.readings.map((r) => r.key));
+  return {
+    config: result.config,
+    trace,
+    counterfactual: new Map([...result.counterfactual].filter(([key]) => kept.has(key))),
+    logOrder: result.logOrder.filter((key) => kept.has(key)),
+    drifts: result.drifts
+      .filter((d) => d.appliedAt < t)
+      .map((d) =>
+        d.endedAt !== null && d.endedAt >= t ? { ...d, endedAt: null, endedBy: null } : d,
+      ),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------

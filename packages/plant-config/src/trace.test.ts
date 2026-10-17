@@ -100,14 +100,42 @@ describe('packing.yaml and quality.yaml (#208)', () => {
       messagesFor((c) => {
         c.quality.characteristics.push(structuredClone(characteristic(c)));
       }),
-    ).toBe('quality:characteristics[1]: duplicate characteristic "leak-rate"');
+    ).toBe(
+      'quality:characteristics[1]: duplicate characteristic "leak-rate"\n' +
+        'quality:characteristics[1].operation: a second characteristic of OP40',
+    );
+    expect(
+      messagesFor((c) => {
+        c.quality.characteristics.push({
+          ...structuredClone(characteristic(c)),
+          id: 'leak-rate-2',
+        });
+      }),
+    ).toBe(
+      'quality:characteristics[1].operation: a second characteristic of OP40\n' +
+        'quality:characteristics[1].id: the leak tester\'s measurement is "leak-rate", got "leak-rate-2"',
+    );
+    expect(
+      messagesFor((c) => {
+        characteristic(c).id = 'leak';
+      }),
+    ).toBe(
+      'quality:characteristics[0].id: the leak tester\'s measurement is "leak-rate", got "leak"',
+    );
+    expect(
+      messagesFor((c) => {
+        characteristic(c).rules.I = [5, 1, 2];
+      }),
+    ).toBe(
+      'quality:characteristics[0].rules.I: rules must be listed in ascending order, each once',
+    );
     expect(
       messagesFor((c) => {
         characteristic(c).rules = { I: [1, 1], MR: [2], Xbar: [1], R: [1, 5] };
       }),
     ).toBe(
       [
-        'quality:characteristics[0].rules.I: a rule is listed twice',
+        'quality:characteristics[0].rules.I: rules must be listed in ascending order, each once',
         'quality:characteristics[0].rules.MR: only rule 1 applies to MR',
         'quality:characteristics[0].rules.R: only rule 1 applies to R',
       ].join('\n'),

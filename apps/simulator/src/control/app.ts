@@ -25,7 +25,7 @@ import type { EventHub } from './event-hub.ts';
  * 1.3 failure injection and the alarm ground truth (#140), 1.4 the production mode and the order
  * ground truth (#172), 1.5 the leak-test drift injection (#196).
  */
-export const CONTROL_API_VERSION = '1.5.0';
+export const CONTROL_API_VERSION = '1.6.0';
 export const API_PREFIX = '/api/v1';
 export const EVENTS_PATH = `${API_PREFIX}/events`;
 /** A WebSocket client that falls this far behind is disconnected rather than buffered without bound. */
@@ -552,6 +552,9 @@ export const groundTruthSchema = z.object({
   alarms: alarmsSchema,
   orders: ordersSchema,
   trace: traceSchema,
+  traceAsOf: isoSchema
+    .optional()
+    .describe('1.6: present when `trace` was cut at an earlier plant time (`?asOf`)'),
 });
 
 /** The live ground truth with the run's epoch: what `GET /api/v1/ground-truth` returns. */
@@ -598,7 +601,11 @@ export interface ControlAppOptions {
     };
   };
   /** The live run's ground truth (#100); the route exists only when given. */
-  readonly groundTruth?: () => GroundTruthReport;
+  /**
+   * `traceAsOf` (1.6): cut the `trace` section at that plant time; throws a `RangeError` when it
+   * is after the simulation time.
+   */
+  readonly groundTruth?: (traceAsOf?: number) => GroundTruthReport;
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
   readonly version?: string;
 }
@@ -792,10 +799,40 @@ export async function buildControlApp({
             'The ground truth a headless run would write if it ended now, kept live while the run ' +
             'is paced. Reconciliation tests compare the MES with it (#100). Reading it never ' +
             'moves the run.',
-          response: { 200: json(groundTruthSchema) },
+          querystring: json(
+            z.object({
+              asOf: z
+                .string()
+                .optional()
+                .describe(
+                  '1.6 (#208): cut `trace` at this plant time (ISO 8601 with an offset or Z, not ' +
+                    "after `simTime`) with trace-core's `traceAsOf`, counterfactual readings " +
+                    'included; every other section stays as of `simTime`',
+                ),
+            }),
+          ),
+          response: { 200: json(groundTruthSchema), 400: json(errorSchema) },
         },
       },
-      () => groundTruth(),
+      (request, reply) => {
+        const { asOf } = request.query as { asOf?: string };
+        if (asOf === undefined) return groundTruth();
+        let at: number;
+        try {
+          at = Temporal.Instant.from(asOf).epochMilliseconds;
+        } catch {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            message: `asOf must be ISO 8601 with an offset or Z, got "${asOf}"`,
+          });
+        }
+        try {
+          return groundTruth(at);
+        } catch (error) {
+          if (!(error instanceof RangeError)) throw error;
+          return reply.code(400).send({ error: 'Bad Request', message: error.message });
+        }
+      },
     );
   }
 

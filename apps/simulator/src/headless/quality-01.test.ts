@@ -24,7 +24,13 @@ import {
   type HeadlessOptions,
   type HeadlessResult,
 } from './run.ts';
-import { DEFAULT_DRIFT_WINDOW, analyseDrifts, type DriftAnalysis } from './trace-truth.ts';
+import {
+  DEFAULT_DRIFT_WINDOW,
+  analyseDrifts,
+  traceResultAsOf,
+  traceSection,
+  type DriftAnalysis,
+} from './trace-truth.ts';
 
 const GOLDEN = resolve(import.meta.dirname, '../../golden');
 /** Monday's shift A: 06:00–14:00 Istanbul. */
@@ -228,13 +234,22 @@ describe('golden scenario quality-01 (#208)', () => {
           steps: Math.round((e.measurement as { value: number }).value * 1000),
         }));
     const [withDrift, without] = [measured(lines), measured(plain)];
+    const keys = [...result.trace.counterfactual.keys()];
     const counterfactual = [...result.trace.counterfactual.values()];
-    let compared = 0;
     for (let k = 0; k < withDrift.length && withDrift[k]?.at === without[k]?.at; k++) {
       expect(counterfactual[k], `measurement ${String(k)}`).toBe(without[k]?.steps);
-      if ((withDrift[k]?.steps ?? 0) !== counterfactual[k]) compared++;
     }
-    expect(compared).toBeGreaterThanOrEqual(drift.latency ?? Infinity);
+    // Every one of the window's 20 drifted readings is compared: the plain run takes the same draw
+    // at the same instant, and its reading is the counterfactual.
+    const driftedKeys = drift.window.readings.slice(40).map(({ reading }) => reading.key);
+    const compared = driftedKeys.filter((key) => {
+      const k = keys.indexOf(key);
+      expect(withDrift[k]?.at, key).toBe(without[k]?.at);
+      expect(counterfactual[k], key).toBe(without[k]?.steps);
+      expect((withDrift[k]?.steps ?? 0) - (counterfactual[k] ?? 0), key).toBe(600);
+      return k >= 0;
+    });
+    expect(compared).toHaveLength(20);
   });
 
   it('has every feature the plan requires', () => {
@@ -326,6 +341,15 @@ describe('golden scenario quality-01 (#208)', () => {
     // the full truth cut at 14:00.
     expect(traceAsOf(cut.trace.trace, SHIFT_A.to)).toEqual(cut.trace.trace);
     expect(traceAsOf(trace, SHIFT_A.to)).toEqual(cut.trace.trace);
+    // What `GET /ground-truth?asOf=` serves (control API 1.6): the cut with its counterfactual
+    // readings and drift equals the reference run's whole trace section.
+    expect(traceSection(traceResultAsOf(result.trace, SHIFT_A.to))).toEqual(
+      traceSection(cut.trace),
+    );
+    // A cut inside the drift: still active then, no end.
+    const during = traceSection(traceResultAsOf(result.trace, DRIFT_AT + 3_600_000));
+    expect(during.drifts[0]).toMatchObject({ endedAt: null, endedBy: null });
+    expect(during.drifts[0]?.counterfactual.clean).toBe(true);
   });
 
   it("reproduces probe P4's search around the chosen start", async () => {
@@ -345,5 +369,16 @@ describe('golden scenario quality-01 (#208)', () => {
     const [, chosen] = rows;
     expect(chosen?.inShift).toBe(155);
     expect(chosen?.firstEpisode).toBe('I rule 1');
+    // The window check can fail: a drift from 10:31Z (until 15:07Z) has a window reaching the
+    // seed's first in-control signal (its 169th first-pass reading), so its counterfactual signals.
+    const [late] = await searchDriftStarts('quality-01', {
+      from: Date.parse('2026-10-12T10:31:00Z'),
+      to: Date.parse('2026-10-12T10:31:00Z'),
+      stepMs: 60_000,
+      until: Date.parse('2026-10-12T15:07:00Z'),
+      window: DEFAULT_DRIFT_WINDOW,
+    });
+    expect(late?.counterfactualSignals).toBeGreaterThan(0);
+    expect(late?.fits).toBe(false);
   }, 60_000);
 });

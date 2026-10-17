@@ -24,6 +24,9 @@ export const PERMISSIONS = [
   'order:redispatch',
   'order:close',
   'order:abandon',
+  // Phase 8 (#200, plan "Identity and permissions"): SPC limit versions and signal acknowledgement.
+  'spc:limits',
+  'spc:ack',
   'user:admin',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
@@ -50,7 +53,15 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'alarm:shelve',
     'note:write',
   ],
-  quality: ['read', 'alarm:ack', 'alarm:comment', 'note:write', 'scrap:code'],
+  quality: [
+    'read',
+    'alarm:ack',
+    'alarm:comment',
+    'note:write',
+    'scrap:code',
+    'spc:limits',
+    'spc:ack',
+  ],
   supervisor: [
     'read',
     'downtime:code',
@@ -66,6 +77,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'order:redispatch',
     'order:close',
     'order:abandon',
+    'spc:ack',
   ],
   admin: ['read', 'user:admin'],
 };

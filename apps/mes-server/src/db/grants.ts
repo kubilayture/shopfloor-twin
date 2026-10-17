@@ -39,6 +39,7 @@ export const DECLARED_GRANTS: {
       identity: ['USAGE'],
       orders: ['USAGE'],
       execution: ['USAGE'],
+      quality: ['USAGE'],
     },
     mes_cagg: { ingest: ['USAGE'], equipment: ['USAGE'] },
   },
@@ -115,6 +116,12 @@ export const DECLARED_GRANTS: {
       'execution.operation_record': ALL,
       'execution.scrap_record': KEEP,
       'execution.execution_incident': KEEP,
+      // SPC (#200): characteristics are seeded and kept; measurements and signal episodes are
+      // derived and rebuilt; limit versions are append-only (a trigger refuses the rest).
+      'quality.characteristic': KEEP,
+      'quality.measurement': ALL,
+      'quality.control_limit': APPEND,
+      'quality.spc_signal': ALL,
     },
     // The aggregates' sources, which a refresh reads; the aggregates themselves it owns.
     mes_cagg: {

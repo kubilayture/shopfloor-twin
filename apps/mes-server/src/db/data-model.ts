@@ -59,6 +59,12 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
       'Every part tracked through the routing from the device’s cycle facts (#175, ADR-0031): units keyed (device epoch, partId) and attributed to an order by the job facts, one operation record per cycle with its rework pass, the scrap records an operator or quality user codes, and routing-violation incidents. Units and records are derived and rebuilt from facts; quantities, material and completion are computed on read.',
   },
   {
+    name: 'quality',
+    owner: 'quality',
+    about:
+      'SPC (#200, ADR-0032): the characteristics of `quality.yaml`, one measurement per cycle fact of the characteristic’s machine with its pass, control limit versions as append-only events (version 1 automatic from the baseline, never re-derived), and the signal episodes derived from the first-pass readings with their finality, withdrawal and acknowledgement. Points and subgroups are derived on read.',
+  },
+  {
     name: 'public',
     owner: 'the migration runner',
     about: 'Bookkeeping of the migration runner (ADR-0016).',
@@ -184,6 +190,14 @@ const TABLES: Readonly<Record<string, string>> = {
     'Every machine scrap (OP10 DIMENSIONAL, OP40 second LEAK) with the coding a person gives it from the scrap reason tree (version per record, audited in identity.audit_log); kept, never deleted (#175).',
   'execution.execution_incident':
     'Routing-violation incidents of the execution module (a predecessor missing or an operation repeated once the expected machine is final through it, a record after the terminal one), open at most once per key (#175).',
+  'quality.characteristic':
+    'SPC characteristics seeded from `quality.yaml` (the leak test’s unit, resolution and upper specification from process.yaml), with the version a limit write names and the `baseline-changed` notice (#200).',
+  'quality.measurement':
+    'One reading per cycle fact of the characteristic’s machine, keyed by the fact, with its pass (1, 2 after a rework) and its value in resolution steps; derived and rebuilt per part (#200).',
+  'quality.control_limit':
+    'Control limit versions as append-only events: `created` (frozen limits, window and the first position it applies to) and `ended`; a trigger refuses UPDATE, DELETE and TRUNCATE for every role (#200, ADR-0032).',
+  'quality.spc_signal':
+    'Signal episodes keyed (characteristic, limit version, chart, rule, first triggering point) with their extent, `provisional` until the tester is final through the triggering point, `final`, or `withdrawn` with a reason; the acknowledgement stays on the episode (#200, ADR-0032).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

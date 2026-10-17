@@ -6,6 +6,7 @@ import { INGEST_COLUMNS } from '../modules/ingest/index.ts';
 import { MASTER_DATA_COLUMNS } from '../modules/master-data/index.ts';
 import { EXECUTION_COLUMNS } from '../modules/execution/index.ts';
 import { ORDERS_COLUMNS } from '../modules/orders/index.ts';
+import { QUALITY_COLUMNS } from '../modules/quality/index.ts';
 import { SHIFTS_COLUMNS } from '../modules/shifts/index.ts';
 import type { Database } from './database.ts';
 
@@ -29,6 +30,7 @@ export const MES_SCHEMAS = [
   'identity',
   'orders',
   'execution',
+  'quality',
 ] as const;
 
 /** Tables and views that exist in the MES schemas, excluding TimescaleDB's own. */
@@ -70,4 +72,5 @@ export const DECLARED_COLUMNS: ColumnSpec = {
   ...IDENTITY_COLUMNS,
   ...ORDERS_COLUMNS,
   ...EXECUTION_COLUMNS,
+  ...QUALITY_COLUMNS,
 };

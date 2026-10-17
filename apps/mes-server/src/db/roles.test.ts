@@ -246,6 +246,12 @@ describe('roles, owners and grants (#169, ADR-0027)', () => {
     const statements = [
       'ALTER TABLE identity.audit_log DISABLE TRIGGER audit_log_no_update_delete',
       'ALTER TABLE alarms.alarm_transition DISABLE TRIGGER ALL',
+      // Limit versions are append-only (#200, plan "Database roles and grants").
+      'ALTER TABLE quality.control_limit DISABLE TRIGGER control_limit_no_update_delete',
+      'ALTER TABLE quality.control_limit DISABLE TRIGGER ALL',
+      'TRUNCATE quality.control_limit',
+      'UPDATE quality.control_limit SET comment = comment',
+      'DELETE FROM quality.control_limit',
       'TRUNCATE identity.audit_log',
       'TRUNCATE alarms.alarm_transition',
       'UPDATE identity.audit_log SET username = username',
@@ -286,6 +292,19 @@ describe('roles, owners and grants (#169, ADR-0027)', () => {
           plant_at, version) VALUES (1, 1, 'k', 'created', '{}', 'x', now(), 1)`.execute(owner),
       ),
     ).toBe('42501');
+    // A limit version (#200) is added by mes_app and changed or removed by nobody.
+    await sql`INSERT INTO quality.characteristic (id, name, equipment, operation, unit, resolution,
+        upper_spec, subgroup_size, baseline_subgroups, rules)
+      VALUES ('roles-test', 'x', 'lkt-01', 'OP40', 'Pa/min', 0.001, 3.2, 5, 20, '{}')`.execute(app);
+    await sql`INSERT INTO quality.control_limit (characteristic, n, kind, version, plant_at, limits,
+        actor) VALUES ('roles-test', 1, 'created', 1, now(), '{}', 'system')`.execute(app);
+    for (const statement of [
+      sql`UPDATE quality.control_limit SET comment = 'x'`,
+      sql`DELETE FROM quality.control_limit`,
+      sql`TRUNCATE quality.control_limit`,
+    ]) {
+      expect(await sqlState(() => statement.execute(owner))).toBe('42501');
+    }
   });
 
   it('refreshes an aggregate only as mes_cagg, and cagg_watermark moves (B1)', async () => {

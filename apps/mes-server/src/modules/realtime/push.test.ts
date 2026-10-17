@@ -3,6 +3,7 @@ import { Registry } from 'prom-client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
+import type { CharacteristicRecord, QualityChange, SignalRecord } from '../quality/index.ts';
 import { PushHub, type PushOptions, type PushSources } from './push.ts';
 import { serverMessageSchema, type ServerMessage } from './schemas.ts';
 
@@ -405,5 +406,95 @@ describe('WebSocket push (#97)', () => {
     await tick();
     await tick();
     expect(socket.types().slice(4)).toEqual(['snapshot', 'telemetry']);
+  });
+});
+
+describe('the quality topic (#200)', () => {
+  const characteristic: CharacteristicRecord = {
+    id: 'leak-rate',
+    name: 'Leak rate',
+    equipment: 'lkt-01',
+    operation: 'OP40',
+    unit: 'Pa/min',
+    resolution: 0.001,
+    upperSpec: 3.2,
+    subgroupSize: 5,
+    baselineSubgroups: 20,
+    rules: { I: [1, 2, 5], MR: [], Xbar: [1, 2, 5], R: [1] },
+    version: 2,
+    currentLimits: 1,
+    baseline: { needed: 100, final: 100 },
+    notice: null,
+    signals: { open: 1, unacknowledged: 1 },
+  };
+  const point = { epoch: 1, partId: 7, pass: 1, at: T0, seq: 7 };
+  const signal = (status: SignalRecord['status']): SignalRecord => ({
+    id: 3,
+    characteristic: 'leak-rate',
+    version: 1,
+    chart: 'I',
+    rule: 1,
+    first: point,
+    last: point,
+    points: 1,
+    closedBy: null,
+    baseline: false,
+    status,
+    detectedAt: new Date(T0),
+    detectedPlantAt: null,
+    finalAt: null,
+    withdrawnAt: null,
+    withdrawnReason: null,
+    acknowledged: null,
+    rowVersion: 1,
+  });
+
+  it('pushes signal upserts by id and characteristic summaries, coalesced, to subscribers only', async () => {
+    const fake = fakeSources();
+    const listeners = new Set<(change: QualityChange) => void>();
+    const hub = new PushHub({ clockMs: 60_000, heartbeatMs: 60_000 });
+    hubs.push(hub);
+    hub.attach({
+      ...fake.sources,
+      quality: {
+        onChange: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+    });
+    const emit = (change: QualityChange) => {
+      for (const listener of listeners) listener(change);
+    };
+    const socket = new FakeSocket();
+    const other = new FakeSocket();
+    hub.connect(socket);
+    hub.connect(other);
+    socket.request({ type: 'subscribe', topic: 'quality' });
+    emit({ type: 'signal', event: 'opened', signal: signal('provisional') });
+    emit({ type: 'signal', event: 'final', signal: signal('final') });
+    emit({ type: 'characteristic', event: 'readings', characteristic });
+    await tick();
+    expect(socket.sent).toMatchObject([
+      { type: 'subscribed', topic: 'quality' },
+      {
+        type: 'spc-signal',
+        event: 'final',
+        signal: { id: 3, status: 'final', ruleText: 'one point beyond a control limit' },
+      },
+      { type: 'spc-characteristic', event: 'readings', characteristic: { id: 'leak-rate' } },
+    ]);
+    expect(other.sent).toEqual([]);
+    socket.request({ type: 'unsubscribe', topic: 'quality' });
+    emit({ type: 'signal', event: 'updated', signal: signal('final') });
+    await tick();
+    expect(socket.types().slice(3)).toEqual(['unsubscribed']);
+  });
+
+  it('answers unknown-topic without a quality source', () => {
+    const { connect } = setup();
+    const socket = connect();
+    socket.request({ type: 'subscribe', topic: 'quality' });
+    expect(socket.sent).toMatchObject([{ type: 'error', code: 'unknown-topic' }]);
   });
 });

@@ -11,7 +11,10 @@ import {
 } from './identity.ts';
 import { loginRequestSchema, userCreateRequestSchema } from './mes-api.ts';
 
-/** The Phase 7 plan's table ("Identity"), column by column: ✓ marks as written there. */
+/**
+ * The Phase 7 plan's table ("Identity"), column by column: ✓ marks as written there; the Phase 8
+ * plan's rows (#200: `spc:limits` quality, `spc:ack` quality and supervisor).
+ */
 const PLAN: Record<Permission, string> = {
   //                  operator maintenance quality supervisor admin
   read: '✓✓✓✓✓',
@@ -28,11 +31,13 @@ const PLAN: Record<Permission, string> = {
   'order:redispatch': '···✓·',
   'order:close': '···✓·',
   'order:abandon': '···✓·',
+  'spc:limits': '··✓··',
+  'spc:ack': '··✓✓·',
   'user:admin': '····✓',
 };
 
 describe('permission matrix (#168, ADR-0026)', () => {
-  it('equals the Phase 7 plan, cell by cell', () => {
+  it('equals the Phase 7 and Phase 8 plans, cell by cell', () => {
     const order: Role[] = ['operator', 'maintenance', 'quality', 'supervisor', 'admin'];
     expect([...ROLES].sort()).toEqual([...order].sort());
     expect(Object.keys(PLAN).sort()).toEqual([...PERMISSIONS].sort());

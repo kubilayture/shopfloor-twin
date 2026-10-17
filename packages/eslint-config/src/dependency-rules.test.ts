@@ -43,6 +43,29 @@ describe('dependency rules (plan section 8)', () => {
       '@shopfloor/oee-core/src/fraction.ts',
     ],
     ['alarm-core imports a Node.js built-in', 'packages/alarm-core/src/a.ts', 'node:fs'],
+    ['spc-core imports a Node.js built-in (ADR-0032)', 'packages/spc-core/src/a.ts', 'node:fs'],
+    ['spc-core imports a third-party package', 'packages/spc-core/src/a.ts', 'zod'],
+    [
+      'spc-core imports a non-pure workspace package',
+      'packages/spc-core/src/a.ts',
+      '@shopfloor/plant-config',
+    ],
+    ['trace-core imports a Node.js built-in', 'packages/trace-core/src/a.ts', 'node:crypto'],
+    [
+      'trace-core imports a non-pure workspace package',
+      'packages/trace-core/src/a.ts',
+      '@shopfloor/contracts',
+    ],
+    [
+      'trace-core imports spc-core by subpath',
+      'packages/trace-core/src/a.ts',
+      '@shopfloor/spc-core/src/chart.ts',
+    ],
+    [
+      'a pure package reaches into spc-core by relative path',
+      'packages/trace-core/src/a.ts',
+      '../../../packages/spc-core/src/chart.ts',
+    ],
     [
       'an MES module imports another module internals',
       'apps/mes-server/src/modules/oee/calc.ts',
@@ -72,7 +95,22 @@ describe('dependency rules (plan section 8)', () => {
       'packages/oee-core/src/a.ts',
       '@shopfloor/shift-calendar',
     ],
+    [
+      'trace-core imports spc-core by name (ADR-0032: pure on pure)',
+      'packages/trace-core/src/a.ts',
+      '@shopfloor/spc-core',
+    ],
+    [
+      'spc-core imports oee-core by name for its fractions',
+      'packages/spc-core/src/a.ts',
+      '@shopfloor/oee-core',
+    ],
     ['a pure package test imports vitest', 'packages/sim-core/src/a.test.ts', 'vitest'],
+    [
+      'spc-core reference cases read the docs in a test',
+      'packages/spc-core/src/reference-cases.test.ts',
+      'node:fs',
+    ],
     [
       'a pure package tool config imports vitest',
       'packages/sim-core/vitest.config.ts',

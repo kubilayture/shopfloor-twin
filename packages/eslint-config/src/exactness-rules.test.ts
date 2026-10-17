@@ -54,8 +54,18 @@ describe('exactness rules (ADR-0021)', () => {
     );
   });
 
-  it('does not apply to tests or outside oee-core and alarm-core', async () => {
+  it.each(['spc-core', 'trace-core'])('applies to %s too (ADR-0032)', async (name) => {
+    expect(await ruleIds(`packages/${name}/src/a.ts`, 'const s = 2.66;\n')).toContain(
+      'no-restricted-syntax',
+    );
+    expect(await ruleIds(`packages/${name}/src/a.ts`, 'Math.abs(x);\n')).toContain(
+      'no-restricted-syntax',
+    );
+  });
+
+  it('does not apply to tests, scripts or packages outside the exact ones', async () => {
     expect(await ruleIds('packages/oee-core/src/a.test.ts', 'Math.floor(1 / 2);\n')).toEqual([]);
     expect(await ruleIds('packages/sim-core/src/a.ts', 'Math.floor(1 / 2);\n')).toEqual([]);
+    expect(await ruleIds('packages/spc-core/scripts/a.ts', 'Math.floor(1 / 2);\n')).toEqual([]);
   });
 });

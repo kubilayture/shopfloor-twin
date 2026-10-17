@@ -1,0 +1,88 @@
+# ADR-0032: SPC: I-MR and X̄-R on first passes, frozen limit versions, Nelson rules and signal episodes
+
+- Status: accepted (#195, revised after the review of PR #210; the MES side follows in #200)
+- Date: 2026-10-17
+- Deciders: Claude (#195), within the Phase 8 plan and its review (PR #207, rounds 1–3); recorded for the owner under the standing instruction of 2026-10-15
+
+## Context and problem statement
+
+Phase 8 must show that SPC detects an injected leak-test drift, and only because of it (exit criterion 3): the MES's limits, points, subgroups and episodes must equal the simulator's ground truth (`trace.json`), and the counterfactual readings (the same draws without the drift) must open no episode in the window around the injection. Both programs need the same definitions, and the textbook leaves open:
+
+- which readings form the population (a retest after rework measures a reworked part);
+- where limits come from, and whether they may move once data arrives late;
+- the exact run rules, their window lengths, and what a tie means (a point on a zone line, on the centre line, an equal pair in a rising run);
+- whether a signal is a point or something with a start and an end, and what is acknowledged;
+- what happens at a simulator restart (a new device epoch) and at a new limit version;
+- which rules are on by default, given that in-control signals must not swamp the chart (probe P4b);
+- where the code lives, and in what arithmetic.
+
+## Considered options
+
+Package and arithmetic: (a) SPC inside the MES's `quality` module, floats; (b) a pure package `spc-core` in IEEE doubles; (c) a pure package `spc-core` on `oee-core`'s exact BigInt fractions, readings in whole resolution steps.
+
+Limits: (a) from the configured mean and sigma; (b) estimated from a baseline, then frozen and versioned.
+
+Rules: (a) Western Electric 1–4; (b) Nelson 1–8, some enabled by default.
+
+Signals: (a) one per triggering point; (b) episodes of consecutive triggering points of one chart and rule.
+
+## Decision outcome
+
+**Package and arithmetic: (c).** `@shopfloor/spc-core` is pure (ADR-0024, ADR-0005 amended): it imports only `@shopfloor/oee-core` for the fractions. A reading is an integer count of the instrument's resolution (the leak tester's 0.001 Pa/min), so every mean, limit and zone line is an exact fraction, and a point exactly on a line is decided the same way by the truth and the MES. `spc-core` and `trace-core` join `EXACT_SOURCES` (no float literals, no `/`, no `Math`). `@shopfloor/trace-core` depends on `spc-core` (pure on pure), because `traceAsOf` re-derives the episodes as of a time.
+
+**Definitions** (exact wording, hand-calculated cases and tie cases in `docs/spc-reference-cases.md`, whose tables drive `packages/spc-core/src/reference-cases.test.ts`):
+
+- **Population:** first-pass readings only; retests (pass 2 and later) are listed apart and never charted.
+- **Order and segments:** (device epoch, plant time, device sequence). A new epoch starts a segment; moving ranges, subgroups and runs never span one. A segment's trailing readings that don't fill a subgroup are dropped once a later segment exists, and pending in the last.
+- **Charts:** I-MR with E2 = 2.66 and D4(2) = 3.267; X̄-R on consecutive subgroups of n (5 in `quality.yaml`) with the ASTM E2587 constants for n = 2–10 (A2 = 0.577, D3 = 0, D4 = 2.114, d2 = 2.326 for n = 5).
+- **Limits from a window** [from, to]: I-MR from every reading in it and the moving ranges inside a segment; X̄-R from the complete subgroups wholly inside it. **Version 1** is estimated from the first 20 complete subgroups (the baseline), created at the baseline's last reading, applies from the first reading (baseline points are judged retroactively) and is never re-derived. A version has `from`, `until`, `createdAt` and `endedAt` (when `until` was set; `traceAsOf` treats a version ended at or after its cut as open); version 1's `createdAt` is its window's last reading (`window.to.at`), which the MES (#200) must use too. A point is judged by the highest version whose range holds it, and a point no version covers is not judged.
+- **Zones and ties:** σ = (upper − centre)/3. "Beyond kσ" is strictly beyond and "within 1σ" strictly within; a point on a zone line is neither, a point on the centre line is on neither side, a point on a control limit is inside it.
+- **Rules (Nelson):** 1 beyond a limit; 2 nine on one side; 3 six points with five successive differences all strictly positive or all strictly negative (an equal pair ends the run); 4 fourteen alternating (an equal pair ends it); 5 the point is beyond 2σ and, with it, two of the last three points of the run are beyond on its side; 6 the point is beyond 1σ and, with it, four of the last five are beyond on its side (for 5 and 6 the signal point is always one of those beyond, and at a run's start two of two, or four of four, suffice: review of PR #210); 7 fifteen within 1σ; 8 eight beyond 1σ on both sides. Any other rule of length L is judged at a point only when its run (one chart, one segment, one limit version) holds L points ending there, and fires at that point. MR and R take rule 1 only (`checkRuleSet` refuses the others: a range has no meaningful side or zone pattern).
+- **Defaults: rules 1, 2 and 5 on I and X̄, rule 1 on R, none on MR** (review of PR #210, see "Deviation"); every rule can be enabled per chart and characteristic (on MR and R, rule 1 only).
+- **Episodes: (b).** An episode opens at the first point where a rule fires on a chart, takes every following point of the same run where it fires again, and is closed by the chart's next point that doesn't continue it; it is keyed by (characteristic, limit version, chart, rule, first triggering point), pushed and acknowledged once. A **baseline episode** is one whose first point lies at or before the end of its version's window (it existed when the version was created, including an earlier epoch's points before the window); it exists only once the version does and is not latency-judged.
+- **Capability:** σ̂ = R̄/d2 (the within-subgroup estimate of the X̄-R chart the limits already rest on, from 20 subgroups of 5 rather than the 99 moving ranges of only adjacent pairs; if the X̄-R chart is ever dropped, the cut line's first item, capability switches to the I-MR estimate σ̂ = M̄R/1.128); the leak specification is one-sided (an upper limit), so only Cpu = (USL − X̿)/3σ̂ and Cpk = Cpu are given, undefined when R̄ = 0. Shown, not reconciled.
+
+**Everything is derived** from the readings and the limit versions (`spcChart`), so a late reading that moves every later moving range, subgroup and run is a rebuild; property tests show the chart doesn't depend on arrival order and that a prefix of the readings judges every point as the full chart does (rules only look back), which `traceAsOf` and provisional points rely on. Finality, the `baseline-changed` notice and withdrawal stay in the MES (#200).
+
+### Deviation from the plan: no rule on MR by default
+
+The plan (review of PR #207, round 1 HIGH 3) also set rule 1 on MR. Measured here, it nearly doubles the in-control episodes (22.9 against 13.0 per 1,000 readings) and adds nothing to the drift's detection (0.99 within 20 readings either way: a mean shift moves I and X̄, not the moving range). The review of PR #210 dropped it; the defaults are `{ I: [1, 2, 5], MR: [], Xbar: [1, 2, 5], R: [1] }`. MR rule 1 stays available per characteristic. `docs/phases/phase-08-plan.md` states the measured rates.
+
+### False-alarm run length of the defaults
+
+Measured with `spc-core` itself (`pnpm --filter @shopfloor/spc-core false-alarm`, `packages/spc-core/scripts/false-alarm-run-length.ts`): 4,000 replications (seed 195) of in-control leak readings as the simulator draws them, normal(2.0, 0.45) Pa/min in 0.001 steps, version 1 estimated from each replication's own first 20 subgroups of 5, then 1,000 readings judged; 44 s. A week is about 2,200 first-pass leak readings (probe P3), so the weekly load is the long-run rate × 2.2.
+
+| Rule set                                                        | Run length to the first new episode: mean (censored at 1,000) / median / 10 % / 90 % | New episodes per 1,000 (per week) | Signalling readings per 1,000 | P(none in 20) / (none in 60) | P(signal in readings 120–139): no drift / +0.6 Pa/min |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------- | ----------------------------- | ---------------------------- | ----------------------------------------------------- |
+| **Defaults:** 1, 2, 5 on I and X̄; 1 on R                        | **124.6** (6) / 76 / 12 / 302                                                        | **13.0 (about 29)**               | 15.9                          | 0.83 / **0.57**              | 0.18 / **0.99**                                       |
+| Plan round 1: 1, 2, 5 on I and X̄; 1 on MR and R                 | 77.0 (0) / 45 / 7 / 179                                                              | 22.9 (about 50)                   | 25.4                          | 0.72 / 0.41                  | 0.28 / 0.99                                           |
+| 1, 2, 5 on I and X̄ only (P4b's measured set)                    | 129.3 (8) / 80 / 12 / 312                                                            | 11.6 (about 25)                   | 14.7                          | 0.84 / 0.59                  | 0.17 / 0.99                                           |
+| Draft: 1, 2, 3, 5, 6 on I and X̄; 1 on MR (P4b's "plan default") | 52.6 (0) / 34 / 5 / 124                                                              | 30.5 (about 67)                   | 33.9                          | 0.65 / 0.29                  | 0.36 / 1.00                                           |
+
+The mean run length leaves the censored replications out, so it is a lower bound where any are censored. **The defaults open an in-control episode about 13 times per 1,000 readings, about 29 a week**; the run length to the first one after the baseline averages 125 readings (median 76). It is wide because each replication estimates its own limits: a tight baseline gives many signals, a wide one few. A clean 60-reading counterfactual window (#208) has probability 0.57.
+
+**The reviewer's variants** (review of PR #210, same script and seed, with rules 5 and 6 as first written: the newest point need not be beyond, no partial window at a run's start). Under that definition the script reproduced probe P4b exactly (16.5 signalling readings per 1,000 for P4b's set, 0.18 / 0.99) and P4c (0.41 / 0.73 for 60 / 20 clean readings with MR rule 1). The final rule 5 fires on slightly fewer points (14.7 for P4b's set); the episode rates barely move.
+
+| Variant (first rule 5 definition) | Mean run length (censored) | New episodes per 1,000 | Signalling readings per 1,000 | P(none in 20) / (none in 60) | P(signal 120–139): no drift / +0.6 |
+| --------------------------------- | -------------------------- | ---------------------- | ----------------------------- | ---------------------------- | ---------------------------------- |
+| 1, 2, 5 on I and X̄; 1 on MR and R | 77.0 (0)                   | 22.9                   | 26.9                          | 0.73 / 0.41                  | 0.28 / 0.99                        |
+| no MR rule 1 (adopted)            | 124.6 (6)                  | 12.9                   | 17.7                          | 0.83 / 0.57                  | 0.19 / 0.99                        |
+| no rule 5                         | 85.5 (0)                   | 19.3                   | 22.3                          | 0.75 / 0.44                  | 0.26 / 0.98                        |
+| no MR, no rule 5                  | 152.0 (18)                 | 9.3                    | 12.7                          | 0.87 / 0.64                  | 0.15 / 0.98                        |
+| no MR, rule 5 on X̄ only           | 147.5 (17)                 | 10.0                   | 13.7                          | 0.86 / 0.63                  | 0.16 / 0.99                        |
+| no MR, rule 5 on I only           | 127.5 (7)                  | 12.2                   | 16.8                          | 0.83 / 0.58                  | 0.18 / 0.98                        |
+| P4b set (no MR, no R)             | 129.4 (8)                  | 11.5                   | 16.5                          | 0.84 / 0.59                  | 0.18 / 0.99                        |
+| I only, 1, 2, 5                   | 147.5 (22)                 | 9.2                    | 13.1                          | 0.85 / 0.63                  | 0.15 / 0.97                        |
+| I rule 1 only                     | 264.6 (522)                | 4.0                    | 4.0                           | 0.93 / 0.81                  | 0.08 / 0.63                        |
+| MR rule 1 only                    | 135.0 (58)                 | 9.9                    | 11.2                          | 0.83 / 0.58                  | 0.17 / 0.20                        |
+| R rule 1 only                     | 359.5 (1615)               | 1.4                    | 1.4                           | 0.97 / 0.92                  | 0.03 / 0.03                        |
+
+MR rule 1 alone opens 9.9 episodes per 1,000 in control and detects the +0.6 drift within 20 readings only 20 % of the time: the cost without the benefit, hence the deviation. R rule 1 is nearly free (1.4 per 1,000) and is kept as the variance signal.
+
+### Consequences
+
+- Good: one definition for the ground truth and the MES, exact to the last fraction; ties are written down and pinned by reference cases; a drift can't hide in its own limits; acknowledging an episode instead of every point keeps the operator's list short.
+- Good: the measured false-alarm rate is in the ADR, so the counterfactual criterion (#208: a clean 60-reading window, else N = 20) rests on a number the code reproduces; dropping MR rule 1 raises its odds from 0.41 to 0.57.
+- Bad: with the defaults a stable process still opens about 13 episodes per 1,000 readings, about 29 a week. Quality users acknowledge them.
+- Bad: exact fractions cost more than doubles; a chart of 1,100 readings with the defaults takes a few milliseconds (44 s for the 32,000 charts of the measurement), well inside probe P3's 20 ms budget per reading (to be measured with the database in #200).
+- Follow-up: the MES (#200) stores versions append-only (with `endedAt` when one is ended), uses `window.to.at` as version 1's `createdAt`, marks episodes provisional until LKT-01 is final through their triggering point, and raises `baseline-changed` instead of re-deriving version 1.

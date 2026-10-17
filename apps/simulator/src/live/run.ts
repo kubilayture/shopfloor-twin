@@ -3,6 +3,7 @@ import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { isoTime } from '../headless/serialize.ts';
 import { applyDispatches, type DispatchSpec } from '../headless/run.ts';
 import { GroundTruth, type GroundTruthSummary } from '../headless/summary.ts';
+import { TraceTruth, traceSection, type TraceSection } from '../headless/trace-truth.ts';
 import {
   ProductionLine,
   type FailureInjection,
@@ -63,6 +64,12 @@ export interface LiveGroundTruth extends GroundTruthSummary {
   readonly buckets: Record<string, { readonly complete: boolean }>;
   /** Each machine's current state and when it began. */
   readonly current: Record<string, { readonly state: MachineState; readonly since: string }>;
+  /**
+   * The traceability and SPC truth so far (#208): `trace.json`'s content without its schema and
+   * run header, as a headless run ending at `simTime` would write it. Provisional: open cartons,
+   * orders not complete yet and episodes still open can change as the run goes on.
+   */
+  readonly trace: TraceSection;
 }
 
 export interface LiveRun {
@@ -98,6 +105,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
   );
   const lotIds = options.config.stock.lots.map((lot) => lot.id);
   const truth = new GroundTruth(options.config, options.start);
+  const traceTruth = new TraceTruth(options.config);
   const line = new ProductionLine({
     config: options.config,
     random: new RandomSource(options.seed),
@@ -105,6 +113,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     production: options.production,
     onEvent: (event) => {
       truth.record(event);
+      traceTruth.record(event);
       processValues.record(event);
       options.onEvent?.(event);
     },
@@ -146,6 +155,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
         ]),
       ),
       ...summary,
+      trace: traceSection(traceTruth.build(summary.orders)),
     };
   };
   return {

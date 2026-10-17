@@ -170,6 +170,15 @@ describe('control API (#54)', () => {
     expect(idle.productionMode).toBe('schedule');
     expect(idle.orders).toMatchObject({ jobs: [], orders: {}, units: { count: 0 } });
 
+    // A drift in shift A (#208), so the trace's drift section goes through the response schema.
+    expect(
+      run.injectLeakDrift({
+        machine: 'lkt-01',
+        shift: 0.6,
+        at: Date.parse('2026-10-12T07:40:00Z'),
+        until: Date.parse('2026-10-12T09:40:00Z'),
+      }).ok,
+    ).toBe(true);
     await served.inject({ method: 'POST', url: '/api/v1/resume' });
     clock.advance(8 * 60_000 + 10_000);
     await served.inject({ method: 'POST', url: '/api/v1/pause' });
@@ -193,6 +202,11 @@ describe('control API (#54)', () => {
     expect(paused.oee.machines['cnc-01']?.shifts['2026-10-12/A']?.result.oee).not.toBeNull();
     expect(Object.keys(paused.oee.machines['cnc-01']?.hours ?? {})).toHaveLength(9);
     expect(run.pacer.state).toBe('paused');
+    // The trace section (1.5, #208) survives it whole too, its drift included.
+    expect(paused.trace).toEqual(JSON.parse(JSON.stringify(run.groundTruth().trace)));
+    expect(paused.trace.drifts).toHaveLength(1);
+    expect(paused.trace.drifts[0]?.window.readings.length).toBeGreaterThan(20);
+    expect(paused.trace.spc.limits).toHaveLength(1);
   });
 
   it('refuses control until every OPC UA server listens, but reports status', async () => {

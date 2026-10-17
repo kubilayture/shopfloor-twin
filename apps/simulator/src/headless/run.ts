@@ -10,6 +10,7 @@ import { ProductionLine, type LineEvent, type ProductionMode } from '../plant/li
 import { RUN_SCHEMA, EVENT_SCHEMA, SUMMARY_SCHEMA, isoTime, stableStringify } from './serialize.ts';
 import { InvariantChecker } from './invariants.ts';
 import { GroundTruth, type GroundTruthSummary } from './summary.ts';
+import { TRACE_SCHEMA, TraceTruth, traceSection, type TraceResult } from './trace-truth.ts';
 
 export interface HeadlessOptions {
   readonly config: PlantConfig;
@@ -90,6 +91,8 @@ export interface HeadlessResult {
   readonly eventCount: number;
   readonly invariantChecks: number;
   readonly summary: GroundTruthSummary;
+  /** The traceability and SPC truth (#208): `trace.json` beside the summary. */
+  readonly trace: TraceResult;
 }
 
 /**
@@ -189,6 +192,7 @@ export function runHeadless(
   writeLine(stableStringify(header));
 
   const truth = new GroundTruth(config, start);
+  const traceTruth = new TraceTruth(config);
 
   let sequence = 0;
   let checker: InvariantChecker | undefined;
@@ -199,6 +203,7 @@ export function runHeadless(
     production,
     onEvent: (event) => {
       truth.record(event);
+      traceTruth.record(event);
       checker?.record(event);
       sequence++;
       writeLine(
@@ -241,6 +246,7 @@ export function runHeadless(
     eventCount: sequence,
     invariantChecks: checker?.checks ?? 0,
     summary,
+    trace: traceTruth.build(summary.orders),
   };
 }
 
@@ -274,3 +280,10 @@ export const summaryDocument = (result: HeadlessResult): string =>
     },
     2,
   )}\n`;
+
+/**
+ * `trace.json` (#208, `sim-trace/1`): the run header (as in the summary) and the trace section. A
+ * new file beside the summary, which stays as it is.
+ */
+export const traceDocument = (result: HeadlessResult): string =>
+  `${stableStringify({ schema: TRACE_SCHEMA, run: result.header, ...traceSection(result.trace) }, 2)}\n`;

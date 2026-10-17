@@ -297,6 +297,153 @@ export const ordersSchema = z
       'records (#172); empty in schedule mode',
   );
 
+const fractionSchema = z
+  .string()
+  .regex(/^-?\d+\/\d+$/)
+  .describe('An exact fraction of reading steps, `num/den` (BigInt digits)');
+const limitsSchema = z.object({
+  lower: fractionSchema,
+  centre: fractionSchema,
+  upper: fractionSchema,
+});
+const atSchema = z.object({ at: isoSchema });
+const readingRefSchema = z.object({ partId: count, pass: count });
+const episodeSchema = z.object({
+  chart: z.enum(['I', 'MR', 'Xbar', 'R']),
+  rule: count,
+  version: count,
+  partId: count,
+  pass: count,
+  at: isoSchema,
+  last: readingRefSchema,
+  points: count,
+  closedBy: readingRefSchema.nullable(),
+  baseline: z.boolean(),
+});
+const pointSchema = z.object({
+  partId: count,
+  pass: count,
+  at: isoSchema,
+  segment: count,
+  value: fractionSchema,
+  version: count.nullable(),
+  baseline: z.boolean(),
+  rules: z.array(count),
+});
+const windowReadingSchema = z.object({
+  partId: count,
+  pass: count,
+  at: isoSchema,
+  value: z.number().int(),
+  counterfactual: z.number().int(),
+  drifted: z.boolean(),
+});
+
+export const traceSchema = z
+  .object({
+    traceConfigSha256: z.string(),
+    config: z.object({
+      packOperation: z.string(),
+      capacity: z.record(z.string(), count),
+      spc: z.object({
+        characteristic: z.string(),
+        operation: z.string(),
+        subgroupSize: count,
+        baselineSubgroups: count,
+        rules: z.record(z.string(), z.array(count)),
+      }),
+    }),
+    units: z.object({ count, unitsTraceSha256: z.string() }),
+    orders: z.array(
+      z.object({ orderId: z.string(), product: z.string(), completedAt: isoSchema.nullable() }),
+    ),
+    lots: z.array(
+      z.object({
+        lot: z.string(),
+        material: z.string(),
+        consumed: count,
+        units: z.array(count).describe('Part ids'),
+        orders: z.array(z.string()),
+        cartons: z.array(z.string()),
+      }),
+    ),
+    cartons: z.array(
+      z.object({
+        id: z.string(),
+        orderId: z.string(),
+        product: z.string(),
+        capacity: count,
+        status: z.enum(['open', 'closed']),
+        closedAt: isoSchema.nullable(),
+        members: z.object({ count, sha256: z.string() }),
+      }),
+    ),
+    spc: z.object({
+      characteristic: z.string(),
+      readings: z.object({ firstPass: count, retests: count }),
+      limits: z.array(
+        z.object({
+          version: count,
+          createdAt: isoSchema,
+          from: atSchema.nullable(),
+          until: atSchema.nullable(),
+          endedAt: isoSchema.nullable(),
+          limits: z.object({
+            subgroupSize: count,
+            window: z.object({ from: atSchema, to: atSchema }),
+            counts: z.object({ readings: count, movingRanges: count, subgroups: count }),
+            statistics: z.object({
+              mean: fractionSchema,
+              movingRange: fractionSchema,
+              grandMean: fractionSchema,
+              range: fractionSchema,
+            }),
+            charts: z.object({
+              I: limitsSchema,
+              MR: limitsSchema,
+              Xbar: limitsSchema,
+              R: limitsSchema,
+            }),
+          }),
+        }),
+      ),
+      points: z.record(z.string(), z.object({ count, sha256: z.string() })),
+      subgroups: z.object({ complete: count, pending: count }),
+      episodes: z.array(episodeSchema),
+    }),
+    drifts: z.array(
+      z.object({
+        injection: count,
+        machine: z.string(),
+        shift: z.number(),
+        steps: z.number().int(),
+        appliedAt: isoSchema,
+        endedAt: isoSchema.nullable(),
+        endedBy: z.enum(['until', 'calibration']).nullable(),
+        start: z
+          .object({
+            partId: count,
+            pass: count,
+            at: isoSchema,
+            value: z.number().int(),
+            firstPassBefore: count,
+          })
+          .nullable(),
+        firstEpisode: episodeSchema.extend({ latency: count.nullable() }).nullable(),
+        window: z.object({ before: count, after: count, readings: z.array(windowReadingSchema) }),
+        counterfactual: z.object({
+          signals: z.array(pointSchema.extend({ chart: z.enum(['I', 'MR', 'Xbar', 'R']) })),
+          episodes: z.array(episodeSchema),
+          clean: z.boolean(),
+        }),
+      }),
+    ),
+  })
+  .describe(
+    'The traceability and SPC truth so far (#208): trace.json (sim-trace/1) without its schema ' +
+      'and run header; provisional while cartons are open, orders incomplete or episodes open',
+  );
+
 export const injectionSchema = z.object({
   id: count,
   machine: z.string(),
@@ -404,6 +551,7 @@ export const groundTruthSchema = z.object({
   oee: oeeSchema,
   alarms: alarmsSchema,
   orders: ordersSchema,
+  trace: traceSchema,
 });
 
 /** The live ground truth with the run's epoch: what `GET /api/v1/ground-truth` returns. */

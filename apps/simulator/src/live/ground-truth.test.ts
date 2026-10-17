@@ -2,6 +2,7 @@ import type { PlantConfig } from '@shopfloor/plant-config';
 import { HOUR, RandomSource, Simulation } from '@shopfloor/sim-core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { runHeadless } from '../headless/run.ts';
+import { traceSection } from '../headless/trace-truth.ts';
 import { GroundTruth } from '../headless/summary.ts';
 import { ProductionLine, type LineEvent, type PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
@@ -90,7 +91,11 @@ describe('live ground truth (#100)', () => {
     });
     expect(replay).toEqual(events);
 
-    const headless = runHeadless({ config, seed, start: T0, end: until }, () => undefined).summary;
+    const headlessRun = runHeadless({ config, seed, start: T0, end: until }, () => undefined);
+    const headless = headlessRun.summary;
+    // The trace (#208) as a headless run ending now would write it, without schema and header.
+    expect(live.trace).toEqual(traceSection(headlessRun.trace));
+    expect(live.trace.units.count).toBeGreaterThan(100);
     expect(live.currentBucket).toBe('2026-10-13/A');
     const complete = Object.entries(live.buckets)
       .filter(([, bucket]) => bucket.complete)

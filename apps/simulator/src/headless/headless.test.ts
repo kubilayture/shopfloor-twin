@@ -233,6 +233,10 @@ describe('headless CLI', () => {
       expect(summary.schema).toBe('sim-summary/4');
       const events = (await readFile(join(out, 'events.jsonl'), 'utf8')).trim().split('\n');
       expect(events.length).toBeGreaterThan(1_000);
+      const trace = JSON.parse(await readFile(join(out, 'trace.json'), 'utf8')) as {
+        schema: string;
+      };
+      expect(trace.schema).toBe('sim-trace/1');
     } finally {
       await rm(out, { recursive: true, force: true });
     }
@@ -253,8 +257,36 @@ describe('headless CLI', () => {
     ['--scenario', 'alarms-01', '--seed', '3'],
     ['--scenario', 'alarms-01', '--days', '1'],
     ['--scenario', 'alarms-01', '--config', 'config/plant'],
+    // --end (#208) only shortens a scenario, to a time inside it.
+    ['--end', '2026-10-12T11:00:00Z'],
+    ['--scenario', 'quality-01', '--end', '2026-10-12T14:00:00'],
+    ['--scenario', 'quality-01', '--end', '2026-10-12T03:00:00Z'],
+    ['--scenario', 'quality-01', '--end', '2026-10-14T03:00:00.001Z'],
   ])('exits with status 2 on invalid arguments %j', async (...args) => {
     await expect(run(process.execPath, [cli, ...args])).rejects.toMatchObject({ code: 2 });
+  });
+
+  it('stops a scenario early with --end: the shift-A reference of quality-01 (#208)', async () => {
+    const out = await mkdtemp(join(tmpdir(), 'sim-headless-'));
+    try {
+      await run(process.execPath, [
+        cli,
+        '--scenario',
+        'quality-01',
+        '--end',
+        '2026-10-12T14:00:00+03:00',
+        '--out',
+        out,
+      ]);
+      const [header] = (await readFile(join(out, 'events.jsonl'), 'utf8')).split('\n');
+      expect(JSON.parse(header ?? '{}')).toMatchObject({ end: '2026-10-12T11:00:00.000Z' });
+      const trace = JSON.parse(await readFile(join(out, 'trace.json'), 'utf8')) as {
+        run: { end: string };
+      };
+      expect(trace.run.end).toBe('2026-10-12T11:00:00.000Z');
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
   });
 
   it('fails with a non-zero status and leaves no summary when the event log cannot be written', async () => {
@@ -282,7 +314,7 @@ describe('headless CLI', () => {
           }),
         ),
       );
-      for (const file of ['events.jsonl', 'summary.json']) {
+      for (const file of ['events.jsonl', 'summary.json', 'trace.json']) {
         const [a, b] = await Promise.all(outs.map((dir) => readFile(join(dir, file))));
         expect(a?.equals(b ?? Buffer.alloc(0))).toBe(true);
       }

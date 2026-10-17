@@ -523,6 +523,9 @@ importers:
       '@shopfloor/sim-core':
         specifier: workspace:*
         version: link:../../packages/sim-core
+      '@shopfloor/spc-core':
+        specifier: workspace:*
+        version: link:../../packages/spc-core
       '@shopfloor/trace-core':
         specifier: workspace:*
         version: link:../../packages/trace-core

@@ -29,7 +29,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   TEST_PASSWORDS,
   TcpProxy,
-  freePort,
   opcuaProxies,
   startBroker,
   startGateway,
@@ -40,7 +39,7 @@ import {
 } from './testing.ts';
 
 // The simulator's ports, the OPC UA proxies' block and the broker proxy's port are chosen at
-// runtime (#212); the broker keeps its port across restarts (`startBroker` retries).
+// runtime (#212), the broker's by Docker, the gateway's HTTP port per start.
 const SIM_ENV = { SIM_PRODUCTION: 'orders' };
 const DEADLINE_MS = 1_500;
 const NOT_BEFORE = '2026-10-12T03:00:00.000Z';
@@ -50,8 +49,8 @@ const PATHS = {
 } as const;
 type Cnc = keyof typeof PATHS;
 
-const BROKER_PORT = await freePort();
-const GATEWAY_HTTP = await freePort();
+/** The broker's host port, as Docker mapped it (the broker is never restarted here). */
+let brokerPort = 0;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -71,7 +70,7 @@ const get = (url: string): Promise<string> =>
     .then((r) => r.text())
     .catch(() => '');
 
-const metrics = (): Promise<string> => get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`);
+const metrics = (): Promise<string> => get(`${gateway.http}/metrics`);
 
 async function metric(name: string): Promise<number> {
   const match = new RegExp(`^${name} (\\S+)$`, 'm').exec(await metrics());
@@ -94,7 +93,6 @@ const env = {
   OPCUA_PKI_DIR: join(dir, 'pki'),
   MODBUS_PORT: '', // the simulator's, once started
   BUFFER_PATH: join(dir, 'buffer', 'gateway.db'),
-  HTTP_PORT: String(GATEWAY_HTTP),
   GATEWAY_CALL_DEADLINE_MS: String(DEADLINE_MS),
 };
 
@@ -109,7 +107,7 @@ const orderQuantity = new Map<string, number>();
 async function ready(): Promise<boolean> {
   const text = await metrics();
   return (
-    (await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/health/ready`)).includes('ok') &&
+    (await get(`${gateway.http}/health/ready`)).includes('ok') &&
     ['cnc-01', 'cnc-02'].every((m) => text.includes(`gateway_device_connected{machine="${m}"} 1`))
   );
 }
@@ -185,12 +183,13 @@ beforeAll(async () => {
   simulator = await startSimulator(undefined, SIM_ENV);
   const block = await opcuaProxies(OPCUA_MACHINES, simulator.opcuaOffset);
   opcua = block.proxies;
-  broker = (await startBroker({ hostPort: BROKER_PORT })).container;
-  brokerProxy = await TcpProxy.start(0, { host: '127.0.0.1', port: BROKER_PORT });
+  broker = (await startBroker()).container;
+  brokerPort = broker.getMappedPort(1883);
+  brokerProxy = await TcpProxy.start(0, { host: '127.0.0.1', port: brokerPort });
   env.MQTT_URL = `mqtt://127.0.0.1:${String(brokerProxy.port)}`;
   env.OPCUA_PORT_OFFSET = String(block.offset);
   env.MODBUS_PORT = String(simulator.modbusPort);
-  mes = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+  mes = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
     username: 'mes',
     password: TEST_PASSWORDS.mes,
     protocolVersion: 5,

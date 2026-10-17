@@ -32,9 +32,9 @@ export async function freePorts(count: number): Promise<number[]> {
   return [...ports];
 }
 
-/** Whether `port` can be listened on, now, on both the IPv6 wildcard and the IPv4 loopback. */
+/** Whether `port` can be listened on, now, on the IPv6 wildcard and both loopbacks. */
 export async function portIsFree(port: number): Promise<boolean> {
-  for (const host of ['::', '127.0.0.1']) {
+  for (const host of ['::', '127.0.0.1', '::1']) {
     const outcome = await new Promise<'free' | 'taken' | 'unsupported'>((resolveOutcome) => {
       const server = createServer();
       server.unref();

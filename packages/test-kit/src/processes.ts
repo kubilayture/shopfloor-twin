@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { OPCUA_MACHINES } from '@shopfloor/contracts';
-import { freeOffset, freePorts } from './ports.ts';
+import { freeOffset, freePort, freePorts } from './ports.ts';
 
 // The real simulator and edge gateway as child processes (apps may not import each other, plan
 // section 8), and TCP proxies to cut or hold their connections: shared by the gateway's command
@@ -29,9 +29,17 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Every child still running when the test process exits is killed, also after a failed
 // `beforeAll` or a crashed test, so no simulator or gateway outlives its suite.
 const children = new Set<ChildProcess>();
-process.once('exit', () => {
+const killChildren = (): void => {
   for (const child of children) child.kill('SIGKILL');
-});
+};
+process.once('exit', killChildren);
+// Also on a signal; when nobody else handles it, it is raised again for its default (the exit).
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    killChildren();
+    if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+  });
+}
 
 /** Thrown when a child exited before it was ready: worth a retry, on other ports if it can. */
 class ExitedEarly extends Error {}
@@ -270,15 +278,17 @@ export interface RunningGateway {
 /**
  * The gateway as its own process, as in production. Ready means: the child logged "gateway
  * started" (after its HTTP server listens) and answers `/health/live`. A start that exits early
- * (its HTTP port taken in the meantime) is retried on the same port.
+ * (its HTTP port taken in the meantime) is retried: on a new free port unless `HTTP_PORT` pins one.
  */
 export async function startGateway(env: Readonly<Record<string, string>>): Promise<RunningGateway> {
   for (let attempt = 1; ; attempt++) {
     try {
-      return await launchGateway(env);
+      // An HTTP port the caller didn't pin is chosen per attempt (read it from `http`).
+      const port = env.HTTP_PORT ?? String(await freePort());
+      return await launchGateway({ ...env, HTTP_PORT: port });
     } catch (error) {
       if (!(error instanceof ExitedEarly) || attempt >= START_ATTEMPTS) throw error;
-      await wait(1_000);
+      await wait(env.HTTP_PORT === undefined ? 100 : 1_000);
     }
   }
 }

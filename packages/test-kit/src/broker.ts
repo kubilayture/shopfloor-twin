@@ -24,9 +24,16 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * With a fixed `hostPort` (a broker restarted where its clients left it), a failed start is
  * retried (`attempts`, default 5, a second apart): the port of a just-stopped container can take
  * a moment to be released.
+ *
+ * One attempt takes at most about 80 s (#212): 60 s for the container to log "running", then
+ * `readyTimeoutMs` (20 s) for it to accept an MQTT connection on the host port.
  */
 export async function startBroker(
-  options: { readonly hostPort?: number; readonly attempts?: number } = {},
+  options: {
+    readonly hostPort?: number;
+    readonly attempts?: number;
+    readonly readyTimeoutMs?: number;
+  } = {},
 ): Promise<{ url: string; container: StartedTestContainer }> {
   useDockerContext();
   const attempts = options.hostPort ? (options.attempts ?? 5) : 1;
@@ -38,7 +45,7 @@ export async function startBroker(
       // "running" in the log is not yet a broker on the host port: Docker's port forward can
       // accept a connection and never pass it on for a while, and a client then hangs (#212).
       try {
-        await awaitMqtt(host, port, 60_000);
+        await awaitMqtt(host, port, options.readyTimeoutMs ?? 20_000);
       } catch (error) {
         await container.stop().catch(() => undefined);
         throw error;
@@ -81,8 +88,8 @@ function connectPacket(): Buffer {
   return Buffer.concat([Buffer.from([0x10, ...length]), body]);
 }
 
-/** One CONNECT on `host:port`: true when the broker accepts it (CONNACK, return code 0) in 3 s. */
-function mqttAnswers(host: string, port: number): Promise<boolean> {
+/** One CONNECT on `host:port`: true when the broker accepts it (CONNACK, return code 0) in time. */
+function mqttAnswers(host: string, port: number, timeoutMs: number): Promise<boolean> {
   return new Promise((resolveAnswer) => {
     const socket = connect(port, host);
     let received = Buffer.alloc(0);
@@ -94,7 +101,7 @@ function mqttAnswers(host: string, port: number): Promise<boolean> {
     };
     const timer = setTimeout(() => {
       done(false);
-    }, 3_000);
+    }, timeoutMs);
     socket.on('connect', () => socket.write(connectPacket()));
     socket.on('data', (chunk: Buffer) => {
       received = Buffer.concat([received, chunk]);
@@ -111,11 +118,15 @@ function mqttAnswers(host: string, port: number): Promise<boolean> {
 
 /** Polls until the broker accepts an MQTT connection on the host port, within `timeoutMs`. */
 async function awaitMqtt(host: string, port: number, timeoutMs: number): Promise<void> {
-  for (const deadline = Date.now() + timeoutMs; !(await mqttAnswers(host, port));) {
-    if (Date.now() > deadline) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const left = deadline - Date.now();
+    if (left <= 0) {
       throw new Error(`broker on ${host}:${String(port)} did not accept MQTT connections`);
     }
-    await wait(250);
+    // No probe outlasts the deadline: the whole wait stays within `timeoutMs`.
+    if (await mqttAnswers(host, port, Math.min(3_000, left))) return;
+    await wait(Math.min(250, Math.max(0, deadline - Date.now())));
   }
 }
 
@@ -130,5 +141,6 @@ function brokerContainer(hostPort: number | undefined): GenericContainer {
       MQTT_HEALTHCHECK_PASSWORD: TEST_PASSWORDS.healthcheck,
     })
     .withExposedPorts(hostPort ? { container: 1883, host: hostPort } : 1883)
-    .withWaitStrategy(Wait.forLogMessage(/running/));
+    .withWaitStrategy(Wait.forLogMessage(/running/))
+    .withStartupTimeout(60_000);
 }

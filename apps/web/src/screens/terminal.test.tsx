@@ -7,6 +7,7 @@ import {
   type TerminalViewDto,
 } from '@shopfloor/contracts/mes-api';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { timed } from '../test/timing.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EQUIPMENT, json, problem, sessionOf } from '../test/fixtures.ts';
 import { renderApp } from '../test/render-app.tsx';
@@ -438,8 +439,12 @@ describe('the operator terminal (#177)', () => {
     fireEvent.click(screen.getByTestId('terminal-start-O-1-OP30'));
     fireEvent.click(await screen.findByTestId('terminal-pause-O-1-OP30'));
     fireEvent.click(screen.getByTestId('terminal-reason-O-1-OP30-quality'));
-    // Nobody touches the screen: the session times out here and at the MES.
-    await screen.findByRole('heading', { name: 'Sign on' }, { timeout: 15_000 });
+    // Nobody touches the screen: the session times out here and at the MES, within about 3 s of
+    // the last touch (1.5 s idle) plus measured scheduler lag; a long deadline only to wait (#212).
+    const idle = await timed(() =>
+      screen.findByRole('heading', { name: 'Sign on' }, { timeout: 15_000 }),
+    );
+    expect(idle.elapsedMs).toBeLessThan(3_000 + idle.maxLagMs);
     await waitFor(() => {
       expect(mes.calls.some((c) => c.method === 'DELETE' && c.path === '/api/v1/session')).toBe(
         true,

@@ -31,6 +31,8 @@ describe('ports chosen at runtime (#212)', () => {
     expect(await portIsFree(loopback)).toBe(false);
     const wildcard = await listen(0);
     expect(await portIsFree(wildcard)).toBe(false);
+    const v6loopback = await listen(0, '::1');
+    expect(await portIsFree(v6loopback)).toBe(false);
     const free = await freePort();
     expect(await portIsFree(free)).toBe(true);
   });

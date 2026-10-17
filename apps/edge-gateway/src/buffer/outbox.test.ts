@@ -29,7 +29,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Waits for a condition; the error names what it waited for, so a failure says which step hung. */
 async function until(
   condition: () => boolean,
-  timeoutMs = 10_000,
+  timeoutMs = 30_000,
   what = 'the condition',
 ): Promise<void> {
   for (const deadline = Date.now() + timeoutMs; !condition();) {
@@ -267,7 +267,7 @@ describe('store-and-forward with the real broker (#78)', () => {
     // restart, and keeps the gateway off the restarted broker until the subscriber is back: a
     // fresh broker has no session to catch a late subscriber up, so a message the gateway sent
     // (or MQTT.js re-sent) before the subscription would be lost to the test, not by the gateway.
-    const brokerAt = (what: string) => within(what, 120_000, startBroker());
+    const brokerAt = (what: string) => within(what, 90_000, startBroker());
     const target = (brokerUrl: string) => {
       const parsed = new URL(brokerUrl);
       return { host: parsed.hostname, port: Number(parsed.port) };
@@ -303,7 +303,7 @@ describe('store-and-forward with the real broker (#78)', () => {
     };
     const { outbox } = open(file(), transport);
     link.start();
-    await until(() => link.connected, 60_000, 'the gateway link to connect to the first broker');
+    await until(() => link.connected, 30_000, 'the gateway link to connect to the first broker');
     const received: number[] = [];
     // A just-started broker can accept a TCP connection (Docker's port forward) and never answer
     // it, and a client without reconnects then waits forever (#212): each attempt gets 10 s, and
@@ -340,44 +340,44 @@ describe('store-and-forward with the real broker (#78)', () => {
           return mes;
         } catch (error) {
           mes.end(true);
-          if (attempt >= 10) throw error;
+          if (attempt >= 5) throw error;
           await wait(500);
         }
       }
     };
-    let mes = await within('subscribing to the first broker', 150_000, subscribe());
+    let mes = await within('subscribing to the first broker', 60_000, subscribe());
     await within(
       'publishing messages 1–50',
-      60_000,
+      30_000,
       (async () => {
         for (let i = 1; i <= 50; i++) await outbox.publish(message(i));
       })(),
     );
-    await until(() => received.length >= 50, 60_000, 'messages 1–50 at the subscriber');
+    await until(() => received.length >= 50, 30_000, 'messages 1–50 at the subscriber');
 
     // Messages 51–100 are on their way when the broker dies: in flight across the outage.
     for (let i = 51; i <= 100; i++) void outbox.publish(message(i));
     // A graceful stop: a broker killed outright also loses what it had acknowledged but not yet
     // passed on, which is the broker's durability, not the gateway's.
-    await within('stopping the first broker', 60_000, broker.stop()); // outage
+    await within('stopping the first broker', 30_000, broker.stop()); // outage
     firstBroker = false;
     proxy.setDown(true); // the gateway finds no broker until the restarted one is ready
     await within('closing the first subscriber', 15_000, mes.endAsync(true));
-    await until(() => !link.connected, 60_000, 'the gateway link to notice the outage');
+    await until(() => !link.connected, 30_000, 'the gateway link to notice the outage');
     for (let i = 101; i <= 300; i++) void outbox.publish(message(i));
-    await until(() => outbox.depth >= 200, 60_000, 'messages 101–300 stored in the outbox');
+    await until(() => outbox.depth >= 200, 30_000, 'messages 101–300 stored in the outbox');
 
     started = await brokerAt('restarting the broker');
     broker = started.container;
     proxy.retarget(target(started.url));
-    mes = await within('subscribing to the restarted broker', 150_000, subscribe());
+    mes = await within('subscribing to the restarted broker', 60_000, subscribe());
     proxy.setDown(false); // the broker is back for the gateway
     await until(() => outbox.depth === 0, 60_000, 'the outbox to drain after the restart');
-    await until(() => received.includes(300), 60_000, 'message 300 at the subscriber');
+    await until(() => received.includes(300), 30_000, 'message 300 at the subscriber');
     await within('closing the second subscriber', 15_000, mes.endAsync(true));
     await within('closing the gateway link', 15_000, link.close());
     await proxy.close();
-    await within('stopping the restarted broker', 60_000, broker.stop());
+    await within('stopping the restarted broker', 30_000, broker.stop());
 
     // The gateway's contract: every message reached a subscriber, or the broker acknowledged it
     // before its outage (what a stopped broker had not passed on yet is the broker's durability).
@@ -389,6 +389,6 @@ describe('store-and-forward with the real broker (#78)', () => {
     // Everything published during the outage was delivered after it, in order.
     const afterOutage = received.filter((seq) => seq > 100);
     expect([...new Set(afterOutage)]).toEqual(Array.from({ length: 200 }, (_, i) => 101 + i));
-    // Above the sum of the step limits, so a hang fails with the name of its step.
-  }, 1_000_000);
+    // Above the sum of the step limits (625 s), so a hang fails with the name of its step.
+  }, 700_000);
 });

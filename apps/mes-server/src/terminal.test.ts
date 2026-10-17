@@ -54,7 +54,7 @@ import {
   type ShiftsSources,
 } from './modules/shifts/index.ts';
 import { timed } from '@shopfloor/test-kit/timing';
-import { startDatabase } from './testing.ts';
+import { backendPid, blockedBy, startDatabase } from './testing.ts';
 
 const T0 = Date.parse('2026-10-17T10:00:00.000Z');
 /** Monday 2026-10-12 06:00 local: shift A (03:00–11:00Z) is running. */
@@ -642,8 +642,8 @@ describe('operator activity and operation sign-off (#177)', () => {
     };
     const work = await h.orders.startWork('D-1', 'OP40', { activity: null }, omar);
     const id = work.activities[0]?.id ?? 0;
-    let closing: () => void = () => undefined;
-    const closed = new Promise<void>((resolve) => {
+    let closing: (pid: number) => void = () => undefined;
+    const closed = new Promise<number>((resolve) => {
       closing = resolve;
     });
     let go: () => void = () => undefined;
@@ -660,22 +660,19 @@ describe('operator activity and operation sign-off (#177)', () => {
         })
         .where('id', '=', id)
         .execute();
-      closing();
+      closing(await backendPid(trx));
       await proceed;
     });
-    await closed;
+    const crewEndPid = await closed;
     const pause = h.orders
       .pauseWork('D-1', 'OP40', { activity: id, reason: 'break' }, omar)
       .catch((e: unknown) => e);
-    // Until the write waits for the crew end's lock, not a fixed 200 ms (#212).
-    for (const deadline = Date.now() + 30_000; ;) {
-      const waiting = await sql<{ n: number }>`SELECT count(*)::int AS n FROM pg_stat_activity
-        WHERE datname = current_database() AND wait_event_type = 'Lock'`.execute(h.db);
-      if ((waiting.rows[0]?.n ?? 0) > 0) break;
-      if (Date.now() > deadline) throw new Error('the pause never waited for the crew end');
-      await new Promise((r) => setTimeout(r, 20));
+    try {
+      // Until the write waits for the crew end's lock, not a fixed 200 ms (#212).
+      await blockedBy(h.db, crewEndPid, 'the pause waiting for the crew end');
+    } finally {
+      go(); // also when the wait failed: the crew end must not keep its transaction open
     }
-    go();
     await crewEnd;
     expect(await pause).toMatchObject({ type: PROBLEM_TYPES.operationStale });
     const [kept] = await h.orders.activities({ orderId: 'D-1', operation: 'OP40' });
@@ -867,6 +864,9 @@ describe('the terminal view after a change (#190 re-review)', () => {
   });
 
   it('pushes the counts of a change within a pace with terminalMs > 0, also after the last cycle', async () => {
+    const PACE_MS = 2_000;
+    /** Every paced delta, as the server computed it: when it started, and what it read (#212). */
+    const cellDeltas: { topic: string; at: number; delta: ServerMessage }[] = [];
     const h = await harness('memo');
     await h.shifts.tick();
     await started(h, 'M-1');
@@ -874,7 +874,12 @@ describe('the terminal view after a change (#190 re-review)', () => {
       ready: () => Promise.resolve(true),
       identity: h.identity,
       auth: true,
-      push: { heartbeatMs: 3_600_000, clockMs: 3_600_000, terminalMs: 2_000 },
+      push: {
+        heartbeatMs: 3_600_000,
+        clockMs: 3_600_000,
+        terminalMs: PACE_MS,
+        onPacedDelta: (topic, at, delta) => cellDeltas.push({ topic, at, delta }),
+      },
     });
     cleanups.push(() => http.app.close());
     const none = () => () => undefined;
@@ -919,20 +924,58 @@ describe('the terminal view after a change (#190 re-review)', () => {
       'view' in m &&
       m.topic === 'terminal:cell-m1' &&
       m.view.orders[0]?.operations[0]?.counts.scrap === 1;
-    // Cell M1's view first; a pace later Line A1's, which keeps the order's execution in the memo.
+    const cellM1At = () =>
+      sent.flatMap((m, i) => ('view' in m && m.topic === 'terminal:cell-m1' ? [i] : [])).length;
+    // Cell M1's view first. Then everything of the order's end but the execution module's
+    // reading of it: the scrap cycle, the job completed and the CNC idle are stored, and the
+    // orders module has taken them in. Whatever that changes for Cell M1 is pushed now, so its
+    // pace is over before the scrap arrives (#212 review): the scrap must not wait out a pace
+    // that an earlier change started.
     subscribe('terminal:cell-m1');
-    await until(() => sent.some((m) => m.type === 'snapshot'), 60_000);
-    await new Promise((r) => setTimeout(r, 2_100));
+    await until(() => sent.some((m) => m.type === 'snapshot'), 30_000);
+    await send(h, [
+      h.line.cycle('cnc-01', 1, 'scrap', 'DIMENSIONAL'),
+      h.line.job('cnc-01', 'completed', 'M-1'),
+      h.line.state('cnc-01', 'Idle', 'NO-ORDER'),
+    ]);
+    for (let round = 0; round < 2; round++) await h.orders.tick();
+    while ((await h.orders.postNow()) > 0) {
+      // until nothing is pending
+    }
+    // Quiet for more than a pace: no Cell M1 message for 2.1 s.
+    for (let seen = -1; seen !== cellM1At();) {
+      seen = cellM1At();
+      await new Promise((r) => setTimeout(r, 2_100));
+    }
+    // Line A1's view, which keeps the order's execution (still without the scrap) in the memo.
     subscribe('terminal:line-a1');
-    await until(() => sent.filter((m) => m.type === 'snapshot').length === 2, 60_000);
+    await until(() => sent.filter((m) => m.type === 'snapshot').length === 2, 30_000);
     expect(sent.some(scrapAtCell)).toBe(false);
-    // The order's last cycle (a scrap at OP10), inside Line A1's window: Cell M1 is due at once
-    // and must not read the kept execution. Nothing changes afterwards.
-    await finished(h, 'M-1', 1);
-    // Within a pace (2 s), plus whatever a loaded machine delayed the scheduler meanwhile (#212):
-    // a wide deadline to wait, and the bound checked on what was measured.
-    const { elapsedMs, maxLagMs } = await timed(() => until(() => sent.some(scrapAtCell), 60_000));
-    expect(elapsedMs).toBeLessThan(2_000 + maxLagMs);
+    // The execution module reads the last cycle (a scrap at OP10), inside Line A1's window, and
+    // reports its change (which drops the memo). From then on Cell M1 must not read the kept
+    // execution: every Cell M1 view computed after the change has the scrap. Nothing changes
+    // afterwards.
+    let changedAt: number | undefined;
+    const stop = h.execution.onChange(() => {
+      changedAt ??= Date.now();
+    });
+    const { maxLagMs } = await timed(async () => {
+      await settle(h);
+      await until(() => sent.some(scrapAtCell), 30_000);
+    });
+    stop();
+    if (changedAt === undefined) throw new Error('the execution module reported no change');
+    const changed = changedAt;
+    const cell = cellDeltas.filter((d) => d.topic === 'terminal:cell-m1');
+    const after = cell.filter((d) => d.at > changed);
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.filter((d) => !scrapAtCell(d.delta)).map((d) => d.at - changed)).toEqual([]);
+    // Within 1.5 s of when Cell M1 could first push after the change (the change itself, or a
+    // pace after a delta that an earlier change of the same round started), plus whatever a
+    // loaded machine delayed the scheduler meanwhile (#212).
+    const before = cell.filter((d) => d.at <= changed).at(-1)?.at;
+    const allowed = Math.max(changed, before === undefined ? 0 : before + PACE_MS);
+    expect((after[0]?.at ?? Infinity) - allowed).toBeLessThan(1_500 + maxLagMs);
   }, 180_000);
 });
 

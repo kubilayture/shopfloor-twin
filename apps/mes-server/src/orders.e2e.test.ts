@@ -17,7 +17,7 @@ import { OPCUA_MACHINES } from '@shopfloor/contracts';
 import { expandErpDataset, type FeedEntry } from '@shopfloor/contracts/erp-api';
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
-import { TEST_PASSWORDS, freePort, startBroker } from '@shopfloor/test-kit/broker';
+import { TEST_PASSWORDS, startBroker } from '@shopfloor/test-kit/broker';
 import {
   TcpProxy,
   opcuaProxies,
@@ -48,12 +48,12 @@ import {
 import { startDatabase } from './testing.ts';
 
 // The simulator's ports, the OPC UA proxies' block and the proxies' ports are chosen at runtime
-// (#212); the broker keeps its port across restarts (`startBroker` retries).
+// (#212), the broker's by Docker, the gateway's HTTP port per start.
 const SIM_ENV = { SIM_PRODUCTION: 'orders' };
 const DEADLINE_MS = 1_500;
 
-const BROKER_PORT = await freePort();
-const GATEWAY_HTTP = await freePort();
+/** The broker's host port, as Docker mapped it (the broker is never restarted here). */
+let brokerPort = 0;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -133,14 +133,13 @@ const gatewayEnv = {
   OPCUA_PKI_DIR: join(dir, 'pki'),
   MODBUS_PORT: '', // the simulator's, once started
   BUFFER_PATH: join(dir, 'buffer', 'gateway.db'),
-  HTTP_PORT: String(GATEWAY_HTTP),
   GATEWAY_CALL_DEADLINE_MS: String(DEADLINE_MS),
 };
 
 async function gatewayReady(): Promise<boolean> {
-  const text = await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`);
+  const text = await get(`${gateway.http}/metrics`);
   return (
-    (await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/health/ready`)).includes('ok') &&
+    (await get(`${gateway.http}/health/ready`)).includes('ok') &&
     ['cnc-01', 'cnc-02'].every((m) => text.includes(`gateway_device_connected{machine="${m}"} 1`))
   );
 }
@@ -228,7 +227,7 @@ const proxy = (machine: string): TcpProxy => {
 
 /** A gauge of the gateway's `/metrics`, optionally of one `result` label; NaN when absent. */
 async function gatewayMetric(name: string, result?: string): Promise<number> {
-  const text = await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`);
+  const text = await get(`${gateway.http}/metrics`);
   const label = result === undefined ? '' : `\\{result="${result}"\\}`;
   const found = new RegExp(`^${name}${label} (\\S+)$`, 'm').exec(text)?.[1];
   return found === undefined ? Number.NaN : Number(found);
@@ -242,7 +241,7 @@ async function injectResult(message: {
   readonly seq: number;
   readonly value: Record<string, unknown>;
 }): Promise<void> {
-  const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+  const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
     username: 'gw-01',
     password: TEST_PASSWORDS['gw-01'],
     protocolVersion: 5,
@@ -288,9 +287,10 @@ beforeAll(async () => {
   simulator = await startSimulator(undefined, SIM_ENV);
   const block = await opcuaProxies(OPCUA_MACHINES, simulator.opcuaOffset);
   opcua = block.proxies;
-  broker = (await startBroker({ hostPort: BROKER_PORT })).container;
-  brokerProxy = await TcpProxy.start(0, { host: '127.0.0.1', port: BROKER_PORT });
-  ingestProxy = await TcpProxy.start(0, { host: '127.0.0.1', port: BROKER_PORT });
+  broker = (await startBroker()).container;
+  brokerPort = broker.getMappedPort(1883);
+  brokerProxy = await TcpProxy.start(0, { host: '127.0.0.1', port: brokerPort });
+  ingestProxy = await TcpProxy.start(0, { host: '127.0.0.1', port: brokerPort });
   gatewayEnv.MQTT_URL = `mqtt://127.0.0.1:${String(brokerProxy.port)}`;
   gatewayEnv.OPCUA_PORT_OFFSET = String(block.offset);
   gatewayEnv.MODBUS_PORT = String(simulator.modbusPort);
@@ -305,7 +305,7 @@ beforeAll(async () => {
   await ingest.start();
   await ingest.waitSubscribed();
   publisher = new MqttCommandPublisher({
-    url: `mqtt://127.0.0.1:${String(BROKER_PORT)}`,
+    url: `mqtt://127.0.0.1:${String(brokerPort)}`,
     username: 'mes',
     password: TEST_PASSWORDS.mes,
     clientId: 'mes-orders-e2e-cmd',
@@ -320,7 +320,7 @@ beforeAll(async () => {
     return epochs.has('cnc-01') && epochs.has('cnc-02');
   });
   await until('the command connection', () => publisher.connected);
-  listener = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+  listener = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
     username: 'mes',
     password: TEST_PASSWORDS.mes,
     protocolVersion: 5,
@@ -793,7 +793,7 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
         .limit(1)
         .executeTakeFirst();
       expect(last === undefined || last.value.result === 'unknown').toBe(true);
-      const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+      const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
         username: 'gw-01',
         password: TEST_PASSWORDS['gw-01'],
         protocolVersion: 5,

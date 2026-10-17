@@ -14,7 +14,7 @@ import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   TEST_PASSWORDS,
-  freePort,
+  TcpProxy,
   startBroker,
   startGateway,
   startSimulator,
@@ -24,10 +24,10 @@ import {
 } from './testing.ts';
 
 // The simulator's ports are chosen at runtime by `startSimulator`, its OPC UA block included (#212).
-// The broker and gateway HTTP ports are chosen at runtime, so a parallel run cannot clash; the
-// broker keeps its port across restarts (`startBroker` retries until the port is released).
-const BROKER_PORT = await freePort();
-const GATEWAY_HTTP = await freePort();
+// Each broker gets the host port Docker picks, and the gateway an HTTP port per start, so a
+// parallel run cannot clash. Clients reach the broker through a proxy on a port of its own, which
+// stays where they left it while the broker restarts on another port.
+let front: TcpProxy;
 const MACHINES = ['cnc-01', 'cnc-02', 'wsh-01', 'asm-01', 'lkt-01', 'pck-01'] as const;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -86,7 +86,7 @@ class Consumer {
     let client: MqttClient;
     for (;;) {
       try {
-        client = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+        client = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(front.port)}`, {
           username: 'mes',
           password: TEST_PASSWORDS.mes,
           protocolVersion: 5,
@@ -172,25 +172,24 @@ let gateway: RunningGateway;
 const consumer = new Consumer();
 const bufferDir = mkdtempSync(join(tmpdir(), 'gateway-e2e-'));
 const gatewayEnv = {
-  MQTT_URL: `mqtt://127.0.0.1:${String(BROKER_PORT)}`,
+  MQTT_URL: '', // the front proxy's, once it listens
   MQTT_PASSWORD: TEST_PASSWORDS['gw-01'],
   OPCUA_HOST: 'localhost',
   OPCUA_PORT_OFFSET: '', // the simulator's, once started
   OPCUA_PKI_DIR: join(bufferDir, 'pki'),
   MODBUS_PORT: '', // the simulator's, once started
   BUFFER_PATH: join(bufferDir, 'buffer', 'gateway.db'),
-  HTTP_PORT: String(GATEWAY_HTTP),
   TELEMETRY_SAMPLING_MS: '500',
 };
 
 const metric = async (name: string): Promise<number> => {
-  const text = await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`);
+  const text = await get(`${gateway.http}/metrics`);
   const match = new RegExp(`^${name} (\\S+)$`, 'm').exec(text);
   return match ? Number(match[1]) : Number.NaN;
 };
 
 const allConnected = async (): Promise<boolean> => {
-  const text = await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`);
+  const text = await get(`${gateway.http}/metrics`);
   return MACHINES.every((m) => text.includes(`gateway_device_connected{machine="${m}"} 1`));
 };
 
@@ -198,17 +197,26 @@ beforeAll(async () => {
   simulator = await startSimulator();
   gatewayEnv.OPCUA_PORT_OFFSET = String(simulator.opcuaOffset);
   gatewayEnv.MODBUS_PORT = String(simulator.modbusPort);
-  broker = (await startBroker({ hostPort: BROKER_PORT })).container;
+  broker = (await startBroker()).container;
+  front = await TcpProxy.start(0, { host: '127.0.0.1', port: broker.getMappedPort(1883) });
+  gatewayEnv.MQTT_URL = `mqtt://127.0.0.1:${String(front.port)}`;
   await consumer.connect();
   gateway = await startGateway(gatewayEnv);
   await until('every machine connected to the gateway', allConnected, 60_000);
 }, 180_000);
+
+/** A new broker after an outage, on the port Docker picks; the front proxy sends clients there. */
+async function restartBroker(): Promise<void> {
+  broker = (await startBroker()).container;
+  front.retarget({ host: '127.0.0.1', port: broker.getMappedPort(1883) });
+}
 
 // Also after a failed beforeAll: whatever was started is stopped (#212).
 afterAll(async () => {
   await (gateway as RunningGateway | undefined)?.stop('SIGKILL').catch(() => undefined);
   await consumer.close();
   await (broker as StartedTestContainer | undefined)?.stop().catch(() => undefined);
+  await (front as TcpProxy | undefined)?.close();
   await (simulator as RunningSimulator | undefined)?.stop();
   rmSync(bufferDir, { recursive: true, force: true });
 });
@@ -245,7 +253,7 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
     buffer.close();
     expect(bufferedFacts).toBeGreaterThan(0);
 
-    broker = (await startBroker({ hostPort: BROKER_PORT })).container;
+    await restartBroker();
     await consumer.connect();
     gateway = await startGateway(gatewayEnv);
     await until('every machine connected to the gateway', allConnected, 60_000);
@@ -261,7 +269,7 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
     await broker.stop();
     await consumer.close();
     await wait(5_000);
-    broker = (await startBroker({ hostPort: BROKER_PORT })).container;
+    await restartBroker();
     await consumer.connect();
     await wait(6_000);
     await simulator.post('/api/v1/pause');

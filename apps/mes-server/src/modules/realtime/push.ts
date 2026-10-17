@@ -130,11 +130,15 @@ export interface PushOptions {
   readonly requestBurst?: number;
   readonly registry?: Registry;
   /**
-   * Called for every paced delta sent, with its topic and the wall time it was computed for (the
-   * time the pace is measured from). For tests: they check the pace on the server's own clock,
-   * not on when a loaded machine happened to deliver the messages (#212).
+   * Called for every paced delta sent, with its topic, the wall time its computation started
+   * (the time the pace is measured from) and the message. For tests: they check the pace and
+   * what each computation read on the server's own clock, not on when a loaded machine happened
+   * to deliver the messages (#212). An error it throws is ignored: an observer never changes
+   * what is pushed.
+   *
+   * @internal
    */
-  readonly onPacedDelta?: (topic: string, wallMs: number) => void;
+  readonly onPacedDelta?: (topic: string, wallMs: number, delta: ServerMessage) => void;
 }
 
 interface Client {
@@ -877,7 +881,11 @@ export class PushHub {
           topic.awaiting.clear();
           if (delta !== undefined) {
             topic.deltaAt = now;
-            this.#onPacedDelta?.(topic.name, now);
+            try {
+              this.#onPacedDelta?.(topic.name, now, update);
+            } catch {
+              // An observer's error is not the push's.
+            }
           }
           if (deltaDue || json === topic.last) topic.last = json;
           // A change held back for the pace goes out with the next computation.

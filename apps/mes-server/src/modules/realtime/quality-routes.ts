@@ -161,8 +161,13 @@ export function qualityRoutes(
     },
     async ({ params, query, request, reply }) => {
       const quality = deps.quality();
-      // The tag names the derivation, not the query: it goes with the query in the cache key.
-      const tag = quality.chartTag(params.id);
+      // The tag names the derivation and the normalized query (`all`, `from`, `to`).
+      const variant = [
+        query.all ? 'all' : '',
+        query.from?.toISOString() ?? '',
+        query.to?.toISOString() ?? '',
+      ].join('|');
+      const tag = quality.chartTag(params.id, variant);
       if (tag !== null) {
         void reply.header('etag', tag);
         if (request.headers['if-none-match'] === tag) {

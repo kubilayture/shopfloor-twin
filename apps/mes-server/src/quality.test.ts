@@ -21,12 +21,12 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import { DEFAULT_RULES } from '@shopfloor/spc-core';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Database } from './db/database.ts';
 import { buildMesHttp } from './http.ts';
-import { PLANT_CONFIG, UnsFeed, freshDatabase } from './modules/equipment/test-support.ts';
+import { PLANT_CONFIG, UnsFeed, freshDatabase, ownerOf } from './modules/equipment/test-support.ts';
 import { Identity } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
@@ -585,6 +585,87 @@ describe('quality: limit writes and acknowledgements (#200)', () => {
   });
 });
 
+describe('quality: the chart tag moves only after a commit (#200 re-review)', () => {
+  it('keeps the old tag while an acknowledgement or a limit write commits, and moves it after', async () => {
+    const h = await harness('tagorder');
+    for (const [i, value] of BASELINE.entries()) await h.cycle(i + 1, value);
+    await h.cycle(7, 2.5);
+    for (let seq = 8; seq <= 12; seq++) await h.cycle(seq, 2.0);
+    await h.tick();
+    // Commits that take 400 ms: a constraint trigger deferred to COMMIT sleeps (owner's DDL).
+    const owner = await ownerOf(serverUrl, h.db);
+    cleanups.push(() => owner.destroy());
+    await sql`CREATE FUNCTION public.slow_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        PERFORM pg_sleep(0.4); RETURN NULL; END $$`.execute(owner);
+    for (const table of ['spc_signal', 'control_limit']) {
+      await sql
+        .raw(
+          `CREATE CONSTRAINT TRIGGER slow_${table} AFTER INSERT OR UPDATE ON quality.${table}
+            DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.slow_commit()`,
+        )
+        .execute(owner);
+    }
+    // While the write runs, each sample reads the tag first, then whether the write is visible
+    // to another connection (committed): a new tag before the commit is the defect.
+    const during = async (
+      write: Promise<unknown>,
+      before: string | null,
+      committed: () => Promise<boolean>,
+    ) => {
+      const flag = { settled: false };
+      const done = write.then(() => {
+        flag.settled = true;
+      });
+      let samples = 0;
+      let oldWhileCommitting = 0;
+      while (!flag.settled) {
+        const tag = h.quality.chartTag('leak-rate');
+        const visible = await committed();
+        if (tag !== before) expect(visible, 'a new tag before the commit').toBe(true);
+        if (tag === before && !visible) oldWhileCommitting++;
+        samples++;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await done;
+      expect(samples).toBeGreaterThan(4);
+      expect(oldWhileCommitting).toBeGreaterThan(0);
+      expect(h.quality.chartTag('leak-rate')).not.toBe(before);
+    };
+    const [signal] = await h.signals();
+    if (!signal) throw new Error('no signal');
+    await during(
+      h.quality.acknowledge(signal.id, { version: signal.rowVersion, comment: 'ok' }, h.by),
+      h.quality.chartTag('leak-rate'),
+      async () =>
+        (
+          await sql<{ n: number }>`SELECT count(*)::int AS n FROM quality.spc_signal
+            WHERE ack_by IS NOT NULL`.execute(owner)
+        ).rows[0]?.n === 1,
+    );
+    const characteristic = await h.quality.characteristic('leak-rate');
+    h.clock.now = T0 + 12 * MINUTE;
+    await during(
+      h.quality.createLimits(
+        'leak-rate',
+        {
+          version: characteristic?.version ?? 0,
+          from: new Date(T0 + 7 * MINUTE),
+          to: new Date(T0 + 12 * MINUTE),
+          comment: 'new',
+        },
+        h.by,
+      ),
+      h.quality.chartTag('leak-rate'),
+      async () =>
+        (
+          await sql<{ n: number }>`SELECT count(*)::int AS n FROM quality.control_limit`.execute(
+            owner,
+          )
+        ).rows[0]?.n === 2,
+    );
+  });
+});
+
 describe('quality: the API (#200)', () => {
   it('serves characteristics, the chart, measurements and signals, and takes the writes', async () => {
     const h = await harness('api');
@@ -683,13 +764,19 @@ describe('quality: the API (#200)', () => {
     // The chart is served from the derivation in memory with an entity tag (#200 review M5).
     const tagged = await request('GET', '/api/v1/quality/characteristics/leak-rate/chart?all=true');
     const etag = String(tagged.headers.etag);
-    expect(etag).toMatch(/^"[0-9a-f]{8}-leak-rate-\d+"$/);
-    const again = await http.app.inject({
-      method: 'GET',
-      url: '/api/v1/quality/characteristics/leak-rate/chart',
-      headers: { ...headers, cookie, 'if-none-match': etag },
-    });
+    expect(etag).toMatch(/^"[0-9a-f]{8}-leak-rate-\d+-[0-9a-f]{8}"$/);
+    const conditional = (url: string) =>
+      http.app.inject({
+        method: 'GET',
+        url,
+        headers: { ...headers, cookie, 'if-none-match': etag },
+      });
+    // The same query: 304. Another query is another representation: its own tag, 200.
+    const again = await conditional('/api/v1/quality/characteristics/leak-rate/chart?all=true');
     expect([again.statusCode, again.body]).toEqual([304, '']);
+    const other = await conditional('/api/v1/quality/characteristics/leak-rate/chart');
+    expect(other.statusCode).toBe(200);
+    expect(String(other.headers.etag)).not.toBe(etag);
     const measurements = measurementListSchema.parse(
       await get('/api/v1/quality/characteristics/leak-rate/measurements'),
     );

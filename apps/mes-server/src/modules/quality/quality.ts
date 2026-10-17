@@ -511,9 +511,12 @@ export class Quality {
    * The chart's entity tag while it is served from memory: it changes with every derivation,
    * limit write and acknowledgement, and with each MES start. Null before the first derivation.
    */
-  chartTag(id: string): string | null {
+  chartTag(id: string, query = ''): string | null {
     const state = this.#states.get(id);
-    return state?.view ? `"${this.#instance}-${id}-${String(state.revision)}"` : null;
+    if (!state?.view) return null;
+    // The normalized query is part of the tag: another range is another representation.
+    const variant = createHash('sha256').update(query).digest('hex').slice(0, 8);
+    return `"${this.#instance}-${id}-${String(state.revision)}-${variant}"`;
   }
 
   /** A characteristic's measurements in chart order (every pass); at most `limit`. */
@@ -765,73 +768,80 @@ export class Quality {
     context: QualityWriteContext,
   ): Promise<SignalRecord> {
     const signal = await this.#serial(() =>
-      this.#db.transaction().execute(async (trx) => {
-        const row = await trx
-          .selectFrom('quality.spc_signal')
-          .selectAll()
-          .where('id', '=', id)
-          .forUpdate()
-          .executeTakeFirst();
-        if (!row) throw new QualityError('not-found', `no signal ${String(id)}`);
-        if (row.row_version !== request.version) {
-          throw new QualityError(
-            'conflict',
-            `signal ${String(id)} changed: version is ${String(row.row_version)}, not ${String(request.version)}`,
-            PROBLEM_TYPES.signalStale,
-          );
-        }
-        if (row.status === 'withdrawn') {
-          throw new QualityError(
-            'conflict',
-            `signal ${String(id)} is withdrawn`,
-            PROBLEM_TYPES.signalWithdrawn,
-          );
-        }
-        if (row.ack_by !== null) {
-          throw new QualityError(
-            'conflict',
-            `signal ${String(id)} is acknowledged already by ${row.ack_by}`,
-            PROBLEM_TYPES.signalAcknowledged,
-          );
-        }
-        const plantAt = this.#options.clock?.() ?? null;
-        const updated = await trx
-          .updateTable('quality.spc_signal')
-          .set({
-            ack_by: nameOf(context.by),
-            ack_at: sql<Date>`clock_timestamp()`,
-            ack_plant_at: plantAt,
-            ack_comment: request.comment,
-            row_version: row.row_version + 1,
-          })
-          .where('id', '=', id)
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        await Identity.audit(trx, {
-          actor: auditActor(context.by),
-          authenticated: isAuthenticated(context.by),
-          action: 'spc.ack',
-          entityType: SIGNAL_AUDIT_ENTITY,
-          entityId: String(id),
-          before: { rowVersion: row.row_version, acknowledged: false },
-          after: {
-            rowVersion: updated.row_version,
-            acknowledged: true,
-            comment: request.comment,
-            characteristic: row.characteristic,
-            key: signalKey(toStored(row)),
-            status: row.status,
-          },
-          requestId: context.requestId,
-          plantAt: plantAt ?? undefined,
-        });
-        const state = this.#states.get(row.characteristic);
-        if (state) {
-          state.signals = null;
-          state.revision += 1;
-        }
-        return toSignal(updated);
-      }),
+      this.#db
+        .transaction()
+        .execute(async (trx) => {
+          const row = await trx
+            .selectFrom('quality.spc_signal')
+            .selectAll()
+            .where('id', '=', id)
+            .forUpdate()
+            .executeTakeFirst();
+          if (!row) throw new QualityError('not-found', `no signal ${String(id)}`);
+          if (row.row_version !== request.version) {
+            throw new QualityError(
+              'conflict',
+              `signal ${String(id)} changed: version is ${String(row.row_version)}, not ${String(request.version)}`,
+              PROBLEM_TYPES.signalStale,
+            );
+          }
+          if (row.status === 'withdrawn') {
+            throw new QualityError(
+              'conflict',
+              `signal ${String(id)} is withdrawn`,
+              PROBLEM_TYPES.signalWithdrawn,
+            );
+          }
+          if (row.ack_by !== null) {
+            throw new QualityError(
+              'conflict',
+              `signal ${String(id)} is acknowledged already by ${row.ack_by}`,
+              PROBLEM_TYPES.signalAcknowledged,
+            );
+          }
+          const plantAt = this.#options.clock?.() ?? null;
+          const updated = await trx
+            .updateTable('quality.spc_signal')
+            .set({
+              ack_by: nameOf(context.by),
+              ack_at: sql<Date>`clock_timestamp()`,
+              ack_plant_at: plantAt,
+              ack_comment: request.comment,
+              row_version: row.row_version + 1,
+            })
+            .where('id', '=', id)
+            .returningAll()
+            .executeTakeFirstOrThrow();
+          await Identity.audit(trx, {
+            actor: auditActor(context.by),
+            authenticated: isAuthenticated(context.by),
+            action: 'spc.ack',
+            entityType: SIGNAL_AUDIT_ENTITY,
+            entityId: String(id),
+            before: { rowVersion: row.row_version, acknowledged: false },
+            after: {
+              rowVersion: updated.row_version,
+              acknowledged: true,
+              comment: request.comment,
+              characteristic: row.characteristic,
+              key: signalKey(toStored(row)),
+              status: row.status,
+            },
+            requestId: context.requestId,
+            plantAt: plantAt ?? undefined,
+          });
+          return toSignal(updated);
+        })
+        .then((acknowledged) => {
+          // After COMMIT, still in the queue (#200 re-review): a chart read between the write and
+          // its commit must not take the new tag with a body that lacks the acknowledgement.
+          const state = this.#states.get(acknowledged.characteristic);
+          if (state) {
+            state.signals = null;
+            state.revision += 1;
+          }
+          return acknowledged;
+        }),
     );
     this.#emit({ type: 'signal', event: 'acknowledged', signal });
     return signal;

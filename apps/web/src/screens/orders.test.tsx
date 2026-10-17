@@ -395,6 +395,31 @@ describe('order detail', () => {
     expect(screen.queryByTestId('abandon-PO-1001~OP10~1')).toBeNull();
   });
 
+  it('on a close before every operation is signed off says so with the problem type and the operations (#177)', async () => {
+    const base = order('PO-1001', { status: 'completed', version: 9 });
+    const state = orderState([base]);
+    const write: Write = (_method, path) =>
+      path.endsWith('/close')
+        ? problem(
+            409,
+            'Conflict',
+            'order PO-1001: not signed off at the terminal yet: OP10 (cell-m1), OP50 (line-a1)',
+            '/x',
+            PROBLEM_TYPES.signOffMissing,
+          )
+        : json({});
+    vi.stubGlobal('fetch', orderMes(state, write).fetch);
+    await renderApp('/orders/PO-1001');
+    fireEvent.click(await screen.findByTestId('action-close'));
+    fireEvent.click(screen.getByTestId('action-submit'));
+    const message = await screen.findByTestId('action-message');
+    expect(message.dataset.kind).toBe('sign-off');
+    expect(message.textContent).toContain('OP10 (cell-m1), OP50 (line-a1)');
+    expect(screen.getByTestId('action-problem-type').textContent).toContain(
+      'urn:shopfloor:sign-off-missing',
+    );
+  });
+
   it('starts another order with no open action (panels keyed by id)', async () => {
     const one = order('PO-1001');
     const two = order('PO-1002');

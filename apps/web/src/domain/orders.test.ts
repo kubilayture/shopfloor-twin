@@ -155,6 +155,10 @@ describe('orders domain', () => {
     });
     expect(orderFailure(conflict(PROBLEM_TYPES.orderState)).kind).toBe('state');
     expect(orderFailure(conflict(PROBLEM_TYPES.commandsUnsettled)).kind).toBe('unsettled');
+    // #177: a close before every operation is signed off says so, with the MES's list.
+    const signOff = orderFailure(conflict(PROBLEM_TYPES.signOffMissing));
+    expect(signOff).toMatchObject({ kind: 'sign-off', type: PROBLEM_TYPES.signOffMissing });
+    expect(signOff.text).toMatch(/^Not closed: not every operation is signed off .*\(409, d\)/);
     const forbidden = new ApiError('Forbidden', 403, {
       type: PROBLEM_TYPES.forbidden,
       title: 'Forbidden',

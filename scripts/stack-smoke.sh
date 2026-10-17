@@ -41,6 +41,8 @@ compose_without MES_BOOTSTRAP_ADMIN_PASSWORD ||
   fail "Compose refused a configuration without the optional MES_BOOTSTRAP_ADMIN_PASSWORD"
 echo "ok: Compose refuses to start without a required secret, not without the bootstrap admin password"
 
+# Rows the MES records from here on belong to this run (rejected cycles below).
+smoke_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 docker compose up -d --wait
 
 timescale=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -Atc \
@@ -170,38 +172,41 @@ states=$(as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t 'orbis/gebze/+/+/+/st
 [ "$states" = "asm-01 cnc-01 cnc-02 lkt-01 pck-01 wsh-01 " ] || fail "UNS states incomplete: $states"
 echo "ok: UNS has the current state of all six machines"
 
-# Lots and operator on cycle facts (UNS contract 1.4, #197, ADR-0033): a CNC's cycle carries its
-# blank lot and no operator; ASM-01's carries the component lots and the operator at its start.
-# Cycles are not retained, so this waits for live ones (60x: a CNC cycle every few seconds, the
-# first ASM-01 cycle within about a minute of the run's start).
-cycle_with() {
-  # $1 equipment, $2 pattern every one of its cycles is checked for, $3 wait in seconds
-  as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t "orbis/gebze/+/+/$1/events/cycle-complete" \
-    -C 1 -W "$3" 2>/dev/null | grep -E "$2" || true
-}
-cnc_cycle=$(cycle_with cnc-01 '"lots":\[\{"material":"BLANK-[0-9]+","lot":"[^"]+"\}\],"operator":null' 60)
-[ -n "$cnc_cycle" ] || fail "no CNC-01 cycle with its blank lot on the UNS"
-asm_cycle=""
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-  asm_cycle=$(cycle_with asm-01 '"lots":\[\{"material":"[^"]+","lot":"[^"]+"\}(,\{[^]]*\})*\],"operator":"[^"]+"' 15)
-  [ -n "$asm_cycle" ] && break
+# Lots and operator on cycle facts (UNS contract 1.4, #197, ADR-0033), as the MES stored them: the
+# latest CNC cycle carries its lots and a null operator; an ASM-01 cycle carries component lots
+# and an operator, and the lot index finds it. The simulator starts producing with the stack, so
+# by now (or within the short retry) both machines have completed cycles; no live subscription.
+cnc_trace=""
+asm_lot=""
+for _ in $(seq 1 45); do
+  cnc_trace=$(as_app -c "select jsonb_typeof(payload -> 'value' -> 'lots') || ':' ||
+      coalesce(jsonb_array_length(case when jsonb_typeof(payload -> 'value' -> 'lots') = 'array'
+        then payload -> 'value' -> 'lots' end), -1) || ':' ||
+      coalesce(jsonb_typeof(payload -> 'value' -> 'operator'), 'absent')
+    from ingest.equipment_event where event_type = 'cycle' and equipment in ('cnc-01', 'cnc-02')
+    order by source_time desc limit 1")
+  asm_lot=$(as_app -c "select payload -> 'value' -> 'lots' -> 0 ->> 'lot'
+    from ingest.equipment_event where event_type = 'cycle' and equipment = 'asm-01'
+      and payload -> 'value' -> 'lots' @> '[{}]'
+      and jsonb_typeof(payload -> 'value' -> 'operator') = 'string'
+    order by source_time desc limit 1")
+  case "$cnc_trace" in array:[1-9]*:null) [ -n "$asm_lot" ] && break ;; esac
+  sleep 2
 done
-[ -n "$asm_cycle" ] || fail "no ASM-01 cycle with component lots and an operator on the UNS"
-# Stored by the MES (contract 1.4 accepted, no rejection) and found through the lot index.
-lot=$(printf '%s' "$asm_cycle" | sed -E 's/.*"lots":\[\{"material":"[^"]+","lot":"([^"]+)".*/\1/')
-printf '%s' "$lot" | grep -Eq '^[A-Za-z0-9-]+$' || fail "unexpected lot id: $lot"
-stored=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  stored=$(as_app -c "select count(*) from ingest.equipment_event where event_type = 'cycle'
-    and payload -> 'value' -> 'lots' @> jsonb_build_array(jsonb_build_object('lot', '$lot'))
-    and payload -> 'value' ->> 'operator' is not null")
-  [ "$stored" -gt 0 ] && break
-  sleep 1
-done
-[ "$stored" -gt 0 ] || fail "the MES stored no ASM-01 cycle of lot $lot with its operator"
-rejected=$(as_app -c "select count(*) from ingest.rejected_message where topic like '%/events/cycle-complete'")
-[ "$rejected" = 0 ] || fail "the MES rejected $rejected cycle messages"
-echo "ok: cycle facts carry lots and operator on the UNS (contract 1.4); the MES stores them (lot $lot)"
+case "$cnc_trace" in
+  array:[1-9]*:null) ;;
+  *) fail "the latest stored CNC cycle has no lots or a non-null operator ($cnc_trace)" ;;
+esac
+[ -n "$asm_lot" ] || fail "no stored ASM-01 cycle with component lots and an operator"
+printf '%s' "$asm_lot" | grep -Eq '^[A-Za-z0-9-]+$' || fail "unexpected lot id: $asm_lot"
+found=$(as_app -c "select count(*) from ingest.equipment_event where event_type = 'cycle'
+  and payload -> 'value' -> 'lots' @> jsonb_build_array(jsonb_build_object('lot', '$asm_lot'))")
+[ "$found" -gt 0 ] || fail "the lot index found no cycle of lot $asm_lot"
+# Cycles refused, or kept without their trace fields, since this smoke started the stack.
+refused=$(as_app -c "select count(*) from ingest.rejected_message
+  where topic like '%/events/cycle-complete' and received_at >= '$smoke_started'")
+[ "$refused" = 0 ] || fail "the MES refused $refused cycle messages or dropped their trace fields"
+echo "ok: stored cycle facts carry lots and operator (contract 1.4; lot $asm_lot found by lot, $found cycles)"
 
 # ERP mock (#171): ready, refuses the API without the bearer token, serves the order feed with it.
 # The token goes to curl on stdin, not on its command line.

@@ -120,6 +120,15 @@ export const lotRefSchema = z.strictObject({
   lot: traceId.describe('Lot id, e.g. BL100-2610-01'),
 });
 
+/**
+ * The two trace fields of a cycle on their own (1.4): a consumer that keeps a cycle whose trace
+ * fields are malformed (the MES's ingest, #197) checks each with these and drops only that field.
+ */
+export const CYCLE_TRACE_FIELDS = {
+  lots: z.array(lotRefSchema).max(UNS_CYCLE_LIMITS.lots),
+  operator: traceId.nullable(),
+} as const;
+
 export const cycleCompleteSchema = envelope(
   'uns.events.cycle-complete',
   z.strictObject({
@@ -132,15 +141,12 @@ export const cycleCompleteSchema = envelope(
     // Added in contract version 1.4 (#197, ADR-0033), optional so that older cycles stay valid.
     // Absent means "not reported" (WSH-01 on Modbus, a gateway before 1.4); [] and null are
     // reported values: "consumed nothing here" and "no operator".
-    lots: z
-      .array(lotRefSchema)
-      .max(UNS_CYCLE_LIMITS.lots)
+    lots: CYCLE_TRACE_FIELDS.lots
       .optional()
       .describe(
         'The lots the machine consumed for this part on this cycle, in consumption order (1.4); [] when none',
       ),
-    operator: traceId
-      .nullable()
+    operator: CYCLE_TRACE_FIELDS.operator
       .optional()
       .describe(
         "The station's operator when the cycle started (1.4); null where the machine has none or the cycle consumed nothing",

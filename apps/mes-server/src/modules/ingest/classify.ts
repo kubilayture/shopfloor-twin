@@ -1,5 +1,6 @@
 import {
   ALARM_SNAPSHOT_NAME,
+  CYCLE_TRACE_FIELDS,
   SYS_SEGMENT,
   UNS_ROOT,
   parseEquipmentTopic,
@@ -19,6 +20,7 @@ import {
   type UnsMessage,
   type UnsSchemaName,
 } from '@shopfloor/contracts';
+import { z } from 'zod';
 import type { RejectReason } from './tables.ts';
 
 export type StateEvent = Extract<StateCurrent, { kind: 'event' }>;
@@ -32,6 +34,12 @@ export type Classified =
       readonly equipment: string;
       readonly eventType: 'state' | 'cycle' | 'alarm' | 'job';
       readonly message: StateEvent | CycleComplete | Alarm | JobEvent;
+      /**
+       * A cycle stored without trace fields it carried but the contract refuses (UNS contract 1.4,
+       * #197): what was dropped and the delivery as received, recorded as `trace-dropped` in the
+       * fact's own transaction. The cycle itself is a fact, so the device sequence keeps no gap.
+       */
+      readonly traceDropped?: { readonly detail: string; readonly payload: string };
     }
   /**
    * The gateway's answer to a command delivery (`cmd-res`, UNS contract 1.3, #174): a
@@ -187,21 +195,66 @@ function storableProblem(message: UnsMessage | CommandResult): string | undefine
   return badString(message);
 }
 
+type TraceField = keyof typeof CYCLE_TRACE_FIELDS;
+const TRACE_FIELDS = Object.keys(CYCLE_TRACE_FIELDS) as TraceField[];
+
+/**
+ * A cycle delivery whose only schema problems are in its trace fields (UNS contract 1.4, #197):
+ * the same JSON without each of `lots` and `operator` that fails its own schema, with what was
+ * wrong. Undefined when no trace field fails (the delivery is invalid for another reason, or
+ * valid).
+ */
+function withoutBadTraceFields(json: unknown): { json: unknown; problems: string[] } | undefined {
+  if (typeof json !== 'object' || json === null || !('value' in json)) return undefined;
+  const value: unknown = json.value;
+  if (typeof value !== 'object' || value === null) return undefined;
+  const fields: Record<string, unknown> = value as Record<string, unknown>;
+  const problems: string[] = [];
+  const bad = new Set<string>();
+  for (const field of TRACE_FIELDS) {
+    if (!(field in fields)) continue;
+    const result = CYCLE_TRACE_FIELDS[field].safeParse(fields[field]);
+    if (!result.success) {
+      problems.push(`${field}: ${z.prettifyError(result.error).replaceAll('\n', ' ')}`);
+      bad.add(field);
+    }
+  }
+  const kept = Object.fromEntries(Object.entries(fields).filter(([key]) => !bad.has(key)));
+  return problems.length > 0 ? { json: { ...json, value: kept }, problems } : undefined;
+}
+
 /**
  * Lots and operator on a cycle (UNS contract 1.4, #197, ADR-0033), beyond the schema: they are
  * OPC UA fields (`LotMaterials`, `LotIds`, `Operator`), so a Modbus cycle (WSH-01, a legacy washer)
- * carries neither; and a cycle that consumed nothing has no start, so no operator (`lots: []`
- * with an operator is refused). Material and lot pairs may repeat (a BOM can take two of one lot).
+ * carries neither; a cycle that consumed nothing has no start, so no operator (`lots: []` with an
+ * operator); and they must be storable (no NUL, no lone surrogate). Returns the fields to drop
+ * with why. Material and lot pairs may repeat (a BOM can take two of one lot).
  */
-function cycleTraceProblem(message: CycleComplete): string | undefined {
+function cycleTraceProblems(message: CycleComplete): { field: TraceField; problem: string }[] {
   const { lots, operator } = message.value;
-  if (message.source.protocol !== 'opcua' && (lots !== undefined || operator !== undefined)) {
-    return `lots and operator come from OPC UA only, not from a ${message.source.protocol} cycle`;
+  const present = TRACE_FIELDS.filter((field) => message.value[field] !== undefined);
+  if (message.source.protocol !== 'opcua') {
+    return present.map((field) => ({
+      field,
+      problem: `${field} come from OPC UA only, not from a ${message.source.protocol} cycle`,
+    }));
   }
-  if (lots?.length === 0 && typeof operator === 'string') {
-    return `operator ${operator} on a cycle that consumed nothing (no cycle start is known)`;
+  const found: { field: TraceField; problem: string }[] = [];
+  for (const field of present) {
+    const unstorable = badString(message.value[field]);
+    if (unstorable) found.push({ field, problem: `${field}: ${unstorable}` });
   }
-  return undefined;
+  if (
+    lots?.length === 0 &&
+    typeof operator === 'string' &&
+    !found.some((f) => f.field === 'operator')
+  ) {
+    found.push({
+      field: 'operator',
+      problem: 'operator on a cycle that consumed nothing (no cycle start is known)',
+    });
+  }
+  return found;
 }
 
 const rejected = (reason: RejectReason, detail: string): Classified => ({
@@ -225,9 +278,31 @@ export function classify(topic: string, text: string, retained: boolean): Classi
     return rejected('invalid-json', error instanceof Error ? error.message : String(error));
   }
   if (info.type === 'command-result') return commandResult(topic, json, retained, info.equipment);
-  const parsed = parseUnsMessage(json);
+  let parsed = parseUnsMessage(json);
+  // A cycle whose only fault is in its trace fields is kept without them (#197): the cycle is a
+  // fact in the device sequence, which must not get a gap over lots or an operator.
+  const dropped: string[] = [];
+  if (!parsed.ok && info.type === 'equipment' && info.expected === 'uns.events.cycle-complete/1') {
+    const stripped = withoutBadTraceFields(json);
+    const again = stripped && parseUnsMessage(stripped.json);
+    if (stripped && again?.ok) {
+      parsed = again;
+      dropped.push(...stripped.problems);
+    }
+  }
   if (!parsed.ok) return rejected('invalid-payload', parsed.error);
-  const message: UnsMessage = parsed.message;
+  let message: UnsMessage = parsed.message;
+  if (message.schema === 'uns.events.cycle-complete/1' && !retained) {
+    const problems = cycleTraceProblems(message);
+    if (problems.length > 0) {
+      const drop = new Set<string>(problems.map((p) => p.field));
+      const value = Object.fromEntries(
+        Object.entries(message.value).filter(([key]) => !drop.has(key)),
+      ) as CycleComplete['value'];
+      message = { ...message, value };
+      dropped.push(...problems.map((p) => p.problem));
+    }
+  }
   const unstorable = storableProblem(message);
   if (unstorable) return rejected('invalid-payload', unstorable);
   if (message.schema !== info.expected) {
@@ -272,9 +347,7 @@ export function classify(topic: string, text: string, retained: boolean): Classi
         name: info.name,
         message,
       };
-    case 'uns.events.cycle-complete/1': {
-      const problem = cycleTraceProblem(message);
-      if (problem) return rejected('invalid-payload', problem);
+    case 'uns.events.cycle-complete/1':
       if (retained) return { kind: 'retained', detail: 'retained cycle' };
       return {
         kind: 'event',
@@ -282,8 +355,10 @@ export function classify(topic: string, text: string, retained: boolean): Classi
         equipment,
         eventType: 'cycle',
         message,
+        ...(dropped.length > 0
+          ? { traceDropped: { detail: dropped.join('; '), payload: text } }
+          : {}),
       };
-    }
     case 'uns.alarms/1':
       if (unsName(message.value.code) !== info.name) {
         return rejected('topic-mismatch', `alarm ${message.value.code} on alarms/${info.name}`);

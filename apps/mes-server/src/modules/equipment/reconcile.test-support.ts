@@ -311,31 +311,78 @@ function unsMessages(run: Run): { facts: Delivery[]; anchors: Delivery[]; end: D
   return { facts, anchors, end: feed.telemetry('wsh-01', run.end, EPOCH) };
 }
 
+/** What a cycle should carry (UNS contract 1.4), derived from the raw events, not `trace-core`. */
+interface ExpectedTrace {
+  readonly lots: { material: string; lot: string }[] | undefined;
+  readonly operator: string | null | undefined;
+}
+
 /**
- * Lots and operator on the stored cycle facts (UNS contract 1.4, #197): every cycle of an OPC UA
- * machine carries what `attachConsumption` attaches to it in the event log, WSH-01's carry
- * neither; and the lot index finds, per lot, exactly the cycles the event log attaches it to.
- * Returns the lots and the cycles that reported at least one.
+ * The lots and operator of every cycle, written out from ADR-0033's rule over the raw event log,
+ * independently of `trace-core`'s `attachConsumption` (which the harness uses to build the
+ * messages, as the machine server does): a part's `material-consumed` events on a machine attach,
+ * in order, to its next `cycle-complete` there; the operator is the machine's latest `operator`
+ * event before the part's first consumption there (none: null); a cycle that consumed nothing has
+ * `[]` and null. WSH-01 (Modbus) reports neither. Also counts the cycles whose machine's operator
+ * changed between that start and the cycle's end, where an end-of-cycle rule would differ.
+ */
+function expectedCycleTraces(run: Run): {
+  cycles: Map<string, ExpectedTrace>;
+  operatorChanged: number;
+} {
+  const operators = new Map<string, string | null>();
+  const pending = new Map<
+    string,
+    { lots: { material: string; lot: string }[]; operator: string | null }
+  >();
+  const cycles = new Map<string, ExpectedTrace>();
+  let operatorChanged = 0;
+  for (const event of run.events) {
+    const machine = event.machineId ?? '';
+    const part = `${machine}/${String(event.partId)}`;
+    if (event.type === 'operator') {
+      operators.set(machine, event.operatorId ?? null);
+    } else if (event.type === 'material-consumed') {
+      let entry = pending.get(part);
+      if (!entry) {
+        entry = { lots: [], operator: operators.get(machine) ?? null };
+        pending.set(part, entry);
+      }
+      entry.lots.push({ material: event.material ?? '', lot: event.lotId ?? '' });
+    } else if (event.type === 'cycle-complete') {
+      const key = `${part}/${String(Date.parse(event.at))}`;
+      const entry = pending.get(part);
+      pending.delete(part);
+      if (machine.startsWith('wsh')) {
+        cycles.set(key, { lots: undefined, operator: undefined });
+        continue;
+      }
+      cycles.set(key, entry ?? { lots: [], operator: null });
+      if (entry && entry.operator !== (operators.get(machine) ?? null)) operatorChanged++;
+    }
+  }
+  return { cycles, operatorChanged };
+}
+
+/**
+ * Lots and operator on the stored cycle facts (UNS contract 1.4, #197): every cycle carries what
+ * `expectedCycleTraces` derives from the event log, and the lot index finds, per lot, exactly the
+ * cycles the event log attaches it to. Returns the lots, the cycles that reported at least one,
+ * those with an operator, and those whose operator changed before the cycle ended.
  */
 async function expectCycleLots(
   ingest: Ingest,
   run: Run,
-): Promise<{ lots: number; tracedCycles: number; operatorCycles: number }> {
-  const attached = attachConsumption(run.events);
-  const expected = new Map<string, { lots: unknown; operator: unknown }>();
+): Promise<{
+  lots: number;
+  tracedCycles: number;
+  operatorCycles: number;
+  operatorChanged: number;
+}> {
+  const { cycles: expected, operatorChanged } = expectedCycleTraces(run);
   const perLot = new Map<string, Set<string>>();
-  for (const [index, event] of run.events.entries()) {
-    const attachment = attached[index];
-    if (event.type !== 'cycle-complete' || !attachment) continue;
-    const machine = event.machineId ?? '';
-    // Device facts number per machine; cycles are keyed by part id and time here.
-    const key = `${machine}/${String(event.partId)}/${String(Date.parse(event.at))}`;
-    if (machine.startsWith('wsh')) {
-      expected.set(key, { lots: undefined, operator: undefined });
-      continue;
-    }
-    expected.set(key, { lots: attachment.lots, operator: attachment.operator });
-    for (const lot of attachment.lots) {
+  for (const [key, trace] of expected) {
+    for (const lot of trace.lots ?? []) {
       perLot.set(lot.lot, (perLot.get(lot.lot) ?? new Set()).add(key));
     }
   }
@@ -360,8 +407,9 @@ async function expectCycleLots(
   const traced = [...expected.values()];
   return {
     lots: perLot.size,
-    tracedCycles: traced.filter((t) => Array.isArray(t.lots) && t.lots.length > 0).length,
+    tracedCycles: traced.filter((t) => (t.lots?.length ?? 0) > 0).length,
     operatorCycles: traced.filter((t) => typeof t.operator === 'string').length,
+    operatorChanged,
   };
 }
 
@@ -1943,7 +1991,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         expect(traced.lots).toBeGreaterThan(0);
         expect(traced.tracedCycles).toBeGreaterThan(0);
         console.log(
-          `${title}: in order, lots and operator of every cycle equal the event log's (${String(traced.tracedCycles)} cycles with ${String(traced.lots)} lots, ${String(traced.operatorCycles)} with an operator)`,
+          `${title}: in order, lots and operator of every cycle equal the event log's (${String(traced.tracedCycles)} cycles with ${String(traced.lots)} lots, ${String(traced.operatorCycles)} with an operator, ${String(traced.operatorChanged)} whose operator changed before the cycle ended)`,
         );
         if (stack && span.orders) {
           await settleOrders(stack);

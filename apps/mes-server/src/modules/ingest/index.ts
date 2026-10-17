@@ -69,10 +69,13 @@
  *
  * For genealogy (#197, UNS contract 1.4, ADR-0033):
  * - cycle facts carry `lots` and `operator` as reported (absent when not reported, `[]` and null
- *   as values); `CycleFact` passes them on. Ingest refuses them on a non-OPC UA cycle and an
- *   operator on a cycle that consumed nothing.
- * - `Ingest.cycleFacts({ epoch, lot })`: the cycles that consumed a lot, through the GIN index
- *   `ingest.equipment_event_cycle_lots` (the forward query during catch-up).
+ *   as values); `CycleFact` passes them on. Ingest drops them from a non-OPC UA cycle, and the
+ *   operator from a cycle that consumed nothing, keeping the cycle (below).
+ * - `Ingest.cycleFacts({ lot, epoch? })`: the cycles that consumed a lot, through the GIN index
+ *   `ingest.equipment_event_cycle_lots` (the forward query during catch-up). The index spans
+ *   device epochs: without `epoch`, every run's cycles of the lot.
+ * - A cycle whose trace fields the contract refuses is stored without them; the delivery and
+ *   what was dropped go to `rejected_message` as `trace-dropped` (the fact's own transaction).
  */
 export { INGEST_TOPICS, Ingest, baselineState } from './ingest.ts';
 export { resolveAlarmBaseline } from './alarm-baseline.ts';
@@ -82,6 +85,7 @@ export type {
   AlarmFactCount,
   CycleCount,
   CycleFact,
+  CycleFactQuery,
   CycleHour,
   DeviceProgress,
   FactSummary,

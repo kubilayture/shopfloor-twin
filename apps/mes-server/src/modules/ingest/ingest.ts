@@ -182,6 +182,17 @@ export interface CycleFact {
   readonly operator?: string | null;
 }
 
+/** The filters of `Ingest.cycleFacts`; a device epoch, a lot, or both are required. */
+export interface CycleFactQuery {
+  readonly epoch?: number;
+  readonly lot?: string;
+  readonly partIds?: readonly number[];
+  readonly equipment?: string;
+  readonly seqs?: readonly number[];
+  readonly afterSeq?: number;
+  readonly beforeSeq?: number;
+}
+
 /** Per (equipment, device epoch): what `factSummary` reports. */
 export interface FactSummary {
   readonly equipment: string;
@@ -254,6 +265,7 @@ export class Ingest {
   readonly #messages: Counter<'outcome'> | undefined;
   readonly #incidents: Counter<'origin'> | undefined;
   readonly #errors: Counter | undefined;
+  readonly #traceDropped: Counter<'equipment'> | undefined;
   readonly #suspensions: Counter | undefined;
   readonly #history: Counter | undefined;
   #client: MqttClient | undefined;
@@ -293,6 +305,12 @@ export class Ingest {
         name: 'mes_ingest_incidents_total',
         help: 'Data-quality incidents recorded: sequence gaps found by the MES, or gateway reports',
         labelNames: ['origin'],
+        registers,
+      });
+      this.#traceDropped = new Counter({
+        name: 'mes_ingest_cycle_trace_dropped_total',
+        help: 'Cycles stored without trace fields (lots, operator) the UNS contract refuses (#197), recorded as trace-dropped',
+        labelNames: ['equipment'],
         registers,
       });
       this.#errors = new Counter({
@@ -1038,28 +1056,21 @@ export class Ingest {
   /**
    * Cycle facts with their part (#175, the execution module): of one device epoch, by part ids
    * (across machines, `ingest.equipment_event_cycle_part`), or of one equipment by `seq` (a list,
-   * or a window `afterSeq`..`beforeSeq`, both exclusive). By equipment, then `seq`. With `lot`
-   * (#197), only the cycles that consumed that lot (`ingest.equipment_event_cycle_lots`): the
-   * forward query of a lot during catch-up.
+   * or a window `afterSeq`..`beforeSeq`, both exclusive). By equipment, then epoch and `seq`.
+   * With `lot` (#197), only the cycles that consumed that lot (`ingest.equipment_event_cycle_lots`):
+   * the forward query of a lot during catch-up. A lot id is not tied to a device epoch (the
+   * index spans epochs), so with `lot` the epoch may be left out: every epoch's cycles of the lot.
    */
   async cycleFacts(
-    options: {
-      readonly epoch: number;
-      readonly lot?: string;
-      readonly partIds?: readonly number[];
-      readonly equipment?: string;
-      readonly seqs?: readonly number[];
-      readonly afterSeq?: number;
-      readonly beforeSeq?: number;
-    },
+    options: CycleFactQuery & ({ readonly epoch: number } | { readonly lot: string }),
     db: Kysely<Database> = this.#options.db,
   ): Promise<CycleFact[]> {
     if (options.partIds?.length === 0 || options.seqs?.length === 0) return [];
     let query = db
       .selectFrom('ingest.equipment_event')
       .select(['equipment', 'epoch', 'seq', 'source_time', 'payload'])
-      .where('event_type', '=', 'cycle')
-      .where('epoch', '=', options.epoch);
+      .where('event_type', '=', 'cycle');
+    if (options.epoch !== undefined) query = query.where('epoch', '=', options.epoch);
     if (options.partIds !== undefined) {
       query = query.where(sql<number>`(payload -> 'value' ->> 'partId')::bigint`, 'in', [
         ...options.partIds,
@@ -1075,7 +1086,7 @@ export class Ingest {
     if (options.seqs !== undefined) query = query.where('seq', 'in', [...options.seqs]);
     if (options.afterSeq !== undefined) query = query.where('seq', '>', options.afterSeq);
     if (options.beforeSeq !== undefined) query = query.where('seq', '<', options.beforeSeq);
-    const rows = await query.orderBy('equipment').orderBy('seq').execute();
+    const rows = await query.orderBy('equipment').orderBy('epoch').orderBy('seq').execute();
     return rows.map((row) => {
       const value = (row.payload as CycleComplete).value;
       return {
@@ -1350,6 +1361,13 @@ export class Ingest {
           return outcome.notices ?? [];
         }
         this.#counted('stored');
+        if (item.kind === 'event' && item.traceDropped) {
+          this.#traceDropped?.inc({ equipment: item.equipment });
+          this.#log.warn(
+            { topic, detail: item.traceDropped.detail },
+            'cycle stored without its refused trace fields',
+          );
+        }
         if (item.kind === 'incident') {
           this.#incidents?.inc({ origin: 'gateway' });
           this.#log.warn({ incident: item.message.value }, 'gateway incident');

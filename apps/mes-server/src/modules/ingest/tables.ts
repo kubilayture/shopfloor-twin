@@ -164,7 +164,12 @@ export type RejectReason =
   | 'topic-mismatch'
   | 'unexpected-topic'
   | 'stale-epoch'
-  | 'unstorable';
+  | 'unstorable'
+  /**
+   * Not a refusal (#197): the cycle was stored, without trace fields (`lots`, `operator`) the
+   * contract refuses; the row keeps the delivery as received and what was dropped.
+   */
+  | 'trace-dropped';
 
 export interface RejectedMessageTable {
   id: Generated<number>;

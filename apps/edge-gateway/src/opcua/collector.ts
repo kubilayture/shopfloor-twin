@@ -276,6 +276,7 @@ export class OpcuaCollector {
   #graceTimer: ReturnType<typeof setTimeout> | undefined;
   #ready = false;
   #facts = 0;
+  #traceDropped = 0;
   #closed = false;
   #baselineSequence = 0;
   readonly #lost: LostRange[] = [];
@@ -326,6 +327,11 @@ export class OpcuaCollector {
   /** Device facts published since start. */
   get facts(): number {
     return this.#facts;
+  }
+
+  /** Cycles published without trace fields the contract can't carry (#197), since start. */
+  get traceDropped(): number {
+    return this.#traceDropped;
   }
 
   /** Device sequence ranges reported lost (sequence-gap incidents). */
@@ -717,6 +723,7 @@ export class OpcuaCollector {
           field('Operator'),
         );
         if (problems.length > 0) {
+          this.#traceDropped++;
           this.#options.onError?.(
             new Error(`${this.machineId}: cycle ${String(seq)}: ${problems.join('; ')}`),
           );

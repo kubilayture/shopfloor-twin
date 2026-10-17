@@ -37,6 +37,7 @@ export type { JobTransition, OpcuaMachineId, OpcuaVariable } from './opcua.ts';
 export {
   INCIDENT_TYPES,
   MACHINE_STATES,
+  CYCLE_TRACE_FIELDS,
   UNS_CYCLE_LIMITS,
   UNS_SCHEMAS,
   UNS_TELEMETRY,

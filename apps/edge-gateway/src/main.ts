@@ -196,7 +196,12 @@ const http = buildGatewayHttp({
     ...executor.pending,
   }),
   machines: () => [
-    ...collectors.map((c) => ({ id: c.machineId, connected: c.connected, facts: c.facts })),
+    ...collectors.map((c) => ({
+      id: c.machineId,
+      connected: c.connected,
+      facts: c.facts,
+      traceDropped: c.traceDropped,
+    })),
     { id: poller.machineId, connected: poller.connected, facts: poller.facts },
   ],
   logger: { level: env.LOG_LEVEL },

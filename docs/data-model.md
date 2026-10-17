@@ -797,7 +797,7 @@ Messages that failed validation, came with a stale epoch or could not be stored:
 | Kind | Name | Definition |
 | --- | --- | --- |
 | Primary key | `rejected_message_pkey` | `PRIMARY KEY (id)` |
-| Check | `rejected_message_reason_check` | `CHECK ((reason = ANY (ARRAY['invalid-json'::text, 'invalid-payload'::text, 'topic-mismatch'::text, 'unexpected-topic'::text, 'stale-epoch'::text, 'unstorable'::text])))` |
+| Check | `rejected_message_reason_check` | `CHECK ((reason = ANY (ARRAY['invalid-json'::text, 'invalid-payload'::text, 'topic-mismatch'::text, 'unexpected-topic'::text, 'stale-epoch'::text, 'unstorable'::text, 'trace-dropped'::text])))` |
 
 ### ingest.source_cursor
 

@@ -605,6 +605,20 @@ export class IngestStore {
         input.kind === 'command-result'
           ? await this.#insertCommandResult(trx, input, topic)
           : await this.#insertFact(trx, input, topic, now);
+      if (inserted && input.kind === 'event' && input.traceDropped) {
+        // A cycle kept without trace fields the contract refuses (#197): the delivery as received
+        // and what was dropped, in the fact's own transaction, so neither exists without the other.
+        await trx
+          .insertInto('ingest.rejected_message')
+          .values({
+            topic,
+            payload: input.traceDropped.payload,
+            retained: false,
+            reason: 'trace-dropped',
+            detail: input.traceDropped.detail,
+          })
+          .execute();
+      }
       let next: Cursor;
       if (!cursor || epoch > cursor.epoch) {
         if (cursor && tracksGaps(stream)) await this.#endEpoch(trx, stream, cursor, now);

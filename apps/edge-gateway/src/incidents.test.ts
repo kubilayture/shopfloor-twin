@@ -49,8 +49,9 @@ describe('incidents and per-machine metrics (#76)', () => {
       ready: () => false,
       published: () => 3,
       machines: () => [
-        { id: 'cnc-01', connected: true, facts: 12 },
-        { id: 'asm-01', connected: false, facts: 0 },
+        { id: 'cnc-01', connected: true, facts: 12, traceDropped: 0 },
+        { id: 'asm-01', connected: false, facts: 0, traceDropped: 2 },
+        { id: 'wsh-01', connected: true, facts: 5 },
       ],
     });
     const metrics = (await http.inject({ url: '/metrics' })).body;
@@ -58,6 +59,10 @@ describe('incidents and per-machine metrics (#76)', () => {
     expect(metrics).toMatch(/^gateway_device_connected\{machine="asm-01"\} 0$/m);
     expect(metrics).toMatch(/^gateway_device_facts\{machine="cnc-01"\} 12$/m);
     expect(metrics).toMatch(/^gateway_mqtt_connected 0$/m);
+    // #197: per OPC UA machine; a Modbus machine has no such counter.
+    expect(metrics).toMatch(/^gateway_cycle_trace_dropped_total\{machine="cnc-01"\} 0$/m);
+    expect(metrics).toMatch(/^gateway_cycle_trace_dropped_total\{machine="asm-01"\} 2$/m);
+    expect(metrics).not.toMatch(/^gateway_cycle_trace_dropped_total\{machine="wsh-01"\}/m);
     await http.close();
   });
 });

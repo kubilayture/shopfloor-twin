@@ -1,13 +1,23 @@
-import type { PlantConfig } from '@shopfloor/plant-config';
+import type { InjectionSpec, PlantConfig } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { isoTime } from '../headless/serialize.ts';
 import { applyDispatches, type DispatchSpec } from '../headless/run.ts';
 import { GroundTruth, type GroundTruthSummary } from '../headless/summary.ts';
 import {
+  AsOfAfterSimTimeError,
+  TraceTruth,
+  traceResultAsOf,
+  traceSection,
+  type TraceSection,
+} from '../headless/trace-truth.ts';
+import {
   ProductionLine,
   type FailureInjection,
+  type InjectDriftRequest,
+  type InjectDriftResult,
   type InjectFailureRequest,
   type InjectFailureResult,
+  type LeakDrift,
   type LineEvent,
   type PlantEvent,
   type ProductionMode,
@@ -60,6 +70,14 @@ export interface LiveGroundTruth extends GroundTruthSummary {
   readonly buckets: Record<string, { readonly complete: boolean }>;
   /** Each machine's current state and when it began. */
   readonly current: Record<string, { readonly state: MachineState; readonly since: string }>;
+  /**
+   * The traceability and SPC truth so far (#208): `trace.json`'s content without its schema and
+   * run header, as a headless run ending at `simTime` would write it. Provisional: open cartons,
+   * orders not complete yet and episodes still open can change as the run goes on.
+   */
+  readonly trace: TraceSection;
+  /** Present when `trace` was cut at an earlier plant time (`?asOf`, control API 1.6). */
+  readonly traceAsOf?: string;
 }
 
 export interface LiveRun {
@@ -68,7 +86,12 @@ export interface LiveRun {
   readonly pacer: LivePacer<LineEvent>;
   readonly processValues: ProcessValues;
   /** The ground truth up to the simulation's current time; read-only, never moves the run. */
-  groundTruth(): LiveGroundTruth;
+  /**
+   * With `traceAsOf` (#208 review, control API 1.6), `trace` is the trace as it stood at that plant
+   * time (`trace-core`'s `traceAsOf`, counterfactual included), which must not be after `simTime`;
+   * every other section stays as of `simTime`.
+   */
+  groundTruth(traceAsOf?: SimTime): LiveGroundTruth;
   /**
    * Schedules a failure injection (#140) at `at`, or at the simulation's current time (the next
    * step) when left out, exactly as a headless run schedules a scenario's injections.
@@ -76,6 +99,15 @@ export interface LiveRun {
   injectFailure(request: InjectFailureRequest): InjectFailureResult;
   /** Every injection so far, with its outcome. */
   injections(): FailureInjection[];
+  /**
+   * Schedules a leak-test drift (#196, control API 1.5) from `at` (now when left out) until
+   * `until` or the tester's next calibration, exactly as a headless run schedules a scenario's.
+   */
+  injectLeakDrift(request: InjectDriftRequest): InjectDriftResult;
+  /** Every drift injection so far, with its outcome. */
+  drifts(): LeakDrift[];
+  /** A scenario's injection of either kind (failure or `leak-drift`), as a headless run applies it. */
+  inject(spec: InjectionSpec): InjectFailureResult | InjectDriftResult;
 }
 
 export function createLiveRun(options: LiveOptions): LiveRun {
@@ -86,6 +118,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
   );
   const lotIds = options.config.stock.lots.map((lot) => lot.id);
   const truth = new GroundTruth(options.config, options.start);
+  const traceTruth = new TraceTruth(options.config);
   const line = new ProductionLine({
     config: options.config,
     random: new RandomSource(options.seed),
@@ -93,6 +126,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     production: options.production,
     onEvent: (event) => {
       truth.record(event);
+      traceTruth.record(event);
       processValues.record(event);
       options.onEvent?.(event);
     },
@@ -110,8 +144,11 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.onAdvance ? { onAdvance: options.onAdvance } : {}),
   });
-  const groundTruth = (): LiveGroundTruth => {
+  const groundTruth = (traceAsOf?: SimTime): LiveGroundTruth => {
     const now = simulation.now;
+    if (traceAsOf !== undefined && traceAsOf > now) {
+      throw new AsOfAfterSimTimeError(traceAsOf, now);
+    }
     const summary = truth.snapshot(now, line, lotIds);
     const currentBucket = truth.currentBucket;
     const keys = new Set([
@@ -134,6 +171,12 @@ export function createLiveRun(options: LiveOptions): LiveRun {
         ]),
       ),
       ...summary,
+      trace: traceSection(
+        traceAsOf === undefined
+          ? traceTruth.build(summary.orders)
+          : traceResultAsOf(traceTruth.build(summary.orders), traceAsOf),
+      ),
+      ...(traceAsOf === undefined ? {} : { traceAsOf: isoTime(traceAsOf) }),
     };
   };
   return {
@@ -144,5 +187,11 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     groundTruth,
     injectFailure: (request) => line.injectFailure(request, simulation),
     injections: () => line.injections(),
+    injectLeakDrift: (request) => line.injectLeakDrift(request, simulation, options.end),
+    drifts: () => line.drifts(),
+    inject: (spec) =>
+      spec.kind === 'leak-drift'
+        ? line.injectLeakDrift(spec, simulation, options.end)
+        : line.injectFailure(spec, simulation),
   };
 }

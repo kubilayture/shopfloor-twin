@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ShopFloor Twin simulator control API",
-    "version": "1.4.0",
+    "version": "1.6.0",
     "description": "Controls the pacing of the live simulation and streams its plant events. Plant events: WebSocket at /api/v1/events (see docs/contracts/simulator-control-api.md)."
   },
   "components": {
@@ -520,6 +520,17 @@
           "simulation"
         ],
         "description": "The ground truth a headless run would write if it ended now, kept live while the run is paced. Reconciliation tests compare the MES with it (#100). Reading it never moves the run.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "description": "1.6 (#208): cut `trace` at this plant time (ISO 8601 with an offset or Z, not after `simTime`) with trace-core's `traceAsOf`, counterfactual readings included; every other section stays as of `simTime`"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Default Response",
@@ -2873,6 +2884,1167 @@
                       ],
                       "additionalProperties": false,
                       "description": "Jobs, per-order quantities, WIP and material, and the hash of every unit's operation records (#172); empty in schedule mode"
+                    },
+                    "trace": {
+                      "type": "object",
+                      "properties": {
+                        "traceConfigSha256": {
+                          "type": "string"
+                        },
+                        "config": {
+                          "type": "object",
+                          "properties": {
+                            "packOperation": {
+                              "type": "string"
+                            },
+                            "capacity": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "spc": {
+                              "type": "object",
+                              "properties": {
+                                "characteristic": {
+                                  "type": "string"
+                                },
+                                "operation": {
+                                  "type": "string"
+                                },
+                                "subgroupSize": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "baselineSubgroups": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "rules": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991
+                                    }
+                                  }
+                                }
+                              },
+                              "required": [
+                                "characteristic",
+                                "operation",
+                                "subgroupSize",
+                                "baselineSubgroups",
+                                "rules"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "packOperation",
+                            "capacity",
+                            "spc"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "units": {
+                          "type": "object",
+                          "properties": {
+                            "count": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "unitsTraceSha256": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "count",
+                            "unitsTraceSha256"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "orders": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "orderId": {
+                                "type": "string"
+                              },
+                              "product": {
+                                "type": "string"
+                              },
+                              "completedAt": {
+                                "nullable": true,
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              }
+                            },
+                            "required": [
+                              "orderId",
+                              "product",
+                              "completedAt"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "lots": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "lot": {
+                                "type": "string"
+                              },
+                              "material": {
+                                "type": "string"
+                              },
+                              "consumed": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "units": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "description": "Part ids"
+                              },
+                              "orders": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "cartons": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": [
+                              "lot",
+                              "material",
+                              "consumed",
+                              "units",
+                              "orders",
+                              "cartons"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "cartons": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "orderId": {
+                                "type": "string"
+                              },
+                              "product": {
+                                "type": "string"
+                              },
+                              "capacity": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "open",
+                                  "closed"
+                                ]
+                              },
+                              "closedAt": {
+                                "nullable": true,
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "members": {
+                                "type": "object",
+                                "properties": {
+                                  "count": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "sha256": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "count",
+                                  "sha256"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "orderId",
+                              "product",
+                              "capacity",
+                              "status",
+                              "closedAt",
+                              "members"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "spc": {
+                          "type": "object",
+                          "properties": {
+                            "characteristic": {
+                              "type": "string"
+                            },
+                            "readings": {
+                              "type": "object",
+                              "properties": {
+                                "firstPass": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "retests": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "firstPass",
+                                "retests"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "limits": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "version": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "createdAt": {
+                                    "type": "string",
+                                    "description": "ISO 8601 UTC"
+                                  },
+                                  "from": {
+                                    "nullable": true,
+                                    "type": "object",
+                                    "properties": {
+                                      "at": {
+                                        "type": "string",
+                                        "description": "ISO 8601 UTC"
+                                      }
+                                    },
+                                    "required": [
+                                      "at"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "until": {
+                                    "nullable": true,
+                                    "type": "object",
+                                    "properties": {
+                                      "at": {
+                                        "type": "string",
+                                        "description": "ISO 8601 UTC"
+                                      }
+                                    },
+                                    "required": [
+                                      "at"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "endedAt": {
+                                    "nullable": true,
+                                    "type": "string",
+                                    "description": "ISO 8601 UTC"
+                                  },
+                                  "limits": {
+                                    "type": "object",
+                                    "properties": {
+                                      "subgroupSize": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "window": {
+                                        "type": "object",
+                                        "properties": {
+                                          "from": {
+                                            "type": "object",
+                                            "properties": {
+                                              "at": {
+                                                "type": "string",
+                                                "description": "ISO 8601 UTC"
+                                              }
+                                            },
+                                            "required": [
+                                              "at"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          "to": {
+                                            "type": "object",
+                                            "properties": {
+                                              "at": {
+                                                "type": "string",
+                                                "description": "ISO 8601 UTC"
+                                              }
+                                            },
+                                            "required": [
+                                              "at"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "required": [
+                                          "from",
+                                          "to"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      "counts": {
+                                        "type": "object",
+                                        "properties": {
+                                          "readings": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "movingRanges": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "subgroups": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "required": [
+                                          "readings",
+                                          "movingRanges",
+                                          "subgroups"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      "statistics": {
+                                        "type": "object",
+                                        "properties": {
+                                          "mean": {
+                                            "type": "string",
+                                            "pattern": "^-?\\d+\\/\\d+$",
+                                            "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                          },
+                                          "movingRange": {
+                                            "type": "string",
+                                            "pattern": "^-?\\d+\\/\\d+$",
+                                            "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                          },
+                                          "grandMean": {
+                                            "type": "string",
+                                            "pattern": "^-?\\d+\\/\\d+$",
+                                            "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                          },
+                                          "range": {
+                                            "type": "string",
+                                            "pattern": "^-?\\d+\\/\\d+$",
+                                            "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                          }
+                                        },
+                                        "required": [
+                                          "mean",
+                                          "movingRange",
+                                          "grandMean",
+                                          "range"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      "charts": {
+                                        "type": "object",
+                                        "properties": {
+                                          "I": {
+                                            "type": "object",
+                                            "properties": {
+                                              "lower": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              },
+                                              "centre": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              },
+                                              "upper": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              }
+                                            },
+                                            "required": [
+                                              "lower",
+                                              "centre",
+                                              "upper"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          "MR": {
+                                            "type": "object",
+                                            "properties": {
+                                              "lower": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              },
+                                              "centre": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              },
+                                              "upper": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              }
+                                            },
+                                            "required": [
+                                              "lower",
+                                              "centre",
+                                              "upper"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          "Xbar": {
+                                            "type": "object",
+                                            "properties": {
+                                              "lower": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              },
+                                              "centre": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              },
+                                              "upper": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              }
+                                            },
+                                            "required": [
+                                              "lower",
+                                              "centre",
+                                              "upper"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          "R": {
+                                            "type": "object",
+                                            "properties": {
+                                              "lower": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              },
+                                              "centre": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              },
+                                              "upper": {
+                                                "type": "string",
+                                                "pattern": "^-?\\d+\\/\\d+$",
+                                                "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                              }
+                                            },
+                                            "required": [
+                                              "lower",
+                                              "centre",
+                                              "upper"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "required": [
+                                          "I",
+                                          "MR",
+                                          "Xbar",
+                                          "R"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "subgroupSize",
+                                      "window",
+                                      "counts",
+                                      "statistics",
+                                      "charts"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "version",
+                                  "createdAt",
+                                  "from",
+                                  "until",
+                                  "endedAt",
+                                  "limits"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "points": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "object",
+                                "properties": {
+                                  "count": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "sha256": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "count",
+                                  "sha256"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "subgroups": {
+                              "type": "object",
+                              "properties": {
+                                "complete": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "pending": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "complete",
+                                "pending"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "episodes": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "chart": {
+                                    "type": "string",
+                                    "enum": [
+                                      "I",
+                                      "MR",
+                                      "Xbar",
+                                      "R"
+                                    ]
+                                  },
+                                  "rule": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "version": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "partId": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "pass": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "at": {
+                                    "type": "string",
+                                    "description": "ISO 8601 UTC"
+                                  },
+                                  "last": {
+                                    "type": "object",
+                                    "properties": {
+                                      "partId": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "pass": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "partId",
+                                      "pass"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "points": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "closedBy": {
+                                    "nullable": true,
+                                    "type": "object",
+                                    "properties": {
+                                      "partId": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "pass": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "partId",
+                                      "pass"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "baseline": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "chart",
+                                  "rule",
+                                  "version",
+                                  "partId",
+                                  "pass",
+                                  "at",
+                                  "last",
+                                  "points",
+                                  "closedBy",
+                                  "baseline"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "characteristic",
+                            "readings",
+                            "limits",
+                            "points",
+                            "subgroups",
+                            "episodes"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "drifts": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "injection": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "machine": {
+                                "type": "string"
+                              },
+                              "shift": {
+                                "type": "number"
+                              },
+                              "steps": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "appliedAt": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "endedAt": {
+                                "nullable": true,
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "endedBy": {
+                                "nullable": true,
+                                "type": "string",
+                                "enum": [
+                                  "until",
+                                  "calibration"
+                                ]
+                              },
+                              "start": {
+                                "nullable": true,
+                                "type": "object",
+                                "properties": {
+                                  "partId": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "pass": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "at": {
+                                    "type": "string",
+                                    "description": "ISO 8601 UTC"
+                                  },
+                                  "value": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "firstPassBefore": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "partId",
+                                  "pass",
+                                  "at",
+                                  "value",
+                                  "firstPassBefore"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "firstEpisode": {
+                                "nullable": true,
+                                "type": "object",
+                                "properties": {
+                                  "chart": {
+                                    "type": "string",
+                                    "enum": [
+                                      "I",
+                                      "MR",
+                                      "Xbar",
+                                      "R"
+                                    ]
+                                  },
+                                  "rule": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "version": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "partId": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "pass": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "at": {
+                                    "type": "string",
+                                    "description": "ISO 8601 UTC"
+                                  },
+                                  "last": {
+                                    "type": "object",
+                                    "properties": {
+                                      "partId": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "pass": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "partId",
+                                      "pass"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "points": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "closedBy": {
+                                    "nullable": true,
+                                    "type": "object",
+                                    "properties": {
+                                      "partId": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "pass": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "partId",
+                                      "pass"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "baseline": {
+                                    "type": "boolean"
+                                  },
+                                  "latency": {
+                                    "nullable": true,
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "chart",
+                                  "rule",
+                                  "version",
+                                  "partId",
+                                  "pass",
+                                  "at",
+                                  "last",
+                                  "points",
+                                  "closedBy",
+                                  "baseline",
+                                  "latency"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "window": {
+                                "type": "object",
+                                "properties": {
+                                  "before": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "after": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "readings": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "partId": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "pass": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "at": {
+                                          "type": "string",
+                                          "description": "ISO 8601 UTC"
+                                        },
+                                        "value": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "counterfactual": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "drifted": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "required": [
+                                        "partId",
+                                        "pass",
+                                        "at",
+                                        "value",
+                                        "counterfactual",
+                                        "drifted"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "before",
+                                  "after",
+                                  "readings"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "counterfactual": {
+                                "type": "object",
+                                "properties": {
+                                  "signals": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "partId": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "pass": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "at": {
+                                          "type": "string",
+                                          "description": "ISO 8601 UTC"
+                                        },
+                                        "segment": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "value": {
+                                          "type": "string",
+                                          "pattern": "^-?\\d+\\/\\d+$",
+                                          "description": "An exact fraction of reading steps, `num/den` (BigInt digits)"
+                                        },
+                                        "version": {
+                                          "nullable": true,
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "baseline": {
+                                          "type": "boolean"
+                                        },
+                                        "rules": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "integer",
+                                            "minimum": -9007199254740991,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "chart": {
+                                          "type": "string",
+                                          "enum": [
+                                            "I",
+                                            "MR",
+                                            "Xbar",
+                                            "R"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "partId",
+                                        "pass",
+                                        "at",
+                                        "segment",
+                                        "value",
+                                        "version",
+                                        "baseline",
+                                        "rules",
+                                        "chart"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "episodes": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "chart": {
+                                          "type": "string",
+                                          "enum": [
+                                            "I",
+                                            "MR",
+                                            "Xbar",
+                                            "R"
+                                          ]
+                                        },
+                                        "rule": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "version": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "partId": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "pass": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "at": {
+                                          "type": "string",
+                                          "description": "ISO 8601 UTC"
+                                        },
+                                        "last": {
+                                          "type": "object",
+                                          "properties": {
+                                            "partId": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "pass": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            }
+                                          },
+                                          "required": [
+                                            "partId",
+                                            "pass"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "points": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "closedBy": {
+                                          "nullable": true,
+                                          "type": "object",
+                                          "properties": {
+                                            "partId": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            },
+                                            "pass": {
+                                              "type": "integer",
+                                              "minimum": -9007199254740991,
+                                              "maximum": 9007199254740991
+                                            }
+                                          },
+                                          "required": [
+                                            "partId",
+                                            "pass"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        "baseline": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "required": [
+                                        "chart",
+                                        "rule",
+                                        "version",
+                                        "partId",
+                                        "pass",
+                                        "at",
+                                        "last",
+                                        "points",
+                                        "closedBy",
+                                        "baseline"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "clean": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "signals",
+                                  "episodes",
+                                  "clean"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "injection",
+                              "machine",
+                              "shift",
+                              "steps",
+                              "appliedAt",
+                              "endedAt",
+                              "endedBy",
+                              "start",
+                              "firstEpisode",
+                              "window",
+                              "counterfactual"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "traceConfigSha256",
+                        "config",
+                        "units",
+                        "orders",
+                        "lots",
+                        "cartons",
+                        "spc",
+                        "drifts"
+                      ],
+                      "additionalProperties": false,
+                      "description": "The traceability and SPC truth so far (#208): trace.json (sim-trace/1) without its schema and run header; provisional while cartons are open, orders incomplete or episodes open"
+                    },
+                    "traceAsOf": {
+                      "description": "1.6: present when `trace` was cut at an earlier plant time (`?asOf`)",
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -2889,7 +4061,31 @@
                     "lots",
                     "oee",
                     "alarms",
-                    "orders"
+                    "orders",
+                    "trace"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
                   ],
                   "additionalProperties": false
                 }
@@ -3330,6 +4526,288 @@
                   },
                   "required": [
                     "injections"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/faults/drift/{machine}": {
+      "post": {
+        "summary": "Inject a leak-test sensor drift, from now or a simulation time until a time",
+        "tags": [
+          "faults"
+        ],
+        "description": "Adds `shift` to the leak tester's readings from `at` until `until` or the tester's next calibration, whichever comes first (#196, ADR-0033). No random draw changes, so the readings without the drift are exactly the logged ones minus `shift`. The event log gets a `leak-drift` line when it applies and when it ends. 404: unknown machine; 400: not the leak tester, a shift that is not a non-zero whole multiple of the tester's resolution, an `until` not after `at`, or an invalid time; 409: `at` in the past or `at`/`until` on a calendar boundary, or the run has finished.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "shift": {
+                    "type": "number",
+                    "description": "Pa/min added to the reading's mean: a non-zero whole multiple of the tester's resolution (0.001)"
+                  },
+                  "at": {
+                    "description": "Simulation time, ISO 8601 with an offset or Z; the current time when left out",
+                    "type": "string"
+                  },
+                  "until": {
+                    "type": "string",
+                    "description": "Simulation time after `at`, ISO 8601 with an offset or Z; the drift ends then or at the tester's next calibration, whichever comes first"
+                  }
+                },
+                "required": [
+                  "shift",
+                  "until"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "machine",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "drift": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Numbered with the failure injections, in acceptance order"
+                        },
+                        "machine": {
+                          "type": "string"
+                        },
+                        "shift": {
+                          "type": "number",
+                          "description": "Added to every reading while active, in the tester's unit (Pa/min)"
+                        },
+                        "at": {
+                          "type": "string",
+                          "description": "When it starts"
+                        },
+                        "until": {
+                          "type": "string",
+                          "description": "When it ends, unless a calibration ends it first"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "scheduled",
+                            "active",
+                            "ended"
+                          ],
+                          "description": "active: readings carry the shift; ended: by `until` or by a calibration"
+                        },
+                        "appliedAt": {
+                          "type": "string",
+                          "description": "ISO 8601 UTC"
+                        },
+                        "endedAt": {
+                          "type": "string",
+                          "description": "ISO 8601 UTC"
+                        },
+                        "endedBy": {
+                          "type": "string",
+                          "enum": [
+                            "until",
+                            "calibration"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "machine",
+                        "shift",
+                        "at",
+                        "until",
+                        "status"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "drift"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/faults/drifts": {
+      "get": {
+        "summary": "Every leak-test drift injection of the run, in order, with its outcome",
+        "tags": [
+          "faults"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "drifts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Numbered with the failure injections, in acceptance order"
+                          },
+                          "machine": {
+                            "type": "string"
+                          },
+                          "shift": {
+                            "type": "number",
+                            "description": "Added to every reading while active, in the tester's unit (Pa/min)"
+                          },
+                          "at": {
+                            "type": "string",
+                            "description": "When it starts"
+                          },
+                          "until": {
+                            "type": "string",
+                            "description": "When it ends, unless a calibration ends it first"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "scheduled",
+                              "active",
+                              "ended"
+                            ],
+                            "description": "active: readings carry the shift; ended: by `until` or by a calibration"
+                          },
+                          "appliedAt": {
+                            "type": "string",
+                            "description": "ISO 8601 UTC"
+                          },
+                          "endedAt": {
+                            "type": "string",
+                            "description": "ISO 8601 UTC"
+                          },
+                          "endedBy": {
+                            "type": "string",
+                            "enum": [
+                              "until",
+                              "calibration"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "machine",
+                          "shift",
+                          "at",
+                          "until",
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "drifts"
                   ],
                   "additionalProperties": false
                 }

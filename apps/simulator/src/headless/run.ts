@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   checkInjections,
   simulationSections,
-  type FailureInjectionSpec,
+  type InjectionSpec,
   type PlantConfig,
 } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
@@ -10,6 +10,7 @@ import { ProductionLine, type LineEvent, type ProductionMode } from '../plant/li
 import { RUN_SCHEMA, EVENT_SCHEMA, SUMMARY_SCHEMA, isoTime, stableStringify } from './serialize.ts';
 import { InvariantChecker } from './invariants.ts';
 import { GroundTruth, type GroundTruthSummary } from './summary.ts';
+import { TRACE_SCHEMA, TraceTruth, traceSection, type TraceResult } from './trace-truth.ts';
 
 export interface HeadlessOptions {
   readonly config: PlantConfig;
@@ -17,8 +18,11 @@ export interface HeadlessOptions {
   readonly start: SimTime;
   readonly end: SimTime;
   readonly checkInvariants?: boolean;
-  /** Failure injections (#140), scheduled after `line.start` (and the dispatches) in list order. */
-  readonly injections?: readonly FailureInjectionSpec[];
+  /**
+   * Failure injections (#140) and leak drifts (#196, `kind: 'leak-drift'`), scheduled after
+   * `line.start` (and the dispatches) in list order, sharing one numbering.
+   */
+  readonly injections?: readonly InjectionSpec[];
   /** `schedule` (default) or `orders` (#172). */
   readonly production?: ProductionMode;
   /**
@@ -48,13 +52,24 @@ export interface HeaderDispatch {
   readonly notBefore: string;
 }
 
-/** An injection as the run header records it. */
-export interface HeaderInjection {
-  readonly at: string;
-  readonly machine: string;
-  readonly code: string;
-  readonly repairMs?: number;
-}
+/**
+ * An injection as the run header records it: a failure without `kind` (as before #196, so
+ * existing headers are unchanged), or a leak drift with `kind: 'leak-drift'`.
+ */
+export type HeaderInjection =
+  | {
+      readonly at: string;
+      readonly machine: string;
+      readonly code: string;
+      readonly repairMs?: number;
+    }
+  | {
+      readonly kind: 'leak-drift';
+      readonly at: string;
+      readonly until: string;
+      readonly machine: string;
+      readonly shift: number;
+    };
 
 export interface RunHeader {
   readonly schema: string;
@@ -76,6 +91,8 @@ export interface HeadlessResult {
   readonly eventCount: number;
   readonly invariantChecks: number;
   readonly summary: GroundTruthSummary;
+  /** The traceability and SPC truth (#208): `trace.json` beside the summary. */
+  readonly trace: TraceResult;
 }
 
 /**
@@ -114,7 +131,7 @@ export function runHeadless(
     throw new RangeError('start and end must be integer milliseconds with end after start');
   }
   const issues = [
-    ...checkInjections(config, injections),
+    ...checkInjections(config, injections, end),
     ...injections.flatMap((injection, index) =>
       injection.at >= end || injection.at < start
         ? [
@@ -141,12 +158,22 @@ export function runHeadless(
     ...(injections.length === 0
       ? {}
       : {
-          injections: injections.map((injection) => ({
-            at: isoTime(injection.at),
-            machine: injection.machine,
-            code: injection.code,
-            ...(injection.repairMs === undefined ? {} : { repairMs: injection.repairMs }),
-          })),
+          injections: injections.map((injection): HeaderInjection =>
+            injection.kind === 'leak-drift'
+              ? {
+                  kind: injection.kind,
+                  at: isoTime(injection.at),
+                  until: isoTime(injection.until),
+                  machine: injection.machine,
+                  shift: injection.shift,
+                }
+              : {
+                  at: isoTime(injection.at),
+                  machine: injection.machine,
+                  code: injection.code,
+                  ...(injection.repairMs === undefined ? {} : { repairMs: injection.repairMs }),
+                },
+          ),
         }),
     ...(production === 'schedule'
       ? {}
@@ -165,6 +192,7 @@ export function runHeadless(
   writeLine(stableStringify(header));
 
   const truth = new GroundTruth(config, start);
+  const traceTruth = new TraceTruth(config);
 
   let sequence = 0;
   let checker: InvariantChecker | undefined;
@@ -175,6 +203,7 @@ export function runHeadless(
     production,
     onEvent: (event) => {
       truth.record(event);
+      traceTruth.record(event);
       checker?.record(event);
       sequence++;
       writeLine(
@@ -190,9 +219,12 @@ export function runHeadless(
   // Dispatches after line.start and before the injections (#172, B3): a live run is attached and
   // idle at the start time when the test dispatches, waits for every acceptance, then injects.
   applyDispatches(line, simulation, dispatches);
-  // After line.start and in list order, exactly as the control API schedules them (#140).
+  // After line.start and in list order, exactly as the control API schedules them (#140, #196).
   for (const injection of injections) {
-    const accepted = line.injectFailure(injection, simulation);
+    const accepted =
+      injection.kind === 'leak-drift'
+        ? line.injectLeakDrift(injection, simulation, end)
+        : line.injectFailure(injection, simulation);
     if (!accepted.ok) {
       throw new RangeError(`injection at ${isoTime(injection.at)}: ${accepted.reason}`);
     }
@@ -214,6 +246,7 @@ export function runHeadless(
     eventCount: sequence,
     invariantChecks: checker?.checks ?? 0,
     summary,
+    trace: traceTruth.build(summary.orders),
   };
 }
 
@@ -247,3 +280,10 @@ export const summaryDocument = (result: HeadlessResult): string =>
     },
     2,
   )}\n`;
+
+/**
+ * `trace.json` (#208, `sim-trace/1`): the run header (as in the summary) and the trace section. A
+ * new file beside the summary, which stays as it is.
+ */
+export const traceDocument = (result: HeadlessResult): string =>
+  `${stableStringify({ schema: TRACE_SCHEMA, run: result.header, ...traceSection(result.trace) }, 2)}\n`;

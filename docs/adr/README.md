@@ -36,3 +36,4 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0030](0030-order-driven-simulator-loadorder-and-job-facts.md)                    | Order-driven simulator: production mode `orders`, idempotent `LoadOrder` and job facts               | accepted           |
 | [0031](0031-execution-units-completion-and-confirmations.md)                      | Execution: units from cycle facts, completion when no unit can return, confirmations from final data | accepted           |
 | [0032](0032-spc-charts-frozen-limits-nelson-rules-and-episodes.md)                | SPC: I-MR and X̄-R on first passes, frozen limit versions, Nelson rules and signal episodes           | accepted           |
+| [0033](0033-traceability-facts-leak-drift-and-scenario-stock.md)                  | Traceability facts on the cycle event, a bounded leak-drift injection and scenario-local stock       | accepted           |

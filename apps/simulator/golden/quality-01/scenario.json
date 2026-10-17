@@ -1,0 +1,88 @@
+{
+  "description": "Traceability and SPC (#208): the week-01 seed and start, two days in production mode orders, its own small-lot stock.yaml (equal to the lots of its ERP dataset orders.json), the dispatches the dispatch rule makes of the released orders, and one bounded leak-drift of +0.6 Pa/min on LKT-01 in Monday shift A after the SPC baseline; no failure injections",
+  "seed": 20261012,
+  "start": "2026-10-12T06:00:00+03:00",
+  "days": 2,
+  "config": "config/plant",
+  "production": "orders",
+  "stock": "stock.yaml",
+  "erp": {
+    "dataset": "orders.json",
+    "release": [
+      "PO-2610-101",
+      "PO-2610-102",
+      "PO-2610-103",
+      "PO-2610-104",
+      "PO-2610-105",
+      "PO-2610-106",
+      "PO-2610-107"
+    ]
+  },
+  "dispatches": [
+    {
+      "commandId": "PO-2610-101~OP10~1",
+      "machine": "cnc-01",
+      "orderId": "PO-2610-101",
+      "product": "VB-100",
+      "quantity": 40,
+      "notBefore": "2026-10-12T03:00:00.000Z"
+    },
+    {
+      "commandId": "PO-2610-102~OP10~1",
+      "machine": "cnc-02",
+      "orderId": "PO-2610-102",
+      "product": "VB-100",
+      "quantity": 40,
+      "notBefore": "2026-10-12T03:00:00.000Z"
+    },
+    {
+      "commandId": "PO-2610-103~OP10~1",
+      "machine": "cnc-01",
+      "orderId": "PO-2610-103",
+      "product": "VB-100",
+      "quantity": 60,
+      "notBefore": "2026-10-12T03:00:00.000Z"
+    },
+    {
+      "commandId": "PO-2610-104~OP10~1",
+      "machine": "cnc-02",
+      "orderId": "PO-2610-104",
+      "product": "VB-100",
+      "quantity": 60,
+      "notBefore": "2026-10-12T03:00:00.000Z"
+    },
+    {
+      "commandId": "PO-2610-105~OP10~1",
+      "machine": "cnc-01",
+      "orderId": "PO-2610-105",
+      "product": "VB-100",
+      "quantity": 400,
+      "notBefore": "2026-10-12T03:00:00.000Z"
+    },
+    {
+      "commandId": "PO-2610-106~OP10~1",
+      "machine": "cnc-02",
+      "orderId": "PO-2610-106",
+      "product": "VB-200",
+      "quantity": 36,
+      "notBefore": "2026-10-13T03:00:00.000Z"
+    },
+    {
+      "commandId": "PO-2610-107~OP10~1",
+      "machine": "cnc-02",
+      "orderId": "PO-2610-107",
+      "product": "VB-200",
+      "quantity": 300,
+      "notBefore": "2026-10-13T03:00:00.000Z"
+    }
+  ],
+  "injections": [
+    {
+      "kind": "leak-drift",
+      "at": "2026-10-12T08:25:00Z",
+      "until": "2026-10-12T10:50:00Z",
+      "machine": "lkt-01",
+      "shift": 0.6
+    }
+  ]
+}

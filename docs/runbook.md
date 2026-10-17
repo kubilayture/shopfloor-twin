@@ -37,6 +37,9 @@ Output:
 
 - `events.jsonl`: one JSON object per line. The first line is the run header (`sim-run/1`: seed, start, end, SHA-256 of the configuration); every other line is an event (`sim-event/1`).
 - `summary.json`: the ground truth (`sim-summary/2`): time in every state per machine, in total and per shift instance; cycles per result; parts started, finished and scrapped by reason; remaining quantity per lot; and the OEE section (inputs per machine, shift bucket and UTC hour; A, P, Q and OEE per machine, work center and shift bucket).
+- `trace.json` (#208): the traceability and SPC ground truth (`sim-trace/1`): every unit's records with lots, operator, leak reading and carton (hashed), lots forward, cartons, the leak test's control limits, points (hashed) and signal episodes, and per leak-test drift its first episode and the counterfactual readings.
+
+`--scenario NAME` runs a golden scenario instead (its seed, span, configuration, stock and injections); `--end ISO-8601` (#208, with `--scenario` only) stops it earlier, e.g. `pnpm sim:headless --scenario quality-01 --end 2026-10-12T14:00:00+03:00` for the shift-A reference of the live `quality` pass (its event log is a prefix of the full run's). `node apps/simulator/src/headless/drift-search.ts quality-01 --from … --to …` reruns probe P4's search of the drift's start (`docs/simulation-model.md`).
 
 A week takes about 0.2 s and about 6 MB of events. The files are written under temporary names and renamed at the end, so a failed run never leaves a mix of old and new files. Invalid options exit with status 2, other failures with status 1. The event and summary formats are described in `docs/simulation-model.md`.
 
@@ -58,7 +61,7 @@ Runs the plant live and exposes the five OPC UA machines (contract: `docs/contra
 pnpm sim:serve
 ```
 
-Configuration comes from environment variables, validated at start-up. Examples: `SIM_SPEED=30`, `SIM_SEED=7`, `SIM_AUTOSTART=false`, `SIM_PRODUCTION=orders` (#172: the CNCs run only the jobs OPC UA `LoadOrder` gives them; `schedule` is the default), `OPCUA_PORT_OFFSET=100`, `CONTROL_PORT=4800`. The full list is in the contract.
+Configuration comes from environment variables, validated at start-up. Examples: `SIM_SPEED=30`, `SIM_SEED=7`, `SIM_AUTOSTART=false`, `SIM_PRODUCTION=orders` (#172: the CNCs run only the jobs OPC UA `LoadOrder` gives them; `schedule` is the default), `SIM_STOCK=apps/simulator/golden/<scenario>/stock.yaml` (#196: a scenario's own stock in place of `config/plant/stock.yaml`), `OPCUA_PORT_OFFSET=100`, `CONTROL_PORT=4800`. The full list is in the contract.
 
 ```bash
 SIM_SPEED=30 SIM_AUTOSTART=false pnpm sim:serve
@@ -88,7 +91,7 @@ MQTT_PASSWORD=<MQTT_GATEWAY_PASSWORD from .env> pnpm --filter @shopfloor/edge-ga
 ```
 
 - Environment: `GATEWAY_ID` (default `gw-01`), `MQTT_URL` (`mqtt://127.0.0.1:1883`), `MQTT_USERNAME` (`gw-01`), `MQTT_PASSWORD` (required), `OPCUA_HOST` (`localhost`), `OPCUA_PORT_OFFSET` (0), `OPCUA_PKI_DIR` (`.pki-gateway`, its own client certificate), `TELEMETRY_SAMPLING_MS` (1000), `MODBUS_HOST` (`127.0.0.1`), `MODBUS_PORT` (5020), `MODBUS_POLL_MS` (250), `BUFFER_PATH` (`.buffer/gateway.db`, the store-and-forward file), `BUFFER_MAX_MESSAGES` (200000), `GATEWAY_CALL_DEADLINE_MS` (5000, the deadline of each OPC UA request of a command), `GATEWAY_CMD_SESSION_EXPIRY_S` (3600, the command session's expiry at the broker), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4900`), `PLANT_CONFIG_DIR`, `LOG_LEVEL`. An invalid environment exits with status 2, and secrets are never echoed.
-- `GET /health/live`, `/health/ready` (ready while both broker sessions are up and the command subscriptions are granted) and `/metrics` (`gateway_device_connected{machine}`, `gateway_device_facts{machine}`, `gateway_published_messages`, `gateway_buffer_messages`, `gateway_buffer_dropped_messages`, and for commands `gateway_command_deliveries`, `gateway_command_calls`, `gateway_command_results{result}`, `gateway_command_pending{stage}` with `queued` and `settling`, `gateway_command_call_timeouts` (calls whose deadline passed without an answer, #178), and `gateway_command_settle_acceptances`, which should stay 0: above it, the gateway's and the simulator's clocks disagree).
+- `GET /health/live`, `/health/ready` (ready while both broker sessions are up and the command subscriptions are granted) and `/metrics` (`gateway_device_connected{machine}`, `gateway_device_facts{machine}`, `gateway_cycle_trace_dropped_total{machine}` (OPC UA cycles published without `lots` or `operator` the UNS contract can't carry, #197), `gateway_published_messages`, `gateway_buffer_messages`, `gateway_buffer_dropped_messages`, and for commands `gateway_command_deliveries`, `gateway_command_calls`, `gateway_command_results{result}`, `gateway_command_pending{stage}` with `queued` and `settling`, `gateway_command_call_timeouts` (calls whose deadline passed without an answer, #178), and `gateway_command_settle_acceptances`, which should stay 0: above it, the gateway's and the simulator's clocks disagree).
 - Commands: the gateway's second broker connection has client id `gw-01-cmd` and a persistent session, so commands published while it is down wait at the broker for up to `GATEWAY_CMD_SESSION_EXPIRY_S`. Each delivery is recorded in `BUFFER_PATH` (table `command_inbox`) before the broker gets its acknowledgement, and definitive answers are kept in `command_result`: `sqlite3 .buffer/gateway.db 'SELECT command_id, expires_at, json_extract(value, "$.result") FROM command_result'`. A command whose outcome the gateway can't learn is answered `unknown` (log level `warn`) and settled again every 5 s; `gateway_command_pending{stage="settling"}` counts them. A finished simulator run answers every call as "not running", so such a command stays `unknown` until the simulator restarts. Deleting `.buffer/` loses the inbox too: commands acknowledged and not yet answered are then never answered (the MES's `failed` margin reports them).
 - While the broker is down, `gateway_buffer_messages` grows; it drains after the broker returns. Deleting `.buffer/` throws away whatever wasn't delivered yet.
 - Data-quality incidents (sequence gaps, disconnects) go to `orbis/gebze/_sys/edge-gateway/gw-01/incidents` and to the log at `warn`.
@@ -98,6 +101,8 @@ MQTT_PASSWORD=<MQTT_GATEWAY_PASSWORD from .env> pnpm --filter @shopfloor/edge-ga
 The gateway's tests start a real Mosquitto with Testcontainers, so Docker must be running. They also start the simulator (and, end to end, the gateway) as child processes on ports chosen at runtime, so several runs, worktrees or agents can share the machine (#212): Modbus, control API, gateway HTTP and proxy ports are OS-assigned, and the OPC UA servers and their TCP proxies each take a block of five consecutive ports at a random offset (`OPCUA_PORT_OFFSET` 1000–9990, ports about 5841–14835) whose every port is checked free before use; a process that exits before it is ready (a port taken in the meantime) is started again (on new ports, unless it is a restart where its clients left it), and every child still running is killed when the test process exits. Without `DOCKER_HOST` the tests use the active `docker context`, which covers Colima and similar setups.
 
 ## Run the MES server
+
+**Upgrade order for UNS contract 1.4 (#197):** deploy the MES (migrations `0028`, `0029`; ingest accepting `lots` and `operator` on cycles) before the edge gateway. An older MES refuses every 1.4 cycle that carries the fields (`invalid-payload`), which leaves gaps in the device sequences; a 1.4 MES with an older gateway just stores cycles without them. Compose starts both from the same tag, so this matters only for a partial upgrade.
 
 `mes-server` (Phase 4) runs on the stack's TimescaleDB and broker (`pnpm stack:up` first) and subscribes to the UNS (#95). Since #169 it no longer migrates itself (ADR-0016 amended, ADR-0027): the `migrate` step does, as the bootstrap superuser, and the MES connects as `mes_app` and waits (not ready, a warning every 30 s) until the database's migration history equals its own. Outside Compose, migrate first, then start:
 
@@ -111,7 +116,7 @@ DATABASE_URL=postgres://mes_app:<DB_APP_PASSWORD>@127.0.0.1:5442/shopfloor \
 (`pnpm stack:up` runs the `migrate` service already; the first command matters only against a database no stack has migrated.)
 
 - Environment: `DATABASE_URL` (required, never echoed), `MQTT_URL` (`mqtt://127.0.0.1:1883`, never echoed), `MQTT_USERNAME` (`mes`), `MQTT_PASSWORD` (required: `MQTT_MES_PASSWORD` from `.env`), `MQTT_CLIENT_ID` (`mes-server`), `MQTT_SESSION_EXPIRY_S` (604800, 7 days), `INGEST_GAP_GRACE_MS` (30000), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4700`), `MIGRATIONS_DIR` (`db/migrations`), `LOG_LEVEL`.
-- `GET /health/live`, `/health/ready` (database answers, migrations are applied, and the UNS subscription is granted) and `/metrics` (`mes_ingest_messages_total{outcome}` with outcomes `stored`, `duplicate`, `rejected`, `anchor`, `status`, `retained`; `mes_ingest_incidents_total{origin}`; `mes_ingest_store_errors_total`; `mes_ingest_suspensions_total`; `mes_ingest_subscribed`).
+- `GET /health/live`, `/health/ready` (database answers, migrations are applied, and the UNS subscription is granted) and `/metrics` (`mes_ingest_messages_total{outcome}` with outcomes `stored`, `duplicate`, `rejected`, `anchor`, `status`, `retained`; `mes_ingest_incidents_total{origin}`; `mes_ingest_cycle_trace_dropped_total{equipment}` (cycles stored without refused trace fields, recorded as `trace-dropped` in `ingest.rejected_message`, #197); `mes_ingest_store_errors_total`; `mes_ingest_suspensions_total`; `mes_ingest_subscribed`).
 - The MES keeps a persistent broker session (client id `mes-server`): while it is stopped, the broker queues up to 100,000 messages for it (about one hour of the plant at 60×), delivered on the next start; the MES stores about 1,000 messages/s, so a full queue drains in about two minutes. Only one MES may use the client id; a second one takes the session over. **Accepted risk until Phase 9:** the plain ACL file can't bind a client id to a user, so any broker user (even `dev`) can connect as `mes-server` and take the session, and with it the queued messages. Phase 9 moves to Mosquitto's dynamic-security plugin. To drop the session (and its queue), start once with another `MQTT_CLIENT_ID` or reset the broker volume (`pnpm stack:reset`).
 - What arrived: `SELECT reason, count(*) FROM ingest.rejected_message GROUP BY 1;` lists rejected messages; `SELECT * FROM ingest.data_quality_incident WHERE closed_at IS NULL;` lists open gaps and gateway incidents (contract: `docs/contracts/uns.md`, "Consumer: MES ingest").
 - Alarm anchors and snapshots (#141): retained alarm deliveries land in `ingest.alarm_anchor`, the gateway's resync snapshots in `ingest.alarm_snapshot`; both count as `anchor` in `mes_ingest_messages_total`. Rows of an older device epoch than the newest one known for their equipment are kept with `stale = true` and never used, so after a simulator restart the old run's retained alarms never show as active: `SELECT equipment, epoch, code, seq, transition, stale FROM ingest.alarm_anchor ORDER BY 1, 2, 3;` and `SELECT equipment, device_epoch, as_of_seq, active, stale FROM ingest.alarm_snapshot ORDER BY 1, 2;`. To clear the old run's retained alarms from the broker itself, reset its volume (`pnpm stack:reset`).
@@ -269,14 +274,15 @@ It ends with one record for the pull request's "Gate" section, also written to `
 
 A commit after the gate reruns the jobs its files touch, with `GATE_STEPS` (a comma list of `verify`, `golden`, `e2e`, `smoke`, `reconcile`), and the pull request names them:
 
-| Files changed                                                 | Rerun                               |
-| ------------------------------------------------------------- | ----------------------------------- |
-| Documentation only (`docs/`, `*.md`)                          | `verify` (formatting)               |
-| `apps/simulator`, `packages/sim-core`, `config/plant`         | `verify,golden,e2e,smoke,reconcile` |
-| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`   | `verify,e2e,smoke,reconcile`        |
-| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*` | `verify,smoke,reconcile`            |
-| `e2e/` (reconciliation, Playwright)                           | `verify,reconcile`                  |
-| `scripts/stack-smoke*`                                        | `verify,smoke`                      |
+| Files changed                                                   | Rerun                               |
+| --------------------------------------------------------------- | ----------------------------------- |
+| Documentation only (`docs/`, `*.md`)                            | `verify` (formatting)               |
+| `apps/simulator`, `packages/sim-core`, `config/plant`           | `verify,golden,e2e,smoke,reconcile` |
+| `packages/spc-core`, `packages/trace-core` (shape `trace.json`) | `verify,golden,e2e,smoke,reconcile` |
+| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`     | `verify,e2e,smoke,reconcile`        |
+| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*`   | `verify,smoke,reconcile`            |
+| `e2e/` (reconciliation, Playwright)                             | `verify,reconcile`                  |
+| `scripts/stack-smoke*`                                          | `verify,smoke`                      |
 
 ## Full stack (Compose)
 

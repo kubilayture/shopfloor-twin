@@ -415,12 +415,16 @@ describe('OEE configuration (ADR-0021)', () => {
     expect(sections).not.toHaveProperty('reasons');
     expect(sections).not.toHaveProperty('alarms');
     expect(sections).not.toHaveProperty('scrap');
+    expect(sections).not.toHaveProperty('packing');
+    expect(sections).not.toHaveProperty('quality');
     expect(Object.keys(PLANT_FILES)).toEqual([
       ...Object.keys(SIMULATION_FILES),
       'oee',
       'reasons',
       'scrap',
       'alarms',
+      'packing',
+      'quality',
     ]);
   });
 });
@@ -437,6 +441,29 @@ describe('loading files', () => {
       const text = result.ok ? '' : formatIssues(result.issues);
       expect(text).toContain('stock.yaml: ');
       expect(text).toContain('shifts.yaml: ');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads another stock file in place of stock.yaml, validated and cross-checked (ADR-0033)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'plant-config-'));
+    try {
+      const stock = join(dir, 'small-lots.yaml');
+      await writeFile(
+        stock,
+        'lots:\n  - { id: BL100-A, material: BLANK-100, quantity: 5 }\n  - { id: SK1-A, material: SK-1, quantity: 3 }\n',
+      );
+      const result = await loadPlantConfig(DEFAULT_DIR, { stock });
+      expect(result.ok && result.config.stock.lots).toEqual([
+        { id: 'BL100-A', material: 'BLANK-100', quantity: 5 },
+        { id: 'SK1-A', material: 'SK-1', quantity: 3 },
+      ]);
+      await writeFile(stock, 'lots:\n  - { id: X-1, material: UNOBTAINIUM, quantity: 1 }\n');
+      const unknown = await loadPlantConfig(DEFAULT_DIR, { stock });
+      expect(unknown.ok ? '' : formatIssues(unknown.issues)).toContain('UNOBTAINIUM');
+      const missing = await loadPlantConfig(DEFAULT_DIR, { stock: join(dir, 'none.yaml') });
+      expect(missing.ok ? '' : formatIssues(missing.issues)).toContain('stock.yaml: ');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

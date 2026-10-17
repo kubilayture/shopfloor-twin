@@ -16,7 +16,9 @@ if (!parsed.ok) {
 }
 const env = parsed.env;
 
-const loaded = await loadPlantConfig(resolve(env.SIM_CONFIG_DIR)).catch((error: unknown) => {
+const loaded = await loadPlantConfig(resolve(env.SIM_CONFIG_DIR), {
+  ...(env.SIM_STOCK === undefined ? {} : { stock: resolve(env.SIM_STOCK) }),
+}).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 });
@@ -68,8 +70,9 @@ const app = await buildControlApp({
     },
     opcuaOffline: (machineId, offline) => servers.setOffline(machineId, offline),
     failure: { inject: (request) => run.injectFailure(request), list: () => run.injections() },
+    drift: { inject: (request) => run.injectLeakDrift(request), list: () => run.drifts() },
   },
-  groundTruth: () => ({ epoch: servers.epoch, ...run.groundTruth() }),
+  groundTruth: (traceAsOf) => ({ epoch: servers.epoch, ...run.groundTruth(traceAsOf) }),
   logger: { level: env.LOG_LEVEL },
 });
 const log = app.log;

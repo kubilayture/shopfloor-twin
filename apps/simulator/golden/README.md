@@ -1,9 +1,10 @@
 # Golden scenarios
 
-Each folder holds a scenario (`scenario.json`: seed, start, days, configuration and optionally `injections`, and for production mode `orders` (#172) `production`, `dispatches` and `erp`, which names the scenario's ERP dataset and the orders it releases) and its committed output: `summary.json` (the ground truth) and `events.sha256` (the SHA-256 and line count of the event log). `pnpm test:golden` reruns every scenario with the invariant checker on and fails on any byte difference; `pnpm test:golden --update` rewrites the files. Every regeneration needs a written reason here, in the changelog and in the phase log (plan section 9).
+Each folder holds a scenario (`scenario.json`: seed, start, days, configuration and optionally `injections` (failures, and from #196 leak-test drifts with `kind: "leak-drift"`), `stock` (#196: a stock file in the scenario's folder, read in place of `config/plant/stock.yaml`), and for production mode `orders` (#172) `production`, `dispatches` and `erp`, which names the scenario's ERP dataset and the orders it releases) and its committed output: `summary.json` (the ground truth), `trace.json` (from #208: the traceability and SPC ground truth, `sim-trace/1`, `docs/simulation-model.md` "Ground-truth traceability and SPC") and `events.sha256` (the SHA-256 and line count of the event log). `pnpm test:golden` reruns every scenario with the invariant checker on and fails on any byte difference; `pnpm test:golden --update` rewrites the files. Every regeneration needs a written reason here, in the changelog and in the phase log (plan section 9).
 
 - `week-01`: the default plant, one production week from Monday 06:00 Istanbul (seed 20261012).
 - `orders-01` (#172): the same seed and start, two days, production mode `orders`: the CNCs run only the jobs of its `dispatches` (the dispatch rule applied to the released orders of its ERP dataset `orders.json`, tested), with `alarms-01`'s 14 shift A injections (`docs/simulation-model.md`, "Invariants and golden scenarios"). `orders.json` is not a simulation input; the ERP mock and the MES's golden harness serve it.
+- `quality-01` (#208): the same seed and start, two days, production mode `orders`, its own small-lot `stock.yaml` (equal to the `lots` of its ERP dataset `orders.json`, tested), the dispatch rule's `dispatches`, and one bounded `leak-drift` of +0.6 Pa/min on LKT-01 in Monday's shift A after the SPC baseline (08:25Z to 10:50Z). Lots that change inside orders and cartons, a rework with a second seal-kit lot, a leak scrap, a short order with a partial carton, and the drift detected within 20 first-pass readings while its counterfactual window (N = 40: 40 readings before the start, 20 after) opens no episode (`docs/simulation-model.md`, "Invariants and golden scenarios").
 - `alarms-01` (#140): the same seed and start, two days, with 15 failure injections: a flood with a chattering point on Cell M1 from Monday 08:00, a fleeting alarm on LKT-01 and a standing alarm on PCK-01 (`docs/simulation-model.md`, "Invariants and golden scenarios"). Its event log equals `week-01`'s up to the first injection (695 events, tested); its header adds the injections.
 
 ## Regenerations of `week-01`
@@ -22,5 +23,13 @@ Each folder holds a scenario (`scenario.json`: seed, start, days, configuration 
 
 - #172: created (`events.sha256` `ebd1e4aaf49f74ddca14f7b3a4767ade51627cf388d32ece86bcb4ac602aa893`, 6,622 lines).
 - #175: `orders.json` rewritten in the ERP mock's dataset schema (`erpDatasetSchema` of `@shopfloor/contracts/erp-api`: `orderNumber`, the feed number its position) instead of `number`/`feed`; the same order versions in the same order. It is not a simulation input, so `events.sha256` (unchanged, above) and `summary.json` are untouched.
+
+## `trace.json` (#208)
+
+- #208: `trace.json` added beside the summary of `week-01`, `alarms-01` and `orders-01`. A new file, not a regeneration: their `summary.json` and `events.sha256` are byte-identical (tested against the hashes above). From now on every change to a committed `trace.json` (also `quality-01`'s) is a golden regeneration: a written reason here, and the owner's approval, deferred to the owner (Phase 8 plan).
+
+## `quality-01`
+
+- #208: created (`events.sha256` `fce46549f8e8aae4662481cea655beef50b8407f0192db589af431ea99ec0cd7`, 12,605 lines), with `stock.yaml`, `orders.json` and `trace.json`. Probe P4's search (`apps/simulator/src/headless/drift-search.ts`): every drift start from 08:16Z to 09:40Z had a clean 60-reading counterfactual window; 44 of the 85 starts met every condition; 08:25Z also gives a leak scrap. N = 40, the plan's window: the N = 20 fallback is not used.
 
 Earlier changes are recorded in the changelog (#53, #73, #126).

@@ -466,6 +466,9 @@ importers:
       '@shopfloor/test-kit':
         specifier: workspace:*
         version: link:../../packages/test-kit
+      '@shopfloor/trace-core':
+        specifier: workspace:*
+        version: link:../../packages/trace-core
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
@@ -523,6 +526,12 @@ importers:
       '@shopfloor/sim-core':
         specifier: workspace:*
         version: link:../../packages/sim-core
+      '@shopfloor/spc-core':
+        specifier: workspace:*
+        version: link:../../packages/spc-core
+      '@shopfloor/trace-core':
+        specifier: workspace:*
+        version: link:../../packages/trace-core
       fastify:
         specifier: 'catalog:'
         version: 5.12.5

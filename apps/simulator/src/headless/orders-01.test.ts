@@ -13,25 +13,17 @@ import { resolve } from 'node:path';
 import { CAUSES } from '@shopfloor/contracts';
 import { erpDatasetSchema } from '@shopfloor/contracts/erp-api';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { dispatchRule, type ErpOrder } from './dispatch-rule.test-support.ts';
 import { readScenario, scenarioOptions } from './golden.ts';
 import { unitsHash, type UnitJson } from './order-truth.ts';
 import { runHeadless, summaryDocument, type HeadlessResult } from './run.ts';
 import { stableStringify } from './serialize.ts';
 
 const GOLDEN = resolve(import.meta.dirname, '../../golden');
-const MINUTE = 60_000;
 
 interface Logged {
   readonly lines: string[];
   readonly result: HeadlessResult;
-}
-
-interface ErpOrder {
-  readonly orderNumber: string;
-  readonly revision: number;
-  readonly product: string;
-  readonly quantity: number;
-  readonly plannedStart: string;
 }
 
 type LoggedEvent = Record<string, unknown> & {
@@ -78,60 +70,10 @@ describe('golden scenario orders-01 (#172)', () => {
   });
 
   it('dispatches exactly what the dispatch rule makes of the released orders of orders.json', () => {
-    // The plan's rule (#174 implements it in the MES): released orders in planned-start order,
-    // ties by order number, each whole order to the CNC whose queue with it appended finishes
-    // first by ideal time (NotBefore waits and changeovers counted, `none→…` included); ties go
-    // to the lower id.
+    // The plan's rule (#174 implements it in the MES), in `dispatch-rule.test-support.ts`.
     const { erp } = scenario();
     expect(erp?.dataset).toBe('orders.json');
-    const latest = new Map<string, ErpOrder>();
-    for (const order of dataset.orders) {
-      latest.set(order.orderNumber, order);
-    }
-    const released = [...latest.values()]
-      .filter((order) => erp?.release.includes(order.orderNumber))
-      .sort(
-        (a, b) =>
-          Date.parse(a.plannedStart) - Date.parse(b.plannedStart) ||
-          (a.orderNumber < b.orderNumber ? -1 : 1),
-      );
-    const ideal: Record<string, number> = { 'VB-100': 240_000, 'VB-200': 330_000 };
-    const changeover = 25 * MINUTE;
-    const queues = new Map<string, { product: string; quantity: number; notBefore: number }[]>([
-      ['cnc-01', []],
-      ['cnc-02', []],
-    ]);
-    const finish = (queue: { product: string; quantity: number; notBefore: number }[]) => {
-      let end = Number.NEGATIVE_INFINITY;
-      let loaded: string | undefined;
-      for (const job of queue) {
-        const start = Math.max(job.notBefore, end) + (job.product === loaded ? 0 : changeover);
-        end = start + job.quantity * (ideal[job.product] ?? 0);
-        loaded = job.product;
-      }
-      return end;
-    };
-    const dispatches = released.map((order) => {
-      const job = {
-        product: order.product,
-        quantity: order.quantity,
-        notBefore: Date.parse(order.plannedStart),
-      };
-      const [machine = ''] = [...queues.keys()].sort(
-        (a, b) =>
-          finish([...(queues.get(a) ?? []), job]) - finish([...(queues.get(b) ?? []), job]) ||
-          (a < b ? -1 : 1),
-      );
-      queues.get(machine)?.push(job);
-      return {
-        commandId: `${order.orderNumber}~OP10~1`,
-        machine,
-        orderId: order.orderNumber,
-        product: order.product,
-        quantity: order.quantity,
-        notBefore: new Date(job.notBefore).toISOString(),
-      };
-    });
+    const dispatches = dispatchRule(dataset.orders, erp?.release ?? []);
     expect(dispatches).toEqual(scenario().dispatches);
   });
 

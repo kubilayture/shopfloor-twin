@@ -312,6 +312,22 @@ describe('UNS end to end at 60× (#79, Phase 3 exit criteria 1 and 2)', () => {
       total += expected.length;
     }
     expect(total).toBeGreaterThan(80);
+    // Lots and operator (UNS contract 1.4, #197): every OPC UA cycle reports both (lots may be
+    // empty, the operator null), WSH-01's Modbus cycles neither; the gateway's own unit and
+    // collector tests check the values against the simulator's events.
+    const cycles = [...consumer.facts.values()]
+      .flat()
+      .filter((m) => m.schema === 'uns.events.cycle-complete/1');
+    for (const cycle of cycles) {
+      const { lots, operator } = cycle.value;
+      if (cycle.source.protocol === 'modbus') {
+        expect([lots, operator], cycle.source.id).toEqual([undefined, undefined]);
+      } else {
+        expect(Array.isArray(lots), cycle.source.id).toBe(true);
+        expect(operator === null || typeof operator === 'string', cycle.source.id).toBe(true);
+      }
+    }
+    expect(cycles.some((m) => (m.value.lots?.length ?? 0) > 0)).toBe(true);
     // `_sys/…/status` is excluded from gap checks (docs/contracts/uns.md): reserved will numbers.
     expect(consumer.dedup.gaps().filter((gap) => !gap.stream.endsWith('/status'))).toEqual([]);
     // A restarted gateway starts new counters for its own streams; only telemetry (sampled, plan

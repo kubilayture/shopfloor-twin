@@ -43,6 +43,7 @@ import {
 } from '../identity/index.ts';
 import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
+import type { Orders } from '../orders/index.ts';
 import { pareto, type DowntimeFeed, type Oee, type OeeScope } from '../oee/index.ts';
 import { ShiftError, type ShiftRecord, type Shifts } from '../shifts/index.ts';
 import {
@@ -58,6 +59,7 @@ import {
   transitionDto,
 } from './alarm-dto.ts';
 import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
+import { orderRoutes, type OrdersApi } from './order-routes.ts';
 import {
   handoverAuditDto,
   handoverNoteDto,
@@ -219,6 +221,8 @@ export interface ApiSources {
     Shifts,
     'instance' | 'report' | 'notes' | 'note' | 'noteAudit' | 'createNote' | 'editNote' | 'onChange'
   >;
+  /** Production orders and their commands (#174); the order routes answer 503 without it. */
+  readonly orders?: OrdersApi & Pick<Orders, 'onChange'>;
 }
 
 export interface RealtimeOptions {
@@ -678,6 +682,25 @@ export async function registerRealtime(
   };
   const tokenOf = (request: FastifyRequest): Buffer | undefined =>
     parseToken(cookieValue(request.headers.cookie, cookieName));
+  /**
+   * Who a write without a typed actor field is by (#174, session-first): the session's user;
+   * with `MES_AUTH=off` the user of a session the request still carries, else `anonymous`
+   * (recorded unauthenticated). New write routes take no actor field (#170 removes the old ones).
+   */
+  const sessionWriteBy = async (request: FastifyRequest): Promise<WriteBy> => {
+    const principal = principals.get(request);
+    if (principal) {
+      return { userId: principal.userId, username: principal.username, roles: principal.roles };
+    }
+    if (auth) throw new HttpProblem(401, 'a session is needed', PROBLEM_TYPES.unauthenticated);
+    const token = tokenOf(request);
+    const found =
+      token !== undefined && identity?.started === true
+        ? await identity.authenticate(token, { touch: true })
+        : undefined;
+    if (found) return { userId: found.userId, username: found.username, roles: found.roles };
+    return 'anonymous';
+  };
   const accessOf = (request: FastifyRequest): Access =>
     (request.routeOptions.config as Partial<RouteConfig> | undefined)?.access ?? 'read';
   /**
@@ -1396,6 +1419,16 @@ export async function registerRealtime(
           };
         },
       );
+
+      // ---- Orders (#174): list, detail, incidents and the supervisor's writes ----
+      orderRoutes(api, {
+        orders: () => {
+          const orders = ready().sources.orders;
+          if (!orders) throw new HttpProblem(503, 'orders are not available');
+          return orders;
+        },
+        writer: sessionWriteBy,
+      });
 
       // ---- Shifts: instances, report and handover notes (#144, ADR-0025) ----
 
@@ -2425,6 +2458,7 @@ export async function registerRealtime(
         ]),
         ...(sources.downtime ? { downtime: sources.downtime } : {}),
         ...(sources.shifts ? { shifts: sources.shifts } : {}),
+        ...(sources.orders ? { orders: sources.orders } : {}),
         ...(sources.alarms
           ? {
               alarms: sources.alarms,

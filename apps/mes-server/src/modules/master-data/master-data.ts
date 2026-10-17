@@ -1,4 +1,5 @@
-import { parentReason, type PlantConfig } from '@shopfloor/plant-config';
+import { routingAndBom, type BomItem, type ErpMasterData } from '@shopfloor/contracts/erp-api';
+import { idealCycleMs, parentReason, type PlantConfig } from '@shopfloor/plant-config';
 import type { ShiftPattern } from '@shopfloor/shift-calendar';
 import type { Kysely, Transaction } from 'kysely';
 import type { Database } from '../../db/database.ts';
@@ -52,6 +53,51 @@ export interface AlarmPosition {
   readonly workCenters: readonly string[];
   /** The equipment of those work centers, in line order. */
   readonly equipment: readonly string[];
+}
+
+/**
+ * A product's routing and BOM (#174): the operations in order with the work center running each
+ * and the product's ideal cycle there, and the materials consumed per unit.
+ */
+export interface Routing {
+  readonly product: string;
+  readonly changeoverMs: number;
+  readonly operations: readonly {
+    readonly operation: string;
+    readonly workCenter: string;
+    readonly idealCycleMs: number;
+  }[];
+  readonly bom: readonly BomItem[];
+}
+
+/**
+ * The plant configuration as the ERP builds routings and BOMs from it (#174): the same function
+ * (`routingAndBom` of @shopfloor/contracts/erp-api) on the same files, so an ERP order built from
+ * the plant's master data always matches the MES's. Each operation's work center is the one of the
+ * equipment that runs it; an operation run in two work centers has no routing.
+ */
+export function erpMasterData(config: PlantConfig): ErpMasterData {
+  const workCenterByOperation: Record<string, string> = {};
+  for (const area of config.plant.areas) {
+    for (const workCenter of area.workCenters) {
+      for (const equipment of workCenter.equipment) {
+        const known = workCenterByOperation[equipment.operation];
+        if (known !== undefined && known !== workCenter.id) {
+          throw new Error(
+            `${equipment.operation} runs in two work centers (${known}, ${workCenter.id}); a routing needs one`,
+          );
+        }
+        workCenterByOperation[equipment.operation] = workCenter.id;
+      }
+    }
+  }
+  return {
+    operations: config.products.operations,
+    componentsOperation: config.products.componentsOperation,
+    products: config.products.products,
+    workCenterByOperation,
+    lots: config.stock.lots,
+  };
 }
 
 /** master-data's interface for the other modules (plan section 7). */
@@ -197,7 +243,48 @@ export class MasterData {
           .execute();
       }
       await seedAlarms(trx, config);
+      await seedRoutings(trx, config);
     });
+  }
+
+  /** Every product's routing and BOM (#174), by product id. */
+  async routings(): Promise<Routing[]> {
+    const [routings, operations, items] = await Promise.all([
+      this.#db.selectFrom('master_data.routing').selectAll().orderBy('product_id').execute(),
+      this.#db
+        .selectFrom('master_data.routing_operation')
+        .selectAll()
+        .orderBy('product_id')
+        .orderBy('position')
+        .execute(),
+      this.#db
+        .selectFrom('master_data.bom_item')
+        .selectAll()
+        .orderBy('product_id')
+        .orderBy('operation')
+        .orderBy('usage')
+        .orderBy('material')
+        .execute(),
+    ]);
+    return routings.map((routing) => ({
+      product: routing.product_id,
+      changeoverMs: routing.changeover_minutes * 60_000,
+      operations: operations
+        .filter((op) => op.product_id === routing.product_id)
+        .map((op) => ({
+          operation: op.operation,
+          workCenter: op.work_center_id,
+          idealCycleMs: op.ideal_cycle_ms,
+        })),
+      bom: items
+        .filter((item) => item.product_id === routing.product_id)
+        .map((item) => ({
+          material: item.material,
+          operation: item.operation,
+          quantityPerUnit: item.quantity_per_unit,
+          usage: item.usage,
+        })),
+    }));
   }
 
   /**
@@ -324,6 +411,61 @@ export class MasterData {
       .where('id', '=', SHIFT_PATTERN_ID)
       .executeTakeFirstOrThrow(() => new Error('no shift pattern: master data not seeded'));
     return { timeZone: row.time_zone, workdays: row.workdays, shifts: row.shifts };
+  }
+}
+
+/**
+ * Routings and BOMs (#174), inside the seed's transaction: built by `routingAndBom` from the same
+ * configuration the ERP mock reads. A configured product's operations and items are rewritten;
+ * products the configuration drops keep theirs (orders recorded for them name them).
+ */
+async function seedRoutings(trx: Transaction<Database>, config: PlantConfig): Promise<void> {
+  const master = erpMasterData(config);
+  const ideal = idealCycleMs(config);
+  for (const product of config.products.products) {
+    const { routing, bom } = routingAndBom(product.id, master);
+    await trx
+      .insertInto('master_data.routing')
+      .values({ product_id: product.id, changeover_minutes: config.products.changeoverMinutes })
+      .onConflict((c) =>
+        c.column('product_id').doUpdateSet((eb) => ({
+          changeover_minutes: eb.ref('excluded.changeover_minutes'),
+        })),
+      )
+      .execute();
+    await trx.deleteFrom('master_data.bom_item').where('product_id', '=', product.id).execute();
+    await trx
+      .deleteFrom('master_data.routing_operation')
+      .where('product_id', '=', product.id)
+      .execute();
+    if (routing.length > 0) {
+      await trx
+        .insertInto('master_data.routing_operation')
+        .values(
+          routing.map((step, position) => ({
+            product_id: product.id,
+            operation: step.operation,
+            position,
+            work_center_id: step.workCenter,
+            ideal_cycle_ms: ideal[product.id]?.[step.operation] ?? 0,
+          })),
+        )
+        .execute();
+    }
+    if (bom.length > 0) {
+      await trx
+        .insertInto('master_data.bom_item')
+        .values(
+          bom.map((item) => ({
+            product_id: product.id,
+            material: item.material,
+            operation: item.operation,
+            quantity_per_unit: item.quantityPerUnit,
+            usage: item.usage,
+          })),
+        )
+        .execute();
+    }
   }
 }
 

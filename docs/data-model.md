@@ -13,15 +13,19 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `master_data.alarm_position`
   - `master_data.alarm_position_work_center`
   - `master_data.area`
+  - `master_data.bom_item`
   - `master_data.equipment`
   - `master_data.product`
   - `master_data.reason_code`
+  - `master_data.routing`
+  - `master_data.routing_operation`
   - `master_data.shift_pattern`
   - `master_data.site`
   - `master_data.work_center`
 - [`ingest`](#schema-ingest)
   - `ingest.alarm_anchor`
   - `ingest.alarm_snapshot`
+  - `ingest.command_result`
   - `ingest.component_status`
   - `ingest.data_quality_incident`
   - `ingest.equipment_event`
@@ -57,6 +61,14 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `identity.session`
   - `identity.user_account`
   - `identity.user_role`
+- [`orders`](#schema-orders)
+  - `orders.command_attempt`
+  - `orders.dispatch_command`
+  - `orders.erp_cursor`
+  - `orders.erp_message_log`
+  - `orders.order_incident`
+  - `orders.order_operation`
+  - `orders.production_order`
 - [`public`](#schema-public)
   - `public.schema_migrations`
 
@@ -110,6 +122,7 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `ingest` | `mes_owner` | USAGE | USAGE |
 | `ingest.alarm_anchor` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `ingest.alarm_snapshot` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `ingest.command_result` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `ingest.component_status` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `ingest.cycle_hourly` | `mes_cagg` | SELECT |  |
 | `ingest.data_quality_incident` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
@@ -123,12 +136,23 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `master_data.alarm_position` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.alarm_position_work_center` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.area` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.bom_item` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.equipment` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.product` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.reason_code` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.routing` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `master_data.routing_operation` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.shift_pattern` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.site` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `master_data.work_center` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `orders` | `mes_owner` | USAGE |  |
+| `orders.command_attempt` | `mes_owner` | INSERT, SELECT |  |
+| `orders.dispatch_command` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `orders.erp_cursor` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `orders.erp_message_log` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `orders.order_incident` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `orders.order_operation` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `orders.production_order` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `public.schema_migrations` | `mes_owner` | SELECT |  |
 | `shifts` | `mes_owner` | USAGE |  |
 | `shifts.crew_assignment` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
@@ -157,13 +181,30 @@ erDiagram
     text id PK
     text site_id FK
   }
+  bom_item {
+    text product_id PK, FK, FK
+    text material PK
+    text operation PK, FK
+    text usage PK
+  }
   equipment {
     text id PK
     text work_center_id FK
   }
+  product {
+    text id PK
+  }
   reason_code {
     text id PK
     text parent_id FK
+  }
+  routing {
+    text product_id PK, FK
+  }
+  routing_operation {
+    text product_id PK, FK
+    text operation PK
+    text work_center_id FK
   }
   site {
     text id PK
@@ -176,8 +217,13 @@ erDiagram
   alarm_position ||--o{ alarm_position_work_center : "position_id"
   work_center ||--o{ alarm_position_work_center : "work_center_id"
   site ||--o{ area : "site_id"
+  routing ||--o{ bom_item : "product_id"
+  routing_operation ||--o{ bom_item : "product_id, operation"
   work_center ||--o{ equipment : "work_center_id"
   reason_code |o--o{ reason_code : "parent_id"
+  product ||--o{ routing : "product_id"
+  routing ||--o{ routing_operation : "product_id"
+  work_center ||--o{ routing_operation : "work_center_id"
   area ||--o{ work_center : "area_id"
 ```
 
@@ -250,6 +296,30 @@ erDiagram
   user_account ||--o{ session : "user_id"
   role ||--o{ user_role : "role_id"
   user_account ||--o{ user_role : "user_id"
+```
+
+Schema orders:
+
+```mermaid
+erDiagram
+  command_attempt {
+    text command_id FK, PK
+    integer attempt PK
+  }
+  dispatch_command {
+    text command_id PK
+    text order_id FK
+  }
+  order_operation {
+    text order_id FK, PK
+    text operation PK
+  }
+  production_order {
+    text id PK
+  }
+  dispatch_command ||--o{ command_attempt : "command_id"
+  production_order ||--o{ dispatch_command : "order_id"
+  production_order ||--o{ order_operation : "order_id"
 ```
 
 The other schemas have no foreign keys; their references are by value, as described above.
@@ -325,6 +395,26 @@ Areas of the site.
 | Primary key | `area_pkey` | `PRIMARY KEY (id)` |
 | Foreign key | `area_site_id_fkey` | `FOREIGN KEY (site_id) REFERENCES master_data.site(id)` |
 
+### master_data.bom_item
+
+Materials an operation consumes per unit: the blank at OP10, components and rework components at OP30 (`standard` or `rework`) (#174).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `product_id` | `text` | not null |  |
+| `material` | `text` | not null |  |
+| `operation` | `text` | not null |  |
+| `quantity_per_unit` | `integer` | not null |  |
+| `usage` | `text` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `bom_item_pkey` | `PRIMARY KEY (product_id, material, operation, usage)` |
+| Foreign key | `bom_item_product_id_fkey` | `FOREIGN KEY (product_id) REFERENCES master_data.routing(product_id)` |
+| Foreign key | `bom_item_product_id_operation_fkey` | `FOREIGN KEY (product_id, operation) REFERENCES master_data.routing_operation(product_id, operation)` |
+| Check | `bom_item_quantity_per_unit_check` | `CHECK ((quantity_per_unit >= 1))` |
+| Check | `bom_item_usage_check` | `CHECK ((usage = ANY (ARRAY['standard'::text, 'rework'::text])))` |
+
 ### master_data.equipment
 
 The machines, with their operation, interface and position in the line.
@@ -375,6 +465,43 @@ The downtime reason tree from reasons.yaml: id (its path), parent and name; inac
 | Primary key | `reason_code_pkey` | `PRIMARY KEY (id)` |
 | Foreign key | `reason_code_parent_id_fkey` | `FOREIGN KEY (parent_id) REFERENCES master_data.reason_code(id)` |
 | Check | `reason_code_check` | `CHECK ((((parent_id IS NULL) AND (POSITION(('/'::text) IN (id)) = 0)) OR ((parent_id IS NOT NULL) AND (id = ((parent_id \|\| '/'::text) \|\| split_part(id, '/'::text, '-1'::integer))))))` |
+
+### master_data.routing
+
+Each product’s routing, with the changeover time to it for the dispatch rule (#174).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `product_id` | `text` | not null |  |
+| `changeover_minutes` | `integer` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `routing_pkey` | `PRIMARY KEY (product_id)` |
+| Foreign key | `routing_product_id_fkey` | `FOREIGN KEY (product_id) REFERENCES master_data.product(id)` |
+| Check | `routing_changeover_minutes_check` | `CHECK ((changeover_minutes >= 0))` |
+
+### master_data.routing_operation
+
+The operations of a routing in order, the work center of the equipment that runs each and the product’s ideal cycle there; built by `routingAndBom` like the ERP’s (#174).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `product_id` | `text` | not null |  |
+| `operation` | `text` | not null |  |
+| `position` | `integer` | not null |  |
+| `work_center_id` | `text` | not null |  |
+| `ideal_cycle_ms` | `bigint` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `routing_operation_pkey` | `PRIMARY KEY (product_id, operation)` |
+| Unique | `routing_operation_product_id_position_key` | `UNIQUE (product_id, "position")` |
+| Foreign key | `routing_operation_product_id_fkey` | `FOREIGN KEY (product_id) REFERENCES master_data.routing(product_id)` |
+| Foreign key | `routing_operation_work_center_id_fkey` | `FOREIGN KEY (work_center_id) REFERENCES master_data.work_center(id)` |
+| Check | `routing_operation_ideal_cycle_ms_check` | `CHECK ((ideal_cycle_ms > 0))` |
+| Check | `routing_operation_operation_check` | `CHECK ((operation ~ '^OP[0-9]{2}$'::text))` |
+| Check | `routing_operation_position_check` | `CHECK (("position" >= 0))` |
 
 ### master_data.shift_pattern
 
@@ -475,6 +602,33 @@ The gateway’s alarm snapshot on resync: active codes at a device sequence (asO
 | Primary key | `alarm_snapshot_pkey` | `PRIMARY KEY (equipment, device_epoch)` |
 | Check | `alarm_snapshot_quality_check` | `CHECK ((quality = ANY (ARRAY['good'::text, 'uncertain'::text, 'bad'::text])))` |
 
+### ingest.command_result
+
+The gateway’s answers to command deliveries (`cmd-res`), a topic stream deduplicated by its cursor; several per command id, read with ADR-0029’s precedence by the orders module (#174).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `arrival` | `bigint` | not null | `generated always as identity` |
+| `topic` | `text` | not null |  |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `seq` | `bigint` | not null |  |
+| `command_id` | `text` | not null |  |
+| `order_id` | `text` | not null |  |
+| `device_epoch` | `bigint` | not null |  |
+| `expires_at` | `timestamp with time zone` | not null |  |
+| `result` | `text` | not null |  |
+| `responded_at` | `timestamp with time zone` | not null |  |
+| `ingested_at` | `timestamp with time zone` | not null | `now()` |
+| `payload` | `jsonb` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `command_result_pkey` | `PRIMARY KEY (arrival)` |
+| Unique | `command_result_topic_epoch_seq_key` | `UNIQUE (topic, epoch, seq)` |
+| Check | `command_result_result_check` | `CHECK ((result = ANY (ARRAY['accepted'::text, 'duplicate'::text, 'rejected'::text, 'expired'::text, 'unknown'::text])))` |
+| Index | `command_result_command` | `ingest.command_result USING btree (command_id, device_epoch)` |
+
 ### ingest.component_status
 
 Latest online/offline status of each component (last will).
@@ -526,7 +680,7 @@ Sequence gaps found by the MES and incidents reported by the gateway.
 
 ### ingest.equipment_event
 
-Device facts (state changes, cycles, alarm transitions), one stream per equipment; deduplicated by the unique key.
+Device facts (state changes, cycles, alarm transitions, job transitions from #174), one stream per equipment; deduplicated by the unique key.
 
 TimescaleDB hypertable, partitioned by `source_time` in chunks of 7 days.
 
@@ -550,9 +704,10 @@ TimescaleDB hypertable, partitioned by `source_time` in chunks of 7 days.
 | --- | --- | --- |
 | Unique | `equipment_event_equipment_epoch_seq_source_time_key` | `UNIQUE (equipment, epoch, seq, source_time)` |
 | Check | `equipment_event_check` | `CHECK (((event_type = 'state'::text) = (state IS NOT NULL)))` |
-| Check | `equipment_event_event_type_check` | `CHECK ((event_type = ANY (ARRAY['state'::text, 'cycle'::text, 'alarm'::text])))` |
+| Check | `equipment_event_event_type_check` | `CHECK ((event_type = ANY (ARRAY['state'::text, 'cycle'::text, 'alarm'::text, 'job'::text])))` |
 | Check | `equipment_event_quality_check` | `CHECK ((quality = ANY (ARRAY['good'::text, 'uncertain'::text, 'bad'::text])))` |
 | Index | `equipment_event_alarm` | `ingest.equipment_event USING btree (equipment, epoch, seq) WHERE (event_type = 'alarm'::text)` |
+| Index | `equipment_event_job_command` | `ingest.equipment_event USING btree ((((payload -> 'value'::text) ->> 'commandId'::text)), equipment, epoch) WHERE (event_type = 'job'::text)` |
 | Index | `equipment_event_source_time_idx` | `ingest.equipment_event USING btree (source_time DESC)` |
 
 ### ingest.rejected_message
@@ -1298,6 +1453,222 @@ The roles of each user, one or more (#168).
 | Primary key | `user_role_pkey` | `PRIMARY KEY (user_id, role_id)` |
 | Foreign key | `user_role_role_id_fkey` | `FOREIGN KEY (role_id) REFERENCES identity.role(id)` |
 | Foreign key | `user_role_user_id_fkey` | `FOREIGN KEY (user_id) REFERENCES identity.user_account(id)` |
+
+## Schema orders
+
+Owner: orders. Production orders imported from the ERP’s change feed with their routing, the dispatch commands to the CNCs (a transactional outbox, every delivery published) and their reading from the gateway’s results and the device’s job facts, the ERP message log (feed entries in, status messages out through a second outbox) and the module’s incidents (#174, ADR-0028, ADR-0029).
+
+### orders.command_attempt
+
+Every delivery of a command published, with its own expiresAt and the command envelope’s epoch and seq; written before the publish; append-only (#174).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `command_id` | `text` | not null |  |
+| `attempt` | `integer` | not null |  |
+| `issued_at` | `timestamp with time zone` | not null |  |
+| `expires_at` | `timestamp with time zone` | not null |  |
+| `mes_epoch` | `bigint` | not null |  |
+| `mes_seq` | `bigint` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `command_attempt_pkey` | `PRIMARY KEY (command_id, attempt)` |
+| Foreign key | `command_attempt_command_id_fkey` | `FOREIGN KEY (command_id) REFERENCES orders.dispatch_command(command_id)` |
+| Check | `command_attempt_attempt_check` | `CHECK ((attempt >= 1))` |
+
+### orders.dispatch_command
+
+The command outbox: one `cmd/load-order` per dispatch (`{order}~OP10~{n}`) with its CNC, job, notBefore and device epoch, its queue position, and its reading (state, settled, failed, acceptance and confirmation by the job fact, the job’s state and times, blanks a lost job started, seqAfterExpiry) (#174, ADR-0029).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `command_id` | `text` | not null |  |
+| `order_id` | `text` | not null |  |
+| `n` | `integer` | not null |  |
+| `equipment` | `text` | not null |  |
+| `product` | `text` | not null |  |
+| `quantity` | `integer` | not null |  |
+| `not_before` | `timestamp with time zone` | not null |  |
+| `device_epoch` | `bigint` | not null |  |
+| `queue_position` | `bigint` | not null | `generated always as identity` |
+| `created_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `state` | `text` | not null | `'queued'::text` |
+| `settled` | `boolean` | not null | `false` |
+| `failed` | `boolean` | not null | `false` |
+| `accepted_by` | `text` | null |  |
+| `accepted_seq` | `bigint` | null |  |
+| `accepted_at` | `timestamp with time zone` | null |  |
+| `confirmed` | `boolean` | not null | `false` |
+| `job` | `text` | null |  |
+| `started_at` | `timestamp with time zone` | null |  |
+| `completed_at` | `timestamp with time zone` | null |  |
+| `lost_started` | `integer` | null |  |
+| `rejection` | `text` | null |  |
+| `seq_after_expiry` | `bigint` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `dispatch_command_pkey` | `PRIMARY KEY (command_id)` |
+| Unique | `dispatch_command_order_id_n_key` | `UNIQUE (order_id, n)` |
+| Unique | `dispatch_command_queue_position_key` | `UNIQUE (queue_position)` |
+| Foreign key | `dispatch_command_order_id_fkey` | `FOREIGN KEY (order_id) REFERENCES orders.production_order(id)` |
+| Check | `dispatch_command_accepted_by_check` | `CHECK ((accepted_by = ANY (ARRAY['fact'::text, 'result'::text])))` |
+| Check | `dispatch_command_check` | `CHECK ((command_id = ((order_id \|\| '~OP10~'::text) \|\| (n)::text)))` |
+| Check | `dispatch_command_check1` | `CHECK (((accepted_by IS NULL) = (job IS NULL)))` |
+| Check | `dispatch_command_check2` | `CHECK (((job = 'lost'::text) = (lost_started IS NOT NULL)))` |
+| Check | `dispatch_command_job_check` | `CHECK ((job = ANY (ARRAY['accepted'::text, 'started'::text, 'completed'::text, 'lost'::text])))` |
+| Check | `dispatch_command_lost_started_check` | `CHECK ((lost_started >= 0))` |
+| Check | `dispatch_command_n_check` | `CHECK ((n >= 1))` |
+| Check | `dispatch_command_quantity_check` | `CHECK (((quantity >= 1) AND (quantity <= 100000)))` |
+| Check | `dispatch_command_state_check` | `CHECK ((state = ANY (ARRAY['queued'::text, 'sent'::text, 'unknown'::text, 'failed'::text, 'accepted'::text, 'rejected'::text, 'expired'::text, 'not-accepted'::text, 'epoch-ended'::text])))` |
+| Index | `dispatch_command_open` | `orders.dispatch_command USING btree (equipment, queue_position) WHERE ((settled = false) OR (job = ANY (ARRAY['accepted'::text, 'started'::text])))` |
+
+### orders.erp_cursor
+
+The ERP change feed’s cursor and feed id, committed with the page it imported; a changed feed id resets it to 0 (#174, ADR-0028).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `text` | not null |  |
+| `feed_id` | `text` | null |  |
+| `cursor` | `bigint` | not null |  |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `erp_cursor_pkey` | `PRIMARY KEY (id)` |
+| Check | `erp_cursor_cursor_check` | `CHECK ((cursor >= 0))` |
+| Check | `erp_cursor_feed_id_check` | `CHECK ((feed_id ~ '^[0-9a-f]{32}$'::text))` |
+| Check | `erp_cursor_id_check` | `CHECK ((id = 'erp'::text))` |
+
+### orders.erp_message_log
+
+Feed entries imported (in) and messages to the ERP (out, an outbox with its Idempotency-Key, attempts, last error and the ERP’s receipt); a 409 is an incident and never retried (#174, ADR-0028).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `direction` | `text` | not null |  |
+| `kind` | `text` | not null |  |
+| `order_id` | `text` | not null |  |
+| `revision` | `integer` | not null |  |
+| `idempotency_key` | `text` | null |  |
+| `feed_id` | `text` | null |  |
+| `feed_seq` | `bigint` | null |  |
+| `payload` | `jsonb` | not null |  |
+| `status` | `text` | not null |  |
+| `detail` | `text` | null |  |
+| `attempts` | `integer` | not null | `0` |
+| `last_error` | `text` | null |  |
+| `next_attempt_at` | `timestamp with time zone` | null |  |
+| `receipt` | `jsonb` | null |  |
+| `created_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `erp_message_log_pkey` | `PRIMARY KEY (id)` |
+| Unique | `erp_message_log_idempotency_key_key` | `UNIQUE (idempotency_key)` |
+| Check | `erp_message_log_attempts_check` | `CHECK ((attempts >= 0))` |
+| Check | `erp_message_log_check` | `CHECK (((direction = 'out'::text) = (idempotency_key IS NOT NULL)))` |
+| Check | `erp_message_log_check1` | `CHECK (((direction = 'in'::text) = (kind = 'feed-entry'::text)))` |
+| Check | `erp_message_log_direction_check` | `CHECK ((direction = ANY (ARRAY['in'::text, 'out'::text])))` |
+| Check | `erp_message_log_kind_check` | `CHECK ((kind = ANY (ARRAY['feed-entry'::text, 'status'::text, 'confirmation'::text])))` |
+| Check | `erp_message_log_status_check` | `CHECK ((status = ANY (ARRAY['imported'::text, 'rejected'::text, 'unchanged'::text, 'cancelled'::text, 'revision-refused'::text, 'pending'::text, 'sent'::text, 'conflict'::text, 'refused'::text])))` |
+| Index | `erp_message_log_order` | `orders.erp_message_log USING btree (order_id, id)` |
+| Index | `erp_message_log_pending` | `orders.erp_message_log USING btree (id) WHERE (status = 'pending'::text)` |
+
+### orders.order_incident
+
+Incidents of the orders module (ERP feed changed, ERP conflict or refusal, command failed or unconfirmed, unknown or duplicate job, dispatch lost), open at most once per key (#174).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `type` | `text` | not null |  |
+| `key` | `text` | not null |  |
+| `order_id` | `text` | null |  |
+| `command_id` | `text` | null |  |
+| `equipment` | `text` | null |  |
+| `message` | `text` | not null |  |
+| `detected_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `closed_at` | `timestamp with time zone` | null |  |
+| `resolution` | `text` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `order_incident_pkey` | `PRIMARY KEY (id)` |
+| Check | `order_incident_check` | `CHECK (((closed_at IS NULL) = (resolution IS NULL)))` |
+| Check | `order_incident_type_check` | `CHECK ((type = ANY (ARRAY['erp-feed-changed'::text, 'erp-conflict'::text, 'erp-refused'::text, 'command-failed'::text, 'command-unconfirmed'::text, 'unknown-job'::text, 'duplicate-job'::text, 'dispatch-lost'::text])))` |
+| Index | `order_incident_open` | `orders.order_incident USING btree (key) WHERE (closed_at IS NULL)` |
+| Index | `order_incident_order` | `orders.order_incident USING btree (order_id, id)` |
+
+### orders.order_operation
+
+The routing operations of an order with their work centers; rebuilt when a new revision replaces an order only imported (#174; #175 adds its tracking).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `order_id` | `text` | not null |  |
+| `operation` | `text` | not null |  |
+| `position` | `integer` | not null |  |
+| `work_center` | `text` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `order_operation_pkey` | `PRIMARY KEY (order_id, operation)` |
+| Foreign key | `order_operation_order_id_fkey` | `FOREIGN KEY (order_id) REFERENCES orders.production_order(id)` |
+| Check | `order_operation_operation_check` | `CHECK ((operation ~ '^OP[0-9]{2}$'::text))` |
+| Check | `order_operation_position_check` | `CHECK (("position" >= 0))` |
+
+### orders.production_order
+
+One row per ERP order number at the revision held: product, quantity, planned start and due date (plant time), status (imported, rejected, released, dispatched, in-progress, completed, closed, cancelled), the flags short, dispatch-failed and dispatch-lost, the ERP’s routing and BOM, and the version a supervisor write names (#174).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `text` | not null |  |
+| `revision` | `integer` | not null |  |
+| `feed_seq` | `bigint` | not null |  |
+| `product` | `text` | not null |  |
+| `quantity` | `integer` | not null |  |
+| `priority` | `integer` | not null |  |
+| `planned_start` | `timestamp with time zone` | not null |  |
+| `due_date` | `timestamp with time zone` | not null |  |
+| `erp_status` | `text` | not null |  |
+| `status` | `text` | not null |  |
+| `short` | `boolean` | not null | `false` |
+| `dispatch_failed` | `boolean` | not null | `false` |
+| `dispatch_lost` | `boolean` | not null | `false` |
+| `rejection` | `text` | null |  |
+| `routing` | `jsonb` | not null |  |
+| `bom` | `jsonb` | not null |  |
+| `version` | `integer` | not null | `1` |
+| `imported_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `released_at` | `timestamp with time zone` | null |  |
+| `dispatched_at` | `timestamp with time zone` | null |  |
+| `started_at` | `timestamp with time zone` | null |  |
+| `completed_at` | `timestamp with time zone` | null |  |
+| `closed_at` | `timestamp with time zone` | null |  |
+| `cancelled_at` | `timestamp with time zone` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `production_order_pkey` | `PRIMARY KEY (id)` |
+| Check | `production_order_check` | `CHECK (((status = 'rejected'::text) = (rejection IS NOT NULL)))` |
+| Check | `production_order_check1` | `CHECK (((short = false) OR (status = ANY (ARRAY['completed'::text, 'closed'::text]))))` |
+| Check | `production_order_erp_status_check` | `CHECK ((erp_status = ANY (ARRAY['open'::text, 'cancelled'::text])))` |
+| Check | `production_order_id_check` | `CHECK ((id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$'::text))` |
+| Check | `production_order_priority_check` | `CHECK (((priority >= 1) AND (priority <= 9)))` |
+| Check | `production_order_quantity_check` | `CHECK (((quantity >= 1) AND (quantity <= 100000)))` |
+| Check | `production_order_revision_check` | `CHECK ((revision >= 1))` |
+| Check | `production_order_status_check` | `CHECK ((status = ANY (ARRAY['imported'::text, 'rejected'::text, 'released'::text, 'dispatched'::text, 'in-progress'::text, 'completed'::text, 'closed'::text, 'cancelled'::text])))` |
+| Check | `production_order_version_check` | `CHECK ((version >= 1))` |
+| Index | `production_order_planned` | `orders.production_order USING btree (planned_start, id)` |
+| Index | `production_order_status` | `orders.production_order USING btree (status, planned_start)` |
 
 ## Schema public
 

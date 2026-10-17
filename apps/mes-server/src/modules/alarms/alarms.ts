@@ -1698,6 +1698,10 @@ export class Alarms {
         case 'alarm-stale':
           // Anchors and snapshots once used stay part of their epoch's history.
           return;
+        // For the orders module (#174); a job's `sample` notice moves finality like any fact.
+        case 'job':
+        case 'command-result':
+          return;
         case 'epoch':
           await this.#track(notice.equipment, notice.epoch);
           return;

@@ -1,11 +1,14 @@
 import type { FloodEpisode } from '@shopfloor/alarm-core';
+import { ORDERS_TOPIC } from '@shopfloor/contracts/mes-api';
 import { Counter, Gauge, Histogram, type Registry } from 'prom-client';
 import type { AlarmEvent, AlarmKpiBucket, AlarmScope } from '../alarms/index.ts';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
 import type { DowntimeChange, OeeBucket, OeeChange, OeeScope } from '../oee/index.ts';
 import { alarmKpiDto, floodEpisodeDto, occurrenceDto, pointDto } from './alarm-dto.ts';
+import type { OrderChange } from '../orders/index.ts';
 import type { ShiftChange } from '../shifts/index.ts';
+import { commandDto, orderDto } from './order-dto.ts';
 import { bucketDto, recordDto } from './oee-dto.ts';
 import { handoverNoteDto, shiftRecordDto } from './shift-dto.ts';
 import {
@@ -83,6 +86,10 @@ export interface PushSources {
   readonly shifts?: {
     onChange(listener: (change: ShiftChange) => void): () => void;
   };
+  /** Order and command changes (#174). */
+  readonly orders?: {
+    onChange(listener: (change: OrderChange) => void): () => void;
+  };
 }
 
 export interface PushOptions {
@@ -119,6 +126,8 @@ interface Client {
   alarms: boolean;
   /** Following `shifts` (#144). */
   shifts: boolean;
+  /** Following `orders` (#174). */
+  orders: boolean;
   /** The paced topics followed: `oee:<id>` and `alarm-kpi:<scope>`. */
   readonly paced: Set<string>;
   /** Per equipment: the metrics subscribed, or null for all. */
@@ -275,6 +284,13 @@ export class PushHub {
         }),
       );
     }
+    if (sources.orders) {
+      this.#detach.push(
+        sources.orders.onChange((change) => {
+          this.#onOrder(change);
+        }),
+      );
+    }
     if (sources.alarms) {
       this.#detach.push(
         sources.alarms.onChange((change) => {
@@ -316,6 +332,7 @@ export class PushHub {
       downtime: false,
       alarms: false,
       shifts: false,
+      orders: false,
       paced: new Set(),
       telemetry: new Map(),
       pending: new Map(),
@@ -401,6 +418,10 @@ export class PushHub {
     }
     if (request.topic === SHIFTS_TOPIC) {
       this.#shiftsRequest(client, sources, request);
+      return;
+    }
+    if (request.topic === ORDERS_TOPIC) {
+      this.#ordersRequest(client, sources, request);
       return;
     }
     if (request.topic.startsWith('alarm-kpi:')) {
@@ -520,6 +541,47 @@ export class PushHub {
       topic: SHIFTS_TOPIC,
       metric: null,
     });
+  }
+
+  /**
+   * `orders` (#174): order upserts keyed by order id and command upserts keyed by command id. A
+   * client reads `GET /orders` (and `GET /orders/{id}`) first, then applies upserts by id; it
+   * resets its copy on (re)subscribe.
+   */
+  #ordersRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    if (!sources.orders) {
+      this.#send(client, {
+        type: 'error',
+        code: 'unknown-topic',
+        detail: 'order push is not available',
+      });
+      return;
+    }
+    client.orders = request.type === 'subscribe';
+    if (!client.orders) {
+      this.#dropPending(client, 'order:');
+      this.#dropPending(client, 'command:');
+    }
+    this.#send(client, {
+      type: request.type === 'subscribe' ? 'subscribed' : 'unsubscribed',
+      topic: ORDERS_TOPIC,
+      metric: null,
+    });
+  }
+
+  #onOrder(change: OrderChange): void {
+    let data: string | undefined;
+    const key =
+      change.type === 'order' ? `order:${change.order.id}` : `command:${change.command.commandId}`;
+    for (const client of this.#clients) {
+      if (!client.orders) continue;
+      data ??= message(
+        change.type === 'order'
+          ? { type: 'order', event: change.event, order: orderDto(change.order) }
+          : { type: 'command', event: change.event, command: commandDto(change.command) },
+      );
+      this.#enqueue(client, key, data);
+    }
   }
 
   #onShift(change: ShiftChange): void {

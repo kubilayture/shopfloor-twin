@@ -12,6 +12,8 @@ const ALL = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
 /** Append-only tables (a trigger refuses the rest for every role besides). */
 const APPEND = ['SELECT', 'INSERT'] as const;
 const READ = ['SELECT'] as const;
+/** Kept, never deleted. */
+const KEEP = ['SELECT', 'INSERT', 'UPDATE'] as const;
 
 /**
  * Every grant of `mes_app` (#169, ADR-0027), per table and view: typed from `Database`, so a table
@@ -35,6 +37,7 @@ export const DECLARED_GRANTS: {
       alarms: ['USAGE'],
       shifts: ['USAGE'],
       identity: ['USAGE'],
+      orders: ['USAGE'],
     },
     mes_cagg: { ingest: ['USAGE'], equipment: ['USAGE'] },
   },
@@ -51,6 +54,9 @@ export const DECLARED_GRANTS: {
       'master_data.alarm_position': ALL,
       'master_data.alarm_position_work_center': ALL,
       'master_data.alarm_definition': ALL,
+      'master_data.routing': ALL,
+      'master_data.routing_operation': ALL,
+      'master_data.bom_item': ALL,
       'ingest.equipment_event': ALL,
       'ingest.telemetry_sample': ALL,
       'ingest.source_cursor': ALL,
@@ -60,6 +66,7 @@ export const DECLARED_GRANTS: {
       'ingest.rejected_message': ALL,
       'ingest.alarm_anchor': ALL,
       'ingest.alarm_snapshot': ALL,
+      'ingest.command_result': ALL,
       // Owned by mes_cagg, which granted it: without it a read is 42501.
       'ingest.cycle_hourly': READ,
       'equipment.bucket_finality': ALL,
@@ -87,6 +94,16 @@ export const DECLARED_GRANTS: {
       'identity.user_role': ALL,
       'identity.session': ALL,
       'identity.audit_log': APPEND,
+      // Orders, commands, messages and incidents are kept, never deleted (#174).
+      'orders.erp_cursor': KEEP,
+      'orders.production_order': KEEP,
+      // Replaced with a new revision of an order only imported.
+      'orders.order_operation': ALL,
+      'orders.dispatch_command': KEEP,
+      // Every delivery published, append-only.
+      'orders.command_attempt': APPEND,
+      'orders.erp_message_log': KEEP,
+      'orders.order_incident': KEEP,
     },
     // The aggregates' sources, which a refresh reads; the aggregates themselves it owns.
     mes_cagg: {

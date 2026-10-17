@@ -177,7 +177,7 @@ The gateway (ADR-0029):
 
 **How a consumer reads several results for one command id:** `accepted` and `duplicate` are sticky per command id (and device epoch): the job exists, and no later `expired`, `unknown` or `rejected` (`command-conflict`) for that id ever revokes them. `expired` and `unknown` hold only for the delivery they answer, which they name by `expiresAt`: an `expired` for one `expiresAt` says nothing about a resend with another, and an `unknown` never overrides a definitive answer (`expired`, `rejected` or a sticky one) for the same `expiresAt`, whatever their order, and is replaced by any definitive answer. `rejected` (other than `command-conflict` after an acceptance) is final for the command id.
 
-Until #174 the MES ingest refuses `events/job` and `cmd-res` (`unexpected-topic`): an orders-mode run seen by the MES has sequence gaps where its job facts are. Schedule mode, the default, has no job facts.
+The MES ingests both from #174 (ADR-0017 note): job facts as device facts in `equipment_event`, `cmd-res` as a topic stream of the gateway in `command_result`; its `orders` module reads them with the precedence above (see "Consumer: MES ingest"). Schedule mode, the default, has no job facts.
 
 ## Identity, duplicates and gaps (ADR-0015)
 
@@ -203,7 +203,7 @@ The MES `ingest` module (`apps/mes-server/src/modules/ingest/`, ADR-0017) is the
 
 **Subscriptions** (QoS 1, renewed and checked on every connect; readiness requires all granted; the ACL's `topic read orbis/#` for `mes` covers them):
 
-- `orbis/gebze/+/+/+/state/+`, `…/telemetry/+`, `…/events/+`, `…/alarms/+`;
+- `orbis/gebze/+/+/+/state/+`, `…/telemetry/+`, `…/events/+`, `…/alarms/+`, `…/cmd-res/+` (1.3, #174);
 - `orbis/gebze/_sys/edge-gateway/+/status` and `…/incidents`.
 
 **Acknowledgement:** a message is acknowledged only after its transaction committed, one at a time in arrival order. A crash before the commit means the broker delivers the message again; a crash between commit and acknowledgement means a copy, which dedup removes. When a transaction fails (ADR-0017):
@@ -213,21 +213,22 @@ The MES `ingest` module (`apps/mes-server/src/modules/ingest/`, ADR-0017) is the
 
 **What happens to each delivery** (tables in the `ingest` schema, `db/migrations/0003_ingest_raw.sql`):
 
-| Delivery                                                                       | Result                                                                                                                  |
-| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| Invalid JSON, a schema `parseUnsMessage` rejects, a topic/payload mismatch     | `rejected_message` with reason `invalid-json`, `invalid-payload`, `topic-mismatch` or `unexpected-topic` and the detail |
-| A time outside the years 1970–2199, a NUL character, a lone surrogate          | `rejected_message`, reason `invalid-payload` (the database couldn't store it)                                           |
-| A valid message the database still refuses                                     | `rejected_message`, reason `unstorable`                                                                                 |
-| State event, cycle, alarm (`scope: device`)                                    | `equipment_event` (hypertable; unique on equipment, epoch, seq, sourceTime)                                             |
-| Telemetry                                                                      | `telemetry_sample` (hypertable; unique on topic, epoch, seq, sourceTime)                                                |
-| Gateway incident                                                               | `data_quality_incident`, origin `gateway`                                                                               |
-| Gateway status                                                                 | `component_status`: the latest delivery wins                                                                            |
-| Snapshot (`kind: snapshot`), or `state/current` delivered with the retain flag | `state_anchor`: not a fact                                                                                              |
-| `alarms/{code}` delivered with the retain flag (#141)                          | `alarm_anchor`: the device's last fact for the code, not a fact here; the highest `seq` per (equipment, epoch, code)    |
-| `alarms/_snapshot` (`uns.alarm-snapshot/1`, #141), retained or not             | `alarm_snapshot`: the highest `asOfSeq` per (equipment, `deviceEpoch`)                                                  |
-| Other retained deliveries (telemetry, cycles)                                  | not stored: current values, not facts (counted in metrics)                                                              |
-| A number already seen in the stream's current epoch                            | dropped as a duplicate (counted)                                                                                        |
-| An epoch older than the stream's current one                                   | `rejected_message`, reason `stale-epoch`                                                                                |
+| Delivery                                                                            | Result                                                                                                                  |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Invalid JSON, a schema `parseUnsMessage` rejects, a topic/payload mismatch          | `rejected_message` with reason `invalid-json`, `invalid-payload`, `topic-mismatch` or `unexpected-topic` and the detail |
+| A time outside the years 1970–2199, a NUL character, a lone surrogate               | `rejected_message`, reason `invalid-payload` (the database couldn't store it)                                           |
+| A valid message the database still refuses                                          | `rejected_message`, reason `unstorable`                                                                                 |
+| State event, cycle, alarm, job fact (`scope: device`; job facts from #174)          | `equipment_event` (hypertable; unique on equipment, epoch, seq, sourceTime)                                             |
+| `cmd-res/load-order` (`uns.cmd-res/1`, #174), validated by `parseUnsCommandMessage` | `command_result`: a topic stream of the gateway, deduplicated by its cursor; several per command id                     |
+| Telemetry                                                                           | `telemetry_sample` (hypertable; unique on topic, epoch, seq, sourceTime)                                                |
+| Gateway incident                                                                    | `data_quality_incident`, origin `gateway`                                                                               |
+| Gateway status                                                                      | `component_status`: the latest delivery wins                                                                            |
+| Snapshot (`kind: snapshot`), or `state/current` delivered with the retain flag      | `state_anchor`: not a fact                                                                                              |
+| `alarms/{code}` delivered with the retain flag (#141)                               | `alarm_anchor`: the device's last fact for the code, not a fact here; the highest `seq` per (equipment, epoch, code)    |
+| `alarms/_snapshot` (`uns.alarm-snapshot/1`, #141), retained or not                  | `alarm_snapshot`: the highest `asOfSeq` per (equipment, `deviceEpoch`)                                                  |
+| Other retained deliveries (telemetry, cycles)                                       | not stored: current values, not facts (counted in metrics)                                                              |
+| A number already seen in the stream's current epoch                                 | dropped as a duplicate (counted)                                                                                        |
+| An epoch older than the stream's current one                                        | `rejected_message`, reason `stale-epoch`                                                                                |
 
 Topic/payload checks: the schema must be the one of the topic class, an alarm's `code` must match its topic name, and `source.id` must be the topic's equipment (or the `_sys` instance).
 

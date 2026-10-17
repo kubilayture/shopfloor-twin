@@ -4,8 +4,11 @@ import {
   parseEquipmentTopic,
   type Alarm,
   type AlarmSnapshot,
+  type CommandResultValue,
   type CycleComplete,
   type Incident,
+  type JobEvent,
+  type JobTransition,
   type MachineState,
   type StateCurrent,
   type Status,
@@ -26,6 +29,7 @@ import {
 import type {
   AlarmAnchorTable,
   AlarmSnapshotTable,
+  CommandResultTable,
   RejectReason,
   StateAnchorTable,
 } from './tables.ts';
@@ -65,10 +69,10 @@ export interface StateAnchor {
   readonly retained: boolean;
 }
 
-/** Any other stored fact (cycle, alarm, telemetry): its time, for watermarks. */
+/** Any other stored fact (cycle, alarm, job, telemetry): its time, for watermarks. */
 export interface StoredSample {
   readonly equipment: string;
-  readonly kind: 'cycle' | 'alarm' | 'telemetry';
+  readonly kind: 'cycle' | 'alarm' | 'job' | 'telemetry';
   readonly scope: 'device' | 'topic';
   readonly epoch: number;
   readonly seq: number;
@@ -155,6 +159,47 @@ export function toAlarmSnapshot(row: Selectable<AlarmSnapshotTable>): StoredAlar
   };
 }
 
+/**
+ * A job transition of a CNC as stored (#174, UNS contract 1.3): a device fact in the machine's
+ * shared sequence, the device's proof that a command made a job (ADR-0030).
+ */
+export interface JobFact {
+  readonly equipment: string;
+  readonly epoch: number;
+  readonly seq: number;
+  readonly sourceTime: Date;
+  readonly transition: JobTransition;
+  readonly commandId: string;
+  readonly orderId: string;
+  readonly product: string;
+  readonly quantity: number;
+}
+
+/** The gateway's answer to one command delivery as stored (#174): `ingest.command_result`. */
+export interface StoredCommandResult {
+  /** Order of arrival at the MES. */
+  readonly arrival: number;
+  readonly equipment: string;
+  /** The gateway's epoch and its sequence number on the topic. */
+  readonly epoch: number;
+  readonly seq: number;
+  readonly respondedAt: Date;
+  readonly receivedAt: Date;
+  readonly value: CommandResultValue;
+}
+
+export function toCommandResult(row: Selectable<CommandResultTable>): StoredCommandResult {
+  return {
+    arrival: row.arrival,
+    equipment: row.equipment,
+    epoch: row.epoch,
+    seq: row.seq,
+    respondedAt: row.responded_at,
+    receivedAt: row.ingested_at,
+    value: row.payload.value,
+  };
+}
+
 /** A completed cycle as stored (#118): what changes `ingest.cycle_hourly`. */
 export interface StoredCycle {
   readonly equipment: string;
@@ -191,6 +236,10 @@ export type IngestNotice =
   | { readonly type: 'cycle'; readonly cycle: StoredCycle }
   /** A stored alarm transition (#141), after its `sample`. */
   | { readonly type: 'alarm'; readonly fact: AlarmFact; readonly settledSeq: number | null }
+  /** A stored job transition (#174), after its `sample`. */
+  | { readonly type: 'job'; readonly fact: JobFact; readonly settledSeq: number | null }
+  /** A stored command result (#174); topic-scoped, so no `sample`. */
+  | { readonly type: 'command-result'; readonly result: StoredCommandResult }
   /** A retained alarm delivery stored or raised to a higher `seq` (#141); may be `stale`. */
   | { readonly type: 'alarm-anchor'; readonly anchor: AlarmAnchor }
   /** An alarm snapshot stored or raised to a higher `asOfSeq` (#141); may be `stale`. */
@@ -244,7 +293,10 @@ export type FactOutcome =
   | { readonly status: 'duplicate'; readonly notices?: readonly IngestNotice[] }
   | { readonly status: 'stale' };
 
-type FactInput = Extract<Classified, { kind: 'event' | 'telemetry' | 'incident' }>;
+type FactInput = Extract<
+  Classified,
+  { kind: 'event' | 'telemetry' | 'incident' | 'command-result' }
+>;
 
 /** `_sys` streams are deduplicated but not checked for gaps (status numbers aren't gap-free). */
 const tracksGaps = (stream: string): boolean =>
@@ -535,20 +587,24 @@ export class IngestStore {
     const cursor = this.#cursors.get(stream);
     if (cursor && epoch < cursor.epoch) return { status: 'stale' };
     if (cursor?.epoch === epoch && contains(cursor.seen, seq)) return { status: 'duplicate' };
+    // Device streams carry only events (state, cycle, alarm, job facts).
     const epochNotices: IngestNotice[] =
-      (!cursor || epoch > cursor.epoch) && stream.startsWith('device:')
+      (!cursor || epoch > cursor.epoch) && input.kind === 'event'
         ? [
             {
               type: 'epoch',
-              equipment: stream.slice('device:'.length),
+              equipment: input.equipment,
               epoch,
               previous: cursor?.epoch ?? null,
-              sourceTime: new Date(message.sourceTime),
+              sourceTime: new Date(input.message.sourceTime),
             },
           ]
         : [];
     const result = await this.#db.transaction().execute(async (trx) => {
-      const inserted = await this.#insertFact(trx, input, topic, now);
+      const inserted =
+        input.kind === 'command-result'
+          ? await this.#insertCommandResult(trx, input, topic)
+          : await this.#insertFact(trx, input, topic, now);
       let next: Cursor;
       if (!cursor || epoch > cursor.epoch) {
         if (cursor && tracksGaps(stream)) await this.#endEpoch(trx, stream, cursor, now);
@@ -620,19 +676,72 @@ export class IngestStore {
     if (!result.inserted) {
       const anchor =
         input.kind === 'event' ? await this.#firstAnchor(input.equipment, epoch) : undefined;
+      const stored =
+        input.kind === 'command-result' ? await this.#storedResult(topic, epoch, seq) : undefined;
       return {
         status: 'duplicate',
         notices: [
           ...epochNotices,
           ...(anchor ? [{ type: 'anchor' as const, anchor }] : []),
+          ...(stored ? [{ type: 'command-result' as const, result: stored }] : []),
           ...factNotices(input, settledSeq),
         ],
       };
     }
     return {
       status: 'stored',
-      notices: [...epochNotices, ...result.notices, ...factNotices(input, settledSeq)],
+      notices: [
+        ...epochNotices,
+        ...result.notices,
+        ...(typeof result.inserted === 'object'
+          ? [{ type: 'command-result' as const, result: result.inserted }]
+          : []),
+        ...factNotices(input, settledSeq),
+      ],
     };
+  }
+
+  /** A command result (#174): a row of `ingest.command_result`, or false if it was stored before. */
+  async #insertCommandResult(
+    trx: Transaction<Database>,
+    input: Extract<FactInput, { kind: 'command-result' }>,
+    topic: string,
+  ): Promise<StoredCommandResult | false> {
+    const { message } = input;
+    const row = await trx
+      .insertInto('ingest.command_result')
+      .values({
+        topic,
+        equipment: input.equipment,
+        epoch: message.epoch,
+        seq: message.seq,
+        command_id: message.value.commandId,
+        order_id: message.value.orderId,
+        device_epoch: message.value.deviceEpoch,
+        expires_at: message.value.expiresAt,
+        result: message.value.result,
+        responded_at: message.respondedAt,
+        payload: JSON.stringify(message),
+      })
+      .onConflict((c) => c.columns(['topic', 'epoch', 'seq']).doNothing())
+      .returningAll()
+      .executeTakeFirst();
+    return row ? toCommandResult(row) : false;
+  }
+
+  async #storedResult(
+    topic: string,
+    epoch: number,
+    seq: number,
+  ): Promise<StoredCommandResult | undefined> {
+    const row = await this.#db
+      .selectFrom('ingest.command_result')
+      .selectAll()
+      .where('topic', '=', topic)
+      .where('epoch', '=', epoch)
+      .where('seq', '=', seq)
+      .executeTakeFirst();
+    return row && toCommandResult(row);
   }
 
   /**
@@ -795,7 +904,7 @@ export class IngestStore {
 
   async #insertFact(
     trx: Transaction<Database>,
-    input: FactInput,
+    input: Exclude<FactInput, { kind: 'command-result' }>,
     topic: string,
     now: Date,
   ): Promise<boolean> {
@@ -950,9 +1059,9 @@ export class IngestStore {
 }
 
 function factNotices(input: FactInput, settledSeq: number | null): IngestNotice[] {
+  if (input.kind === 'incident' || input.kind === 'command-result') return [];
   const { message } = input;
   const sourceTime = new Date(message.sourceTime);
-  if (input.kind === 'incident') return [];
   if (input.kind === 'event' && input.eventType === 'state') {
     const state = (input.message as StateEvent).value;
     return [
@@ -1008,13 +1117,18 @@ function factNotices(input: FactInput, settledSeq: number | null): IngestNotice[
           },
         ]
       : [];
+  const job: IngestNotice[] =
+    input.kind === 'event' && input.eventType === 'job'
+      ? [{ type: 'job', fact: toJobFact(input.equipment, input.message as JobEvent), settledSeq }]
+      : [];
   return [
     {
       type: 'sample',
       ...(input.kind === 'telemetry' ? {} : { settledSeq }),
       sample: {
         equipment: input.equipment,
-        kind: input.kind === 'telemetry' ? 'telemetry' : (input.eventType as 'cycle' | 'alarm'),
+        kind:
+          input.kind === 'telemetry' ? 'telemetry' : (input.eventType as 'cycle' | 'alarm' | 'job'),
         scope: input.kind === 'telemetry' ? 'topic' : 'device',
         epoch: message.epoch,
         seq: message.seq,
@@ -1034,5 +1148,21 @@ function factNotices(input: FactInput, settledSeq: number | null): IngestNotice[
     },
     ...cycle,
     ...alarm,
+    ...job,
   ];
+}
+
+/** A job event as the orders module reads it. */
+export function toJobFact(equipment: string, message: JobEvent): JobFact {
+  return {
+    equipment,
+    epoch: message.epoch,
+    seq: message.seq,
+    sourceTime: new Date(message.sourceTime),
+    transition: message.value.transition,
+    commandId: message.value.commandId,
+    orderId: message.value.orderId,
+    product: message.value.product,
+    quantity: message.value.quantity,
+  };
 }

@@ -447,6 +447,10 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
     case 'handover-note':
       upsertNote(queryClient, message.note);
       return;
+    // The `orders` topic (#174): the web subscribes to it from #176.
+    case 'order':
+    case 'command':
+      return;
     case 'subscribed':
     case 'unsubscribed':
     case 'error':

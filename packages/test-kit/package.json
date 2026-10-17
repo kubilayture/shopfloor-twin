@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./docker": "./src/docker.ts",
-    "./broker": "./src/broker.ts"
+    "./broker": "./src/broker.ts",
+    "./processes": "./src/processes.ts"
   },
   "scripts": {
     "typecheck": "tsc",

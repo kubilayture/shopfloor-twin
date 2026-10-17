@@ -1,6 +1,8 @@
 import {
   alarmSnapshotTopic,
   alarmTopic,
+  commandResultTopic,
+  jobTopic,
   stateTopic,
   sysTopic,
   telemetryTopic,
@@ -59,11 +61,13 @@ describe('classify (#95)', () => {
     };
     expect(reason('orbis/gebze/machining/cell-m1/cnc-01/cmd/start', '{}')).toBe('unexpected-topic');
     expect(reason('elsewhere/x', '{}')).toBe('unexpected-topic');
-    // Job facts (UNS 1.3, published from #173) are ingested only from #174; refused until then.
-    expect(reason('orbis/gebze/machining/cell-m1/cnc-01/events/job', '{}')).toBe(
+    expect(reason('orbis/gebze/machining/cell-m1/cnc-01/events/other', '{}')).toBe(
       'unexpected-topic',
     );
-    expect(reason('orbis/gebze/machining/cell-m1/cnc-01/cmd-res/load-order', '{}')).toBe(
+    expect(reason('orbis/gebze/machining/cell-m1/cnc-01/cmd-res/other', '{}')).toBe(
+      'unexpected-topic',
+    );
+    expect(reason('orbis/gebze/machining/cell-m1/cnc-01/cmd/load-order', '{}')).toBe(
       'unexpected-topic',
     );
     expect(reason('orbis/gebze/machining/cell-m1/cnc-01/state/other', '{}')).toBe(
@@ -121,6 +125,100 @@ describe('classify (#95)', () => {
     );
     expect(reason(sysTopic('edge-gateway', 'gw-01', 'status'), JSON.stringify(incident))).toBe(
       'topic-mismatch',
+    );
+  });
+});
+
+describe('classify: the command path (#174, UNS contract 1.3)', () => {
+  const job = {
+    ...base,
+    schema: 'uns.events.job/1',
+    scope: 'device',
+    value: {
+      transition: 'accepted',
+      commandId: 'PO-1~OP10~1',
+      orderId: 'PO-1',
+      product: 'VB-100',
+      quantity: 3,
+    },
+  } as const;
+  const result = {
+    schema: 'uns.cmd-res/1',
+    scope: 'topic',
+    epoch: 1_760_000_100,
+    seq: 7,
+    source: { id: 'cnc-01', protocol: 'opcua' },
+    respondedAt: '2026-10-15T10:00:01.000Z',
+    value: {
+      result: 'accepted',
+      commandId: 'PO-1~OP10~1',
+      orderId: 'PO-1',
+      deviceEpoch: 1_760_000_000,
+      expiresAt: '2026-10-15T10:01:00.000Z',
+      statusCode: 'Good',
+      position: 1,
+      acceptedSeq: 12,
+      acceptedAt: '2026-10-12T03:00:00.000Z',
+    },
+  } as const;
+
+  it('takes job facts as device facts in the machine sequence; a retained copy is no fact', () => {
+    expect(classify(jobTopic(AT), JSON.stringify(job), false)).toMatchObject({
+      kind: 'event',
+      stream: 'device:cnc-01',
+      eventType: 'job',
+    });
+    expect(classify(jobTopic(AT), JSON.stringify(job), true)).toMatchObject({ kind: 'retained' });
+    expect(classify(jobTopic(AT), JSON.stringify(stateEvent), false)).toMatchObject({
+      kind: 'rejected',
+      reason: 'topic-mismatch',
+    });
+  });
+
+  it('takes cmd-res as a topic stream of the gateway, validated by the command registry', () => {
+    const topic = commandResultTopic(AT, 'load-order');
+    expect(classify(topic, JSON.stringify(result), false)).toMatchObject({
+      kind: 'command-result',
+      stream: `topic:${topic}`,
+      equipment: 'cnc-01',
+    });
+    expect(classify(topic, JSON.stringify(result), true)).toMatchObject({ kind: 'retained' });
+    const reason = (payload: unknown): unknown => {
+      const classified = classify(topic, JSON.stringify(payload), false);
+      return classified.kind === 'rejected' ? classified.reason : classified.kind;
+    };
+    expect(reason({ ...result, source: { id: 'cnc-02', protocol: 'opcua' } })).toBe(
+      'topic-mismatch',
+    );
+    expect(reason(job)).toBe('invalid-payload');
+    expect(reason({ ...result, value: { ...result.value, result: 'maybe' } })).toBe(
+      'invalid-payload',
+    );
+    const command = {
+      schema: 'uns.cmd.load-order/1',
+      scope: 'topic',
+      epoch: 1,
+      seq: 1,
+      source: { id: 'mes-server', protocol: 'internal' },
+      issuedAt: '2026-10-15T10:00:00.000Z',
+      expiresAt: '2026-10-15T10:01:00.000Z',
+      value: {
+        commandId: 'PO-1~OP10~1',
+        orderId: 'PO-1',
+        operation: 'OP10',
+        product: 'VB-100',
+        quantity: 3,
+        notBefore: '2026-10-12T03:00:00.000Z',
+        deviceEpoch: 1,
+      },
+    };
+    expect(reason(command)).toBe('topic-mismatch');
+    expect(reason({ ...result, respondedAt: '2300-01-01T00:00:00.000Z' })).toBe('invalid-payload');
+    expect(
+      reason({ ...result, value: { ...result.value, acceptedAt: '1960-01-01T00:00:00.000Z' } }),
+    ).toBe('invalid-payload');
+    expect(reason({ ...result, value: { ...result.value, commandId: 'PO-1~OP10~1\u0000' } })).toBe(
+      'invalid-payload',
     );
   });
 });

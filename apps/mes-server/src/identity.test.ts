@@ -717,6 +717,14 @@ const ROUTES: Readonly<Record<string, Permission | 'session' | 'public'>> = {
   'POST /api/v1/users': 'user:admin',
   'PUT /api/v1/users/{username}': 'user:admin',
   'POST /api/v1/users/{username}/password': 'user:admin',
+  'GET /api/v1/orders': 'read',
+  'GET /api/v1/orders/{id}': 'read',
+  'GET /api/v1/order-incidents': 'read',
+  'POST /api/v1/orders/{id}/release': 'order:release',
+  'POST /api/v1/orders/{id}/dispatch': 'order:dispatch',
+  'POST /api/v1/orders/{id}/cancel': 'order:cancel',
+  'POST /api/v1/orders/{id}/redispatch': 'order:redispatch',
+  'POST /api/v1/orders/{id}/close': 'order:close',
 };
 
 /** Path parameters filled in so the route matches (the handler may still answer 400 or 404). */
@@ -810,7 +818,7 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     );
     const api = routes.filter((route) => route.includes(' /api/v1/'));
     expect(api.sort()).toEqual(Object.keys(ROUTES).sort());
-    expect(api).toHaveLength(46);
+    expect(api).toHaveLength(54);
     expect(routes.filter((r) => !r.includes(' /api/v1/')).sort()).toEqual([
       'GET /health/live',
       'GET /health/ready',

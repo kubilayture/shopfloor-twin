@@ -7,6 +7,9 @@ import {
   USERNAME_PATTERN,
   passwordLength,
 } from './identity.ts';
+import { ORDERS_TOPIC, orderPushMessages } from './orders-api.ts';
+
+export * from './orders-api.ts';
 
 // The MES API's responses and WebSocket messages (#97, ADR-0019), shared by `mes-server`, which
 // generates docs/api/mes.openapi.json and mes-realtime.schema.json from them, and `web`, which
@@ -125,6 +128,15 @@ export const PROBLEM_TYPES = {
   userExists: 'urn:shopfloor:user-exists',
   /** 429: too many logins, all together or for one user name; retry after `Retry-After` seconds. */
   loginRate: 'urn:shopfloor:login-rate',
+  /** 409 (#174): the order's `version` sent is not its current one. */
+  orderStale: 'urn:shopfloor:order-stale',
+  /** 409: the order's status doesn't allow the write (release of a dispatched order, …). */
+  orderState: 'urn:shopfloor:order-state',
+  /**
+   * 409: a re-dispatch while an earlier command of the order is not settled (no final answer, and
+   * the CNC's facts have not reached its `seqAfterExpiry`), ADR-0029.
+   */
+  commandsUnsettled: 'urn:shopfloor:commands-unsettled',
 } as const;
 
 export type ProblemType = (typeof PROBLEM_TYPES)[keyof typeof PROBLEM_TYPES];
@@ -1393,6 +1405,7 @@ const topic = z.union([
   z.literal(DOWNTIME_TOPIC),
   z.literal(ALARMS_TOPIC),
   z.literal(SHIFTS_TOPIC),
+  z.literal(ORDERS_TOPIC),
   telemetryTopic,
   oeeTopic,
   alarmKpiTopic,
@@ -1514,6 +1527,7 @@ export const serverMessageSchema = z
       event: z.enum(['created', 'edited']),
       note: handoverNoteSchema,
     }),
+    ...orderPushMessages,
     z.object({ type: z.literal('telemetry'), ...telemetrySample.shape }),
     z.object({ type: z.literal('clock'), ...clockSchema.shape }),
     z.object({

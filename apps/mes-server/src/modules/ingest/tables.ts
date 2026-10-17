@@ -1,6 +1,7 @@
 import type {
   Alarm,
   AlarmSnapshot,
+  CommandResult,
   Incident,
   StateCurrent,
   Status,
@@ -21,7 +22,7 @@ export interface EquipmentEventTable {
   epoch: number;
   seq: number;
   source_time: Timestamp;
-  event_type: 'state' | 'cycle' | 'alarm';
+  event_type: 'state' | 'cycle' | 'alarm' | 'job';
   topic: string;
   state: string | null;
   cause: string | null;
@@ -108,6 +109,26 @@ export interface AlarmSnapshotTable {
   payload: JSONColumnType<AlarmSnapshot>;
 }
 
+/**
+ * The gateway's answer to one command delivery (`cmd-res`, #174): a topic-scoped stream of the
+ * gateway, deduplicated by its cursor; several per command id.
+ */
+export interface CommandResultTable {
+  arrival: Generated<number>;
+  topic: string;
+  equipment: string;
+  epoch: number;
+  seq: number;
+  command_id: string;
+  order_id: string;
+  device_epoch: number;
+  expires_at: Timestamp;
+  result: 'accepted' | 'duplicate' | 'rejected' | 'expired' | 'unknown';
+  responded_at: Timestamp;
+  ingested_at: DefaultTimestamp;
+  payload: JSONColumnType<CommandResult>;
+}
+
 export interface DataQualityIncidentTable {
   id: Generated<number>;
   origin: 'mes' | 'gateway';
@@ -175,6 +196,7 @@ export interface IngestTables {
   'ingest.state_anchor': StateAnchorTable;
   'ingest.alarm_anchor': AlarmAnchorTable;
   'ingest.alarm_snapshot': AlarmSnapshotTable;
+  'ingest.command_result': CommandResultTable;
   'ingest.data_quality_incident': DataQualityIncidentTable;
   'ingest.component_status': ComponentStatusTable;
   'ingest.rejected_message': RejectedMessageTable;
@@ -258,6 +280,21 @@ export const INGEST_COLUMNS = {
     'received_at',
     'ingested_at',
     'stale',
+    'payload',
+  ],
+  'ingest.command_result': [
+    'arrival',
+    'topic',
+    'equipment',
+    'epoch',
+    'seq',
+    'command_id',
+    'order_id',
+    'device_epoch',
+    'expires_at',
+    'result',
+    'responded_at',
+    'ingested_at',
     'payload',
   ],
   'ingest.data_quality_incident': [

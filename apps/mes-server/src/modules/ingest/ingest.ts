@@ -1,4 +1,10 @@
-import { SYS_SEGMENT, UNS_ROOT, type Alarm, type MachineState } from '@shopfloor/contracts';
+import {
+  SYS_SEGMENT,
+  UNS_ROOT,
+  type Alarm,
+  type JobEvent,
+  type MachineState,
+} from '@shopfloor/contracts';
 import { sql, type Kysely } from 'kysely';
 import mqtt, { type IClientOptions, type IPublishPacket, type MqttClient } from 'mqtt';
 import { Counter, Gauge, type Registry } from 'prom-client';
@@ -9,14 +15,19 @@ import {
 } from '../../db/aggregate-refresh.ts';
 import type { Database } from '../../db/database.ts';
 import { resolveAlarmBaseline, type AlarmPointState } from './alarm-baseline.ts';
+import { settledThrough } from './ranges.ts';
 import { classify } from './classify.ts';
 import {
   IngestStore,
   toAlarmAnchor,
   toAlarmSnapshot,
   toAnchor,
+  toCommandResult,
+  toJobFact,
   type AlarmAnchor,
   type AlarmFact,
+  type JobFact,
+  type StoredCommandResult,
   type StoredAlarmSnapshot,
   type IngestNotice,
   type SettledState,
@@ -36,6 +47,8 @@ export const INGEST_TOPICS = [
   `${UNS_ROOT}/+/+/+/telemetry/+`,
   `${UNS_ROOT}/+/+/+/events/+`,
   `${UNS_ROOT}/+/+/+/alarms/+`,
+  // The gateway's answers to the MES's commands (#174, UNS contract 1.3).
+  `${UNS_ROOT}/+/+/+/cmd-res/+`,
   `${UNS_ROOT}/${SYS_SEGMENT}/edge-gateway/+/status`,
   `${UNS_ROOT}/${SYS_SEGMENT}/edge-gateway/+/incidents`,
 ] as const;
@@ -131,6 +144,15 @@ export interface CycleCount {
   readonly epoch: number;
   readonly hour: Date;
   readonly count: number;
+}
+
+/** How far a device stream has arrived (`Ingest.deviceProgress`, #174). */
+export interface DeviceProgress {
+  readonly equipment: string;
+  readonly epoch: number | null;
+  readonly receivedThrough: number | null;
+  readonly settledSeq: number | null;
+  readonly settledTime: Date | null;
 }
 
 /** Per (equipment, device epoch): what `factSummary` reports. */
@@ -806,6 +828,149 @@ export class Ingest {
     };
   }
 
+  /**
+   * Job facts (#174), by equipment, epoch and `seq`: of some command ids, or of one equipment (and
+   * epoch), or all. The orders module's proof that a command made a job.
+   */
+  async jobFacts(
+    options: {
+      readonly commandIds?: readonly string[];
+      readonly equipment?: string;
+      readonly epoch?: number;
+    } = {},
+    db: Kysely<Database> = this.#options.db,
+  ): Promise<JobFact[]> {
+    if (options.commandIds?.length === 0) return [];
+    let query = db
+      .selectFrom('ingest.equipment_event')
+      .select(['equipment', 'payload'])
+      .where('event_type', '=', 'job');
+    if (options.commandIds !== undefined) {
+      query = query.where(sql<string>`payload -> 'value' ->> 'commandId'`, 'in', [
+        ...options.commandIds,
+      ]);
+    }
+    if (options.equipment !== undefined) query = query.where('equipment', '=', options.equipment);
+    if (options.epoch !== undefined) query = query.where('epoch', '=', options.epoch);
+    const rows = await query.orderBy('equipment').orderBy('epoch').orderBy('seq').execute();
+    return rows.map((row) => toJobFact(row.equipment, row.payload as JobEvent));
+  }
+
+  /** Every `cmd-res` stored for some command ids (#174), in the order they arrived. */
+  async commandResults(
+    commandIds: readonly string[],
+    db: Kysely<Database> = this.#options.db,
+  ): Promise<StoredCommandResult[]> {
+    if (commandIds.length === 0) return [];
+    const rows = await db
+      .selectFrom('ingest.command_result')
+      .selectAll()
+      .where('command_id', 'in', [...commandIds])
+      .orderBy('arrival')
+      .execute();
+    return rows.map(toCommandResult);
+  }
+
+  /** The latest `_sys` status of each instance of a component (`edge-gateway`), #174. */
+  async componentStatuses(
+    component: string,
+  ): Promise<{ readonly instance: string; readonly status: 'online' | 'offline' }[]> {
+    return this.#options.db
+      .selectFrom('ingest.component_status')
+      .select(['instance', 'status'])
+      .where('component', '=', component)
+      .orderBy('instance')
+      .execute();
+  }
+
+  /**
+   * How far one equipment's device stream has arrived (#174), per the cursor: its current epoch;
+   * `receivedThrough`, the highest `seq` with every number from the stream's first one up to it
+   * received (a gap written off as an incident does not count as received); `settledSeq`, the
+   * final-through of ADR-0018 (a reported gap counts as closed), and the source time of the fact
+   * at or below it with the highest `seq`. Null fields when the stream has no cursor.
+   */
+  async deviceProgress(equipment: string): Promise<DeviceProgress> {
+    const cursor = await this.#options.db
+      .selectFrom('ingest.source_cursor')
+      .select(['epoch', 'seen', 'reported'])
+      .where('stream', '=', `device:${equipment}`)
+      .executeTakeFirst();
+    if (!cursor) {
+      return {
+        equipment,
+        epoch: null,
+        receivedThrough: null,
+        settledSeq: null,
+        settledTime: null,
+      };
+    }
+    const settledSeq = settledThrough(cursor.seen, cursor.reported);
+    const time =
+      settledSeq === null
+        ? undefined
+        : await this.#options.db
+            .selectFrom('ingest.equipment_event')
+            .select('source_time')
+            .where('equipment', '=', equipment)
+            .where('epoch', '=', cursor.epoch)
+            .where('seq', '<=', settledSeq)
+            .orderBy('seq', 'desc')
+            .limit(1)
+            .executeTakeFirst();
+    return {
+      equipment,
+      epoch: cursor.epoch,
+      receivedThrough: cursor.seen[0]?.[1] ?? null,
+      settledSeq,
+      settledTime: time?.source_time ?? null,
+    };
+  }
+
+  /**
+   * The newest device epoch ingest knows for each equipment (#174): from its facts, state anchors
+   * (retained events and snapshots), alarm anchors and alarm snapshots. A command for an older
+   * epoch can't be accepted any more (the device refuses it, ADR-0030).
+   */
+  async newestDeviceEpochs(): Promise<Map<string, number>> {
+    const result = await sql<{ equipment: string; epoch: number }>`
+      SELECT equipment, max(epoch)::bigint AS epoch FROM (
+        SELECT substr(stream, 8) AS equipment, epoch FROM ingest.source_cursor
+          WHERE stream LIKE 'device:%'
+        UNION ALL
+        SELECT equipment, device_epoch FROM ingest.state_anchor WHERE device_epoch IS NOT NULL
+        UNION ALL
+        SELECT equipment, epoch FROM ingest.alarm_anchor
+        UNION ALL
+        SELECT equipment, device_epoch FROM ingest.alarm_snapshot
+      ) known
+      GROUP BY equipment`.execute(this.#options.db);
+    return new Map(result.rows.map((row) => [row.equipment, row.epoch]));
+  }
+
+  /**
+   * Completed cycles of one equipment's device epoch with `seq` in (afterSeq, beforeSeq): the
+   * blanks a job started that its run then lost (#174), counted between its `started` fact and
+   * the next job's.
+   */
+  async cyclesBetween(
+    equipment: string,
+    epoch: number,
+    afterSeq: number,
+    beforeSeq: number | null,
+  ): Promise<number> {
+    let query = this.#options.db
+      .selectFrom('ingest.equipment_event')
+      .select((eb) => eb.fn.countAll<string>().as('n'))
+      .where('equipment', '=', equipment)
+      .where('epoch', '=', epoch)
+      .where('event_type', '=', 'cycle')
+      .where('seq', '>', afterSeq);
+    if (beforeSeq !== null) query = query.where('seq', '<', beforeSeq);
+    const row = await query.executeTakeFirstOrThrow();
+    return Number(row.n);
+  }
+
   /** The anchor of every (equipment, device epoch) that has one (see `anchor`). */
   async anchors(): Promise<StateAnchor[]> {
     const rows = await this.#options.db
@@ -1015,7 +1180,8 @@ export class Ingest {
       }
       case 'event':
       case 'telemetry':
-      case 'incident': {
+      case 'incident':
+      case 'command-result': {
         const outcome = await this.#store.fact(item, topic, new Date(this.#now()));
         if (outcome.status === 'stale') {
           const current = this.#store.cursor(item.stream)?.epoch;

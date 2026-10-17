@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { PacerState, PacerStatus } from '../live/pacer.ts';
 import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { isoTime } from '../headless/serialize.ts';
+import { AsOfAfterSimTimeError } from '../headless/trace-truth.ts';
 import type { LiveGroundTruth } from '../live/run.ts';
 import type {
   FailureInjection,
@@ -25,7 +26,7 @@ import type { EventHub } from './event-hub.ts';
  * 1.3 failure injection and the alarm ground truth (#140), 1.4 the production mode and the order
  * ground truth (#172), 1.5 the leak-test drift injection (#196).
  */
-export const CONTROL_API_VERSION = '1.5.0';
+export const CONTROL_API_VERSION = '1.6.0';
 export const API_PREFIX = '/api/v1';
 export const EVENTS_PATH = `${API_PREFIX}/events`;
 /** A WebSocket client that falls this far behind is disconnected rather than buffered without bound. */
@@ -297,6 +298,153 @@ export const ordersSchema = z
       'records (#172); empty in schedule mode',
   );
 
+const fractionSchema = z
+  .string()
+  .regex(/^-?\d+\/\d+$/)
+  .describe('An exact fraction of reading steps, `num/den` (BigInt digits)');
+const limitsSchema = z.object({
+  lower: fractionSchema,
+  centre: fractionSchema,
+  upper: fractionSchema,
+});
+const atSchema = z.object({ at: isoSchema });
+const readingRefSchema = z.object({ partId: count, pass: count });
+const episodeSchema = z.object({
+  chart: z.enum(['I', 'MR', 'Xbar', 'R']),
+  rule: count,
+  version: count,
+  partId: count,
+  pass: count,
+  at: isoSchema,
+  last: readingRefSchema,
+  points: count,
+  closedBy: readingRefSchema.nullable(),
+  baseline: z.boolean(),
+});
+const pointSchema = z.object({
+  partId: count,
+  pass: count,
+  at: isoSchema,
+  segment: count,
+  value: fractionSchema,
+  version: count.nullable(),
+  baseline: z.boolean(),
+  rules: z.array(count),
+});
+const windowReadingSchema = z.object({
+  partId: count,
+  pass: count,
+  at: isoSchema,
+  value: z.number().int(),
+  counterfactual: z.number().int(),
+  drifted: z.boolean(),
+});
+
+export const traceSchema = z
+  .object({
+    traceConfigSha256: z.string(),
+    config: z.object({
+      packOperation: z.string(),
+      capacity: z.record(z.string(), count),
+      spc: z.object({
+        characteristic: z.string(),
+        operation: z.string(),
+        subgroupSize: count,
+        baselineSubgroups: count,
+        rules: z.record(z.string(), z.array(count)),
+      }),
+    }),
+    units: z.object({ count, unitsTraceSha256: z.string() }),
+    orders: z.array(
+      z.object({ orderId: z.string(), product: z.string(), completedAt: isoSchema.nullable() }),
+    ),
+    lots: z.array(
+      z.object({
+        lot: z.string(),
+        material: z.string(),
+        consumed: count,
+        units: z.array(count).describe('Part ids'),
+        orders: z.array(z.string()),
+        cartons: z.array(z.string()),
+      }),
+    ),
+    cartons: z.array(
+      z.object({
+        id: z.string(),
+        orderId: z.string(),
+        product: z.string(),
+        capacity: count,
+        status: z.enum(['open', 'closed']),
+        closedAt: isoSchema.nullable(),
+        members: z.object({ count, sha256: z.string() }),
+      }),
+    ),
+    spc: z.object({
+      characteristic: z.string(),
+      readings: z.object({ firstPass: count, retests: count }),
+      limits: z.array(
+        z.object({
+          version: count,
+          createdAt: isoSchema,
+          from: atSchema.nullable(),
+          until: atSchema.nullable(),
+          endedAt: isoSchema.nullable(),
+          limits: z.object({
+            subgroupSize: count,
+            window: z.object({ from: atSchema, to: atSchema }),
+            counts: z.object({ readings: count, movingRanges: count, subgroups: count }),
+            statistics: z.object({
+              mean: fractionSchema,
+              movingRange: fractionSchema,
+              grandMean: fractionSchema,
+              range: fractionSchema,
+            }),
+            charts: z.object({
+              I: limitsSchema,
+              MR: limitsSchema,
+              Xbar: limitsSchema,
+              R: limitsSchema,
+            }),
+          }),
+        }),
+      ),
+      points: z.record(z.string(), z.object({ count, sha256: z.string() })),
+      subgroups: z.object({ complete: count, pending: count }),
+      episodes: z.array(episodeSchema),
+    }),
+    drifts: z.array(
+      z.object({
+        injection: count,
+        machine: z.string(),
+        shift: z.number(),
+        steps: z.number().int(),
+        appliedAt: isoSchema,
+        endedAt: isoSchema.nullable(),
+        endedBy: z.enum(['until', 'calibration']).nullable(),
+        start: z
+          .object({
+            partId: count,
+            pass: count,
+            at: isoSchema,
+            value: z.number().int(),
+            firstPassBefore: count,
+          })
+          .nullable(),
+        firstEpisode: episodeSchema.extend({ latency: count.nullable() }).nullable(),
+        window: z.object({ before: count, after: count, readings: z.array(windowReadingSchema) }),
+        counterfactual: z.object({
+          signals: z.array(pointSchema.extend({ chart: z.enum(['I', 'MR', 'Xbar', 'R']) })),
+          episodes: z.array(episodeSchema),
+          clean: z.boolean(),
+        }),
+      }),
+    ),
+  })
+  .describe(
+    'The traceability and SPC truth so far (#208): trace.json (sim-trace/1) without its schema ' +
+      'and run header; provisional while cartons are open, orders incomplete or episodes open',
+  );
+
 export const injectionSchema = z.object({
   id: count,
   machine: z.string(),
@@ -404,6 +552,10 @@ export const groundTruthSchema = z.object({
   oee: oeeSchema,
   alarms: alarmsSchema,
   orders: ordersSchema,
+  trace: traceSchema,
+  traceAsOf: isoSchema
+    .optional()
+    .describe('1.6: present when `trace` was cut at an earlier plant time (`?asOf`)'),
 });
 
 /** The live ground truth with the run's epoch: what `GET /api/v1/ground-truth` returns. */
@@ -450,7 +602,11 @@ export interface ControlAppOptions {
     };
   };
   /** The live run's ground truth (#100); the route exists only when given. */
-  readonly groundTruth?: () => GroundTruthReport;
+  /**
+   * `traceAsOf` (1.6): cut the `trace` section at that plant time; throws an
+   * `AsOfAfterSimTimeError` when it is after the simulation time (400; any other error is a 500).
+   */
+  readonly groundTruth?: (traceAsOf?: number) => GroundTruthReport;
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
   readonly version?: string;
 }
@@ -644,10 +800,40 @@ export async function buildControlApp({
             'The ground truth a headless run would write if it ended now, kept live while the run ' +
             'is paced. Reconciliation tests compare the MES with it (#100). Reading it never ' +
             'moves the run.',
-          response: { 200: json(groundTruthSchema) },
+          querystring: json(
+            z.object({
+              asOf: z
+                .string()
+                .optional()
+                .describe(
+                  '1.6 (#208): cut `trace` at this plant time (ISO 8601 with an offset or Z, not ' +
+                    "after `simTime`) with trace-core's `traceAsOf`, counterfactual readings " +
+                    'included; every other section stays as of `simTime`',
+                ),
+            }),
+          ),
+          response: { 200: json(groundTruthSchema), 400: json(errorSchema) },
         },
       },
-      () => groundTruth(),
+      (request, reply) => {
+        const { asOf } = request.query as { asOf?: string };
+        if (asOf === undefined) return groundTruth();
+        let at: number;
+        try {
+          at = Temporal.Instant.from(asOf).epochMilliseconds;
+        } catch {
+          return reply.code(400).send({
+            error: 'Bad Request',
+            message: `asOf must be ISO 8601 with an offset or Z, got "${asOf}"`,
+          });
+        }
+        try {
+          return groundTruth(at);
+        } catch (error) {
+          if (!(error instanceof AsOfAfterSimTimeError)) throw error;
+          return reply.code(400).send({ error: 'Bad Request', message: error.message });
+        }
+      },
     );
   }
 

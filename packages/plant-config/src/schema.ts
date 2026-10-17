@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { alarmsSchema } from './alarms.ts';
 import { reasonsSchema } from './reasons.ts';
 import { scrapSchema } from './scrap.ts';
+import { packingSchema, qualitySchema } from './trace.ts';
 
 const id = z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'lower-case kebab-case id');
 const code = z.string().regex(/^[A-Z0-9]+(-[A-Z0-9]+)*$/, 'upper-case code');
@@ -211,6 +212,8 @@ export const PLANT_FILES = {
   reasons: reasonsSchema,
   scrap: scrapSchema,
   alarms: alarmsSchema,
+  packing: packingSchema,
+  quality: qualitySchema,
 } as const;
 
 export type PlantFiles = typeof PLANT_FILES;

@@ -8,7 +8,13 @@ import {
   type InjectionSpec,
 } from '@shopfloor/plant-config';
 import { PRODUCTION_MODES, type ProductionMode } from '../plant/line.ts';
-import { runHeadless, summaryDocument, type DispatchSpec, type HeadlessOptions } from './run.ts';
+import {
+  runHeadless,
+  summaryDocument,
+  traceDocument,
+  type DispatchSpec,
+  type HeadlessOptions,
+} from './run.ts';
 
 const REPO = resolve(import.meta.dirname, '../../../..');
 const GOLDEN = resolve(import.meta.dirname, '../../golden');
@@ -148,6 +154,8 @@ export async function scenarioOptions(name: string, folder = GOLDEN): Promise<He
 export interface GoldenOutcome {
   readonly name: string;
   readonly summary: string;
+  /** `trace.json` (#208): the traceability and SPC truth beside the summary. */
+  readonly trace: string;
   readonly events: string;
   readonly invariantChecks: number;
 }
@@ -163,6 +171,7 @@ export async function runScenario(name: string): Promise<GoldenOutcome> {
   return {
     name,
     summary: summaryDocument(result),
+    trace: traceDocument(result),
     events: `${hash.digest('hex')}  ${String(lines)} lines\n`,
     invariantChecks: result.invariantChecks,
   };
@@ -186,7 +195,11 @@ async function main(update: boolean): Promise<number> {
   let failures = 0;
   for (const name of scenarioNames()) {
     const outcome = await runScenario(name);
-    const files = { 'summary.json': outcome.summary, 'events.sha256': outcome.events };
+    const files = {
+      'summary.json': outcome.summary,
+      'trace.json': outcome.trace,
+      'events.sha256': outcome.events,
+    };
     for (const [file, actual] of Object.entries(files)) {
       const path = join(GOLDEN, name, file);
       if (update) {

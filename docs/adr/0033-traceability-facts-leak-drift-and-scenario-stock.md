@@ -1,6 +1,6 @@
 # ADR-0033: Traceability facts on the cycle event, a bounded leak-drift injection and scenario-local stock
 
-- Status: accepted (#196: device facts, drift, stock; the ground-truth sidecar `trace.json` is decided in the Phase 8 plan and follows in #208)
+- Status: accepted (#196: device facts, drift, stock; #208: the ground-truth sidecar `trace.json` (`sim-trace/1`) with the exact counterfactual readings, `trace` and `?asOf` in the live ground truth (control API 1.6), and the golden `quality-01`, as decided in the Phase 8 plan; `docs/simulation-model.md`, "Ground-truth traceability and SPC")
 - Date: 2026-10-17
 - Deciders: Claude (#196), within the Phase 8 plan and its review (PR #207, rounds 1–3); recorded for the owner under the standing instruction of 2026-10-15
 

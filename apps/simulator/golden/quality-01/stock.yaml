@@ -1,0 +1,29 @@
+# quality-01's own stock (#208, ADR-0033), read in place of config/plant/stock.yaml and equal to the
+# lots of its ERP dataset orders.json (tested). Small lots, consumed first in first out per
+# material in file order, so lots change inside orders and inside cartons within two days; the
+# last lot of each material covers every dispatched job.
+
+lots:
+  - { id: BL100-Q01-01, material: BLANK-100, quantity: 50 }
+  - { id: BL100-Q01-02, material: BLANK-100, quantity: 70 }
+  - { id: BL100-Q01-03, material: BLANK-100, quantity: 900 }
+  - { id: BL200-Q01-01, material: BLANK-200, quantity: 60 }
+  - { id: BL200-Q01-02, material: BLANK-200, quantity: 400 }
+  - { id: SK1-Q01-01, material: SK-1, quantity: 60 }
+  - { id: SK1-Q01-02, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-03, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-04, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-05, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-06, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-07, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-08, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-09, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-10, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-11, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-12, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-13, material: SK-1, quantity: 12 }
+  - { id: SK1-Q01-14, material: SK-1, quantity: 1000 }
+  - { id: SK2-Q01-01, material: SK-2, quantity: 40 }
+  - { id: SK2-Q01-02, material: SK-2, quantity: 400 }
+  - { id: SP100-Q01-01, material: SP-100, quantity: 1200 }
+  - { id: SP200-Q01-01, material: SP-200, quantity: 500 }

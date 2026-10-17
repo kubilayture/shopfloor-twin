@@ -4,6 +4,7 @@
 pnpm-lock.yaml
 docs/project-plan.md
 apps/simulator/golden/**/summary.json
+apps/simulator/golden/**/trace.json
 
 # Generated; checked for drift by tests (apps/simulator/src/control/openapi.ts,
 # apps/mes-server/src/openapi.ts, apps/mes-server/src/db/data-model.ts)

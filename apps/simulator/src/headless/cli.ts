@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { scenarioNames, scenarioOptions } from './golden.ts';
-import { runHeadless, summaryDocument, type HeadlessOptions } from './run.ts';
+import { runHeadless, summaryDocument, traceDocument, type HeadlessOptions } from './run.ts';
 
 const DEFAULT_CONFIG = resolve(import.meta.dirname, '../../../../config/plant');
 const USAGE =
@@ -31,6 +31,7 @@ function parse(): {
   config: string;
   out: string;
   scenario: string | undefined;
+  scenarioEnd: number | undefined;
 } {
   let values;
   try {
@@ -44,6 +45,7 @@ function parse(): {
         config: { type: 'string' },
         out: { type: 'string', default: 'runs/latest' },
         scenario: { type: 'string' },
+        end: { type: 'string' },
       },
     }));
   } catch (error) {
@@ -56,6 +58,15 @@ function parse(): {
     );
     if (extra.length > 0) {
       return usage(`--scenario takes no ${extra.map((name) => `--${name}`).join(', ')}`);
+    }
+  }
+  let scenarioEnd: number | undefined;
+  if (values.end !== undefined) {
+    if (values.scenario === undefined) return usage('--end needs --scenario');
+    try {
+      scenarioEnd = Temporal.Instant.from(values.end).epochMilliseconds;
+    } catch {
+      return usage(`invalid --end "${values.end}" (needs an offset or Z)`);
     }
   }
   const seedText = values.seed ?? '1';
@@ -87,6 +98,7 @@ function parse(): {
     config: values.config ?? DEFAULT_CONFIG,
     out: values.out,
     scenario: values.scenario,
+    scenarioEnd,
   };
 }
 
@@ -102,14 +114,24 @@ if (options.scenario === undefined) {
 } else {
   // A golden scenario (#142): its seed, span, configuration and injections, as `test:golden` runs it.
   run = await scenarioOptions(options.scenario);
+  if (options.scenarioEnd !== undefined) {
+    // An earlier end (#208): the shift-A reference of quality-01. Its event log is a prefix of the
+    // full run's after the header (tested); later than the scenario's own end is refused.
+    if (options.scenarioEnd <= run.start || options.scenarioEnd > run.end) {
+      usage(`--end must be after the scenario's start and not after its end`);
+    }
+    run = { ...run, end: options.scenarioEnd };
+  }
 }
 
 const out = resolve(options.out);
 mkdirSync(out, { recursive: true });
 const eventsPath = join(out, 'events.jsonl');
 const summaryPath = join(out, 'summary.json');
+const tracePath = join(out, 'trace.json');
 rmSync(eventsPath, { force: true });
 rmSync(summaryPath, { force: true });
+rmSync(tracePath, { force: true });
 
 const started = performance.now();
 const fd = openSync(`${eventsPath}.partial`, 'w');
@@ -129,6 +151,8 @@ closeSync(fd);
 renameSync(`${eventsPath}.partial`, eventsPath);
 writeFileSync(`${summaryPath}.partial`, summaryDocument(result));
 renameSync(`${summaryPath}.partial`, summaryPath);
+writeFileSync(`${tracePath}.partial`, traceDocument(result));
+renameSync(`${tracePath}.partial`, tracePath);
 
 const finished = Object.values(result.summary.production.finished).reduce((s, n) => s + n, 0);
 const days = (run.end - run.start) / 86_400_000;
@@ -136,5 +160,5 @@ console.log(
   `seed ${String(run.seed)}, ${String(days)} days: ${String(result.eventCount)} events, ${String(finished)} parts finished`,
 );
 console.log(
-  `wrote ${eventsPath} and ${summaryPath} in ${(performance.now() - started).toFixed(0)} ms`,
+  `wrote ${eventsPath}, ${summaryPath} and ${tracePath} in ${(performance.now() - started).toFixed(0)} ms`,
 );

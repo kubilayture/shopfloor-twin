@@ -178,6 +178,7 @@ function SignOn({
   readonly session: SessionDto | null;
 }) {
   const auth = useAuth();
+  const queryClient = useQueryClient();
   const heading = useHeadingFocus<HTMLHeadingElement>();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -188,16 +189,23 @@ function SignOn({
     mutationFn: async () => {
       const next = await login({ username: username.trim(), password, kind: 'terminal' });
       setPassword('');
-      if (next.user.mustChangePassword) return { next, signedOn: false };
+      if (next.user.mustChangePassword) {
+        // The MES holds that session now: the app reads it, so it never shows the one before.
+        await auth.refresh().catch(() => undefined);
+        return { next, signedOn: false };
+      }
       // The crew row first, then the session goes to the app: the screen that mounts then reads
       // a view that already has the operator signed on. A refused sign-on (no shift running)
-      // leaves the operator logged in; the screen offers to sign on again and says why not.
-      const signedOn = await signOn(workCenter).then(
-        () => true,
-        () => false,
+      // leaves the operator logged in; the screen that mounts says why and offers to sign on.
+      const refusal = await signOn(workCenter).then(
+        () => undefined,
+        (error: unknown) => terminalFailure(error, 'Logged in, but not signed on').text,
       );
       auth.loggedIn(next);
-      return { next, signedOn };
+      if (refusal !== undefined) {
+        queryClient.setQueryData(terminalKeys.refusal(next.user.username, workCenter), refusal);
+      }
+      return { next, signedOn: refusal === undefined };
     },
     meta: { auth: false },
     onSuccess: ({ next }) => {
@@ -313,7 +321,9 @@ function TerminalWork({
   });
   const live = useLiveTerminal(workCenter);
   const view = live ?? rest.data;
-  const [message, setMessage] = useState<string | undefined>(undefined);
+  const [message, setMessage] = useState<string | undefined>(() =>
+    queryClient.getQueryData<string>(terminalKeys.refusal(user.username, workCenter)),
+  );
   /** A write's answer, shown at once in whichever copy is on screen. */
   const patch = (change: (view: TerminalViewDto) => TerminalViewDto) => {
     for (const k of [key, liveKeys.terminal(workCenter)] as const) {
@@ -434,7 +444,8 @@ function TerminalWork({
       <ScrapRecords
         view={view}
         username={user.username}
-        canCode={auth.can('scrap:code')}
+        // Coding is offered to operators signed on here (or quality, who need no crew row).
+        canCode={auth.can('scrap:code') && (here || !auth.can('terminal:operate'))}
         onCoded={(id) => {
           patch((v) => withoutScrapRecord(v, id));
         }}
@@ -565,14 +576,17 @@ function OperationRow({
   const [reason, setReason] = useState<PauseReason | undefined>(undefined);
   const [message, setMessage] = useState<string | undefined>(undefined);
   const id = `${operation.orderId}-${operation.operation}`;
+  const mine = myActivity(operation, userId);
   const write = useMutation({
     mutationFn: (action: OperationAction) =>
       operationWrite(
         { workCenter, orderId: operation.orderId, operation: operation.operation },
         action,
-        action === 'pause'
-          ? { version: operation.version, reason: reason ?? 'other' }
-          : { version: operation.version },
+        action === 'sign-off'
+          ? { version: operation.version }
+          : action === 'pause'
+            ? { activity: mine?.id ?? null, reason: reason ?? 'other' }
+            : { activity: mine?.id ?? null },
       ),
     onSuccess: (result) => {
       setMessage(undefined);
@@ -587,7 +601,6 @@ function OperationRow({
   const actions = signedOn
     ? operationActions(operation, orderStatus, userId)
     : { start: false, pause: false, resume: false, signOff: false };
-  const mine = myActivity(operation, userId);
   const others = operation.activities.filter((a) => a.userId !== userId);
   const c = operation.counts;
   return (

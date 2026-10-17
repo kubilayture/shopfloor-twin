@@ -10975,7 +10975,7 @@
                                   "type": "integer",
                                   "minimum": -9007199254740991,
                                   "maximum": 9007199254740991,
-                                  "description": "Raised by every terminal write on it; a write sends the version read"
+                                  "description": "Raised by every terminal write on it; a sign-off sends the version read (activity writes name their own interval)"
                                 },
                                 "complete": {
                                   "type": "boolean",
@@ -11926,7 +11926,7 @@
         "tags": [
           "terminal"
         ],
-        "description": "Ends the operator's crew row here (409 urn:shopfloor:not-signed-on without one) and their open activity intervals on its operations. The web then ends the session. Audited. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `terminal:operate` (MES_AUTH=on; ADR-0026).",
+        "description": "Ends the operator's crew row here held by this session (409 urn:shopfloor:not-signed-on without one) and their open activity intervals on its operations. The web then ends the session. Audited. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `terminal:operate` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -12184,7 +12184,7 @@
         "tags": [
           "terminal"
         ],
-        "description": "Opens a work interval of the operator on it (409 urn:shopfloor:operation-state while one of theirs is open). Records the operator's time; the machine runs its queue regardless. Needs the operator signed on at the work center with this session (409 urn:shopfloor:not-signed-on); names the operation's `version` (409 urn:shopfloor:operation-stale); the order dispatched, in progress or completed (409 urn:shopfloor:operation-state). Audited. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `terminal:operate` (MES_AUTH=on; ADR-0026).",
+        "description": "Opens a work interval of the operator on it; names `activity: null` (409 urn:shopfloor:operation-stale while one of theirs is open). Records the operator's time; the machine runs its queue regardless. Needs the operator signed on at the work center with this session, checked and locked in the write's transaction (409 urn:shopfloor:not-signed-on); the order dispatched, in progress or completed (409 urn:shopfloor:operation-state). Audited. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `terminal:operate` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -12192,18 +12192,25 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "version": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 9007199254740991,
-                    "description": "The operation version read; 409 when it is not the current one"
+                  "activity": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The operator's own open interval as read (its id), null when none"
                   }
                 },
                 "required": [
-                  "version"
+                  "activity"
                 ],
                 "additionalProperties": false,
-                "description": "A start, resume or sign-off: the operation version read"
+                "description": "A start (activity null) or resume (the operator's open pause)"
               }
             }
           }
@@ -12264,7 +12271,7 @@
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991,
-                          "description": "Raised by every terminal write on it; a write sends the version read"
+                          "description": "Raised by every terminal write on it; a sign-off sends the version read (activity writes name their own interval)"
                         },
                         "complete": {
                           "type": "boolean",
@@ -12588,7 +12595,7 @@
         "tags": [
           "terminal"
         ],
-        "description": "Closes their work interval and opens a pause with the reason (409 urn:shopfloor:operation-state when they are not working on it). Needs the operator signed on at the work center with this session (409 urn:shopfloor:not-signed-on); names the operation's `version` (409 urn:shopfloor:operation-stale); the order dispatched, in progress or completed (409 urn:shopfloor:operation-state). Audited. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `terminal:operate` (MES_AUTH=on; ADR-0026).",
+        "description": "Closes their work interval (named as `activity`) and opens a pause with the reason (409 urn:shopfloor:operation-state when they are not working on it). Needs the operator signed on at the work center with this session, checked and locked in the write's transaction (409 urn:shopfloor:not-signed-on); the order dispatched, in progress or completed (409 urn:shopfloor:operation-state). Audited. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `terminal:operate` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -12596,11 +12603,18 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "version": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 9007199254740991,
-                    "description": "The operation version read; 409 when it is not the current one"
+                  "activity": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The operator's own open interval as read (its id), null when none"
                   },
                   "reason": {
                     "type": "string",
@@ -12620,11 +12634,11 @@
                   }
                 },
                 "required": [
-                  "version",
+                  "activity",
                   "reason"
                 ],
                 "additionalProperties": false,
-                "description": "Pauses the operator’s work on the operation, with a reason"
+                "description": "Pauses the operator's work (their open work interval) with a reason"
               }
             }
           }
@@ -12685,7 +12699,7 @@
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991,
-                          "description": "Raised by every terminal write on it; a write sends the version read"
+                          "description": "Raised by every terminal write on it; a sign-off sends the version read (activity writes name their own interval)"
                         },
                         "complete": {
                           "type": "boolean",
@@ -13009,7 +13023,7 @@
         "tags": [
           "terminal"
         ],
-        "description": "Closes their pause and opens a work interval (409 urn:shopfloor:operation-state when they have not paused it). Needs the operator signed on at the work center with this session (409 urn:shopfloor:not-signed-on); names the operation's `version` (409 urn:shopfloor:operation-stale); the order dispatched, in progress or completed (409 urn:shopfloor:operation-state). Audited. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `terminal:operate` (MES_AUTH=on; ADR-0026).",
+        "description": "Closes their pause (named as `activity`) and opens a work interval (409 urn:shopfloor:operation-state when they have not paused it). Needs the operator signed on at the work center with this session, checked and locked in the write's transaction (409 urn:shopfloor:not-signed-on); the order dispatched, in progress or completed (409 urn:shopfloor:operation-state). Audited. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `terminal:operate` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -13017,18 +13031,25 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "version": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 9007199254740991,
-                    "description": "The operation version read; 409 when it is not the current one"
+                  "activity": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The operator's own open interval as read (its id), null when none"
                   }
                 },
                 "required": [
-                  "version"
+                  "activity"
                 ],
                 "additionalProperties": false,
-                "description": "A start, resume or sign-off: the operation version read"
+                "description": "A start (activity null) or resume (the operator's open pause)"
               }
             }
           }
@@ -13089,7 +13110,7 @@
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991,
-                          "description": "Raised by every terminal write on it; a write sends the version read"
+                          "description": "Raised by every terminal write on it; a sign-off sends the version read (activity writes name their own interval)"
                         },
                         "complete": {
                           "type": "boolean",
@@ -13413,7 +13434,7 @@
         "tags": [
           "terminal"
         ],
-        "description": "Allowed once the MES has it complete (its final confirmation is written) and not signed off yet (409 urn:shopfloor:operation-state otherwise); closes every open interval on it. A close of the order needs every operation signed off. Needs the operator signed on at the work center with this session (409 urn:shopfloor:not-signed-on); names the operation's `version` (409 urn:shopfloor:operation-stale); the order dispatched, in progress or completed (409 urn:shopfloor:operation-state). Audited. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `terminal:operate` (MES_AUTH=on; ADR-0026).",
+        "description": "Names the operation's `version` (409 urn:shopfloor:operation-stale). Allowed once the MES has it complete (its final confirmation is written) and not signed off yet (409 urn:shopfloor:operation-state otherwise); closes every open interval on it. A close of the order needs every operation signed off. Needs the operator signed on at the work center with this session, checked and locked in the write's transaction (409 urn:shopfloor:not-signed-on); the order dispatched, in progress or completed (409 urn:shopfloor:operation-state). Audited. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `terminal:operate` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -13432,7 +13453,7 @@
                   "version"
                 ],
                 "additionalProperties": false,
-                "description": "A start, resume or sign-off: the operation version read"
+                "description": "A sign-off: the operation version read"
               }
             }
           }
@@ -13493,7 +13514,7 @@
                           "type": "integer",
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991,
-                          "description": "Raised by every terminal write on it; a write sends the version read"
+                          "description": "Raised by every terminal write on it; a sign-off sends the version read (activity writes name their own interval)"
                         },
                         "complete": {
                           "type": "boolean",

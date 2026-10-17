@@ -52,7 +52,27 @@ export interface OperationRecord {
 export interface TerminalWriteContext {
   readonly by: SessionUser;
   readonly requestId?: string | undefined;
+  /**
+   * Locks the operator's crew row at the operation's work center for this transaction and says
+   * whether there is one (#177 review, MEDIUM-1): the API passes the shifts module's `lockCrew`,
+   * so the check and the write commit together and no crew end can slip in between. Absent only
+   * in module tests that write without the API.
+   */
+  readonly lockCrew?: (trx: Transaction<Database>, workCenter: string) => Promise<boolean>;
 }
+
+/**
+ * What a terminal write names as read: an activity write the operator's own open interval (its
+ * id, null when none: start), so other operators' writes on the operation never make it stale; a
+ * sign-off the operation's version, as it decides for everyone.
+ */
+export type TerminalRequest =
+  | {
+      readonly activity: number | null;
+      readonly reason?: PauseReason | undefined;
+      readonly comment?: string | undefined;
+    }
+  | { readonly version: number };
 
 export type TerminalAction = 'start' | 'pause' | 'resume' | 'sign-off';
 
@@ -183,17 +203,15 @@ export async function readActivities(
  * operation row locked at `version`, the transition of the operator's own interval (start: none
  * open; pause: work open; resume: pause open) or the sign-off (complete, not signed off: closes
  * every open interval on it), the version raised and the audit. Returns the refusal, if refused.
+ * The crew row is locked first (`context.lockCrew`); without it the write is refused
+ * (`not-signed-on`).
  */
 export async function terminalWrite(
   trx: Transaction<Database>,
   orderId: string,
   operation: string,
   action: TerminalAction,
-  request: {
-    readonly version: number;
-    readonly reason?: PauseReason | undefined;
-    readonly comment?: string | undefined;
-  },
+  request: TerminalRequest,
   context: TerminalWriteContext,
   plantAt: Date,
 ): Promise<TerminalRefusal | undefined> {
@@ -212,13 +230,44 @@ export async function terminalWrite(
     .forUpdate()
     .executeTakeFirst();
   if (!row) return { kind: 'not-found', message: `order ${orderId} has no operation ${operation}` };
-  if (row.version !== request.version) {
+  if (context.lockCrew && !(await context.lockCrew(trx, row.work_center))) {
     return {
       kind: 'conflict',
-      message: `operation ${orderId}/${operation} changed: version is ${String(row.version)}, not ${String(request.version)}`,
-      type: PROBLEM_TYPES.operationStale,
+      message: `${context.by.username} is not signed on at ${row.work_center} with this session`,
+      type: PROBLEM_TYPES.notSignedOn,
     };
   }
+  const user = context.by;
+  const mine = await trx
+    .selectFrom('orders.operation_activity')
+    .selectAll()
+    .where('order_id', '=', orderId)
+    .where('operation', '=', operation)
+    .where('user_id', '=', user.userId)
+    .where('to_at', 'is', null)
+    // Locked: a crew end or orphan closure running now finishes first, and the interval is then
+    // read again (closed: not the operator's open one any more).
+    .forUpdate()
+    .executeTakeFirst();
+  const stale = (what: string): TerminalRefusal => ({
+    kind: 'conflict',
+    message: `operation ${orderId}/${operation} changed: ${what}`,
+    type: PROBLEM_TYPES.operationStale,
+  });
+  if ('version' in request) {
+    if (action !== 'sign-off') return stale('an activity write names the interval it read');
+    if (row.version !== request.version) {
+      return stale(`version is ${String(row.version)}, not ${String(request.version)}`);
+    }
+  } else {
+    if (action === 'sign-off') return stale('a sign-off names the version it read');
+    if ((mine?.id ?? null) !== request.activity) {
+      return stale(
+        `your open interval is ${mine ? String(mine.id) : 'none'}, not ${request.activity === null ? 'none' : String(request.activity)}`,
+      );
+    }
+  }
+  const pause = 'activity' in request ? request : undefined;
   const state = (message: string): TerminalRefusal => ({
     kind: 'conflict',
     message: `operation ${orderId}/${operation}: ${message}`,
@@ -228,22 +277,14 @@ export async function terminalWrite(
     return state(`the order is ${order.status} (terminal writes need it ${ACTIVE.join(', ')})`);
   }
   if (row.signed_off_at !== null) return state(`signed off by ${row.signed_off_by ?? '?'} already`);
-  const user = context.by;
   const now = sql<Date>`clock_timestamp()`;
-  const mine = await trx
-    .selectFrom('orders.operation_activity')
-    .selectAll()
-    .where('order_id', '=', orderId)
-    .where('operation', '=', operation)
-    .where('user_id', '=', user.userId)
-    .where('to_at', 'is', null)
-    .executeTakeFirst();
   const close = async (ids: readonly number[], reason: ActivityEndReason) => {
     if (ids.length === 0) return;
     await trx
       .updateTable('orders.operation_activity')
       .set({ to_at: now, to_plant_at: plantAt, end_reason: reason })
       .where('id', 'in', [...ids])
+      .where('to_at', 'is', null)
       .execute();
   };
   const open = async (kind: 'work' | 'pause') => {
@@ -256,8 +297,8 @@ export async function terminalWrite(
         user_id: user.userId,
         username: user.username,
         kind,
-        reason: kind === 'pause' ? (request.reason ?? 'other') : null,
-        comment: kind === 'pause' ? (request.comment ?? null) : null,
+        reason: kind === 'pause' ? (pause?.reason ?? 'other') : null,
+        comment: kind === 'pause' ? (pause?.comment ?? null) : null,
         from_at: now,
         from_plant_at: plantAt,
       })
@@ -277,7 +318,7 @@ export async function terminalWrite(
       if (mine?.kind !== 'work') return state('you are not working on it');
       await close([mine.id], 'paused');
       await open('pause');
-      after = { reason: request.reason, ...(request.comment ? { comment: request.comment } : {}) };
+      after = { reason: pause?.reason, ...(pause?.comment ? { comment: pause.comment } : {}) };
       break;
     case 'resume':
       if (mine?.kind !== 'pause') return state('you have not paused it');
@@ -341,11 +382,13 @@ export async function terminalWrite(
 
 /**
  * Closes an operator's open intervals at a work center (`crew-ended`): their crew row there ended
- * (sign-off at the terminal, the session's end, the shift's end). Returns the operations touched.
+ * (sign-off at the terminal, the session's end, the shift's end). Only intervals started by then
+ * (`until`, the crew row's end in wall time): a notice that arrives late never closes work begun
+ * under a newer sign-on. Returns the operations touched.
  */
 export async function endActivities(
   db: Kysely<Database>,
-  who: { readonly userId: number; readonly workCenter: string },
+  who: { readonly userId: number; readonly workCenter: string; readonly until: Date },
   plantAt: Date,
 ): Promise<{ orderId: string; operation: string }[]> {
   const rows = await db
@@ -357,6 +400,7 @@ export async function endActivities(
     })
     .where('user_id', '=', who.userId)
     .where('work_center', '=', who.workCenter)
+    .where('from_at', '<=', who.until)
     .where('to_at', 'is', null)
     .returning(['order_id', 'operation'])
     .execute();
@@ -365,17 +409,21 @@ export async function endActivities(
 
 /**
  * Closes every open interval whose operator holds no open crew row at its work center (a crew row
- * ended while the MES was down, or its notice was lost). `signedOn` holds `{userId}|{workCenter}`.
+ * ended while the MES was down, or its notice was lost). `signedOn` holds `{userId}|{workCenter}`
+ * as read after `before` (database time): only intervals started before it are judged, so a
+ * sign-on and a start after the crew rows were read are never taken for orphans.
  */
 export async function endOrphanedActivities(
   db: Kysely<Database>,
   signedOn: ReadonlySet<string>,
+  before: Date,
   plantAt: Date,
 ): Promise<{ orderId: string; operation: string }[]> {
   const open = await db
     .selectFrom('orders.operation_activity')
     .select(['id', 'user_id', 'work_center', 'order_id', 'operation'])
     .where('to_at', 'is', null)
+    .where('from_at', '<', before)
     .execute();
   const orphans = open.filter((a) => !signedOn.has(`${String(a.user_id)}|${a.work_center}`));
   if (orphans.length === 0) return [];

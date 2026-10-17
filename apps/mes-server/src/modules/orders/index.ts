@@ -52,6 +52,7 @@ export type {
   ActivityRecord,
   OperationRecord,
   TerminalAction,
+  TerminalRequest,
   TerminalWriteContext,
 } from './operations.ts';
 export { MqttCommandPublisher } from './publisher.ts';

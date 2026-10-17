@@ -63,7 +63,7 @@ import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
 import { executionRoutes, type ExecutionApi } from './execution-routes.ts';
 import { orderRoutes, type OrdersApi } from './order-routes.ts';
 import { terminalRoutes, workCentersOf, type TerminalApi } from './terminal-routes.ts';
-import { terminalView } from './terminal-view.ts';
+import { memoizeOrderExecution, terminalView } from './terminal-view.ts';
 import {
   handoverAuditDto,
   handoverNoteDto,
@@ -225,7 +225,7 @@ export interface ApiSources {
     Shifts,
     'instance' | 'report' | 'notes' | 'note' | 'noteAudit' | 'createNote' | 'editNote' | 'onChange'
   > &
-    Partial<Pick<Shifts, 'crew' | 'currentInstance' | 'signOn' | 'signOff'>>;
+    Partial<Pick<Shifts, 'crew' | 'currentInstance' | 'signOn' | 'signOff' | 'lockCrew'>>;
   /** Production orders and their commands (#174); the order routes answer 503 without it. */
   readonly orders?: OrdersApi &
     Pick<Orders, 'onChange'> &
@@ -2449,6 +2449,23 @@ export async function registerRealtime(
     { prefix: API_PREFIX },
   );
 
+  /**
+   * One memo of `orderExecution` for every terminal topic and read (#177 review, MEDIUM-2): within
+   * one pace window (`terminalMs`) an order's execution is read once.
+   */
+  let memo: { source: unknown; memoized: NonNullable<TerminalApi['execution']> } | undefined;
+  const executionMemo = (
+    execution: NonNullable<TerminalApi['execution']>,
+  ): NonNullable<TerminalApi['execution']> => {
+    if (memo?.source !== execution) {
+      memo = {
+        source: execution,
+        memoized: memoizeOrderExecution(execution, options.push?.terminalMs ?? 500),
+      };
+    }
+    return memo.memoized;
+  };
+
   /** What the terminal needs, once the orders and shifts modules are attached with it (#177). */
   function terminalSources(found: Attached): TerminalApi | undefined {
     const { orders, shifts, execution, equipment } = found.sources;
@@ -2463,7 +2480,8 @@ export async function registerRealtime(
       !shifts?.crew ||
       !shifts.currentInstance ||
       !shifts.signOn ||
-      !shifts.signOff
+      !shifts.signOff ||
+      !shifts.lockCrew
     ) {
       return undefined;
     }
@@ -2471,7 +2489,7 @@ export async function registerRealtime(
       equipment,
       orders: orders as TerminalApi['orders'],
       shifts: shifts as TerminalApi['shifts'],
-      ...(execution ? { execution } : {}),
+      ...(execution ? { execution: executionMemo(execution) } : {}),
       catalog: found.catalog,
     };
   }

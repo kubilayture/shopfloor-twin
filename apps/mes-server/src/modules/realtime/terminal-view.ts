@@ -121,6 +121,35 @@ function wipHere(
   return { count, atMachines };
 }
 
+/**
+ * `orderExecution` read at most once per order within `ttlMs` (#177 review, MEDIUM-2): every
+ * terminal topic and read in one pace window shares it. A failed read is not kept.
+ */
+export function memoizeOrderExecution(
+  execution: NonNullable<TerminalViewSources['execution']>,
+  ttlMs: number,
+  now: () => number = Date.now,
+): NonNullable<TerminalViewSources['execution']> {
+  const kept = new Map<string, { at: number; value: Promise<OrderExecutionRecord | undefined> }>();
+  return {
+    scrapRecords: (query) => execution.scrapRecords(query),
+    orderExecution: (id) => {
+      const at = now();
+      const found = kept.get(id);
+      if (found && at - found.at < ttlMs) return found.value;
+      for (const [key, entry] of kept) if (at - entry.at >= ttlMs) kept.delete(key);
+      const value = execution.orderExecution(id);
+      if (ttlMs > 0) {
+        kept.set(id, { at, value });
+        value.catch(() => {
+          if (kept.get(id)?.value === value) kept.delete(id);
+        });
+      }
+      return value;
+    },
+  };
+}
+
 /** The terminal view of a work center from the modules' current data. */
 export async function terminalView(
   sources: TerminalViewSources,
@@ -159,7 +188,7 @@ export async function terminalView(
     workCenter: workCenter.id,
   });
   const ordersAt = new Map<string, string[]>(machines.map((m) => [m.id, []]));
-  const commands = await sources.orders.commands();
+  const commands = await sources.orders.commands({ orderIds: here.map((o) => o.id) });
   const started = commands.filter((c) => c.job === 'started');
   const terminalOrders: TerminalOrderDto[] = shown.map((order) => {
     const execution = executions.get(order.id);
@@ -199,11 +228,13 @@ export async function terminalView(
       orders: ordersAt.get(m.id) ?? [],
     };
   });
-  const operationsHere = new Set(machines.map((m) => m.operation));
+  // By the machine that scrapped it, not its operation id: operations may share ids across work
+  // centers in another plant.
+  const machinesHere = new Set(machines.map((m) => m.id));
   let scrapTruncated = false;
   const scrap = sources.execution
     ? await sources.execution.scrapRecords({ uncoded: true, limit: 500 }).then((found) => {
-        const mine = found.records.filter((r) => operationsHere.has(r.operation));
+        const mine = found.records.filter((r) => machinesHere.has(r.equipment));
         scrapTruncated = found.truncated || mine.length > TERMINAL_LIMITS.scrapRecords;
         return mine.slice(0, TERMINAL_LIMITS.scrapRecords);
       })

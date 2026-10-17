@@ -43,6 +43,7 @@ import {
 } from '../oee/index.ts';
 import {
   endCrew,
+  lockCrew,
   readCrew,
   signOff as crewSignOff,
   signOn as crewSignOn,
@@ -103,6 +104,12 @@ export interface ShiftsOptions extends ShiftsSources {
   readonly sessions?: { live(id: string): Promise<boolean> };
   /** How often (wall ms) the open crew rows' sessions are checked (5 s). */
   readonly crewCheckMs?: number;
+  /**
+   * Runs after each crew check (#177 review, MEDIUM-1): the open crew rows as `{userId}|{workCenter}`
+   * and the database time they were read at, so a module can close what holds no crew row any
+   * more (operator activity intervals started before that time).
+   */
+  readonly afterCrewCheck?: (signedOn: ReadonlySet<string>, readAt: Date) => Promise<unknown>;
   readonly log?: ShiftsLog;
 }
 
@@ -409,6 +416,7 @@ export class Shifts {
   #ticking = false;
   readonly #sessions: { live(id: string): Promise<boolean> } | undefined;
   readonly #crewCheckMs: number;
+  readonly #afterCrewCheck: ShiftsOptions['afterCrewCheck'];
   #crewCheckedAt = 0;
 
   constructor(options: ShiftsOptions) {
@@ -421,6 +429,7 @@ export class Shifts {
     this.#recheckMs = options.recheckMs ?? 10_000;
     this.#sessions = options.sessions;
     this.#crewCheckMs = options.crewCheckMs ?? 5_000;
+    this.#afterCrewCheck = options.afterCrewCheck;
   }
 
   get shiftPattern(): ShiftPattern {
@@ -712,25 +721,45 @@ export class Shifts {
       shiftKey: instance.key,
       plantAt,
       requestId,
+      endOf: (epoch, key) => this.#tracked.get(instanceKey(epoch, key))?.record.end,
     });
     for (const ended of result.ended) this.#emit({ type: 'crew', event: 'ended', crew: ended });
     if (result.created) this.#emit({ type: 'crew', event: 'signed-on', crew: result.crew });
     return result.crew;
   }
 
-  /** Signs the user off at the work center (their open row ends with `sign-off`). */
-  async signOff(workCenter: string, by: SessionUser, requestId?: string): Promise<CrewRecord> {
+  /**
+   * Signs the user off at the work center: their open row held by this session ends with
+   * `sign-off` (409 `not-signed-on` when the session holds none there).
+   */
+  async signOff(
+    workCenter: string,
+    by: SessionUser,
+    sessionId: string,
+    requestId?: string,
+  ): Promise<CrewRecord> {
     const plantAt = this.#sources.equipment.watermarks()[0]?.watermark ?? new Date();
-    const ended = await crewSignOff(this.#db, { workCenter, by, plantAt, requestId });
+    const ended = await crewSignOff(this.#db, { workCenter, by, sessionId, plantAt, requestId });
     if (!ended) {
       throw new ShiftError(
         'conflict',
-        `${by.username} is not signed on at ${workCenter}`,
+        `${by.username} is not signed on at ${workCenter} with this session`,
         PROBLEM_TYPES.notSignedOn,
       );
     }
     this.#emit({ type: 'crew', event: 'ended', crew: ended });
     return ended;
+  }
+
+  /**
+   * Locks the user's open crew row at the work center held by the session `FOR SHARE` inside the
+   * caller's transaction (a terminal write, #177 review): false when there is none.
+   */
+  lockCrew(
+    trx: Transaction<Database>,
+    who: { readonly userId: number; readonly workCenter: string; readonly sessionId: string },
+  ): Promise<boolean> {
+    return lockCrew(trx, who);
   }
 
   /** Ends the open rows of these sessions (`session-ended`): logout, a disabled user, … */
@@ -771,7 +800,15 @@ export class Shifts {
       .select(['id', 'epoch', 'shift_key', 'session_id'])
       .where('to_at', 'is', null)
       .execute();
-    if (open.length === 0) return;
+    const now = Date.now();
+    const checking = now - this.#crewCheckedAt >= this.#crewCheckMs;
+    if (open.length === 0) {
+      if (checking) {
+        this.#crewCheckedAt = now;
+        await this.#crewChecked();
+      }
+      return;
+    }
     const shiftEnded = open.filter((row) => {
       const record = this.#tracked.get(instanceKey(row.epoch, row.shift_key))?.record;
       return record ? this.#ended(record, newest) : false;
@@ -780,19 +817,38 @@ export class Shifts {
       shiftEnded.map((r) => r.id),
       'shift-ended',
     );
-    const sessions = this.#sessions;
-    const now = Date.now();
-    if (!sessions || now - this.#crewCheckedAt < this.#crewCheckMs) return;
+    if (!checking) return;
     this.#crewCheckedAt = now;
-    const gone = new Set(shiftEnded.map((r) => r.id));
-    const dead: number[] = [];
-    for (const row of open) {
-      if (gone.has(row.id)) continue;
-      if (row.session_id === null || !(await sessions.live(row.session_id))) {
-        dead.push(row.id);
+    const sessions = this.#sessions;
+    if (sessions) {
+      const gone = new Set(shiftEnded.map((r) => r.id));
+      const dead: number[] = [];
+      for (const row of open) {
+        if (gone.has(row.id)) continue;
+        if (row.session_id === null || !(await sessions.live(row.session_id))) {
+          dead.push(row.id);
+        }
       }
+      await this.#endRows(dead, 'session-ended');
     }
-    await this.#endRows(dead, 'session-ended');
+    await this.#crewChecked();
+  }
+
+  /** The open crew rows and when they were read, for `afterCrewCheck`. */
+  async #crewChecked(): Promise<void> {
+    const after = this.#afterCrewCheck;
+    if (!after) return;
+    // The time first, then the rows: an interval started before it had its crew row open then,
+    // so it is in the set unless that row ended since (and then closing the interval is right).
+    const { rows: now } = await sql<{ at: Date }>`SELECT clock_timestamp() AS at`.execute(this.#db);
+    const readAt = now[0]?.at ?? new Date();
+    const open = await this.#db
+      .selectFrom('shifts.crew_assignment')
+      .select(['user_id', 'work_center'])
+      .where('to_at', 'is', null)
+      .execute();
+    const signedOn = new Set(open.map((r) => `${String(r.user_id)}|${r.work_center}`));
+    await after(signedOn, readAt);
   }
 
   /** The notes of an instance, by creation, each with its history (newest first) if asked. */
@@ -1044,6 +1100,17 @@ export class Shifts {
       readonly alarms: readonly ReportAlarmScope[];
     },
   ): Promise<boolean> {
+    // An open crew row of the instance (#177 review): its crew section may still change, so the
+    // report isn't final until the tick has closed it.
+    const crewOpen = await this.#db
+      .selectFrom('shifts.crew_assignment')
+      .select('id')
+      .where('epoch', '=', record.epoch)
+      .where('shift_key', '=', record.key)
+      .where('to_at', 'is', null)
+      .limit(1)
+      .executeTakeFirst();
+    if (crewOpen) return false;
     const { equipment, oee, alarms } = this.#sources;
     const scopes = alarms.scopes().filter((s) => s.scope !== 'equipment');
     const range = { from: record.start, to: record.end };

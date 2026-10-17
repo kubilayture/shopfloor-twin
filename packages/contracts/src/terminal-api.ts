@@ -83,7 +83,9 @@ export const terminalOperationSchema = z
     orderId: z.string(),
     operation: z.string(),
     workCenter: z.string(),
-    version: int.describe('Raised by every terminal write on it; a write sends the version read'),
+    version: int.describe(
+      'Raised by every terminal write on it; a sign-off sends the version read (activity writes name their own interval)',
+    ),
     complete: z
       .boolean()
       .describe(
@@ -178,17 +180,31 @@ const version = int
 
 export const terminalEmptyRequestSchema = z.strictObject({}).describe('An empty JSON object');
 
+/**
+ * What an activity write read: the id of the operator's own open interval on the operation, null
+ * when none. 409 operation-stale when it is not theirs now; other operators' writes never make it
+ * stale (#177 review).
+ */
+const activity = int
+  .min(1)
+  .nullable()
+  .describe("The operator's own open interval as read (its id), null when none");
+
+export const activityWriteRequestSchema = z
+  .strictObject({ activity })
+  .describe("A start (activity null) or resume (the operator's open pause)");
+
 export const operationWriteRequestSchema = z
   .strictObject({ version })
-  .describe('A start, resume or sign-off: the operation version read');
+  .describe('A sign-off: the operation version read');
 
 export const pauseRequestSchema = z
   .strictObject({
-    version,
+    activity,
     reason: z.enum(PAUSE_REASONS),
     comment: z.string().trim().min(1).max(TERMINAL_LIMITS.comment).optional(),
   })
-  .describe('Pauses the operator’s work on the operation, with a reason');
+  .describe("Pauses the operator's work (their open work interval) with a reason");
 
 export const crewResultSchema = z.object({ crew: crewMemberSchema });
 
@@ -220,6 +236,7 @@ export type TerminalQueueEntryDto = z.infer<typeof terminalQueueEntrySchema>;
 export type TerminalMachineDto = z.infer<typeof terminalMachineSchema>;
 export type TerminalViewDto = z.infer<typeof terminalViewSchema>;
 export type OperationWriteRequest = z.infer<typeof operationWriteRequestSchema>;
+export type ActivityWriteRequest = z.infer<typeof activityWriteRequestSchema>;
 export type PauseRequest = z.input<typeof pauseRequestSchema>;
 export type CrewResult = z.infer<typeof crewResultSchema>;
 export type OperationResult = z.infer<typeof operationResultSchema>;

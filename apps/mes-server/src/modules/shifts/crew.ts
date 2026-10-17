@@ -98,10 +98,17 @@ const audit = async (
   });
 };
 
+/** SQLSTATE 23505: a unique index refused the row (two sign-ons of one user racing). */
+const isUniqueViolation = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && (error as { code?: unknown }).code === '23505';
+
 /**
  * Opens a crew row for the user at the work center in the shift instance, for the session. The
  * same session again changes nothing (the open row is answered); an open row of another session of
- * the same user there is ended with `replaced` first. Returns the open row and the rows it ended.
+ * the same user there is ended first: `replaced` at the plant clock when it belongs to this shift
+ * instance, `shift-ended` at that instance's end when it belongs to an earlier one (`endOf`). Two
+ * sign-ons racing: the loser's insert hits the open-row index (23505) and is tried once more, and
+ * then finds the winner's row. Returns the open row and the rows it ended.
  */
 export async function signOn(
   db: Kysely<Database>,
@@ -113,7 +120,21 @@ export async function signOn(
     readonly shiftKey: string;
     readonly plantAt: Date;
     readonly requestId?: string | undefined;
+    /** The end (plant time) of a shift instance, if known. */
+    readonly endOf?: (epoch: number, shiftKey: string) => Date | undefined;
   },
+): Promise<{ crew: CrewRecord; ended: CrewRecord[]; created: boolean }> {
+  try {
+    return await signOnOnce(db, input);
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error;
+    return signOnOnce(db, input);
+  }
+}
+
+async function signOnOnce(
+  db: Kysely<Database>,
+  input: Parameters<typeof signOn>[1],
 ): Promise<{ crew: CrewRecord; ended: CrewRecord[]; created: boolean }> {
   return db.transaction().execute(async (trx) => {
     const open = await trx
@@ -133,7 +154,16 @@ export async function signOn(
       ) {
         return { crew: toCrew(open), ended, created: false };
       }
-      const closed = await close(trx, [open.id], 'replaced', input.plantAt);
+      const sameInstance = open.epoch === input.epoch && open.shift_key === input.shiftKey;
+      const end = sameInstance ? undefined : input.endOf?.(open.epoch, open.shift_key);
+      const closed = await close(
+        trx,
+        [open.id],
+        sameInstance ? 'replaced' : 'shift-ended',
+        end === undefined
+          ? input.plantAt
+          : new Date(Math.min(end.getTime(), input.plantAt.getTime())),
+      );
       for (const row of closed) {
         await audit(trx, { system: 'shifts' }, 'crew.end', row, input.plantAt, input.requestId);
         ended.push(toCrew(row));
@@ -158,12 +188,16 @@ export async function signOn(
   });
 }
 
-/** Ends the user's open row at the work center (`sign-off`); undefined when none is open. */
+/**
+ * Ends the user's open row at the work center held by this session (`sign-off`); undefined when
+ * none is open for it (another session's row is that session's to end).
+ */
 export async function signOff(
   db: Kysely<Database>,
   input: {
     readonly workCenter: string;
     readonly by: SessionUser;
+    readonly sessionId: string;
     readonly plantAt: Date;
     readonly requestId?: string | undefined;
   },
@@ -174,6 +208,7 @@ export async function signOff(
       .select('id')
       .where('user_id', '=', input.by.userId)
       .where('work_center', '=', input.workCenter)
+      .where('session_id', '=', input.sessionId)
       .where('to_at', 'is', null)
       .forUpdate()
       .executeTakeFirst();
@@ -214,6 +249,28 @@ export async function endCrew(
     }
     return ended;
   });
+}
+
+/**
+ * Inside a caller's transaction (#177 review, MEDIUM-1): the open crew row of the user at the work
+ * center held by the session, locked `FOR SHARE` until that transaction ends, so no sign-off, session
+ * end or shift end can close it while a terminal write that relies on it commits (they lock it `FOR
+ * UPDATE` and wait). False when there is none.
+ */
+export async function lockCrew(
+  trx: Transaction<Database>,
+  who: { readonly userId: number; readonly workCenter: string; readonly sessionId: string },
+): Promise<boolean> {
+  const row = await trx
+    .selectFrom('shifts.crew_assignment')
+    .select('id')
+    .where('user_id', '=', who.userId)
+    .where('work_center', '=', who.workCenter)
+    .where('session_id', '=', who.sessionId)
+    .where('to_at', 'is', null)
+    .forShare()
+    .executeTakeFirst();
+  return row !== undefined;
 }
 
 async function close(

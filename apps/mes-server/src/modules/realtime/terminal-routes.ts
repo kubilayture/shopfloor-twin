@@ -3,6 +3,7 @@ import {
   PROBLEM_TYPES,
   crewResultSchema,
   operationResultSchema,
+  activityWriteRequestSchema,
   operationWriteRequestSchema,
   pauseRequestSchema,
   terminalEmptyRequestSchema,
@@ -24,7 +25,8 @@ import { operationDto, terminalView, type TerminalViewSources } from './terminal
 export interface TerminalApi extends TerminalViewSources {
   readonly orders: TerminalViewSources['orders'] &
     Pick<Orders, 'startWork' | 'pauseWork' | 'resumeWork' | 'signOff' | 'endActivities'>;
-  readonly shifts: NonNullable<TerminalViewSources['shifts']> & Pick<Shifts, 'signOn' | 'signOff'>;
+  readonly shifts: NonNullable<TerminalViewSources['shifts']> &
+    Pick<Shifts, 'signOn' | 'signOff' | 'lockCrew'>;
   /** Master data's machines by id. */
   readonly catalog: ReadonlyMap<string, EquipmentInfo>;
 }
@@ -151,7 +153,7 @@ export function terminalRoutes(
       url: '/terminal/:workCenter/sign-off',
       access: 'terminal:operate',
       summary: 'Signs the operator off at the work center',
-      description: `Ends the operator's crew row here (409 urn:shopfloor:not-signed-on without one) and their open activity intervals on its operations. The web then ends the session. Audited. ${GUARDS}`,
+      description: `Ends the operator's crew row here held by this session (409 urn:shopfloor:not-signed-on without one) and their open activity intervals on its operations. The web then ends the session. Audited. ${GUARDS}`,
       tags: ['terminal'],
       params: workCenterParams,
       body: terminalEmptyRequestSchema,
@@ -164,17 +166,18 @@ export function terminalRoutes(
       center(sources, params.workCenter);
       const principal = deps.principal(request);
       const crew = await sources.shifts
-        .signOff(params.workCenter, principal, requestId)
+        .signOff(params.workCenter, principal, principal.session.id, requestId)
         .catch(mapped);
       await sources.orders.endActivities({
         userId: principal.userId,
         workCenter: params.workCenter,
+        until: crew.to ?? new Date(),
       });
       return { crew: crewDto(crew) };
     },
   );
 
-  /** The operator signed on here with this session, and the operation at this work center. */
+  /** The operation at this work center (404 otherwise), and who writes. */
   const checked = async (
     sources: TerminalApi,
     request: FastifyRequest,
@@ -182,18 +185,6 @@ export function terminalRoutes(
   ): Promise<Principal> => {
     center(sources, params.workCenter);
     const principal = deps.principal(request);
-    const crew = await sources.shifts.crew({
-      userId: principal.userId,
-      workCenter: params.workCenter,
-      open: true,
-    });
-    if (!crew.some((row) => row.sessionId === principal.session.id)) {
-      throw new HttpProblem(
-        409,
-        `${principal.username} is not signed on at ${params.workCenter} with this session`,
-        PROBLEM_TYPES.notSignedOn,
-      );
-    }
     const [operation] = await sources.orders.operations({
       orderIds: [params.id],
       operation: params.operation,
@@ -212,37 +203,42 @@ export function terminalRoutes(
       path: 'start',
       summary: "Starts the operator's work on an order operation",
       description:
-        "Opens a work interval of the operator on it (409 urn:shopfloor:operation-state while one of theirs is open). Records the operator's time; the machine runs its queue regardless.",
-      body: operationWriteRequestSchema,
+        "Opens a work interval of the operator on it; names `activity: null` (409 urn:shopfloor:operation-stale while one of theirs is open). Records the operator's time; the machine runs its queue regardless.",
+      body: activityWriteRequestSchema,
       run: (o: TerminalApi['orders'], p: OpParams, b: Body, c: Context) =>
-        o.startWork(p.id, p.operation, b, c),
+        o.startWork(p.id, p.operation, { activity: b.activity ?? null }, c),
     },
     {
       path: 'pause',
       summary: "Pauses the operator's work on an order operation, with a reason",
       description:
-        'Closes their work interval and opens a pause with the reason (409 urn:shopfloor:operation-state when they are not working on it).',
+        'Closes their work interval (named as `activity`) and opens a pause with the reason (409 urn:shopfloor:operation-state when they are not working on it).',
       body: pauseRequestSchema,
       run: (o: TerminalApi['orders'], p: OpParams, b: Body, c: Context) =>
-        o.pauseWork(p.id, p.operation, { ...b, reason: b.reason ?? 'other' }, c),
+        o.pauseWork(
+          p.id,
+          p.operation,
+          { activity: b.activity ?? null, reason: b.reason ?? 'other', comment: b.comment },
+          c,
+        ),
     },
     {
       path: 'resume',
       summary: "Resumes the operator's paused work on an order operation",
       description:
-        'Closes their pause and opens a work interval (409 urn:shopfloor:operation-state when they have not paused it).',
-      body: operationWriteRequestSchema,
+        'Closes their pause (named as `activity`) and opens a work interval (409 urn:shopfloor:operation-state when they have not paused it).',
+      body: activityWriteRequestSchema,
       run: (o: TerminalApi['orders'], p: OpParams, b: Body, c: Context) =>
-        o.resumeWork(p.id, p.operation, b, c),
+        o.resumeWork(p.id, p.operation, { activity: b.activity ?? null }, c),
     },
     {
       path: 'sign-off',
       summary: 'Signs an order operation off',
       description:
-        'Allowed once the MES has it complete (its final confirmation is written) and not signed off yet (409 urn:shopfloor:operation-state otherwise); closes every open interval on it. A close of the order needs every operation signed off.',
+        "Names the operation's `version` (409 urn:shopfloor:operation-stale). Allowed once the MES has it complete (its final confirmation is written) and not signed off yet (409 urn:shopfloor:operation-state otherwise); closes every open interval on it. A close of the order needs every operation signed off.",
       body: operationWriteRequestSchema,
       run: (o: TerminalApi['orders'], p: OpParams, b: Body, c: Context) =>
-        o.signOff(p.id, p.operation, b, c),
+        o.signOff(p.id, p.operation, { version: b.version ?? 0 }, c),
     },
   ] as const;
 
@@ -254,7 +250,7 @@ export function terminalRoutes(
         url: `/terminal/:workCenter/orders/:id/operations/:operation/${action.path}`,
         access: 'terminal:operate',
         summary: action.summary,
-        description: `${action.description} Needs the operator signed on at the work center with this session (409 urn:shopfloor:not-signed-on); names the operation's \`version\` (409 urn:shopfloor:operation-stale); the order dispatched, in progress or completed (409 urn:shopfloor:operation-state). Audited. ${GUARDS}`,
+        description: `${action.description} Needs the operator signed on at the work center with this session, checked and locked in the write's transaction (409 urn:shopfloor:not-signed-on); the order dispatched, in progress or completed (409 urn:shopfloor:operation-state). Audited. ${GUARDS}`,
         tags: ['terminal'],
         params: operationParams,
         body: action.body,
@@ -265,10 +261,17 @@ export function terminalRoutes(
       async ({ params, body, request, requestId }) => {
         const sources = deps.terminal();
         const principal = await checked(sources, request, params);
+        const session = principal.session.id;
         const operation: OperationRecord = await action
           .run(sources.orders, params, body as Body, {
             by: { userId: principal.userId, username: principal.username, roles: principal.roles },
             requestId,
+            lockCrew: (trx, workCenter) =>
+              sources.shifts.lockCrew(trx, {
+                userId: principal.userId,
+                workCenter,
+                sessionId: session,
+              }),
           })
           .catch(mapped);
         return { operation: operationDto(operation) };
@@ -279,7 +282,8 @@ export function terminalRoutes(
 
 type OpParams = z.output<typeof operationParams>;
 interface Body {
-  readonly version: number;
+  readonly version?: number;
+  readonly activity?: number | null;
   readonly reason?: z.output<typeof pauseRequestSchema>['reason'];
   readonly comment?: string | undefined;
 }

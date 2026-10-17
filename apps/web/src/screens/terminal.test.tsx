@@ -34,7 +34,15 @@ interface Call {
  * A MES with sessions of either kind, the terminal's view of Line A1 and its writes: the view's
  * crew and operations follow the writes; `answer` may refuse a write.
  */
-function terminalMes(options: { session?: SessionDto | null; roles?: Role[] } = {}) {
+function terminalMes(
+  options: {
+    session?: SessionDto | null;
+    roles?: Role[];
+    /** Sessions the MES issues end this soon after the login (the idle timeout), if given. */
+    idleMs?: number;
+  } = {},
+) {
+  let nextActivity = 500;
   let session: SessionDto | null = options.session ?? null;
   let view: TerminalViewDto = viewOf();
   const calls: Call[] = [];
@@ -84,6 +92,9 @@ function terminalMes(options: { session?: SessionDto | null; roles?: Role[] } = 
           ...sessionOf(options.roles ?? ['operator'], { username: login.username }).user,
           id: IDS[login.username] ?? 99,
         },
+        ...(options.idleMs === undefined
+          ? {}
+          : { idleExpiresAt: new Date(Date.now() + options.idleMs).toISOString() }),
       };
       return json(session);
     }
@@ -143,13 +154,14 @@ function terminalMes(options: { session?: SessionDto | null; roles?: Role[] } = 
       const [, operation = '', action = ''] = write;
       const current = op(operation);
       if (!current) return problem(404, 'Not Found', 'no op', path);
-      const request = body as { version: number; reason?: 'break' };
-      if (request.version !== current.version) {
-        return problem(409, 'Conflict', 'changed', path, PROBLEM_TYPES.operationStale);
-      }
+      const request = body as { version?: number; activity?: number | null; reason?: 'break' };
+      const ownId = current.activities.find((a) => a.userId === user.id)?.id ?? null;
+      const stale =
+        action === 'sign-off' ? request.version !== current.version : request.activity !== ownId;
+      if (stale) return problem(409, 'Conflict', 'changed', path, PROBLEM_TYPES.operationStale);
       const others = current.activities.filter((a) => a.userId !== user.id);
       const activity = (kind: 'work' | 'pause') => ({
-        id: Date.now(),
+        id: (nextActivity += 1),
         orderId: 'O-1',
         operation,
         workCenter: 'line-a1',
@@ -256,7 +268,7 @@ describe('the operator terminal (#177)', () => {
     fireEvent.click(screen.getByTestId('terminal-start-O-1-OP30'));
     await screen.findByTestId('terminal-pause-O-1-OP30');
     const start = mes.calls.find((c) => c.path.endsWith('/OP30/start'));
-    expect(start?.body).toEqual({ version: 1 });
+    expect(start?.body).toEqual({ activity: null });
     expect(screen.getByTestId('terminal-op-state-O-1-OP30').textContent).toContain('You: working');
     fireEvent.click(screen.getByTestId('terminal-pause-O-1-OP30'));
     const confirm = screen.getByTestId('terminal-pause-confirm-O-1-OP30');
@@ -265,7 +277,7 @@ describe('the operator terminal (#177)', () => {
     fireEvent.click(confirm);
     await screen.findByTestId('terminal-resume-O-1-OP30');
     expect(mes.calls.find((c) => c.path.endsWith('/OP30/pause'))?.body).toEqual({
-      version: 2,
+      activity: 501,
       reason: 'material',
     });
     expect(screen.getByTestId('terminal-op-state-O-1-OP30').textContent).toContain('paused');
@@ -391,10 +403,46 @@ describe('the operator terminal (#177)', () => {
     expect(screen.getByTestId('terminal-user').parentElement?.textContent).toMatch(
       /not signed on here/,
     );
+    // The refusal of the sign-on with the login is said on the screen that follows.
+    expect((await screen.findByRole('alert')).textContent).toMatch(
+      /Logged in, but not signed on: no shift is running/,
+    );
+    // Not signed on: no scrap coding offered either.
+    expect(screen.queryByTestId('terminal-scrap-code-11')).toBeNull();
     mes.refuseNext('/api/v1/terminal/line-a1/sign-on', PROBLEM_TYPES.noShift, 'no shift');
     fireEvent.click(screen.getByTestId('terminal-join'));
-    expect((await screen.findByRole('alert')).textContent).toMatch(/no shift is running/);
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/^Not signed on: no shift is running/);
+    });
     // Not signed on: no operation write is offered.
     expect(screen.queryByTestId('terminal-start-O-1-OP30')).toBeNull();
   });
+
+  it('when operator A idles out, operator B signs on to a screen with none of A’s drafts or reads', async () => {
+    const mes = terminalMes({ idleMs: 1_500 });
+    vi.stubGlobal('fetch', mes.fetch);
+    const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
+    await signOnAs('olga');
+    fireEvent.change(await screen.findByTestId('terminal-scrap-comment-11'), {
+      target: { value: 'olga’s unsent note' },
+    });
+    fireEvent.click(screen.getByTestId('terminal-start-O-1-OP30'));
+    fireEvent.click(await screen.findByTestId('terminal-pause-O-1-OP30'));
+    fireEvent.click(screen.getByTestId('terminal-reason-O-1-OP30-quality'));
+    // Nobody touches the screen: the session times out here and at the MES.
+    await screen.findByRole('heading', { name: 'Sign on' }, { timeout: 5_000 });
+    await waitFor(() => {
+      expect(mes.calls.some((c) => c.method === 'DELETE' && c.path === '/api/v1/session')).toBe(
+        true,
+      );
+    });
+    expect(app.queryClient.getQueryCache().findAll({ queryKey: ['terminal'] })).toEqual([]);
+    expect(app.queryClient.getQueryCache().findAll({ queryKey: ['live', 'terminal'] })).toEqual([]);
+    expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+    expect(screen.queryByText('olga’s unsent note')).toBeNull();
+    await signOnAs('omar');
+    expect(screen.getByTestId('terminal-user').textContent).toBe('omar');
+    expect(screen.getByTestId<HTMLInputElement>('terminal-scrap-comment-11').value).toBe('');
+    expect(screen.queryByTestId('terminal-pause-reasons-O-1-OP30')).toBeNull();
+  }, 15_000);
 });

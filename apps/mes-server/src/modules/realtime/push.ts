@@ -311,8 +311,11 @@ export class PushHub {
     }
     if (sources.execution) {
       this.#detach.push(
-        sources.execution.onChange(() => {
-          this.#terminalsDirty();
+        sources.execution.onChange((change) => {
+          // A scrap record names its machine: only that work center's view changes. An order's
+          // units may be anywhere on the line.
+          if (change.type === 'scrap') this.#terminalsOf(change.record.equipment);
+          else this.#terminalsDirty();
         }),
       );
     }
@@ -634,6 +637,13 @@ export class PushHub {
         json: JSON.stringify(view),
       };
     });
+  }
+
+  /** The terminal topics whose work center holds the machine are computed again. */
+  #terminalsOf(equipment: string): void {
+    for (const topic of this.#paced.values()) {
+      if (topic.kind === 'terminal' && topic.members.has(equipment)) topic.dirty = true;
+    }
   }
 
   /** Every terminal topic is computed again (an order, operation or execution change). */

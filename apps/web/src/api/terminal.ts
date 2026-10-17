@@ -1,6 +1,7 @@
 import {
   crewResultSchema,
   operationResultSchema,
+  activityWriteRequestSchema,
   operationWriteRequestSchema,
   pauseRequestSchema,
   scrapCodingRequestSchema,
@@ -8,7 +9,9 @@ import {
   scrapRecordSchema,
   terminalViewSchema,
   type CrewResult,
+  type ActivityWriteRequest,
   type OperationResult,
+  type OperationWriteRequest,
   type PauseRequest,
   type ScrapRecordDto,
   type TerminalViewDto,
@@ -30,6 +33,8 @@ export const terminalKeys = {
   all: ['terminal'] as const,
   view: (user: string, workCenter: string) => ['terminal', user, workCenter, 'view'] as const,
   scrapReasons: (user: string) => ['terminal', user, 'scrap-reasons'] as const,
+  /** Why the sign-on at a work center was refused (kept for the screen that mounts after it). */
+  refusal: (user: string, workCenter: string) => ['terminal', user, workCenter, 'refusal'] as const,
 };
 
 export function getTerminalView(
@@ -58,9 +63,15 @@ export interface OperationRef {
 export function operationWrite(
   ref: OperationRef,
   action: OperationAction,
-  body: { readonly version: number } | PauseRequest,
+  body: ActivityWriteRequest | PauseRequest | OperationWriteRequest,
 ): Promise<OperationResult> {
-  const schema = action === 'pause' ? pauseRequestSchema : operationWriteRequestSchema;
+  // Activity writes name the operator's own open interval; a sign-off the operation's version.
+  const schema =
+    action === 'pause'
+      ? pauseRequestSchema
+      : action === 'sign-off'
+        ? operationWriteRequestSchema
+        : activityWriteRequestSchema;
   return sendJson(
     'POST',
     `/terminal/${segment(ref.workCenter)}/orders/${segment(ref.orderId)}/operations/${segment(ref.operation)}/${action}`,

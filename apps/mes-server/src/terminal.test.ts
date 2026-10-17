@@ -27,7 +27,7 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import type { EquipmentPath } from '@shopfloor/contracts';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Database } from './db/database.ts';
@@ -295,6 +295,7 @@ async function harness(name: string): Promise<Harness> {
     tickMs: 3_600_000,
     sessions: { live: (id) => Promise.resolve(!dead.has(id)) },
     crewCheckMs: 0,
+    afterCrewCheck: (signedOn, readAt) => orders.endOrphanedActivities(signedOn, readAt),
   });
   await shifts.start();
   cleanups.push(() => shifts.stop());
@@ -304,7 +305,11 @@ async function harness(name: string): Promise<Harness> {
     if (change.type !== 'crew') return;
     crewChanges.push(change);
     if (change.event === 'ended') {
-      void orders.endActivities({ userId: change.crew.userId, workCenter: change.crew.workCenter });
+      void orders.endActivities({
+        userId: change.crew.userId,
+        workCenter: change.crew.workCenter,
+        until: change.crew.to ?? new Date(),
+      });
     }
   });
   identity.onSessionsEnded((ended) => {
@@ -358,6 +363,12 @@ const send = async (h: Harness, deliveries: readonly { topic: string; payload: s
   for (const d of deliveries) await h.ingest.deliver(d.topic, d.payload);
 };
 
+/** The database's clock (the activity intervals' wall times are its). */
+async function dbNow(h: Harness): Promise<Date> {
+  const { rows } = await sql<{ at: Date }>`SELECT clock_timestamp() AS at`.execute(h.db);
+  return rows[0]?.at ?? new Date();
+}
+
 async function settle(h: Harness): Promise<void> {
   for (let round = 0; round < 2; round++) {
     await h.orders.tick();
@@ -392,8 +403,14 @@ async function finished(h: Harness, number: string, partId: number): Promise<voi
 const version = async (h: Harness, id: string, operation: string): Promise<number> =>
   (await h.orders.operations({ orderIds: [id], operation }))[0]?.version ?? 0;
 
+/** The operator's own open interval on the operation (its id), null when none. */
+const mine = async (h: Harness, id: string, operation: string, user: SessionUser) =>
+  (await h.orders.operations({ orderIds: [id], operation }))[0]?.activities.find(
+    (a) => a.userId === user.userId,
+  )?.id ?? null;
+
 describe('operator activity and operation sign-off (#177)', () => {
-  it('keeps start, pause and resume as intervals with versions and states; signs off only complete operations; a close needs every sign-off', async () => {
+  it('keeps start, pause and resume as intervals checked against the operator’s own interval; signs off only complete operations; a close needs every sign-off', async () => {
     const h = await harness('activity');
     await started(h, 'A-1');
     expect((await h.orders.order('A-1'))?.status).toBe('in-progress');
@@ -407,41 +424,49 @@ describe('operator activity and operation sign-off (#177)', () => {
       kind: 'conflict',
       type: PROBLEM_TYPES.operationState,
     });
-    const working = await h.orders.startWork('A-1', 'OP30', { version: v1 }, olga);
+    const working = await h.orders.startWork('A-1', 'OP30', { activity: null }, olga);
     expect(working).toMatchObject({ version: 2, completedAt: null, signedOff: null });
     expect(working.activities).toMatchObject([
       { username: 'olga', kind: 'work', reason: null, to: null },
     ]);
-    // A second operator works on it too; olga can't start twice, nor resume what she didn't pause.
-    const both = await h.orders.startWork('A-1', 'OP30', { version: 2 }, omar);
+    const olgaWork = working.activities[0]?.id ?? 0;
+    // A second operator works on it too: olga's writes never become stale through omar's.
+    const both = await h.orders.startWork('A-1', 'OP30', { activity: null }, omar);
     expect(both.activities.map((a) => a.username)).toEqual(['olga', 'omar']);
-    await expect(h.orders.startWork('A-1', 'OP30', { version: 3 }, olga)).rejects.toMatchObject({
-      type: PROBLEM_TYPES.operationState,
-    });
-    await expect(h.orders.resumeWork('A-1', 'OP30', { version: 3 }, olga)).rejects.toMatchObject({
-      type: PROBLEM_TYPES.operationState,
-    });
-    // A stale version: refused before any state check.
+    // Olga can't start twice (she read none, but one of hers is open: stale), nor resume work.
+    await expect(h.orders.startWork('A-1', 'OP30', { activity: null }, olga)).rejects.toMatchObject(
+      { type: PROBLEM_TYPES.operationStale },
+    );
+    await expect(
+      h.orders.resumeWork('A-1', 'OP30', { activity: olgaWork }, olga),
+    ).rejects.toMatchObject({ type: PROBLEM_TYPES.operationState });
+    // An interval she didn't read: refused before any state check.
     const stale = await h.orders
-      .pauseWork('A-1', 'OP30', { version: 2, reason: 'material' }, olga)
+      .pauseWork('A-1', 'OP30', { activity: olgaWork + 1000, reason: 'material' }, olga)
       .catch((e: unknown) => e);
     expect(stale).toBeInstanceOf(OrderError);
     expect(stale).toMatchObject({ kind: 'conflict', type: PROBLEM_TYPES.operationStale });
+    // A version where an interval is expected (and the reverse): stale.
+    await expect(
+      h.orders.signOff('A-1', 'OP30', { activity: null } as never, olga),
+    ).rejects.toMatchObject({ type: PROBLEM_TYPES.operationStale });
     const paused = await h.orders.pauseWork(
       'A-1',
       'OP30',
-      { version: 3, reason: 'material', comment: 'no seals' },
+      { activity: olgaWork, reason: 'material', comment: 'no seals' },
       olga,
     );
-    expect(paused.activities.find((a) => a.username === 'olga')).toMatchObject({
-      kind: 'pause',
-      reason: 'material',
-      comment: 'no seals',
-    });
+    const olgaPause = paused.activities.find((a) => a.username === 'olga');
+    expect(olgaPause).toMatchObject({ kind: 'pause', reason: 'material', comment: 'no seals' });
     await expect(
-      h.orders.pauseWork('A-1', 'OP30', { version: 4, reason: 'break' }, olga),
+      h.orders.pauseWork('A-1', 'OP30', { activity: olgaPause?.id ?? 0, reason: 'break' }, olga),
     ).rejects.toMatchObject({ type: PROBLEM_TYPES.operationState });
-    const resumed = await h.orders.resumeWork('A-1', 'OP30', { version: 4 }, olga);
+    const resumed = await h.orders.resumeWork(
+      'A-1',
+      'OP30',
+      { activity: olgaPause?.id ?? 0 },
+      olga,
+    );
     expect(resumed.version).toBe(5);
     const history = await h.orders.activities({
       orderId: 'A-1',
@@ -471,6 +496,10 @@ describe('operator activity and operation sign-off (#177)', () => {
     expect(ops.map((o) => [o.operation, o.completedAt !== null, o.signedOff])).toEqual(
       ['OP10', 'OP20', 'OP30', 'OP40', 'OP50'].map((op) => [op, true, null]),
     );
+    // A sign-off decides for everyone: it names the operation's version.
+    await expect(h.orders.signOff('A-1', 'OP30', { version: 4 }, olga)).rejects.toMatchObject({
+      type: PROBLEM_TYPES.operationStale,
+    });
     const signed = await h.orders.signOff('A-1', 'OP30', { version: 5 }, olga);
     expect(signed.signedOff).toMatchObject({ username: 'olga' });
     // The sign-off closed every open interval on it, olga's and omar's.
@@ -481,9 +510,9 @@ describe('operator activity and operation sign-off (#177)', () => {
         .map((a) => a.username)
         .sort(),
     ).toEqual(['olga', 'omar']);
-    await expect(h.orders.startWork('A-1', 'OP30', { version: 6 }, omar)).rejects.toMatchObject({
-      type: PROBLEM_TYPES.operationState,
-    });
+    await expect(h.orders.startWork('A-1', 'OP30', { activity: null }, omar)).rejects.toMatchObject(
+      { type: PROBLEM_TYPES.operationState },
+    );
     await expect(h.orders.signOff('A-1', 'OP30', { version: 6 }, omar)).rejects.toMatchObject({
       type: PROBLEM_TYPES.operationState,
     });
@@ -496,9 +525,9 @@ describe('operator activity and operation sign-off (#177)', () => {
     await settle(h);
     expect(h.erp.posts.map((p) => p.key)).toContain(statusKey('A-1', 1, 'closed'));
     // A closed order takes no terminal write.
-    await expect(h.orders.startWork('A-1', 'OP30', { version: 6 }, omar)).rejects.toMatchObject({
-      type: PROBLEM_TYPES.operationState,
-    });
+    await expect(h.orders.startWork('A-1', 'OP40', { activity: null }, omar)).rejects.toMatchObject(
+      { type: PROBLEM_TYPES.operationState },
+    );
     // Every terminal write is audited with its operator, request id and plant time.
     const audit = await Identity.auditEntries(h.db, 'order_operation', ['A-1/OP30']);
     expect(audit.map((e) => [e.action, e.username, e.authenticated])).toEqual([
@@ -516,25 +545,147 @@ describe('operator activity and operation sign-off (#177)', () => {
     expect(audit[0]?.plantAt).toEqual(new Date(h.clock.at ?? 0));
   });
 
-  it('closes an operator’s intervals when their crew row ends, and those left without a crew row', async () => {
+  it('closes an operator’s intervals when their crew row ends, never later work, and those left without a crew row', async () => {
     const h = await harness('crew_end');
     await started(h, 'B-1');
     const olga = { by: h.olga, requestId: 'r' };
     const omar = { by: h.omar, requestId: 'r' };
-    await h.orders.startWork('B-1', 'OP30', { version: 1 }, olga);
-    await h.orders.startWork('B-1', 'OP40', { version: 1 }, olga);
-    await h.orders.startWork('B-1', 'OP10', { version: 1 }, omar);
-    expect(await h.orders.endActivities({ userId: h.olga.userId, workCenter: 'line-a1' })).toBe(2);
-    expect(await h.orders.endActivities({ userId: h.olga.userId, workCenter: 'line-a1' })).toBe(0);
+    await h.orders.startWork('B-1', 'OP30', { activity: null }, olga);
+    await h.orders.startWork('B-1', 'OP40', { activity: null }, olga);
+    await h.orders.startWork('B-1', 'OP10', { activity: null }, omar);
+    const now = await dbNow(h);
     expect(
-      await h.orders.endOrphanedActivities(new Set([`${String(h.omar.userId)}|cell-m1`])),
+      await h.orders.endActivities({ userId: h.olga.userId, workCenter: 'line-a1', until: now }),
+    ).toBe(2);
+    expect(
+      await h.orders.endActivities({ userId: h.olga.userId, workCenter: 'line-a1', until: now }),
     ).toBe(0);
-    expect(await h.orders.endOrphanedActivities(new Set())).toBe(1);
-    const all = await h.orders.activities({ orderId: 'B-1' });
-    expect(all.every((a) => a.endReason === 'crew-ended')).toBe(true);
-    // After a crew end the operator starts afresh.
-    const again = await h.orders.startWork('B-1', 'OP30', { version: 2 }, olga);
-    expect(again.activities).toHaveLength(1);
+    // A late notice of a crew row that ended before olga's new start never closes the new work.
+    await h.orders.startWork('B-1', 'OP30', { activity: null }, olga);
+    expect(
+      await h.orders.endActivities({ userId: h.olga.userId, workCenter: 'line-a1', until: now }),
+    ).toBe(0);
+    expect(await mine(h, 'B-1', 'OP30', h.olga)).not.toBeNull();
+    // Orphans: only intervals started before the crew rows were read. Read at `now`, omar's
+    // (begun before) is judged and closed; olga's new work (begun after) is not.
+    expect(await h.orders.endOrphanedActivities(new Set(), now)).toBe(1);
+    expect(
+      (await h.orders.activities({ orderId: 'B-1', open: true })).map((a) => a.username),
+    ).toEqual(['olga']);
+    // Read later with olga signed on: nothing is an orphan.
+    const later = await dbNow(h);
+    expect(
+      await h.orders.endOrphanedActivities(new Set([`${String(h.olga.userId)}|line-a1`]), later),
+    ).toBe(0);
+  });
+
+  it('refuses a write whose crew row is gone, holds a crew end until the write commits, and never rewrites a closed interval', async () => {
+    const h = await harness('crew_lock');
+    await started(h, 'D-1');
+    await h.shifts.tick();
+    const session = 'f'.repeat(64);
+    await h.shifts.signOn('line-a1', h.olga, session);
+    const lockCrew = (trx: Transaction<Database>, workCenter: string) =>
+      h.shifts.lockCrew(trx, { userId: h.olga.userId, workCenter, sessionId: session });
+    const olga = { by: h.olga, requestId: 'r', lockCrew };
+    const working = await h.orders.startWork('D-1', 'OP30', { activity: null }, olga);
+    // Signed on at line-a1 only: a write at cell-m1 is refused inside its transaction.
+    await expect(h.orders.startWork('D-1', 'OP10', { activity: null }, olga)).rejects.toMatchObject(
+      { type: PROBLEM_TYPES.notSignedOn },
+    );
+    // A transaction holding the crew row (as a terminal write does) makes a sign-off wait.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked: () => void = () => undefined;
+    const isLocked = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const holder = h.db.transaction().execute(async (trx) => {
+      expect(await lockCrew(trx, 'line-a1')).toBe(true);
+      locked();
+      await held;
+    });
+    await isLocked;
+    let signedOff = false;
+    const off = h.shifts.signOff('line-a1', h.olga, session).then((crew) => {
+      signedOff = true;
+      return crew;
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(signedOff).toBe(false);
+    release();
+    await holder;
+    const ended = await off;
+    expect(ended.endReason).toBe('sign-off');
+    // The crew row is gone: the next write is refused, whatever it names.
+    await expect(
+      h.orders.pauseWork(
+        'D-1',
+        'OP30',
+        { activity: working.activities[0]?.id ?? 0, reason: 'break' },
+        olga,
+      ),
+    ).rejects.toMatchObject({ type: PROBLEM_TYPES.notSignedOn });
+    // A crew end that closes an interval while a write waits for it: the write finds it closed
+    // (stale) and the interval keeps its end.
+    const omarSession = 'e'.repeat(64);
+    await h.shifts.signOn('line-a1', h.omar, omarSession);
+    const omar = {
+      by: h.omar,
+      requestId: 'r',
+      lockCrew: (trx: Transaction<Database>, workCenter: string) =>
+        h.shifts.lockCrew(trx, { userId: h.omar.userId, workCenter, sessionId: omarSession }),
+    };
+    const work = await h.orders.startWork('D-1', 'OP40', { activity: null }, omar);
+    const id = work.activities[0]?.id ?? 0;
+    let closing: () => void = () => undefined;
+    const closed = new Promise<void>((resolve) => {
+      closing = resolve;
+    });
+    let go: () => void = () => undefined;
+    const proceed = new Promise<void>((resolve) => {
+      go = resolve;
+    });
+    const crewEnd = h.db.transaction().execute(async (trx) => {
+      await trx
+        .updateTable('orders.operation_activity')
+        .set({
+          to_at: sql<Date>`clock_timestamp()`,
+          to_plant_at: sql<Date>`from_plant_at`,
+          end_reason: 'crew-ended',
+        })
+        .where('id', '=', id)
+        .execute();
+      closing();
+      await proceed;
+    });
+    await closed;
+    const pause = h.orders
+      .pauseWork('D-1', 'OP40', { activity: id, reason: 'break' }, omar)
+      .catch((e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 200));
+    go();
+    await crewEnd;
+    expect(await pause).toMatchObject({ type: PROBLEM_TYPES.operationStale });
+    const [kept] = await h.orders.activities({ orderId: 'D-1', operation: 'OP40' });
+    expect(kept).toMatchObject({ id, endReason: 'crew-ended' });
+  });
+
+  it('closes orphaned intervals on the crew-check tick', async () => {
+    const h = await harness('orphans');
+    await started(h, 'E-1');
+    // Olga works without a crew row (a crew end whose notice was lost).
+    await h.orders.startWork('E-1', 'OP30', { activity: null }, { by: h.olga, requestId: 'r' });
+    await h.shifts.signOn('line-a1', h.omar, 'c'.repeat(64));
+    await h.orders.startWork('E-1', 'OP40', { activity: null }, { by: h.omar, requestId: 'r' });
+    await h.shifts.tick();
+    const open = await h.orders.activities({ orderId: 'E-1', open: true });
+    expect(open.map((a) => a.username)).toEqual(['omar']);
+    expect((await h.orders.activities({ orderId: 'E-1', operation: 'OP30' }))[0]?.endReason).toBe(
+      'crew-ended',
+    );
   });
 });
 
@@ -569,9 +720,14 @@ describe('crews (#177)', () => {
         (c) => c.endReason,
       ),
     ).toEqual(['replaced', null]);
-    const off = await h.shifts.signOff('line-a1', h.olga, 'req-2');
+    // Only the session holding the row signs it off.
+    await expect(h.shifts.signOff('line-a1', h.olga, 'a'.repeat(64))).rejects.toMatchObject({
+      kind: 'conflict',
+      type: PROBLEM_TYPES.notSignedOn,
+    });
+    const off = await h.shifts.signOff('line-a1', h.olga, 'c'.repeat(64), 'req-2');
     expect(off).toMatchObject({ id: moved.id, endReason: 'sign-off' });
-    await expect(h.shifts.signOff('line-a1', h.olga)).rejects.toMatchObject({
+    await expect(h.shifts.signOff('line-a1', h.olga, 'c'.repeat(64))).rejects.toMatchObject({
       kind: 'conflict',
       type: PROBLEM_TYPES.notSignedOn,
     });
@@ -624,6 +780,57 @@ describe('crews (#177)', () => {
       ['olga', 'line-a1', 'sign-off'],
       ['olga', 'line-a1', 'shift-ended'],
     ]);
+  });
+});
+
+describe('crews at the edges (#177 review)', () => {
+  it('lets two racing sign-ons of one user end with one open row, ends a past instance’s row at its end, and keeps a report with an open crew row from being final', async () => {
+    const h = await harness('crew_edges');
+    await h.shifts.tick();
+    // Two sign-ons of olga at once (two tablets): one insert loses on the open-row index and is
+    // tried again; both answer, one row stays open.
+    const [x, y] = await Promise.all([
+      h.shifts.signOn('line-a1', h.olga, '1'.repeat(64)),
+      h.shifts.signOn('line-a1', h.olga, '2'.repeat(64)),
+    ]);
+    expect(x.id).not.toBe(y.id);
+    const rows = await h.shifts.crew({ userId: h.olga.userId, workCenter: 'line-a1' });
+    expect(rows.filter((r) => r.to === null)).toHaveLength(1);
+    expect(rows.filter((r) => r.endReason === 'replaced')).toHaveLength(1);
+    // The shift ends with the crew row still open and no tick yet: the report is not final.
+    h.clock.at = Date.parse('2026-10-12T11:30:00.000Z');
+    const early = await h.shifts.report('2026-10-12', 'A', E1);
+    expect(early?.instance.status).toBe('ended');
+    expect(early?.crew.some((c) => c.to === null)).toBe(true);
+    await h.shifts.tick();
+    const late = await h.shifts.report('2026-10-12', 'A', E1);
+    expect(late?.instance.status).toBe('final');
+    expect(late?.crew.every((c) => c.to !== null)).toBe(true);
+    // A row of the past instance still open (its end missed): a sign-on in the new shift ends it
+    // at that instance's end, as `shift-ended`, not `replaced` at the plant clock.
+    await h.db
+      .insertInto('shifts.crew_assignment')
+      .values({
+        user_id: h.omar.userId,
+        username: 'omar',
+        work_center: 'line-a1',
+        epoch: E1,
+        shift_key: '2026-10-12/A',
+        session_id: '3'.repeat(64),
+        from_at: new Date(T0),
+        from_plant_at: new Date('2026-10-12T09:00:00.000Z'),
+      })
+      .execute();
+    await h.shifts.signOn('line-a1', h.omar, '4'.repeat(64));
+    const omarRows = await h.shifts.crew({ userId: h.omar.userId, workCenter: 'line-a1' });
+    const past = omarRows.find((r) => r.shiftKey === '2026-10-12/A');
+    const now = omarRows.find((r) => r.shiftKey === '2026-10-12/B');
+    expect(past).toMatchObject({
+      shiftKey: '2026-10-12/A',
+      endReason: 'shift-ended',
+      toPlant: new Date('2026-10-12T11:00:00.000Z'),
+    });
+    expect(now).toMatchObject({ shiftKey: '2026-10-12/B', to: null });
   });
 });
 
@@ -710,18 +917,33 @@ describe('the terminal API and push (#177)', () => {
     // Omar holds a terminal session but is not signed on here: every operation write refused.
     const omar = await login('omar', 'terminal');
     const start = '/terminal/line-a1/orders/C-1/operations/OP30/start';
-    const notOn = await call(omar, 'POST', start, { version: 1 });
+    const notOn = await call(omar, 'POST', start, { activity: null });
     expect(notOn.statusCode).toBe(409);
     expect(notOn.json()).toMatchObject({ type: PROBLEM_TYPES.notSignedOn });
+    // Signed on at Cell M1 is not signed on at Line A1.
+    expect((await call(omar, 'POST', '/terminal/cell-m1/sign-on', {})).statusCode).toBe(200);
+    expect((await call(omar, 'POST', start, { activity: null })).json()).toMatchObject({
+      type: PROBLEM_TYPES.notSignedOn,
+    });
+    expect((await call(omar, 'POST', '/terminal/cell-m1/sign-off', {})).statusCode).toBe(200);
+    // Olga's desk session is not the session she signed on with: refused too.
+    expect((await call(desk, 'POST', start, { activity: null })).json()).toMatchObject({
+      type: PROBLEM_TYPES.notSignedOn,
+    });
+    // Nor may her desk session sign off her terminal's crew row.
+    expect((await call(desk, 'POST', '/terminal/line-a1/sign-off', {})).json()).toMatchObject({
+      type: PROBLEM_TYPES.notSignedOn,
+    });
     // OP10 is not at Line A1.
     expect(
       (
         await call(olga, 'POST', '/terminal/line-a1/orders/C-1/operations/OP10/start', {
-          version: 1,
+          activity: null,
         })
       ).statusCode,
     ).toBe(404);
-    expect((await call(olga, 'POST', start, { version: 1, actor: 'x' })).statusCode).toBe(400);
+    expect((await call(olga, 'POST', start, { activity: null, actor: 'x' })).statusCode).toBe(400);
+    expect((await call(olga, 'POST', start, { version: 1 })).statusCode).toBe(400);
 
     // Push: the work center's view as a snapshot, then whenever it changed.
     const sent: ServerMessage[] = [];
@@ -754,7 +976,7 @@ describe('the terminal API and push (#177)', () => {
       ['olga'],
     );
 
-    const started1 = await call(olga, 'POST', start, { version: 1 });
+    const started1 = await call(olga, 'POST', start, { activity: null });
     expect(started1.statusCode, started1.body).toBe(200);
     expect(operationResultSchema.parse(started1.json()).operation).toMatchObject({
       version: 2,
@@ -766,24 +988,24 @@ describe('the terminal API and push (#177)', () => {
         (m) => m.type === 'terminal' && m.view.orders[0]?.operations[0]?.activities.length === 1,
       ),
     );
+    const work = operationResultSchema.parse(started1.json()).operation.activities[0]?.id ?? 0;
     const pause = await call(olga, 'POST', '/terminal/line-a1/orders/C-1/operations/OP30/pause', {
-      version: 2,
+      activity: work,
       reason: 'break',
     });
     expect(pause.statusCode, pause.body).toBe(200);
+    // Resuming the work interval she read (closed now): stale.
     const stalePause = await call(
       olga,
       'POST',
       '/terminal/line-a1/orders/C-1/operations/OP30/resume',
-      {
-        version: 2,
-      },
+      { activity: work },
     );
     expect(stalePause.json()).toMatchObject({ type: PROBLEM_TYPES.operationStale });
     expect(
       (
         await call(olga, 'POST', '/terminal/line-a1/orders/C-1/operations/OP30/pause', {
-          version: 3,
+          activity: work,
           reason: 'nap',
         })
       ).statusCode,
@@ -837,7 +1059,7 @@ describe('the terminal API and push (#177)', () => {
     });
 
     // Logging out ends the session, its crew row, and so the operator's intervals there.
-    await call(olga, 'POST', start.replace('OP30', 'OP40'), { version: 1 });
+    await call(olga, 'POST', start.replace('OP30', 'OP40'), { activity: null });
     const out = await call(olga, 'DELETE', '/session', {});
     expect(out.statusCode).toBe(200);
     await until(() => h.crewChanges.some((c) => c.event === 'ended'));
@@ -858,9 +1080,8 @@ describe('the terminal API and push (#177)', () => {
     // The shift report shows the crew.
     const report = await call(omar, 'GET', '/shifts/2026-10-12/A/report');
     expect(report.statusCode, report.body).toBe(200);
-    expect(shiftReportSchema.parse(report.json()).crew.map((c) => c.username)).toEqual([
-      'olga',
-      'omar',
-    ]);
+    expect(
+      shiftReportSchema.parse(report.json()).crew.map((c) => `${c.username}@${c.workCenter}`),
+    ).toEqual(['omar@cell-m1', 'olga@line-a1', 'omar@line-a1']);
   });
 });

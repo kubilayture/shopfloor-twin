@@ -6053,7 +6053,7 @@
                               "type": "integer",
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
-                              "description": "Raised by every terminal write on it; a write sends the version read"
+                              "description": "Raised by every terminal write on it; a sign-off sends the version read (activity writes name their own interval)"
                             },
                             "complete": {
                               "type": "boolean",
@@ -7197,7 +7197,7 @@
                               "type": "integer",
                               "minimum": -9007199254740991,
                               "maximum": 9007199254740991,
-                              "description": "Raised by every terminal write on it; a write sends the version read"
+                              "description": "Raised by every terminal write on it; a sign-off sends the version read (activity writes name their own interval)"
                             },
                             "complete": {
                               "type": "boolean",

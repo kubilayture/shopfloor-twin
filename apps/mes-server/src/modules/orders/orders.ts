@@ -55,6 +55,7 @@ import {
   type ActivityRecord,
   type OperationRecord,
   type TerminalAction,
+  type TerminalRequest,
   type TerminalWriteContext,
 } from './operations.ts';
 import type { CommandPublisher } from './publisher.ts';
@@ -561,11 +562,20 @@ export class Orders {
 
   /** Commands (with their attempts) of an order, or all, in queue order. */
   async commands(
-    filter: { readonly orderId?: string; readonly commandIds?: readonly string[] } = {},
+    filter: {
+      readonly orderId?: string;
+      /** Only the commands of these orders (#177: the terminal's candidates). */
+      readonly orderIds?: readonly string[];
+      readonly commandIds?: readonly string[];
+    } = {},
     db: Kysely<Database> = this.#readDb,
   ): Promise<CommandRecord[]> {
     let select = db.selectFrom('orders.dispatch_command').selectAll();
     if (filter.orderId !== undefined) select = select.where('order_id', '=', filter.orderId);
+    if (filter.orderIds !== undefined) {
+      if (filter.orderIds.length === 0) return [];
+      select = select.where('order_id', 'in', [...filter.orderIds]);
+    }
     if (filter.commandIds !== undefined) {
       if (filter.commandIds.length === 0) return [];
       select = select.where('command_id', 'in', [...filter.commandIds]);
@@ -902,22 +912,25 @@ export class Orders {
     return readActivities(this.#readDb, filter);
   }
 
-  /** The operator starts work on an order operation (no interval of theirs open on it). */
+  /**
+   * The operator starts work on an order operation (no interval of theirs open on it: `activity`
+   * null as read; another one open is 409 `operation-stale`).
+   */
   async startWork(
     id: string,
     operation: string,
-    request: { readonly version: number },
+    request: { readonly activity: number | null },
     context: TerminalWriteContext,
   ): Promise<OperationRecord> {
     return this.#terminal(id, operation, 'start', request, context);
   }
 
-  /** The operator pauses their work on it, with a reason (their work interval is open). */
+  /** The operator pauses their work on it, with a reason (`activity`: their open work interval). */
   async pauseWork(
     id: string,
     operation: string,
     request: {
-      readonly version: number;
+      readonly activity: number | null;
       readonly reason: PauseReason;
       readonly comment?: string | undefined;
     },
@@ -926,11 +939,11 @@ export class Orders {
     return this.#terminal(id, operation, 'pause', request, context);
   }
 
-  /** The operator resumes their paused work on it. */
+  /** The operator resumes their paused work on it (`activity`: their open pause). */
   async resumeWork(
     id: string,
     operation: string,
-    request: { readonly version: number },
+    request: { readonly activity: number | null },
     context: TerminalWriteContext,
   ): Promise<OperationRecord> {
     return this.#terminal(id, operation, 'resume', request, context);
@@ -949,10 +962,14 @@ export class Orders {
     return this.#terminal(id, operation, 'sign-off', request, context);
   }
 
-  /** Closes an operator's open intervals at a work center: their crew row there ended. */
+  /**
+   * Closes an operator's open intervals at a work center started by `until` (the crew row's end,
+   * wall time): their crew row there ended.
+   */
   async endActivities(who: {
     readonly userId: number;
     readonly workCenter: string;
+    readonly until: Date;
   }): Promise<number> {
     const touched = await endActivities(this.#db, who, this.#plantNow());
     await this.#emitOperations(touched);
@@ -961,10 +978,11 @@ export class Orders {
 
   /**
    * Closes every open interval whose operator has no open crew row at its work center
-   * (`{userId}|{workCenter}` in `signedOn`): crew rows that ended while the MES was down.
+   * (`{userId}|{workCenter}` in `signedOn`, read after `before`, database time) and started before
+   * it: crew rows that ended while the MES was down, or whose notice was lost.
    */
-  async endOrphanedActivities(signedOn: ReadonlySet<string>): Promise<number> {
-    const touched = await endOrphanedActivities(this.#db, signedOn, this.#plantNow());
+  async endOrphanedActivities(signedOn: ReadonlySet<string>, before: Date): Promise<number> {
+    const touched = await endOrphanedActivities(this.#db, signedOn, before, this.#plantNow());
     await this.#emitOperations(touched);
     return touched.length;
   }
@@ -973,11 +991,7 @@ export class Orders {
     id: string,
     operation: string,
     action: TerminalAction,
-    request: {
-      readonly version: number;
-      readonly reason?: PauseReason | undefined;
-      readonly comment?: string | undefined;
-    },
+    request: TerminalRequest,
     context: TerminalWriteContext,
   ): Promise<OperationRecord> {
     if (!this.#started) throw new OrderError('conflict', 'the orders module is starting');

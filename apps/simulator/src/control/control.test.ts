@@ -6,7 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
-import type { InjectFailureRequest, PlantEvent } from '../plant/line.ts';
+import type { InjectDriftRequest, InjectFailureRequest, PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
 import { EVENT_SCHEMA, isoTime, stableStringify } from '../headless/serialize.ts';
 import { EVENTS_PATH, buildControlApp, type GroundTruthReport } from './app.ts';
@@ -52,6 +52,10 @@ async function setup(ready = true, withGroundTruth = false, withFailure = false,
             failure: {
               inject: (request: InjectFailureRequest) => run.injectFailure(request),
               list: () => run.injections(),
+            },
+            drift: {
+              inject: (request: InjectDriftRequest) => run.injectLeakDrift(request),
+              list: () => run.drifts(),
             },
           },
         }
@@ -372,8 +376,8 @@ describe('control API (#54)', () => {
     const { readScenario, scenarioOptions } = await import('../headless/golden.ts');
     const { runHeadless } = await import('../headless/run.ts');
     const shiftAEnd = Date.parse('2026-10-12T11:00:00Z');
-    const injections = (readScenario('alarms-01').injections ?? []).filter(
-      (i) => Date.parse(i.at) < shiftAEnd,
+    const injections = (readScenario('alarms-01').injections ?? []).flatMap((i) =>
+      i.kind === undefined && Date.parse(i.at) < shiftAEnd ? [i] : [],
     );
     expect(injections).toHaveLength(14);
     for (const injection of injections) {
@@ -442,11 +446,108 @@ describe('control API (#54)', () => {
     expect(late.json<{ message: string }>().message).toBe('the run has finished');
   });
 
+  it('injects a leak drift (1.5, #196): refusals, its outcome, and the live run equals the headless one', async () => {
+    const { app: served, run, clock, events } = await setup(true, false, true, 20261012);
+    const post = (machine: string, body: object) =>
+      served.inject({ method: 'POST', url: `/api/v1/faults/drift/${machine}`, payload: body });
+    const at = '2026-10-12T04:00:05Z';
+    const until = '2026-10-12T06:30:00Z';
+
+    expect((await post('lkt-09', { shift: 0.6, until })).statusCode).toBe(404);
+    for (const [machine, body] of [
+      ['asm-01', { shift: 0.6, until }],
+      ['lkt-01', { shift: 0.0005, until }],
+      ['lkt-01', { shift: 0, until }],
+      ['lkt-01', { shift: 0.6 }],
+      ['lkt-01', { shift: 0.6, until: 'later' }],
+      ['lkt-01', { shift: 0.6, at: 'soon', until }],
+      ['lkt-01', { shift: '0.6', until }],
+      ['lkt-01', { shift: 0.6, at, until: at }],
+      ['lkt-01', { shift: 0.6, until, extra: true }],
+    ] as const) {
+      expect((await post(machine, body)).statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(
+      (await post('lkt-01', { shift: 0.6, at: '2026-10-12T02:00:00Z', until })).statusCode,
+    ).toBe(409);
+    const boundary = await post('lkt-01', { shift: 0.6, at, until: '2026-10-12T10:00:00+03:00' });
+    expect(boundary.statusCode).toBe(409);
+    expect(boundary.json<{ message: string }>().message).toMatch(/calendar boundary/);
+
+    const accepted = await post('lkt-01', { shift: 0.6, at, until });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toEqual({
+      drift: {
+        id: 1,
+        machine: 'lkt-01',
+        shift: 0.6,
+        at: '2026-10-12T04:00:05.000Z',
+        until: '2026-10-12T06:30:00.000Z',
+        status: 'scheduled',
+      },
+    });
+    const end = T0 + 4 * 60 * MINUTE;
+    await served.inject({ method: 'POST', url: '/api/v1/resume' });
+    clock.advance((end - T0) / 60);
+    await served.inject({ method: 'POST', url: '/api/v1/pause' });
+    const listed = (await served.inject({ method: 'GET', url: '/api/v1/faults/drifts' })).json<{
+      drifts: unknown[];
+    }>().drifts;
+    expect(listed).toEqual([
+      {
+        id: 1,
+        machine: 'lkt-01',
+        shift: 0.6,
+        at: '2026-10-12T04:00:05.000Z',
+        until: '2026-10-12T06:30:00.000Z',
+        status: 'ended',
+        appliedAt: '2026-10-12T04:00:05.000Z',
+        endedAt: '2026-10-12T06:30:00.000Z',
+        endedBy: 'until',
+      },
+    ]);
+
+    const { runHeadless } = await import('../headless/run.ts');
+    const headlessLines: string[] = [];
+    runHeadless(
+      {
+        config,
+        seed: 20261012,
+        start: T0,
+        end,
+        injections: [
+          {
+            kind: 'leak-drift',
+            machine: 'lkt-01',
+            shift: 0.6,
+            at: Date.parse(at),
+            until: Date.parse(until),
+          },
+        ],
+      },
+      (line) => headlessLines.push(line),
+    );
+    const liveLines = events
+      .map((event, i) =>
+        stableStringify({ ...event, schema: EVENT_SCHEMA, seq: i + 1, at: isoTime(event.at) }),
+      )
+      .filter((line) => Date.parse((JSON.parse(line) as { at: string }).at) < end);
+    expect(liveLines.filter((line) => line.includes('"leak-drift"'))).toHaveLength(2);
+    expect(liveLines).toEqual(headlessLines.slice(1));
+
+    run.pacer.stop();
+    const late = await post('lkt-01', { shift: 0.6, until: '2026-10-13T04:00:05Z' });
+    expect(late.statusCode).toBe(409);
+    expect(late.json<{ message: string }>().message).toBe('the run has finished');
+  });
+
   it('keeps the committed OpenAPI description in step with the routes', async () => {
     const generated = await generateOpenApi();
     expect(await readFile(OPENAPI_FILE, 'utf8')).toBe(generated);
     const document = JSON.parse(generated) as { paths: Record<string, unknown> };
     expect(Object.keys(document.paths).sort()).toEqual([
+      '/api/v1/faults/drift/{machine}',
+      '/api/v1/faults/drifts',
       '/api/v1/faults/failure/{machine}',
       '/api/v1/faults/injections',
       '/api/v1/faults/modbus',
@@ -484,6 +585,10 @@ describe('environment configuration (#54)', () => {
     // The production mode (#172): orders only on request.
     const orders = parseEnv({ SIM_PRODUCTION: 'orders' });
     expect(orders.ok && orders.env.SIM_PRODUCTION).toBe('orders');
+    // A scenario's own stock file (#196): the configuration's stock.yaml unless set.
+    expect(result.ok && result.env.SIM_STOCK).toBeUndefined();
+    const stock = parseEnv({ SIM_STOCK: 'apps/simulator/golden/quality-01/stock.yaml' });
+    expect(stock.ok && stock.env.SIM_STOCK).toBe('apps/simulator/golden/quality-01/stock.yaml');
   });
 
   it.each([
@@ -497,6 +602,7 @@ describe('environment configuration (#54)', () => {
     ['CONTROL_HOST', ' '],
     ['SIM_CONFIG_DIR', '  '],
     ['SIM_PRODUCTION', 'campaigns'],
+    ['SIM_STOCK', '   '],
   ])('refuses %s=%j', (key, value) => {
     const result = parseEnv({ [key]: value });
     expect(result.ok).toBe(false);

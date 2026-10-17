@@ -87,7 +87,7 @@ describe('live orders-01 dispatched over OPC UA (#172, B3)', () => {
       }
     }
     for (const injection of options.injections ?? []) {
-      expect(live.injectFailure(injection).ok).toBe(true);
+      expect(live.inject(injection).ok).toBe(true);
     }
     while (live.simulation.nextEventTime !== undefined && live.simulation.nextEventTime < until) {
       live.pacer.step();

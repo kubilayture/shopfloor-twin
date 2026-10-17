@@ -179,6 +179,7 @@ export class OrderTruth {
       case 'program-loaded':
       case 'injection-held':
       case 'injection-applied':
+      case 'leak-drift':
         break;
     }
   }

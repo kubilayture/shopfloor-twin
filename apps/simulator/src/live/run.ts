@@ -1,4 +1,4 @@
-import type { PlantConfig } from '@shopfloor/plant-config';
+import type { InjectionSpec, PlantConfig } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { isoTime } from '../headless/serialize.ts';
 import { applyDispatches, type DispatchSpec } from '../headless/run.ts';
@@ -6,8 +6,11 @@ import { GroundTruth, type GroundTruthSummary } from '../headless/summary.ts';
 import {
   ProductionLine,
   type FailureInjection,
+  type InjectDriftRequest,
+  type InjectDriftResult,
   type InjectFailureRequest,
   type InjectFailureResult,
+  type LeakDrift,
   type LineEvent,
   type PlantEvent,
   type ProductionMode,
@@ -76,6 +79,15 @@ export interface LiveRun {
   injectFailure(request: InjectFailureRequest): InjectFailureResult;
   /** Every injection so far, with its outcome. */
   injections(): FailureInjection[];
+  /**
+   * Schedules a leak-test drift (#196, control API 1.5) from `at` (now when left out) until
+   * `until` or the tester's next calibration, exactly as a headless run schedules a scenario's.
+   */
+  injectLeakDrift(request: InjectDriftRequest): InjectDriftResult;
+  /** Every drift injection so far, with its outcome. */
+  drifts(): LeakDrift[];
+  /** A scenario's injection of either kind (failure or `leak-drift`), as a headless run applies it. */
+  inject(spec: InjectionSpec): InjectFailureResult | InjectDriftResult;
 }
 
 export function createLiveRun(options: LiveOptions): LiveRun {
@@ -144,5 +156,11 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     groundTruth,
     injectFailure: (request) => line.injectFailure(request, simulation),
     injections: () => line.injections(),
+    injectLeakDrift: (request) => line.injectLeakDrift(request, simulation, options.end),
+    drifts: () => line.drifts(),
+    inject: (spec) =>
+      spec.kind === 'leak-drift'
+        ? line.injectLeakDrift(spec, simulation, options.end)
+        : line.injectFailure(spec, simulation),
   };
 }

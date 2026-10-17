@@ -57,6 +57,8 @@ export class LeakTester {
   readonly #config: LeakConfig;
   readonly #stream: RandomStream;
   #calibratedAt: SimTime;
+  /** Injected drift in whole resolution steps (#196, ADR-0033); 0 without an active drift. */
+  #shiftSteps = 0;
 
   readonly #decimals: number;
 
@@ -79,10 +81,24 @@ export class LeakTester {
     this.#calibratedAt = now;
   }
 
+  /** Steps of injected drift now added to every reading. */
+  get shiftSteps(): number {
+    return this.#shiftSteps;
+  }
+
+  /**
+   * Adds (or with a negative value removes) an injected drift in whole resolution steps. It is
+   * added to the rounded reading, which equals adding it to the mean before rounding, without
+   * floating-point noise: the reading without the drift is exactly `steps - shiftSteps`.
+   */
+  addShift(steps: number): void {
+    this.#shiftSteps += steps;
+  }
+
   measure(now: SimTime): LeakReading {
     const drift = (this.#config.driftPerDay * (now - this.#calibratedAt)) / DAY;
     const raw = normal(this.#stream, this.#config.mean + drift, this.#config.sigma);
-    const steps = Math.round(raw / this.#config.resolution);
+    const steps = Math.round(raw / this.#config.resolution) + this.#shiftSteps;
     const value = Number((steps * this.#config.resolution).toFixed(this.#decimals));
     return { value, drift, pass: value <= this.#config.upperLimit };
   }

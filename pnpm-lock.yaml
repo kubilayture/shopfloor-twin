@@ -523,6 +523,9 @@ importers:
       '@shopfloor/sim-core':
         specifier: workspace:*
         version: link:../../packages/sim-core
+      '@shopfloor/trace-core':
+        specifier: workspace:*
+        version: link:../../packages/trace-core
       fastify:
         specifier: 'catalog:'
         version: 5.12.5

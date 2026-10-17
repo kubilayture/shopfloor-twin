@@ -22,6 +22,7 @@
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/shift-calendar": "workspace:*",
     "@shopfloor/sim-core": "workspace:*",
+    "@shopfloor/trace-core": "workspace:*",
     "fastify": "catalog:",
     "modbus-serial": "catalog:",
     "node-opcua": "catalog:",

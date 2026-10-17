@@ -441,6 +441,9 @@ importers:
       '@shopfloor/shift-calendar':
         specifier: workspace:*
         version: link:../../packages/shift-calendar
+      '@shopfloor/spc-core':
+        specifier: workspace:*
+        version: link:../../packages/spc-core
       '@shopfloor/trace-core':
         specifier: workspace:*
         version: link:../../packages/trace-core
@@ -945,6 +948,9 @@ importers:
 
   packages/test-kit:
     dependencies:
+      '@shopfloor/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       testcontainers:
         specifier: 'catalog:'
         version: 12.2.0(supports-color@7.2.0)

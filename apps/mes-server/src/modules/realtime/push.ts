@@ -1,5 +1,5 @@
 import type { FloodEpisode } from '@shopfloor/alarm-core';
-import { ORDERS_TOPIC, type TerminalViewDto } from '@shopfloor/contracts/mes-api';
+import { ORDERS_TOPIC, QUALITY_TOPIC, type TerminalViewDto } from '@shopfloor/contracts/mes-api';
 import { Counter, Gauge, Histogram, type Registry } from 'prom-client';
 import type { AlarmEvent, AlarmKpiBucket, AlarmScope } from '../alarms/index.ts';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
@@ -8,8 +8,10 @@ import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
 import type { DowntimeChange, OeeBucket, OeeChange, OeeScope } from '../oee/index.ts';
 import { alarmKpiDto, floodEpisodeDto, occurrenceDto, pointDto } from './alarm-dto.ts';
 import type { OrderChange } from '../orders/index.ts';
+import type { QualityChange } from '../quality/index.ts';
 import type { ShiftChange } from '../shifts/index.ts';
 import { commandDto, orderDto } from './order-dto.ts';
+import { characteristicDto, signalDto } from './quality-dto.ts';
 import { bucketDto, recordDto } from './oee-dto.ts';
 import { handoverNoteDto, shiftRecordDto } from './shift-dto.ts';
 import {
@@ -91,6 +93,10 @@ export interface PushSources {
   readonly orders?: {
     onChange(listener: (change: OrderChange) => void): () => void;
   };
+  /** SPC signal episodes and characteristic changes (#200): the `quality` topic. */
+  readonly quality?: {
+    onChange(listener: (change: QualityChange) => void): () => void;
+  };
   /** Units, quantities and scrap records changed (#175): the terminal topics follow them. */
   readonly execution?: {
     onChange(listener: (change: ExecutionChange) => void): () => void;
@@ -129,6 +135,16 @@ export interface PushOptions {
   readonly requestsPerSecond?: number;
   readonly requestBurst?: number;
   readonly registry?: Registry;
+  /**
+   * Called for every paced delta sent, with its topic, the wall time its computation started
+   * (the time the pace is measured from) and the message. For tests: they check the pace and
+   * what each computation read on the server's own clock, not on when a loaded machine happened
+   * to deliver the messages (#212). An error it throws is ignored: an observer never changes
+   * what is pushed.
+   *
+   * @internal
+   */
+  readonly onPacedDelta?: (topic: string, wallMs: number, delta: ServerMessage) => void;
 }
 
 interface Client {
@@ -143,6 +159,8 @@ interface Client {
   shifts: boolean;
   /** Following `orders` (#174). */
   orders: boolean;
+  /** Following `quality` (#200). */
+  quality: boolean;
   /** The paced topics followed: `oee:<id>` and `alarm-kpi:<scope>`. */
   readonly paced: Set<string>;
   /** Per equipment: the metrics subscribed, or null for all. */
@@ -218,7 +236,8 @@ const message = (value: ServerMessage): string => JSON.stringify(value);
  * the older of the same key, so a slow client costs bounded memory and sees the latest values.
  */
 export class PushHub {
-  readonly #options: Required<Omit<PushOptions, 'registry'>>;
+  readonly #options: Required<Omit<PushOptions, 'registry' | 'onPacedDelta'>>;
+  readonly #onPacedDelta: PushOptions['onPacedDelta'];
   readonly #clients = new Set<Client>();
   readonly #lastState = new Map<string, string>();
   readonly #metrics: ReturnType<typeof createMetrics> | undefined;
@@ -245,6 +264,7 @@ export class PushHub {
       requestsPerSecond: options.requestsPerSecond ?? 10,
       requestBurst: options.requestBurst ?? 20,
     };
+    this.#onPacedDelta = options.onPacedDelta;
     this.#metrics = options.registry && createMetrics(options.registry, () => this.#clients.size);
     this.#timers.push(
       setInterval(() => {
@@ -306,6 +326,13 @@ export class PushHub {
       this.#detach.push(
         sources.orders.onChange((change) => {
           this.#onOrder(change);
+        }),
+      );
+    }
+    if (sources.quality) {
+      this.#detach.push(
+        sources.quality.onChange((change) => {
+          this.#onQuality(change);
         }),
       );
     }
@@ -371,6 +398,7 @@ export class PushHub {
       alarms: false,
       shifts: false,
       orders: false,
+      quality: false,
       paced: new Set(),
       telemetry: new Map(),
       pending: new Map(),
@@ -460,6 +488,10 @@ export class PushHub {
     }
     if (request.topic === ORDERS_TOPIC) {
       this.#ordersRequest(client, sources, request);
+      return;
+    }
+    if (request.topic === QUALITY_TOPIC) {
+      this.#qualityRequest(client, sources, request);
       return;
     }
     if (request.topic.startsWith('alarm-kpi:')) {
@@ -609,6 +641,53 @@ export class PushHub {
       topic: ORDERS_TOPIC,
       metric: null,
     });
+  }
+
+  /**
+   * `quality` (#200): signal upserts keyed by signal id, and a characteristic's summary keyed by
+   * its id when its readings, limits or notice changed (coalesced: a client reads the chart
+   * again). A client reads first, then applies them; it resets its copy on (re)subscribe.
+   */
+  #qualityRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    if (!sources.quality) {
+      this.#send(client, {
+        type: 'error',
+        code: 'unknown-topic',
+        detail: 'quality push is not available',
+      });
+      return;
+    }
+    client.quality = request.type === 'subscribe';
+    if (!client.quality) {
+      this.#dropPending(client, 'spc-signal:');
+      this.#dropPending(client, 'spc-characteristic:');
+    }
+    this.#send(client, {
+      type: request.type === 'subscribe' ? 'subscribed' : 'unsubscribed',
+      topic: QUALITY_TOPIC,
+      metric: null,
+    });
+  }
+
+  #onQuality(change: QualityChange): void {
+    let data: string | undefined;
+    const key =
+      change.type === 'signal'
+        ? `spc-signal:${String(change.signal.id)}`
+        : `spc-characteristic:${change.characteristic.id}`;
+    for (const client of this.#clients) {
+      if (!client.quality) continue;
+      data ??= message(
+        change.type === 'signal'
+          ? { type: 'spc-signal', event: change.event, signal: signalDto(change.signal) }
+          : {
+              type: 'spc-characteristic',
+              event: change.event,
+              characteristic: characteristicDto(change.characteristic),
+            },
+      );
+      this.#enqueue(client, key, data);
+    }
   }
 
   /**
@@ -867,7 +946,14 @@ export class PushHub {
             }
           }
           topic.awaiting.clear();
-          if (delta !== undefined) topic.deltaAt = now;
+          if (delta !== undefined) {
+            topic.deltaAt = now;
+            try {
+              this.#onPacedDelta?.(topic.name, now, update);
+            } catch {
+              // An observer's error is not the push's.
+            }
+          }
           if (deltaDue || json === topic.last) topic.last = json;
           // A change held back for the pace goes out with the next computation.
           else topic.dirty = true;

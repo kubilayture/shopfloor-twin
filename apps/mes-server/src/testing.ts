@@ -1,3 +1,4 @@
+import { sql, type QueryExecutorProvider } from 'kysely';
 import { useDockerContext } from '@shopfloor/test-kit/docker';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 
@@ -49,4 +50,32 @@ export function appUrl(serverUrl: string, database: string): string {
   url.username = TEST_DB.appUser;
   url.password = TEST_DB.appPassword;
   return url.toString();
+}
+
+/**
+ * Waits until some other session is blocked by the backend `holder` (`pg_blocking_pids`), so a
+ * test of a lock race knows the waiting write got that far, however long a loaded machine took
+ * (#212), instead of sleeping a fixed time.
+ */
+export async function blockedBy(
+  db: QueryExecutorProvider,
+  holder: number,
+  what: string,
+  timeoutMs = 30_000,
+): Promise<void> {
+  for (const deadline = Date.now() + timeoutMs; ;) {
+    const { rows } = await sql<{ n: number }>`SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE pid <> pg_backend_pid() AND pg_blocking_pids(pid) @> ARRAY[${holder}::int]`.execute(db);
+    if ((rows[0]?.n ?? 0) > 0) return;
+    if (Date.now() > deadline) throw new Error(`timed out after ${String(timeoutMs)} ms: ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** The backend pid of a connection or transaction (the `holder` of `blockedBy`). */
+export async function backendPid(db: QueryExecutorProvider): Promise<number> {
+  const { rows } = await sql<{ pid: number }>`SELECT pg_backend_pid() AS pid`.execute(db);
+  const pid = rows[0]?.pid;
+  if (pid === undefined) throw new Error('no backend pid');
+  return pid;
 }

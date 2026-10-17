@@ -3,6 +3,7 @@ import { HOUR } from '@shopfloor/oee-core';
 import { sql, type Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { timed } from '@shopfloor/test-kit/timing';
 import { startDatabase } from '../testing.ts';
 import { AggregateRefresher, type RefreshWindow } from './aggregate-refresh.ts';
 import { stateHourly, stateHourlyRaw } from './aggregates.test-support.ts';
@@ -81,17 +82,25 @@ describe('explicit refresh of an hourly aggregate (#118, ADR-0022)', () => {
     const windows: RefreshWindow[] = [];
     r.onRefresh((window) => windows.push(window));
     await insertPieces(db, { machines: 2, epoch: E1, from: hour(10), to: hour(12), step: MINUTE });
-    const began = Date.now();
-    for (let i = 0; i < 50; i++) {
-      r.changed(hour(10) + i * MINUTE, hour(10) + i * MINUTE + 1);
-      r.through(hour(11));
-    }
-    // Nothing runs on the caller's path.
-    expect(r.status()).toMatchObject({ refreshes: 0 });
-    for (let waited = 0; windows.length === 0 && waited < 5_000; waited += 20) {
-      await new Promise((done) => setTimeout(done, 20));
-    }
-    expect(Date.now() - began).toBeGreaterThanOrEqual(950);
+    // A second after the first change: not before, and not much after, allowing for whatever a
+    // loaded machine delayed the scheduler meanwhile (#212); a long deadline only to wait.
+    const { elapsedMs, maxLagMs } = await timed(async () => {
+      for (let i = 0; i < 50; i++) {
+        r.changed(hour(10) + i * MINUTE, hour(10) + i * MINUTE + 1);
+        r.through(hour(11));
+      }
+      // Nothing runs on the caller's path.
+      expect(r.status()).toMatchObject({ refreshes: 0 });
+      for (let waited = 0; windows.length === 0 && waited < 30_000; waited += 20) {
+        await new Promise((done) => setTimeout(done, 20));
+      }
+    });
+    expect(windows.length).toBeGreaterThan(0);
+    // The wait before the refresh started: the time to its listener less the refresh's own
+    // duration (the database's, which no scheduler lag covers).
+    const debounced = elapsedMs - (windows[0]?.ms ?? 0);
+    expect(debounced).toBeGreaterThanOrEqual(950);
+    expect(debounced).toBeLessThan(1_500 + maxLagMs);
     await new Promise((done) => setTimeout(done, 400));
     expect(windows.map((w) => [w.start, w.end])).toEqual([[null, new Date(hour(11))]]);
     // Hour 10 is materialised, hour 11 (the open hour, above the watermark) read raw.

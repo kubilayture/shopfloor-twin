@@ -65,6 +65,12 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
       'Lots imported from the ERP’s lot list, every unit (device epoch, partId) with its serial, the lots each of its cycles consumed per operation and pass, the device operator and reading per record, cartons formed by the packing rule on final data, and the module’s incidents (#199, ADR-0034). Everything but the lots is derived from the execution module’s units and the cycle facts and rebuilt per unit; the trace queries read it.',
   },
   {
+    name: 'quality',
+    owner: 'quality',
+    about:
+      'SPC (#200, ADR-0032): the characteristics of `quality.yaml`, one measurement per cycle fact of the characteristic’s machine with its pass, control limit versions as append-only events (version 1 automatic from the baseline, never re-derived), and the signal episodes derived from the first-pass readings with their finality, withdrawal and acknowledgement. Points and subgroups are derived on read.',
+  },
+  {
     name: 'public',
     owner: 'the migration runner',
     about: 'Bookkeeping of the migration runner (ADR-0016).',
@@ -202,6 +208,14 @@ const TABLES: Readonly<Record<string, string>> = {
     'Cartons per order by the packing rule (`packing.yaml`, `trace-core`), placed on final packing data: `{orderId}-C{nn}`, capacity, open or closed and when, members (#199).',
   'genealogy.genealogy_incident':
     'Incidents of the genealogy module: `unknown-lot` (closed when the import lists it), `serial-reused` (one per pair of device epochs) and `material-mismatch` (a lot the BOM doesn’t list for that operation and pass), open at most once per key (#199).',
+  'quality.characteristic':
+    'SPC characteristics seeded from `quality.yaml` (the leak test’s unit, resolution and upper specification from process.yaml), with the version a limit write names (it rises with each limit write and each notice raised), the `baseline-changed` notice and the basis (hash) of the re-estimate that raised it, kept when the notice is cleared (#200).',
+  'quality.measurement':
+    'One reading per cycle fact of the characteristic’s machine, keyed by the fact, with its pass (1, 2 after a rework) and its value in resolution steps; derived and rebuilt per part (#200).',
+  'quality.control_limit':
+    'Control limit versions as append-only events: `created` (frozen limits, window and the first position it applies to) and `ended`; a trigger refuses UPDATE, DELETE and TRUNCATE to every role, the owner included (only the owner or a superuser could disable it, in a migration) (#200, ADR-0032).',
+  'quality.spc_signal':
+    'Signal episodes keyed (characteristic, limit version, chart, rule, first triggering point) with their extent and whether it is final, `provisional` until the tester is final through the triggering point, `final`, or `withdrawn` with a reason; the acknowledgement stays on the episode (#200, ADR-0032).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

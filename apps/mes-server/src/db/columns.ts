@@ -7,6 +7,7 @@ import { MASTER_DATA_COLUMNS } from '../modules/master-data/index.ts';
 import { EXECUTION_COLUMNS } from '../modules/execution/index.ts';
 import { GENEALOGY_COLUMNS } from '../modules/genealogy/index.ts';
 import { ORDERS_COLUMNS } from '../modules/orders/index.ts';
+import { QUALITY_COLUMNS } from '../modules/quality/index.ts';
 import { SHIFTS_COLUMNS } from '../modules/shifts/index.ts';
 import type { Database } from './database.ts';
 
@@ -31,6 +32,7 @@ export const MES_SCHEMAS = [
   'orders',
   'execution',
   'genealogy',
+  'quality',
 ] as const;
 
 /** Tables and views that exist in the MES schemas, excluding TimescaleDB's own. */
@@ -73,4 +75,5 @@ export const DECLARED_COLUMNS: ColumnSpec = {
   ...ORDERS_COLUMNS,
   ...EXECUTION_COLUMNS,
   ...GENEALOGY_COLUMNS,
+  ...QUALITY_COLUMNS,
 };

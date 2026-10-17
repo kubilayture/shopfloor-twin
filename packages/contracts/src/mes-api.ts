@@ -8,11 +8,13 @@ import {
   passwordLength,
 } from './identity.ts';
 import { ORDERS_TOPIC, orderPushMessages } from './orders-api.ts';
+import { QUALITY_TOPIC, qualityPushMessages } from './quality-api.ts';
 import { crewMemberSchema, terminalPushMessages, terminalTopicSchema } from './terminal-api.ts';
 
 export * from './execution-api.ts';
 export * from './genealogy-api.ts';
 export * from './orders-api.ts';
+export * from './quality-api.ts';
 export * from './terminal-api.ts';
 
 // The MES API's responses and WebSocket messages (#97, ADR-0019), shared by `mes-server`, which
@@ -156,6 +158,18 @@ export const PROBLEM_TYPES = {
   terminalSessionRequired: 'urn:shopfloor:terminal-session-required',
   /** 409: a sign-on while the plant clock is in no shift instance. */
   noShift: 'urn:shopfloor:no-shift',
+  /** 409 (#200): the characteristic's `version` sent is not its current one (a limit write). */
+  limitsStale: 'urn:shopfloor:limits-stale',
+  /** 409 (#200): the signal's `version` sent is not its current one (an acknowledgement). */
+  signalStale: 'urn:shopfloor:signal-stale',
+  /** 409 (#200): a limit write before limit version 1 exists (it is estimated automatically). */
+  limitsV1Missing: 'urn:shopfloor:limits-v1-missing',
+  /** 409 (#200): the limit version is ended already. */
+  limitsEnded: 'urn:shopfloor:limits-ended',
+  /** 409 (#200): the signal is acknowledged already (once per episode). */
+  signalAcknowledged: 'urn:shopfloor:signal-acknowledged',
+  /** 409 (#200): the signal is withdrawn; it can't be acknowledged. */
+  signalWithdrawn: 'urn:shopfloor:signal-withdrawn',
 } as const;
 
 export type ProblemType = (typeof PROBLEM_TYPES)[keyof typeof PROBLEM_TYPES];
@@ -1409,6 +1423,7 @@ const topic = z.union([
   z.literal(ALARMS_TOPIC),
   z.literal(SHIFTS_TOPIC),
   z.literal(ORDERS_TOPIC),
+  z.literal(QUALITY_TOPIC),
   telemetryTopic,
   oeeTopic,
   alarmKpiTopic,
@@ -1532,6 +1547,7 @@ export const serverMessageSchema = z
       note: handoverNoteSchema,
     }),
     ...orderPushMessages,
+    ...qualityPushMessages,
     ...terminalPushMessages,
     z.object({ type: z.literal('telemetry'), ...telemetrySample.shape }),
     z.object({ type: z.literal('clock'), ...clockSchema.shape }),

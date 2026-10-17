@@ -781,6 +781,14 @@ const ROUTES: Readonly<Record<string, Permission | 'session' | 'public'>> = {
     'terminal:operate',
   'POST /api/v1/terminal/{workCenter}/orders/{id}/operations/{operation}/sign-off':
     'terminal:operate',
+  'GET /api/v1/quality/characteristics': 'read',
+  'GET /api/v1/quality/characteristics/{id}': 'read',
+  'GET /api/v1/quality/characteristics/{id}/chart': 'read',
+  'GET /api/v1/quality/characteristics/{id}/measurements': 'read',
+  'GET /api/v1/quality/signals': 'read',
+  'POST /api/v1/quality/characteristics/{id}/limits': 'spc:limits',
+  'POST /api/v1/quality/characteristics/{id}/limits/{version}/end': 'spc:limits',
+  'POST /api/v1/quality/signals/{id}/ack': 'spc:ack',
 };
 
 /** Path parameters filled in so the route matches (the handler may still answer 400 or 404). */
@@ -797,6 +805,7 @@ const PARAMS: Readonly<Record<string, string>> = {
   serial: 'VB-100-000001',
   lot: 'BL100-2610-01',
   carton: 'PO-2610-101-C01',
+  version: '1',
 };
 
 describe('authentication on every route (MES_AUTH=on, #168)', () => {
@@ -879,7 +888,7 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     );
     const api = routes.filter((route) => route.includes(' /api/v1/'));
     expect(api.sort()).toEqual(Object.keys(ROUTES).sort());
-    expect(api).toHaveLength(73);
+    expect(api).toHaveLength(81);
     expect(routes.filter((r) => !r.includes(' /api/v1/')).sort()).toEqual([
       'GET /health/live',
       'GET /health/ready',

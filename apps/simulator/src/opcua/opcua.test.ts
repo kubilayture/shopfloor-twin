@@ -1,5 +1,3 @@
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import {
   OPCUA_EVENT_FIELDS,
   OPCUA_EVENT_TYPES,
@@ -29,45 +27,59 @@ import {
   type PlantEvent,
 } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
+import { onFreeOpcuaPorts, temporaryPki } from '../testing.ts';
 import { machineryItemState, machineryOperationMode } from './machinery-state.ts';
 import { PlantServers, alarmCodes } from './plant-servers.ts';
 import { connect, wait } from './testing.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
-const OFFSET = 200;
+let offset: number;
 let config: PlantConfig;
 let servers: PlantServers;
 let run: LiveRun;
 let clock: ManualClock;
+/** Set once the servers have started, so that `afterAll` stops only what `beforeAll` started. */
+let started: { readonly servers: PlantServers; readonly run: LiveRun } | undefined;
+let removePki: (() => Promise<void>) | undefined;
 const plantEvents: PlantEvent[] = [];
 
 beforeAll(async () => {
   config = await loadDefaultConfig();
-  clock = new ManualClock();
-  servers = new PlantServers({
-    config,
-    start: T0,
-    portOffset: OFFSET,
-    pkiFolder: join(tmpdir(), 'shopfloor-twin-test-pki'),
-  });
-  run = createLiveRun({
-    config,
-    seed: 11,
-    start: T0,
-    speed: 60,
-    clock,
-    onEvent: (event) => {
-      plantEvents.push(event);
-      servers.record(event);
-    },
-  });
-  servers.attach(run);
-  await servers.start();
+  const pki = await temporaryPki('opcua');
+  removePki = pki.remove;
+  ({ portOffset: offset } = await onFreeOpcuaPorts((portOffset) => {
+    clock = new ManualClock();
+    plantEvents.length = 0;
+    servers = new PlantServers({
+      config,
+      start: T0,
+      portOffset,
+      pkiFolder: pki.folder,
+    });
+    run = createLiveRun({
+      config,
+      seed: 11,
+      start: T0,
+      speed: 60,
+      clock,
+      onEvent: (event) => {
+        plantEvents.push(event);
+        servers.record(event);
+      },
+    });
+    servers.attach(run);
+    return servers;
+  }));
+  started = { servers, run };
 }, 60_000);
 
 afterAll(async () => {
-  run.pacer.stop();
-  await servers.stop();
+  try {
+    started?.run.pacer.stop();
+    await started?.servers.stop();
+  } finally {
+    await removePki?.();
+  }
 });
 
 describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
@@ -104,7 +116,7 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
   }, 60_000);
 
   it('delivers every state and cycle event in order with a gap-free sequence, at 60×', async () => {
-    const { session, close } = await connect(4841 + OFFSET);
+    const { session, close } = await connect(4841 + offset);
     try {
       const fields = [...OPCUA_EVENT_FIELDS.common.map((f) => `1:${f}`), 'Time', 'EventType'];
       const namespaces = await session.readNamespaceArray();
@@ -164,7 +176,7 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
   }, 60_000);
 
   it('exposes current values with simulation time as SourceTimestamp, and telemetry', async () => {
-    const { session, close } = await connect(4841 + OFFSET);
+    const { session, close } = await connect(4841 + offset);
     try {
       const namespaces = await session.readNamespaceArray();
       const read = (path: string) =>
@@ -200,7 +212,7 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
   }, 60_000);
 
   it('switches the CNC program through the LoadProgram method', async () => {
-    const { session, close } = await connect(4841 + OFFSET);
+    const { session, close } = await connect(4841 + offset);
     try {
       const namespaces = await session.readNamespaceArray();
       const objectId = resolveNodeId(
@@ -255,7 +267,7 @@ describe('OPC UA servers (ADR-0008, ADR-0009)', () => {
   }, 60_000);
 
   it('exposes alarm states and raises an alarm event per transition (ADR-0010)', async () => {
-    const port = 4844 + OFFSET;
+    const port = 4844 + offset;
     const { session, close } = await connect(port);
     try {
       const namespaces = await session.readNamespaceArray();

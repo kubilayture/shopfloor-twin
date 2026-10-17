@@ -15,6 +15,7 @@ import { DowntimeFeed, Oee } from './modules/oee/index.ts';
 import { Execution } from './modules/execution/index.ts';
 import { Genealogy } from './modules/genealogy/index.ts';
 import { ErpClient, MqttCommandPublisher, Orders } from './modules/orders/index.ts';
+import { Quality, characteristicsOf } from './modules/quality/index.ts';
 import { Shifts } from './modules/shifts/index.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -76,6 +77,7 @@ let shifts: Shifts | undefined;
 let orders: Orders | undefined;
 let execution: Execution | undefined;
 let genealogy: Genealogy | undefined;
+let quality: Quality | undefined;
 let publisher: MqttCommandPublisher | undefined;
 
 const { app, registry, realtime } = await buildMesHttp({
@@ -129,6 +131,7 @@ async function shutdown(signal: string): Promise<void> {
     () => app.close(),
     async () => ingest?.stop(),
     async () => genealogy?.stop(),
+    async () => quality?.stop(),
     async () => execution?.stop(),
     async () => orders?.stop(),
     async () => publisher?.close(),
@@ -375,6 +378,19 @@ try {
   await executionModule.start();
   ordersModule.useBlankCounter(executionModule);
   await genealogyModule.start();
+  // SPC (#200): measurements from the leak tester's cycle facts, limit versions and signal
+  // episodes on final data; the charts are derived on read through the API's pool.
+  const qualityModule = new Quality({
+    db,
+    readDb,
+    ingest,
+    characteristics: characteristicsOf(plant.config),
+    clock: () => equipmentModule.watermarks()[0]?.watermark,
+    registry,
+    log: log.child({ module: 'quality' }),
+  });
+  quality = qualityModule;
+  await qualityModule.start();
   // The operator terminal (#177): a session that ends (logout, a disabled user, a password
   // change, a new login) ends its crew rows; a crew row that ends closes its operator's activity
   // intervals at that work center; intervals left open while the MES was down are closed now.
@@ -418,6 +434,7 @@ try {
     orders: ordersModule,
     execution: executionModule,
     genealogy: genealogyModule,
+    quality: qualityModule,
   });
   log.info({ writes: env.MES_WRITES }, 'operator writes (downtime coding, alarms, handover notes)');
   await ingest.start();

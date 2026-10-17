@@ -45,6 +45,7 @@ import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
 import type { Execution } from '../execution/index.ts';
 import type { Orders } from '../orders/index.ts';
+import type { Quality } from '../quality/index.ts';
 import { pareto, type DowntimeFeed, type Oee, type OeeScope } from '../oee/index.ts';
 import { ShiftError, type ShiftRecord, type Shifts } from '../shifts/index.ts';
 import {
@@ -63,6 +64,7 @@ import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
 import { executionRoutes, type ExecutionApi } from './execution-routes.ts';
 import { genealogyRoutes, type GenealogyApi } from './genealogy-routes.ts';
 import { orderRoutes, type OrdersApi } from './order-routes.ts';
+import { qualityRoutes, type QualityApi } from './quality-routes.ts';
 import { terminalRoutes, workCentersOf, type TerminalApi } from './terminal-routes.ts';
 import { memoizeOrderExecution, terminalView } from './terminal-view.ts';
 import {
@@ -246,6 +248,8 @@ export interface ApiSources {
   readonly execution?: ExecutionApi & Partial<Pick<Execution, 'onChange'>>;
   /** Lots, serials, cartons and the trace queries (#199); the trace routes answer 503 without it. */
   readonly genealogy?: GenealogyApi;
+  /** SPC characteristics, charts and signals (#200); the quality routes answer 503 without it. */
+  readonly quality?: QualityApi & Partial<Pick<Quality, 'onChange'>>;
 }
 
 export interface RealtimeOptions {
@@ -1440,6 +1444,16 @@ export async function registerRealtime(
         principal: principalOf,
       });
 
+      // ---- Quality, SPC (#200): characteristics, charts, signals, limits and acknowledgement ----
+      qualityRoutes(api, {
+        quality: () => {
+          const quality = ready().sources.quality;
+          if (!quality) throw new HttpProblem(503, 'quality is not available');
+          return quality;
+        },
+        writer: (request) => Promise.resolve(writeBy(request)),
+      });
+
       // ---- Execution (#175): units, an order's execution, scrap records and coding ----
       executionRoutes(api, {
         execution: () => {
@@ -2536,6 +2550,9 @@ export async function registerRealtime(
         ...(sources.downtime ? { downtime: sources.downtime } : {}),
         ...(sources.shifts ? { shifts: sources.shifts } : {}),
         ...(sources.orders ? { orders: sources.orders } : {}),
+        ...(sources.quality?.onChange
+          ? { quality: { onChange: sources.quality.onChange.bind(sources.quality) } }
+          : {}),
         ...(sources.execution?.onChange
           ? { execution: { onChange: sources.execution.onChange.bind(sources.execution) } }
           : {}),

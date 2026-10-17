@@ -558,6 +558,12 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       // The list shows the order's `dispatched`: read it again too (#176 review H1).
       void queryClient.invalidateQueries({ queryKey: ['orders'] });
       return;
+    // The `quality` topic (#200): no SPC screen subscribes yet (#203); whatever reads quality
+    // data is read again.
+    case 'spc-signal':
+    case 'spc-characteristic':
+      void queryClient.invalidateQueries({ queryKey: ['quality'] });
+      return;
     case 'subscribed':
       // `orders` has no snapshot: a change between the screen's read and the subscription taking
       // effect would never arrive, so the order reads are read again once it has (#176 review).

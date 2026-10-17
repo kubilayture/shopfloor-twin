@@ -1,7 +1,9 @@
-import { createServer } from 'node:net';
+import { connect } from 'node:net';
 import { resolve } from 'node:path';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { useDockerContext } from './docker.ts';
+
+export { freePort } from './ports.ts';
 
 /** Passwords of the broker users in test brokers (never the ones in `.env`). */
 export const TEST_PASSWORDS = {
@@ -16,45 +18,39 @@ const MOSQUITTO_CONFIG = resolve(import.meta.dirname, '../../../config/mosquitto
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * A host port that is free right now: the OS picks one (bind to port 0), we read it back and
- * close. Chosen at runtime, so parallel runs (two worktrees, say) do not clash on a fixed port.
- */
-export function freePort(): Promise<number> {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.unref();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      server.close(() => {
-        if (port > 0) resolvePort(port);
-        else reject(new Error('the OS did not report a free port'));
-      });
-    });
-  });
-}
-
-/**
  * The project's Mosquitto (same image, configuration, users and ACL as Compose) in a throw-away
  * container. Shared by the gateway's and the MES's tests.
  *
  * With a fixed `hostPort` (a broker restarted where its clients left it), a failed start is
  * retried (`attempts`, default 5, a second apart): the port of a just-stopped container can take
  * a moment to be released.
+ *
+ * One attempt takes at most about 80 s (#212): 60 s for the container to log "running", then
+ * `readyTimeoutMs` (20 s) for it to accept an MQTT connection on the host port.
  */
 export async function startBroker(
-  options: { readonly hostPort?: number; readonly attempts?: number } = {},
+  options: {
+    readonly hostPort?: number;
+    readonly attempts?: number;
+    readonly readyTimeoutMs?: number;
+  } = {},
 ): Promise<{ url: string; container: StartedTestContainer }> {
   useDockerContext();
   const attempts = options.hostPort ? (options.attempts ?? 5) : 1;
   for (let attempt = 1; ; attempt++) {
     try {
       const container = await brokerContainer(options.hostPort).start();
-      return {
-        url: `mqtt://${container.getHost()}:${String(container.getMappedPort(1883))}`,
-        container,
-      };
+      const host = container.getHost();
+      const port = container.getMappedPort(1883);
+      // "running" in the log is not yet a broker on the host port: Docker's port forward can
+      // accept a connection and never pass it on for a while, and a client then hangs (#212).
+      try {
+        await awaitMqtt(host, port, options.readyTimeoutMs ?? 20_000);
+      } catch (error) {
+        await container.stop().catch(() => undefined);
+        throw error;
+      }
+      return { url: `mqtt://${host}:${String(port)}`, container };
     } catch (error) {
       if (attempt >= attempts) {
         const where = options.hostPort ? ` on host port ${String(options.hostPort)}` : '';
@@ -64,6 +60,73 @@ export async function startBroker(
       }
       await wait(1_000);
     }
+  }
+}
+
+/** An MQTT 3.1.1 CONNECT of the healthcheck user (clean session, no will), encoded by hand. */
+function connectPacket(): Buffer {
+  const text = (value: string) => {
+    const bytes = Buffer.from(value, 'utf8');
+    const length = Buffer.alloc(2);
+    length.writeUInt16BE(bytes.length);
+    return Buffer.concat([length, bytes]);
+  };
+  const body = Buffer.concat([
+    text('MQTT'),
+    Buffer.from([4, 0b1100_0010, 0, 30]), // level 4; username, password, clean; keep-alive 30 s
+    text(`test-kit-probe-${String(process.pid)}-${String(Date.now())}`),
+    text('healthcheck'),
+    text(TEST_PASSWORDS.healthcheck),
+  ]);
+  const length: number[] = [];
+  for (let rest = body.length; ;) {
+    const byte = rest % 128;
+    rest = Math.floor(rest / 128);
+    length.push(rest > 0 ? byte | 0x80 : byte);
+    if (rest === 0) break;
+  }
+  return Buffer.concat([Buffer.from([0x10, ...length]), body]);
+}
+
+/** One CONNECT on `host:port`: true when the broker accepts it (CONNACK, return code 0) in time. */
+function mqttAnswers(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolveAnswer) => {
+    const socket = connect(port, host);
+    let received = Buffer.alloc(0);
+    const done = (ok: boolean) => {
+      clearTimeout(timer);
+      if (ok) socket.end(Buffer.from([0xe0, 0])); // DISCONNECT
+      socket.destroy();
+      resolveAnswer(ok);
+    };
+    const timer = setTimeout(() => {
+      done(false);
+    }, timeoutMs);
+    socket.on('connect', () => socket.write(connectPacket()));
+    socket.on('data', (chunk: Buffer) => {
+      received = Buffer.concat([received, chunk]);
+      if (received.length >= 4) done(received[0] === 0x20 && received[3] === 0);
+    });
+    socket.on('error', () => {
+      done(false);
+    });
+    socket.on('close', () => {
+      done(false);
+    });
+  });
+}
+
+/** Polls until the broker accepts an MQTT connection on the host port, within `timeoutMs`. */
+async function awaitMqtt(host: string, port: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      throw new Error(`broker on ${host}:${String(port)} did not accept MQTT connections`);
+    }
+    // No probe outlasts the deadline: the whole wait stays within `timeoutMs`.
+    if (await mqttAnswers(host, port, Math.min(3_000, left))) return;
+    await wait(Math.min(250, Math.max(0, deadline - Date.now())));
   }
 }
 
@@ -78,5 +141,6 @@ function brokerContainer(hostPort: number | undefined): GenericContainer {
       MQTT_HEALTHCHECK_PASSWORD: TEST_PASSWORDS.healthcheck,
     })
     .withExposedPorts(hostPort ? { container: 1883, host: hostPort } : 1883)
-    .withWaitStrategy(Wait.forLogMessage(/running/));
+    .withWaitStrategy(Wait.forLogMessage(/running/))
+    .withStartupTimeout(60_000);
 }

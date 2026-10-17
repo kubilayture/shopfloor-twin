@@ -32,18 +32,11 @@
         },
         "protocol": {
           "type": "string",
-          "enum": [
-            "opcua",
-            "modbus",
-            "internal"
-          ],
+          "enum": ["opcua", "modbus", "internal"],
           "description": "Where the gateway got it"
         }
       },
-      "required": [
-        "id",
-        "protocol"
-      ],
+      "required": ["id", "protocol"],
       "additionalProperties": false,
       "description": "The issuer, e.g. { id: mes-server, protocol: internal }"
     },
@@ -114,16 +107,7 @@
       "additionalProperties": false
     }
   },
-  "required": [
-    "schema",
-    "scope",
-    "epoch",
-    "seq",
-    "source",
-    "issuedAt",
-    "expiresAt",
-    "value"
-  ],
+  "required": ["schema", "scope", "epoch", "seq", "source", "issuedAt", "expiresAt", "value"],
   "additionalProperties": false,
   "title": "uns.cmd.load-order/1",
   "description": "Append a job to a CNC queue through LoadOrder (QoS 1, not retained)"

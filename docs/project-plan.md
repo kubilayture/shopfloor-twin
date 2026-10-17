@@ -42,14 +42,14 @@ ShopFloor Twin is a realistic simulation of a discrete-manufacturing plant plus 
 
 **Success criteria for v1**
 
-| # | Criterion | How it is verified |
-| --- | --- | --- |
-| 1 | The whole system starts with one command on a clean machine | `docker compose up` on a fresh clone, documented in README |
-| 2 | The same seed and scenario always produce the same events and KPIs | Golden-scenario test in CI compares output with a committed snapshot |
-| 3 | OEE numbers match hand-calculated reference cases exactly | Reference-case unit tests in the OEE package |
-| 4 | A finished serial number can be traced back to its raw-material lot, machines, operators and test results | End-to-end test plus a traceability screen |
-| 5 | Data survives a broker outage without loss | Integration test: broker stopped and restarted, gateway buffer replayed, no gaps |
-| 6 | Every phase closes with updated docs, a phase report and owner sign-off | Phase checklist in the tracking files |
+| #   | Criterion                                                                                                 | How it is verified                                                               |
+| --- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 1   | The whole system starts with one command on a clean machine                                               | `docker compose up` on a fresh clone, documented in README                       |
+| 2   | The same seed and scenario always produce the same events and KPIs                                        | Golden-scenario test in CI compares output with a committed snapshot             |
+| 3   | OEE numbers match hand-calculated reference cases exactly                                                 | Reference-case unit tests in the OEE package                                     |
+| 4   | A finished serial number can be traced back to its raw-material lot, machines, operators and test results | End-to-end test plus a traceability screen                                       |
+| 5   | Data survives a broker outage without loss                                                                | Integration test: broker stopped and restarted, gateway buffer replayed, no gaps |
+| 6   | Every phase closes with updated docs, a phase report and owner sign-off                                   | Phase checklist in the tracking files                                            |
 
 ## 2. Working model
 
@@ -57,9 +57,9 @@ Claude writes the code; an independent review agent reviews every change before 
 
 **Roles**
 
-| Role | Responsibilities |
-| --- | --- |
-| Owner (you) | Creates the GitHub repo and connects it to Claude; approves the plan and every phase, including its realism or demo checks; may review, comment on or revert any pull request (ADR-0011); completes the learning exercise of each phase if they wish; decides on open questions |
+| Role               | Responsibilities                                                                                                                                                                                                                                                                                                                      |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Owner (you)        | Creates the GitHub repo and connects it to Claude; approves the plan and every phase, including its realism or demo checks; may review, comment on or revert any pull request (ADR-0011); completes the learning exercise of each phase if they wish; decides on open questions                                                       |
 | Claude (developer) | Implements tasks on branches; writes tests and docs with the code; opens pull requests with an explanation aimed at learning; has each one reviewed by an independent review agent, fixes the findings and squash-merges when CI is green (ADR-0011); updates tracking files; proposes ADRs for any decision not already in this plan |
 
 **Unit of work.** One task = one GitHub issue = one branch = one pull request. A task is sized to be reviewable in under one hour (as a guideline, roughly 400 changed lines excluding generated files and fixtures).
@@ -114,22 +114,22 @@ The plant is a fictional automotive-hydraulics supplier, Orbis Components, Gebze
 
 **Equipment**
 
-| ID | Equipment | Operation | Interface | Behaviours the simulator models |
-| --- | --- | --- | --- | --- |
-| CNC-01, CNC-02 | Horizontal machining centre (parallel pair) | OP10 Machining | OPC UA | Program per variant, tool life and wear, spindle and coolant faults, door-interlock micro-stops, laser-marked serial (DMC) at cycle end |
-| WSH-01 | Conveyor washer | OP20 Wash | Modbus TCP (legacy) | Bath temperature, conveyor speed, heater fault; exposes only registers, no semantics |
-| ASM-01 | Manual assembly station | OP30 Assembly | OPC UA (station PLC) | Needs an operator logged in; component lot scanning; operator speed varies by person and shift |
-| LKT-01 | Leak tester | OP40 Leak test | OPC UA | Pressure-decay measurement per part, pass/fail limits, sensor drift, calibration due |
-| PCK-01 | Pack and label | OP50 Pack | OPC UA | Label printing, carton fill, label-printer out-of-stock stop |
+| ID             | Equipment                                   | Operation      | Interface            | Behaviours the simulator models                                                                                                         |
+| -------------- | ------------------------------------------- | -------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| CNC-01, CNC-02 | Horizontal machining centre (parallel pair) | OP10 Machining | OPC UA               | Program per variant, tool life and wear, spindle and coolant faults, door-interlock micro-stops, laser-marked serial (DMC) at cycle end |
+| WSH-01         | Conveyor washer                             | OP20 Wash      | Modbus TCP (legacy)  | Bath temperature, conveyor speed, heater fault; exposes only registers, no semantics                                                    |
+| ASM-01         | Manual assembly station                     | OP30 Assembly  | OPC UA (station PLC) | Needs an operator logged in; component lot scanning; operator speed varies by person and shift                                          |
+| LKT-01         | Leak tester                                 | OP40 Leak test | OPC UA               | Pressure-decay measurement per part, pass/fail limits, sensor drift, calibration due                                                    |
+| PCK-01         | Pack and label                              | OP50 Pack      | OPC UA               | Label printing, carton fill, label-printer out-of-stock stop                                                                            |
 
 Buffers between operations have finite capacity (defaults: OP10→OP20: 20 parts, OP20→OP30: 30, OP30→OP40: 5, OP40→OP50: 10). Full buffers block upstream machines and empty ones starve downstream machines, so bottlenecks emerge from the model rather than being scripted.
 
 **Products and routing**
 
-| Product | Description | OP10 ideal cycle (s) | OP20 | OP30 | OP40 | OP50 | Components consumed at OP30 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| VB-100 | 2-way valve block | 240 per machine | 60 | 150 | 90 | 30 | Seal kit SK-1, spool SP-100 |
-| VB-200 | 4-way valve block | 330 per machine | 60 | 210 | 90 | 30 | Seal kit SK-2, spool SP-200 |
+| Product | Description       | OP10 ideal cycle (s) | OP20 | OP30 | OP40 | OP50 | Components consumed at OP30 |
+| ------- | ----------------- | -------------------- | ---- | ---- | ---- | ---- | --------------------------- |
+| VB-100  | 2-way valve block | 240 per machine      | 60   | 150  | 90   | 30   | Seal kit SK-1, spool SP-100 |
+| VB-200  | 4-way valve block | 330 per machine      | 60   | 210  | 90   | 30   | Seal kit SK-2, spool SP-200 |
 
 With two CNCs in parallel, OP10 delivers one VB-100 every 120 s on average, so OP30 assembly (150 s) is the designed bottleneck. Changing variant on a CNC requires a changeover (default 25 min) that the MES records as setup time.
 
@@ -162,10 +162,10 @@ The simulator is a deterministic discrete-event engine: the same seed, plant con
 
 **Two run modes, one engine**
 
-| Mode | Pacing | Outputs | Used for |
-| --- | --- | --- | --- |
-| Live | Simulation time paced to wall time × speed factor (0.5× to 60×), with pause and single-step | OPC UA and Modbus servers, control API | Running the full system, demos, manual exploration |
-| Headless | As fast as possible, no network servers | Event log as JSON Lines plus a ground-truth KPI summary | Golden-scenario tests, statistical validation, quick what-if runs |
+| Mode     | Pacing                                                                                      | Outputs                                                 | Used for                                                          |
+| -------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------- |
+| Live     | Simulation time paced to wall time × speed factor (0.5× to 60×), with pause and single-step | OPC UA and Modbus servers, control API                  | Running the full system, demos, manual exploration                |
+| Headless | As fast as possible, no network servers                                                     | Event log as JSON Lines plus a ground-truth KPI summary | Golden-scenario tests, statistical validation, quick what-if runs |
 
 **Machine behaviour.** Each machine is a typed state machine with an exhaustive transition table. States: Off, Idle, Running, Stopped, Starved, Blocked, Setup, Down, PlannedStop, Maintenance. Illegal transitions throw in development and are covered by tests.
 
@@ -173,17 +173,17 @@ The simulator is a deterministic discrete-event engine: the same seed, plant con
 
 **Stochastic models (all parameters in YAML, per machine or per operation)**
 
-| Phenomenon | Model | Parameters |
-| --- | --- | --- |
-| Cycle time | Log-normal around the ideal cycle time × machine and operator speed factors | Ideal time, coefficient of variation |
-| Minor stops (`Stopped`) | Poisson arrivals while running, exponential durations (not truncated: some will exceed the MES micro-stop threshold, as in a real plant) | Rate per hour, mean duration, stop cause |
-| Breakdowns (`Down`) | Weibull time-to-failure in running hours, one per failure mode | Shape, scale, failure code |
-| Repair | Log-normal time-to-repair, starting only when a maintenance technician is available | Median, spread, technician count |
-| Tool wear | Linear wear per cycle; defect probability rises with wear; tool change resets it | Tool life, wear-to-defect curve |
-| Leak-test reading | Normal distribution with slow sensor drift until calibration; an injectable mean shift until the next calibration (`leak-drift`, rev. 8) | Mean, sigma, drift per day |
-| Operators | Presence by shift, absences, individual speed factor, skill qualification per station | Roster file |
-| Production schedule | Which variant each CNC runs: in `schedule` mode a fixed weekly list of campaigns (variant, quantity, machine); in `orders` mode (from Phase 7) only the jobs the MES dispatched through `LoadOrder`, run in order, each not before its planned start; a variant change triggers a changeover | Schedule file (`schedule` mode, the default); dispatched jobs (`orders` mode, rev. 7) |
-| Materials | Lots with finite quantity; a missing lot starves the consuming operation | Stock file, which from Phase 7 the ERP mock also serves as its lot master data; the simulator never calls the ERP (rev. 7); a golden scenario may name its own stock file (rev. 8) |
+| Phenomenon              | Model                                                                                                                                                                                                                                                                                        | Parameters                                                                                                                                                                         |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cycle time              | Log-normal around the ideal cycle time × machine and operator speed factors                                                                                                                                                                                                                  | Ideal time, coefficient of variation                                                                                                                                               |
+| Minor stops (`Stopped`) | Poisson arrivals while running, exponential durations (not truncated: some will exceed the MES micro-stop threshold, as in a real plant)                                                                                                                                                     | Rate per hour, mean duration, stop cause                                                                                                                                           |
+| Breakdowns (`Down`)     | Weibull time-to-failure in running hours, one per failure mode                                                                                                                                                                                                                               | Shape, scale, failure code                                                                                                                                                         |
+| Repair                  | Log-normal time-to-repair, starting only when a maintenance technician is available                                                                                                                                                                                                          | Median, spread, technician count                                                                                                                                                   |
+| Tool wear               | Linear wear per cycle; defect probability rises with wear; tool change resets it                                                                                                                                                                                                             | Tool life, wear-to-defect curve                                                                                                                                                    |
+| Leak-test reading       | Normal distribution with slow sensor drift until calibration; an injectable mean shift until the next calibration (`leak-drift`, rev. 8)                                                                                                                                                     | Mean, sigma, drift per day                                                                                                                                                         |
+| Operators               | Presence by shift, absences, individual speed factor, skill qualification per station                                                                                                                                                                                                        | Roster file                                                                                                                                                                        |
+| Production schedule     | Which variant each CNC runs: in `schedule` mode a fixed weekly list of campaigns (variant, quantity, machine); in `orders` mode (from Phase 7) only the jobs the MES dispatched through `LoadOrder`, run in order, each not before its planned start; a variant change triggers a changeover | Schedule file (`schedule` mode, the default); dispatched jobs (`orders` mode, rev. 7)                                                                                              |
+| Materials               | Lots with finite quantity; a missing lot starves the consuming operation                                                                                                                                                                                                                     | Stock file, which from Phase 7 the ERP mock also serves as its lot master data; the simulator never calls the ERP (rev. 7); a golden scenario may name its own stock file (rev. 8) |
 
 **Interactivity.** The simulator exposes a control API (REST for commands, WebSocket for live state) used by the simulation console:
 
@@ -210,29 +210,29 @@ Only the gateway talks to machines and only the MES talks to the database; the c
 
 **Components**
 
-| Component | ISA-95 level | Responsibility | Talks to |
-| --- | --- | --- | --- |
-| `simulator` | 0–2 (process, devices, control) | Discrete-event plant model; one OPC UA server endpoint per machine (ports 4841–4845); Modbus TCP server for WSH-01 (port 5020); control API | Gateway (serves it), simulation console |
-| `edge-gateway` | 2 (edge) | OPC UA subscriptions and Modbus polling; normalization to canonical payloads; on-disk store-and-forward buffer; MQTT publishing; executing commands as OPC UA method calls (`LoadOrder`, idempotent by command id) | Simulator, broker |
-| `broker` | Integration | Eclipse Mosquitto; per-client credentials and topic ACLs; retained state; last-will messages | Gateway, MES |
-| `mes-server` | 3 (operations) | Modular monolith: ingest, equipment states and downtime, OEE, alarms, orders and routing, genealogy, quality and SPC, shifts, users; REST API and WebSocket push | Broker, database, ERP mock, web |
-| `db` | 3 | PostgreSQL with TimescaleDB: relational MES data plus time-series hypertables and continuous aggregates | MES only |
-| `erp-mock` | 4 (business) | Serves production orders (with routing and BOM) and lot master data; receives confirmations, order status messages and quality notifications (rev. 8), idempotently | MES |
-| `web` | UI | MES screens, operator terminal, simulation console | MES API, simulator control API |
+| Component      | ISA-95 level                    | Responsibility                                                                                                                                                                                                     | Talks to                                |
+| -------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| `simulator`    | 0–2 (process, devices, control) | Discrete-event plant model; one OPC UA server endpoint per machine (ports 4841–4845); Modbus TCP server for WSH-01 (port 5020); control API                                                                        | Gateway (serves it), simulation console |
+| `edge-gateway` | 2 (edge)                        | OPC UA subscriptions and Modbus polling; normalization to canonical payloads; on-disk store-and-forward buffer; MQTT publishing; executing commands as OPC UA method calls (`LoadOrder`, idempotent by command id) | Simulator, broker                       |
+| `broker`       | Integration                     | Eclipse Mosquitto; per-client credentials and topic ACLs; retained state; last-will messages                                                                                                                       | Gateway, MES                            |
+| `mes-server`   | 3 (operations)                  | Modular monolith: ingest, equipment states and downtime, OEE, alarms, orders and routing, genealogy, quality and SPC, shifts, users; REST API and WebSocket push                                                   | Broker, database, ERP mock, web         |
+| `db`           | 3                               | PostgreSQL with TimescaleDB: relational MES data plus time-series hypertables and continuous aggregates                                                                                                            | MES only                                |
+| `erp-mock`     | 4 (business)                    | Serves production orders (with routing and BOM) and lot master data; receives confirmations, order status messages and quality notifications (rev. 8), idempotently                                                | MES                                     |
+| `web`          | UI                              | MES screens, operator terminal, simulation console                                                                                                                                                                 | MES API, simulator control API          |
 
 **Unified Namespace (UNS).** All shop-floor data flows through one MQTT topic tree that follows the ISA-95 hierarchy:
 
 `orbis/gebze/{area}/{workcenter}/{equipment}/{class}/{name}`
 
-| Class | Example topic | Kind | Retained |
-| --- | --- | --- | --- |
-| `state` | `orbis/gebze/machining/cell-m1/cnc-01/state/current` | Current machine state | Yes |
-| `telemetry` | `…/cnc-01/telemetry/spindle-load` | Sampled process values | Yes (last value) |
-| `events` | `…/cnc-01/events/cycle-complete` | Discrete events: cycle complete with serial, result, lots consumed and operator (rev. 8), tool change | No |
-| `alarms` | `…/cnc-01/alarms/spindle-overload` | Alarm lifecycle: active, acknowledged, cleared | Yes |
-| `cmd` / `cmd-res` | `…/cnc-01/cmd/load-order` | Commands from MES (command envelope with expiry and target device epoch) and the gateway's results | No |
-| `mes` | `…/assembly/line-a1/asm-01/mes/active-order` | Context published by MES for HMIs | Yes |
-| `_sys` | `orbis/gebze/_sys/edge-gateway/gw-01/status` | Component health, last-will "offline" | Yes |
+| Class             | Example topic                                        | Kind                                                                                                  | Retained         |
+| ----------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------- |
+| `state`           | `orbis/gebze/machining/cell-m1/cnc-01/state/current` | Current machine state                                                                                 | Yes              |
+| `telemetry`       | `…/cnc-01/telemetry/spindle-load`                    | Sampled process values                                                                                | Yes (last value) |
+| `events`          | `…/cnc-01/events/cycle-complete`                     | Discrete events: cycle complete with serial, result, lots consumed and operator (rev. 8), tool change | No               |
+| `alarms`          | `…/cnc-01/alarms/spindle-overload`                   | Alarm lifecycle: active, acknowledged, cleared                                                        | Yes              |
+| `cmd` / `cmd-res` | `…/cnc-01/cmd/load-order`                            | Commands from MES (command envelope with expiry and target device epoch) and the gateway's results    | No               |
+| `mes`             | `…/assembly/line-a1/asm-01/mes/active-order`         | Context published by MES for HMIs                                                                     | Yes              |
+| `_sys`            | `orbis/gebze/_sys/edge-gateway/gw-01/status`         | Component health, last-will "offline"                                                                 | Yes              |
 
 Every payload uses one envelope: schema name and version, source timestamp, gateway receive timestamp, value, unit, quality (`good`, `uncertain`, `bad`), and a per-source sequence number. Schemas are defined once in the `contracts` package and published as JSON Schema in `docs/contracts/`.
 
@@ -257,33 +257,33 @@ Every payload uses one envelope: schema name and version, source timestamp, gate
 
 The stack is TypeScript end to end on Node.js 26 LTS, PostgreSQL 18 with TimescaleDB, and React on Vite 8. Versions marked "verified" were checked against release notes on 10 October 2026; the others are pinned to their latest stable release in Phase 0, recorded in ADR-0002 and enforced by the lockfile.
 
-| Area | Choice | Version policy | Why this choice |
-| --- | --- | --- | --- |
-| Runtime | Node.js | 26.x, verified: promoted to Active LTS in October 2026 ([schedule](https://github.com/nodejs/nodejs.org/pull/8826/files)) | Long support window covers the whole project |
-| Language | TypeScript, `strict` | 6.0.x, verified | TypeScript 7.0 ships without the programmatic API that typescript-eslint needs; typed linting stays on 6.x until 7.1 and typescript-eslint support land ([InfoQ](https://infoq.com/news/2026/08/typescript-7-released/)). Revisit via ADR |
-| Package manager and monorepo | pnpm workspaces + Turborepo | Latest stable at Phase 0 | Strict dependency isolation; cached, dependency-aware task runs |
-| Validation and contracts | Zod | Latest stable at Phase 0 | One schema gives runtime validation, TypeScript types and generated JSON Schema / OpenAPI |
-| OPC UA (server and client) | node-opcua | 2.170.0 or later, verified; earlier versions have a client reconnection resource leak ([CVE-2026-68904](https://osv.dev/vulnerability/CVE-2026-68904)) | The mature full OPC UA stack for Node.js, including server, client, subscriptions, methods and companion nodesets |
-| Modbus TCP | `modbus-serial` (server and client) | Latest stable at Phase 0 | Covers the legacy washer; chosen by a spike in Phase 3 if it falls short |
-| MQTT broker | Eclipse Mosquitto | 2.x | Lightweight, standard, ACLs and persistence; easy to reason about |
-| MQTT client | MQTT.js | 5.x | De facto Node.js MQTT client, MQTT 5 support |
-| Database | PostgreSQL + TimescaleDB | PostgreSQL 18, TimescaleDB 2.x, verified compatible ([support matrix](https://www.tigerdata.com/docs/get-started/timescaledb-supported-platforms)) | One database for relational MES data and time series; hypertables, compression and continuous aggregates |
-| Data access | Kysely + SQL migrations | Latest stable at Phase 0 | Type-safe SQL builder that stays close to SQL, which is a learning goal; TimescaleDB DDL is written as plain SQL. Drizzle was considered but its 1.0 is still a release candidate |
-| HTTP API | Fastify | 5.x | Fast, explicit plugin model, first-class schema validation and OpenAPI generation |
-| Real-time push | WebSocket (`@fastify/websocket`) | Matches Fastify | Pushes state changes to UI; no extra infrastructure |
-| Logging | pino | Latest stable | Structured JSON logs, the Fastify default |
-| Metrics and tracing | OpenTelemetry SDK, Prometheus endpoint | Latest stable | Standard observability; optional Grafana profile in Phase 9 |
-| Web app | React 19 + Vite 8 + TanStack Router and Query | Vite 8 verified stable since March 2026 ([Vite](https://vite.dev/blog/announcing-vite8)) | The owner's existing strength; Rolldown-based builds |
-| UI | Tailwind CSS 4 + shadcn/ui components | Latest stable | Accessible components owned in the repo, not a black-box kit |
-| Charts | Apache ECharts (dashboards), uPlot (high-rate time series) | Latest stable | ECharts for Pareto, gauges and SPC; uPlot for thousands of live points |
-| Unit and integration tests | Vitest 4 | 4.x, verified ([Vitest 4](https://voidzero.dev/posts/announcing-vitest-4)) | Same runner across packages; browser mode for components |
-| Property-based tests | fast-check | Latest stable | Finds edge cases in OEE and state logic automatically |
-| Containers in tests | Testcontainers for Node.js | Latest stable | Real PostgreSQL/TimescaleDB and Mosquitto in integration tests |
-| End-to-end tests | Playwright | Latest stable | Full-system browser tests against Docker Compose |
-| Lint and format | ESLint (flat config) + typescript-eslint type-checked rules + Prettier | Latest compatible with TypeScript 6 | Type-aware rules such as no-floating-promises matter in async I/O code |
-| CI | GitHub Actions | n/a | Lint, typecheck, tests, image builds, on every pull request |
-| Runtime packaging | Docker + Docker Compose | Compose spec | One-command start, profiles for optional services |
-| Dependency hygiene | Renovate | n/a | Automated, reviewable upgrade pull requests |
+| Area                         | Choice                                                                 | Version policy                                                                                                                                         | Why this choice                                                                                                                                                                                                                           |
+| ---------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime                      | Node.js                                                                | 26.x, verified: promoted to Active LTS in October 2026 ([schedule](https://github.com/nodejs/nodejs.org/pull/8826/files))                              | Long support window covers the whole project                                                                                                                                                                                              |
+| Language                     | TypeScript, `strict`                                                   | 6.0.x, verified                                                                                                                                        | TypeScript 7.0 ships without the programmatic API that typescript-eslint needs; typed linting stays on 6.x until 7.1 and typescript-eslint support land ([InfoQ](https://infoq.com/news/2026/08/typescript-7-released/)). Revisit via ADR |
+| Package manager and monorepo | pnpm workspaces + Turborepo                                            | Latest stable at Phase 0                                                                                                                               | Strict dependency isolation; cached, dependency-aware task runs                                                                                                                                                                           |
+| Validation and contracts     | Zod                                                                    | Latest stable at Phase 0                                                                                                                               | One schema gives runtime validation, TypeScript types and generated JSON Schema / OpenAPI                                                                                                                                                 |
+| OPC UA (server and client)   | node-opcua                                                             | 2.170.0 or later, verified; earlier versions have a client reconnection resource leak ([CVE-2026-68904](https://osv.dev/vulnerability/CVE-2026-68904)) | The mature full OPC UA stack for Node.js, including server, client, subscriptions, methods and companion nodesets                                                                                                                         |
+| Modbus TCP                   | `modbus-serial` (server and client)                                    | Latest stable at Phase 0                                                                                                                               | Covers the legacy washer; chosen by a spike in Phase 3 if it falls short                                                                                                                                                                  |
+| MQTT broker                  | Eclipse Mosquitto                                                      | 2.x                                                                                                                                                    | Lightweight, standard, ACLs and persistence; easy to reason about                                                                                                                                                                         |
+| MQTT client                  | MQTT.js                                                                | 5.x                                                                                                                                                    | De facto Node.js MQTT client, MQTT 5 support                                                                                                                                                                                              |
+| Database                     | PostgreSQL + TimescaleDB                                               | PostgreSQL 18, TimescaleDB 2.x, verified compatible ([support matrix](https://www.tigerdata.com/docs/get-started/timescaledb-supported-platforms))     | One database for relational MES data and time series; hypertables, compression and continuous aggregates                                                                                                                                  |
+| Data access                  | Kysely + SQL migrations                                                | Latest stable at Phase 0                                                                                                                               | Type-safe SQL builder that stays close to SQL, which is a learning goal; TimescaleDB DDL is written as plain SQL. Drizzle was considered but its 1.0 is still a release candidate                                                         |
+| HTTP API                     | Fastify                                                                | 5.x                                                                                                                                                    | Fast, explicit plugin model, first-class schema validation and OpenAPI generation                                                                                                                                                         |
+| Real-time push               | WebSocket (`@fastify/websocket`)                                       | Matches Fastify                                                                                                                                        | Pushes state changes to UI; no extra infrastructure                                                                                                                                                                                       |
+| Logging                      | pino                                                                   | Latest stable                                                                                                                                          | Structured JSON logs, the Fastify default                                                                                                                                                                                                 |
+| Metrics and tracing          | OpenTelemetry SDK, Prometheus endpoint                                 | Latest stable                                                                                                                                          | Standard observability; optional Grafana profile in Phase 9                                                                                                                                                                               |
+| Web app                      | React 19 + Vite 8 + TanStack Router and Query                          | Vite 8 verified stable since March 2026 ([Vite](https://vite.dev/blog/announcing-vite8))                                                               | The owner's existing strength; Rolldown-based builds                                                                                                                                                                                      |
+| UI                           | Tailwind CSS 4 + shadcn/ui components                                  | Latest stable                                                                                                                                          | Accessible components owned in the repo, not a black-box kit                                                                                                                                                                              |
+| Charts                       | Apache ECharts (dashboards), uPlot (high-rate time series)             | Latest stable                                                                                                                                          | ECharts for Pareto, gauges and SPC; uPlot for thousands of live points                                                                                                                                                                    |
+| Unit and integration tests   | Vitest 4                                                               | 4.x, verified ([Vitest 4](https://voidzero.dev/posts/announcing-vitest-4))                                                                             | Same runner across packages; browser mode for components                                                                                                                                                                                  |
+| Property-based tests         | fast-check                                                             | Latest stable                                                                                                                                          | Finds edge cases in OEE and state logic automatically                                                                                                                                                                                     |
+| Containers in tests          | Testcontainers for Node.js                                             | Latest stable                                                                                                                                          | Real PostgreSQL/TimescaleDB and Mosquitto in integration tests                                                                                                                                                                            |
+| End-to-end tests             | Playwright                                                             | Latest stable                                                                                                                                          | Full-system browser tests against Docker Compose                                                                                                                                                                                          |
+| Lint and format              | ESLint (flat config) + typescript-eslint type-checked rules + Prettier | Latest compatible with TypeScript 6                                                                                                                    | Type-aware rules such as no-floating-promises matter in async I/O code                                                                                                                                                                    |
+| CI                           | GitHub Actions                                                         | n/a                                                                                                                                                    | Lint, typecheck, tests, image builds, on every pull request                                                                                                                                                                               |
+| Runtime packaging            | Docker + Docker Compose                                                | Compose spec                                                                                                                                           | One-command start, profiles for optional services                                                                                                                                                                                         |
+| Dependency hygiene           | Renovate                                                               | n/a                                                                                                                                                    | Automated, reviewable upgrade pull requests                                                                                                                                                                                               |
 
 **Rules that keep the stack consistent**
 
@@ -297,20 +297,20 @@ The MES is a modular monolith: one deployable `mes-server` whose modules own the
 
 **Modules**
 
-| Module | Owns | Key functions |
-| --- | --- | --- |
-| `master-data` | ISA-95 hierarchy, products, routings, BOMs, reason-code tree, shift patterns | CRUD with versioning; seeded from `config/plant/` |
-| `ingest` | Raw telemetry and event tables | Subscribe to UNS, validate envelopes, deduplicate by source and sequence, persist, detect gaps |
-| `equipment` | State intervals, downtime records | Turn state changes into closed intervals; auto-classify by rules; operator reason coding; split intervals at hour and shift boundaries so every stored interval lies inside one hour and one shift (required for correct hourly continuous aggregates); open intervals are closed provisionally at each boundary |
-| `oee` | OEE results and aggregates | Calculate per equipment, work center, shift, order (per order from Phase 9, rev. 8); continuous aggregates per hour and shift |
-| `alarms` | Alarm definitions and occurrences | Lifecycle (active, acknowledged, cleared, shelved), priorities, alarm-flood detection, top-offender reports |
-| `orders` | Production orders and order operations | Import from ERP mock, release, dispatch to a CNC over the command path, progress, close, confirm back to ERP |
-| `execution` | Operation records per serial | Track each serial through OP10–OP50, enforce routing order, rework loop, component consumption |
-| `genealogy` | Lots (from the ERP mock), serial units, cartons (packing rule), parent-child links | Forward and backward trace queries on final data |
-| `quality` | Characteristics, measurements, control limits, SPC signals, quality holds | Limits per characteristic, SPC charts and run rules, quality holds with ERP notifications; scrap and rework records are read from `execution` (rev. 8) |
-| `shifts` | Shift instances, crews, handover notes | Shift calendar, shift report generation |
-| `identity` | Users, roles, sessions, audit log | Local accounts; roles: operator, supervisor, maintenance, quality, admin; every request needs a session (from Phase 7); every write is audited in one audit log |
-| `realtime` | WebSocket channels | Push state, alarm and order changes to subscribed screens |
+| Module        | Owns                                                                               | Key functions                                                                                                                                                                                                                                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `master-data` | ISA-95 hierarchy, products, routings, BOMs, reason-code tree, shift patterns       | CRUD with versioning; seeded from `config/plant/`                                                                                                                                                                                                                                                                |
+| `ingest`      | Raw telemetry and event tables                                                     | Subscribe to UNS, validate envelopes, deduplicate by source and sequence, persist, detect gaps                                                                                                                                                                                                                   |
+| `equipment`   | State intervals, downtime records                                                  | Turn state changes into closed intervals; auto-classify by rules; operator reason coding; split intervals at hour and shift boundaries so every stored interval lies inside one hour and one shift (required for correct hourly continuous aggregates); open intervals are closed provisionally at each boundary |
+| `oee`         | OEE results and aggregates                                                         | Calculate per equipment, work center, shift, order (per order from Phase 9, rev. 8); continuous aggregates per hour and shift                                                                                                                                                                                    |
+| `alarms`      | Alarm definitions and occurrences                                                  | Lifecycle (active, acknowledged, cleared, shelved), priorities, alarm-flood detection, top-offender reports                                                                                                                                                                                                      |
+| `orders`      | Production orders and order operations                                             | Import from ERP mock, release, dispatch to a CNC over the command path, progress, close, confirm back to ERP                                                                                                                                                                                                     |
+| `execution`   | Operation records per serial                                                       | Track each serial through OP10–OP50, enforce routing order, rework loop, component consumption                                                                                                                                                                                                                   |
+| `genealogy`   | Lots (from the ERP mock), serial units, cartons (packing rule), parent-child links | Forward and backward trace queries on final data                                                                                                                                                                                                                                                                 |
+| `quality`     | Characteristics, measurements, control limits, SPC signals, quality holds          | Limits per characteristic, SPC charts and run rules, quality holds with ERP notifications; scrap and rework records are read from `execution` (rev. 8)                                                                                                                                                           |
+| `shifts`      | Shift instances, crews, handover notes                                             | Shift calendar, shift report generation                                                                                                                                                                                                                                                                          |
+| `identity`    | Users, roles, sessions, audit log                                                  | Local accounts; roles: operator, supervisor, maintenance, quality, admin; every request needs a session (from Phase 7); every write is audited in one audit log                                                                                                                                                  |
+| `realtime`    | WebSocket channels                                                                 | Push state, alarm and order changes to subscribed screens                                                                                                                                                                                                                                                        |
 
 **OEE definitions.** Terms follow ISO 22400-2. Planned busy time is the scheduled time minus planned stops (breaks, planned maintenance, no scheduled order). Actual production time is time in the Running state plus time in `Stopped` episodes shorter than the micro-stop threshold.
 
@@ -334,14 +334,14 @@ The MES is a modular monolith: one deployable `mes-server` whose modules own the
 
 **State-to-loss mapping**
 
-| Equipment state | Counts as | OEE loss category |
-| --- | --- | --- |
-| Running | Actual production time | Performance loss if slower than ideal |
-| Stopped, shorter than the micro-stop threshold | Actual production time | Performance loss (micro-stop) |
-| Stopped at or above the threshold, Down, Setup | Unplanned stop within planned busy time | Availability loss |
-| Starved, Blocked | Unplanned stop within planned busy time | Availability loss, flagged as external cause so it is not blamed on the machine |
-| Idle (scheduled, see above) | Unplanned stop | Availability loss |
-| PlannedStop, Maintenance (planned), Off, Idle (not scheduled) | Excluded from planned busy time | None |
+| Equipment state                                               | Counts as                               | OEE loss category                                                               |
+| ------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------- |
+| Running                                                       | Actual production time                  | Performance loss if slower than ideal                                           |
+| Stopped, shorter than the micro-stop threshold                | Actual production time                  | Performance loss (micro-stop)                                                   |
+| Stopped at or above the threshold, Down, Setup                | Unplanned stop within planned busy time | Availability loss                                                               |
+| Starved, Blocked                                              | Unplanned stop within planned busy time | Availability loss, flagged as external cause so it is not blamed on the machine |
+| Idle (scheduled, see above)                                   | Unplanned stop                          | Availability loss                                                               |
+| PlannedStop, Maintenance (planned), Off, Idle (not scheduled) | Excluded from planned busy time         | None                                                                            |
 
 With mixed products, performance uses the sum of ideal cycle time × quantity per product. Quality uses first-pass yield: a part reworked after a leak-test failure is not counted as good at OP40 on its first pass. The threshold between a micro-stop and a stop (default 2 minutes) is configuration, documented in an ADR. The threshold applies to `Stopped` only: a `Down` breakdown is always an availability loss, however quickly it is repaired.
 
@@ -349,15 +349,15 @@ Starved and Blocked are counted as availability losses on every machine, so by d
 
 **Core data model (PostgreSQL, TimescaleDB hypertables marked)**
 
-| Group | Tables |
-| --- | --- |
-| Hierarchy and master data | `site`, `area`, `work_center`, `equipment`, `product`, `routing`, `routing_operation`, `bom_item`, `reason_code` (tree), `alarm_definition`, `shift_pattern` |
-| Raw shop-floor data | `telemetry_sample` (hypertable), `equipment_event` (hypertable), `ingest_source_cursor` (last sequence per source) |
-| Equipment and OEE | `equipment_state_interval`, `downtime_record`, `production_count` (hypertable), `oee_hourly` and `oee_shift` (continuous aggregates) |
-| Alarms | `alarm_occurrence`, `alarm_transition` |
-| Orders and execution | `production_order`, `order_operation`, `operation_record`, `material_consumption`, `erp_message_log` |
-| Genealogy and quality | `material_lot`, `serial_unit`, `carton`, `genealogy_link`, `quality_characteristic`, `quality_measurement`, `control_limit`, `spc_signal`, `quality_hold`, `hold_transition`, `hold_unit`, `genealogy_incident` |
-| People and shifts | `user_account`, `role`, `shift_instance`, `crew_assignment`, `handover_note`, `audit_log` |
+| Group                     | Tables                                                                                                                                                                                                          |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hierarchy and master data | `site`, `area`, `work_center`, `equipment`, `product`, `routing`, `routing_operation`, `bom_item`, `reason_code` (tree), `alarm_definition`, `shift_pattern`                                                    |
+| Raw shop-floor data       | `telemetry_sample` (hypertable), `equipment_event` (hypertable), `ingest_source_cursor` (last sequence per source)                                                                                              |
+| Equipment and OEE         | `equipment_state_interval`, `downtime_record`, `production_count` (hypertable), `oee_hourly` and `oee_shift` (continuous aggregates)                                                                            |
+| Alarms                    | `alarm_occurrence`, `alarm_transition`                                                                                                                                                                          |
+| Orders and execution      | `production_order`, `order_operation`, `operation_record`, `material_consumption`, `erp_message_log`                                                                                                            |
+| Genealogy and quality     | `material_lot`, `serial_unit`, `carton`, `genealogy_link`, `quality_characteristic`, `quality_measurement`, `control_limit`, `spc_signal`, `quality_hold`, `hold_transition`, `hold_unit`, `genealogy_incident` |
+| People and shifts         | `user_account`, `role`, `shift_instance`, `crew_assignment`, `handover_note`, `audit_log`                                                                                                                       |
 
 The full entity-relationship diagram is generated from the database into `docs/data-model.md` at the end of each phase that changes the schema.
 
@@ -422,28 +422,28 @@ The determinism of the simulator is the backbone of testing: because a seed and 
 
 **Test levels**
 
-| Level | Tool | Scope | Runs |
-| --- | --- | --- | --- |
-| Static | TypeScript, ESLint (type-checked), Prettier, dependency-rule lint | Whole repo | Every commit (pre-commit hook) and CI |
-| Unit | Vitest | Pure functions and classes: DES kernel, distributions, state machines, OEE, SPC rules, payload normalizers | Every commit and CI |
-| Property-based | fast-check | Invariants: OEE components between 0 and 1; state durations sum to elapsed time; splitting an interval at a shift boundary preserves total time; ingest is idempotent under duplicates and reordering | CI |
-| Statistical | Vitest + fixed seeds | Simulator distributions match configuration (goodness-of-fit within tolerance); long-run MTBF and MTTR match configured values | CI (nightly for long runs) |
-| Contract | Vitest + Zod | Every UNS payload and REST DTO validates against `contracts`; OPC UA address space matches its documented node-id list; generated JSON Schema and OpenAPI are up to date | CI |
-| Integration | Vitest + Testcontainers | One app against real dependencies: gateway ↔ simulator OPC UA and Modbus; gateway ↔ Mosquitto; MES ↔ TimescaleDB and Mosquitto; SQL migrations up from empty | CI |
-| Component | Vitest browser mode | React components with real browser rendering, including chart and terminal screens | CI |
-| Golden scenario | Headless simulator + MES pipeline | A committed scenario and seed; MES KPIs, downtime totals and genealogy must equal the simulator's ground truth and the committed snapshot; genealogy and SPC truth in `trace.json` beside the summary (rev. 8) | CI |
-| Resilience | Docker Compose + test scripts | Broker restart, OPC UA server offline, Modbus device silent, MES restart mid-shift: no data loss, no duplicates, correct recovery | CI (nightly) |
-| End-to-end | Playwright | Full system in Docker Compose: operator codes a downtime, supervisor sees OEE change, order runs to confirmation, serial traced back to lot | CI |
-| Performance | Scripted load (k6 or a Node load script, decided in Phase 9) | Ingest throughput at 60× simulation speed with all machines; UI update latency | Before release |
+| Level           | Tool                                                              | Scope                                                                                                                                                                                                          | Runs                                  |
+| --------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| Static          | TypeScript, ESLint (type-checked), Prettier, dependency-rule lint | Whole repo                                                                                                                                                                                                     | Every commit (pre-commit hook) and CI |
+| Unit            | Vitest                                                            | Pure functions and classes: DES kernel, distributions, state machines, OEE, SPC rules, payload normalizers                                                                                                     | Every commit and CI                   |
+| Property-based  | fast-check                                                        | Invariants: OEE components between 0 and 1; state durations sum to elapsed time; splitting an interval at a shift boundary preserves total time; ingest is idempotent under duplicates and reordering          | CI                                    |
+| Statistical     | Vitest + fixed seeds                                              | Simulator distributions match configuration (goodness-of-fit within tolerance); long-run MTBF and MTTR match configured values                                                                                 | CI (nightly for long runs)            |
+| Contract        | Vitest + Zod                                                      | Every UNS payload and REST DTO validates against `contracts`; OPC UA address space matches its documented node-id list; generated JSON Schema and OpenAPI are up to date                                       | CI                                    |
+| Integration     | Vitest + Testcontainers                                           | One app against real dependencies: gateway ↔ simulator OPC UA and Modbus; gateway ↔ Mosquitto; MES ↔ TimescaleDB and Mosquitto; SQL migrations up from empty                                                   | CI                                    |
+| Component       | Vitest browser mode                                               | React components with real browser rendering, including chart and terminal screens                                                                                                                             | CI                                    |
+| Golden scenario | Headless simulator + MES pipeline                                 | A committed scenario and seed; MES KPIs, downtime totals and genealogy must equal the simulator's ground truth and the committed snapshot; genealogy and SPC truth in `trace.json` beside the summary (rev. 8) | CI                                    |
+| Resilience      | Docker Compose + test scripts                                     | Broker restart, OPC UA server offline, Modbus device silent, MES restart mid-shift: no data loss, no duplicates, correct recovery                                                                              | CI (nightly)                          |
+| End-to-end      | Playwright                                                        | Full system in Docker Compose: operator codes a downtime, supervisor sees OEE change, order runs to confirmation, serial traced back to lot                                                                    | CI                                    |
+| Performance     | Scripted load (k6 or a Node load script, decided in Phase 9)      | Ingest throughput at 60× simulation speed with all machines; UI update latency                                                                                                                                 | Before release                        |
 
 **Coverage targets (enforced in CI)**
 
-| Package or app | Line coverage | Branch coverage |
-| --- | --- | --- |
-| `oee-core`, `sim-core`, `spc-core`, `trace-core` | 95% | 90% |
-| `contracts`, `plant-config` | 90% | 85% |
-| Apps (`mes-server`, `edge-gateway`, `simulator`, `erp-mock`) | 80% | 70% |
-| `web` | 70% | 60% |
+| Package or app                                               | Line coverage | Branch coverage |
+| ------------------------------------------------------------ | ------------- | --------------- |
+| `oee-core`, `sim-core`, `spc-core`, `trace-core`             | 95%           | 90%             |
+| `contracts`, `plant-config`                                  | 90%           | 85%             |
+| Apps (`mes-server`, `edge-gateway`, `simulator`, `erp-mock`) | 80%           | 70%             |
+| `web`                                                        | 70%           | 60%             |
 
 Coverage is a floor, not a goal: every bug fix starts with a failing test that reproduces it.
 
@@ -473,27 +473,27 @@ Every document has one owner-facing purpose and a fixed update trigger, so nothi
 
 **Documents and when they change**
 
-| Document | Purpose | Updated when |
-| --- | --- | --- |
-| `README.md` | What the project is, quick start, screenshots | A user-visible capability or the start procedure changes |
-| `docs/STATUS.md` | Single page: current phase, done, in progress, next, blockers, health of CI | Every merged pull request |
-| `docs/phases/phase-NN-plan.md` | Phase scope, issue list, acceptance and exit criteria | Phase start; scope changes during the phase |
-| `docs/phases/phase-NN-log.md` | Dated entries: what merged, what was learned, deviations | Every merged pull request in that phase |
-| `docs/phases/phase-NN-report.md` | Outcome against exit criteria, metrics, known issues, carry-overs | Phase close |
-| `docs/learning/phase-NN.md` | Concepts explained, suggested reading order of the code, review questions, hands-on exercise, owner's answers | Phase close (owner adds answers) |
-| `docs/adr/NNNN-title.md` | Architecture decision records in MADR format: context, options, decision, consequences | Any decision not already in this plan |
-| `docs/architecture.md` | Architecture overview (arc42-lite): context, containers, runtime views, deployment | A component, interface or data flow changes |
-| `docs/contracts/uns.md` + generated JSON Schema | Topic tree, payloads, QoS and retain rules | Any UNS change (version bump required) |
-| `docs/contracts/opcua-address-space.md` | Node ids, types, methods, events per machine | Any address-space change |
-| `docs/contracts/modbus-register-map.md` | Register addresses, scaling, units for WSH-01 | Any register change |
-| `docs/api/openapi.json` (generated) | MES and ERP mock REST APIs | Generated in CI; checked for drift |
-| `docs/data-model.md` (generated) | Entity-relationship diagram and table notes | A migration is added |
-| `docs/oee-reference-cases.md` | Hand-calculated OEE cases that also drive tests | OEE logic or definitions change |
-| `docs/simulation-model.md` | Every stochastic model, its parameters and its validation | Simulator behaviour changes |
-| `docs/runbook.md` | Start, stop, reset data, run scenarios, troubleshoot | Operations change |
-| `docs/dependencies.md` | Why each third-party dependency exists | A dependency is added or removed |
-| `docs/glossary.md` | Industrial and project terms | A new term appears in code or docs |
-| `CHANGELOG.md` | Keep a Changelog format, grouped by release | Every pull request ("Unreleased" section) |
+| Document                                        | Purpose                                                                                                       | Updated when                                             |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `README.md`                                     | What the project is, quick start, screenshots                                                                 | A user-visible capability or the start procedure changes |
+| `docs/STATUS.md`                                | Single page: current phase, done, in progress, next, blockers, health of CI                                   | Every merged pull request                                |
+| `docs/phases/phase-NN-plan.md`                  | Phase scope, issue list, acceptance and exit criteria                                                         | Phase start; scope changes during the phase              |
+| `docs/phases/phase-NN-log.md`                   | Dated entries: what merged, what was learned, deviations                                                      | Every merged pull request in that phase                  |
+| `docs/phases/phase-NN-report.md`                | Outcome against exit criteria, metrics, known issues, carry-overs                                             | Phase close                                              |
+| `docs/learning/phase-NN.md`                     | Concepts explained, suggested reading order of the code, review questions, hands-on exercise, owner's answers | Phase close (owner adds answers)                         |
+| `docs/adr/NNNN-title.md`                        | Architecture decision records in MADR format: context, options, decision, consequences                        | Any decision not already in this plan                    |
+| `docs/architecture.md`                          | Architecture overview (arc42-lite): context, containers, runtime views, deployment                            | A component, interface or data flow changes              |
+| `docs/contracts/uns.md` + generated JSON Schema | Topic tree, payloads, QoS and retain rules                                                                    | Any UNS change (version bump required)                   |
+| `docs/contracts/opcua-address-space.md`         | Node ids, types, methods, events per machine                                                                  | Any address-space change                                 |
+| `docs/contracts/modbus-register-map.md`         | Register addresses, scaling, units for WSH-01                                                                 | Any register change                                      |
+| `docs/api/openapi.json` (generated)             | MES and ERP mock REST APIs                                                                                    | Generated in CI; checked for drift                       |
+| `docs/data-model.md` (generated)                | Entity-relationship diagram and table notes                                                                   | A migration is added                                     |
+| `docs/oee-reference-cases.md`                   | Hand-calculated OEE cases that also drive tests                                                               | OEE logic or definitions change                          |
+| `docs/simulation-model.md`                      | Every stochastic model, its parameters and its validation                                                     | Simulator behaviour changes                              |
+| `docs/runbook.md`                               | Start, stop, reset data, run scenarios, troubleshoot                                                          | Operations change                                        |
+| `docs/dependencies.md`                          | Why each third-party dependency exists                                                                        | A dependency is added or removed                         |
+| `docs/glossary.md`                              | Industrial and project terms                                                                                  | A new term appears in code or docs                       |
+| `CHANGELOG.md`                                  | Keep a Changelog format, grouped by release                                                                   | Every pull request ("Unreleased" section)                |
 
 **GitHub tracking**
 
@@ -507,12 +507,19 @@ Every document has one owner-facing purpose and a fixed update trigger, so nothi
 
 ```markdown
 # Status — updated YYYY-MM-DD
+
 ## Current phase: NN – <name> (started YYYY-MM-DD)
+
 ## Exit criteria progress: x / y met
+
 ## Done since last update
+
 ## In progress
+
 ## Next up
+
 ## Blockers and open questions for the owner
+
 ## Health: CI on main, coverage, open bugs
 ```
 
@@ -528,19 +535,19 @@ Every document has one owner-facing purpose and a fixed update trigger, so nothi
 
 Eleven phases build the system bottom-up, following the data from the machine to the report, so each phase stands on tested ground and ends with something the owner can run and demonstrate. Phases are sequential; no calendar dates are set, because the owner's review pace is the main constraint. Size is relative effort: S, M or L.
 
-| Phase | Name | Main deliverables | Exit criteria (all must be demonstrated) | Size |
-| --- | --- | --- | --- | --- |
-| 0 | Foundations | Repo, pnpm + Turborepo, TypeScript and lint config, CI, issue and PR templates, docs skeleton, ADR-0001 (use ADRs), ADR-0002 (stack and versions), ADR-0003 (monorepo layout), Compose with TimescaleDB and Mosquitto | Fresh clone: `pnpm install && pnpm verify` passes; CI green on `main`; `docker compose up` shows healthy database and broker; `docs/STATUS.md` in place | S |
-| 1 | Simulation core (headless) | `sim-core` kernel, random streams, distributions; `plant-config` with schema; machine state machines; buffers, routing, products, shifts, operators, tool wear, leak-test model; materials from an initial stock file and a weekly production schedule file (both replaced by the ERP mock in Phase 7); JSONL event log and ground-truth KPI summary; `docs/simulation-model.md` | Two runs with the same seed are byte-identical; conservation and time-accounting invariants hold over a simulated 5-day week; statistical tests pass | L |
-| 2 | Device layer: OPC UA | One OPC UA server per machine, address space modelled on OPC UA for Machine Tools concepts; live mode pacing and time controls in the control API; `LoadProgram` method; alarm representation decided by spike and ADR (Alarms & Conditions vs state variables); lossless state and event delivery decided by spike and ADR (events vs queued monitored items, section 5); security mode None for now | A generic OPC UA client browses every machine and sees values change at the chosen speed; at 60× a test client receives every state transition and cycle event of a scripted shift, with no sequence gaps; method call switches the program; integration tests green; address-space doc complete | M |
-| 3 | Edge gateway and UNS | Gateway with OPC UA subscriptions and reconnection; Modbus TCP server for WSH-01 in the simulator and poller in the gateway (library confirmed by spike); `contracts` for UNS; normalization; store-and-forward; Mosquitto ACLs and last-will | All machine data visible in the UNS with valid envelopes; broker-outage test shows no loss and no duplicates after dedup; UNS and Modbus docs complete | L |
-| 4 | MES foundation: historian and equipment states | `mes-server` skeleton, migrations, master-data seeding, idempotent ingest, hypertables, state intervals with hour and shift splitting, REST and WebSocket; web plant overview and machine detail with live state and trends | Recorded state intervals for a simulated shift equal the simulator's ground truth; duplicate and reorder tests pass; live overview works at 60× | L |
-| 5 | OEE and downtime | `oee-core` with reference cases; continuous aggregates; reason-code tree; auto-classification rules; operator downtime coding UI; OEE dashboard and downtime Pareto | MES OEE for the golden scenario equals the simulator's ground truth to four decimals, per machine and per shift | L |
-| 6 | Alarms and shifts | Alarm lifecycle (active, acknowledged, cleared, shelved), alarm list UI, alarm KPIs and flood detection; shift calendar, handover notes, shift report | Injected faults appear, are acknowledged and clear with a complete audit trail; shift report totals reconcile with OEE data | M |
-| 7 | Orders, ERP and execution | `erp-mock`; `identity` (users, roles, login, audit) and separate database roles; order import, release and dispatch over the command path (`cmd/load-order` → `LoadOrder`); routing execution per part; operator terminal; confirmations to ERP; the ERP mock serves the lots the simulator stocks (same lot file) | An order runs end to end: ERP → MES → machine program → production → confirmation in ERP, quantities reconciled; role permissions tested | XL (two waves) |
-| 8 | Traceability and quality | Lots from the ERP mock, serial units, cartons by the MES's packing rule, genealogy queries; rework genealogy (the rework loop itself in Phase 7); leak-test measurements and an injectable drift; SPC charts (I-MR, X̄-R) with Nelson run rules; quality holds with ERP notifications; traceability, SPC and holds screens (rev. 8) | Any shipped serial traces back to its blank lot, component lots, machines, operators and test values, and a lot traces forward to all affected cartons; SPC detects an injected drift; a shipped serial is one packed in a closed carton (rev. 8) | XL (three waves) |
-| 9 | Simulation console, scenarios and hardening | Interactive console UI; per-order and line OEE (from Phase 8, rev. 8); scenario playback; resilience suite; OPC UA security mode SignAndEncrypt with certificates; optional Prometheus + Grafana profile; load-test tool chosen and performance test run | Resilience suite passes; performance at 60× meets the targets set in the phase plan; security review checklist complete | M |
-| 10 | Release 1.0 | Documentation pass, architecture views updated, demo scenario and recording, final report, `v1.0.0` tag | All six success criteria in section 1 verified and recorded in the final report | S |
+| Phase | Name                                           | Main deliverables                                                                                                                                                                                                                                                                                                                                                                                     | Exit criteria (all must be demonstrated)                                                                                                                                                                                                                                                         | Size             |
+| ----- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------- |
+| 0     | Foundations                                    | Repo, pnpm + Turborepo, TypeScript and lint config, CI, issue and PR templates, docs skeleton, ADR-0001 (use ADRs), ADR-0002 (stack and versions), ADR-0003 (monorepo layout), Compose with TimescaleDB and Mosquitto                                                                                                                                                                                 | Fresh clone: `pnpm install && pnpm verify` passes; CI green on `main`; `docker compose up` shows healthy database and broker; `docs/STATUS.md` in place                                                                                                                                          | S                |
+| 1     | Simulation core (headless)                     | `sim-core` kernel, random streams, distributions; `plant-config` with schema; machine state machines; buffers, routing, products, shifts, operators, tool wear, leak-test model; materials from an initial stock file and a weekly production schedule file (both replaced by the ERP mock in Phase 7); JSONL event log and ground-truth KPI summary; `docs/simulation-model.md`                      | Two runs with the same seed are byte-identical; conservation and time-accounting invariants hold over a simulated 5-day week; statistical tests pass                                                                                                                                             | L                |
+| 2     | Device layer: OPC UA                           | One OPC UA server per machine, address space modelled on OPC UA for Machine Tools concepts; live mode pacing and time controls in the control API; `LoadProgram` method; alarm representation decided by spike and ADR (Alarms & Conditions vs state variables); lossless state and event delivery decided by spike and ADR (events vs queued monitored items, section 5); security mode None for now | A generic OPC UA client browses every machine and sees values change at the chosen speed; at 60× a test client receives every state transition and cycle event of a scripted shift, with no sequence gaps; method call switches the program; integration tests green; address-space doc complete | M                |
+| 3     | Edge gateway and UNS                           | Gateway with OPC UA subscriptions and reconnection; Modbus TCP server for WSH-01 in the simulator and poller in the gateway (library confirmed by spike); `contracts` for UNS; normalization; store-and-forward; Mosquitto ACLs and last-will                                                                                                                                                         | All machine data visible in the UNS with valid envelopes; broker-outage test shows no loss and no duplicates after dedup; UNS and Modbus docs complete                                                                                                                                           | L                |
+| 4     | MES foundation: historian and equipment states | `mes-server` skeleton, migrations, master-data seeding, idempotent ingest, hypertables, state intervals with hour and shift splitting, REST and WebSocket; web plant overview and machine detail with live state and trends                                                                                                                                                                           | Recorded state intervals for a simulated shift equal the simulator's ground truth; duplicate and reorder tests pass; live overview works at 60×                                                                                                                                                  | L                |
+| 5     | OEE and downtime                               | `oee-core` with reference cases; continuous aggregates; reason-code tree; auto-classification rules; operator downtime coding UI; OEE dashboard and downtime Pareto                                                                                                                                                                                                                                   | MES OEE for the golden scenario equals the simulator's ground truth to four decimals, per machine and per shift                                                                                                                                                                                  | L                |
+| 6     | Alarms and shifts                              | Alarm lifecycle (active, acknowledged, cleared, shelved), alarm list UI, alarm KPIs and flood detection; shift calendar, handover notes, shift report                                                                                                                                                                                                                                                 | Injected faults appear, are acknowledged and clear with a complete audit trail; shift report totals reconcile with OEE data                                                                                                                                                                      | M                |
+| 7     | Orders, ERP and execution                      | `erp-mock`; `identity` (users, roles, login, audit) and separate database roles; order import, release and dispatch over the command path (`cmd/load-order` → `LoadOrder`); routing execution per part; operator terminal; confirmations to ERP; the ERP mock serves the lots the simulator stocks (same lot file)                                                                                    | An order runs end to end: ERP → MES → machine program → production → confirmation in ERP, quantities reconciled; role permissions tested                                                                                                                                                         | XL (two waves)   |
+| 8     | Traceability and quality                       | Lots from the ERP mock, serial units, cartons by the MES's packing rule, genealogy queries; rework genealogy (the rework loop itself in Phase 7); leak-test measurements and an injectable drift; SPC charts (I-MR, X̄-R) with Nelson run rules; quality holds with ERP notifications; traceability, SPC and holds screens (rev. 8)                                                                    | Any shipped serial traces back to its blank lot, component lots, machines, operators and test values, and a lot traces forward to all affected cartons; SPC detects an injected drift; a shipped serial is one packed in a closed carton (rev. 8)                                                | XL (three waves) |
+| 9     | Simulation console, scenarios and hardening    | Interactive console UI; per-order and line OEE (from Phase 8, rev. 8); scenario playback; resilience suite; OPC UA security mode SignAndEncrypt with certificates; optional Prometheus + Grafana profile; load-test tool chosen and performance test run                                                                                                                                              | Resilience suite passes; performance at 60× meets the targets set in the phase plan; security review checklist complete                                                                                                                                                                          | M                |
+| 10    | Release 1.0                                    | Documentation pass, architecture views updated, demo scenario and recording, final report, `v1.0.0` tag                                                                                                                                                                                                                                                                                               | All six success criteria in section 1 verified and recorded in the final report                                                                                                                                                                                                                  | S                |
 
 The golden scenario grows phase by phase: from simulator-only output in Phase 1 to full end-to-end reconciliation (states, OEE, orders, genealogy) by Phase 8.
 
@@ -548,21 +555,21 @@ The golden scenario grows phase by phase: from simulator-only output in Phase 1 
 
 The biggest risk is not technical: it is the scope outgrowing the owner's review capacity, so the plan limits task size, puts an independent review on every change and requires the owner's approval at every phase close. Technical risks are known and each has a planned response.
 
-| Risk | Likelihood | Impact | Response |
-| --- | --- | --- | --- |
-| Owner understanding: code is produced and merged faster than the owner follows it | High | Medium | Task size limit (section 2); independent review agent per PR (ADR-0011); at most two open pull requests; phase reports, owner-approved realism or demo checks at every phase close; optional learning notes |
-| Realism drift: simulator behaviour is plausible but not validated | Medium | Medium | Every model documented with parameters and validated statistically; owner checks behaviour against his factory experience at each Phase 1 review |
-| node-opcua feature gaps (for example Alarms & Conditions details or companion nodesets) | Medium | Medium | Spike in Phase 2 before committing; fallback to state variables recorded in an ADR |
-| Modbus library limitations | Low | Low | Spike in Phase 3; the washer is a single device, so a swap is cheap |
-| Tooling churn: TypeScript 7 and typescript-eslint support, Drizzle 1.0, Node.js 27 | High | Low | Versions pinned; upgrades only as separate pull requests with ADRs; Renovate surfaces them |
-| Golden snapshots updated carelessly, hiding regressions | Medium | High | Snapshot updates require a written justification in the pull request and owner approval |
-| Local machine resources: many containers at 60× speed | Medium | Low | Speed limits configurable; Compose profiles keep optional services off by default |
-| Continuity between Claude sessions | High | Medium | Repository docs are the memory: session protocol in section 2 starts and ends with `docs/STATUS.md` |
-| A command executed twice (a retried method call, a late acceptance, a re-dispatch) | Medium | High | Command id dedup on the device, device-side expiry and epoch checks, failure declared only after the last expiry, exactly-once asserted per order (Phase 7, ADR-0029) |
-| The MES's database role can weaken its own audit | Medium | Medium | Owner and application roles separated in Phase 7; the application role owns no table; the continuous aggregates have their own owner role (ADR-0027) |
-| SPC signals, cartons or a hold's scope judged on partial data | Medium | High | Signals final and cartons placed only below the machine's final-through; withdrawals recorded; shuffled golden reconciliations (Phase 8, ADR-0032, ADR-0034) |
-| Serials repeat across simulator runs (the part counter restarts) | High | Low | Units keyed (device epoch, part id); a `serial-reused` incident; lookups list every unit (Phase 8, ADR-0034) |
-| No CI while GitHub Actions is unavailable | High | Medium | Every CI job's local equivalent on each final commit, recorded per pull request (Phases 6 and 7) |
+| Risk                                                                                    | Likelihood | Impact | Response                                                                                                                                                                                                    |
+| --------------------------------------------------------------------------------------- | ---------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Owner understanding: code is produced and merged faster than the owner follows it       | High       | Medium | Task size limit (section 2); independent review agent per PR (ADR-0011); at most two open pull requests; phase reports, owner-approved realism or demo checks at every phase close; optional learning notes |
+| Realism drift: simulator behaviour is plausible but not validated                       | Medium     | Medium | Every model documented with parameters and validated statistically; owner checks behaviour against his factory experience at each Phase 1 review                                                            |
+| node-opcua feature gaps (for example Alarms & Conditions details or companion nodesets) | Medium     | Medium | Spike in Phase 2 before committing; fallback to state variables recorded in an ADR                                                                                                                          |
+| Modbus library limitations                                                              | Low        | Low    | Spike in Phase 3; the washer is a single device, so a swap is cheap                                                                                                                                         |
+| Tooling churn: TypeScript 7 and typescript-eslint support, Drizzle 1.0, Node.js 27      | High       | Low    | Versions pinned; upgrades only as separate pull requests with ADRs; Renovate surfaces them                                                                                                                  |
+| Golden snapshots updated carelessly, hiding regressions                                 | Medium     | High   | Snapshot updates require a written justification in the pull request and owner approval                                                                                                                     |
+| Local machine resources: many containers at 60× speed                                   | Medium     | Low    | Speed limits configurable; Compose profiles keep optional services off by default                                                                                                                           |
+| Continuity between Claude sessions                                                      | High       | Medium | Repository docs are the memory: session protocol in section 2 starts and ends with `docs/STATUS.md`                                                                                                         |
+| A command executed twice (a retried method call, a late acceptance, a re-dispatch)      | Medium     | High   | Command id dedup on the device, device-side expiry and epoch checks, failure declared only after the last expiry, exactly-once asserted per order (Phase 7, ADR-0029)                                       |
+| The MES's database role can weaken its own audit                                        | Medium     | Medium | Owner and application roles separated in Phase 7; the application role owns no table; the continuous aggregates have their own owner role (ADR-0027)                                                        |
+| SPC signals, cartons or a hold's scope judged on partial data                           | Medium     | High   | Signals final and cartons placed only below the machine's final-through; withdrawals recorded; shuffled golden reconciliations (Phase 8, ADR-0032, ADR-0034)                                                |
+| Serials repeat across simulator runs (the part counter restarts)                        | High       | Low    | Units keyed (device epoch, part id); a `serial-reused` incident; lookups list every unit (Phase 8, ADR-0034)                                                                                                |
+| No CI while GitHub Actions is unavailable                                               | High       | Medium | Every CI job's local equivalent on each final commit, recorded per pull request (Phases 6 and 7)                                                                                                            |
 
 **Constraints**
 
@@ -588,26 +595,26 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 
 ## 13. Glossary and references
 
-| Term | Meaning in this project |
-| --- | --- |
-| ADR | Architecture Decision Record: a short file recording one decision, its options and consequences |
-| Blocked / Starved | A machine that cannot unload because the downstream buffer is full / cannot load because the upstream buffer is empty |
-| Changeover (setup) | Time to switch a machine from one product variant to another |
-| DES | Discrete-event simulation: time jumps from event to event instead of ticking |
-| DMC | Data Matrix Code laser-marked on a part, carrying its serial number |
-| Genealogy | Parent-child links between lots, serials and cartons that make traceability possible |
-| Golden scenario | A fixed seed and scenario whose expected outputs are committed and checked in CI |
-| ISA-95 | Standard for integrating enterprise and control systems; defines the equipment hierarchy and the level model used here |
-| ISO 22400-2 | Standard defining manufacturing KPIs, including the OEE terms used here |
-| MES | Manufacturing Execution System: software that manages and records production on the shop floor |
-| Micro-stop | A `Stopped` episode shorter than the configured threshold; counted as performance loss, not availability loss. Breakdowns (`Down`) are never micro-stops |
-| MQTT | Lightweight publish/subscribe protocol; QoS 1 means at-least-once delivery |
-| OEE | Overall Equipment Effectiveness = Availability × Performance × Quality |
-| OPC UA | Industrial communication standard with a typed information model, subscriptions, methods and security |
-| Modbus TCP | Older, register-based industrial protocol with no built-in semantics |
-| SPC | Statistical Process Control: control charts and run rules that detect process drift |
-| Store-and-forward | Buffering data locally while the network is down and sending it later in order |
-| UNS | Unified Namespace: one shared MQTT topic tree, organized by the plant hierarchy, as the single hub of shop-floor data |
+| Term               | Meaning in this project                                                                                                                                  |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ADR                | Architecture Decision Record: a short file recording one decision, its options and consequences                                                          |
+| Blocked / Starved  | A machine that cannot unload because the downstream buffer is full / cannot load because the upstream buffer is empty                                    |
+| Changeover (setup) | Time to switch a machine from one product variant to another                                                                                             |
+| DES                | Discrete-event simulation: time jumps from event to event instead of ticking                                                                             |
+| DMC                | Data Matrix Code laser-marked on a part, carrying its serial number                                                                                      |
+| Genealogy          | Parent-child links between lots, serials and cartons that make traceability possible                                                                     |
+| Golden scenario    | A fixed seed and scenario whose expected outputs are committed and checked in CI                                                                         |
+| ISA-95             | Standard for integrating enterprise and control systems; defines the equipment hierarchy and the level model used here                                   |
+| ISO 22400-2        | Standard defining manufacturing KPIs, including the OEE terms used here                                                                                  |
+| MES                | Manufacturing Execution System: software that manages and records production on the shop floor                                                           |
+| Micro-stop         | A `Stopped` episode shorter than the configured threshold; counted as performance loss, not availability loss. Breakdowns (`Down`) are never micro-stops |
+| MQTT               | Lightweight publish/subscribe protocol; QoS 1 means at-least-once delivery                                                                               |
+| OEE                | Overall Equipment Effectiveness = Availability × Performance × Quality                                                                                   |
+| OPC UA             | Industrial communication standard with a typed information model, subscriptions, methods and security                                                    |
+| Modbus TCP         | Older, register-based industrial protocol with no built-in semantics                                                                                     |
+| SPC                | Statistical Process Control: control charts and run rules that detect process drift                                                                      |
+| Store-and-forward  | Buffering data locally while the network is down and sending it later in order                                                                           |
+| UNS                | Unified Namespace: one shared MQTT topic tree, organized by the plant hierarchy, as the single hub of shop-floor data                                    |
 
 **References**
 

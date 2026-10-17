@@ -18,7 +18,8 @@ export interface TraceFact {
   /** Undefined when the fact didn't carry the field (UNS 1.4: absent, `[]` and a value differ). */
   readonly lots?: readonly LotRef[];
   readonly operator?: string | null;
-  readonly measurement: StoredMeasurement | null;
+  /** Null or absent when the cycle measured nothing. */
+  readonly measurement?: StoredMeasurement | null;
 }
 
 /** An operation record of a unit as the execution module has it. */

@@ -17,7 +17,7 @@ import { OPCUA_MACHINES } from '@shopfloor/contracts';
 import { expandErpDataset, type FeedEntry } from '@shopfloor/contracts/erp-api';
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
-import { TEST_PASSWORDS, freePort, startBroker } from '@shopfloor/test-kit/broker';
+import { TEST_PASSWORDS, startBroker } from '@shopfloor/test-kit/broker';
 import {
   TcpProxy,
   opcuaProxies,
@@ -47,14 +47,13 @@ import {
 } from './modules/orders/index.ts';
 import { startDatabase } from './testing.ts';
 
-const SIM = { opcuaOffset: 3700, modbusPort: 8720, controlPort: 8500 };
-const PROXY_OFFSET = 3750;
+// The simulator's ports, the OPC UA proxies' block and the proxies' ports are chosen at runtime
+// (#212), the broker's by Docker, the gateway's HTTP port per start.
+const SIM_ENV = { SIM_PRODUCTION: 'orders' };
 const DEADLINE_MS = 1_500;
 
-const BROKER_PORT = await freePort();
-const GATEWAY_MQTT = await freePort();
-const INGEST_MQTT = await freePort();
-const GATEWAY_HTTP = await freePort();
+/** The broker's host port, as Docker mapped it (the broker is never restarted here). */
+let brokerPort = 0;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -114,7 +113,7 @@ let ingest: Ingest;
 let masterData: MasterData;
 let publisher: MqttCommandPublisher;
 let orders: Orders;
-let opcua: Map<string, TcpProxy>;
+let opcua = new Map<string, TcpProxy>();
 let brokerProxy: TcpProxy;
 let ingestProxy: TcpProxy;
 const erp = new TestErp();
@@ -127,21 +126,20 @@ let listener: MqttClient;
 const deliveries: { topic: string; payload: string }[] = [];
 
 const gatewayEnv = {
-  MQTT_URL: `mqtt://127.0.0.1:${String(GATEWAY_MQTT)}`,
+  MQTT_URL: '', // the broker proxy's, once it listens
   MQTT_PASSWORD: TEST_PASSWORDS['gw-01'],
   OPCUA_HOST: 'localhost',
-  OPCUA_PORT_OFFSET: String(PROXY_OFFSET),
+  OPCUA_PORT_OFFSET: '', // the OPC UA proxies' block, once chosen
   OPCUA_PKI_DIR: join(dir, 'pki'),
-  MODBUS_PORT: String(SIM.modbusPort),
+  MODBUS_PORT: '', // the simulator's, once started
   BUFFER_PATH: join(dir, 'buffer', 'gateway.db'),
-  HTTP_PORT: String(GATEWAY_HTTP),
   GATEWAY_CALL_DEADLINE_MS: String(DEADLINE_MS),
 };
 
 async function gatewayReady(): Promise<boolean> {
-  const text = await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`);
+  const text = await get(`${gateway.http}/metrics`);
   return (
-    (await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/health/ready`)).includes('ok') &&
+    (await get(`${gateway.http}/health/ready`)).includes('ok') &&
     ['cnc-01', 'cnc-02'].every((m) => text.includes(`gateway_device_connected{machine="${m}"} 1`))
   );
 }
@@ -229,7 +227,7 @@ const proxy = (machine: string): TcpProxy => {
 
 /** A gauge of the gateway's `/metrics`, optionally of one `result` label; NaN when absent. */
 async function gatewayMetric(name: string, result?: string): Promise<number> {
-  const text = await get(`http://127.0.0.1:${String(GATEWAY_HTTP)}/metrics`);
+  const text = await get(`${gateway.http}/metrics`);
   const label = result === undefined ? '' : `\\{result="${result}"\\}`;
   const found = new RegExp(`^${name}${label} (\\S+)$`, 'm').exec(text)?.[1];
   return found === undefined ? Number.NaN : Number(found);
@@ -243,7 +241,7 @@ async function injectResult(message: {
   readonly seq: number;
   readonly value: Record<string, unknown>;
 }): Promise<void> {
-  const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+  const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
     username: 'gw-01',
     password: TEST_PASSWORDS['gw-01'],
     protocolVersion: 5,
@@ -286,14 +284,19 @@ beforeAll(async () => {
     { system: 'test' },
   );
   by = { userId: user.id, username: 'sup', roles: ['supervisor'] };
-  simulator = await startSimulator(SIM, { SIM_PRODUCTION: 'orders' });
-  opcua = await opcuaProxies(OPCUA_MACHINES, PROXY_OFFSET, SIM.opcuaOffset);
-  broker = (await startBroker({ hostPort: BROKER_PORT })).container;
-  brokerProxy = await TcpProxy.start(GATEWAY_MQTT, { host: '127.0.0.1', port: BROKER_PORT });
-  ingestProxy = await TcpProxy.start(INGEST_MQTT, { host: '127.0.0.1', port: BROKER_PORT });
+  simulator = await startSimulator(undefined, SIM_ENV);
+  const block = await opcuaProxies(OPCUA_MACHINES, simulator.opcuaOffset);
+  opcua = block.proxies;
+  broker = (await startBroker()).container;
+  brokerPort = broker.getMappedPort(1883);
+  brokerProxy = await TcpProxy.start(0, { host: '127.0.0.1', port: brokerPort });
+  ingestProxy = await TcpProxy.start(0, { host: '127.0.0.1', port: brokerPort });
+  gatewayEnv.MQTT_URL = `mqtt://127.0.0.1:${String(brokerProxy.port)}`;
+  gatewayEnv.OPCUA_PORT_OFFSET = String(block.offset);
+  gatewayEnv.MODBUS_PORT = String(simulator.modbusPort);
   ingest = new Ingest({
     db,
-    url: `mqtt://127.0.0.1:${String(INGEST_MQTT)}`,
+    url: `mqtt://127.0.0.1:${String(ingestProxy.port)}`,
     username: 'mes',
     password: TEST_PASSWORDS.mes,
     clientId: 'mes-orders-e2e',
@@ -302,7 +305,7 @@ beforeAll(async () => {
   await ingest.start();
   await ingest.waitSubscribed();
   publisher = new MqttCommandPublisher({
-    url: `mqtt://127.0.0.1:${String(BROKER_PORT)}`,
+    url: `mqtt://127.0.0.1:${String(brokerPort)}`,
     username: 'mes',
     password: TEST_PASSWORDS.mes,
     clientId: 'mes-orders-e2e-cmd',
@@ -317,7 +320,7 @@ beforeAll(async () => {
     return epochs.has('cnc-01') && epochs.has('cnc-02');
   });
   await until('the command connection', () => publisher.connected);
-  listener = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+  listener = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
     username: 'mes',
     password: TEST_PASSWORDS.mes,
     protocolVersion: 5,
@@ -329,19 +332,20 @@ beforeAll(async () => {
   await listener.subscribeAsync('orbis/gebze/+/+/+/cmd/#', { qos: 1 });
 }, 240_000);
 
+// Also after a failed beforeAll: whatever was started is stopped, processes above all (#212).
 afterAll(async () => {
-  await listener.endAsync(true).catch(() => undefined);
-  await orders.stop().catch(() => undefined);
-  await publisher.close().catch(() => undefined);
-  await ingest.stop().catch(() => undefined);
-  await gateway.stop('SIGKILL').catch(() => undefined);
-  await brokerProxy.close();
-  await ingestProxy.close();
+  await (listener as MqttClient | undefined)?.endAsync(true).catch(() => undefined);
+  await (orders as Orders | undefined)?.stop().catch(() => undefined);
+  await (publisher as MqttCommandPublisher | undefined)?.close().catch(() => undefined);
+  await (ingest as Ingest | undefined)?.stop().catch(() => undefined);
+  await (gateway as RunningGateway | undefined)?.stop('SIGKILL').catch(() => undefined);
+  await (brokerProxy as TcpProxy | undefined)?.close();
+  await (ingestProxy as TcpProxy | undefined)?.close();
   for (const p of opcua.values()) await p.close();
-  await broker.stop().catch(() => undefined);
-  await simulator.stop();
-  await db.destroy();
-  await container.stop();
+  await (broker as StartedTestContainer | undefined)?.stop().catch(() => undefined);
+  await (simulator as RunningSimulator | undefined)?.stop();
+  await (db as Kysely<Database> | undefined)?.destroy();
+  await (container as StartedTestContainer | undefined)?.stop();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -789,7 +793,7 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
         .limit(1)
         .executeTakeFirst();
       expect(last === undefined || last.value.result === 'unknown').toBe(true);
-      const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(BROKER_PORT)}`, {
+      const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
         username: 'gw-01',
         password: TEST_PASSWORDS['gw-01'],
         protocolVersion: 5,
@@ -913,9 +917,10 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
     await until('confirmed', async () => (await command(sent.commandId)).confirmed, 60_000);
     const before = (await ingest.newestDeviceEpochs()).get('cnc-01') ?? 0;
     pastRuns.push(simulator.events);
+    const ports = simulator.ports;
     await simulator.stop();
     await wait(1_100); // a new run, a new epoch
-    simulator = await startSimulator(SIM, { SIM_PRODUCTION: 'orders' });
+    simulator = await startSimulator(ports, SIM_ENV); // where the gateway left it
     for (const p of opcua.values()) p.cut();
     await until(
       'the new run known',

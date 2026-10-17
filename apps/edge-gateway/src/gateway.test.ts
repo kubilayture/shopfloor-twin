@@ -11,7 +11,7 @@ import { equipmentPaths } from './hierarchy.ts';
 import { buildGatewayHttp } from './http.ts';
 import { TopicSequences } from './identity.ts';
 import { MqttLink, NotConnectedError } from './mqtt-link.ts';
-import { TEST_PASSWORDS, startBroker } from './testing.ts';
+import { TEST_PASSWORDS, startBroker, timed } from './testing.ts';
 
 let broker: { url: string; container: StartedTestContainer };
 let config: PlantConfig;
@@ -19,7 +19,7 @@ const cleanup: (() => Promise<unknown>)[] = [];
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
+async function until(condition: () => boolean, timeoutMs = 30_000): Promise<void> {
   for (const deadline = Date.now() + timeoutMs; !condition();) {
     if (Date.now() > deadline) throw new Error('timed out waiting');
     await wait(20);
@@ -231,9 +231,9 @@ describe('broker session and _sys status (#75)', () => {
     await expect(
       refused.publish({ topic: 't', message: {} as never, retain: false }),
     ).rejects.toBeInstanceOf(NotConnectedError);
-    const started = Date.now();
-    await refused.close();
-    expect(Date.now() - started).toBeLessThan(2_000);
+    // Promptly: within 2 s plus whatever the scheduler lagged meanwhile on a loaded machine (#212).
+    const { elapsedMs, maxLagMs } = await timed(() => refused.close());
+    expect(elapsedMs).toBeLessThan(2_000 + maxLagMs);
   });
 
   it('lists in the ACL exactly the areas of the plant, so `+` never has to match `_sys`', async () => {

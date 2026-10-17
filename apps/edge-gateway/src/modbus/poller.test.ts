@@ -412,9 +412,22 @@ describe('Modbus poller against a register map in memory (#77)', () => {
   });
 });
 
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Polls a condition with a generous deadline (#212); the error names what it waited for. */
+async function until(what: string, condition: () => boolean, timeoutMs = 60_000): Promise<void> {
+  for (const deadline = Date.now() + timeoutMs; !condition();) {
+    if (Date.now() > deadline) throw new Error(`timed out after ${String(timeoutMs)} ms: ${what}`);
+    await wait(100);
+  }
+}
+
 describe('Modbus poller against the real simulator (#77)', () => {
-  const PORTS = { opcuaOffset: 3200, modbusPort: 8220, controlPort: 8000 };
-  let simulator: RunningSimulator;
+  // Ports chosen at runtime by `startSimulator` (#212). A Modbus answer may take this long on a
+  // loaded machine before the poll counts as failed: two slow answers in a row must not look like
+  // the silence the test injects.
+  const MODBUS_TIMEOUT_MS = 2_000;
+  let simulator: RunningSimulator | undefined;
   let washerTables: ReturnType<typeof modbusTables>;
 
   beforeAll(async () => {
@@ -426,14 +439,16 @@ describe('Modbus poller against the real simulator (#77)', () => {
       failureCodes: failures?.failureModes.map((m) => m.code) ?? [],
       minorStopCauses: failures?.minorStops.causes ?? [],
     });
-    simulator = await startSimulator(PORTS);
-  }, 120_000);
+    simulator = await startSimulator();
+  }, 180_000);
 
   afterAll(async () => {
-    await simulator.stop();
+    await simulator?.stop();
   });
 
   it('publishes every washer fact of the run, including those during a silence, in order', async () => {
+    const sim = simulator;
+    if (!sim) throw new Error('no simulator');
     const published: UnsPublication[] = [];
     const incidents: IncidentInput[] = [];
     const poller = new ModbusPoller({
@@ -442,7 +457,7 @@ describe('Modbus poller against the real simulator (#77)', () => {
       tables: washerTables,
       scaling: { bath: 0.1, conveyor: 0.01 },
       alarmSeverity: 700,
-      connect: () => connectModbus('127.0.0.1', PORTS.modbusPort, 300),
+      connect: () => connectModbus('127.0.0.1', sim.modbusPort, MODBUS_TIMEOUT_MS),
       publisher: {
         publish: (p) => {
           published.push(p);
@@ -454,23 +469,44 @@ describe('Modbus poller against the real simulator (#77)', () => {
       pollMs: 200,
       silentAfter: 2,
     });
+    const factsSoFar = () =>
+      sim.events.filter(
+        (e) =>
+          e.machineId === 'wsh-01' &&
+          (e.type === 'state' || e.type === 'cycle-complete' || e.type === 'alarm'),
+      );
+    const devicePublished = () => published.filter((p) => p.message.scope === 'device').length;
+    const reported = (type: string) => incidents.some((i) => i.type === type);
+    // Each step waits for what it needs (#212), not for a fixed time: facts before, during and
+    // after the silence, the silence seen and its end seen, every fact polled after the pause.
     poller.start();
-    await new Promise((r) => setTimeout(r, 1_000));
-    await simulator.post('/api/v1/resume');
-    await new Promise((r) => setTimeout(r, 8_000));
-    await simulator.post('/api/v1/faults/modbus', { silent: true });
-    await new Promise((r) => setTimeout(r, 3_000));
-    await simulator.post('/api/v1/faults/modbus', { silent: false });
-    await new Promise((r) => setTimeout(r, 8_000));
-    await simulator.post('/api/v1/pause');
-    await new Promise((r) => setTimeout(r, 1_500));
-    await poller.stop();
+    try {
+      await until('first contact', () => poller.polls >= 1);
+      await sim.post('/api/v1/resume');
+      await until('washer facts before the silence', () => factsSoFar().length >= 6);
+      const beforeSilence = factsSoFar().length;
+      await sim.post('/api/v1/faults/modbus', { silent: true });
+      await until('the silence reported', () => reported('device-silent'));
+      await until(
+        'washer facts during the silence',
+        () => factsSoFar().length >= beforeSilence + 2,
+      );
+      await sim.post('/api/v1/faults/modbus', { silent: false });
+      await until('the recovery reported', () => reported('device-recovered'));
+      const afterSilence = factsSoFar().length;
+      await until('washer facts after the silence', () => factsSoFar().length >= afterSilence + 6);
+      await sim.post('/api/v1/pause');
+      // Paused, no fact is added; the event stream and the poller catch up. Seen equal twice, a
+      // few polls apart, so neither side was still behind.
+      for (let check = 0; check < 2; check++) {
+        await until('every fact polled', () => devicePublished() === factsSoFar().length, 30_000);
+        await wait(1_000);
+      }
+    } finally {
+      await poller.stop();
+    }
 
-    const washerFacts = simulator.events.filter(
-      (e) =>
-        e.machineId === 'wsh-01' &&
-        (e.type === 'state' || e.type === 'cycle-complete' || e.type === 'alarm'),
-    );
+    const washerFacts = factsSoFar();
     const device = published.filter((p) => p.message.scope === 'device').map((p) => p.message);
     expect(washerFacts.length).toBeGreaterThan(10);
     expect(device.map((m) => m.sourceTime)).toEqual(washerFacts.map((e) => e.at));
@@ -510,17 +546,25 @@ describe('Modbus poller against the real simulator (#77)', () => {
       ]),
     );
     // Alarm snapshots (#141) on first contact and after the silence; each consistent with the
-    // facts up to its asOfSeq (no alarm was active at either).
+    // facts up to its asOfSeq. The run starts without alarms; where the silence falls in the run
+    // depends on the machine's speed (#212), so the second one is checked against a replay of
+    // the facts up to it rather than against a fixed list.
     const alarmSnapshots = published
       .map((p) => p.message)
       .filter((m): m is AlarmSnapshot => m.schema === 'uns.alarm-snapshot/1');
     const firstSeq = device[0]?.seq ?? 0;
-    expect(alarmSnapshots.map((m) => [m.seq, m.value.active])).toEqual([
-      [1, []],
-      [2, []],
-    ]);
+    expect(alarmSnapshots.map((m) => m.seq)).toEqual([1, 2]);
     expect(alarmSnapshots[0]?.asOfSeq).toBe(firstSeq - 1);
     expect(alarmSnapshots[1]?.asOfSeq).toBeGreaterThanOrEqual(firstSeq);
     expect(alarmSnapshots[1]?.asOfSeq).toBeLessThanOrEqual(device.at(-1)?.seq ?? 0);
-  }, 120_000);
+    for (const snapshot of alarmSnapshots) {
+      const active = new Set<string>();
+      for (const event of washerFacts.slice(0, snapshot.asOfSeq - firstSeq + 1)) {
+        if (event.type !== 'alarm') continue;
+        if (event.transition === 'active') active.add(String(event.code));
+        else active.delete(String(event.code));
+      }
+      expect(snapshot.value.active, `at ${String(snapshot.asOfSeq)}`).toEqual([...active].sort());
+    }
+  }, 240_000);
 });

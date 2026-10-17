@@ -8,6 +8,8 @@
  * on final data, and scrap coding (version, reason tree, audit).
  */
 import {
+  confirmationKey,
+  confirmationRequestSchema,
   statusKey,
   expandErpDataset,
   type FeedEntry,
@@ -472,6 +474,11 @@ describe('execution: units, completion and confirmations (#175)', () => {
     expect(h.erp.posts.find((p) => p.key === statusKey('X-1', 1, 'completed'))?.body).toMatchObject(
       { short: true },
     );
+    // Every body is one the ERP accepts, under the key built from it.
+    for (const post of h.erp.posts.filter((p) => p.kind === 'confirmation')) {
+      const body = confirmationRequestSchema.parse(post.body);
+      expect(post.key).toBe(confirmationKey(body.orderNumber, body.operation, body.confirmation));
+    }
     // The order's execution: WIP empty, completed at the packing.
     const execution = await h.execution.orderExecution('X-1');
     expect(execution?.units).toEqual({ total: 2, wip: 0, packed: 1, scrapped: 1, lost: 0 });

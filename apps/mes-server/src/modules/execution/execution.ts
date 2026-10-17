@@ -118,7 +118,7 @@ export interface ExecutionOptions {
   readonly rework: { readonly test: string; readonly back: string };
   /** The plant clock (the newest epoch's watermark), for the audit's plant time. */
   readonly clock?: () => Date | undefined;
-  /** How often units, orders and confirmations are brought up to date (250 ms); 0: only `tick()`. */
+  /** How often units, orders and confirmations are brought up to date (1 s; a notice brings one forward by 250 ms); 0: only `tick()`. */
   readonly tickMs?: number;
   readonly registry?: Registry;
   readonly log?: ExecutionLog;
@@ -323,7 +323,7 @@ export class Execution implements BlankCounter {
     this.#started = true;
     await this.#serial(() => this.#catchUp());
     await this.tick();
-    const period = this.#options.tickMs ?? 250;
+    const period = this.#options.tickMs ?? 1_000;
     if (period > 0) {
       const timer = setInterval(() => {
         this.tick().catch((error: unknown) => {
@@ -652,7 +652,7 @@ export class Execution implements BlankCounter {
       this.tick().catch((error: unknown) => {
         this.#log.error({ err: error }, 'execution: tick failed');
       });
-    }, 50);
+    }, 250);
     this.#kick.unref();
   }
 
@@ -780,7 +780,10 @@ export class Execution implements BlankCounter {
     const sorted = [...partIds].sort((a, b) => a - b);
     for (let i = 0; i < sorted.length; i += PART_BATCH) {
       const chunk = sorted.slice(i, i + PART_BATCH);
-      const facts = await this.#ingest.cycleFacts({ epoch, partIds: chunk });
+      // A fact of a machine master data doesn't know has no operation: no record can hold it.
+      const facts = (await this.#ingest.cycleFacts({ epoch, partIds: chunk })).filter((f) =>
+        this.#operationOf.has(f.equipment),
+      );
       const byPart = new Map<number, CycleFact[]>();
       for (const fact of facts) byPart.set(fact.partId, [...(byPart.get(fact.partId) ?? []), fact]);
       const built: BuiltUnit[] = [];

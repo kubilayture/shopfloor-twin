@@ -1370,7 +1370,18 @@ export class Orders {
     const readings = new Map<string, { row: CommandRow; reading: CommandReading }>();
     if (rows.length === 0) return { readings, orders: [], commands: [] };
     const ids = rows.map((r) => r.command_id);
-    const [attempts, results, facts, newest] = await Promise.all([
+    // What settles a command without a job (how far each CNC's stream arrived, the newest run) is
+    // read BEFORE the facts and results it is weighed against (#218). Ingest commits a fact and
+    // its stream's cursor in one transaction, so every number this progress counts as received is
+    // visible to the later reads: the acceptance can't be counted as arrived yet missing from
+    // `facts`. Read the other way round, an `accepted` fact stored between the two reads settled
+    // the command `not-accepted` (or `epoch-ended`) with its job on the device.
+    const progress = new Map<string, DeviceProgress>();
+    for (const equipment of new Set(rows.map((r) => r.equipment))) {
+      progress.set(equipment, await this.#ingest.deviceProgress(equipment));
+    }
+    const newest = await this.#ingest.newestDeviceEpochs();
+    const [attempts, results, facts] = await Promise.all([
       trx
         .selectFrom('orders.command_attempt')
         .selectAll()
@@ -1379,12 +1390,7 @@ export class Orders {
         .execute(),
       this.#ingest.commandResults(ids),
       this.#ingest.jobFacts({ commandIds: ids }),
-      this.#ingest.newestDeviceEpochs(),
     ]);
-    const progress = new Map<string, DeviceProgress>();
-    for (const equipment of new Set(rows.map((r) => r.equipment))) {
-      progress.set(equipment, await this.#ingest.deviceProgress(equipment));
-    }
     const now = this.#now();
     const changed: { row: CommandRow; reading: Recorded }[] = [];
     for (const row of rows) {

@@ -57,6 +57,7 @@ import {
   type ErpApi,
   type FeedPage,
   type OrderChange,
+  type OrdersIngest,
   type PostOutcome,
 } from './modules/orders/index.ts';
 import { PushHub, type ApiSources, type PushSocket } from './modules/realtime/index.ts';
@@ -201,6 +202,8 @@ async function harness(
   options: {
     readonly timings?: ConstructorParameters<typeof Orders>[0]['timings'];
     readonly beforePublish?: (commandId: string) => Promise<void>;
+    /** What the orders module sees of ingest, around the real one (to script interleavings). */
+    readonly ingest?: (ingest: Ingest) => OrdersIngest;
   } = {},
 ): Promise<Harness> {
   const db = await freshDatabase(serverUrl, `orders_${name}`);
@@ -235,7 +238,7 @@ async function harness(
   const make = async () => {
     const orders = new Orders({
       db,
-      ingest,
+      ingest: options.ingest ? options.ingest(ingest) : ingest,
       masterData,
       publisher: sink,
       erp,
@@ -1222,6 +1225,98 @@ describe('reading commands safely (#174 review)', () => {
       settled: true,
     });
   });
+
+  // #218: a tick reads the command's results and job facts and its CNC's progress as separate
+  // statements, and the acceptance (the one number missing up to seqAfterExpiry) is stored in the
+  // middle. `during`: before the progress is read, i.e. after the facts were in the order before
+  // #218, which then counted the acceptance as received while the facts lacked it: `not-accepted`,
+  // settled, with the job on the device (fails with that order). `after`: once the progress is
+  // read, so it can't count the fact: nothing is settled wrongly with either order (passes with
+  // both; with the fix the facts read after the progress have it at once). The stream either starts at 1
+  // (`receivedThrough`) or the MES joined it late at 5 (no `receivedThrough`: only the `seen`
+  // range holding `stored_seq` counts, the path of the failing e2e run).
+  it.each([
+    { name: 'during', from: 1, store: 'before' as const },
+    { name: 'during_late', from: 5, store: 'before' as const },
+    { name: 'after', from: 1, store: 'after' as const },
+    { name: 'after_late', from: 5, store: 'after' as const },
+  ])(
+    'never settles not-accepted when the acceptance is stored while a tick reads (#218): $store the progress read, stream first seen at $from',
+    async ({ name, from, store }) => {
+      let race: (() => Promise<void>) | undefined;
+      const h = await harness(`read_race_${name}`, {
+        timings: { maxAttempts: 1 },
+        ingest: (real) =>
+          new Proxy(real, {
+            get(target, property) {
+              if (property === 'deviceProgress') {
+                return async (equipment: string) => {
+                  const pending = race;
+                  race = undefined;
+                  if (store === 'before') await pending?.();
+                  const progress = await target.deviceProgress(equipment);
+                  if (store === 'after') await pending?.();
+                  return progress;
+                };
+              }
+              const value: unknown = Reflect.get(target, property, target);
+              return typeof value === 'function'
+                ? ((value as (...args: unknown[]) => unknown).bind(target) as unknown)
+                : value;
+            },
+          }),
+      });
+      await stateAt(h, 'cnc-01', from);
+      const progress = await h.ingest.deviceProgress('cnc-01');
+      expect(progress.receivedThrough).toBe(from === 1 ? 1 : null);
+      const orderId = `RR-${name}`;
+      const { command } = await dispatched(h, orderId, { quantity: 2 });
+      await h.orders.tick();
+      const [delivery] = h.sink.of(command.commandId);
+      if (!delivery) throw new Error('not published');
+      expect(
+        (
+          await h.db
+            .selectFrom('orders.command_attempt')
+            .select('stored_seq')
+            .where('command_id', '=', command.commandId)
+            .executeTakeFirst()
+        )?.stored_seq,
+      ).toBe(from);
+      // The device accepted it at from + 1 (that fact held on the way); the gateway's settle step
+      // read the device's sequence after the expiry: from + 1.
+      const accepted = from + 1;
+      await result(h, delivery, 'cnc-01', { result: 'unknown', seqAfterExpiry: accepted });
+      await h.orders.tick();
+      expect((await h.orders.commands({ orderId }))[0]).toMatchObject({
+        state: 'unknown',
+        settled: false,
+      });
+      // The held fact arrives in the middle of the next tick's reads.
+      race = () => job(h, delivery.value, 'cnc-01', accepted, 'accepted');
+      await h.orders.tick();
+      expect(race).toBeUndefined();
+      if (store === 'after') {
+        // Stored once the progress was read: whatever the order of the other reads, the progress
+        // can't count it, so this tick settles nothing (an older order reads the facts first and
+        // sees it a tick later). Never `not-accepted`.
+        expect((await h.orders.commands({ orderId }))[0]?.state).toMatch(/^(accepted|unknown)$/);
+        await h.orders.tick();
+      }
+      expect((await h.orders.commands({ orderId }))[0]).toMatchObject({
+        state: 'accepted',
+        acceptedBy: 'fact',
+        acceptedSeq: accepted,
+        settled: true,
+      });
+      await h.orders.tick();
+      expect(await h.orders.incidents()).toEqual([]);
+      expect(await h.orders.order(orderId)).toMatchObject({
+        dispatched: 2,
+        dispatchFailed: false,
+      });
+    },
+  );
 
   it('raises command-publish-refused when the broker refuses a delivery, backs off, fails, and recovers once the ACL is fixed', async () => {
     const h = await harness('refused', { timings: { maxAttempts: 2 } });

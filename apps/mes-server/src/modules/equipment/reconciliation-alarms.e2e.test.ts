@@ -13,5 +13,7 @@ reconciliationSuite(
       oeeBuckets: 48,
       alarmComparisons: 129,
       shifts: { instances: 6, final: 5, compared: 102 },
+      // Measured without extra load (#218): 19 s and 27 s.
+      quietMs: { inOrder: 20_000, shuffled: 27_000 },
     }),
 );

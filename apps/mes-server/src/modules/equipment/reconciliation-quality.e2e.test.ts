@@ -30,16 +30,21 @@ reconciliationSuite(
         features: true,
         // The golden hold cases (#201), opened at the cut (Monday 14:00): the first blank lot in
         // use across it (84 units before, 396 consumed after: one held-material-consumed each),
-        // the first closed carton, the first completed order; its close refused while held.
+        // the first seal-kit lot of a rework pass, the first closed carton, the first completed
+        // order; its close refused while held, and PO-2610-103's by the blank lot's scope alone.
+        // The shuffled replay opens the same holds halfway and reaches the same ends.
         holds: {
           lot: 'BL100-Q01-03',
           lotUnitsAtCut: 84,
           lotUnits: 480,
           consumedAfter: 396,
+          reworkLot: 'SK1-Q01-05',
+          reworkLotUnits: 11,
           carton: 'PO-2610-101-C01',
           cartonUnits: 20,
           order: 'PO-2610-101',
           orderUnits: 40,
+          lotOrder: 'PO-2610-103',
         },
       },
     }),

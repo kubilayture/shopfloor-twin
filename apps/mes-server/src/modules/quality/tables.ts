@@ -170,9 +170,11 @@ export interface HoldTable {
   opened_by: string;
   opened_at: DefaultTimestamp;
   opened_plant_at: NullableTimestamp;
+  opened_epoch: number | null;
   decided_by: string | null;
   decided_at: NullableTimestamp;
   decided_plant_at: NullableTimestamp;
+  decided_epoch: number | null;
   decision_reason: string | null;
   transitions: Defaulted<number>;
   version: Defaulted<number>;
@@ -309,9 +311,11 @@ export const QUALITY_COLUMNS = {
     'opened_by',
     'opened_at',
     'opened_plant_at',
+    'opened_epoch',
     'decided_by',
     'decided_at',
     'decided_plant_at',
+    'decided_epoch',
     'decision_reason',
     'transitions',
     'version',

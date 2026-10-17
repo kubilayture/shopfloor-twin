@@ -96,6 +96,7 @@ export type {
   HoldsOptions,
   HoldsOrders,
 } from './holds.ts';
+export { windowOf } from './quality.ts';
 export type { SignalWindow } from './quality.ts';
 export { QUALITY_COLUMNS } from './tables.ts';
 export type {

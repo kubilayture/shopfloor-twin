@@ -66,18 +66,56 @@ export interface HoldsGenealogy {
   covers(
     facts: readonly { readonly equipment: string; readonly epoch: number; readonly seq: number }[],
   ): boolean;
+  /** The facts genealogy has no record of for their unit (review of PR #222, H1). */
+  unrecorded<
+    F extends {
+      readonly equipment: string;
+      readonly epoch: number;
+      readonly seq: number;
+      readonly partId: number;
+    },
+  >(
+    facts: readonly F[],
+    db?: Kysely<Database>,
+  ): Promise<F[]>;
   finalityAt(at: Date, epochs: readonly number[]): { final: boolean; notFinal: readonly string[] };
   lots(): Promise<readonly { readonly id: string }[]>;
   carton(id: string): Promise<unknown>;
 }
 
-/** What the close guard reads of ingest: the cycle facts of the order's units (ADR-0034). */
+/**
+ * What the close guard reads of ingest: the cycle facts of the order's units (ADR-0034), and the
+ * job facts and cycle facts of its jobs on their CNCs (a unit execution has not built yet).
+ */
 export interface HoldsIngest {
   cycleFacts(
-    options: { readonly epoch: number; readonly partIds: readonly number[] },
+    options: {
+      readonly epoch: number;
+      readonly partIds?: readonly number[];
+      readonly equipment?: string;
+      readonly afterSeq?: number;
+      readonly beforeSeq?: number;
+    },
     db?: Kysely<Database>,
   ): Promise<
-    readonly { readonly equipment: string; readonly epoch: number; readonly seq: number }[]
+    readonly {
+      readonly equipment: string;
+      readonly epoch: number;
+      readonly seq: number;
+      readonly partId: number;
+    }[]
+  >;
+  jobFacts(
+    options: { readonly equipment?: string; readonly epoch?: number },
+    db?: Kysely<Database>,
+  ): Promise<
+    readonly {
+      readonly equipment: string;
+      readonly epoch: number;
+      readonly seq: number;
+      readonly transition: string;
+      readonly commandId: string;
+    }[]
   >;
 }
 
@@ -101,6 +139,17 @@ export interface HoldsOrders {
     }[]
   >;
   order(id: string): Promise<unknown>;
+  /** The order's dispatch commands: where its jobs ran (the guard's unbuilt units). */
+  commands(
+    filter: { readonly orderId?: string },
+    db?: Kysely<Database>,
+  ): Promise<
+    readonly {
+      readonly commandId: string;
+      readonly equipment: string;
+      readonly deviceEpoch: number;
+    }[]
+  >;
 }
 
 export interface HoldsLog {
@@ -129,6 +178,8 @@ export interface HoldsOptions {
   readonly signals?: { signalWindow(id: number): Promise<SignalWindow | undefined> };
   /** The plant clock (the newest epoch's watermark): `opened_plant_at`, decisions, notifications. */
   readonly clock?: () => Date | undefined;
+  /** The newest device epoch, the plant clock's (`opened_epoch`, `decided_epoch`). */
+  readonly epoch?: () => number | undefined;
   /** Wall clock, ms (tests move it). */
   readonly now?: () => number;
   /** How often the scopes are derived again (1 s); 0: only `tick()`. */
@@ -353,12 +404,35 @@ export class Holds {
     for (const u of await genealogy.scope({ kind: 'order', id: orderId }, { db: trx })) {
       units.set(unitKey(u), { epoch: u.epoch, partId: u.partId });
     }
-    const facts: { equipment: string; epoch: number; seq: number }[] = [];
+    // Units neither module has built yet (review of PR #222, H1): every part of a cycle fact on the
+    // order's CNC inside one of its jobs (after its `started`, before the CNC's next `started`), as
+    // execution attributes them (ADR-0031).
+    for (const u of await this.#jobParts(trx, orderId)) units.set(unitKey(u), u);
+    const facts: { equipment: string; epoch: number; seq: number; partId: number }[] = [];
     for (const [epoch, parts] of byEpoch([...units.values()])) {
       for (let i = 0; i < parts.length; i += CHUNK) {
         const found = await ingest.cycleFacts({ epoch, partIds: parts.slice(i, i + CHUNK) }, trx);
-        facts.push(...found.map((f) => ({ equipment: f.equipment, epoch: f.epoch, seq: f.seq })));
+        facts.push(
+          ...found.map((f) => ({
+            equipment: f.equipment,
+            epoch: f.epoch,
+            seq: f.seq,
+            partId: f.partId,
+          })),
+        );
       }
+    }
+    // Every fact must be in genealogy's records of its unit: the watermark alone counts a
+    // written-off number as settled, so a late fact of that gap would pass it unprocessed.
+    const unrecorded = await genealogy.unrecorded(facts, trx);
+    if (unrecorded.length > 0) {
+      return {
+        kind: 'genealogy-pending',
+        message: `order ${orderId}: genealogy has no record yet of ${String(unrecorded.length)} fact(s) of its units (${unrecorded
+          .slice(0, 5)
+          .map((f) => `${f.equipment} #${String(f.seq)} part ${String(f.partId)}`)
+          .join(', ')}); retry shortly`,
+      };
     }
     if (!genealogy.covers(facts)) {
       const behind = new Map<string, number>();
@@ -398,6 +472,51 @@ export class Holds {
       holds: blocking,
       message: `order ${orderId} has units in open quality holds: ${blocking.join(', ')}`,
     };
+  }
+
+  /** Parts of the cycle facts inside the order's jobs on their CNCs (the unit attribution rule). */
+  async #jobParts(
+    trx: Transaction<Database>,
+    orderId: string,
+  ): Promise<{ epoch: number; partId: number }[]> {
+    const { ingest, orders } = this.#options;
+    const commands = await orders.commands({ orderId }, trx);
+    const parts: { epoch: number; partId: number }[] = [];
+    const ranges: {
+      run: { equipment: string; epoch: number };
+      after: number;
+      before: number | undefined;
+    }[] = [];
+    const runs = new Map<string, { equipment: string; epoch: number; ids: Set<string> }>();
+    for (const c of commands) {
+      const key = `${c.equipment}/${String(c.deviceEpoch)}`;
+      const run = runs.get(key) ?? { equipment: c.equipment, epoch: c.deviceEpoch, ids: new Set() };
+      run.ids.add(c.commandId);
+      runs.set(key, run);
+    }
+    for (const run of runs.values()) {
+      const starts = (await ingest.jobFacts({ equipment: run.equipment, epoch: run.epoch }, trx))
+        .filter((j) => j.transition === 'started')
+        .sort((a, b) => a.seq - b.seq);
+      starts.forEach((start, i) => {
+        if (!run.ids.has(start.commandId)) return;
+        const next = starts.slice(i + 1).find((s) => s.commandId !== start.commandId);
+        ranges.push({ run, after: start.seq, before: next?.seq });
+      });
+    }
+    for (const r of ranges) {
+      const found = await ingest.cycleFacts(
+        {
+          epoch: r.run.epoch,
+          equipment: r.run.equipment,
+          afterSeq: r.after,
+          ...(r.before === undefined ? {} : { beforeSeq: r.before }),
+        },
+        trx,
+      );
+      for (const f of found) parts.push({ epoch: f.epoch, partId: f.partId });
+    }
+    return parts;
   }
 
   // ---- reads ----
@@ -627,12 +746,13 @@ export class Holds {
   async open(
     request: { readonly subject: HoldSubject; readonly reason: string; readonly comment?: string },
     context: QualityWriteContext,
-    options: { readonly plantAt?: Date } = {},
+    options: { readonly plantAt?: Date; readonly epoch?: number } = {},
   ): Promise<HoldRecord> {
     this.#reason(request.reason, 'open');
     await this.#known(request.subject);
     const id = randomUUID();
     const plantAt = options.plantAt ?? this.#options.clock?.() ?? null;
+    const epoch = plantAt === null ? null : (options.epoch ?? this.#options.epoch?.() ?? null);
     const by = nameOf(context.by);
     const hold = await this.#serial(() =>
       this.#db.transaction().execute(async (trx) => {
@@ -651,9 +771,11 @@ export class Holds {
             reason: request.reason,
             opened_by: by,
             opened_plant_at: plantAt,
+            opened_epoch: epoch,
             decided_by: null,
             decided_at: null,
             decided_plant_at: null,
+            decided_epoch: null,
             decision_reason: null,
           })
           .execute();
@@ -935,11 +1057,31 @@ export class Holds {
   /** Raises `held-material-consumed` for a lot hold's consumptions after its opening. */
   async #consumptions(hold: Selectable<HoldTable>): Promise<boolean> {
     const consumptions = await this.#options.genealogy.lotConsumptions(hold.subject_id, this.#db);
-    const after = hold.opened_plant_at?.getTime() ?? Number.NEGATIVE_INFINITY;
-    const until =
+    // Positions (epoch, plant time): within the hold's epoch by time, a newer epoch is later and an
+    // older one earlier (review of PR #222, L1); without an epoch, by time alone.
+    const position = (epoch: number | null, at: Date | null, fallback: number) => ({
+      epoch,
+      at: at?.getTime() ?? fallback,
+    });
+    const opened = position(hold.opened_epoch, hold.opened_plant_at, Number.NEGATIVE_INFINITY);
+    const decided =
       hold.state === 'released'
-        ? (hold.decided_plant_at?.getTime() ?? Number.NEGATIVE_INFINITY)
-        : Number.POSITIVE_INFINITY;
+        ? position(hold.decided_epoch, hold.decided_plant_at, Number.NEGATIVE_INFINITY)
+        : { epoch: null, at: Number.POSITIVE_INFINITY };
+    const later = (
+      c: { epoch: number; at: Date },
+      than: { epoch: number | null; at: number },
+    ): boolean =>
+      than.epoch === null || c.epoch === than.epoch
+        ? c.at.getTime() > than.at
+        : c.epoch > than.epoch;
+    const earlier = (
+      c: { epoch: number; at: Date },
+      than: { epoch: number | null; at: number },
+    ): boolean =>
+      than.epoch === null || c.epoch === than.epoch
+        ? c.at.getTime() < than.at
+        : c.epoch < than.epoch;
     const known = new Set(
       (
         await this.#db
@@ -951,8 +1093,8 @@ export class Holds {
     );
     const late = consumptions.filter(
       (c) =>
-        c.at.getTime() > after &&
-        c.at.getTime() < until &&
+        later(c, opened) &&
+        earlier(c, decided) &&
         !known.has(`${c.equipment}/${String(c.epoch)}/${String(c.seq)}`),
     );
     let raised = 0;
@@ -1092,6 +1234,7 @@ export class Holds {
               decided_by: decision.by,
               decided_at: sql<Date>`clock_timestamp()`,
               decided_plant_at: decision.plantAt,
+              decided_epoch: decision.plantAt === null ? null : (this.#options.epoch?.() ?? null),
               decision_reason: decision.reason,
             }),
         transitions: row.transitions + 1,

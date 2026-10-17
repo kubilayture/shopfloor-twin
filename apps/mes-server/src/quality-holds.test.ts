@@ -158,6 +158,7 @@ class Sink implements CommandPublisher {
 class Line {
   readonly #feed: UnsFeed;
   readonly #seqs = new Map<string, number>();
+  epoch = E1;
   #at = PLANT_T0;
 
   constructor(feed: UnsFeed) {
@@ -169,12 +170,13 @@ class Line {
   }
 
   seq(equipment: string): number {
-    return this.#seqs.get(equipment) ?? 0;
+    return this.#seqs.get(`${String(this.epoch)}/${equipment}`) ?? 0;
   }
 
   #next(equipment: string): number {
-    const seq = (this.#seqs.get(equipment) ?? 0) + 1;
-    this.#seqs.set(equipment, seq);
+    const k = `${String(this.epoch)}/${equipment}`;
+    const seq = (this.#seqs.get(k) ?? 0) + 1;
+    this.#seqs.set(k, seq);
     return seq;
   }
 
@@ -184,21 +186,33 @@ class Line {
   }
 
   state(equipment: string, state: 'Idle' | 'Running' = 'Running'): Delivery {
-    return this.#feed.state(equipment, E1, this.#next(equipment), this.#time(), state, null);
+    return this.#feed.state(
+      equipment,
+      this.epoch,
+      this.#next(equipment),
+      this.#time(),
+      state,
+      null,
+    );
   }
 
   cycle(
     equipment: string,
     partId: number,
-    options: { lots?: { material: string; lot: string }[]; measurement?: typeof READING } = {},
+    options: {
+      lots?: { material: string; lot: string }[];
+      measurement?: typeof READING;
+      result?: 'good' | 'rework' | 'scrap';
+      reason?: string;
+    } = {},
   ): Delivery {
     const modbus = equipment.startsWith('wsh');
-    return this.#feed.cycle(equipment, E1, this.#next(equipment), this.#time(), {
+    return this.#feed.cycle(equipment, this.epoch, this.#next(equipment), this.#time(), {
       product: 'VB-100',
       partId,
       serial: equipment.startsWith('cnc') ? `VB-100-${String(partId).padStart(6, '0')}` : '',
-      result: 'good',
-      reason: null,
+      result: options.result ?? 'good',
+      reason: (options.reason ?? null) as never,
       measurement: options.measurement ?? null,
       ...(modbus ? {} : { lots: options.lots ?? [] }),
       ...(equipment === 'asm-01' ? { operator: 'op-ayse' } : {}),
@@ -206,7 +220,7 @@ class Line {
   }
 
   job(transition: 'accepted' | 'started' | 'completed', orderId: string, quantity: number) {
-    return this.#feed.job('cnc-01', E1, this.#next('cnc-01'), this.#time(), {
+    return this.#feed.job('cnc-01', this.epoch, this.#next('cnc-01'), this.#time(), {
       transition,
       commandId: `${orderId}~OP10~1`,
       orderId,
@@ -260,6 +274,9 @@ async function harness(
   name: string,
   options: {
     signals?: { signalWindow(id: number): Promise<SignalWindow | undefined> };
+    wrapExecution?: (e: Execution) => Execution;
+    /** The holds see no plant clock (no fact yet): `opened_plant_at` null. */
+    noClock?: boolean;
   } = {},
 ): Promise<Harness> {
   const db = await freshDatabase(serverUrl, `holds_${name}`);
@@ -323,7 +340,7 @@ async function harness(
   const genealogy = new Genealogy({
     db,
     ingest,
-    execution,
+    execution: options.wrapExecution ? options.wrapExecution(execution) : execution,
     orders,
     masterData,
     erp,
@@ -346,7 +363,8 @@ async function harness(
     orders,
     reasons: plant.quality.holdReasons,
     ...(options.signals ? { signals: options.signals } : {}),
-    clock,
+    clock: options.noClock === true ? () => undefined : clock,
+    epoch: () => line.epoch,
     tickMs: 0,
     beforeCommit: async (trx) => {
       const current = pause;
@@ -705,6 +723,7 @@ describe('quality holds: scope, lifecycle and notifications (#201)', () => {
     const window: SignalWindow = {
       signal: { id: 7, characteristic: 'leak-rate', chart: 'I', rule: 1 } as SignalWindow['signal'],
       after: { epoch: E1, at: PLANT_T0, seq: 1 },
+      from: { epoch: E1, at: PLANT_T0, seq: 2 },
       through: { epoch: E1, at: PLANT_T0 + 1, seq: 3 },
       readings: [
         { epoch: E1, partId: 1, pass: 1, at: PLANT_T0, seq: 2 },
@@ -1039,6 +1058,304 @@ describe('the hold routes (#201)', () => {
     expect([close.statusCode, close.json<{ type: string }>().type]).toEqual([
       409,
       PROBLEM_TYPES.qualityHold,
+    ]);
+  });
+});
+
+const outcome = (promise: Promise<{ status: string }>) =>
+  promise.then(
+    (o) => `closed:${o.status}`,
+    (e: unknown) => `refused:${String((e as { type?: string }).type)}`,
+  );
+
+async function signOffAll(h: Harness, id: string) {
+  for (const op of await h.orders.operations({ orderIds: [id] })) {
+    await h.orders.signOff(id, op.operation, { version: op.version }, h.sup);
+  }
+  const ready = await h.orders.order(id);
+  if (!ready) throw new Error('no order');
+  return ready;
+}
+
+describe('the close guard on late and lost facts (review of PR #222)', () => {
+  it('a late fact of an ended run carrying a held lot is refused by ingest, so it never joins the order (PA)', async () => {
+    const h = await harness('pa');
+    await dispatched(h, 'X-1', 1);
+    const l = h.line;
+    const e1 = [
+      l.job('accepted', 'X-1', 1),
+      l.job('started', 'X-1', 1),
+      ...l.unit(1, { blank: 'B1', kit: 'K1' }),
+      l.job('completed', 'X-1', 1),
+      ...l.settleAll(),
+    ];
+    const hold = await h.holds.open(
+      { subject: { kind: 'lot', id: 'K1' }, reason: 'SUSPECT-LOT' },
+      h.qa,
+    );
+    // A newer run starts first; the older run's facts arrive afterwards.
+    l.epoch = E1 + 1000;
+    await send(h, l.settleAll());
+    await settle(h);
+    await send(h, e1);
+    for (let r = 0; r < 3; r++) {
+      await h.orders.tick();
+      await h.execution.tick();
+    }
+    // The order can't complete from an ended run's late facts (no close reaches the guard), so the
+    // guard is asked directly, as a close would, in a transaction after its lock.
+    const guard = h.holds.closeGuard();
+    const ask = () =>
+      h.db.transaction().execute(async (trx) => {
+        await guard.lock(trx);
+        return (await guard.check(trx, 'X-1'))?.kind;
+      });
+    // Ingest refuses an ended run's facts as stale (ADR-0015): they never become the order's, so
+    // nothing is pending and no hold covers the order, before and after genealogy's rounds.
+    expect(await h.ingest.cycleFacts({ epoch: E1 })).toEqual([]);
+    expect(await ask()).toBeUndefined();
+    await settle(h);
+    expect(await ask()).toBeUndefined();
+    expect((await h.holds.detail(hold.id))?.units).toEqual([]);
+  });
+
+  it('a late fact of a written-off gap carrying a held lot: refused until genealogy records it (PD, H1)', async () => {
+    const h = await harness('pd');
+    await dispatched(h, 'X-1', 1);
+    const l = h.line;
+    await send(
+      h,
+      ['wsh-01', 'asm-01', 'lkt-01', 'pck-01'].map((m) => l.state(m, 'Running')),
+    );
+    await settle(h);
+    const facts = [
+      l.job('accepted', 'X-1', 1),
+      l.job('started', 'X-1', 1),
+      ...l.unit(1, { blank: 'B1', kit: 'K1' }),
+      l.job('completed', 'X-1', 1),
+      ...l.settleAll(),
+    ];
+    const late = facts[4]; // the OP30 cycle at ASM-01 with K1
+    if (!late) throw new Error('late');
+    const hold = await h.holds.open(
+      { subject: { kind: 'lot', id: 'K1' }, reason: 'SUSPECT-LOT' },
+      h.qa,
+    );
+    await send(
+      h,
+      facts.filter((f) => f !== late),
+    );
+    // The gap is written off: ASM-01's settled sequence passes it.
+    await h.ingest.sweep(0);
+    for (let i = 0; i < 3; i++) await settle(h);
+    expect((await h.orders.order('X-1'))?.status).toBe('completed');
+    const ready = await signOffAll(h, 'X-1');
+    expect((await h.holds.hold(hold.id))?.scope.units).toBe(0);
+    // The late fact arrives; the watermark already covers its number, genealogy has no record.
+    await send(h, [late]);
+    const seq = (JSON.parse(late.payload) as { seq: number }).seq;
+    expect(h.genealogy.covers([{ equipment: 'asm-01', epoch: E1, seq }])).toBe(true);
+    expect(await outcome(h.orders.close('X-1', { version: ready.version }, h.sup))).toBe(
+      `refused:${PROBLEM_TYPES.genealogyPending}`,
+    );
+    for (let i = 0; i < 3; i++) await settle(h);
+    expect(await outcome(h.orders.close('X-1', { version: ready.version }, h.sup))).toBe(
+      `refused:${PROBLEM_TYPES.qualityHold}`,
+    );
+    expect((await h.holds.detail(hold.id))?.units.map((u) => u.partId)).toEqual([1]);
+  });
+
+  it('a unit neither execution nor genealogy has built, inside the order’s job: pending (H1)', async () => {
+    const h = await harness('unbuilt');
+    await dispatched(h, 'X-1', 2);
+    const l = h.line;
+    await send(
+      h,
+      ['wsh-01', 'asm-01', 'lkt-01', 'pck-01'].map((m) => l.state(m, 'Running')),
+    );
+    await settle(h);
+    const facts = [
+      l.job('accepted', 'X-1', 2),
+      l.job('started', 'X-1', 2),
+      ...l.unit(1, { blank: 'B1', kit: 'K1' }),
+      ...l.unit(2, { blank: 'B1', kit: 'K2' }),
+      l.job('completed', 'X-1', 2),
+      ...l.settleAll(),
+    ];
+    // Every fact of unit 2 is lost; the gaps are written off and the order completes short.
+    const lost = facts.slice(7, 12);
+    await send(
+      h,
+      facts.filter((f) => !lost.includes(f)),
+    );
+    await h.ingest.sweep(0);
+    for (let i = 0; i < 3; i++) await settle(h);
+    const order = await h.orders.order('X-1');
+    expect([order?.status, order?.short]).toEqual(['completed', true]);
+    const ready = await signOffAll(h, 'X-1');
+    // Unit 2's facts arrive late: no module has built it yet, its numbers are written off.
+    await send(h, lost);
+    expect(await h.execution.orderUnits('X-1')).toEqual([{ epoch: E1, partId: 1 }]);
+    expect(await outcome(h.orders.close('X-1', { version: ready.version }, h.sup))).toBe(
+      `refused:${PROBLEM_TYPES.genealogyPending}`,
+    );
+    for (let i = 0; i < 3; i++) await settle(h);
+    expect(await outcome(h.orders.close('X-1', { version: ready.version }, h.sup))).toBe(
+      'closed:closed',
+    );
+  });
+
+  it('a poison unit of the order keeps the close pending, also with a hold genealogy can’t see (PB)', async () => {
+    let poison = 0;
+    const h = await harness('pb', {
+      wrapExecution: (e) =>
+        ({
+          onUnits: (listener: never) => e.onUnits(listener),
+          processedThrough: () => e.processedThrough(),
+          unitStates: () => e.unitStates(),
+          units: async (query: never) => {
+            const found = await e.units(query);
+            if (poison === 0 || !found.units.some((u) => u.partId === 1)) return found;
+            return {
+              ...found,
+              units: found.units.map((u) =>
+                u.partId === 1 ? { ...u, status: 'bogus' as never } : u,
+              ),
+            };
+          },
+        }) as unknown as Execution,
+    });
+    poison = 1;
+    const order = await completed(h, 'X-1', { blank: 'B1', kit: 'K1' });
+    for (let i = 0; i < 3; i++) await settle(h);
+    await h.holds.open({ subject: { kind: 'lot', id: 'K1' }, reason: 'SUSPECT-LOT' }, h.qa);
+    expect(await outcome(h.orders.close('X-1', { version: order.version }, h.sup))).toBe(
+      `refused:${PROBLEM_TYPES.genealogyPending}`,
+    );
+    poison = 0;
+    for (let i = 0; i < 40; i++) await settle(h);
+    expect(await outcome(h.orders.close('X-1', { version: order.version }, h.sup))).toBe(
+      `refused:${PROBLEM_TYPES.qualityHold}`,
+    );
+  });
+
+  it('a held lot consumed at a rework pass joins the scope and blocks the close (PC, M1)', async () => {
+    const h = await harness('pc');
+    await dispatched(h, 'X-1', 1);
+    const l = h.line;
+    const fail = { characteristic: 'leak-rate', value: 4.5, unit: 'Pa/min', upperLimit: 3.2 };
+    await send(h, [
+      l.job('accepted', 'X-1', 1),
+      l.job('started', 'X-1', 1),
+      l.cycle('cnc-01', 1, { lots: [{ material: 'BLANK-100', lot: 'B1' }] }),
+      l.cycle('wsh-01', 1),
+      l.cycle('asm-01', 1, {
+        lots: [
+          { material: 'SK-1', lot: 'K1' },
+          { material: 'SP-100', lot: 'P1' },
+        ],
+      }),
+      l.cycle('lkt-01', 1, { measurement: fail, result: 'rework', reason: 'LEAK' }),
+      l.cycle('asm-01', 1, {
+        lots: [
+          { material: 'SK-1', lot: 'K2' },
+          { material: 'SP-100', lot: 'P1' },
+        ],
+      }),
+      l.cycle('lkt-01', 1, { measurement: READING }),
+      l.cycle('pck-01', 1),
+      l.job('completed', 'X-1', 1),
+      ...l.settleAll(),
+    ]);
+    await settle(h);
+    await settle(h);
+    expect(
+      (await h.genealogy.lotConsumptions('K2')).map((c) => [c.partId, c.operation, c.pass]),
+    ).toEqual([[1, 'OP30', 2]]);
+    const hold = await h.holds.open(
+      { subject: { kind: 'lot', id: 'K2' }, reason: 'SUSPECT-LOT' },
+      h.qa,
+    );
+    expect(hold.scope.units).toBe(1);
+    expect((await h.orders.order('X-1'))?.status).toBe('completed');
+    const ready = await signOffAll(h, 'X-1');
+    expect(await outcome(h.orders.close('X-1', { version: ready.version }, h.sup))).toBe(
+      `refused:${PROBLEM_TYPES.qualityHold}`,
+    );
+  });
+
+  it('refuses a close with no close guard wired (fail closed, L2)', async () => {
+    const h = await harness('unguarded');
+    const order = await completed(h, 'X-1', { blank: 'B1', kit: 'K1' });
+    const bare = new Orders({
+      db: h.db,
+      ingest: h.ingest,
+      masterData: new MasterData(h.db),
+      tickMs: 0,
+      erpPollMs: 0,
+      erpPostMs: 0,
+    });
+    await bare.start();
+    cleanups.push(() => bare.stop());
+    expect(bare.closeGuarded).toBe(false);
+    await expect(bare.close('X-1', { version: order.version }, h.sup)).rejects.toThrow(
+      /no quality close guard/,
+    );
+    expect(h.orders.closeGuarded).toBe(true);
+  });
+});
+
+describe('held-material-consumed by plant position (review of PR #222)', () => {
+  it('without a plant clock the opening has no time: every consumption counts as after it (L6)', async () => {
+    const h = await harness('noclock', { noClock: true });
+    await dispatched(h, 'X-1', 1);
+    const l = h.line;
+    await send(h, [
+      l.job('accepted', 'X-1', 1),
+      l.job('started', 'X-1', 1),
+      ...l.unit(1, { blank: 'B1', kit: 'K1' }),
+    ]);
+    await settle(h);
+    const hold = await h.holds.open(
+      { subject: { kind: 'lot', id: 'K1' }, reason: 'SUSPECT-LOT' },
+      h.qa,
+    );
+    expect(hold.openedPlantAt).toBeNull();
+    await h.holds.tick();
+    const detail = await h.holds.detail(hold.id);
+    expect(detail?.incidents.map((i) => [i.partId, i.operation])).toEqual([[1, 'OP30']]);
+    await postAll(h);
+    const body = qualityNotificationRequestSchema.parse(
+      h.erp.posts.find((p) => p.key === qualityNotificationKey(hold.id, 'opened', 1))?.body,
+    );
+    expect([body.scopeFinal, body.scopeAsOf]).toEqual([false, body.occurredAt]);
+  });
+
+  it('compares within the hold’s epoch by time; an older epoch is before the opening, a newer one after (L1)', async () => {
+    const h = await harness('epochs');
+    await dispatched(h, 'X-1', 3);
+    const l = h.line;
+    // Opened in epoch E2 at a plant time before every fact of this test.
+    const hold = await h.holds.open(
+      { subject: { kind: 'lot', id: 'K1' }, reason: 'SUSPECT-LOT' },
+      h.qa,
+      { plantAt: new Date(PLANT_T0), epoch: E1 + 500 },
+    );
+    // Epoch E1 (older), later plant times: before the opening by position.
+    await send(h, [
+      l.job('accepted', 'X-1', 3),
+      l.job('started', 'X-1', 3),
+      ...l.unit(1, { blank: 'B1', kit: 'K1' }),
+    ]);
+    await settle(h);
+    expect((await h.holds.detail(hold.id))?.incidents).toEqual([]);
+    // A newer epoch (E1 + 1000): after the opening whatever its time.
+    l.epoch = E1 + 1000;
+    await send(h, [...l.unit(7, { blank: 'B1', kit: 'K1' }), ...l.settleAll()]);
+    await settle(h);
+    const incidents = (await h.holds.detail(hold.id))?.incidents ?? [];
+    expect(incidents.map((i) => [i.epoch, i.partId, i.operation])).toEqual([
+      [E1 + 1000, 7, 'OP30'],
     ]);
   });
 });

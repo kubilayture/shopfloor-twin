@@ -165,6 +165,7 @@ export function holdSuggestionDto(s: HoldSuggestion): HoldSuggestionDto {
     chart: s.window.signal.chart,
     rule: s.window.signal.rule,
     after: s.window.after === null ? null : position(s.window.after),
+    from: position(s.window.from),
     through: position(s.window.through),
     readings: s.window.readings.length,
     units: s.units.map((u) => ({

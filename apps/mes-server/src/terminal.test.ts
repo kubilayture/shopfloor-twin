@@ -263,6 +263,7 @@ async function harness(name: string): Promise<Harness> {
   const erp = new FakeErp();
   const clock = { at: (PLANT_T0 + 3 * 3_600_000) as number | undefined };
   const orders = new Orders({
+    unguardedClose: true,
     db,
     ingest,
     masterData,

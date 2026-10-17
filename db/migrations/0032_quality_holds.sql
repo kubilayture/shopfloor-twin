@@ -8,8 +8,10 @@
 
 -- A hold's current state. `id` is a UUID, unique forever: the ERP's store outlives the MES's
 -- database (ADR-0028 amendment). `opened_plant_at` is the plant clock (the newest epoch's
--- watermark) when it opened (round 1, MEDIUM 9); null when the MES had no plant clock yet, then
--- every consumption of a held lot counts as after the opening. Never deleted.
+-- watermark) when it opened (round 1, MEDIUM 9), with that epoch (`opened_epoch`): a consumption
+-- counts as after the opening when it is in a newer epoch, or in that epoch after that time
+-- (review of PR #222, L1); null when the MES had no plant clock yet, then every consumption of a
+-- held lot counts as after the opening. A decision keeps its epoch likewise. Never deleted.
 CREATE TABLE quality.hold (
   id UUID PRIMARY KEY,
   subject_kind TEXT NOT NULL CHECK (subject_kind IN ('lot', 'serial', 'carton', 'order')),
@@ -19,9 +21,11 @@ CREATE TABLE quality.hold (
   opened_by TEXT NOT NULL,
   opened_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   opened_plant_at TIMESTAMPTZ,
+  opened_epoch BIGINT,
   decided_by TEXT,
   decided_at TIMESTAMPTZ,
   decided_plant_at TIMESTAMPTZ,
+  decided_epoch BIGINT,
   decision_reason TEXT,
   -- Transitions and comments so far (`hold_transition.n` of the latest).
   transitions INTEGER NOT NULL DEFAULT 1 CHECK (transitions >= 1),
@@ -30,7 +34,9 @@ CREATE TABLE quality.hold (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CHECK ((state = 'open') = (decided_by IS NULL)),
   CHECK ((decided_by IS NULL) = (decided_at IS NULL)),
-  CHECK ((decided_by IS NULL) = (decision_reason IS NULL))
+  CHECK ((decided_by IS NULL) = (decision_reason IS NULL)),
+  CHECK (opened_epoch IS NULL OR opened_plant_at IS NOT NULL),
+  CHECK (decided_epoch IS NULL OR decided_plant_at IS NOT NULL)
 );
 CREATE INDEX hold_subject ON quality.hold (subject_kind, subject_id);
 CREATE INDEX hold_state ON quality.hold (state, opened_at);
@@ -124,6 +130,10 @@ ALTER TABLE orders.erp_message_log ALTER COLUMN order_id DROP NOT NULL;
 ALTER TABLE orders.erp_message_log ALTER COLUMN revision DROP NOT NULL;
 ALTER TABLE orders.erp_message_log ADD COLUMN subject_kind TEXT CHECK (subject_kind IN ('hold'));
 ALTER TABLE orders.erp_message_log ADD COLUMN subject_id TEXT;
+-- A subject id only with a subject kind (review of PR #222, L5).
+ALTER TABLE orders.erp_message_log
+  ADD CONSTRAINT erp_message_log_subject
+  CHECK ((subject_kind IS NULL) = (subject_id IS NULL));
 ALTER TABLE orders.erp_message_log
   ADD CONSTRAINT erp_message_log_order_kinds
   CHECK (

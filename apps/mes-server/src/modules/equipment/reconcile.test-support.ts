@@ -76,7 +76,9 @@ import {
   type TraceProjection,
 } from './genealogy-reconcile.test-support.ts';
 import {
+  chooseSubjects,
   expectScriptedHolds,
+  openCartonHold,
   openScriptedHolds,
   type HoldPins,
   type ScriptedHolds,
@@ -1491,6 +1493,7 @@ async function ordersStack(
     orders,
     reasons: plant.quality.holdReasons,
     clock,
+    epoch: () => EPOCH,
     tickMs: 0,
   });
   await holds.start();
@@ -1557,6 +1560,21 @@ function splitAtFirstJob(facts: readonly Delivery[]): {
  * Brings commands, units, completion and confirmations up to date, then the genealogy (units and
  * cartons, #199), then posts the ERP outbox.
  */
+/** The scripted holds' view of a stack (#201). */
+const holdContext = (stack: OrdersStack) => ({
+  holds: stack.holds,
+  orders: stack.orders,
+  quality: stack.quality,
+  supervisor: stack.by,
+});
+
+/** Posts the stack's ERP outbox until nothing is pending. */
+const postAllOf = (stack: OrdersStack) => async () => {
+  while ((await stack.orders.postNow()) > 0) {
+    // until nothing is pending
+  }
+};
+
 async function settleOrders(stack: OrdersStack): Promise<void> {
   for (let round = 0; round < 2; round++) {
     await stack.orders.tick();
@@ -2295,16 +2313,16 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
             );
             if (span.genealogy?.holds !== undefined) {
               // The golden hold cases (#201): scripted holds at the cut's plant time.
+              const atCut = projectionAsOf(genealogyTruth.cutTrace, at);
+              const completed = (await stack.orders.list({ status: ['completed'] })).orders.map(
+                (o) => o.id,
+              );
               scripted = await openScriptedHolds(
-                {
-                  holds: stack.holds,
-                  orders: stack.orders,
-                  quality: stack.quality,
-                  supervisor: stack.by,
-                },
-                genealogyTruth.expected,
-                projectionAsOf(genealogyTruth.cutTrace, at),
+                holdContext(stack),
+                chooseSubjects(genealogyTruth.expected, atCut, at, completed),
                 at,
+                EPOCH,
+                { atCut },
               );
             }
             await send([...rest.filter((d) => deliveryTime(d) >= at), end]);
@@ -2385,25 +2403,15 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
               `${title}: in order, ${String(counts.units)} units, ${String(counts.lots)} lots and ${String(counts.cartons)} cartons equal trace.json; ${String(counts.final)} backward traces final`,
             );
             if (scripted && span.genealogy.holds !== undefined) {
-              const live = stack;
               const pins = await expectScriptedHolds(
-                {
-                  holds: live.holds,
-                  orders: live.orders,
-                  quality: live.quality,
-                  supervisor: live.by,
-                },
+                holdContext(stack),
                 scripted,
                 genealogyTruth.expected,
-                live.erp.posts,
-                async () => {
-                  while ((await live.orders.postNow()) > 0) {
-                    // until nothing is pending
-                  }
-                },
+                stack.erp.posts,
+                postAllOf(stack),
               );
               console.log(
-                `${title}: in order, holds: lot ${pins.lot} ${String(pins.lotUnitsAtCut)} units at the cut, ${String(pins.lotUnits)} in the end (${String(pins.consumedAfter)} held-material-consumed), carton ${pins.carton} ${String(pins.cartonUnits)}, order ${pins.order} ${String(pins.orderUnits)}; close refused while held; 6 notifications once each`,
+                `${title}: in order, holds: lot ${pins.lot} ${String(pins.lotUnitsAtCut)} units at the cut, ${String(pins.lotUnits)} in the end (${String(pins.consumedAfter)} held-material-consumed), rework lot ${pins.reworkLot} ${String(pins.reworkLotUnits)}, carton ${pins.carton} ${String(pins.cartonUnits)}, order ${pins.order} ${String(pins.orderUnits)}; closes refused while held (also ${pins.lotOrder} by the lot hold's scope); 8 notifications once each`,
               );
               expect(pins).toEqual(span.genealogy.holds);
             }
@@ -2435,6 +2443,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const next = random(2026);
         const { db, equipment, ingest, masterData, alarms, send } = await mes();
         let stack: OrdersStack | undefined;
+        let shuffledHolds: ScriptedHolds | undefined;
         if (span.orders === undefined && span.genealogy !== undefined) {
           // Schedule mode with genealogy (#199): shuffled with 10 % duplicates, units and cartons
           // brought up to date every 400 deliveries (judged on partial, reordered data).
@@ -2463,12 +2472,31 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           const mixed = shuffle([...after, ...copies], next);
           // A closed carton never changes its members, also on partial data (#199 review H2).
           const watch = closedCartonWatch(stack.genealogy);
+          const pinned = span.genealogy?.holds;
+          const cut = span.genealogy?.cut;
           for (let i = 0; i < mixed.length; i += 400) {
             await send(mixed.slice(i, i + 400));
             await stack.orders.tick();
             await stack.execution.tick();
             await stack.genealogy.tick();
             await watch.check();
+            if (
+              pinned !== undefined &&
+              cut !== undefined &&
+              shuffledHolds === undefined &&
+              i >= mixed.length / 2
+            ) {
+              // The golden hold cases on reordered data (#201 review L4): the same subjects at the
+              // same plant time, opened halfway; the carton once it exists.
+              shuffledHolds = await openScriptedHolds(
+                holdContext(stack),
+                pinned,
+                Date.parse(cut),
+                EPOCH,
+                { carton: false },
+              );
+            }
+            await stack.holds.tick();
             await stack.orders.postNow();
           }
           await send([end, ...mixed.slice(0, 500)]);
@@ -2525,6 +2553,24 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
             console.log(
               `${title}: shuffled, ${String(counts.units)} units, ${String(counts.lots)} lots and ${String(counts.cartons)} cartons equal trace.json and the in-order run`,
             );
+            const pinned = span.genealogy.holds;
+            if (pinned !== undefined) {
+              // The golden hold cases on reordered data reach the in-order run's ends (#201 L4);
+              // what the lot covered when it opened differs (opened halfway, not at the cut).
+              if (!shuffledHolds) throw new Error('the shuffled holds were never opened');
+              await openCartonHold(holdContext(stack), shuffledHolds, pinned.carton, EPOCH);
+              const pins = await expectScriptedHolds(
+                holdContext(stack),
+                shuffledHolds,
+                traced.expected,
+                stack.erp.posts,
+                postAllOf(stack),
+              );
+              expect({ ...pins, lotUnitsAtCut: pinned.lotUnitsAtCut }).toEqual(pinned);
+              console.log(
+                `${title}: shuffled, the hold cases equal the in-order run's (lot ${pins.lot} ${String(pins.lotUnits)} units, ${String(pins.consumedAfter)} held-material-consumed)`,
+              );
+            }
           }
           await stack.genealogy.stop();
           await stack.execution.stop();

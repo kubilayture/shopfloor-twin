@@ -198,6 +198,11 @@ export interface OrdersOptions {
   readonly mesEpoch?: number;
   readonly registry?: Registry;
   readonly log?: OrdersLog;
+  /**
+   * Closes without a close guard (#201 review, L2): module tests of orders alone. Otherwise a close
+   * with no guard wired is refused (fail closed): the quality holds must be asked.
+   */
+  readonly unguardedClose?: boolean;
   /** Test seam: runs after a delivery's attempt row is committed, before its publish. */
   readonly beforePublish?: (commandId: string) => Promise<void>;
 }
@@ -476,6 +481,11 @@ export class Orders {
    */
   useCloseGuard(guard: CloseGuard): void {
     this.#guard = guard;
+  }
+
+  /** Whether a close guard is wired (the MES asserts it at start: a close fails closed without). */
+  get closeGuarded(): boolean {
+    return this.#guard !== undefined;
   }
 
   /**
@@ -757,6 +767,12 @@ export class Orders {
     const guard = this.#guard;
     const write = async (trx: Transaction<Database>, row: OrderRow, plantAt: Date) => {
       expectStatus(row, ['completed'], 'close');
+      if (!guard && this.#options.unguardedClose !== true) {
+        throw new OrderError(
+          'conflict',
+          `order ${id}: no quality close guard is wired; refusing the close (fail closed)`,
+        );
+      }
       const refusal = guard ? await guard.check(trx, id) : undefined;
       if (refusal) {
         throw new OrderError(

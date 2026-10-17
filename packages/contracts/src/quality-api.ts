@@ -490,6 +490,9 @@ export const holdSuggestionSchema = z
     after: spcPositionSchema
       .nullable()
       .describe('The last in-control point before the episode; null: from its segment’s start'),
+    from: spcPositionSchema.describe(
+      'The window’s first reading: just after `after`, or its segment’s first reading',
+    ),
     through: spcPositionSchema.describe('The episode’s last triggering point'),
     readings: int.describe('Readings (every pass) after `after` through `through`'),
     units: z.array(

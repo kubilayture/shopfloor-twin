@@ -1778,6 +1778,7 @@ Feed entries imported (in) and messages to the ERP (out, an outbox with its Idem
 | Check | `erp_message_log_order_kinds` | `CHECK (((kind = 'quality-notification'::text) OR ((order_id IS NOT NULL) AND (revision IS NOT NULL) AND (subject_kind IS NULL))))` |
 | Check | `erp_message_log_quality_notification` | `CHECK (((kind <> 'quality-notification'::text) OR ((direction = 'out'::text) AND (order_id IS NULL) AND (revision IS NULL) AND (subject_kind = 'hold'::text) AND (subject_id IS NOT NULL))))` |
 | Check | `erp_message_log_status_check` | `CHECK ((status = ANY (ARRAY['imported'::text, 'rejected'::text, 'unchanged'::text, 'cancelled'::text, 'revision-refused'::text, 'pending'::text, 'sent'::text, 'conflict'::text, 'refused'::text])))` |
+| Check | `erp_message_log_subject` | `CHECK (((subject_kind IS NULL) = (subject_id IS NULL)))` |
 | Check | `erp_message_log_subject_kind_check` | `CHECK ((subject_kind = 'hold'::text))` |
 | Index | `erp_message_log_order` | `orders.erp_message_log USING btree (order_id, id)` |
 | Index | `erp_message_log_pending` | `orders.erp_message_log USING btree (id) WHERE (status = 'pending'::text)` |
@@ -2294,9 +2295,11 @@ Quality holds on a lot, serial, carton or order (#201, ADR-0035): id a UUID (uni
 | `opened_by` | `text` | not null |  |
 | `opened_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
 | `opened_plant_at` | `timestamp with time zone` | null |  |
+| `opened_epoch` | `bigint` | null |  |
 | `decided_by` | `text` | null |  |
 | `decided_at` | `timestamp with time zone` | null |  |
 | `decided_plant_at` | `timestamp with time zone` | null |  |
+| `decided_epoch` | `bigint` | null |  |
 | `decision_reason` | `text` | null |  |
 | `transitions` | `integer` | not null | `1` |
 | `version` | `integer` | not null | `1` |
@@ -2308,6 +2311,8 @@ Quality holds on a lot, serial, carton or order (#201, ADR-0035): id a UUID (uni
 | Check | `hold_check` | `CHECK (((state = 'open'::text) = (decided_by IS NULL)))` |
 | Check | `hold_check1` | `CHECK (((decided_by IS NULL) = (decided_at IS NULL)))` |
 | Check | `hold_check2` | `CHECK (((decided_by IS NULL) = (decision_reason IS NULL)))` |
+| Check | `hold_check3` | `CHECK (((opened_epoch IS NULL) OR (opened_plant_at IS NOT NULL)))` |
+| Check | `hold_check4` | `CHECK (((decided_epoch IS NULL) OR (decided_plant_at IS NOT NULL)))` |
 | Check | `hold_state_check` | `CHECK ((state = ANY (ARRAY['open'::text, 'released'::text, 'rejected'::text])))` |
 | Check | `hold_subject_id_check` | `CHECK (((length(subject_id) >= 1) AND (length(subject_id) <= 128)))` |
 | Check | `hold_subject_kind_check` | `CHECK ((subject_kind = ANY (ARRAY['lot'::text, 'serial'::text, 'carton'::text, 'order'::text])))` |

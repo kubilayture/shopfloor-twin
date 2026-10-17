@@ -237,6 +237,7 @@ async function harness(
   const changes: OrderChange[] = [];
   const make = async () => {
     const orders = new Orders({
+      unguardedClose: true,
       db,
       ingest: options.ingest ? options.ingest(ingest) : ingest,
       masterData,

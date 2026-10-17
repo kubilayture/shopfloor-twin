@@ -405,11 +405,14 @@ try {
     reasons: plant.config.quality.holdReasons,
     signals: qualityModule,
     clock: () => equipmentModule.watermarks()[0]?.watermark,
+    epoch: () => equipmentModule.watermarks()[0]?.epoch,
     registry,
     log: log.child({ module: 'quality', part: 'holds' }),
   });
   holds = holdsModule;
   ordersModule.useCloseGuard(holdsModule.closeGuard());
+  // Fail closed (#201 review, L2): a close without the guard is refused; say so at start.
+  if (!ordersModule.closeGuarded) throw new Error('orders: no quality close guard wired');
   await holdsModule.start();
   // The operator terminal (#177): a session that ends (logout, a disabled user, a password
   // change, a new login) ends its crew rows; a crew row that ends closes its operator's activity

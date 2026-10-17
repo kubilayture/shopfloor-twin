@@ -608,6 +608,48 @@ export class Genealogy {
     }));
   }
 
+  /**
+   * The cycle facts among these that genealogy has not recorded for their unit (no `unit_record`
+   * with that fact's key and part): #201's close guard (review of PR #222, H1). The processed
+   * watermark counts a written-off number as settled, so a late fact of a written-off gap is below
+   * it before genealogy has rebuilt its unit; this asks the records themselves. Reads `db` (the
+   * close's transaction).
+   */
+  async unrecorded<
+    F extends {
+      readonly equipment: string;
+      readonly epoch: number;
+      readonly seq: number;
+      readonly partId: number;
+    },
+  >(facts: readonly F[], db: Kysely<Database> = this.#readDb): Promise<F[]> {
+    const recorded = new Set<string>();
+    const parts = new Map<number, Set<number>>();
+    for (const f of facts) {
+      const set = parts.get(f.epoch) ?? new Set<number>();
+      set.add(f.partId);
+      parts.set(f.epoch, set);
+    }
+    for (const [epoch, set] of parts) {
+      const ids = [...set];
+      for (let i = 0; i < ids.length; i += 5_000) {
+        const rows = await db
+          .selectFrom('genealogy.unit_record')
+          .select(['equipment', 'seq', 'part_id'])
+          .where('epoch', '=', epoch)
+          .where('part_id', 'in', ids.slice(i, i + 5_000))
+          .execute();
+        for (const r of rows) {
+          recorded.add(`${r.equipment}/${String(epoch)}/${String(r.seq)}/${String(r.part_id)}`);
+        }
+      }
+    }
+    return facts.filter(
+      (f) =>
+        !recorded.has(`${f.equipment}/${String(f.epoch)}/${String(f.seq)}/${String(f.partId)}`),
+    );
+  }
+
   /** Every consumption of a lot (its `lot-unit` links), in plant-time order. */
   async lotConsumptions(
     lot: string,

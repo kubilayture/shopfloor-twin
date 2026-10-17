@@ -21298,6 +21298,36 @@
                       ],
                       "description": "The last in-control point before the episode; null: from its segment’s start"
                     },
+                    "from": {
+                      "type": "object",
+                      "properties": {
+                        "epoch": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The device epoch of the tester"
+                        },
+                        "at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "Plant time"
+                        },
+                        "seq": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "The fact in the tester’s device sequence"
+                        }
+                      },
+                      "required": [
+                        "epoch",
+                        "at",
+                        "seq"
+                      ],
+                      "additionalProperties": false,
+                      "description": "The window’s first reading: just after `after`, or its segment’s first reading"
+                    },
                     "through": {
                       "type": "object",
                       "properties": {
@@ -21401,6 +21431,7 @@
                     "chart",
                     "rule",
                     "after",
+                    "from",
                     "through",
                     "readings",
                     "units",

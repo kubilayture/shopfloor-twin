@@ -170,6 +170,39 @@ states=$(as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t 'orbis/gebze/+/+/+/st
 [ "$states" = "asm-01 cnc-01 cnc-02 lkt-01 pck-01 wsh-01 " ] || fail "UNS states incomplete: $states"
 echo "ok: UNS has the current state of all six machines"
 
+# Lots and operator on cycle facts (UNS contract 1.4, #197, ADR-0033): a CNC's cycle carries its
+# blank lot and no operator; ASM-01's carries the component lots and the operator at its start.
+# Cycles are not retained, so this waits for live ones (60x: a CNC cycle every few seconds, the
+# first ASM-01 cycle within about a minute of the run's start).
+cycle_with() {
+  # $1 equipment, $2 pattern every one of its cycles is checked for, $3 wait in seconds
+  as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t "orbis/gebze/+/+/$1/events/cycle-complete" \
+    -C 1 -W "$3" 2>/dev/null | grep -E "$2" || true
+}
+cnc_cycle=$(cycle_with cnc-01 '"lots":\[\{"material":"BLANK-[0-9]+","lot":"[^"]+"\}\],"operator":null' 60)
+[ -n "$cnc_cycle" ] || fail "no CNC-01 cycle with its blank lot on the UNS"
+asm_cycle=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  asm_cycle=$(cycle_with asm-01 '"lots":\[\{"material":"[^"]+","lot":"[^"]+"\}(,\{[^]]*\})*\],"operator":"[^"]+"' 15)
+  [ -n "$asm_cycle" ] && break
+done
+[ -n "$asm_cycle" ] || fail "no ASM-01 cycle with component lots and an operator on the UNS"
+# Stored by the MES (contract 1.4 accepted, no rejection) and found through the lot index.
+lot=$(printf '%s' "$asm_cycle" | sed -E 's/.*"lots":\[\{"material":"[^"]+","lot":"([^"]+)".*/\1/')
+printf '%s' "$lot" | grep -Eq '^[A-Za-z0-9-]+$' || fail "unexpected lot id: $lot"
+stored=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  stored=$(as_app -c "select count(*) from ingest.equipment_event where event_type = 'cycle'
+    and payload -> 'value' -> 'lots' @> jsonb_build_array(jsonb_build_object('lot', '$lot'))
+    and payload -> 'value' ->> 'operator' is not null")
+  [ "$stored" -gt 0 ] && break
+  sleep 1
+done
+[ "$stored" -gt 0 ] || fail "the MES stored no ASM-01 cycle of lot $lot with its operator"
+rejected=$(as_app -c "select count(*) from ingest.rejected_message where topic like '%/events/cycle-complete'")
+[ "$rejected" = 0 ] || fail "the MES rejected $rejected cycle messages"
+echo "ok: cycle facts carry lots and operator on the UNS (contract 1.4); the MES stores them (lot $lot)"
+
 # ERP mock (#171): ready, refuses the API without the bearer token, serves the order feed with it.
 # The token goes to curl on stdin, not on its command line.
 erp="http://127.0.0.1:${ERP_HTTP_PORT:-4600}"

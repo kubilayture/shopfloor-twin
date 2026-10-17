@@ -4,6 +4,7 @@ import {
   OPCUA_EVENT_TYPES,
   OPCUA_VARIABLES,
   SHOPFLOOR_NAMESPACE_URI,
+  UNS_CYCLE_LIMITS,
   UNS_TELEMETRY,
   alarmSnapshotTopic,
   alarmTopic,
@@ -21,6 +22,7 @@ import {
   type CycleComplete,
   type EquipmentPath,
   type JobEvent,
+  type LotRef,
   type MachineState,
   type StateCurrent,
   type Telemetry,
@@ -173,6 +175,67 @@ export async function readAlarmSnapshot(
     sourceTime: sequence?.sourceTimestamp?.getTime(),
     active: codes.filter((_code, i) => active[i]?.value.value === true),
   };
+}
+
+/** What a cycle event's `LotMaterials`, `LotIds` and `Operator` become on the UNS (1.4, #197). */
+export interface CycleTrace {
+  /** Absent when the server sent no lot fields (address space before 1.2) or a malformed pair. */
+  readonly lots?: LotRef[];
+  /** Absent when the server sent no `Operator`; an empty one is null. */
+  readonly operator?: string | null;
+  /** Why a field present on the event was left out, if one was. */
+  readonly problems: string[];
+}
+
+/**
+ * Maps the OPC UA lot and operator fields of one cycle event (ADR-0033, UNS contract 1.4). A field
+ * the event lacks arrives as `Null` (probe P1) and stays absent on the UNS; an empty `String[]`
+ * pair is `lots: []` and an empty `Operator` is `operator: null`, so "not reported", "none" and a
+ * value stay apart. A pair the contract can't carry (one array missing, unequal lengths, an entry
+ * that isn't a non-empty string of at most 128 characters, more than 64 lots) is left out with a
+ * problem, never guessed at: the cycle itself is a fact and is published all the same.
+ */
+export function cycleTrace(lotMaterials: unknown, lotIds: unknown, operator: unknown): CycleTrace {
+  const problems: string[] = [];
+  const isId = (value: unknown): value is string =>
+    typeof value === 'string' && value.length > 0 && value.length <= UNS_CYCLE_LIMITS.id;
+  const asList = (value: unknown): unknown[] | undefined =>
+    Array.isArray(value)
+      ? (value as unknown[])
+      : ArrayBuffer.isView(value)
+        ? Array.from(value as unknown as ArrayLike<unknown>)
+        : undefined;
+  let lots: LotRef[] | undefined;
+  const absent = (value: unknown) => value === null || value === undefined;
+  if (!absent(lotMaterials) || !absent(lotIds)) {
+    const materials = asList(lotMaterials);
+    const ids = asList(lotIds);
+    if (!materials || !ids) {
+      problems.push('LotMaterials and LotIds must both be String arrays');
+    } else if (materials.length !== ids.length) {
+      problems.push(
+        `LotMaterials (${String(materials.length)}) and LotIds (${String(ids.length)}) differ in length`,
+      );
+    } else if (materials.length > UNS_CYCLE_LIMITS.lots) {
+      problems.push(`${String(materials.length)} lots, more than ${String(UNS_CYCLE_LIMITS.lots)}`);
+    } else {
+      const pairs = materials.flatMap((material, i) => {
+        const lot = ids[i];
+        return isId(material) && isId(lot) ? [{ material, lot }] : [];
+      });
+      if (pairs.length === materials.length) lots = pairs;
+      else {
+        problems.push('a lot material or id is empty, not a string, or longer than 128 characters');
+      }
+    }
+  }
+  let result: { operator?: string | null } = {};
+  if (!absent(operator)) {
+    if (operator === '') result = { operator: null };
+    else if (isId(operator)) result = { operator };
+    else problems.push('Operator is not a string of at most 128 characters');
+  }
+  return { ...(lots === undefined ? {} : { lots }), ...result, problems };
 }
 
 export interface LostRange {
@@ -647,6 +710,17 @@ export class OpcuaCollector {
       }
       case 'cycleComplete': {
         const measurement = Number(field('MeasurementValue'));
+        // Lots and operator (address space 1.2, UNS contract 1.4, #197).
+        const { problems, ...trace } = cycleTrace(
+          field('LotMaterials'),
+          field('LotIds'),
+          field('Operator'),
+        );
+        if (problems.length > 0) {
+          this.#options.onError?.(
+            new Error(`${this.machineId}: cycle ${String(seq)}: ${problems.join('; ')}`),
+          );
+        }
         const message: CycleComplete = {
           ...common,
           schema: 'uns.events.cycle-complete/1',
@@ -664,6 +738,7 @@ export class OpcuaCollector {
                   unit: UNS_TELEMETRY['leak-rate'].unit,
                   upperLimit: this.#upperLimit,
                 },
+            ...trace,
           },
         };
         this.#send({ topic: cycleTopic(this.#options.path), message, retain: false });

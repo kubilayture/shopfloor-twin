@@ -187,6 +187,23 @@ function storableProblem(message: UnsMessage | CommandResult): string | undefine
   return badString(message);
 }
 
+/**
+ * Lots and operator on a cycle (UNS contract 1.4, #197, ADR-0033), beyond the schema: they are
+ * OPC UA fields (`LotMaterials`, `LotIds`, `Operator`), so a Modbus cycle (WSH-01, a legacy washer)
+ * carries neither; and a cycle that consumed nothing has no start, so no operator (`lots: []`
+ * with an operator is refused). Material and lot pairs may repeat (a BOM can take two of one lot).
+ */
+function cycleTraceProblem(message: CycleComplete): string | undefined {
+  const { lots, operator } = message.value;
+  if (message.source.protocol !== 'opcua' && (lots !== undefined || operator !== undefined)) {
+    return `lots and operator come from OPC UA only, not from a ${message.source.protocol} cycle`;
+  }
+  if (lots?.length === 0 && typeof operator === 'string') {
+    return `operator ${operator} on a cycle that consumed nothing (no cycle start is known)`;
+  }
+  return undefined;
+}
+
 const rejected = (reason: RejectReason, detail: string): Classified => ({
   kind: 'rejected',
   reason,
@@ -255,7 +272,9 @@ export function classify(topic: string, text: string, retained: boolean): Classi
         name: info.name,
         message,
       };
-    case 'uns.events.cycle-complete/1':
+    case 'uns.events.cycle-complete/1': {
+      const problem = cycleTraceProblem(message);
+      if (problem) return rejected('invalid-payload', problem);
       if (retained) return { kind: 'retained', detail: 'retained cycle' };
       return {
         kind: 'event',
@@ -264,6 +283,7 @@ export function classify(topic: string, text: string, retained: boolean): Classi
         eventType: 'cycle',
         message,
       };
+    }
     case 'uns.alarms/1':
       if (unsName(message.value.code) !== info.name) {
         return rejected('topic-mismatch', `alarm ${message.value.code} on alarms/${info.name}`);

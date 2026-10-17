@@ -4,6 +4,7 @@ import {
   type Alarm,
   type CycleComplete,
   type JobEvent,
+  type LotRef,
   type MachineState,
 } from '@shopfloor/contracts';
 import { sql, type Kysely } from 'kysely';
@@ -172,6 +173,13 @@ export interface CycleFact {
   readonly serial: string;
   readonly result: 'good' | 'scrap' | 'rework';
   readonly reason: string | null;
+  /**
+   * The lots consumed for the part on this cycle (UNS contract 1.4, #197): undefined when the
+   * fact didn't report them (WSH-01, a gateway before 1.4), [] when it consumed none.
+   */
+  readonly lots?: readonly LotRef[];
+  /** The station's operator at the cycle's start (1.4): undefined when not reported. */
+  readonly operator?: string | null;
 }
 
 /** Per (equipment, device epoch): what `factSummary` reports. */
@@ -1030,11 +1038,14 @@ export class Ingest {
   /**
    * Cycle facts with their part (#175, the execution module): of one device epoch, by part ids
    * (across machines, `ingest.equipment_event_cycle_part`), or of one equipment by `seq` (a list,
-   * or a window `afterSeq`..`beforeSeq`, both exclusive). By equipment, then `seq`.
+   * or a window `afterSeq`..`beforeSeq`, both exclusive). By equipment, then `seq`. With `lot`
+   * (#197), only the cycles that consumed that lot (`ingest.equipment_event_cycle_lots`): the
+   * forward query of a lot during catch-up.
    */
   async cycleFacts(
     options: {
       readonly epoch: number;
+      readonly lot?: string;
       readonly partIds?: readonly number[];
       readonly equipment?: string;
       readonly seqs?: readonly number[];
@@ -1054,6 +1065,12 @@ export class Ingest {
         ...options.partIds,
       ]);
     }
+    if (options.lot !== undefined) {
+      // The containment form the GIN index `equipment_event_cycle_lots` (jsonb_path_ops) serves.
+      query = query.where(
+        sql<boolean>`payload -> 'value' -> 'lots' @> ${JSON.stringify([{ lot: options.lot }])}::jsonb`,
+      );
+    }
     if (options.equipment !== undefined) query = query.where('equipment', '=', options.equipment);
     if (options.seqs !== undefined) query = query.where('seq', 'in', [...options.seqs]);
     if (options.afterSeq !== undefined) query = query.where('seq', '>', options.afterSeq);
@@ -1071,6 +1088,8 @@ export class Ingest {
         serial: value.serial,
         result: value.result,
         reason: value.reason,
+        ...(value.lots === undefined ? {} : { lots: value.lots }),
+        ...(value.operator === undefined ? {} : { operator: value.operator }),
       };
     });
   }

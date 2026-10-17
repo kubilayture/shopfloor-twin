@@ -66,6 +66,13 @@
  * - `Ingest.cycleFacts({ epoch, partIds?, equipment?, seqs?, afterSeq?, beforeSeq? })`: cycle
  *   facts with their part, by device epoch and part id across machines (an expression index), or
  *   of one equipment by `seq`; `cycleFactCounts()` per (equipment, epoch) for the catch-up.
+ *
+ * For genealogy (#197, UNS contract 1.4, ADR-0033):
+ * - cycle facts carry `lots` and `operator` as reported (absent when not reported, `[]` and null
+ *   as values); `CycleFact` passes them on. Ingest refuses them on a non-OPC UA cycle and an
+ *   operator on a cycle that consumed nothing.
+ * - `Ingest.cycleFacts({ epoch, lot })`: the cycles that consumed a lot, through the GIN index
+ *   `ingest.equipment_event_cycle_lots` (the forward query during catch-up).
  */
 export { INGEST_TOPICS, Ingest, baselineState } from './ingest.ts';
 export { resolveAlarmBaseline } from './alarm-baseline.ts';

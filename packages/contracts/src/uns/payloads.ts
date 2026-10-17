@@ -109,6 +109,17 @@ export const measurementSchema = z.strictObject({
   upperLimit: z.number(),
 });
 
+/** At most this many lots on one cycle, and this long a material, lot or operator id (1.4). */
+export const UNS_CYCLE_LIMITS = { lots: 64, id: 128 } as const;
+
+const traceId = z.string().min(1).max(UNS_CYCLE_LIMITS.id);
+
+/** A lot the machine consumed for the part (contract 1.4, #197, ADR-0033). */
+export const lotRefSchema = z.strictObject({
+  material: traceId.describe('Material code, e.g. BLANK-100'),
+  lot: traceId.describe('Lot id, e.g. BL100-2610-01'),
+});
+
 export const cycleCompleteSchema = envelope(
   'uns.events.cycle-complete',
   z.strictObject({
@@ -118,6 +129,22 @@ export const cycleCompleteSchema = envelope(
     result: z.enum(['good', 'scrap', 'rework']),
     reason: z.string().nullable(),
     measurement: measurementSchema.nullable(),
+    // Added in contract version 1.4 (#197, ADR-0033), optional so that older cycles stay valid.
+    // Absent means "not reported" (WSH-01 on Modbus, a gateway before 1.4); [] and null are
+    // reported values: "consumed nothing here" and "no operator".
+    lots: z
+      .array(lotRefSchema)
+      .max(UNS_CYCLE_LIMITS.lots)
+      .optional()
+      .describe(
+        'The lots the machine consumed for this part on this cycle, in consumption order (1.4); [] when none',
+      ),
+    operator: traceId
+      .nullable()
+      .optional()
+      .describe(
+        "The station's operator when the cycle started (1.4); null where the machine has none or the cycle consumed nothing",
+      ),
   }),
   { ...DEVICE },
 ).meta({ title: 'uns.events.cycle-complete/1', description: 'A completed cycle (not retained)' });
@@ -233,6 +260,7 @@ export type UnsSchemaName = keyof typeof UNS_SCHEMAS;
 export type StateCurrent = z.infer<typeof stateCurrentSchema>;
 export type Telemetry = z.infer<typeof telemetrySchema>;
 export type CycleComplete = z.infer<typeof cycleCompleteSchema>;
+export type LotRef = z.infer<typeof lotRefSchema>;
 export type JobEvent = z.infer<typeof jobEventSchema>;
 export type Alarm = z.infer<typeof alarmSchema>;
 export type AlarmSnapshot = z.infer<typeof alarmSnapshotSchema>;

@@ -9,7 +9,7 @@ import {
   type UnsCommandMessage,
 } from './commands.ts';
 import { generateJsonSchemas } from './json-schema.ts';
-import { UNS_SCHEMAS, parseUnsMessage, type UnsMessage } from './payloads.ts';
+import { UNS_SCHEMAS, parseUnsMessage, type CycleComplete, type UnsMessage } from './payloads.ts';
 import {
   alarmSnapshotTopic,
   alarmTopic,
@@ -172,6 +172,55 @@ describe('UNS payloads (envelope, plan section 5; ADR-0015)', () => {
   it.each(Object.keys(UNS_SCHEMAS))('accepts a valid %s', (name) => {
     const result = parseUnsMessage(SAMPLES[name as keyof typeof SAMPLES]);
     expect(result).toEqual({ ok: true, message: SAMPLES[name as keyof typeof SAMPLES] });
+  });
+
+  it('accepts cycles with and without lots and operator, [] and null kept apart (contract 1.4)', () => {
+    const cycle = SAMPLES['uns.events.cycle-complete/1'] as CycleComplete;
+    const traced = {
+      ...cycle,
+      value: {
+        ...cycle.value,
+        lots: [
+          { material: 'SK-1', lot: 'SK1-2610-01' },
+          { material: 'SK-2', lot: 'SK2-2610-01' },
+        ],
+        operator: 'OP-07',
+      },
+    };
+    // A version 1 cycle (no field) stays valid and gains none.
+    expect(parseUnsMessage(cycle)).toEqual({ ok: true, message: cycle });
+    expect(parseUnsMessage(traced)).toEqual({ ok: true, message: traced });
+    const none = { ...cycle, value: { ...cycle.value, lots: [], operator: null } };
+    const parsed = parseUnsMessage(none);
+    expect(parsed).toEqual({ ok: true, message: none });
+    if (parsed.ok && parsed.message.schema === 'uns.events.cycle-complete/1') {
+      expect(parsed.message.value.lots).toEqual([]);
+      expect(parsed.message.value.operator).toBeNull();
+    }
+    // Either field alone.
+    expect(parseUnsMessage({ ...cycle, value: { ...cycle.value, lots: [] } }).ok).toBe(true);
+    expect(parseUnsMessage({ ...cycle, value: { ...cycle.value, operator: null } }).ok).toBe(true);
+  });
+
+  it.each([
+    ['an empty lot id', { lots: [{ material: 'SK-1', lot: '' }] }, /lot/],
+    ['an empty material', { lots: [{ material: '', lot: 'L-1' }] }, /material/],
+    ['a lot without its material', { lots: [{ lot: 'L-1' }] }, /material/],
+    ['an extra field in a lot', { lots: [{ material: 'SK-1', lot: 'L-1', qty: 1 }] }, /qty/],
+    ['lots that are not an array', { lots: 'L-1' }, /lots/],
+    [
+      'more than 64 lots',
+      { lots: Array.from({ length: 65 }, () => ({ material: 'SK-1', lot: 'L-1' })) },
+      /lots/,
+    ],
+    ['an empty operator (the gateway sends null)', { operator: '' }, /operator/],
+    ['an operator id longer than 128', { operator: 'x'.repeat(129) }, /operator/],
+    ['a numeric operator', { operator: 7 }, /operator/],
+  ])('rejects a cycle with %s (contract 1.4)', (_label, extra, pattern) => {
+    const cycle = SAMPLES['uns.events.cycle-complete/1'] as CycleComplete;
+    const result = parseUnsMessage({ ...cycle, value: { ...cycle.value, ...extra } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(pattern);
   });
 
   it('accepts snapshots with and without a device epoch (contract 1.1)', () => {

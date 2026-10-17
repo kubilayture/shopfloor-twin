@@ -37,6 +37,7 @@ export type { JobTransition, OpcuaMachineId, OpcuaVariable } from './opcua.ts';
 export {
   INCIDENT_TYPES,
   MACHINE_STATES,
+  UNS_CYCLE_LIMITS,
   UNS_SCHEMAS,
   UNS_TELEMETRY,
   alarmSchema,
@@ -44,6 +45,7 @@ export {
   cycleCompleteSchema,
   incidentSchema,
   jobEventSchema,
+  lotRefSchema,
   measurementSchema,
   parseUnsMessage,
   qualitySchema,
@@ -58,6 +60,7 @@ export type {
   CycleComplete,
   Incident,
   JobEvent,
+  LotRef,
   MachineState,
   StateCurrent,
   Status,

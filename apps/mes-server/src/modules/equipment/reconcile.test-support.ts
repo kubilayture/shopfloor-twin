@@ -20,6 +20,7 @@ import { confirmationKey, expandErpDataset, type FeedEntry } from '@shopfloor/co
 import { HOUR, availabilityLoss, oeeFromTotals, sumTotals } from '@shopfloor/oee-core';
 import { UNCODED, idealCycleMs, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import { NO_SHIFT, shiftBuckets, shiftInstances, shiftSegments } from '@shopfloor/shift-calendar';
+import { attachConsumption } from '@shopfloor/trace-core';
 import type { Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -95,6 +96,9 @@ interface SimEvent {
   readonly orderId?: string;
   readonly quantity?: number;
   readonly material?: string;
+  /** Traceability (#196, #197): the lot of a `material-consumed`, the operator of an `operator`. */
+  readonly lotId?: string;
+  readonly operatorId?: string | null;
 }
 
 /** Device facts: every one takes the machine's next sequence number (job facts in orders mode). */
@@ -251,7 +255,10 @@ function unsMessages(run: Run): { facts: Delivery[]; anchors: Delivery[]; end: D
   const anchors = [...paths.keys()].map((id) => feed.snapshot(id, EPOCH, run.start, 'Off'));
   const seqs = new Map<string, number>();
   const facts: Delivery[] = [];
-  for (const event of run.events) {
+  // Lots and operator per cycle (UNS contract 1.4, #197): the machine server's very rule, the
+  // fold `attachConsumption` of trace-core over the event log (ADR-0033).
+  const attached = attachConsumption(run.events);
+  for (const [index, event] of run.events.entries()) {
     const machine = event.machineId;
     if (!machine || !DEVICE_FACTS.includes(event.type)) continue;
     const seq = (seqs.get(machine) ?? 0) + 1;
@@ -270,15 +277,21 @@ function unsMessages(run: Run): { facts: Delivery[]; anchors: Delivery[]; end: D
         }),
       );
     } else if (event.type === 'cycle-complete') {
+      // WSH-01, a legacy washer on Modbus, reads no serial (its register map), and its ring
+      // carries no lots or operator: the gateway sends none of them.
+      const modbus = machine.startsWith('wsh');
+      const attachment = attached[index];
       facts.push(
         feed.cycle(machine, EPOCH, seq, at, {
           product: event.product ?? '',
           partId: event.partId ?? 0,
-          // WSH-01, a legacy washer, reads no serial (its register map): the gateway sends none.
-          serial: machine.startsWith('wsh') ? '' : (event.serial ?? ''),
+          serial: modbus ? '' : (event.serial ?? ''),
           result: event.result ?? 'good',
           reason: event.reason ?? null,
           measurement: event.measurement ?? null,
+          ...(modbus || !attachment
+            ? {}
+            : { lots: attachment.lots, operator: attachment.operator }),
         }),
       );
     } else {
@@ -296,6 +309,108 @@ function unsMessages(run: Run): { facts: Delivery[]; anchors: Delivery[]; end: D
     }
   }
   return { facts, anchors, end: feed.telemetry('wsh-01', run.end, EPOCH) };
+}
+
+/** What a cycle should carry (UNS contract 1.4), derived from the raw events, not `trace-core`. */
+interface ExpectedTrace {
+  readonly lots: { material: string; lot: string }[] | undefined;
+  readonly operator: string | null | undefined;
+}
+
+/**
+ * The lots and operator of every cycle, written out from ADR-0033's rule over the raw event log,
+ * independently of `trace-core`'s `attachConsumption` (which the harness uses to build the
+ * messages, as the machine server does): a part's `material-consumed` events on a machine attach,
+ * in order, to its next `cycle-complete` there; the operator is the machine's latest `operator`
+ * event before the part's first consumption there (none: null); a cycle that consumed nothing has
+ * `[]` and null. WSH-01 (Modbus) reports neither. Also counts the cycles whose machine's operator
+ * changed between that start and the cycle's end, where an end-of-cycle rule would differ.
+ */
+function expectedCycleTraces(run: Run): {
+  cycles: Map<string, ExpectedTrace>;
+  operatorChanged: number;
+} {
+  const operators = new Map<string, string | null>();
+  const pending = new Map<
+    string,
+    { lots: { material: string; lot: string }[]; operator: string | null }
+  >();
+  const cycles = new Map<string, ExpectedTrace>();
+  let operatorChanged = 0;
+  for (const event of run.events) {
+    const machine = event.machineId ?? '';
+    const part = `${machine}/${String(event.partId)}`;
+    if (event.type === 'operator') {
+      operators.set(machine, event.operatorId ?? null);
+    } else if (event.type === 'material-consumed') {
+      let entry = pending.get(part);
+      if (!entry) {
+        entry = { lots: [], operator: operators.get(machine) ?? null };
+        pending.set(part, entry);
+      }
+      entry.lots.push({ material: event.material ?? '', lot: event.lotId ?? '' });
+    } else if (event.type === 'cycle-complete') {
+      const key = `${part}/${String(Date.parse(event.at))}`;
+      const entry = pending.get(part);
+      pending.delete(part);
+      if (machine.startsWith('wsh')) {
+        cycles.set(key, { lots: undefined, operator: undefined });
+        continue;
+      }
+      cycles.set(key, entry ?? { lots: [], operator: null });
+      if (entry && entry.operator !== (operators.get(machine) ?? null)) operatorChanged++;
+    }
+  }
+  return { cycles, operatorChanged };
+}
+
+/**
+ * Lots and operator on the stored cycle facts (UNS contract 1.4, #197): every cycle carries what
+ * `expectedCycleTraces` derives from the event log, and the lot index finds, per lot, exactly the
+ * cycles the event log attaches it to. Returns the lots, the cycles that reported at least one,
+ * those with an operator, and those whose operator changed before the cycle ended.
+ */
+async function expectCycleLots(
+  ingest: Ingest,
+  run: Run,
+): Promise<{
+  lots: number;
+  tracedCycles: number;
+  operatorCycles: number;
+  operatorChanged: number;
+}> {
+  const { cycles: expected, operatorChanged } = expectedCycleTraces(run);
+  const perLot = new Map<string, Set<string>>();
+  for (const [key, trace] of expected) {
+    for (const lot of trace.lots ?? []) {
+      perLot.set(lot.lot, (perLot.get(lot.lot) ?? new Set()).add(key));
+    }
+  }
+  const stored = await ingest.cycleFacts({ epoch: EPOCH });
+  const actual = new Map(
+    stored.map((fact) => [
+      `${fact.equipment}/${String(fact.partId)}/${String(fact.sourceTime.getTime())}`,
+      { lots: fact.lots, operator: fact.operator },
+    ]),
+  );
+  expect(actual.size).toBe(stored.length);
+  expect(actual).toEqual(expected);
+  for (const [lot, cycles] of perLot) {
+    const found = await ingest.cycleFacts({ epoch: EPOCH, lot });
+    expect(
+      new Set(
+        found.map((f) => `${f.equipment}/${String(f.partId)}/${String(f.sourceTime.getTime())}`),
+      ),
+      lot,
+    ).toEqual(cycles);
+  }
+  const traced = [...expected.values()];
+  return {
+    lots: perLot.size,
+    tracedCycles: traced.filter((t) => (t.lots?.length ?? 0) > 0).length,
+    operatorCycles: traced.filter((t) => typeof t.operator === 'string').length,
+    operatorChanged,
+  };
 }
 
 /**
@@ -1872,6 +1987,12 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           `${title}: in order, ${String(alarmed.compared)} alarm comparisons equal the ground truth; ${String(alarmed.final)} KPI buckets final, not final (no fact after them): ${alarmed.open.join(', ') || 'none'}`,
         );
         await checkReports('in order', { db, equipment, ingest, masterData, alarms });
+        const traced = await expectCycleLots(ingest, run);
+        expect(traced.lots).toBeGreaterThan(0);
+        expect(traced.tracedCycles).toBeGreaterThan(0);
+        console.log(
+          `${title}: in order, lots and operator of every cycle equal the event log's (${String(traced.tracedCycles)} cycles with ${String(traced.lots)} lots, ${String(traced.operatorCycles)} with an operator, ${String(traced.operatorChanged)} whose operator changed before the cycle ended)`,
+        );
         if (stack && span.orders) {
           await settleOrders(stack);
           const counts = await expectOrders(stack, ingest, run);
@@ -1941,6 +2062,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           `${title}: shuffled, ${String(alarmed.compared)} alarm comparisons equal the ground truth`,
         );
         await checkReports('shuffled', { db, equipment, ingest, masterData, alarms });
+        await expectCycleLots(ingest, run);
         if (stack && span.orders) {
           await settleOrders(stack);
           expect(await expectOrders(stack, ingest, run)).toEqual(span.orders);

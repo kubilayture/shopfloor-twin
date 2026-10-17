@@ -127,6 +127,46 @@
               "type": "null"
             }
           ]
+        },
+        "lots": {
+          "description": "The lots the machine consumed for this part on this cycle, in consumption order (1.4); [] when none",
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "material": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": "Material code, e.g. BLANK-100"
+              },
+              "lot": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": "Lot id, e.g. BL100-2610-01"
+              }
+            },
+            "required": [
+              "material",
+              "lot"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "operator": {
+          "description": "The station's operator when the cycle started (1.4); null where the machine has none or the cycle consumed nothing",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [

@@ -41,6 +41,8 @@ compose_without MES_BOOTSTRAP_ADMIN_PASSWORD ||
   fail "Compose refused a configuration without the optional MES_BOOTSTRAP_ADMIN_PASSWORD"
 echo "ok: Compose refuses to start without a required secret, not without the bootstrap admin password"
 
+# Rows the MES records from here on belong to this run (rejected cycles below).
+smoke_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 docker compose up -d --wait
 
 timescale=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -Atc \
@@ -169,6 +171,42 @@ echo "ok: gateway ready ($ready)"
 states=$(as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t 'orbis/gebze/+/+/+/state/current' -v -C 6 -W 30 | cut -d/ -f5 | sort -u | tr '\n' ' ')
 [ "$states" = "asm-01 cnc-01 cnc-02 lkt-01 pck-01 wsh-01 " ] || fail "UNS states incomplete: $states"
 echo "ok: UNS has the current state of all six machines"
+
+# Lots and operator on cycle facts (UNS contract 1.4, #197, ADR-0033), as the MES stored them: the
+# latest CNC cycle carries its lots and a null operator; an ASM-01 cycle carries component lots
+# and an operator, and the lot index finds it. The simulator starts producing with the stack, so
+# by now (or within the short retry) both machines have completed cycles; no live subscription.
+cnc_trace=""
+asm_lot=""
+for _ in $(seq 1 45); do
+  cnc_trace=$(as_app -c "select jsonb_typeof(payload -> 'value' -> 'lots') || ':' ||
+      coalesce(jsonb_array_length(case when jsonb_typeof(payload -> 'value' -> 'lots') = 'array'
+        then payload -> 'value' -> 'lots' end), -1) || ':' ||
+      coalesce(jsonb_typeof(payload -> 'value' -> 'operator'), 'absent')
+    from ingest.equipment_event where event_type = 'cycle' and equipment in ('cnc-01', 'cnc-02')
+    order by ingested_at desc limit 1")
+  asm_lot=$(as_app -c "select payload -> 'value' -> 'lots' -> 0 ->> 'lot'
+    from ingest.equipment_event where event_type = 'cycle' and equipment = 'asm-01'
+      and payload -> 'value' -> 'lots' @> '[{}]'
+      and jsonb_typeof(payload -> 'value' -> 'operator') = 'string'
+    order by ingested_at desc limit 1")
+  case "$cnc_trace" in array:[1-9]*:null) [ -n "$asm_lot" ] && break ;; esac
+  sleep 2
+done
+case "$cnc_trace" in
+  array:[1-9]*:null) ;;
+  *) fail "the latest stored CNC cycle has no lots or a non-null operator ($cnc_trace)" ;;
+esac
+[ -n "$asm_lot" ] || fail "no stored ASM-01 cycle with component lots and an operator"
+printf '%s' "$asm_lot" | grep -Eq '^[A-Za-z0-9-]+$' || fail "unexpected lot id: $asm_lot"
+found=$(as_app -c "select count(*) from ingest.equipment_event where event_type = 'cycle'
+  and payload -> 'value' -> 'lots' @> jsonb_build_array(jsonb_build_object('lot', '$asm_lot'))")
+[ "$found" -gt 0 ] || fail "the lot index found no cycle of lot $asm_lot"
+# Cycles refused, or kept without their trace fields, since this smoke started the stack.
+refused=$(as_app -c "select count(*) from ingest.rejected_message
+  where topic like '%/events/cycle-complete' and received_at >= '$smoke_started'")
+[ "$refused" = 0 ] || fail "the MES refused $refused cycle messages or dropped their trace fields"
+echo "ok: stored cycle facts carry lots and operator (contract 1.4; lot $asm_lot found by lot, $found cycles)"
 
 # ERP mock (#171): ready, refuses the API without the bearer token, serves the order feed with it.
 # The token goes to curl on stdin, not on its command line.

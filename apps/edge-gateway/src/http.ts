@@ -1,5 +1,5 @@
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
-import { Gauge, Registry, collectDefaultMetrics } from 'prom-client';
+import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
 
 export interface GatewayHttpOptions {
   /** Ready when the broker session is up. */
@@ -12,6 +12,11 @@ export interface GatewayHttpOptions {
     readonly id: string;
     readonly connected: boolean;
     readonly facts: number;
+    /**
+     * OPC UA cycles published without `lots` or `operator` the contract can't carry (#197); a
+     * Modbus machine reports none.
+     */
+    readonly traceDropped?: number;
   }[];
   /** The command path (#173): deliveries, calls, results by kind, waiting and settling. */
   readonly commands?: () => {
@@ -71,6 +76,18 @@ export function buildGatewayHttp({
     registers: [registry],
     collect() {
       for (const m of machines()) this.set({ machine: m.id }, m.facts);
+    },
+  });
+  new Counter({
+    name: 'gateway_cycle_trace_dropped_total',
+    help: 'OPC UA cycles published without lots or operator the UNS contract cannot carry (malformed LotMaterials, LotIds or Operator), per machine (#197)',
+    labelNames: ['machine'],
+    registers: [registry],
+    collect() {
+      this.reset();
+      for (const m of machines()) {
+        if (m.traceDropped !== undefined) this.inc({ machine: m.id }, m.traceDropped);
+      }
     },
   });
   new Gauge({

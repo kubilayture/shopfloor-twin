@@ -14,6 +14,7 @@ import {
   opcuaAlarmPath,
   parseUnsMessage,
   type AlarmSnapshot,
+  type LotRef,
   type StateCurrent,
   type Telemetry,
   type UnsMessage,
@@ -85,6 +86,42 @@ function deviceFacts(machineId: string): SimEvent[] {
   );
 }
 
+/**
+ * The lots and operator each cycle of the stream carries (ADR-0033, UNS contract 1.4): the part's
+ * `material-consumed` events on that machine before its cycle, in order, and the machine's latest
+ * `operator` event before the first of them. Written out here rather than imported from
+ * `trace-core`, so the gateway's test checks the mapping against the rule as the ADR states it.
+ */
+function expectedTrace(): Map<SimEvent, { lots: LotRef[]; operator: string | null | undefined }> {
+  const operators = new Map<string, string | null>();
+  const pending = new Map<string, { lots: LotRef[]; operator: string | null | undefined }>();
+  const out = new Map<SimEvent, { lots: LotRef[]; operator: string | null | undefined }>();
+  const cycled = new Set<string>();
+  for (const event of simulator.events) {
+    const machine = event.machineId ?? '';
+    const key = `${machine}/${String(event.partId)}`;
+    if (event.type === 'operator') {
+      operators.set(machine, (event.operatorId as string | null | undefined) ?? null);
+    } else if (event.type === 'material-consumed') {
+      let entry = pending.get(key);
+      if (!entry) {
+        // Undefined: the operator was set before the stream connected (unknown here).
+        entry = { lots: [], operator: operators.has(machine) ? operators.get(machine) : undefined };
+        pending.set(key, entry);
+      }
+      entry.lots.push({ material: String(event.material), lot: String(event.lotId) });
+    } else if (event.type === 'cycle-complete') {
+      const entry = pending.get(key);
+      // A machine's first cycle in the stream may be of a part it took before the stream
+      // connected (the start-up facts are history): its lots are unknown here.
+      if (entry || cycled.has(machine)) out.set(event, entry ?? { lots: [], operator: null });
+      cycled.add(machine);
+      pending.delete(key);
+    }
+  }
+  return out;
+}
+
 const deviceMessages = (machineId: string): UnsMessage[] =>
   published.map((p) => p.message).filter((m) => m.source.id === machineId && m.scope === 'device');
 
@@ -150,6 +187,8 @@ describe('OPC UA collector (#76)', () => {
       expect(parsed.ok, parsed.ok ? '' : parsed.error).toBe(true);
     }
     let total = 0;
+    const traces = expectedTrace();
+    let traced = 0;
     for (const machine of OPCUA_MACHINES) {
       const baseline = baselines.get(machine.id) ?? 0;
       const expected = deviceFacts(machine.id).map((event, i) => ({
@@ -181,6 +220,19 @@ describe('OPC UA collector (#76)', () => {
             { value: number; upperLimit: number } | undefined;
           expect(message.value.measurement?.value).toBe(measurement?.value);
           expect(message.value.measurement?.upperLimit).toBe(measurement?.upperLimit);
+          // Lots and operator (UNS contract 1.4, #197): always reported by an OPC UA machine.
+          const trace = traces.get(event);
+          expect(message.value.lots, `${machine.id} #${String(i)} lots`).toEqual(
+            trace?.lots ?? expect.any(Array),
+          );
+          if (machine.id !== 'asm-01' || trace?.lots.length === 0) {
+            expect(message.value.operator, `${machine.id} #${String(i)}`).toBeNull();
+          } else if (trace?.operator !== undefined) {
+            expect(message.value.operator, `${machine.id} #${String(i)}`).toBe(trace.operator);
+          } else {
+            expect(message.value).toHaveProperty('operator');
+          }
+          if ((trace?.lots.length ?? 0) > 0) traced++;
         } else if (event.type === 'alarm' && message?.schema === 'uns.alarms/1') {
           expect(message.value).toEqual({
             code: event.code,
@@ -196,6 +248,8 @@ describe('OPC UA collector (#76)', () => {
       total += expected.length;
     }
     expect(total).toBeGreaterThan(30);
+    // CNC blanks at least; ASM-01's components once a part has reached it.
+    expect(traced).toBeGreaterThan(0);
     expect(incidents.filter((i) => i.type === 'sequence-gap')).toEqual([]);
   }, 120_000);
 

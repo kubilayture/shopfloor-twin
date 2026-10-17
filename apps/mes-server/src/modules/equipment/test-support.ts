@@ -110,6 +110,9 @@ export class UnsFeed {
         readonly unit: string;
         readonly upperLimit: number;
       } | null;
+      /** UNS contract 1.4 (#197): left out when undefined, as a gateway before 1.4 or WSH-01. */
+      readonly lots?: readonly { readonly material: string; readonly lot: string }[];
+      readonly operator?: string | null;
     } = { product: 'VB-100', partId: seq, serial: `S-${String(seq)}`, result: 'good' },
   ): Delivery {
     return this.#deliver(cycleTopic(this.path(equipment)), {
@@ -123,6 +126,8 @@ export class UnsFeed {
         result: value.result,
         reason: value.reason ?? null,
         measurement: value.measurement ?? null,
+        ...(value.lots === undefined ? {} : { lots: value.lots.map((lot) => ({ ...lot })) }),
+        ...(value.operator === undefined ? {} : { operator: value.operator }),
       },
     });
   }

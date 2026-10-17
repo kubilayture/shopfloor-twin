@@ -71,3 +71,7 @@ Migration `0018_identity_audit_log_backfill.sql` copies into it, in that shape (
 - Bad: a database user (`DB_USER`) and a password more to manage; `DB_APP_PASSWORD` must stay what `migrate` last set, or the MES can't log in until `migrate` runs again (it runs on every `up`).
 - Bad: tests that inject faults with DDL need the superuser's connection (`ownerOf`), and every new table needs its grants in two places (the migration and `DECLARED_GRANTS`).
 - Bad: `identity.audit_log` holds `plant_epoch` of alarm transitions only in the transition log, and `after` mixes state with a few keys of the change (`recordId`, `from`, `to`, `version`); the history endpoints strip them.
+
+## Notes (#170)
+
+- **Actors.** The two-step removal planned under "Actors (H4)" is complete: `codedBy`, `actor` and `author` are gone from the request schemas (a request that still sends one is refused, 400), and every write needs a session also with `MES_AUTH=off` (ADR-0026, notes), so every new row of `identity.audit_log` written through the API has a user id, the roles and `authenticated: true`. Rows with `authenticated: false` are the legacy backfill of `0018` and rows written with `MES_AUTH=off` before #170. The modules still accept a typed name (`WriteBy`) for their own tests, which write without the HTTP layer; the API never passes one.

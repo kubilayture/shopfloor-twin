@@ -49,9 +49,9 @@ export interface CommandInputs {
     /** The numbers seen in the stream's epoch, as sorted ranges (a reported gap is not seen). */
     readonly seen?: readonly (readonly [number, number])[];
     /**
-     * The highest number of the command's run the MES had stored before its first delivery was
-     * written: the device emitted it before the command existed, so the command's acceptance has
-     * a higher number. Null when none.
+     * The highest number of the command's run the MES had stored when its first delivery was
+     * written (read before it, no clock compared): the device emitted it before the command
+     * existed, so the command's acceptance has a higher number. Null when none.
      */
     readonly before?: number | null;
     /** ADR-0018's final-through (a gap written off as an incident counts as closed). */
@@ -145,8 +145,9 @@ export function readCommand(
     : results.filter(
         (v): v is Extract<CommandResultValue, { result: 'rejected' }> => v.result === 'rejected',
       );
-  const rejected = refusals.find((v) => v.code !== 'command-conflict');
+  // A conflict first: whatever else was refused, the device holds a job under the id.
   const conflict = refusals.find((v) => v.code === 'command-conflict');
+  const rejected = conflict ? undefined : refusals.find((v) => v.code !== 'command-conflict');
   const newest = Math.max(input.device.newestEpoch ?? -1, input.device.epoch ?? -1);
   const epochEnded = newest > input.deviceEpoch;
   const latest = input.attempts.reduce<
@@ -203,29 +204,42 @@ export function readCommand(
     input.device.epoch === input.deviceEpoch &&
     through >= seqAfterExpiry;
   const exhausted = input.attempts.filter((a) => a.published).length >= policy.maxAttempts;
+  // Deliveries the broker never acknowledged (refused, or a crash before the PUBACK) are capped
+  // too (at `maxAttempts`, at least 3: a crash before one publish must not end the command), so a
+  // refusing broker can't make one every tick forever.
+  const unpublishedCapped =
+    input.attempts.filter((a) => !a.published).length >= Math.max(3, policy.maxAttempts);
+  // `failed` counts from the first delivery nobody answered: resends (published or not) never
+  // move it later.
+  const answered = (expiresAt: number) =>
+    results.some((v) => Date.parse(v.expiresAt) === expiresAt);
+  const firstUnanswered = input.attempts.find((a) => !answered(a.expiresAt));
+  const failAt = (firstUnanswered ?? latest)?.expiresAt;
   let state: CommandState;
   if (accepted) state = 'accepted';
+  else if (conflict) state = epochEnded ? 'epoch-ended' : 'conflict';
   else if (rejected) state = 'rejected';
   else if (epochEnded) state = 'epoch-ended';
-  else if (conflict) state = 'conflict';
   else if (latest === undefined) state = 'queued';
   else if (expiredLatest && exhausted) state = 'expired';
   else if (settledBySeq) state = 'not-accepted';
-  else if (!expiredLatest && now >= latest.expiresAt + policy.failMarginMs) state = 'failed';
-  else if (unknownLatest && !expiredLatest) state = 'unknown';
+  else if (!expiredLatest && failAt !== undefined && now >= failAt + policy.failMarginMs) {
+    state = 'failed';
+  } else if (unknownLatest && !expiredLatest) state = 'unknown';
   else state = 'sent';
   const settled = ['accepted', 'rejected', 'epoch-ended', 'expired', 'not-accepted'].includes(
     state,
   );
   const answeredLatest = forLatest.length > 0;
+  // Every resend waits `resendMs` after the latest delivery was written, published or not.
   const send =
     !settled &&
     !exhausted &&
+    !unpublishedCapped &&
     state !== 'conflict' &&
     (latest === undefined ||
-      !latest.published ||
       expiredLatest ||
-      (!answeredLatest && now - latest.issuedAt >= policy.resendMs));
+      ((!latest.published || !answeredLatest) && now - latest.issuedAt >= policy.resendMs));
   const unconfirmed =
     sticky !== undefined &&
     acceptedFacts.length === 0 &&

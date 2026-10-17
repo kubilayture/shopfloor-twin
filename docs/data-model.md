@@ -1470,6 +1470,7 @@ Every delivery of a command published, with its own expiresAt and the command en
 | `expires_at` | `timestamp with time zone` | not null |  |
 | `mes_epoch` | `bigint` | not null |  |
 | `mes_seq` | `bigint` | not null |  |
+| `stored_seq` | `bigint` | null |  |
 | `published_at` | `timestamp with time zone` | null |  |
 
 | Kind | Name | Definition |
@@ -1603,7 +1604,7 @@ Incidents of the orders module (ERP feed changed, ERP conflict or refusal, comma
 | --- | --- | --- |
 | Primary key | `order_incident_pkey` | `PRIMARY KEY (id)` |
 | Check | `order_incident_check` | `CHECK (((closed_at IS NULL) = (resolution IS NULL)))` |
-| Check | `order_incident_type_check` | `CHECK ((type = ANY (ARRAY['erp-feed-changed'::text, 'erp-conflict'::text, 'erp-refused'::text, 'command-failed'::text, 'command-unconfirmed'::text, 'unknown-job'::text, 'duplicate-job'::text, 'command-conflict'::text, 'erp-invalid-entry'::text, 'dispatch-lost'::text])))` |
+| Check | `order_incident_type_check` | `CHECK ((type = ANY (ARRAY['erp-feed-changed'::text, 'erp-conflict'::text, 'erp-refused'::text, 'command-failed'::text, 'command-unconfirmed'::text, 'unknown-job'::text, 'duplicate-job'::text, 'command-conflict'::text, 'command-publish-refused'::text, 'erp-invalid-entry'::text, 'dispatch-lost'::text])))` |
 | Index | `order_incident_open` | `orders.order_incident USING btree (key) WHERE (closed_at IS NULL)` |
 | Index | `order_incident_order` | `orders.order_incident USING btree (order_id, id)` |
 

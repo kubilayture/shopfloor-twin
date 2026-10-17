@@ -94,6 +94,8 @@ export const ORDER_INCIDENT_TYPES = [
   'duplicate-job',
   /** The device answered `command-conflict`: it holds another job under this command id. */
   'command-conflict',
+  /** The broker refused a command delivery (PUBACK reason code ≥ 0x80, e.g. not authorised). */
+  'command-publish-refused',
   /** A feed entry the database could not store: recorded as rejected, the page committed. */
   'erp-invalid-entry',
   /** A device run ended with jobs of the order not completed, or commands not answered. */

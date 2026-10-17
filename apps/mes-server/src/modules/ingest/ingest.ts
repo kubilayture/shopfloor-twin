@@ -961,16 +961,16 @@ export class Ingest {
   }
 
   /**
-   * The highest `seq` of one equipment's device epoch stored before a wall time (#174): a number
-   * the device emitted before then. Null when none.
+   * The highest `seq` stored so far of one equipment's device epoch (#174): read before a command
+   * is published, it names a fact the device emitted before the command existed. No clock is
+   * compared. Null when none.
    */
-  async seqStoredBefore(equipment: string, epoch: number, at: Date): Promise<number | null> {
+  async maxStoredSeq(equipment: string, epoch: number): Promise<number | null> {
     const row = await this.#options.db
       .selectFrom('ingest.equipment_event')
       .select((eb) => eb.fn.max<number | null>('seq').as('seq'))
       .where('equipment', '=', equipment)
       .where('epoch', '=', epoch)
-      .where('ingested_at', '<', at)
       .executeTakeFirstOrThrow();
     return row.seq;
   }

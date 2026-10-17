@@ -91,6 +91,7 @@ export interface CommandAttemptTable {
   expires_at: Timestamp;
   mes_epoch: number;
   mes_seq: number;
+  stored_seq: number | null;
   published_at: NullableTimestamp;
 }
 
@@ -212,6 +213,7 @@ export const ORDERS_COLUMNS = {
     'expires_at',
     'mes_epoch',
     'mes_seq',
+    'stored_seq',
     'published_at',
   ],
   'orders.erp_message_log': [

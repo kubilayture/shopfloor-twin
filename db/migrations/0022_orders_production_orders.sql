@@ -152,6 +152,10 @@ CREATE TABLE orders.command_attempt (
   -- The MES process's epoch and its sequence number on the command topic (the command envelope).
   mes_epoch BIGINT NOT NULL,
   mes_seq BIGINT NOT NULL,
+  -- The highest seq of the command's device run the MES had stored when the delivery was written
+  -- (read before it, no clock compared): a fact the device emitted before the command existed, so
+  -- any acceptance has a higher number. The first delivery's settles by `seqAfterExpiry`.
+  stored_seq BIGINT,
   published_at TIMESTAMPTZ,
   PRIMARY KEY (command_id, attempt)
 );
@@ -211,6 +215,7 @@ CREATE TABLE orders.order_incident (
       'unknown-job',
       'duplicate-job',
       'command-conflict',
+      'command-publish-refused',
       'erp-invalid-entry',
       'dispatch-lost'
     )

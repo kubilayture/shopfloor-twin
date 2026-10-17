@@ -68,7 +68,14 @@ export interface OrdersIngest {
     component: string,
   ): Promise<readonly { readonly instance: string; readonly status: 'online' | 'offline' }[]>;
   deviceProgress(equipment: string): Promise<DeviceProgress>;
-  seqStoredBefore(equipment: string, epoch: number, at: Date): Promise<number | null>;
+  maxStoredSeq(equipment: string, epoch: number): Promise<number | null>;
+  stateFacts(
+    equipment: string,
+    epoch: number,
+    window?: { readonly fromSeq?: number; readonly toSeq?: number },
+  ): Promise<
+    readonly { readonly seq: number; readonly state: string; readonly cause: string | null }[]
+  >;
   settled(
     equipment: string,
     epoch: number,
@@ -809,6 +816,7 @@ export class Orders {
           );
           continue;
         }
+        const deferred: string[] = [];
         const changed = await this.#serial(() =>
           this.#db.transaction().execute(async (trx) => {
             const now = await trx
@@ -832,7 +840,7 @@ export class Orders {
                 await sql`RELEASE SAVEPOINT erp_entry`.execute(trx);
               } catch (error) {
                 await sql`ROLLBACK TO SAVEPOINT erp_entry`.execute(trx);
-                change = await this.#invalidEntry(trx, entry, page.feedId, error);
+                change = await this.#invalidEntry(trx, entry, page.feedId, error, deferred);
               }
               if (change && orders.get(entry.order.orderNumber) !== 'imported') {
                 orders.set(entry.order.orderNumber, change);
@@ -853,6 +861,8 @@ export class Orders {
           }),
         );
         if (changed === undefined) continue;
+        // Committed: the page's incidents are open now.
+        for (const key of deferred) this.#openIncidents.add(key);
         handled += page.entries.length;
         for (const [id, event] of changed) await this.#emitOrder(id, event);
         if (!page.more) break;
@@ -1029,20 +1039,10 @@ export class Orders {
     const changed: { row: CommandRow; reading: Recorded }[] = [];
     for (const row of rows) {
       const device = progress.get(row.equipment);
-      const mine = attempts.filter((a) => a.command_id === row.command_id);
-      const first = mine[0];
-      // Only needed to settle by `seqAfterExpiry`: read when an answer carries one.
+      // What the MES had stored of the run before the first delivery was written (no clock).
       const before =
-        first !== undefined &&
-        !row.settled &&
-        results.some(
-          (r) =>
-            r.value.commandId === row.command_id &&
-            (r.value.result === 'unknown' || r.value.result === 'expired') &&
-            r.value.seqAfterExpiry !== null,
-        )
-          ? await this.#ingest.seqStoredBefore(row.equipment, row.device_epoch, first.issued_at)
-          : null;
+        attempts.find((a) => a.command_id === row.command_id && a.attempt === 1)?.stored_seq ??
+        null;
       const reading = readCommand(
         {
           commandId: row.command_id,
@@ -1204,7 +1204,35 @@ export class Orders {
       known = !incidents.some((incident) => incident.seqTo >= from);
     }
     if (!known) return row.quantity;
-    if (reading.started === null) return 0;
+    if (reading.started === null) {
+      // Accepted, never started: one blank may have been taken without its `started` fact
+      // having been raised yet only if it was the CNC's head job (an earlier job not completed
+      // keeps it waiting), unless a later fact shows the CNC moved on (another job started, or
+      // it went Idle for want of a startable order).
+      const acceptedSeq = reading.accepted.seq;
+      const jobs = await this.#ingest.jobFacts({
+        equipment: row.equipment,
+        epoch: row.device_epoch,
+      });
+      const earlier = new Set(
+        jobs
+          .filter((f) => f.transition === 'accepted' && f.seq < acceptedSeq)
+          .map((f) => f.commandId),
+      );
+      for (const f of jobs) if (f.transition === 'completed') earlier.delete(f.commandId);
+      if (earlier.size > 0) return 0;
+      const movedOn =
+        jobs.some(
+          (f) =>
+            f.transition === 'started' && f.seq > acceptedSeq && f.commandId !== row.command_id,
+        ) ||
+        (
+          await this.#ingest.stateFacts(row.equipment, row.device_epoch, {
+            fromSeq: acceptedSeq + 1,
+          })
+        ).some((f) => f.state === 'Idle' && f.cause === 'NO-ORDER');
+      return movedOn ? 0 : Math.min(1, row.quantity);
+    }
     const started = reading.started;
     const later = (
       await this.#ingest.jobFacts({ equipment: row.equipment, epoch: row.device_epoch })
@@ -1254,6 +1282,7 @@ export class Orders {
     if (reading.settled) {
       await this.#closeIncidents(trx, { key: `command-failed:${id}` }, reading.state);
       await this.#closeIncidents(trx, { key: `command-conflict:${id}` }, reading.state);
+      await this.#closeIncidents(trx, { key: `command-publish-refused:${id}` }, reading.state);
     }
     if (reading.state === 'conflict' && row.state !== 'conflict') {
       await this.#incident(trx, {
@@ -1405,6 +1434,8 @@ export class Orders {
         deviceEpoch: row.device_epoch,
       },
     });
+    // Read before the delivery exists: every fact stored by now was emitted before the command.
+    const storedSeq = await this.#ingest.maxStoredSeq(row.equipment, row.device_epoch);
     const attempt = await this.#db.transaction().execute(async (trx) => {
       const last = await trx
         .selectFrom('orders.command_attempt')
@@ -1421,6 +1452,7 @@ export class Orders {
           expires_at: new Date(expiresAt),
           mes_epoch: this.#mesEpoch,
           mes_seq: seq,
+          stored_seq: storedSeq,
         })
         .execute();
       await trx
@@ -1432,7 +1464,28 @@ export class Orders {
       return number;
     });
     await this.#options.beforePublish?.(row.command_id);
-    await publisher.publish(topic, JSON.stringify(message));
+    try {
+      await publisher.publish(topic, JSON.stringify(message));
+    } catch (error) {
+      // A reason code from the broker (PUBACK ≥ 0x80, e.g. 0x87 not authorised): the delivery is
+      // refused for good, not lost on the way. The attempt stays unpublished (resent after
+      // `resendMs`, capped); a person must look.
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+      if (typeof code === 'number' && code >= 0x80) {
+        await this.#db.transaction().execute(async (trx) => {
+          await this.#incident(trx, {
+            type: 'command-publish-refused',
+            key: `command-publish-refused:${row.command_id}`,
+            orderId: row.order_id,
+            commandId: row.command_id,
+            equipment: row.equipment,
+            message: `${row.command_id}: the broker refused the delivery on ${topic} (reason code 0x${code.toString(16)}); check the ACL of the MES's user`,
+          });
+        });
+      }
+      throw error;
+    }
     // Acknowledged by the broker: only now does the delivery count towards the attempts.
     await this.#db
       .updateTable('orders.command_attempt')
@@ -1791,6 +1844,7 @@ export class Orders {
     entry: FeedEntry,
     feedId: string,
     error: unknown,
+    deferred: string[],
   ): Promise<'imported' | undefined> {
     const erp = entry.order;
     const reason = `the entry could not be stored: ${(error instanceof Error ? error.message : String(error)).slice(0, 300)}`;
@@ -1856,6 +1910,7 @@ export class Orders {
     await this.#incident(trx, {
       type: 'erp-invalid-entry',
       key: `erp-invalid-entry:${feedId}:${String(entry.feedSeq)}`,
+      deferred,
       orderId: null,
       message: `ERP feed entry ${String(entry.feedSeq)} (${erp.orderNumber} revision ${String(erp.revision)}) recorded as rejected: ${reason}`,
     });
@@ -1948,6 +2003,11 @@ export class Orders {
       readonly message: string;
       /** Recorded closed at once, with this resolution (an event, nothing to resolve). */
       readonly close?: string;
+      /**
+       * Keys of open incidents are remembered only after the caller's commit: they go here and the
+       * caller adds them then (a page that rolls back leaves no key behind).
+       */
+      readonly deferred?: string[];
     },
   ): Promise<void> {
     const row = await trx
@@ -1966,7 +2026,10 @@ export class Orders {
       .returning('id')
       .executeTakeFirst();
     if (!row) return;
-    if (incident.close === undefined) this.#openIncidents.add(incident.key);
+    if (incident.close === undefined) {
+      if (incident.deferred) incident.deferred.push(incident.key);
+      else this.#openIncidents.add(incident.key);
+    }
     this.#incidentCounter?.inc({ type: incident.type });
     this.#log.warn({ incident: incident.type, key: incident.key }, incident.message);
   }

@@ -615,7 +615,7 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
   it('resends a delivery written but never published when the MES crashed before the publish', async () => {
     let crash = true;
     await startOrders(
-      { ttlMs: 30_000, resendMs: 20_000, maxAttempts: 1, failMarginMs: 5_000 },
+      { ttlMs: 30_000, resendMs: 2_000, maxAttempts: 1, failMarginMs: 5_000 },
       true,
       () => {
         if (!crash) return Promise.resolve();
@@ -629,7 +629,7 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
       async () => (await command(sent.commandId)).attempts.length >= 1,
     );
     // The restarted MES finds an unpublished delivery: it doesn't count, and is sent again.
-    await startOrders({ ttlMs: 30_000, resendMs: 20_000, maxAttempts: 1, failMarginMs: 5_000 });
+    await startOrders({ ttlMs: 30_000, resendMs: 2_000, maxAttempts: 1, failMarginMs: 5_000 });
     await until('confirmed', async () => (await command(sent.commandId)).confirmed, 60_000);
     const attempts = (await command(sent.commandId)).attempts;
     expect(attempts[0]?.publishedAt).toBeNull();
@@ -654,7 +654,9 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
     );
     await until('the job lost', async () => (await command(sent.commandId)).job === 'lost');
     const order = await orders.order(sent.orderId);
-    expect(order).toMatchObject({ dispatchLost: true, dispatched: 0 });
+    // Accepted at the head of its CNC, never started, nothing showing the CNC moved on: one
+    // blank may have been taken, so it counts (short, never over).
+    expect(order).toMatchObject({ dispatchLost: true, dispatched: 1 });
     const again = await orders.redispatch(
       sent.orderId,
       { version: order?.version ?? 0, equipment: 'cnc-01' },

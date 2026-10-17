@@ -144,10 +144,17 @@ class FakeErp implements ErpApi {
 /** The broker as the outbox sees it: records every publish; `connected` can be turned off. */
 class Sink implements CommandPublisher {
   connected = true;
+  /** A PUBACK reason code the broker answers with (≥ 0x80 refuses), as MQTT.js reports it. */
+  refuseWith: number | undefined;
   readonly published: { topic: string; message: LoadOrderCommand }[] = [];
 
   publish(topic: string, payload: string): Promise<void> {
     if (!this.connected) return Promise.reject(new Error('not connected'));
+    if (this.refuseWith !== undefined) {
+      return Promise.reject(
+        Object.assign(new Error('Publish error: Not authorized'), { code: this.refuseWith }),
+      );
+    }
     this.published.push({ topic, message: loadOrderCommandSchema.parse(JSON.parse(payload)) });
     return Promise.resolve();
   }
@@ -1164,6 +1171,93 @@ describe('the command outbox and the reading of commands (ADR-0029)', () => {
 });
 
 describe('reading commands safely (#174 review)', () => {
+  it('measures seqAfterExpiry from what was stored when the delivery was written, not by clocks', async () => {
+    const h = await harness('skew', { timings: { maxAttempts: 1 } });
+    // The MES joined cnc-01's stream late (first seen at 5): no `receivedThrough`.
+    await stateAt(h, 'cnc-01', 5);
+    const { command } = await dispatched(h, 'SK-1');
+    await h.orders.tick();
+    const [delivery] = h.sink.of(command.commandId);
+    if (!delivery) throw new Error('not published');
+    expect((await h.orders.commands({ orderId: 'SK-1' }))[0]?.attempts).toHaveLength(1);
+    // The device accepted it at 6 (that fact never arrived); 7 and 8 arrived after the delivery,
+    // but the database's clock lags: their `ingested_at` reads as before it.
+    await stateAt(h, 'cnc-01', 7);
+    await stateAt(h, 'cnc-01', 8);
+    await h.db
+      .updateTable('ingest.equipment_event')
+      .set({ ingested_at: new Date('2000-01-01T00:00:00.000Z') })
+      .where('equipment', '=', 'cnc-01')
+      .execute();
+    await result(h, delivery, 'cnc-01', { result: 'unknown', seqAfterExpiry: 8 });
+    await h.orders.tick();
+    expect((await h.orders.commands({ orderId: 'SK-1' }))[0]).toMatchObject({
+      state: 'unknown',
+      settled: false,
+    });
+    // 6 arrives and is no acceptance (a state change): every number from 5 through 8 is in.
+    await stateAt(h, 'cnc-01', 6);
+    await h.orders.tick();
+    expect((await h.orders.commands({ orderId: 'SK-1' }))[0]).toMatchObject({
+      state: 'not-accepted',
+      settled: true,
+    });
+  });
+
+  it('raises command-publish-refused when the broker refuses a delivery, paces and caps the retries, and fails', async () => {
+    const h = await harness('refused', { timings: { maxAttempts: 2 } });
+    await stateAt(h, 'cnc-01', 1);
+    h.sink.refuseWith = 0x87;
+    const { command } = await dispatched(h, 'RF-1');
+    await h.orders.tick();
+    await h.orders.tick();
+    expect(h.sink.published).toEqual([]);
+    expect(await h.orders.incidents({ open: true })).toMatchObject([
+      { type: 'command-publish-refused', commandId: command.commandId },
+    ]);
+    expect((await h.orders.commands({ orderId: 'RF-1' }))[0]?.attempts).toHaveLength(1);
+    for (let i = 0; i < 6; i++) {
+      h.clock.now += 15_000;
+      await h.orders.tick();
+    }
+    const [after] = await h.orders.commands({ orderId: 'RF-1' });
+    // Capped at three unpublished deliveries; failed from the first one's expiresAt.
+    expect(after?.attempts).toHaveLength(3);
+    expect(after?.attempts.every((a) => a.publishedAt === null)).toBe(true);
+    expect(after).toMatchObject({ state: 'failed', failed: true, settled: false });
+    expect((await h.orders.incidents({ open: true })).map((i) => i.type).sort()).toEqual([
+      'command-failed',
+      'command-publish-refused',
+    ]);
+  });
+
+  it('counts one blank for a lost job accepted at the head of its CNC, none once the CNC went Idle for want of an order', async () => {
+    const h = await harness('head');
+    await stateAt(h, 'cnc-01', 1);
+    await stateAt(h, 'cnc-02', 1);
+    const one = await dispatched(h, 'HD-1', { quantity: 4 }, 'cnc-01');
+    const two = await dispatched(h, 'HD-2', { quantity: 4 }, 'cnc-02');
+    await h.orders.tick();
+    const [d1] = h.sink.of(one.command.commandId);
+    const [d2] = h.sink.of(two.command.commandId);
+    if (!d1 || !d2) throw new Error('not published');
+    await job(h, d1.value, 'cnc-01', 2, 'accepted');
+    await job(h, d2.value, 'cnc-02', 2, 'accepted');
+    // cnc-02 shows it moved on: Idle for want of a startable order after the acceptance.
+    await deliver(h, h.feed.state('cnc-02', E1, 3, PLANT_T0.getTime() + 3_000, 'Idle', 'NO-ORDER'));
+    await deliver(h, h.feed.snapshot('cnc-01', E1 + 2, PLANT_T0.getTime(), 'Idle'));
+    await deliver(h, h.feed.snapshot('cnc-02', E1 + 2, PLANT_T0.getTime(), 'Idle'));
+    await h.orders.tick();
+    expect((await h.orders.commands({ orderId: 'HD-1' }))[0]).toMatchObject({
+      job: 'lost',
+      lostStarted: 1,
+    });
+    expect((await h.orders.commands({ orderId: 'HD-2' }))[0]).toMatchObject({
+      job: 'lost',
+      lostStarted: 0,
+    });
+  });
+
   it('keeps a command-conflict unsettled with an incident until its run ends, then counts its quantity', async () => {
     const h = await harness('conflict');
     await stateAt(h, 'cnc-01', 1);
@@ -1282,6 +1376,10 @@ describe('reading commands safely (#174 review)', () => {
     expect(h.sink.of(command.commandId)).toEqual([]);
     const [written] = await h.orders.commands({ orderId: 'UP-1' });
     expect(written?.attempts).toMatchObject([{ attempt: 1, publishedAt: null }]);
+    // Resent only after resendMs.
+    await h.orders.tick();
+    expect(h.sink.of(command.commandId)).toEqual([]);
+    h.clock.now += 15_000;
     await h.orders.tick();
     expect(h.sink.of(command.commandId)).toHaveLength(1);
     const [after] = await h.orders.commands({ orderId: 'UP-1' });

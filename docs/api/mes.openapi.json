@@ -6191,6 +6191,7 @@
                               "unknown-job",
                               "duplicate-job",
                               "command-conflict",
+                              "command-publish-refused",
                               "erp-invalid-entry",
                               "dispatch-lost"
                             ]
@@ -6443,6 +6444,7 @@
                               "unknown-job",
                               "duplicate-job",
                               "command-conflict",
+                              "command-publish-refused",
                               "erp-invalid-entry",
                               "dispatch-lost"
                             ]

@@ -194,12 +194,17 @@ describe('reading a command (ADR-0029)', () => {
       send: false,
       rejection: 'command-conflict',
     });
-    // An unpublished latest delivery is resent and doesn't count.
-    expect(
-      read({ attempts: [attempt(0), attempt(1), attempt(2, false)] }, T0 + 30_000),
-    ).toMatchObject({
-      state: 'sent',
-      send: true,
+    // An unpublished latest delivery is resent, paced by resendMs, and doesn't count.
+    const refused = { attempts: [attempt(0), attempt(1), attempt(2, false)] };
+    expect(read(refused, T0 + 30_000)).toMatchObject({ state: 'sent', send: false });
+    expect(read(refused, T0 + 45_000)).toMatchObject({ state: 'sent', send: true });
+    // A broker that refuses every delivery: capped at maxAttempts unpublished ones, and failed
+    // from the first one's expiresAt (resends never move it later).
+    const never = { attempts: [attempt(0, false), attempt(1, false), attempt(2, false)] };
+    expect(read(never, T0 + 60_000)).toMatchObject({ send: false });
+    expect(read(never, attempt(0).expiresAt + 30_000)).toMatchObject({
+      state: 'failed',
+      send: false,
     });
   });
 
@@ -218,11 +223,20 @@ describe('reading a command (ADR-0029)', () => {
     ).toBe('accepted');
   });
 
-  it('is failed after its last expiresAt plus the margin without a final answer, and not final', () => {
+  it('is failed after the first unanswered delivery’s expiresAt plus the margin, and not final', () => {
     const one = { attempts: [attempt(0), attempt(1), attempt(2)] };
     const lastExpiry = attempt(2).expiresAt;
-    expect(read(one, lastExpiry + 29_999)).toMatchObject({ state: 'sent', failed: false });
-    expect(read(one, lastExpiry + 30_000)).toMatchObject({
+    const firstExpiry = attempt(0).expiresAt;
+    expect(read(one, firstExpiry + 29_999)).toMatchObject({ state: 'sent', failed: false });
+    // The first delivery answered (expired): failed counts from the next unanswered one.
+    expect(read({ ...one, results: [expired(firstExpiry)] }, firstExpiry + 30_000)).toMatchObject({
+      state: 'sent',
+      failed: false,
+    });
+    expect(
+      read({ ...one, results: [expired(firstExpiry)] }, attempt(1).expiresAt + 30_000),
+    ).toMatchObject({ state: 'failed' });
+    expect(read(one, firstExpiry + 30_000)).toMatchObject({
       state: 'failed',
       failed: true,
       settled: false,

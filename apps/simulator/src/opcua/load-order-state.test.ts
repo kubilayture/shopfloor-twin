@@ -4,18 +4,17 @@
  * argument flagged), while production mode `schedule` is permanent (`BadInvalidState`, no
  * argument flagged), so the gateway (#173) can tell a retry from a definitive refusal.
  */
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import type { ProductionMode } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
 import { PlantServers } from './plant-servers.ts';
+import { onFreeOpcuaPorts, temporaryPki } from '../testing.ts';
 import { callLoadOrder, connect } from './testing.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
-const OFFSET = 700;
+let offset: number;
 const EPOCH = 1_791_000_000;
 const WALL = Date.UTC(2026, 9, 16, 12);
 const CALL = {
@@ -28,6 +27,7 @@ const CALL = {
   expiresAt: WALL + 60_000,
 };
 let servers: PlantServers;
+let removePki: (() => Promise<void>) | undefined;
 const runs: LiveRun[] = [];
 
 async function liveRun(production: ProductionMode): Promise<LiveRun> {
@@ -47,26 +47,32 @@ async function liveRun(production: ProductionMode): Promise<LiveRun> {
 }
 
 beforeAll(async () => {
-  servers = new PlantServers({
-    config: await loadDefaultConfig(),
-    start: T0,
-    portOffset: OFFSET,
-    epoch: EPOCH,
-    production: 'orders',
-    wallClock: () => WALL,
-    pkiFolder: join(tmpdir(), 'shopfloor-twin-load-order-state-pki'),
-  });
-  await servers.start();
+  const config = await loadDefaultConfig();
+  const pki = await temporaryPki('load-order-state');
+  removePki = pki.remove;
+  ({ portOffset: offset } = await onFreeOpcuaPorts(async (portOffset) => {
+    servers = new PlantServers({
+      config,
+      start: T0,
+      portOffset,
+      epoch: EPOCH,
+      production: 'orders',
+      wallClock: () => WALL,
+      pkiFolder: pki.folder,
+    });
+    await servers.start();
+  }));
 }, 60_000);
 
 afterAll(async () => {
   for (const run of runs) run.pacer.stop();
   await servers.stop();
+  await removePki?.();
 });
 
 describe('LoadOrder refusals for the run state over OPC UA (#172)', () => {
   it('answers BadWaitingForInitialData with no argument flagged while the run is not attached', async () => {
-    const { session, close } = await connect(4841 + OFFSET);
+    const { session, close } = await connect(4841 + offset);
     try {
       expect(await callLoadOrder(session, 'cnc-01', CALL)).toEqual({
         status: 'BadWaitingForInitialData',
@@ -84,7 +90,7 @@ describe('LoadOrder refusals for the run state over OPC UA (#172)', () => {
     servers.attach(run);
     run.pacer.stop();
     expect(run.pacer.state).toBe('finished');
-    const { session, close } = await connect(4841 + OFFSET);
+    const { session, close } = await connect(4841 + offset);
     try {
       expect(await callLoadOrder(session, 'cnc-01', CALL)).toEqual({
         status: 'BadWaitingForInitialData',
@@ -101,7 +107,7 @@ describe('LoadOrder refusals for the run state over OPC UA (#172)', () => {
     const run = await liveRun('schedule');
     servers.attach(run);
     expect(run.pacer.state).toBe('idle');
-    const { session, close } = await connect(4842 + OFFSET);
+    const { session, close } = await connect(4842 + offset);
     try {
       expect(await callLoadOrder(session, 'cnc-02', CALL)).toEqual({
         status: 'BadInvalidState',

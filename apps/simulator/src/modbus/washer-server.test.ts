@@ -24,11 +24,11 @@ import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import type { PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
+import { onFreePort } from '../testing.ts';
 import { WasherModbusServer } from './washer-server.ts';
 
 const ModbusRTU = Modbus.default;
 const T0 = Date.UTC(2026, 9, 12, 3);
-const PORT = 5320;
 const EPOCH = 1_791_774_000;
 let config: PlantConfig;
 let washer: WasherModbusServer;
@@ -90,23 +90,26 @@ function asEntry(event: PlantEvent, seq: number): RingEntry {
 
 beforeAll(async () => {
   config = await loadDefaultConfig();
-  clock = new ManualClock();
-  washer = new WasherModbusServer({ config, epoch: EPOCH, port: PORT });
-  run = createLiveRun({
-    config,
-    seed: 20261012,
-    start: T0,
-    speed: 60,
-    clock,
-    onEvent: (event) => {
-      events.push(event);
-      washer.record(event);
-    },
+  const { port } = await onFreePort(async (port) => {
+    clock = new ManualClock();
+    events.length = 0;
+    washer = new WasherModbusServer({ config, epoch: EPOCH, port });
+    run = createLiveRun({
+      config,
+      seed: 20261012,
+      start: T0,
+      speed: 60,
+      clock,
+      onEvent: (event) => {
+        events.push(event);
+        washer.record(event);
+      },
+    });
+    washer.attach(run);
+    await washer.start();
   });
-  washer.attach(run);
-  await washer.start();
   client = new ModbusRTU();
-  await client.connectTCP('127.0.0.1', { port: PORT });
+  await client.connectTCP('127.0.0.1', { port });
   client.setID(1);
   client.setTimeout(500);
 });

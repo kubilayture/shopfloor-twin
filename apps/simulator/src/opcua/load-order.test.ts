@@ -5,8 +5,6 @@
  * event and the job variables, no initial `Program`, and `LoadProgram` refused. The run is attached
  * and idle at its start time, as a live dispatch finds it (B3).
  */
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import {
   OPCUA_EVENT_FIELDS,
   OPCUA_EVENT_TYPES,
@@ -32,46 +30,54 @@ import { ManualClock } from '../live/testing.ts';
 import type { PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
 import { PlantServers } from './plant-servers.ts';
+import { onFreeOpcuaPorts, temporaryPki } from '../testing.ts';
 import { callLoadOrder, connect, wait } from './testing.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
-const OFFSET = 600;
+let offset: number;
 const EPOCH = 1_791_000_000;
 const WALL = Date.UTC(2026, 9, 16, 12);
 let servers: PlantServers;
 let run: LiveRun;
+let removePki: (() => Promise<void>) | undefined;
 const plantEvents: PlantEvent[] = [];
 
 beforeAll(async () => {
   const config = await loadDefaultConfig();
-  servers = new PlantServers({
-    config,
-    start: T0,
-    portOffset: OFFSET,
-    epoch: EPOCH,
-    production: 'orders',
-    wallClock: () => WALL,
-    pkiFolder: join(tmpdir(), 'shopfloor-twin-load-order-pki'),
-  });
-  run = createLiveRun({
-    config,
-    seed: 20261012,
-    start: T0,
-    speed: 60,
-    clock: new ManualClock(),
-    production: 'orders',
-    onEvent: (event) => {
-      plantEvents.push(event);
-      servers.record(event);
-    },
-  });
-  servers.attach(run);
-  await servers.start();
+  const pki = await temporaryPki('load-order');
+  removePki = pki.remove;
+  ({ portOffset: offset } = await onFreeOpcuaPorts(async (portOffset) => {
+    plantEvents.length = 0;
+    servers = new PlantServers({
+      config,
+      start: T0,
+      portOffset,
+      epoch: EPOCH,
+      production: 'orders',
+      wallClock: () => WALL,
+      pkiFolder: pki.folder,
+    });
+    run = createLiveRun({
+      config,
+      seed: 20261012,
+      start: T0,
+      speed: 60,
+      clock: new ManualClock(),
+      production: 'orders',
+      onEvent: (event) => {
+        plantEvents.push(event);
+        servers.record(event);
+      },
+    });
+    servers.attach(run);
+    await servers.start();
+  }));
 }, 60_000);
 
 afterAll(async () => {
   run.pacer.stop();
   await servers.stop();
+  await removePki?.();
 });
 
 interface Call {
@@ -107,7 +113,7 @@ async function read(session: ClientSession, machine: string, path: string): Prom
 
 describe('LoadOrder over OPC UA in orders mode (#172)', () => {
   it('accepts a job with the acceptance from the device sequence, raises its event and shows the queue', async () => {
-    const { session, close } = await connect(4841 + OFFSET);
+    const { session, close } = await connect(4841 + offset);
     try {
       expect(run.pacer.state).toBe('idle');
       expect(await read(session, 'cnc-01', OPCUA_VARIABLES.program)).toBe('');
@@ -182,7 +188,7 @@ describe('LoadOrder over OPC UA in orders mode (#172)', () => {
   }, 60_000);
 
   it('answers a late or wrong-epoch call for an accepted command as a duplicate, and the same id on the other CNC as a conflict', async () => {
-    const { session, close } = await connect(4841 + OFFSET);
+    const { session, close } = await connect(4841 + offset);
     try {
       const first = servers.servers[0]?.acceptance('PO-1~OP10~1');
       const late = await loadOrder(session, 'cnc-01', {
@@ -201,7 +207,7 @@ describe('LoadOrder over OPC UA in orders mode (#172)', () => {
       await close();
     }
     // The dedup table is line-wide: the same command id with the same job on the other CNC.
-    const other = await connect(4842 + OFFSET);
+    const other = await connect(4842 + offset);
     try {
       const sequence = servers.servers[1]?.sequence;
       expect(await loadOrder(other.session, 'cnc-02')).toEqual({
@@ -239,7 +245,7 @@ describe('LoadOrder over OPC UA in orders mode (#172)', () => {
   ])(
     'refuses %s on a miss with the argument flagged',
     async (_case, call, status, flagged) => {
-      const { session, close } = await connect(4842 + OFFSET);
+      const { session, close } = await connect(4842 + offset);
       try {
         const sequence = servers.servers[1]?.sequence;
         const refused = await loadOrder(session, 'cnc-02', { ...call, commandId: 'PO-2~OP10~1' });
@@ -254,7 +260,7 @@ describe('LoadOrder over OPC UA in orders mode (#172)', () => {
   );
 
   it('refuses LoadProgram in orders mode', async () => {
-    const { session, close } = await connect(4842 + OFFSET);
+    const { session, close } = await connect(4842 + offset);
     try {
       const namespaces = await session.readNamespaceArray();
       const result = await session.call({
@@ -276,7 +282,7 @@ describe('LoadOrder over OPC UA in orders mode (#172)', () => {
   }, 60_000);
 
   it('shows the active order while the job runs and clears it at its last OP10 cycle', async () => {
-    const { session, close } = await connect(4841 + OFFSET);
+    const { session, close } = await connect(4841 + offset);
     try {
       while (run.simulation.now < T0 + 2 * HOUR && run.pacer.step()) {
         if (plantEvents.some((e) => e.type === 'job' && e.transition === 'started')) break;

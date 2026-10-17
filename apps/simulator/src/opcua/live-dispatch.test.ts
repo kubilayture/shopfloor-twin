@@ -4,8 +4,6 @@
  * called on its CNC's server (through the attach and replay gate and the device's epoch and expiry
  * guard) and accepted, then the injections are posted, then the run is stepped.
  */
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { OPCUA_MACHINES } from '@shopfloor/contracts';
 import { HOUR } from '@shopfloor/sim-core';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -16,18 +14,20 @@ import { EVENT_SCHEMA, isoTime, stableStringify } from '../headless/serialize.ts
 import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import type { PlantEvent } from '../plant/line.ts';
+import { onFreeOpcuaPorts, temporaryPki } from '../testing.ts';
 import { PlantServers } from './plant-servers.ts';
 import { callLoadOrder, connect } from './testing.ts';
 
-const OFFSET = 800;
 const EPOCH = 1_791_000_000;
 const WALL = Date.UTC(2026, 9, 16, 12);
 let servers: PlantServers | undefined;
 let run: LiveRun | undefined;
+let removePki: (() => Promise<void>) | undefined;
 
 afterAll(async () => {
   run?.pacer.stop();
   await servers?.stop();
+  await removePki?.();
 });
 
 describe('live orders-01 dispatched over OPC UA (#172, B3)', () => {
@@ -37,32 +37,40 @@ describe('live orders-01 dispatched over OPC UA (#172, B3)', () => {
     const headless: string[] = [];
     runHeadless({ ...options, end: until }, (line) => headless.push(line));
 
-    const plant = new PlantServers({
-      config: options.config,
-      start: options.start,
-      portOffset: OFFSET,
-      epoch: EPOCH,
-      production: 'orders',
-      wallClock: () => WALL,
-      pkiFolder: join(tmpdir(), 'shopfloor-twin-live-dispatch-pki'),
+    const pki = await temporaryPki('live-dispatch');
+    removePki = pki.remove;
+    const {
+      portOffset,
+      value: { plant, live, events },
+    } = await onFreeOpcuaPorts(async (portOffset) => {
+      const plant = new PlantServers({
+        config: options.config,
+        start: options.start,
+        portOffset,
+        epoch: EPOCH,
+        production: 'orders',
+        wallClock: () => WALL,
+        pkiFolder: pki.folder,
+      });
+      servers = plant;
+      const events: PlantEvent[] = [];
+      const live = createLiveRun({
+        config: options.config,
+        seed: options.seed,
+        start: options.start,
+        speed: 60,
+        clock: new ManualClock(),
+        production: 'orders',
+        onEvent: (event) => {
+          events.push(event);
+          plant.record(event);
+        },
+      });
+      run = live;
+      plant.attach(live);
+      await plant.start();
+      return { plant, live, events };
     });
-    servers = plant;
-    const events: PlantEvent[] = [];
-    const live = createLiveRun({
-      config: options.config,
-      seed: options.seed,
-      start: options.start,
-      speed: 60,
-      clock: new ManualClock(),
-      production: 'orders',
-      onEvent: (event) => {
-        events.push(event);
-        plant.record(event);
-      },
-    });
-    run = live;
-    plant.attach(live);
-    await plant.start();
 
     // The live order: attached and idle at the start time, every job dispatched and accepted
     // through LoadOrder, then the injections, then the run resumes.
@@ -72,7 +80,7 @@ describe('live orders-01 dispatched over OPC UA (#172, B3)', () => {
     for (const dispatch of dispatches) {
       const machine = plant.servers.find((s) => s.machineId === dispatch.machine);
       const port = OPCUA_MACHINES.find((m) => m.id === dispatch.machine)?.port ?? 0;
-      const { session, close } = await connect(port + OFFSET);
+      const { session, close } = await connect(port + portOffset);
       try {
         const result = await callLoadOrder(session, dispatch.machine, {
           ...dispatch,

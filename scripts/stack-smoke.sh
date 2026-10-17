@@ -2,14 +2,44 @@
 set -eu
 
 cd "$(dirname "$0")/.."
+# The env file: ./.env by default; SMOKE_ENV_FILE names another (the gate's throw-away file with
+# generated secrets, #178), which every docker compose call below then reads instead of ./.env.
+env_file=${SMOKE_ENV_FILE:-./.env}
 set -a
-. ./.env
+. "$env_file"
 set +a
+docker() {
+  if [ "$1" = compose ]; then
+    shift
+    command docker compose --env-file "$env_file" "$@"
+  else
+    command docker "$@"
+  fi
+}
 
 fail() {
   echo "FAIL: $1" >&2
   exit 1
 }
+
+# Compose refuses to start without a required secret, but not without the optional bootstrap
+# admin password (#168, ADR-0026): `config` interpolates like `up`, in a clean environment so the
+# variables exported above don't fill the gap.
+compose_without() {
+  stripped=$(mktemp)
+  grep -v "^$1=" "$env_file" >"$stripped" || true
+  env -i PATH="$PATH" HOME="$HOME" docker compose --env-file "$stripped" config -q >/dev/null 2>&1
+  result=$?
+  rm -f "$stripped"
+  return $result
+}
+for key in DB_PASSWORD DB_APP_PASSWORD ERP_API_TOKEN MQTT_HEALTHCHECK_PASSWORD MQTT_DEV_PASSWORD \
+  MQTT_GATEWAY_PASSWORD MQTT_MES_PASSWORD; do
+  if compose_without "$key"; then fail "Compose accepted a configuration without $key"; fi
+done
+compose_without MES_BOOTSTRAP_ADMIN_PASSWORD ||
+  fail "Compose refused a configuration without the optional MES_BOOTSTRAP_ADMIN_PASSWORD"
+echo "ok: Compose refuses to start without a required secret, not without the bootstrap admin password"
 
 docker compose up -d --wait
 
@@ -81,11 +111,11 @@ echo "ok: retained message survives broker restart"
 acl_out=$(mktemp)
 # On every exit (success, `fail`, a `set -e` stop, Ctrl-C): remove the temporary file and disable
 # the smoke user once it exists (#170; review of PR #186).
-smoke_user=
+smoke_users=
 cleanup() {
   status=$?
   rm -f "$acl_out"
-  if [ -n "$smoke_user" ]; then
+  for smoke_user in $smoke_users; do
     if docker compose exec -T mes node apps/mes-server/src/user-cli.ts --disable \
       --username "$smoke_user" >/dev/null 2>&1; then
       echo "ok: the smoke user $smoke_user is disabled again"
@@ -93,7 +123,7 @@ cleanup() {
       echo "FAIL: could not disable the smoke user $smoke_user" >&2
       [ "$status" -ne 0 ] || status=1
     fi
-  fi
+  done
   exit "$status"
 }
 trap cleanup EXIT
@@ -174,6 +204,18 @@ export SMOKE_USERNAME SMOKE_PASSWORD
 printf '%s' "$SMOKE_PASSWORD" | docker compose exec -T mes \
   node apps/mes-server/src/user-cli.ts --username "$SMOKE_USERNAME" --role operator >/dev/null ||
   fail "user:create could not create the smoke user"
-smoke_user=$SMOKE_USERNAME
+smoke_users=$SMOKE_USERNAME
 echo "ok: user:create made the operator $SMOKE_USERNAME"
+# With SMOKE_WRITES=1 also a supervisor (#178): it releases and dispatches one order and is refused
+# an abandon while the command's run goes on. Disabled again by the exit trap.
+if [ "${SMOKE_WRITES:-}" = 1 ]; then
+  SMOKE_SUPERVISOR_USERNAME="smoke-sup-$(openssl rand -hex 4)"
+  SMOKE_SUPERVISOR_PASSWORD=$(openssl rand -hex 16)
+  export SMOKE_SUPERVISOR_USERNAME SMOKE_SUPERVISOR_PASSWORD
+  printf '%s' "$SMOKE_SUPERVISOR_PASSWORD" | docker compose exec -T mes \
+    node apps/mes-server/src/user-cli.ts --username "$SMOKE_SUPERVISOR_USERNAME" --role supervisor >/dev/null ||
+    fail "user:create could not create the smoke supervisor"
+  smoke_users="$smoke_users $SMOKE_SUPERVISOR_USERNAME"
+  echo "ok: user:create made the supervisor $SMOKE_SUPERVISOR_USERNAME"
+fi
 node scripts/stack-smoke-web.mjs "$web" || fail "web checks failed"

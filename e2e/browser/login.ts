@@ -7,34 +7,89 @@ import { expect, type Page } from '@playwright/test';
 export const reconcileUser = process.env.RECONCILE_USERNAME ?? '';
 const reconcilePassword = process.env.RECONCILE_PASSWORD ?? '';
 
+/** A generated user of the run (#178): name and password, never written to a file. */
+export interface Account {
+  readonly username: string;
+  readonly password: string;
+}
+
 /**
- * Logs in through `/login` as the run's user and waits for the app to come back to `/`. Resolves
- * with the session cookie (`sft_session=…`) for the test's own API reads.
+ * The orders pass's other users (#178), by what they are for (`operator`, `operator2`, `admin`,
+ * `quality`, `maintenance`): RECONCILE_ACCOUNTS, a JSON object the reconciliation passes with
+ * generated passwords.
  */
-export async function logIn(page: Page): Promise<string> {
-  if (reconcileUser === '' || reconcilePassword === '') {
-    throw new Error('RECONCILE_USERNAME and RECONCILE_PASSWORD are not set');
-  }
-  // The trace (kept on failure) must not hold the password (#170 review L5): its fill and the
-  // login request are left out by ending the runner's trace chunk without saving it, and a new
-  // chunk starts after the login. Without tracing both calls throw and nothing changes.
+export function account(name: string): Account {
+  const accounts = JSON.parse(process.env.RECONCILE_ACCOUNTS ?? '{}') as Record<string, Account>;
+  const found = accounts[name];
+  if (!found) throw new Error(`RECONCILE_ACCOUNTS has no ${name}`);
+  return found;
+}
+
+/**
+ * Runs `fill` with the runner's trace paused (#170 review L5): the trace kept on failure must
+ * not hold a password, so its fill and the login request are left out by ending the trace chunk
+ * without saving it, and a new chunk starts afterwards. Without tracing both calls throw and
+ * nothing changes.
+ */
+async function untraced(page: Page, fill: () => Promise<void>): Promise<void> {
   const tracing = page.context().tracing;
   const paused = await tracing.stopChunk().then(
     () => true,
     () => false,
   );
   try {
-    await page.goto('/login');
-    await page.getByTestId('login-username').fill(reconcileUser);
-    await page.getByTestId('login-password').fill(reconcilePassword);
-    await page.getByTestId('login-submit').click();
-    await expect(page.getByTestId('signed-in-user')).toHaveText(reconcileUser);
+    await fill();
   } finally {
     if (paused) await tracing.startChunk({ title: 'after the login' });
   }
+}
+
+/** The session cookie of the page's context, checked HttpOnly and SameSite=Strict (ADR-0026). */
+async function sessionCookie(page: Page): Promise<string> {
   const session = (await page.context().cookies()).find((c) => c.name === 'sft_session');
   if (!session) throw new Error('the login set no session cookie');
-  // HttpOnly (no script reads it) and SameSite=Strict (ADR-0026).
   expect([session.httpOnly, session.sameSite]).toEqual([true, 'Strict']);
   return `sft_session=${session.value}`;
+}
+
+/**
+ * Logs in through `/login` as `user` (by default the run's user) and waits for the app to show
+ * them signed in. Resolves with the session cookie (`sft_session=…`) for the test's own API calls.
+ */
+export async function logIn(
+  page: Page,
+  user: Account = { username: reconcileUser, password: reconcilePassword },
+): Promise<string> {
+  if (user.username === '' || user.password === '') {
+    throw new Error('RECONCILE_USERNAME and RECONCILE_PASSWORD are not set');
+  }
+  await untraced(page, async () => {
+    await page.goto('/login');
+    await page.getByTestId('login-username').fill(user.username);
+    await page.getByTestId('login-password').fill(user.password);
+    await page.getByTestId('login-submit').click();
+    await expect(page.getByTestId('signed-in-user')).toHaveText(user.username);
+  });
+  return sessionCookie(page);
+}
+
+/**
+ * Signs `user` on at a work center's terminal (#177): `/terminal/<workCenter>`, user name and
+ * password, a `terminal` session and the crew row. Resolves with the session cookie once the
+ * screen shows them signed on.
+ */
+export async function signOnAtTerminal(
+  page: Page,
+  workCenter: string,
+  user: Account,
+): Promise<string> {
+  await untraced(page, async () => {
+    await page.goto(`/terminal/${workCenter}`);
+    await page.getByTestId('terminal-username').fill(user.username);
+    await page.getByTestId('terminal-password').fill(user.password);
+    await page.getByTestId('terminal-sign-on').click();
+    await expect(page.getByTestId('terminal-user')).toHaveText(user.username);
+  });
+  await expect(page.getByTestId('terminal-crew')).toContainText(user.username);
+  return sessionCookie(page);
 }

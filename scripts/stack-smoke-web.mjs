@@ -265,6 +265,63 @@ if (shelve.status !== 403 || JSON.parse(shelve.text).type !== 'urn:shopfloor:for
 }
 console.log('ok: a write without a session is 401, a permission the role lacks 403');
 
+// Orders and the terminal (#178): an operator may not write orders (403, before the route reads
+// anything), may not work on an order operation without a crew row at its work center (409
+// not-signed-on) and may not sign on with a desk session (409 terminal-session-required). The
+// orders come from the ERP mock's default dataset; the MES pulls it every ERP_POLL_MS.
+const problemType = (answer) => {
+  try {
+    return JSON.parse(answer.text).type ?? null;
+  } catch {
+    return null;
+  }
+};
+let imported;
+for (const begun = Date.now(); imported === undefined;) {
+  imported = (await getJson('/api/v1/orders')).orders.find((o) => o.status === 'imported');
+  if (imported === undefined) {
+    if (Date.now() - begun > DEADLINE_MS) fail('the MES imported no order from the ERP mock');
+    await sleep(1000);
+  }
+}
+const orderPath = (action) => `/api/v1/orders/${encodeURIComponent(imported.id)}/${action}`;
+for (const action of ['release', 'dispatch', 'close']) {
+  const answer = await send(
+    'POST',
+    orderPath(action),
+    page,
+    JSON.stringify({ version: imported.version }),
+  );
+  if (answer.status !== 403 || problemType(answer) !== 'urn:shopfloor:forbidden') {
+    fail(`an operator's order ${action} answered ${answer.status}: ${answer.text}`);
+  }
+}
+const terminalStart = await send(
+  'POST',
+  `/api/v1/terminal/line-a1/orders/${encodeURIComponent(imported.id)}/operations/OP30/start`,
+  page,
+  JSON.stringify({ activity: null }),
+);
+if (terminalStart.status !== 409 || problemType(terminalStart) !== 'urn:shopfloor:not-signed-on') {
+  fail(
+    `a terminal write without a crew row answered ${terminalStart.status}: ${terminalStart.text}`,
+  );
+}
+const deskSignOn = await send('POST', '/api/v1/terminal/line-a1/sign-on', page, '{}');
+if (
+  deskSignOn.status !== 409 ||
+  problemType(deskSignOn) !== 'urn:shopfloor:terminal-session-required'
+) {
+  fail(`a sign-on with a desk session answered ${deskSignOn.status}: ${deskSignOn.text}`);
+}
+const unchanged = (await getJson(`/api/v1/orders/${encodeURIComponent(imported.id)}`)).order;
+if (unchanged.version !== imported.version || unchanged.status !== 'imported') {
+  fail(`a refused write changed order ${imported.id}: ${JSON.stringify(unchanged)}`);
+}
+console.log(
+  `ok: an operator's order writes are 403; a terminal write without a crew row and a desk sign-on are 409 (${imported.id})`,
+);
+
 const patch = await send('PATCH', refused, page, body);
 if (patch.status !== 403) fail(`PATCH through the web answered ${patch.status}, not 403`);
 console.log('ok: nginx passes only GET, POST, PUT and DELETE under /api/ (PATCH refused, 403)');
@@ -305,6 +362,35 @@ if (bootstrap) {
 } else {
   console.log('skipped: the bootstrap admin check (MES_BOOTSTRAP_ADMIN_PASSWORD not set)');
 }
+
+// A supervisor (#178) releases and dispatches the imported order, then is refused an abandon of
+// its command while the command's device run goes on (409 order-state). The stack runs in schedule
+// mode, so the device refuses the job (wrong mode): no job is made; the order stays flagged.
+const supervisorName = process.env.SMOKE_SUPERVISOR_USERNAME;
+const supervisorSecret = process.env.SMOKE_SUPERVISOR_PASSWORD;
+if (!supervisorName || !supervisorSecret) fail('SMOKE_SUPERVISOR_USERNAME/PASSWORD not set');
+const supervisorLogin = await login(supervisorName, supervisorSecret);
+if (supervisorLogin.status !== 200) fail(`supervisor login answered ${supervisorLogin.status}`);
+const desk = { origin: base.origin, ...json, cookie: supervisorLogin.cookie };
+const write = async (action, request) => {
+  const answer = await send('POST', orderPath(action), desk, JSON.stringify(request));
+  return { status: answer.status, type: problemType(answer), body: answer.text };
+};
+const released = await write('release', { version: imported.version });
+if (released.status !== 200) fail(`release answered ${released.status}: ${released.body}`);
+const dispatched = await write('dispatch', { version: JSON.parse(released.body).order.version });
+if (dispatched.status !== 200) fail(`dispatch answered ${dispatched.status}: ${dispatched.body}`);
+const { order: afterDispatch, command } = JSON.parse(dispatched.body);
+const abandon = await write('abandon-command', {
+  version: afterDispatch.version,
+  commandId: command.commandId,
+});
+if (abandon.status !== 409 || abandon.type !== 'urn:shopfloor:order-state') {
+  fail(`an abandon while the run goes on answered ${abandon.status}: ${abandon.body}`);
+}
+console.log(
+  `ok: a supervisor released and dispatched ${imported.id}; abandoning ${command.commandId} while its run goes on is 409 order-state`,
+);
 
 const reasons = (await getJson('/api/v1/reason-codes')).reasons;
 const reason = reasons.find((r) => r.id !== 'UNCODED' && r.parent !== null)?.id;

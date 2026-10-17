@@ -2,15 +2,21 @@ import { join } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * The browser checks of the reconciliation (#100, #123, #147). They run only inside
+ * The browser checks of the reconciliation (#100, #123, #147, #178). They run only inside
  * `pnpm test:reconcile`, which starts the stack and passes its addresses (RECONCILE_WEB_URL,
- * RECONCILE_SIM_URL, RECONCILE_MES_URL, RECONCILE_SHIFT, RECONCILE_ALARMS_UNTIL), one project at a
- * time, its files in alphabetical order:
+ * RECONCILE_SIM_URL, RECONCILE_MES_URL, RECONCILE_SHIFT, RECONCILE_ALARMS_UNTIL, the run's users),
+ * one project at a time, its files in alphabetical order. The alarms-01 pass:
  * - `live`, during shift A: the alarm list, flood banner and alarm KPI cards, the OEE dashboard's
  *   values and the overview's states, each within 2 s;
  * - `final`, after the drain (browser/final): alarm actions, a recode and a split through the
  *   downtime screen, and a handover note on the shift report.
- * Chromium only. On failure: a trace and a screenshot in e2e/results/playwright/<project>.
+ * The orders-01 pass (#178, browser/orders):
+ * - `orders-dispatch`, while the simulator waits idle at the start: login and role checks, then
+ *   the supervisor's release and dispatch through the UI;
+ * - `orders-live`, during shift A: the OEE dashboard and the alarm checks as above, then the Line
+ *   A1 terminal (counts within 2 s, start, pause, resume);
+ * - `orders-final`, after the drain: sign-off at both terminals, drafts, scrap coding, close.
+ * Chromium only. On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
  */
 const results = process.env.RECONCILE_RESULTS ?? join(import.meta.dirname, 'results');
 const chromium = devices['Desktop Chrome'];
@@ -29,7 +35,7 @@ export default defineConfig({
   projects: [
     {
       name: 'live',
-      testIgnore: 'final/**',
+      testIgnore: ['final/**', 'orders/**'],
       outputDir: join(results, 'playwright', 'live'),
       use: { ...chromium },
     },
@@ -37,6 +43,24 @@ export default defineConfig({
       name: 'final',
       testDir: './browser/final',
       outputDir: join(results, 'playwright', 'final'),
+      use: { ...chromium },
+    },
+    {
+      name: 'orders-dispatch',
+      testDir: './browser/orders/dispatch',
+      outputDir: join(results, 'playwright', 'orders-dispatch'),
+      use: { ...chromium },
+    },
+    {
+      name: 'orders-live',
+      testMatch: ['1-oee-live.spec.ts', '2-alarms-live.spec.ts', 'orders/live/*.spec.ts'],
+      outputDir: join(results, 'playwright', 'orders-live'),
+      use: { ...chromium },
+    },
+    {
+      name: 'orders-final',
+      testDir: './browser/orders/final',
+      outputDir: join(results, 'playwright', 'orders-final'),
       use: { ...chromium },
     },
   ],

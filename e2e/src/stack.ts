@@ -18,17 +18,21 @@ export interface StackOptions {
   readonly project: string;
   /** Extra variables for the env file (seed, start, speed). */
   readonly env: Readonly<Record<string, string>>;
+  /** More Compose files after e2e/compose.reconcile.yml, relative to the repository (#178). */
+  readonly files?: readonly string[];
 }
 
 export class Stack {
   readonly project: string;
   readonly #env: Readonly<Record<string, string>>;
+  readonly #files: readonly string[];
   #dir: string | undefined;
-  #bootstrapAdminPassword: string | undefined;
+  #values: Readonly<Record<string, string>> | undefined;
 
-  constructor({ project, env }: StackOptions) {
+  constructor({ project, env, files = [] }: StackOptions) {
     this.project = project;
     this.#env = env;
+    this.#files = files;
   }
 
   /** Writes the env file (mode 600, in a fresh temporary directory). */
@@ -47,7 +51,7 @@ export class Stack {
       MES_BOOTSTRAP_ADMIN_PASSWORD: secret(),
       ...this.#env,
     };
-    this.#bootstrapAdminPassword = values.MES_BOOTSTRAP_ADMIN_PASSWORD;
+    this.#values = values;
     const text = Object.entries(values)
       .map(([key, value]) => `${key}=${value}\n`)
       .join('');
@@ -56,8 +60,14 @@ export class Stack {
 
   /** The generated bootstrap admin password of this run (after `prepare()`). */
   get bootstrapAdminPassword(): string {
-    if (this.#bootstrapAdminPassword === undefined) throw new Error('prepare() first');
-    return this.#bootstrapAdminPassword;
+    return this.value('MES_BOOTSTRAP_ADMIN_PASSWORD');
+  }
+
+  /** A value of this run's env file (after `prepare()`), e.g. the generated ERP_API_TOKEN. */
+  value(key: string): string {
+    const value = this.#values?.[key];
+    if (value === undefined) throw new Error(`${key}: prepare() first, or no such variable`);
+    return value;
   }
 
   /** Runs `docker compose …` for this project; resolves with stdout. */
@@ -77,6 +87,7 @@ export class Stack {
         join(REPO, 'docker-compose.yml'),
         '--file',
         join(REPO, 'e2e/compose.reconcile.yml'),
+        ...this.#files.flatMap((file) => ['--file', join(REPO, file)]),
         ...args,
       ],
       { cwd: REPO, maxBuffer: 256 * 1024 * 1024, timeout: timeoutMs },

@@ -26,6 +26,7 @@
     "sim:serve": "pnpm --filter @shopfloor/simulator serve",
     "test:e2e": "turbo run test:e2e --concurrency=1",
     "test:reconcile": "pnpm --filter @shopfloor/e2e test:reconcile",
+    "gate": "node scripts/gate.ts",
     "playwright:install": "pnpm --filter @shopfloor/e2e playwright:install"
   },
   "devDependencies": {

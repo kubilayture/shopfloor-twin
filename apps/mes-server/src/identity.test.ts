@@ -1079,6 +1079,26 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     // An admin may not write production data (separation of duties).
     const write = await send('POST', '/api/v1/alarms/ack', { cookie, body: { ids: ['x'] } });
     expect(write.statusCode).toBe(403);
+    // Exit criterion 1 (#178): each user administration and the admin's login are audited with
+    // the user, its roles, `authenticated` and the request id.
+    const audit = await db
+      .selectFrom('identity.audit_log')
+      .select(['action', 'username', 'roles', 'authenticated', 'request_id', 'entity_id'])
+      .where('username', '=', 'm-admin')
+      .where('action', 'in', ['session.login', 'user.create', 'user.update', 'user.password-reset'])
+      .orderBy('id')
+      .execute();
+    const forKim = audit.filter((r) => r.entity_id === 'm-kim').map((r) => r.action);
+    expect(forKim).toEqual(['user.create', 'user.update', 'user.password-reset']);
+    expect(audit.some((r) => r.action === 'session.login')).toBe(true);
+    for (const row of audit) {
+      expect([row.action, row.roles, row.authenticated, typeof row.request_id]).toEqual([
+        row.action,
+        ['admin'],
+        true,
+        'string',
+      ]);
+    }
   });
 
   it('closes an anonymous WebSocket with 4401, and a logged-in one when the session ends', async () => {

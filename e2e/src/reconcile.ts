@@ -44,8 +44,27 @@
  * (`reconcile-supervisor`, generated password) through the API. Every API read of the run sends
  * its session cookie, and the Playwright checks log in as it through `/login`.
  *
- * Usage: pnpm test:reconcile. Results (report.json, compose.log on failure, Playwright traces) go
- * to e2e/results/. Environment: RECONCILE_PROJECT (Compose project, default shopfloor-reconcile),
+ * Phase 7 (#178): a second pass runs orders-01's shift A in orders mode (SIM_PRODUCTION=orders) on
+ * a Compose project of its own, with the ERP mock serving orders-01's dataset
+ * (e2e/compose.reconcile-orders.yml). Before the resume, while the simulator waits idle at the
+ * start, Playwright checks the roles (an operator and an admin see no order action and are refused
+ * with 403) and the supervisor releases and dispatches the orders through the UI in the scenario's
+ * order, each command confirmed by its device fact before the next (ADR-0030, B3); the commands
+ * must equal the scenario's `dispatches`, each with exactly one `accepted` job fact, and the CNC
+ * queues the golden run's. Then the injections, the resume and every check above against the live
+ * ground truth and orders-01's golden summary, with the OEE dashboard, the alarm list and the Line
+ * A1 terminal live in the browser (browser/orders/live: counts within 2 s, start, pause, resume).
+ * After the drain (src/orders-pass.ts): at least three orders completed in shift A, each `completed`
+ * in the ERP with one final confirmation per operation equal to the MES's and the ground truth's;
+ * the new refusals on the order path; the paused simulator stepped on to orders-01's first scrap;
+ * the sign-off at both terminals, a second operator who sees none of the first one's drafts and
+ * codes the scrap, the supervisor's close (`closed` in the ERP) and the audit log; finally the
+ * MES's outbox posted again after an MES restart, leaving the ERP unchanged.
+ *
+ * Usage: pnpm test:reconcile. Results (per pass: report.json, compose.log on failure, Playwright
+ * traces) go to e2e/results/<pass>/. Environment: RECONCILE_PASSES (default `alarms,orders`),
+ * RECONCILE_PROJECT (Compose project prefix, default shopfloor-reconcile; each pass adds
+ * `-alarms` or `-orders`),
  * RECONCILE_TAG (image tag, default reconcile; give parallel runs their own),
  * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_BROWSER=0 (no Playwright),
  * OVERVIEW_SAMPLE_MS and OEE_SAMPLE_MS (how long each live check samples, default 90000 each; the
@@ -68,8 +87,10 @@ import {
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { shiftSegments } from '@shopfloor/shift-calendar';
 import {
+  ErpClient,
   GatewayClient,
   MesClient,
+  ordersTruthSchema,
   SimulatorClient,
   provisionUsers,
   gauge,
@@ -88,17 +109,48 @@ import {
   type Piece,
   type StateMs,
 } from './compare.ts';
+import {
+  checkAuditAndClose,
+  checkDispatch,
+  checkImport,
+  checkOrdersAfterDrain,
+  checkRefusals,
+  repostOutbox,
+  stepToScrap,
+  stepUntil,
+  type PassContext,
+  type ScenarioDispatch,
+} from './orders-pass.ts';
 import { REPO, Stack } from './stack.ts';
 
 const SPEED = 60;
 /** Simulated time past shift end before the simulator is paused (5 wall seconds at 60×). */
 const MARGIN_MS = 5 * 60_000;
 const RESULTS = join(REPO, 'e2e/results');
-/** The golden scenario the live run reproduces (#147): week-01's seed with injected failures. */
-const GOLDEN = join(REPO, 'apps/simulator/golden/alarms-01');
-/** Where the event log's prefix equality with week-01 is proven (headless, #140). */
-const PREFIX_TEST =
-  'apps/simulator/src/headless/alarms-01.test.ts: logs exactly what week-01 logs up to the first injection';
+/** The two passes (#178), each a golden scenario the live run reproduces on its own project. */
+type PassName = 'alarms' | 'orders';
+const PASSES: Readonly<Record<PassName, { golden: string; evidence: string }>> = {
+  // #147: week-01's seed with injected failures; its event log equals week-01's up to the first
+  // injection (headless, #140).
+  alarms: {
+    golden: 'alarms-01',
+    evidence:
+      'apps/simulator/src/headless/alarms-01.test.ts: logs exactly what week-01 logs up to the first injection',
+  },
+  // #178: orders mode, the jobs dispatched through LoadOrder at the idle start (#172, B3).
+  orders: {
+    golden: 'orders-01',
+    evidence:
+      'apps/simulator/src/opcua/live-dispatch.test.ts: reproduces headless orders-01 when the jobs are dispatched through LoadOrder at the idle start, then injected',
+  },
+};
+/** The ERP's dataset override of the orders pass. */
+const ORDERS_COMPOSE = 'e2e/compose.reconcile-orders.yml';
+/** Orders mode: a completed order to sign off and close, and the one whose scrap is coded. */
+const CLOSE_ORDER = 'PO-2610-001';
+const SCRAP_ORDER = 'PO-2610-007';
+const RUNNING_ORDER = 'PO-2610-005';
+const UNRELEASED_ORDER = 'PO-2610-008';
 /** Sampling of /alarms runs this long (simulated) past the last injection of the shift. */
 const ALARMS_SAMPLE_PAST_MS = 3 * 60_000;
 /** The OEE check stops sampling this long (simulated) before the first injection: 15 s at 60×. */
@@ -127,9 +179,20 @@ const OEE_FINAL_MS = 30_000;
 /** Overall limit of a run, below the CI job's timeout (30 minutes). */
 const DEADLINE_MS = Number(process.env.RECONCILE_DEADLINE_MS ?? 25 * 60_000);
 
-const project = process.env.RECONCILE_PROJECT ?? 'shopfloor-reconcile';
+const projectPrefix = process.env.RECONCILE_PROJECT ?? 'shopfloor-reconcile';
+const passNames = (process.env.RECONCILE_PASSES ?? 'alarms,orders')
+  .split(',')
+  .map((p) => p.trim())
+  .filter((p): p is PassName => p === 'alarms' || p === 'orders');
 /** The run's supervisor (#170): created per run, with a generated password. */
 const RECONCILE_USER = 'reconcile-supervisor';
+/** The orders pass's other users (#178), by what they are for, each with a generated password. */
+const ORDER_USERS = {
+  operator: { username: 'reconcile-operator', roles: ['operator'] },
+  operator2: { username: 'reconcile-operator-2', roles: ['operator'] },
+  quality: { username: 'reconcile-quality', roles: ['quality'] },
+  maintenance: { username: 'reconcile-maintenance', roles: ['maintenance'] },
+} as const;
 const skipBuild = process.env.RECONCILE_SKIP_BUILD === '1';
 const withBrowser = process.env.RECONCILE_BROWSER !== '0';
 
@@ -151,7 +214,9 @@ async function until(what: string, check: () => Promise<boolean>, timeoutMs: num
     if (Date.now() > deadline) {
       throw new Error(`timed out after ${String(timeoutMs)} ms: ${what}`, { cause: last });
     }
-    await sleep(500);
+    // Jittered (#178): a fixed period can phase-lock with a periodic source, such as the
+    // gateway's Modbus poller every 250 ms, and see its one message in flight at every poll.
+    await sleep(250 + Math.floor(Math.random() * 500));
   }
 }
 
@@ -162,7 +227,7 @@ async function until(what: string, check: () => Promise<boolean>, timeoutMs: num
  */
 let browserChild: ChildProcess | undefined;
 
-function runBrowser(project: 'live' | 'final', env: Record<string, string>): Promise<number> {
+function runBrowser(project: string, env: Record<string, string>): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn('pnpm', ['exec', 'playwright', 'test', '--project', project], {
       cwd: join(REPO, 'e2e'),
@@ -181,6 +246,7 @@ function runBrowser(project: 'live' | 'final', env: Record<string, string>): Pro
 }
 
 interface Report {
+  pass: PassName;
   project: string;
   seed?: number;
   shiftKey?: string;
@@ -293,6 +359,8 @@ interface Report {
     failures: string[];
   };
   pieces?: { count: number; violations: string[] };
+  /** The orders pass (#178): import, dispatch, orders after the drain, refusals, terminal, ERP. */
+  orders?: Record<string, unknown>;
   incidents?: unknown[];
   rejectedMessages?: number;
   /** The live checks: the overview (#100), the OEE dashboard (#123) and the alarms (#147). */
@@ -323,8 +391,25 @@ interface Report {
 
 async function main(): Promise<boolean> {
   await rm(RESULTS, { recursive: true, force: true });
-  await mkdir(RESULTS, { recursive: true });
-  const report: Report = { project, phasesMs: {}, failures: [] };
+  if (passNames.length === 0) throw new Error('RECONCILE_PASSES names no pass (alarms, orders)');
+  const outcomes: [PassName, boolean][] = [];
+  for (const [n, name] of passNames.entries()) {
+    // The images are built once, by the first pass.
+    outcomes.push([name, await runPass(name, n === 0 && !skipBuild)]);
+  }
+  log(`passes: ${outcomes.map(([name, ok]) => `${name} ${ok ? 'OK' : 'FAILED'}`).join(', ')}`);
+  return outcomes.every(([, ok]) => ok);
+}
+
+async function runPass(pass: PassName, build: boolean): Promise<boolean> {
+  const RESULTS_DIR = join(RESULTS, pass);
+  const GOLDEN = join(REPO, 'apps/simulator/golden', PASSES[pass].golden);
+  const goldenName = PASSES[pass].golden;
+  const orders = pass === 'orders';
+  const project = `${projectPrefix}-${pass}`;
+  await mkdir(RESULTS_DIR, { recursive: true });
+  log(`pass ${pass}: ${goldenName} on project ${project}`);
+  const report: Report = { pass, project, phasesMs: {}, failures: [] };
   const fail = (message: string) => {
     report.failures.push(message);
     console.error(`FAIL: ${message}`);
@@ -336,12 +421,18 @@ async function main(): Promise<boolean> {
     phaseStart = now;
   };
 
-  // alarms-01's seed and start (week-01's: Monday 06:00 Istanbul, the start of shift A).
+  // The scenario's seed and start (week-01's: Monday 06:00 Istanbul, the start of shift A).
   const scenario = JSON.parse(await readFile(join(GOLDEN, 'scenario.json'), 'utf8')) as {
     seed: number;
     start: string;
     injections?: ScenarioInjection[];
+    production?: 'orders';
+    erp?: { dataset: string; release: string[] };
+    dispatches?: ScenarioDispatch[];
   };
+  if (orders !== (scenario.production === 'orders')) {
+    throw new Error(`${goldenName} is not a scenario for the ${pass} pass`);
+  }
   const loaded = await loadPlantConfig(join(REPO, 'config/plant'));
   if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
   const shifts = loaded.config.shifts;
@@ -360,7 +451,7 @@ async function main(): Promise<boolean> {
   const injections = (scenario.injections ?? []).filter(
     (i) => Date.parse(i.at) >= shift.from && Date.parse(i.at) < shift.to,
   );
-  // Exactly alarms-01's 14 of shift A (13 on Cell M1, the fleeting one on LKT-01).
+  // Exactly the 14 of shift A (13 on Cell M1, the fleeting one on LKT-01; orders-01 has the same).
   if (injections.length !== 14) {
     throw new Error(`${GOLDEN}: ${String(injections.length)} injections in ${shift.key}, not 14`);
   }
@@ -381,7 +472,10 @@ async function main(): Promise<boolean> {
       // Its own image tags: the run never replaces the dev stack's images, and RECONCILE_TAG
       // keeps parallel runs (other worktrees) from building over each other's.
       IMAGE_TAG: process.env.RECONCILE_TAG ?? 'reconcile',
+      // Orders mode (#178): the CNCs run only LoadOrder jobs; the MES pulls the ERP every second.
+      ...(orders ? { SIM_PRODUCTION: 'orders', ERP_POLL_MS: '1000' } : {}),
     },
+    files: orders ? [ORDERS_COMPOSE] : [],
   });
   let browser: Promise<number> | undefined;
   // Ctrl+C or a cancelled job: remove the stack and the env file with its passwords, then exit.
@@ -414,7 +508,7 @@ async function main(): Promise<boolean> {
         await stack.prepare();
         // Leftovers of an aborted run: start from empty volumes.
         await stack.compose(['down', '--volumes', '--remove-orphans']);
-        if (!skipBuild) {
+        if (build) {
           log('building the images');
           await stack.compose(['build'], 1_200_000);
         }
@@ -422,20 +516,42 @@ async function main(): Promise<boolean> {
 
         // 1. Database and broker, then the MES ready (migrated, subscribed to the UNS).
         log('starting db, broker and mes');
-        await stack.compose(['up', '--detach', '--wait', '--no-build', 'db', 'broker', 'mes']);
+        await stack.compose([
+          'up',
+          '--detach',
+          '--wait',
+          '--no-build',
+          'db',
+          'broker',
+          'mes',
+          // Orders mode (#178): the ERP mock with orders-01's dataset, which the MES pulls.
+          ...(orders ? ['erp'] : []),
+        ]);
         const mesBase = await stack.url('mes', 4700);
         await until('MES ready', () => new MesClient(mesBase).ready(), 60_000);
         // Identity (#170, MES_AUTH=on): the bootstrap admin (generated password, must change it)
         // creates the run's supervisor through the API; every read and the browser log in as it.
         const users = await provisionUsers(mesBase, stack.bootstrapAdminPassword, [
           { username: RECONCILE_USER, roles: ['supervisor'] },
+          ...(orders ? Object.values(ORDER_USERS) : []),
         ]);
         const supervisor = users.get(RECONCILE_USER);
         if (!supervisor) throw new Error(`${RECONCILE_USER} was not created`);
         const mes = new MesClient(mesBase, supervisor.cookie);
+        // The orders pass's other users for the browser (#178): passwords generated this run.
+        const accounts = Object.fromEntries(
+          [
+            ...Object.entries(ORDER_USERS).map(([name, u]) => [name, u.username] as const),
+            ['admin', 'admin'] as const,
+          ].flatMap(([name, username]) => {
+            const user = users.get(username);
+            return orders && user ? [[name, { username, password: user.password }]] : [];
+          }),
+        );
         const browserLogin = {
           RECONCILE_USERNAME: RECONCILE_USER,
           RECONCILE_PASSWORD: supervisor.password,
+          RECONCILE_ACCOUNTS: JSON.stringify(accounts),
         };
         log(`logged in as ${RECONCILE_USER} (supervisor, made by the bootstrap admin)`);
         phase('mesReady');
@@ -482,6 +598,64 @@ async function main(): Promise<boolean> {
         );
         phase('gatewayConnected');
 
+        // Orders mode (#178): the ERP's orders imported, then the roles and the supervisor's
+        // release and dispatch through the UI while the simulator waits idle at the start, each
+        // command confirmed by its device fact before the next: the order headless applies them
+        // in (ADR-0030, B3). Only then the injections and the resume.
+        let webUrl = '';
+        let ctx: PassContext | undefined;
+        const ordersReport: Record<string, unknown> = {};
+        const goldenOrders = orders
+          ? ordersTruthSchema.parse(
+              (
+                JSON.parse(await readFile(join(GOLDEN, 'summary.json'), 'utf8')) as {
+                  orders: unknown;
+                }
+              ).orders,
+            )
+          : undefined;
+        if (orders) {
+          report.orders = ordersReport;
+          if (!withBrowser)
+            throw new Error(
+              'the orders pass dispatches through the UI: RECONCILE_BROWSER=0 is not possible',
+            );
+          const erp = new ErpClient(await stack.url('erp', 4600), stack.value('ERP_API_TOKEN'));
+          ctx = { stack, mes, erp, sim, gateway, log, fail };
+          log('starting web');
+          await stack.compose(['up', '--detach', '--wait', '--no-build', 'web']);
+          webUrl = await stack.url('web', 8080);
+          ordersReport.import = await checkImport(ctx);
+          log(`the MES imported the ERP's orders: ${JSON.stringify(ordersReport.import)}`);
+          const exitCode = await runBrowser('orders-dispatch', {
+            RECONCILE_WEB_URL: webUrl,
+            RECONCILE_MES_URL: mes.base,
+            RECONCILE_RESULTS: RESULTS_DIR,
+            RECONCILE_RELEASE: JSON.stringify(scenario.erp?.release ?? []),
+            RECONCILE_DISPATCHES: JSON.stringify(scenario.dispatches ?? []),
+            RECONCILE_ROLE_ORDER: scenario.erp?.release[0] ?? '',
+            ...browserLogin,
+          });
+          ordersReport.roles = await readJson(join(RESULTS_DIR, 'roles.json'));
+          ordersReport.dispatchTimings = await readJson(join(RESULTS_DIR, 'dispatch.json'));
+          if (exitCode !== 0) {
+            throw new Error(
+              `the roles or the release and dispatch through the UI failed (Playwright exit ${String(exitCode)})`,
+            );
+          }
+          ordersReport.dispatch = await checkDispatch(
+            ctx,
+            scenario.dispatches ?? [],
+            goldenOrders?.jobs ?? [],
+          );
+          const still = await sim.status();
+          if (still.state !== 'idle' || Date.parse(still.simTime) !== start) {
+            throw new Error(`the simulator moved during the dispatch: ${JSON.stringify(still)}`);
+          }
+          log(`dispatched through the UI: ${JSON.stringify(ordersReport.dispatch)}`);
+          phase('dispatch');
+        }
+
         // The scenario's shift A injections, before the resume, in its order: the same events in
         // the queue as in the headless run (control API 1.3, "Determinism").
         const posted: Injection[] = [];
@@ -508,9 +682,11 @@ async function main(): Promise<boolean> {
         }
         log(`scheduled ${String(posted.length)} injections of ${shiftKey}`);
 
-        log('starting web');
-        await stack.compose(['up', '--detach', '--wait', '--no-build', 'web']);
-        const webUrl = await stack.url('web', 8080);
+        if (!orders) {
+          log('starting web');
+          await stack.compose(['up', '--detach', '--wait', '--no-build', 'web']);
+          webUrl = await stack.url('web', 8080);
+        }
         phase('webReady');
 
         // 3. Go: shift A at 60×.
@@ -520,11 +696,12 @@ async function main(): Promise<boolean> {
         const resumedAt = Date.now();
         await sim.resume();
         if (withBrowser) {
-          browser = runBrowser('live', {
+          browser = runBrowser(orders ? 'orders-live' : 'live', {
             RECONCILE_WEB_URL: webUrl,
             RECONCILE_SIM_URL: sim.base,
             RECONCILE_MES_URL: mes.base,
-            RECONCILE_RESULTS: RESULTS,
+            RECONCILE_RESULTS: RESULTS_DIR,
+            RECONCILE_TERMINAL_ORDER: RUNNING_ORDER,
             RECONCILE_SHIFT: shiftKey,
             RECONCILE_ALARMS_UNTIL: new Date(alarmsUntil).toISOString(),
             RECONCILE_OEE_UNTIL: new Date(oeeUntil).toISOString(),
@@ -570,6 +747,22 @@ async function main(): Promise<boolean> {
             afterEnd = await factsAfterEnd();
             const silent = machines.filter((id) => afterEnd[id] === undefined);
             if (silent.length === 0) break;
+            // Orders mode (#178): a CNC without a job stays Idle NO-ORDER for hours after the
+            // shift (CNC-02 from 08:55 to the shift B break at 18:00 in orders-01), so the run is
+            // paused and stepped on, event by event, until every machine has sent its fact: the
+            // same events as paced, without minutes of waiting.
+            if (orders && ctx) {
+              await sim.pause();
+              ordersReport.silentSteps = await stepUntil(
+                ctx,
+                'a fact of every machine after the shift end',
+                async () => {
+                  afterEnd = await factsAfterEnd();
+                  return machines.every((id) => afterEnd[id] !== undefined);
+                },
+              );
+              break;
+            }
             // Its own wall budget too: twice its nominal wall time, plus a minute.
             const waitedMs = Date.now() - waitFrom.wall;
             if (
@@ -804,7 +997,7 @@ async function main(): Promise<boolean> {
           );
         }
 
-        // The live run reproduces the headless alarms-01's shift A: pacing never changes the run.
+        // The live run reproduces the headless scenario's shift A: pacing never changes the run.
         const golden = JSON.parse(await readFile(join(GOLDEN, 'summary.json'), 'utf8')) as {
           machines: Record<string, { byShift: Record<string, StateMs> }>;
           oee: unknown;
@@ -821,7 +1014,7 @@ async function main(): Promise<boolean> {
         report.injections = {
           scenario: GOLDEN.slice(REPO.length + 1),
           posted: injections.length,
-          prefixEvidence: PREFIX_TEST,
+          prefixEvidence: PASSES[pass].evidence,
           applied: applied.map(({ id, machine, code, at, status, heldAt, appliedAt }) => ({
             id,
             machine,
@@ -848,7 +1041,7 @@ async function main(): Promise<boolean> {
         }
 
         // Alarm KPIs (#142, #147): shift A of the plant and of each position, per shift and per
-        // hour, final and equal to the live ground truth and to alarms-01's golden summary.
+        // hour, final and equal to the live ground truth and to the scenario's golden summary.
         const alarmFrom = Date.now();
         const alarmScopes = Object.keys(truth.alarms.scopes).sort();
         const readAlarms = () =>
@@ -950,7 +1143,7 @@ async function main(): Promise<boolean> {
           }
           if (goldenDiffs.length > 0) {
             fail(
-              `${id}: the live ground truth's ${shiftKey} alarm KPIs differ from alarms-01's:\n  ${goldenDiffs.join('\n  ')}`,
+              `${id}: the live ground truth's ${shiftKey} alarm KPIs differ from ${goldenName}'s:\n  ${goldenDiffs.join('\n  ')}`,
             );
           }
           if (notFinal(bucket)) {
@@ -992,10 +1185,10 @@ async function main(): Promise<boolean> {
         report.goldenShiftEqual = goldenDiffs.length === 0;
         if (goldenDiffs.length > 0) {
           fail(
-            `the live ground truth differs from alarms-01's ${shiftKey} (truth = golden, MES = live):\n${formatDifferences(goldenDiffs)}`,
+            `the live ground truth differs from ${goldenName}'s ${shiftKey} (truth = golden, MES = live):\n${formatDifferences(goldenDiffs)}`,
           );
         }
-        // Its OEE too: the injected breakdowns change availability (Phase 5 checks on alarms-01).
+        // Its OEE too: the injected breakdowns change availability (Phase 5 checks on the scenario).
         // The golden summary is read through the live answer's schema, so both hold the same fields.
         const goldenOee = groundTruthSchema.shape.oee.parse(golden.oee);
         const goldenOeeDiffs = [
@@ -1015,7 +1208,7 @@ async function main(): Promise<boolean> {
         report.goldenOeeEqual = goldenOeeDiffs.length === 0;
         if (goldenOeeDiffs.length > 0) {
           fail(
-            `the live ground truth's ${shiftKey} OEE differs from alarms-01's:\n  ${goldenOeeDiffs.join('\n  ')}`,
+            `the live ground truth's ${shiftKey} OEE differs from ${goldenName}'s:\n  ${goldenOeeDiffs.join('\n  ')}`,
           );
         }
 
@@ -1062,36 +1255,93 @@ async function main(): Promise<boolean> {
         if (browser) {
           const exitCode = await browser;
           browser = undefined;
-          const browserReport = await readFile(join(RESULTS, 'overview-latency.json'), 'utf8').then(
-            (text) => JSON.parse(text) as unknown,
-            () => undefined,
-          );
-          const oeeReport = await readFile(join(RESULTS, 'oee-latency.json'), 'utf8').then(
-            (text) => JSON.parse(text) as unknown,
-            () => undefined,
-          );
-          const alarmsReport = await readFile(join(RESULTS, 'alarms-latency.json'), 'utf8').then(
-            (text) => JSON.parse(text) as unknown,
-            () => undefined,
-          );
           report.browser = {
             exitCode,
-            report: browserReport,
-            oee: oeeReport,
-            alarms: alarmsReport,
+            report: await readJson(join(RESULTS_DIR, 'overview-latency.json')),
+            oee: await readJson(join(RESULTS_DIR, 'oee-latency.json')),
+            alarms: await readJson(join(RESULTS_DIR, 'alarms-latency.json')),
+            ...(orders
+              ? { terminal: await readJson(join(RESULTS_DIR, 'terminal-latency.json')) }
+              : {}),
           };
           if (exitCode !== 0) {
             fail(
-              `the live alarms, overview or OEE check failed (Playwright exit ${String(exitCode)})`,
+              `the live ${orders ? 'alarms, OEE or terminal' : 'alarms, overview or OEE'} check failed (Playwright exit ${String(exitCode)})`,
             );
           }
         }
         phase('browser');
 
+        // 6. Orders mode (#178, exit criteria 4 and 5), after the drain: the orders, the refusals,
+        //    the step to a scrap, the terminals and the close, the audit, the outbox posted again.
+        if (orders && ctx) {
+          const operations = loaded.config.products.operations;
+          ordersReport.afterDrain = await checkOrdersAfterDrain(
+            ctx,
+            truth,
+            goldenOrders ?? { jobs: [], orders: {}, units: { count: 0, sha256: '' } },
+            shift.to,
+            operations,
+          );
+          log(`orders after the drain: ${JSON.stringify(ordersReport.afterDrain)}`);
+          const operator = users.get(ORDER_USERS.operator.username);
+          const operator2 = users.get(ORDER_USERS.operator2.username);
+          const maintenance = users.get(ORDER_USERS.maintenance.username);
+          if (!operator || !operator2 || !maintenance) throw new Error('order users missing');
+          ordersReport.refusals = await checkRefusals(
+            ctx,
+            {
+              supervisor: supervisor.cookie,
+              operator: { username: ORDER_USERS.operator.username, password: operator.password },
+              operator2: { username: ORDER_USERS.operator2.username, password: operator2.password },
+              maintenance: {
+                username: ORDER_USERS.maintenance.username,
+                password: maintenance.password,
+              },
+            },
+            { completed: CLOSE_ORDER, running: RUNNING_ORDER, unreleased: UNRELEASED_ORDER },
+          );
+          phase('ordersChecked');
+          ordersReport.step = await stepToScrap(ctx, SCRAP_ORDER);
+          log(`stepped to ${SCRAP_ORDER}'s scrap: ${JSON.stringify(ordersReport.step)}`);
+          phase('stepToScrap');
+          const exitCode = await runBrowser('orders-final', {
+            RECONCILE_WEB_URL: webUrl,
+            RECONCILE_MES_URL: mes.base,
+            RECONCILE_RESULTS: RESULTS_DIR,
+            RECONCILE_CLOSE_ORDER: CLOSE_ORDER,
+            RECONCILE_SCRAP_ORDER: SCRAP_ORDER,
+            ...browserLogin,
+          });
+          ordersReport.terminal = await readJson(join(RESULTS_DIR, 'terminal-close.json'));
+          if (exitCode !== 0) {
+            fail(
+              `the terminal sign-off, scrap coding or close failed (Playwright exit ${String(exitCode)})`,
+            );
+          }
+          ordersReport.audit = await checkAuditAndClose(
+            ctx,
+            CLOSE_ORDER,
+            {
+              supervisor: RECONCILE_USER,
+              operator: ORDER_USERS.operator.username,
+              operator2: ORDER_USERS.operator2.username,
+            },
+            shiftKey,
+          );
+          phase('terminal');
+          const ids = Object.keys(goldenOrders?.orders ?? {})
+            .concat(UNRELEASED_ORDER)
+            .sort();
+          ordersReport.repost = await repostOutbox(ctx, ids);
+          log(`outbox posted again: ${JSON.stringify(ordersReport.repost)}`);
+          phase('repost');
+        }
+
         // 6. Through the UI, after the drain: alarm actions (#147), the downtime recode (#123) and
         //    a handover note (#147). Shift A is final and the simulator paused, so nothing but these
         //    writes can change anything, and neither the alarm KPIs nor OEE may change at all.
-        if (withBrowser) {
+        if (withBrowser && !orders) {
           const kpiTexts = () =>
             Promise.all(
               alarmScopes.flatMap((id) =>
@@ -1110,14 +1360,14 @@ async function main(): Promise<boolean> {
           const oeeBefore = await mes.shiftOeeText(shiftKey);
           browser = runBrowser('final', {
             RECONCILE_WEB_URL: webUrl,
-            RECONCILE_RESULTS: RESULTS,
+            RECONCILE_RESULTS: RESULTS_DIR,
             RECONCILE_SHIFT: shiftKey,
             ...browserLogin,
           });
           const exitCode = await browser;
           browser = undefined;
           const read = (name: string) =>
-            readFile(join(RESULTS, name), 'utf8').then(
+            readFile(join(RESULTS_DIR, name), 'utf8').then(
               (text) => JSON.parse(text) as unknown,
               () => undefined,
             );
@@ -1159,7 +1409,7 @@ async function main(): Promise<boolean> {
     if (failed) {
       try {
         const logs = await stack.compose(['logs', '--no-color', '--timestamps']);
-        await writeFile(join(RESULTS, 'compose.log'), logs);
+        await writeFile(join(RESULTS_DIR, 'compose.log'), logs);
         const tail = await stack.compose(['logs', '--no-color', '--tail', '60']);
         console.error(
           `--- service logs (last 60 lines each; all in e2e/results/compose.log) ---\n${tail}`,
@@ -1169,14 +1419,24 @@ async function main(): Promise<boolean> {
       }
     }
     report.totalMs = Date.now() - started;
-    await writeFile(join(RESULTS, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
+    await writeFile(join(RESULTS_DIR, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
     clearTimeout(deadlineTimer);
     await stack.destroy().catch((error: unknown) => {
       console.error('could not remove the stack', error);
     });
+    process.off('SIGINT', stop);
+    process.off('SIGTERM', stop);
   }
   summarize(report);
   return report.failures.length === 0;
+}
+
+/** A JSON file a Playwright check wrote, or undefined when it wrote none. */
+function readJson(path: string): Promise<unknown> {
+  return readFile(path, 'utf8').then(
+    (text) => JSON.parse(text) as unknown,
+    () => undefined,
+  );
 }
 
 /** An alarm KPI bucket of the MES in the ground truth's shape (`AlarmKpisJson`, sim-summary/3). */

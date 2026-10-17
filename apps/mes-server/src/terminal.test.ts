@@ -977,6 +977,81 @@ describe('the terminal view after a change (#190 re-review)', () => {
     const allowed = Math.max(changed, before === undefined ? 0 : before + PACE_MS);
     expect((after[0]?.at ?? Infinity) - allowed).toBeLessThan(1_500 + maxLagMs);
   }, 180_000);
+
+  it('drops the kept execution on every change of the execution module (no clock involved)', async () => {
+    // The wiring `execution.onChange → memoized.clear()` on its own (#190, review of PR #215): with
+    // a pace of an hour, the memo never expires and no delta is ever due, so only that clear can
+    // make a later snapshot read the execution again.
+    const h = await harness('memo_clear');
+    await h.shifts.tick();
+    await started(h, 'M-1');
+    let reads = 0;
+    const orderExecution = h.execution.orderExecution.bind(h.execution);
+    h.execution.orderExecution = (orderId) => {
+      reads++;
+      return orderExecution(orderId);
+    };
+    const http = await buildMesHttp({
+      ready: () => Promise.resolve(true),
+      identity: h.identity,
+      auth: true,
+      push: { heartbeatMs: 3_600_000, clockMs: 3_600_000, terminalMs: 3_600_000 },
+    });
+    cleanups.push(() => http.app.close());
+    const none = () => () => undefined;
+    await http.realtime.attach({
+      masterData: new MasterData(h.db),
+      equipment: {
+        currentStates: () => [],
+        currentState: () => undefined,
+        onChange: none,
+        watermark: () => undefined,
+        watermarks: () => [],
+      },
+      ingest: { onStored: none, telemetryMetrics: () => Promise.resolve([]) },
+      oee: { workCenters: () => Promise.resolve([]), onChange: none },
+      coding: {},
+      orders: h.orders,
+      execution: h.execution,
+      shifts: h.shifts,
+    } as unknown as ApiSources);
+    /** A new subscriber of `topic`: resolves with its snapshot. */
+    const snapshotOf = async (topic: string): Promise<ServerMessage> => {
+      const sent: ServerMessage[] = [];
+      const emitter = new EventEmitter();
+      const socket = Object.assign(emitter, {
+        bufferedAmount: 0,
+        send: (data: string) => {
+          sent.push(serverMessageSchema.parse(JSON.parse(data)));
+        },
+        ping: () => undefined,
+        close: () => undefined,
+        terminate: () => undefined,
+      }) as unknown as PushSocket;
+      http.realtime.push.connect(socket);
+      emitter.emit('message', Buffer.from(JSON.stringify({ type: 'subscribe', topic })), false);
+      for (;;) {
+        const snapshot = sent.find((m) => m.type === 'snapshot');
+        if (snapshot) return snapshot;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    const scrapOf = (m: ServerMessage) =>
+      'view' in m ? m.view.orders[0]?.operations[0]?.counts.scrap : undefined;
+
+    expect(scrapOf(await snapshotOf('terminal:cell-m1'))).toBe(0);
+    await snapshotOf('terminal:line-a1');
+    const kept = reads;
+    expect(kept).toBeGreaterThan(0);
+    // Without a change, a new subscriber's snapshot comes from the memo.
+    expect(scrapOf(await snapshotOf('terminal:cell-m1'))).toBe(0);
+    expect(reads).toBe(kept);
+    // The order's last cycle, a scrap: the execution module changes, the memo is dropped, and the
+    // next snapshot reads the execution again and shows the scrap.
+    await finished(h, 'M-1', 1);
+    expect(scrapOf(await snapshotOf('terminal:cell-m1'))).toBe(1);
+    expect(reads).toBeGreaterThan(kept);
+  });
 });
 
 describe('the terminal API and push (#177)', () => {

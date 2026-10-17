@@ -107,6 +107,20 @@ function useHandover(): [Handover | undefined, (next: Handover | undefined) => v
   return [shown, show];
 }
 
+/**
+ * The mutation that set a temporary password holds it in its variables (review of PR #186): once
+ * the password is hidden (Done, the timer, the session), the mutation is reset and forgets it.
+ */
+function useForgetPassword(
+  handover: Handover | undefined,
+  mutation: { readonly isSuccess: boolean; readonly reset: () => void },
+): void {
+  const { isSuccess, reset } = mutation;
+  useEffect(() => {
+    if (!handover && isSuccess) reset();
+  }, [handover, isSuccess, reset]);
+}
+
 /** The temporary password of a create or a reset: shown once, for the admin to hand over. */
 function TemporaryPassword({
   handover: { username, password },
@@ -151,6 +165,8 @@ function CreateUser() {
   useUnsavedDraft(username.trim() !== '');
   const create = useMutation({
     mutationFn: (password: string) => createUser({ username: username.trim(), roles, password }),
+    // Removed from the mutation cache as soon as it is reset (it holds the password).
+    gcTime: 0,
     onSuccess: (user, password) => {
       setHandover({ username: user.username, password });
       setMessage({ kind: 'saved', text: `Created ${user.username} (${rolesText(user.roles)}).` });
@@ -162,6 +178,7 @@ function CreateUser() {
       setMessage(userWriteFailure(error));
     },
   });
+  useForgetPassword(handover, create);
   return (
     <form
       noValidate
@@ -263,6 +280,7 @@ function UserRow({ user, self }: { readonly user: UserDto; readonly self: boolea
   });
   const reset = useMutation({
     mutationFn: (password: string) => resetPassword(user.username, password),
+    gcTime: 0,
     onSuccess: (next, password) => {
       setHandover({ username: next.username, password });
       done(`New temporary password for ${next.username}; their sessions ended.`);
@@ -271,6 +289,7 @@ function UserRow({ user, self }: { readonly user: UserDto; readonly self: boolea
       setMessage(userWriteFailure(error));
     },
   });
+  useForgetPassword(handover, reset);
   const busy = update.isPending || reset.isPending;
   return (
     <li

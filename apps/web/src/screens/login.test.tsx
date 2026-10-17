@@ -179,7 +179,7 @@ describe('roles in the app (#170)', () => {
   it('lets an admin create a user with a generated temporary password, shown once', async () => {
     const mes = fakeMes({ signedIn: true, roles: ['admin'] });
     vi.stubGlobal('fetch', mes.fetch);
-    await renderApp('/admin/users', { session: 'fetch' });
+    const app = await renderApp('/admin/users', { session: 'fetch' });
     expect(await screen.findByTestId('nav-users')).toBeTruthy();
     fireEvent.change(await screen.findByTestId('new-username'), { target: { value: 'can' } });
     fireEvent.click(screen.getByTestId('new-role-supervisor'));
@@ -195,6 +195,14 @@ describe('roles in the app (#170)', () => {
     // Hidden on request (#170 review L2); it also goes after two minutes or with the session.
     fireEvent.click(screen.getByTestId('hide-temporary-password'));
     expect(screen.queryByTestId('temporary-password')).toBeNull();
+    // …and the mutation that set it forgets it (no variables with the password left).
+    await waitFor(() => {
+      const held = app.queryClient
+        .getMutationCache()
+        .getAll()
+        .some((m) => JSON.stringify(m.state.variables ?? null).includes(body.password));
+      expect(held).toBe(false);
+    });
   });
 
   it('shows the account with roles and permissions and changes the password', async () => {

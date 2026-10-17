@@ -1,7 +1,7 @@
 import { ROLES, type Role } from '@shopfloor/contracts/identity';
 import type { UserDto } from '@shopfloor/contracts/mes-api';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { createUser, getUsers, resetPassword, updateUser } from '../api/identity.ts';
 import { useAuth, useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
@@ -74,20 +74,69 @@ function RolePicker({
   );
 }
 
+/** How long a temporary password stays on the screen at most (#170 review L2). */
+export const HANDOVER_SHOWN_MS = 2 * 60_000;
+
+interface Handover {
+  readonly username: string;
+  readonly password: string;
+}
+
+/**
+ * The temporary password just set, shown until the admin hides it, for at most
+ * `HANDOVER_SHOWN_MS`, and never once the session is lost (a covered page keeps its state).
+ */
+function useHandover(): [Handover | undefined, (next: Handover | undefined) => void] {
+  // Tied to the session it was shown in: after a lost session and a re-login it stays hidden.
+  const [handover, setHandover] = useState<(Handover & { session: string }) | undefined>(undefined);
+  const { session } = useAuth();
+  const current = session?.createdAt;
+  const shown = handover && handover.session === current ? handover : undefined;
+  useEffect(() => {
+    if (!handover) return undefined;
+    const timer = setTimeout(() => {
+      setHandover(undefined);
+    }, HANDOVER_SHOWN_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [handover]);
+  const show = (next: Handover | undefined) => {
+    setHandover(next && current ? { ...next, session: current } : undefined);
+  };
+  return [shown, show];
+}
+
 /** The temporary password of a create or a reset: shown once, for the admin to hand over. */
-function TemporaryPassword({ username, password }: { username: string; password: string }) {
+function TemporaryPassword({
+  handover: { username, password },
+  onDone,
+}: {
+  readonly handover: Handover;
+  readonly onDone: () => void;
+}) {
   return (
     <div
       role="status"
       data-testid="temporary-password"
-      className="rounded border border-amber-700 bg-amber-50 p-2 text-sm"
+      className="flex flex-wrap items-center gap-2 rounded border border-amber-700 bg-amber-50 p-2 text-sm"
     >
-      Temporary password of <span className="font-semibold">{username}</span>:{' '}
-      <span className="select-all font-mono font-semibold" data-testid="temporary-password-value">
-        {password}
-      </span>
-      . Hand it over in person; it is shown only now. {username} must choose a new one at the first
-      login.
+      <p>
+        Temporary password of <span className="font-semibold">{username}</span>:{' '}
+        <span className="select-all font-mono font-semibold" data-testid="temporary-password-value">
+          {password}
+        </span>
+        . Hand it over in person; it is shown only now, for two minutes at most. {username} must
+        choose a new one at the first login.
+      </p>
+      <button
+        type="button"
+        data-testid="hide-temporary-password"
+        className={buttonClass}
+        onClick={onDone}
+      >
+        Done, hide it
+      </button>
     </div>
   );
 }
@@ -97,9 +146,7 @@ function CreateUser() {
   const [username, setUsername] = useState('');
   const [roles, setRoles] = useState<Role[]>(['operator']);
   const [message, setMessage] = useState<Message | undefined>(undefined);
-  const [handover, setHandover] = useState<{ username: string; password: string } | undefined>(
-    undefined,
-  );
+  const [handover, setHandover] = useHandover();
   const nameId = useId();
   useUnsavedDraft(username.trim() !== '');
   const create = useMutation({
@@ -162,7 +209,14 @@ function CreateUser() {
         login.
       </p>
       {message ? <MessageLine message={message} testId="create-message" /> : null}
-      {handover ? <TemporaryPassword {...handover} /> : null}
+      {handover ? (
+        <TemporaryPassword
+          handover={handover}
+          onDone={() => {
+            setHandover(undefined);
+          }}
+        />
+      ) : null}
       <div>
         <button
           type="submit"
@@ -183,9 +237,7 @@ function UserRow({ user, self }: { readonly user: UserDto; readonly self: boolea
   const [draft, setDraft] = useState<Role[] | undefined>(undefined);
   const roles = draft ?? [...user.roles];
   const [message, setMessage] = useState<Message | undefined>(undefined);
-  const [handover, setHandover] = useState<{ username: string; password: string } | undefined>(
-    undefined,
-  );
+  const [handover, setHandover] = useHandover();
   const changedRoles =
     roles.length !== user.roles.length || roles.some((role) => !user.roles.includes(role));
   useUnsavedDraft(changedRoles);
@@ -295,7 +347,12 @@ function UserRow({ user, self }: { readonly user: UserDto; readonly self: boolea
       ) : null}
       {handover ? (
         <div className="mt-2">
-          <TemporaryPassword {...handover} />
+          <TemporaryPassword
+            handover={handover}
+            onDone={() => {
+              setHandover(undefined);
+            }}
+          />
         </div>
       ) : null}
     </li>

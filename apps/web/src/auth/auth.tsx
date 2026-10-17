@@ -55,6 +55,8 @@ export interface Auth {
   readonly lost: LostSession | undefined;
   /** Why the last session of this tab ended, for `/login` to say: lost (above) or logged out. */
   readonly ended: LostReason | 'logout' | undefined;
+  /** A logout is still ending the session at the MES: the login waits for it (#170 review L3). */
+  readonly loggingOut: boolean;
   readonly drafts: Drafts;
   /** Whether the session's roles hold the permission (`ROLE_PERMISSIONS` of contracts). */
   readonly can: (permission: Permission) => boolean;
@@ -101,9 +103,27 @@ export function useUnsavedDraft(dirty: boolean): void {
   }, [drafts, id, dirty]);
 }
 
-/** Empties every cached read but the session: another user, or nobody, is next. */
+/**
+ * Empties every cached read but the session, and every mutation's state (its variables may hold
+ * what the last user typed): another user, or nobody, is next.
+ */
 function forgetData(queryClient: QueryClient): void {
   queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== sessionKey[0] });
+  queryClient.getMutationCache().clear();
+}
+
+/**
+ * The browser storage keys of earlier versions that held people's input: `shopfloor.codedBy`, the
+ * name typed into the write screens before #170. Removed at start; storage may refuse.
+ */
+export const LEGACY_STORAGE_KEYS = ['shopfloor.codedBy'] as const;
+
+export function forgetLegacyStorage(storage: () => Storage = () => globalThis.localStorage): void {
+  try {
+    for (const key of LEGACY_STORAGE_KEYS) storage().removeItem(key);
+  } catch {
+    // Private mode or blocked storage: nothing was stored either.
+  }
 }
 
 export function AuthProvider({ children }: { readonly children: ReactNode }) {
@@ -119,8 +139,14 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const [lost, setLost] = useState<LostSession | undefined>(undefined);
   const [ended, setEnded] = useState<LostReason | 'logout' | undefined>(undefined);
   const [drafts] = useState(() => new Drafts());
+  const [loggingOut, setLoggingOut] = useState(false);
+  useEffect(() => {
+    forgetLegacyStorage();
+  }, []);
   // The last user who held a session in this tab: a login as anyone else empties the cache.
   const lastUser = useRef<string | undefined>(undefined);
+  // Moves with every login and logout: a logout empties the cache only if it is still the last.
+  const generation = useRef(0);
   useEffect(() => {
     if (session) lastUser.current = session.user.username;
   }, [session]);
@@ -148,6 +174,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       const sameUser = previous === next.user.username;
       if (!sameUser) forgetData(queryClient);
       lastUser.current = next.user.username;
+      generation.current += 1;
       queryClient.setQueryData(sessionKey, next);
       setLost(undefined);
       setEnded(undefined);
@@ -166,16 +193,22 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const logOut = useCallback(async () => {
     // The page goes first (no session: the shell leaves it), then the socket and the cookie.
     lastUser.current = undefined;
+    generation.current += 1;
+    const mine = generation.current;
     setLost(undefined);
     setEnded('logout');
     queryClient.setQueryData(sessionKey, null);
     live.stop();
+    setLoggingOut(true);
     try {
       await logout();
     } catch {
       // The cookie may outlive an unreachable MES; the session still ends at its idle expiry.
+    } finally {
+      setLoggingOut(false);
     }
-    forgetData(queryClient);
+    // Only if nobody logged in meanwhile: their reads must stay.
+    if (generation.current === mine) forgetData(queryClient);
   }, [queryClient, live]);
 
   const refresh = useCallback(async () => {
@@ -188,6 +221,8 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   useEffect(() => {
     const events = authEventsFor(queryClient);
     const stopEvents = events.listen((signal) => {
+      // `password` or `forbidden`: the session's roles or its temporary password may have changed
+      // (an admin's edit); read it again so the screens show what it may do now.
       if (signal === 'ended') sessionLost('ended');
       else void queryClient.invalidateQueries({ queryKey: sessionKey });
     });
@@ -207,6 +242,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       error: query.error,
       lost,
       ended,
+      loggingOut,
       drafts,
       // A page kept under the re-login keeps what its user's roles allowed, so no form unmounts.
       can: (permission) => {
@@ -219,7 +255,19 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       refresh,
       startLive,
     }),
-    [session, query.error, lost, ended, drafts, loggedIn, logOut, sessionLost, refresh, startLive],
+    [
+      session,
+      query.error,
+      lost,
+      ended,
+      loggingOut,
+      drafts,
+      loggedIn,
+      logOut,
+      sessionLost,
+      refresh,
+      startLive,
+    ],
   );
   return <AuthContext value={value}>{children}</AuthContext>;
 }

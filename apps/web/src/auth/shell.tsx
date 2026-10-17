@@ -1,6 +1,7 @@
 import type { SessionDto } from '@shopfloor/contracts/mes-api';
 import { Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 import { useEffect, useId, useRef, useState } from 'react';
+import { serverClockOffsetMs } from '../api/client.ts';
 import { logout } from '../api/identity.ts';
 import { LoginForm } from '../screens/login.tsx';
 import { RootLayout } from '../screens/root-layout.tsx';
@@ -15,7 +16,7 @@ import {
   storeActivity,
   storedActivity,
 } from './idle.ts';
-import { safeRedirect } from './redirect.ts';
+import { isLogin, safeRedirect } from './redirect.ts';
 
 const buttonClass =
   'rounded border border-slate-700 bg-white px-3 py-1 text-sm font-medium text-slate-900 hover:bg-slate-100 disabled:opacity-60';
@@ -41,7 +42,7 @@ function Protected() {
   const location = useRouterState({ select: (state) => state.location });
   const { session, lost } = auth;
   // On the way to /login (the location moved, the matches not yet): nothing to show or redirect.
-  if (location.pathname === '/login') return null;
+  if (isLogin(location.pathname)) return null;
   const href = location.href;
   if (session === undefined) {
     return <SessionPending error={auth.error} />;
@@ -140,10 +141,12 @@ function IdleWatch({ session }: { readonly session: SessionDto }) {
         storeActivity(at);
       }
     };
+    // Another tab of this app was used: that is use too. Its keepalives move the MES's idle
+    // expiry, so this tab reads the session again (throttled) to see the new expiry.
     const onStorage = (event: StorageEvent) => {
       if (event.key !== ACTIVITY_STORAGE_KEY) return;
       const at = Number(event.newValue);
-      if (Number.isFinite(at)) lastActivity.current = Math.max(lastActivity.current, at);
+      if (Number.isFinite(at) && at > 0) used(Math.min(at, Date.now()));
     };
     stay.current = () => {
       lastKeepalive.current = 0;
@@ -163,9 +166,15 @@ function IdleWatch({ session }: { readonly session: SessionDto }) {
     };
   }, [refresh]);
 
-  const deadline = idleDeadline(session, clock.last);
+  const deadline = idleDeadline(session, clock.last, serverClockOffsetMs());
   const left = deadline.at - clock.now;
   const over = left <= 0;
+  const warning = !over && left <= IDLE_WARNING_MS;
+  // The warning reads the session once (#170 review M3): the MES's own idle expiry may have
+  // moved with requests this tab doesn't see (polling screens, other tabs).
+  useEffect(() => {
+    if (warning) void refresh().catch(() => undefined);
+  }, [warning, refresh]);
   useEffect(() => {
     if (!over) return;
     // Ends the session at the MES too (other tabs then close their sockets with 4401).
@@ -173,7 +182,7 @@ function IdleWatch({ session }: { readonly session: SessionDto }) {
     sessionLost('idle');
   }, [over, sessionLost]);
 
-  if (left > IDLE_WARNING_MS || over) return null;
+  if (!warning) return null;
   return (
     <div
       role="alert"

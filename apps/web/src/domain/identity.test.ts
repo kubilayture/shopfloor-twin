@@ -1,6 +1,7 @@
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../api/client.ts';
+import { authSignalOf } from '../auth/events.ts';
 import { countdownText, idleDeadline } from '../auth/idle.ts';
 import { safeRedirect } from '../auth/redirect.ts';
 import { sessionOf } from '../test/fixtures.ts';
@@ -24,6 +25,18 @@ describe('identity on screen (#170)', () => {
       'javascript:alert(1)',
       'alarms',
       '/login?redirect=/x',
+      // Normalised by the URL parser to `//evil.test` (#170 review M1): dot segments are refused.
+      '/.//evil.test',
+      '/..//evil.test',
+      '/%2e//evil.test',
+      '/%2E%2E//evil.test',
+      '/a/..//evil.test/x',
+      '/a/./b',
+      '/%zz',
+      // `/login` in any case, with trailing slashes.
+      '/login/',
+      '/LOGIN',
+      '/Login//?redirect=/x',
       '/a\nb',
       '',
       42,
@@ -37,9 +50,23 @@ describe('identity on screen (#170)', () => {
     const now = Date.parse('2026-10-15T08:00:00.000Z');
     const session = {
       ...sessionOf(['operator']),
+      idleExpiresAt: '2026-10-15T23:00:00.000Z',
       expiresAt: '2026-10-15T18:00:00.000Z',
     };
     expect(idleDeadline(session, now)).toEqual({ at: now + 3_600_000, absolute: false });
+    // The MES's own idle expiry, when earlier (#170 review M3): never past the MES's deadline.
+    expect(idleDeadline({ ...session, idleExpiresAt: '2026-10-15T08:30:00.000Z' }, now)).toEqual({
+      at: Date.parse('2026-10-15T08:30:00.000Z'),
+      absolute: false,
+    });
+    // The MES's clock 3 minutes ahead of this one: its times move 3 minutes earlier here.
+    expect(
+      idleDeadline({ ...session, idleExpiresAt: '2026-10-15T08:30:00.000Z' }, now, 180_000),
+    ).toEqual({ at: Date.parse('2026-10-15T08:27:00.000Z'), absolute: false });
+    expect(idleDeadline(session, Date.parse('2026-10-15T17:30:00.000Z'), -60_000)).toEqual({
+      at: Date.parse('2026-10-15T18:01:00.000Z'),
+      absolute: true,
+    });
     expect(idleDeadline({ ...session, kind: 'terminal' }, now)).toEqual({
       at: now + 900_000,
       absolute: false,
@@ -101,5 +128,11 @@ describe('identity on screen (#170)', () => {
       userWriteFailure(problem(403, PROBLEM_TYPES.forbidden, 'permission user:admin needed')),
     ).toMatchObject({ kind: 'refused' });
     expect(rolesText(['supervisor', 'operator'])).toBe('Operator, Supervisor');
+    // What the app does about a refusal (#170 review L4): a 403 forbidden reads the session again.
+    expect(authSignalOf(problem(401, PROBLEM_TYPES.unauthenticated))).toBe('ended');
+    expect(authSignalOf(problem(403, PROBLEM_TYPES.passwordChangeRequired))).toBe('password');
+    expect(authSignalOf(problem(403, PROBLEM_TYPES.forbidden))).toBe('forbidden');
+    expect(authSignalOf(problem(403, PROBLEM_TYPES.writeOrigin))).toBeUndefined();
+    expect(authSignalOf(new Error('x'))).toBeUndefined();
   });
 });

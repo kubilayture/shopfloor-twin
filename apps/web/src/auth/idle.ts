@@ -7,9 +7,9 @@ export const IDLE_WARNING_MS = 2 * 60_000;
 /**
  * A person's input reads the session again (counting as use at the MES) at most this often, so a
  * user who types a long draft without sending it keeps the session (the MES never counts pushed
- * messages, ADR-0026).
+ * messages, ADR-0026), and the MES's idle expiry this tab knows stays recent.
  */
-export const KEEPALIVE_MS = 2 * 60_000;
+export const KEEPALIVE_MS = 30_000;
 
 /** What counts as use here: a person's input, never a pushed message or a background refresh. */
 export const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
@@ -25,12 +25,23 @@ export interface IdleDeadline {
 }
 
 /**
- * When the app ends a session (#170): the idle timeout of its kind (desk 60 min, terminal 15 min)
- * after the last input in any of this browser's tabs, or the absolute expiry, whichever is first.
+ * When the app ends a session (#170), on this browser's clock: the idle timeout of its kind (desk
+ * 60 min, terminal 15 min) after the last input in any of this browser's tabs, or the MES's own
+ * idle expiry as last read (`idleExpiresAt`), or the absolute expiry, whichever is first (#170
+ * review M3). The MES's times are moved onto this clock by `serverOffsetMs` (the MES's clock
+ * minus this one, from the answers' `Date` headers), so a skewed clock can't let the web keep
+ * showing a session the MES has ended, or end one early.
  */
-export function idleDeadline(session: SessionDto, lastActivity: number): IdleDeadline {
-  const idle = lastActivity + SESSION_IDLE_MS[session.kind];
-  const absolute = Date.parse(session.expiresAt);
+export function idleDeadline(
+  session: SessionDto,
+  lastActivity: number,
+  serverOffsetMs = 0,
+): IdleDeadline {
+  const idle = Math.min(
+    lastActivity + SESSION_IDLE_MS[session.kind],
+    Date.parse(session.idleExpiresAt) - serverOffsetMs,
+  );
+  const absolute = Date.parse(session.expiresAt) - serverOffsetMs;
   return idle < absolute ? { at: idle, absolute: false } : { at: absolute, absolute: true };
 }
 

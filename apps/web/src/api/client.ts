@@ -123,6 +123,21 @@ function retryAfterOf(response: Response): number | undefined {
   return Number(value);
 }
 
+let serverOffset = 0;
+
+/**
+ * The MES's clock minus this browser's, from the last answer's `Date` header (1 s resolution; 0
+ * until one arrived): the idle timeout reads the MES's session times on this clock (#170).
+ */
+export function serverClockOffsetMs(): number {
+  return serverOffset;
+}
+
+function noteServerDate(response: Response): void {
+  const date = Date.parse(response.headers.get('date') ?? '');
+  if (Number.isFinite(date)) serverOffset = date - Date.now();
+}
+
 /** Sends a request under `/api/v1` and parses the JSON answer with a shared response schema. */
 async function requestJson<S extends z.ZodType>(
   path: string,
@@ -136,6 +151,7 @@ async function requestJson<S extends z.ZodType>(
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new ApiError('The MES cannot be reached', 0);
   }
+  noteServerDate(response);
   if (!response.ok) {
     const problem = await problemOf(response);
     throw new ApiError(

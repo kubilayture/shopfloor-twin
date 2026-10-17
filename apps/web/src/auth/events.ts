@@ -3,9 +3,10 @@ import { ApiError } from '../api/client.ts';
 
 /**
  * What a refused request says about the session (ADR-0026): `ended`, a 401 (no session, or one
- * that ended or expired); `password`, a 403 that asks for a password change first.
+ * that ended or expired); `password`, a 403 that asks for a password change first; `forbidden`, a
+ * 403 for a permission the session's roles lack (they may have changed since it was read).
  */
-export type AuthSignal = 'ended' | 'password';
+export type AuthSignal = 'ended' | 'password' | 'forbidden';
 
 export function authSignalOf(error: unknown): AuthSignal | undefined {
   if (!(error instanceof ApiError)) return undefined;
@@ -13,6 +14,7 @@ export function authSignalOf(error: unknown): AuthSignal | undefined {
   if (error.status === 403 && error.problem?.type === PROBLEM_TYPES.passwordChangeRequired) {
     return 'password';
   }
+  if (error.status === 403 && error.problem?.type === PROBLEM_TYPES.forbidden) return 'forbidden';
   return undefined;
 }
 

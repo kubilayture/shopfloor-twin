@@ -30,6 +30,8 @@ export function LoginForm({
   readonly fixedUsername?: string;
   readonly onLoggedIn: (session: SessionDto, password: string) => void;
 }) {
+  // A logout still ending at the MES would clear the cookie of this login (#170 review L3).
+  const { loggingOut } = useAuth();
   const [username, setUsername] = useState(fixedUsername ?? '');
   const [password, setPassword] = useState('');
   const [message, setMessage] = useState<string | undefined>(undefined);
@@ -111,10 +113,10 @@ export function LoginForm({
       <button
         type="submit"
         data-testid="login-submit"
-        disabled={submit.isPending}
+        disabled={submit.isPending || loggingOut}
         className={primaryClass}
       >
-        {submit.isPending ? 'Logging in…' : 'Log in'}
+        {loggingOut ? 'Logging out…' : submit.isPending ? 'Logging in…' : 'Log in'}
       </button>
     </form>
   );

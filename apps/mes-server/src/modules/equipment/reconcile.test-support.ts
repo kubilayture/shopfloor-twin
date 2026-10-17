@@ -1978,11 +1978,14 @@ const deliveryTime = (d: Delivery): number =>
 /**
  * Per-test limits: with execution and genealogy (#199) the golden week takes about 165 s in order
  * (a cut and two full trace comparisons of 2,200 units) and 205 s shuffled locally; quality-01's
- * shuffled test, with its two extra orderings, about 200 s. The end-to-end job's limit grows
- * with them (CI does not run it; the local gate has none).
+ * shuffled test, with its two extra orderings, about 200 s, alone. Vitest runs the e2e files side
+ * by side, so under load they take two to three times as long (quality-01's shuffled test passed
+ * its every comparison and timed out at 480 s while the other suites and another worktree's tests
+ * ran): the limits leave that room. The end-to-end job's limit grows with them (CI does not run
+ * it; the local gate has none).
  */
-const IN_ORDER_MS = 360_000;
-const SHUFFLED_MS = 480_000;
+const IN_ORDER_MS = 600_000;
+const SHUFFLED_MS = 900_000;
 
 export interface Scenario {
   readonly seed: number;

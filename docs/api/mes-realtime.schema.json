@@ -3594,7 +3594,7 @@
                       },
                       "codedBy": {
                         "type": "string",
-                        "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
+                        "description": "The user name from the session; the name as typed in rows written before #170"
                       },
                       "codedAt": {
                         "type": "string",
@@ -3814,7 +3814,7 @@
                       "properties": {
                         "by": {
                           "type": "string",
-                          "description": "The user name from the session, or (MES_AUTH=off) the name as typed"
+                          "description": "The user name from the session; the name as typed in rows written before #170"
                         },
                         "at": {
                           "type": "string",
@@ -4989,11 +4989,11 @@
                 },
                 "createdBy": {
                   "type": "string",
-                  "description": "The user name, or (MES_AUTH=off) the name as typed"
+                  "description": "The user name; the name as typed in notes written before #170"
                 },
                 "author": {
                   "type": "string",
-                  "description": "Who wrote the current version: user name, or as typed"
+                  "description": "Who wrote the current version: the user name (as typed before #170)"
                 },
                 "version": {
                   "type": "integer",

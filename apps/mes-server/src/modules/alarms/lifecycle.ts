@@ -277,7 +277,7 @@ export async function retrying<T>(work: () => Promise<T>): Promise<T> {
 }
 
 export interface WriteContext {
-  /** The session's user, or (`MES_AUTH=off`, until #170) the name as typed. */
+  /** The session's user (#170); a typed name only in the module's own tests. */
   readonly actor: WriteBy;
   readonly requestId?: string | undefined;
   readonly clock: PlantClock | undefined;

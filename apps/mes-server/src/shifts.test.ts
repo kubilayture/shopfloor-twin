@@ -6,6 +6,7 @@
  * modules the report reads are fakes here, so every input's finality and revision is set by the
  * test; the golden reconciliation (`reconcile.test-support.ts`) runs the real ones.
  */
+import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { kpisOfBucket, prepare, type BadActor } from '@shopfloor/alarm-core';
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
@@ -75,6 +76,7 @@ let plant: PlantConfig;
 const databases: Kysely<Database>[] = [];
 const modules: Shifts[] = [];
 const apps: FastifyInstance[] = [];
+const identities: Identity[] = [];
 
 beforeAll(async () => {
   ({ url: serverUrl, container } = await startDatabase());
@@ -85,6 +87,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   for (const app of apps) await app.close();
+  for (const identity of identities) identity.stop();
   for (const module of modules) await module.stop();
   for (const db of databases) await db.destroy();
   await container.stop();
@@ -855,7 +858,7 @@ describe('evaluation load, read order, concurrency and epochs (#144 review)', ()
 
   it('takes ?epoch on a note write', async () => {
     const context = await setup('api_epoch');
-    const front = await api(context);
+    const { front, write } = await api(context);
     const app = await front(true);
     context.fake.state.newer = { epoch: E1 + 1, clock: at('12:00') };
     await context.shifts.tick();
@@ -863,8 +866,8 @@ describe('evaluation load, read order, concurrency and epochs (#144 review)', ()
       app.inject({
         method: 'POST',
         url: `/api/v1/shifts/2026-10-12/B/notes?epoch=${String(epoch)}`,
-        headers: JSON_WRITE,
-        payload: { author: 'a', text: 'x', category: 'general' },
+        headers: write,
+        payload: { text: 'x', category: 'general' },
       });
     const newer = await post(E1 + 1);
     expect(newer.statusCode).toBe(200);
@@ -874,12 +877,25 @@ describe('evaluation load, read order, concurrency and epochs (#144 review)', ()
   });
 });
 
-/** An MES HTTP front over the fakes and a real `Shifts`, with or without writes. */
-async function api({
-  db,
-  fake,
-  shifts,
-}: Awaited<ReturnType<typeof setup>>): Promise<(writes: boolean) => Promise<FastifyInstance>> {
+/**
+ * MES HTTP fronts over the fakes and a real `Shifts`, with or without writes, and the write headers
+ * of a logged-in supervisor `ayse` (#170: every write has a session, also with MES_AUTH=off).
+ */
+async function api({ db, fake, shifts }: Awaited<ReturnType<typeof setup>>): Promise<{
+  front: (writes: boolean) => Promise<FastifyInstance>;
+  write: Record<string, string>;
+  identity: Identity;
+}> {
+  const identity = new Identity({ db, sweepMs: 0, hashParams: { N: 1024, r: 8, p: 1 } });
+  await identity.start();
+  identities.push(identity);
+  const password = randomBytes(15).toString('base64url');
+  await identity.createUser(
+    { username: 'ayse', roles: ['supervisor'], password, mustChangePassword: false },
+    { system: 'test' },
+  );
+  const { token } = await identity.login({ username: 'ayse', password, kind: 'desk' });
+  const write = { ...JSON_WRITE, cookie: `sft_session=${token}` };
   const masterData = new MasterData(db);
   await masterData.seed(plant);
   const none = () => () => undefined;
@@ -900,19 +916,20 @@ async function api({
     coding: {},
     shifts,
   } as unknown as ApiSources;
-  return async (writes) => {
-    const http = await buildMesHttp({ ready: () => Promise.resolve(true), writes });
+  const front = async (writes: boolean) => {
+    const http = await buildMesHttp({ ready: () => Promise.resolve(true), writes, identity });
     await http.realtime.attach(sources);
     apps.push(http.app);
     return http.app;
   };
+  return { front, write, identity };
 }
 
 describe('the shifts API and push (#144)', () => {
   it('serves the instance, report and notes; writes pass the guards; push sends upserts', async () => {
     const context = await setup('api');
     const { fake, shifts } = context;
-    const front = await api(context);
+    const { front, write } = await api(context);
     const app = await front(true);
     const get = async (url: string) =>
       app.inject({ method: 'GET', url: `/api/v1${url}`, headers: { host: HOST } });
@@ -932,20 +949,21 @@ describe('the shifts API and push (#144)', () => {
     const created = await app.inject({
       method: 'POST',
       url: '/api/v1/shifts/2026-10-12/A/notes',
-      headers: JSON_WRITE,
-      payload: { author: 'Ayşe', text: 'Fixture 3 worn', category: 'quality' },
+      headers: write,
+      payload: { text: 'Fixture 3 worn', category: 'quality' },
     });
     expect(created.statusCode).toBe(200);
     expect(created.headers['x-request-id']).toBeTruthy();
     const body = noteResultSchema.parse(created.json());
+    // The author is the session's user (#170).
+    expect(body.note).toMatchObject({ author: 'ayse', createdBy: 'ayse' });
     expect(body.shift.revision).toEqual({ inputs: 0, content: 1, contentAtFinal: null });
     const edit = (version: number) =>
       app.inject({
         method: 'PUT',
         url: `/api/v1/shifts/2026-10-12/A/notes/${String(body.note.id)}`,
-        headers: JSON_WRITE,
+        headers: write,
         payload: {
-          author: 'Mehmet',
           text: 'Fixture 3 replaced',
           category: 'quality',
           retracted: false,
@@ -962,44 +980,70 @@ describe('the shifts API and push (#144)', () => {
     const elsewhere = await app.inject({
       method: 'PUT',
       url: `/api/v1/shifts/2026-10-12/B/notes/${String(body.note.id)}`,
-      headers: JSON_WRITE,
-      payload: { author: 'x', text: 'y', category: 'quality', retracted: false, version: 2 },
+      headers: write,
+      payload: { text: 'y', category: 'quality', retracted: false, version: 2 },
     });
     expect(elsewhere.statusCode).toBe(404);
     const invalid = await app.inject({
       method: 'POST',
       url: '/api/v1/shifts/2026-10-12/A/notes',
-      headers: JSON_WRITE,
-      payload: { author: 'Ayşe', text: '', category: 'gossip' },
+      headers: write,
+      payload: { text: '', category: 'gossip' },
     });
     expect(invalid.statusCode).toBe(400);
+    // A typed author (before #170) is refused by the strict schema, on create and on edit.
+    const typed = await app.inject({
+      method: 'POST',
+      url: '/api/v1/shifts/2026-10-12/A/notes',
+      headers: write,
+      payload: { author: 'mallory', text: 'y', category: 'general' },
+    });
+    expect(typed.statusCode).toBe(400);
+    const typedEdit = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/shifts/2026-10-12/A/notes/${String(body.note.id)}`,
+      headers: write,
+      payload: { author: 'mallory', text: 'y', category: 'quality', retracted: false, version: 2 },
+    });
+    expect(typedEdit.statusCode).toBe(400);
+    // Without a session (MES_AUTH=off here): 401, while reads are served.
+    const anonymous = await app.inject({
+      method: 'POST',
+      url: '/api/v1/shifts/2026-10-12/A/notes',
+      headers: JSON_WRITE,
+      payload: { text: 'y', category: 'general' },
+    });
+    expect([anonymous.statusCode, problemSchema.parse(anonymous.json()).type]).toEqual([
+      401,
+      PROBLEM_TYPES.unauthenticated,
+    ]);
 
     // ADR-0023's guards, unchanged: no Origin, a foreign one, a form, a cross-site fetch.
-    const payload = { author: 'x', text: 'y', category: 'general' };
+    const payload = { text: 'y', category: 'general' };
     const url = '/api/v1/shifts/2026-10-12/A/notes';
     const refused = await Promise.all([
       app.inject({
         method: 'POST',
         url,
-        headers: { host: HOST, 'content-type': 'application/json' },
+        headers: { host: HOST, 'content-type': 'application/json', cookie: write.cookie ?? '' },
         payload,
       }),
       app.inject({
         method: 'POST',
         url,
-        headers: { ...JSON_WRITE, origin: 'http://evil.example' },
+        headers: { ...write, origin: 'http://evil.example' },
         payload,
       }),
       app.inject({
         method: 'POST',
         url,
-        headers: { ...JSON_WRITE, 'content-type': 'application/x-www-form-urlencoded' },
-        payload: 'author=x&text=y&category=general',
+        headers: { ...write, 'content-type': 'application/x-www-form-urlencoded' },
+        payload: 'text=y&category=general',
       }),
       app.inject({
         method: 'POST',
         url,
-        headers: { ...JSON_WRITE, 'sec-fetch-site': 'cross-site' },
+        headers: { ...write, 'sec-fetch-site': 'cross-site' },
         payload,
       }),
     ]);
@@ -1012,7 +1056,7 @@ describe('the shifts API and push (#144)', () => {
       PROBLEM_TYPES.writeOrigin,
     ]);
     const off = await front(false);
-    const turnedOff = await off.inject({ method: 'POST', url, headers: JSON_WRITE, payload });
+    const turnedOff = await off.inject({ method: 'POST', url, headers: write, payload });
     expect([turnedOff.statusCode, problemSchema.parse(turnedOff.json()).type]).toEqual([
       405,
       PROBLEM_TYPES.writesOff,
@@ -1022,7 +1066,7 @@ describe('the shifts API and push (#144)', () => {
 
     // Outside the handover window: 409.
     fake.state.clock = at('19:00');
-    const closed = await app.inject({ method: 'POST', url, headers: JSON_WRITE, payload });
+    const closed = await app.inject({ method: 'POST', url, headers: write, payload });
     expect(closed.statusCode).toBe(409);
     const closedProblem = problemSchema.parse(closed.json());
     expect(closedProblem.type).toBe(PROBLEM_TYPES.handoverClosed);
@@ -1046,9 +1090,17 @@ describe('the shifts API and push (#144)', () => {
     const audit = handoverAuditSchema.parse(
       (await get(`/shifts/2026-10-12/A/notes/${String(body.note.id)}/audit`)).json(),
     );
-    expect(audit.entries.map((e) => [e.action, e.after.text, e.requestId !== null])).toEqual([
-      ['edited', 'Fixture 3 replaced', true],
-      ['created', 'Fixture 3 worn', true],
+    expect(
+      audit.entries.map((e) => [
+        e.action,
+        e.actor,
+        e.authenticated,
+        e.after.text,
+        e.requestId !== null,
+      ]),
+    ).toEqual([
+      ['edited', 'ayse', true, 'Fixture 3 replaced', true],
+      ['created', 'ayse', true, 'Fixture 3 worn', true],
     ]);
 
     const report = await get('/shifts/2026-10-12/A/report');
@@ -1139,7 +1191,7 @@ describe('handover notes by a session user (#169)', () => {
       sweepMs: 0,
       hashParams: { N: 1024, r: 8, p: 1 },
     }).createUser(
-      { username: 'selin', roles: ['quality'], password: 'a long enough password' },
+      { username: 'selin', roles: ['quality'], password: randomBytes(15).toString('base64url') },
       { system: 'test' },
     );
     const user = { userId: created.id, username: 'selin', roles: created.roles };

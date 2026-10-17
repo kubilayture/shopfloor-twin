@@ -21,7 +21,7 @@ export function LiveProvider({ client, children }: { client: LiveClient; childre
   return <LiveContext value={client}>{children}</LiveContext>;
 }
 
-function useLiveClient(): LiveClient {
+export function useLiveClient(): LiveClient {
   const client = use(LiveContext);
   if (!client) throw new Error('useLiveClient needs a LiveProvider');
   return client;

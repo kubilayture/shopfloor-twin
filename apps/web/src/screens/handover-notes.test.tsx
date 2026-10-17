@@ -1,21 +1,14 @@
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { json, problem } from '../test/fixtures.ts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { json, problem, sessionOf } from '../test/fixtures.ts';
 import { renderApp } from '../test/render-app.tsx';
 import { auditEntry, note, shiftRecord } from '../test/shift-fixtures.ts';
-import { memoryStorage, shiftMes, shiftState, type Write } from '../test/shift-mes.ts';
+import { shiftMes, shiftState, type Write } from '../test/shift-mes.ts';
 
 vi.mock('../chart/echarts-view.tsx', () => ({ EChartsView: () => null }));
 
 const PATH = '/shifts/2026-10-15/A';
-
-let storage: Storage;
-
-beforeEach(() => {
-  storage = memoryStorage();
-  vi.stubGlobal('localStorage', storage);
-});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -26,21 +19,20 @@ const type = (element: HTMLElement, value: string) => {
 };
 
 describe('handover note editor', () => {
-  it('creates a note with the remembered author and shows it as plain text', async () => {
-    storage.setItem('shopfloor.codedBy', 'Mehmet');
+  it("creates a note as the session's user and shows it as plain text", async () => {
     const state = shiftState();
     const text = '<img src=x onerror="alert(1)"> Coolant topped up\nsecond line';
     const write: Write = (method, path, body) => {
       const created = note(1, {
         text,
         category: 'material',
-        author: 'Mehmet',
-        createdBy: 'Mehmet',
+        author: 'ayse',
+        createdBy: 'ayse',
       });
       state.notes = [created];
       expect(method).toBe('POST');
       expect(path).toBe('/api/v1/shifts/2026-10-15/A/notes');
-      expect(body).toEqual({ author: 'Mehmet', text, category: 'material' });
+      expect(body).toEqual({ text, category: 'material' });
       return json({
         note: created,
         shift: shiftRecord({ revision: { inputs: 0, content: 1, contentAtFinal: null } }),
@@ -50,7 +42,8 @@ describe('handover note editor', () => {
     vi.stubGlobal('fetch', server.fetch);
     await renderApp(PATH);
     const form = await screen.findByTestId('new-note');
-    expect(screen.getByTestId<HTMLInputElement>('note-author').value).toBe('Mehmet');
+    // No name to type: the MES records the session's user (#170).
+    expect(screen.queryByTestId('note-author')).toBeNull();
     fireEvent.change(within(form).getByTestId('note-category'), { target: { value: 'material' } });
     type(within(form).getByTestId('note-text-input'), text);
     fireEvent.click(within(form).getByTestId('add-note'));
@@ -66,36 +59,27 @@ describe('handover note editor', () => {
     expect(post?.path).toMatch(/\?epoch=\d+$/);
   });
 
-  it('asks for the author before sending and remembers it after a write', async () => {
+  it('asks for the text before sending', async () => {
     const state = shiftState();
-    const write: Write = () => {
-      const created = note(1, { author: 'Zeynep' });
-      state.notes = [created];
-      return json({ note: created, shift: shiftRecord() });
-    };
-    const server = shiftMes(state, write);
+    const server = shiftMes(state);
     vi.stubGlobal('fetch', server.fetch);
     await renderApp(PATH);
     const form = await screen.findByTestId('new-note');
-    type(within(form).getByTestId('note-text-input'), 'Hello');
+    type(within(form).getByTestId('note-text-input'), '   ');
     fireEvent.click(within(form).getByTestId('add-note'));
-    expect(within(form).getByTestId('new-note-message').dataset.kind).toBe('invalid');
+    expect(within(form).getByTestId('new-note-message').textContent).toContain(
+      'Write the note first',
+    );
     expect(server.calls.some((call) => call.method === 'POST')).toBe(false);
-    type(screen.getByTestId('note-author'), 'Zeynep');
-    fireEvent.click(within(form).getByTestId('add-note'));
-    await screen.findByTestId('note-1');
-    expect(storage.getItem('shopfloor.codedBy')).toBe('Zeynep');
   });
 
   it('edits a note with the version it started from and shows its history', async () => {
-    storage.setItem('shopfloor.codedBy', 'Mehmet');
     const first = note(1);
     const state = shiftState({ notes: [first] });
     const write: Write = (method, path, body) => {
       expect(method).toBe('PUT');
       expect(path).toBe('/api/v1/shifts/2026-10-15/A/notes/1');
       expect(body).toEqual({
-        author: 'Mehmet',
         text: 'Pump replaced',
         category: 'equipment',
         retracted: true,
@@ -105,10 +89,11 @@ describe('handover note editor', () => {
         version: 2,
         text: 'Pump replaced',
         retracted: true,
-        author: 'Mehmet',
+        author: 'ayse',
       });
       state.notes = [edited];
-      state.history = { 1: [auditEntry(edited), auditEntry(first)] };
+      // The edit came with a session; the note was created before #170 (typed name).
+      state.history = { 1: [auditEntry(edited, { authenticated: true }), auditEntry(first)] };
       return json({
         note: edited,
         shift: shiftRecord({ revision: { inputs: 0, content: 2, contentAtFinal: null } }),
@@ -141,10 +126,13 @@ describe('handover note editor', () => {
         ['1', 'created'],
       ]);
     });
+    const [edit, create] = within(history).getAllByTestId('note-history-entry');
+    expect(edit?.textContent).toContain('edited by ayse at');
+    expect(edit?.textContent).not.toContain('not authenticated');
+    expect(create?.textContent).toContain('created by Ayşe (not authenticated)');
   });
 
   it('never sends a draft over a note that moved on (pushed), and reloads it', async () => {
-    storage.setItem('shopfloor.codedBy', 'Mehmet');
     const state = shiftState({ notes: [note(1)] });
     const server = shiftMes(state);
     vi.stubGlobal('fetch', server.fetch);
@@ -176,7 +164,6 @@ describe('handover note editor', () => {
   });
 
   it('on 409 keeps the draft, reads the notes again and offers a reload', async () => {
-    storage.setItem('shopfloor.codedBy', 'Mehmet');
     const state = shiftState({ notes: [note(1)] });
     const write: Write = () => {
       // Someone else's edit landed first, and its push has not reached this tab.
@@ -209,7 +196,6 @@ describe('handover note editor', () => {
   });
 
   it('explains a closed handover window and the note limit', async () => {
-    storage.setItem('shopfloor.codedBy', 'Mehmet');
     const state = shiftState();
     let answer = problem(
       409,
@@ -254,7 +240,6 @@ describe('handover note editor', () => {
   });
 
   it('starts every draft afresh on another shift, also one read before (M1)', async () => {
-    storage.setItem('shopfloor.codedBy', 'Mehmet');
     const state = shiftState({ notes: [note(1)] });
     const server = shiftMes(state);
     vi.stubGlobal('fetch', server.fetch);
@@ -302,5 +287,26 @@ describe('handover note editor', () => {
     await waitFor(() => {
       expect(within(section).getByRole('alert').textContent).toContain('Could not load the notes');
     });
+  });
+
+  it.each([
+    ['admin', ['admin'] as const, false],
+    ['quality', ['quality'] as const, true],
+  ])('lets a %s write notes only with note:write', async (_role, roles, writes) => {
+    const state = shiftState({ notes: [note(1)] });
+    vi.stubGlobal('fetch', shiftMes(state).fetch);
+    await renderApp(PATH, { session: sessionOf(roles) });
+    await screen.findByTestId('note-1');
+    // The notes and their history stay readable either way.
+    expect(screen.getByTestId('note-history-toggle-1')).toBeTruthy();
+    if (writes) {
+      expect(screen.getByTestId('new-note')).toBeTruthy();
+      expect(screen.getByTestId('edit-note-1')).toBeTruthy();
+      expect(screen.queryByTestId('notes-read-only')).toBeNull();
+    } else {
+      expect(screen.queryByTestId('new-note')).toBeNull();
+      expect(screen.queryByTestId('edit-note-1')).toBeNull();
+      expect(screen.getByTestId('notes-read-only').textContent).toContain('cannot write');
+    }
   });
 });

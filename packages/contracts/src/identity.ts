@@ -96,6 +96,18 @@ export function passwordLength(password: string): number {
 export const SESSION_KINDS = ['desk', 'terminal'] as const;
 export type SessionKind = (typeof SESSION_KINDS)[number];
 
+/**
+ * A session ends after this long without use (ADR-0026): the MES counts requests, never pushed
+ * messages; the web counts a person's input (#170).
+ */
+export const SESSION_IDLE_MS: Readonly<Record<SessionKind, number>> = {
+  desk: 60 * 60_000,
+  terminal: 15 * 60_000,
+};
+
+/** A session ends this long after the login, whatever the use. */
+export const SESSION_ABSOLUTE_MS = 12 * 60 * 60_000;
+
 /** The session cookie on plain HTTP; with `MES_COOKIE_SECURE=on` it is `__Host-sft_session`. */
 export const SESSION_COOKIE = 'sft_session';
 export const SECURE_SESSION_COOKIE = '__Host-sft_session';

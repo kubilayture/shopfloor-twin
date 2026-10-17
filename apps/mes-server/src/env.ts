@@ -25,9 +25,10 @@ export const envSchema = z.object({
   HTTP_ALLOWED_ORIGINS: z.string().trim().default(''),
   // Writes (#121, ADR-0023): `off` answers every non-GET request under /api/v1 with 405.
   MES_WRITES: z.enum(['on', 'off']).default('on'),
-  // Identity (#168, ADR-0026): `on` needs a session on every /api/v1 route but the login, and on
-  // the WebSocket; `off` (the default until #170) serves everyone as before and logs a warning.
-  MES_AUTH: z.enum(['on', 'off']).default('off'),
+  // Identity (#168, #170, ADR-0026): `on` (the default) needs a session on every /api/v1 route but
+  // the login, and on the WebSocket. `off` is for one-off diagnosis only: reads and the WebSocket
+  // are served without a session (writes still need one) and the MES logs a warning.
+  MES_AUTH: z.enum(['on', 'off']).default('on'),
   // `on` marks the session cookie `Secure` and names it `__Host-sft_session` (behind TLS only).
   MES_COOKIE_SECURE: z.enum(['on', 'off']).default('off'),
   // Optional: creates the user `admin` (must change its password) when no enabled admin exists.

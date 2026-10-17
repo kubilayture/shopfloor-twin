@@ -123,6 +123,29 @@ function retryAfterOf(response: Response): number | undefined {
   return Number(value);
 }
 
+let serverOffset = 0;
+
+/**
+ * The MES's clock minus this browser's, from the `Date` header of the last answer that came back
+ * within `OFFSET_MAX_RTT_MS` (1 s resolution; 0 until one arrived): the idle timeout reads the
+ * MES's session times on this clock (#170). Behind a proxy that sets its own `Date`, it is the
+ * proxy's clock (nginx in Compose sends its own; the containers share the host's clock).
+ */
+export function serverClockOffsetMs(): number {
+  return serverOffset;
+}
+
+/** A slower answer's `Date` may be stale by its round trip: only faster ones set the offset. */
+export const OFFSET_MAX_RTT_MS = 1_000;
+
+function noteServerDate(response: Response, sentAt: number): void {
+  const receivedAt = Date.now();
+  if (receivedAt - sentAt > OFFSET_MAX_RTT_MS) return;
+  const date = Date.parse(response.headers.get('date') ?? '');
+  // The MES stamped it somewhere between sending and receiving: the midpoint is the best guess.
+  if (Number.isFinite(date)) serverOffset = date - (sentAt + receivedAt) / 2;
+}
+
 /** Sends a request under `/api/v1` and parses the JSON answer with a shared response schema. */
 async function requestJson<S extends z.ZodType>(
   path: string,
@@ -130,12 +153,15 @@ async function requestJson<S extends z.ZodType>(
   init: RequestInit,
 ): Promise<z.output<S>> {
   let response: Response;
+  const sentAt = Date.now();
   try {
-    response = await fetch(`${API_BASE}${path}`, init);
+    // Never from the HTTP cache: a session read or a plant value must be the MES's answer now.
+    response = await fetch(`${API_BASE}${path}`, { cache: 'no-store', ...init });
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new ApiError('The MES cannot be reached', 0);
   }
+  noteServerDate(response, sentAt);
   if (!response.ok) {
     const problem = await problemOf(response);
     throw new ApiError(

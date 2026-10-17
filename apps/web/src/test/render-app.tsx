@@ -1,9 +1,12 @@
+import type { SessionDto } from '@shopfloor/contracts/mes-api';
 import { createMemoryHistory } from '@tanstack/react-router';
 import { act, render } from '@testing-library/react';
 import { createQueryClient, App } from '../app.tsx';
+import { sessionKey } from '../auth/auth.tsx';
 import { connectLiveToCache } from '../live/live-cache.ts';
 import { LiveClient } from '../live/live-client.ts';
 import { socketFactory } from './fake-socket.ts';
+import { SESSION } from './fixtures.ts';
 
 /** Runs an update and lets TanStack Query's batched notifications (a 0 ms timeout) reach React. */
 export async function settle(update: () => void): Promise<void> {
@@ -13,11 +16,21 @@ export async function settle(update: () => void): Promise<void> {
   });
 }
 
+export interface RenderOptions {
+  /**
+   * The session the app starts with (#170): a supervisor by default, so screens show every write
+   * but user administration; `null` for none (the app goes to `/login`); `'fetch'` to read it with
+   * `GET /api/v1/session` from the stubbed fetch.
+   */
+  readonly session?: SessionDto | null | 'fetch';
+}
+
 /** The whole app at a path, with a fake socket the test drives and the stubbed fetch. */
-export async function renderApp(path: string) {
+export async function renderApp(path: string, { session = SESSION }: RenderOptions = {}) {
   const factory = socketFactory();
   const queryClient = createQueryClient();
   queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 5_000 } });
+  if (session !== 'fetch') queryClient.setQueryData(sessionKey, session);
   const live = new LiveClient({ url: 'ws://test/api/v1/ws', createSocket: factory.create });
   connectLiveToCache(live, queryClient);
   live.start();
@@ -36,9 +49,9 @@ export async function renderApp(path: string) {
       settle(() => {
         factory.last.open();
       }),
-    drop: () =>
+    drop: (code?: number) =>
       settle(() => {
-        factory.last.drop();
+        factory.last.drop(code);
       }),
     push: (...messages: Parameters<(typeof factory)['last']['receive']>[0][]) =>
       settle(() => {

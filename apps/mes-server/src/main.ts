@@ -200,8 +200,8 @@ try {
   await identity.start({ bootstrapAdminPassword: env.MES_BOOTSTRAP_ADMIN_PASSWORD });
   if (env.MES_AUTH === 'off') {
     log.warn(
-      'MES_AUTH=off: the API and the WebSocket serve requests without a session (ADR-0026); ' +
-        'only the session routes need one',
+      'MES_AUTH=off (diagnosis only): reads and the WebSocket are served without a session ' +
+        '(ADR-0026); writes still need one. Set MES_AUTH=on (the default) again when done',
     );
   } else {
     log.info('MES_AUTH=on: every route but the login needs a session');

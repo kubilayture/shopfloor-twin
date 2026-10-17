@@ -1,3 +1,4 @@
+import { WS_CLOSE_FORBIDDEN, WS_CLOSE_UNAUTHENTICATED } from '@shopfloor/contracts/identity';
 import {
   serverMessageSchema,
   type ClientMessage,
@@ -41,6 +42,13 @@ interface Subscription {
   sent: boolean;
 }
 
+/**
+ * Close codes after which the client stops instead of reconnecting (ADR-0026): 4401, no or an ended
+ * session; 4403, a session that may not read (it must change its password first). Reconnecting
+ * would only be closed again; the app logs in and calls `start()`.
+ */
+const AUTH_CLOSES: ReadonlySet<number> = new Set([WS_CLOSE_UNAUTHENTICATED, WS_CLOSE_FORBIDDEN]);
+
 /** Errors after which the unconfirmed subscriptions are asked for again (ADR-0019 limits). */
 const RETRIED = new Set(['busy', 'rate-limited', 'unavailable']);
 
@@ -66,6 +74,7 @@ export class LiveClient {
   readonly #subscriptions = new Map<string, Subscription>();
   readonly #messageListeners = new Set<(message: ServerMessage) => void>();
   readonly #statusListeners = new Set<() => void>();
+  readonly #authListeners = new Set<(code: number) => void>();
   #socket: LiveSocket | undefined;
   #status: LiveStatus = 'stopped';
   #attempt = 0;
@@ -159,6 +168,15 @@ export class LiveClient {
     return () => this.#statusListeners.delete(listener);
   }
 
+  /**
+   * Called with 4401 or 4403 when the MES closed the socket for its session (ADR-0026). The client
+   * has stopped then: subscriptions are kept and sent again after the next `start()`.
+   */
+  onAuthClose(listener: (code: number) => void): () => void {
+    this.#authListeners.add(listener);
+    return () => this.#authListeners.delete(listener);
+  }
+
   #release(key: string): void {
     const subscription = this.#subscriptions.get(key);
     if (!subscription) return;
@@ -215,7 +233,7 @@ export class LiveClient {
     socket.onmessage = (event) => {
       this.#receive(event.data);
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (this.#socket !== socket) return;
       this.#socket = undefined;
       for (const subscription of this.#subscriptions.values()) {
@@ -223,6 +241,12 @@ export class LiveClient {
         subscription.sent = false;
       }
       this.#clearSending();
+      if (AUTH_CLOSES.has(event.code)) {
+        this.#attempt = 0;
+        this.#setStatus('stopped');
+        for (const listener of this.#authListeners) listener(event.code);
+        return;
+      }
       this.#scheduleReconnect();
     };
   }

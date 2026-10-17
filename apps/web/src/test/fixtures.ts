@@ -1,4 +1,5 @@
-import type { CurrentStateDto, EquipmentDto } from '@shopfloor/contracts/mes-api';
+import { permissionsOf, type Role } from '@shopfloor/contracts/identity';
+import type { CurrentStateDto, EquipmentDto, SessionDto } from '@shopfloor/contracts/mes-api';
 
 export const EPOCH = 1_790_000_000;
 
@@ -51,7 +52,7 @@ export const PLANT = {
   epochs: [{ epoch: EPOCH, watermark: '2026-10-15T06:10:00.000Z' }],
 };
 
-type Handler = (url: URL) => Response | Promise<Response>;
+type Handler = (url: URL, init?: RequestInit) => Response | Promise<Response>;
 
 export const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -69,12 +70,44 @@ export const problem = (
     headers: { 'content-type': 'application/problem+json' },
   });
 
-/** A fetch that answers by path; unknown paths are 404 problems. */
+const NOW = Date.now();
+
+/** A session of `username` with these roles (#170): what `GET /api/v1/session` answers. */
+export function sessionOf(
+  roles: readonly Role[] = ['supervisor'],
+  overrides: { username?: string; mustChangePassword?: boolean; kind?: 'desk' | 'terminal' } = {},
+): SessionDto {
+  return {
+    user: {
+      id: 7,
+      username: overrides.username ?? 'ayse',
+      roles: [...roles],
+      permissions: permissionsOf(roles),
+      mustChangePassword: overrides.mustChangePassword ?? false,
+    },
+    kind: overrides.kind ?? 'desk',
+    // Wall time around the test run, so the idle timeout here never ends it by surprise.
+    createdAt: new Date(NOW - 60_000).toISOString(),
+    idleExpiresAt: new Date(NOW + 60 * 60_000).toISOString(),
+    expiresAt: new Date(NOW + 12 * 60 * 60_000).toISOString(),
+  };
+}
+
+/** The session every screen test runs in unless it answers `/api/v1/session` itself. */
+export const SESSION = sessionOf();
+
+/**
+ * A fetch that answers by path; unknown paths are 404 problems. `GET /api/v1/session` answers
+ * `SESSION` (a supervisor) unless the routes answer it.
+ */
 export function fakeFetch(routes: Record<string, Handler>) {
-  return async (input: RequestInfo | URL): Promise<Response> => {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
     const handler = routes[url.pathname];
-    if (handler) return handler(url);
+    if (handler) return handler(url, init);
+    if (url.pathname === '/api/v1/session' && (init?.method ?? 'GET') === 'GET') {
+      return json(SESSION);
+    }
     return problem(404, 'Not Found', 'Unknown equipment, metric or route', url.pathname);
   };
 }

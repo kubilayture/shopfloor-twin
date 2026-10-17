@@ -52,6 +52,43 @@ export function parseUserCreateArgs(argv: readonly string[]): UserCreateArgs | s
   };
 }
 
+/**
+ * `user:disable --username <name>` (`node src/user-cli.ts --disable --username <name>`, #170): a
+ * user that may no longer log in, its sessions ended (audited as `system: cli`). The stack smoke
+ * disables its per-run user with it. The last enabled admin can't be disabled.
+ */
+export function parseUserDisableArgs(argv: readonly string[]): { username: string } | string {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: [...argv],
+      options: { disable: { type: 'boolean' }, username: { type: 'string' } },
+      strict: true,
+      allowPositionals: false,
+    });
+  } catch (error) {
+    return (error as Error).message;
+  }
+  if (parsed.values.disable !== true) return 'missing --disable';
+  if (parsed.values.username === undefined) return 'missing --username';
+  return { username: parsed.values.username };
+}
+
+/** Disables the user; the outcome as a line for the operator. */
+export async function userDisable(
+  db: Kysely<Database>,
+  username: string,
+): Promise<{ readonly ok: boolean; readonly message: string }> {
+  const identity = new Identity({ db, sweepMs: 0 });
+  try {
+    const user = await identity.updateUser(username, { enabled: false }, { system: 'cli' });
+    return { ok: true, message: `disabled user ${user.username}` };
+  } catch (error) {
+    if (error instanceof IdentityError) return { ok: false, message: error.message };
+    throw error;
+  }
+}
+
 /** The password from stdin's text: one trailing line break (from `echo` or a file) is dropped. */
 export function passwordFromStdin(text: string): string {
   return text.replace(/\r?\n$/, '');
@@ -82,16 +119,37 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-if (import.meta.main) {
-  const args = parseUserCreateArgs(process.argv.slice(2));
-  if (typeof args === 'string') {
-    console.error(`${args}\n${USAGE}`);
-    process.exit(2);
-  }
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
   // Only the database URL: the CLI needs nothing else of the MES's environment.
   const env = z
     .object({ DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }) })
     .safeParse(process.env);
+  if (argv.includes('--disable')) {
+    const args = parseUserDisableArgs(argv);
+    if (typeof args === 'string') {
+      console.error(`${args}\nusage: user:disable --username <name>`);
+      process.exit(2);
+    }
+    if (!env.success) {
+      console.error('DATABASE_URL: expected a postgres:// URL (hidden)');
+      process.exit(2);
+    }
+    const db = createDatabase(env.data.DATABASE_URL, 1);
+    try {
+      const result = await userDisable(db, args.username);
+      (result.ok ? console.log : console.error)(result.message);
+      process.exitCode = result.ok ? 0 : 1;
+    } finally {
+      await db.destroy();
+    }
+    return;
+  }
+  const args = parseUserCreateArgs(argv);
+  if (typeof args === 'string') {
+    console.error(`${args}\n${USAGE}`);
+    process.exit(2);
+  }
   if (!env.success) {
     console.error('DATABASE_URL: expected a postgres:// URL (hidden)');
     process.exit(2);
@@ -107,3 +165,5 @@ if (import.meta.main) {
     await db.destroy();
   }
 }
+
+if (import.meta.main) await main();

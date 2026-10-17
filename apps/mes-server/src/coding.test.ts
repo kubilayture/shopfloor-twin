@@ -20,7 +20,7 @@ import {
   type CodingChange,
 } from './modules/equipment/index.ts';
 import { PLANT_CONFIG, UnsFeed, freshDatabase } from './modules/equipment/test-support.ts';
-import { Identity } from './modules/identity/index.ts';
+import { Identity, type Principal } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 import { DowntimeFeed, Oee } from './modules/oee/index.ts';
@@ -50,7 +50,12 @@ const feed = new UnsFeed(new Map());
 
 const HOST = 'localhost:4700';
 const ORIGIN = `http://${HOST}`;
-const JSON_WRITE = { host: HOST, origin: ORIGIN, 'content-type': 'application/json' };
+/** A write's headers; `beforeAll` adds the session cookie of `ayse` (#170: every write has one). */
+const JSON_WRITE: Record<string, string> = {
+  host: HOST,
+  origin: ORIGIN,
+  'content-type': 'application/json',
+};
 
 let container: StartedTestContainer;
 let plant: PlantConfig;
@@ -62,6 +67,14 @@ let downtime: DowntimeFeed;
 let coding: DowntimeCoding;
 let sources: ApiSources;
 let app: FastifyInstance;
+let identity: Identity;
+/** The session cookie and principal of each test user (all supervisors). */
+const users: Record<string, { cookie: string; principal: Principal }> = {};
+/** A write's headers as another user. */
+const as = (username: string): Record<string, string> => ({
+  ...JSON_WRITE,
+  cookie: users[username]?.cookie ?? '',
+});
 const apps: FastifyInstance[] = [];
 
 const send = async (...deliveries: { topic: string; payload: string }[]): Promise<void> => {
@@ -70,7 +83,7 @@ const send = async (...deliveries: { topic: string; payload: string }[]): Promis
 
 /** Another MES HTTP front over the same modules (other options). */
 async function front(options: Parameters<typeof buildMesHttp>[0]): Promise<FastifyInstance> {
-  const http = await buildMesHttp(options);
+  const http = await buildMesHttp({ identity, ...options });
   await http.realtime.attach(sources);
   apps.push(http.app);
   return http.app;
@@ -123,11 +136,24 @@ beforeAll(async () => {
       audit: (key) => coding.audit(key),
     },
   };
-  // A high write rate here: the global limit has its own test below.
+  identity = new Identity({ db, sweepMs: 0, hashParams: { N: 1024, r: 8, p: 1 } });
+  await identity.start();
+  for (const username of ['ayse', 'mehmet', 'zeynep']) {
+    const password = randomBytes(15).toString('base64url');
+    await identity.createUser(
+      { username, roles: ['supervisor'], password, mustChangePassword: false },
+      { system: 'test' },
+    );
+    const { token, principal } = await identity.login({ username, password, kind: 'desk' });
+    users[username] = { cookie: `sft_session=${token}`, principal };
+  }
+  JSON_WRITE.cookie = users.ayse?.cookie ?? '';
+  // High write rates here: the global limit has its own test below.
   app = await front({
     ready: () => Promise.resolve(true),
     push: { clockMs: 50, oeeMs: 100 },
     writeRate: { perSecond: 1000, burst: 1000 },
+    userWriteRate: { perSecond: 1000, burst: 1000 },
   });
 
   // CNC-01 in shift A: a breakdown 03:40-04:20, a long stop 05:00-05:30 (UNCODED), cycles.
@@ -152,6 +178,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   for (const each of apps) await each.close();
+  identity.stop();
   coding.stop();
   downtime.stop();
   oee.stop();
@@ -188,7 +215,7 @@ const version = async (id: string): Promise<number> =>
   (await records(id.split('~')[0])).find((r) => r.id === id)?.version ?? -1;
 
 describe('write guards (ADR-0023)', () => {
-  const valid = () => ({ segments: [], codedBy: 'guard test', version: 0 });
+  const valid = () => ({ segments: [], version: 0 });
 
   it('refuses a write without Origin, from another origin or site, or not as JSON', async () => {
     for (const [name, headers, status, detail] of [
@@ -280,17 +307,17 @@ describe('write guards (ADR-0023)', () => {
   });
 
   it('limits the body to 16 KiB and parses it strictly', async () => {
-    const big = await put(STOP_ID, { ...valid(), codedBy: 'x'.repeat(17 * 1024) });
+    const big = await put(STOP_ID, { ...valid(), pad: 'x'.repeat(17 * 1024) });
     expect(big.statusCode).toBe(413);
     expect(big.headers['content-type']).toMatch(/^application\/problem\+json/);
     for (const body of [
       '{not json',
       { ...valid(), extra: 1 },
-      { ...valid(), codedBy: ' ' },
+      // The typed name of before #170: the user comes from the session only.
+      { ...valid(), codedBy: 'mallory' },
       { ...valid(), version: -1 },
       {
         segments: [{ from: 'yesterday', to: iso('05:10'), reason: 'MATERIAL' }],
-        codedBy: 'a',
         version: 0,
       },
     ]) {
@@ -382,7 +409,6 @@ describe('coding downtime records (#121)', () => {
       segments: [
         { from: iso('05:00'), to: iso('05:10'), reason: 'MATERIAL', comment: 'no blanks' },
       ],
-      codedBy: 'Ayşe',
       version: v0,
     });
     expect(first.statusCode).toBe(200);
@@ -403,17 +429,20 @@ describe('coding downtime records (#121)', () => {
           to: iso('05:10'),
           reason: 'MATERIAL',
           comment: 'no blanks',
-          codedBy: 'Ayşe',
+          codedBy: 'ayse',
         },
       ],
     });
 
     // A second client still holding v0 loses.
-    const stale = await put(STOP_ID, {
-      segments: [{ from: iso('05:00'), to: iso('05:30'), reason: 'MINOR-STOP/CHIP-JAM' }],
-      codedBy: 'Mehmet',
-      version: v0,
-    });
+    const stale = await put(
+      STOP_ID,
+      {
+        segments: [{ from: iso('05:00'), to: iso('05:30'), reason: 'MINOR-STOP/CHIP-JAM' }],
+        version: v0,
+      },
+      as('mehmet'),
+    );
     expect(stale.statusCode).toBe(409);
     expect(problemSchema.parse(stale.json()).detail).toMatch(/version is \d+, not \d+/);
     expect(problemSchema.parse(stale.json()).type).toBe(PROBLEM_TYPES.codingStale);
@@ -421,14 +450,17 @@ describe('coding downtime records (#121)', () => {
     // A split: two codings cover the whole stop; the larger names the record.
     const split = codingResultSchema.parse(
       (
-        await put(STOP_ID, {
-          segments: [
-            { from: iso('05:10'), to: iso('05:30'), reason: 'MINOR-STOP/CHIP-JAM' },
-            { from: iso('05:00'), to: iso('05:10'), reason: 'MATERIAL' },
-          ],
-          codedBy: 'Mehmet',
-          version: v0 + 1,
-        })
+        await put(
+          STOP_ID,
+          {
+            segments: [
+              { from: iso('05:10'), to: iso('05:30'), reason: 'MINOR-STOP/CHIP-JAM' },
+              { from: iso('05:00'), to: iso('05:10'), reason: 'MATERIAL' },
+            ],
+            version: v0 + 1,
+          },
+          as('mehmet'),
+        )
       ).json(),
     );
     expect(split.record).toMatchObject({
@@ -448,7 +480,7 @@ describe('coding downtime records (#121)', () => {
 
     // Clearing restores the auto reason.
     const cleared = codingResultSchema.parse(
-      (await put(STOP_ID, { segments: [], codedBy: 'Mehmet', version: split.version })).json(),
+      (await put(STOP_ID, { segments: [], version: split.version }, as('mehmet'))).json(),
     );
     expect(cleared.record).toMatchObject({ reason: 'UNCODED', codings: [], uncoded: true });
   });
@@ -469,7 +501,7 @@ describe('coding downtime records (#121)', () => {
       [[{ from: iso('03:40'), to: iso('04:00'), reason: 'UNCODED' }], /not an active reason/],
       [[{ from: iso('03:40'), to: iso('04:00'), reason: 'NO-SUCH' }], /not an active reason/],
     ] as const) {
-      const response = await put(DOWN_ID, { segments, codedBy: 'x', version: v });
+      const response = await put(DOWN_ID, { segments, version: v });
       expect([segments, response.statusCode]).toEqual([segments, 422]);
       expect(problemSchema.parse(response.json()).detail).toMatch(detail);
     }
@@ -478,11 +510,14 @@ describe('coding downtime records (#121)', () => {
 
   it('audits every write with actor, request id and before/after, append-only', async () => {
     const v = await version(DOWN_ID);
-    const response = await put(DOWN_ID, {
-      segments: [{ from: iso('03:40'), to: iso('04:20'), reason: 'BREAKDOWN/COOLANT-PRESSURE' }],
-      codedBy: 'Zeynep',
-      version: v,
-    });
+    const response = await put(
+      DOWN_ID,
+      {
+        segments: [{ from: iso('03:40'), to: iso('04:20'), reason: 'BREAKDOWN/COOLANT-PRESSURE' }],
+        version: v,
+      },
+      as('zeynep'),
+    );
     expect(response.statusCode).toBe(200);
     const audit = downtimeAuditSchema.parse(
       (
@@ -493,8 +528,8 @@ describe('coding downtime records (#121)', () => {
     expect(audit.entries[0]).toMatchObject({
       recordId: DOWN_ID,
       action: 'coded',
-      actor: 'Zeynep',
-      authenticated: false,
+      actor: 'zeynep',
+      authenticated: true,
       requestId: response.headers['x-request-id'],
       version: v + 1,
       from: iso('03:40'),
@@ -505,7 +540,7 @@ describe('coding downtime records (#121)', () => {
           from: iso('03:40'),
           to: iso('04:20'),
           reason: 'BREAKDOWN/COOLANT-PRESSURE',
-          codedBy: 'Zeynep',
+          codedBy: 'zeynep',
         },
       ],
     });
@@ -516,9 +551,9 @@ describe('coding downtime records (#121)', () => {
     );
     // Newest first: the clear of the test above, after its split and its first coding.
     expect(stopAudit.entries.slice(0, 3).map((e) => [e.action, e.actor])).toEqual([
-      ['cleared', 'Mehmet'],
-      ['coded', 'Mehmet'],
-      ['coded', 'Ayşe'],
+      ['cleared', 'mehmet'],
+      ['coded', 'mehmet'],
+      ['coded', 'ayse'],
     ]);
     expect(stopAudit.entries[1]?.before.map((c) => c.reason)).toEqual(['MATERIAL']);
     const missing = await app.inject({
@@ -539,9 +574,9 @@ describe('coding downtime records (#121)', () => {
         action: 'downtime.code',
         entity_type: 'downtime-coding-set',
         entity_id: `cnc-01~${String(E1)}`,
-        username: 'Zeynep',
-        user_id: null,
-        authenticated: false,
+        username: 'zeynep',
+        user_id: users.zeynep?.principal.userId,
+        authenticated: true,
       },
     ]);
     for (const statement of [
@@ -582,7 +617,6 @@ describe('coding downtime records (#121)', () => {
         { from: iso('05:00'), to: iso('05:05'), reason: 'MINOR-STOP/PART-MISFEED' },
         { from: iso('05:05'), to: iso('05:25'), reason: 'BREAKDOWN/COOLANT-PRESSURE' },
       ],
-      codedBy: 'Ayşe',
       version: await version(STOP_ID),
     });
     const after = await read();
@@ -634,7 +668,6 @@ describe('coding downtime records (#121)', () => {
     await until((m) => m.type === 'snapshot' && m.topic === 'oee:cnc-01');
     const response = await put(DOWN_ID, {
       segments: [{ from: iso('03:40'), to: iso('04:20'), reason: 'SETUP/TOOL-CHANGE' }],
-      codedBy: 'Zeynep',
       version: await version(DOWN_ID),
     });
     expect(response.statusCode).toBe(200);
@@ -681,7 +714,6 @@ describe('codings after a re-cut (#121)', () => {
         { from: iso('03:50'), to: iso('04:10'), reason: 'BREAKDOWN/COOLANT-PRESSURE' },
         { from: iso('04:10'), to: iso('04:20'), reason: 'SETUP/TOOL-CHANGE', comment: 'swap' },
       ],
-      codedBy: 'Ayşe',
       version: record?.version ?? -1,
     });
     expect(coded.statusCode).toBe(200);
@@ -710,7 +742,7 @@ describe('codings after a re-cut (#121)', () => {
       ],
     });
     expect(after?.codings.map((c) => [c.from, c.to, c.codedBy, c.version])).toEqual([
-      [iso('03:50'), iso('04:00'), 'Ayşe', version + 1],
+      [iso('03:50'), iso('04:00'), 'ayse', version + 1],
     ]);
     const stored = await db
       .selectFrom('equipment.downtime_coding')
@@ -737,7 +769,7 @@ describe('codings after a re-cut (#121)', () => {
       ['system', null, iso('04:10'), iso('04:20'), [true]],
       ['system', null, iso('03:50'), iso('04:10'), [false, true]],
     ]);
-    expect(audit.entries.at(-1)).toMatchObject({ action: 'coded', actor: 'Ayşe' });
+    expect(audit.entries.at(-1)).toMatchObject({ action: 'coded', actor: 'ayse' });
 
     // The Pareto counts only the kept coding; the auto reason keeps the rest of the record.
     const pareto = paretoSchema.parse(
@@ -753,7 +785,7 @@ describe('codings after a re-cut (#121)', () => {
       ['BREAKDOWN/SPINDLE-OVERLOAD', 10 * MINUTE],
     ]);
     // An old version is refused after the clip moved it on.
-    const stale = await put(RECUT_ID, { segments: [], codedBy: 'Ayşe', version });
+    const stale = await put(RECUT_ID, { segments: [], version });
     expect(stale.statusCode).toBe(409);
   });
 
@@ -770,7 +802,6 @@ describe('codings after a re-cut (#121)', () => {
     expect(stop?.end).toBe(iso('05:30'));
     const response = await put(stopId, {
       segments: [{ from: iso('05:00'), to: iso('05:30'), reason: 'MINOR-STOP/CHIP-JAM' }],
-      codedBy: 'Ayşe',
       version: stop?.version ?? -1,
     });
     expect(response.statusCode).toBe(200);
@@ -827,7 +858,7 @@ describe('codings after a re-cut (#121)', () => {
     await equipment.flush();
     const id = `asm-01~${String(E1)}~${String(at('06:00'))}`;
     const first = codingResultSchema.parse(
-      (await put(id, { segments: [], codedBy: 'x', version: await version(id) })).json(),
+      (await put(id, { segments: [], version: await version(id) })).json(),
     );
     // Another write holds the coding set, so this one waits after reading its record.
     let release = (): void => undefined;
@@ -846,7 +877,6 @@ describe('codings after a re-cut (#121)', () => {
     await isLocked;
     const write = put(id, {
       segments: [{ from: iso('06:00'), to: iso('06:30'), reason: 'BREAKDOWN/PRESS-FAULT' }],
-      codedBy: 'Ayşe',
       version: first.version,
     });
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -960,67 +990,79 @@ describe('clipping (pure)', () => {
   });
 });
 
-describe('actors from the session (MES_AUTH=on, #169)', () => {
-  it('codes as the session user (the typed codedBy ignored), and needs codedBy only with MES_AUTH=off', async () => {
-    const identity = new Identity({ db, sweepMs: 0, hashParams: { N: 1024, r: 8, p: 1 } });
-    await identity.start();
+describe('actors from the session (#169, #170)', () => {
+  it('codes as the session user with MES_AUTH=on, and refuses a typed codedBy', async () => {
     const password = randomBytes(15).toString('base64url');
     await identity.createUser(
       { username: 'oya', roles: ['operator'], password, mustChangePassword: false },
       { system: 'test' },
     );
     const { token, principal } = await identity.login({ username: 'oya', password, kind: 'desk' });
-    try {
-      const authed = await front({
-        ready: () => Promise.resolve(true),
-        identity,
-        auth: true,
-        writeRate: { perSecond: 1000, burst: 1000 },
-      });
-      const headers = { ...JSON_WRITE, cookie: `sft_session=${token}` };
-      const segments = [{ from: iso('03:40'), to: iso('04:00'), reason: 'MATERIAL' }];
-      const response = await put(
-        DOWN_ID,
-        { segments, codedBy: 'mallory', version: await version(DOWN_ID) },
-        headers,
-        authed,
-      );
-      expect(response.statusCode, response.body).toBe(200);
-      expect(codingResultSchema.parse(response.json()).record.codings).toEqual([
-        expect.objectContaining({ codedBy: 'oya' }),
-      ]);
-      const audit = downtimeAuditSchema.parse(
-        (
-          await authed.inject({
-            url: `/api/v1/downtime/${DOWN_ID}/audit`,
-            headers: { host: HOST, cookie: `sft_session=${token}` },
-          })
-        ).json(),
-      );
-      expect(audit.entries[0]).toMatchObject({
-        action: 'coded',
-        actor: 'oya',
-        authenticated: true,
-        requestId: response.headers['x-request-id'],
-      });
-      const row = await db
-        .selectFrom('identity.audit_log')
-        .select(['user_id', 'username', 'roles', 'authenticated', 'action'])
-        .where('request_id', '=', response.headers['x-request-id'] as string)
-        .executeTakeFirstOrThrow();
-      expect(row).toEqual({
-        user_id: principal.userId,
-        username: 'oya',
-        roles: ['operator'],
-        authenticated: true,
-        action: 'downtime.code',
-      });
-      // MES_AUTH=off: the typed name, and 422 without one.
-      const missing = await put(DOWN_ID, { segments: [], version: await version(DOWN_ID) });
-      expect(missing.statusCode).toBe(422);
-      expect(problemSchema.parse(missing.json()).detail).toMatch(/`codedBy` is needed/);
-    } finally {
-      identity.stop();
-    }
+    const authed = await front({
+      ready: () => Promise.resolve(true),
+      auth: true,
+      writeRate: { perSecond: 1000, burst: 1000 },
+    });
+    const headers = { ...JSON_WRITE, cookie: `sft_session=${token}` };
+    const segments = [{ from: iso('03:40'), to: iso('04:00'), reason: 'MATERIAL' }];
+    // The typed name of before #170 is no longer part of the request: 400, nothing written.
+    const before = await version(DOWN_ID);
+    const typed = await put(
+      DOWN_ID,
+      { segments, codedBy: 'mallory', version: before },
+      headers,
+      authed,
+    );
+    expect(typed.statusCode).toBe(400);
+    expect(await version(DOWN_ID)).toBe(before);
+    const response = await put(DOWN_ID, { segments, version: before }, headers, authed);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(codingResultSchema.parse(response.json()).record.codings).toEqual([
+      expect.objectContaining({ codedBy: 'oya' }),
+    ]);
+    const audit = downtimeAuditSchema.parse(
+      (
+        await authed.inject({
+          url: `/api/v1/downtime/${DOWN_ID}/audit`,
+          headers: { host: HOST, cookie: `sft_session=${token}` },
+        })
+      ).json(),
+    );
+    expect(audit.entries[0]).toMatchObject({
+      action: 'coded',
+      actor: 'oya',
+      authenticated: true,
+      requestId: response.headers['x-request-id'],
+    });
+    const row = await db
+      .selectFrom('identity.audit_log')
+      .select(['user_id', 'username', 'roles', 'authenticated', 'action'])
+      .where('request_id', '=', response.headers['x-request-id'] as string)
+      .executeTakeFirstOrThrow();
+    expect(row).toEqual({
+      user_id: principal.userId,
+      username: 'oya',
+      roles: ['operator'],
+      authenticated: true,
+      action: 'downtime.code',
+    });
+  });
+
+  it('needs a session for a write also with MES_AUTH=off, and still serves reads without one', async () => {
+    const before = await version(DOWN_ID);
+    const anonymous = { host: HOST, origin: ORIGIN, 'content-type': 'application/json' };
+    const response = await put(DOWN_ID, { segments: [], version: before }, anonymous);
+    expect(response.statusCode).toBe(401);
+    expect(problemSchema.parse(response.json()).type).toBe(PROBLEM_TYPES.unauthenticated);
+    // A token that names no live session counts as none.
+    const unknown = await put(
+      DOWN_ID,
+      { segments: [], version: before },
+      { ...anonymous, cookie: `sft_session=${randomBytes(32).toString('base64url')}` },
+    );
+    expect(unknown.statusCode).toBe(401);
+    expect(await version(DOWN_ID)).toBe(before);
+    // Reads need none.
+    expect((await records()).length).toBeGreaterThan(0);
   });
 });

@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { expect, test } from '@playwright/test';
+import { logIn } from './login.ts';
 import { MesClient, SimulatorClient } from '../src/clients.ts';
 import { percentile } from '../src/compare.ts';
 import {
@@ -69,7 +70,7 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
 }) => {
   test.skip(!mesUrl, 'runs inside pnpm test:reconcile, which starts the stack');
   test.setTimeout(SAMPLE_MS + 90_000);
-  const mes = new MesClient(mesUrl ?? '');
+  const mes = new MesClient(mesUrl ?? '', await logIn(page));
 
   const current = await mes.currentShift();
   const shiftKey = current.shiftKey;

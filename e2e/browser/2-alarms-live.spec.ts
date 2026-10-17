@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { expect, test, type Page } from '@playwright/test';
+import { logIn } from './login.ts';
 import { MesClient, SimulatorClient } from '../src/clients.ts';
 import { percentile } from '../src/compare.ts';
 import {
@@ -134,7 +135,7 @@ test('/alarms lists every raise within 2 s, shows the flood banner, and the KPI 
   if (Number.isNaN(sampleUntil)) throw new Error('RECONCILE_ALARMS_UNTIL is not a time');
   test.setTimeout(10 * 60_000);
   const sim = new SimulatorClient(simUrl ?? '');
-  const mes = new MesClient(mesUrl ?? '');
+  const mes = new MesClient(mesUrl ?? '', await logIn(page));
   const current = await mes.currentShift();
   if (current.shiftKey !== shiftKey || current.shift === null) {
     throw new Error(`the plant is not in ${shiftKey}: ${JSON.stringify(current)}`);

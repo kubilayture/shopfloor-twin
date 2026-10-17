@@ -31,7 +31,7 @@ export function problem(status: number, detail: string, url: string, type?: Prob
 /**
  * Who may call a route (#168, ADR-0026): a permission of `ROLE_PERMISSIONS`, `session` (any logged
  * in user, also one that must change the password: the session and password routes) or `public`
- * (the login). With `MES_AUTH=off` only `session` routes need a session.
+ * (the login). With `MES_AUTH=off` (#170) only `read` routes are served without a session.
  */
 export type Access = Permission | 'session' | 'public';
 

@@ -79,7 +79,26 @@ echo "ok: retained message survives broker restart"
 
 # delivered <publisher> <publisher password> <topic>: does a message from this user reach `mes`?
 acl_out=$(mktemp)
-trap 'rm -f "$acl_out"' EXIT
+# On every exit (success, `fail`, a `set -e` stop, Ctrl-C): remove the temporary file and disable
+# the smoke user once it exists (#170; review of PR #186).
+smoke_user=
+cleanup() {
+  status=$?
+  rm -f "$acl_out"
+  if [ -n "$smoke_user" ]; then
+    if docker compose exec -T mes node apps/mes-server/src/user-cli.ts --disable \
+      --username "$smoke_user" >/dev/null 2>&1; then
+      echo "ok: the smoke user $smoke_user is disabled again"
+    else
+      echo "FAIL: could not disable the smoke user $smoke_user" >&2
+      [ "$status" -ne 0 ] || status=1
+    fi
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 delivered() {
   as_user mes "$MQTT_MES_PASSWORD" mosquitto_sub -t "$3" -C 1 -W 6 >"$acl_out" 2>/dev/null &
   sub=$!
@@ -143,4 +162,18 @@ web="http://127.0.0.1:${WEB_PORT:-8080}"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.test:${WEB_PORT:-8080}" "$web/api/v1/equipment")
 [ "$code" = 403 ] || fail "MES answered a foreign Host through the web ($code)"
 echo "ok: foreign Host refused through the web (DNS rebinding)"
+
+# Identity (#170): every API route and the WebSocket need a session (MES_AUTH=on by default). The
+# smoke logs in as a user of its own, made for this run with `user:create` inside the MES container
+# (password generated here, passed on stdin and in the environment of the web checks only; never
+# written to a file). The exit trap disables it again, pass, fail or Ctrl-C (`user-cli.ts --disable`);
+# its row and audit entries stay in the database (users are never deleted).
+SMOKE_USERNAME="smoke-$(openssl rand -hex 4)"
+SMOKE_PASSWORD=$(openssl rand -hex 16)
+export SMOKE_USERNAME SMOKE_PASSWORD
+printf '%s' "$SMOKE_PASSWORD" | docker compose exec -T mes \
+  node apps/mes-server/src/user-cli.ts --username "$SMOKE_USERNAME" --role operator >/dev/null ||
+  fail "user:create could not create the smoke user"
+smoke_user=$SMOKE_USERNAME
+echo "ok: user:create made the operator $SMOKE_USERNAME"
 node scripts/stack-smoke-web.mjs "$web" || fail "web checks failed"

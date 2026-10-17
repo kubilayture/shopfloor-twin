@@ -38,7 +38,13 @@ import {
 import { WS_PATH, cookieValue } from './modules/realtime/index.ts';
 import { OPENAPI_FILE } from './openapi.ts';
 import { startDatabase } from './testing.ts';
-import { parseUserCreateArgs, passwordFromStdin, userCreate } from './user-cli.ts';
+import {
+  parseUserCreateArgs,
+  parseUserDisableArgs,
+  passwordFromStdin,
+  userCreate,
+  userDisable,
+} from './user-cli.ts';
 
 const MINUTE = 60_000;
 const REPO = resolve(import.meta.dirname, '../../..');
@@ -572,9 +578,13 @@ describe('identity module (#168)', () => {
 describe('environment and secrets (#168)', () => {
   const base = { DATABASE_URL: 'postgres://u@h/d', MQTT_PASSWORD: 'x' };
 
-  it('defaults MES_AUTH and MES_COOKIE_SECURE to off; the bootstrap password is optional and hidden', () => {
+  it('defaults MES_AUTH to on (#170) and MES_COOKIE_SECURE to off; the bootstrap password is optional and hidden', () => {
     const parsed = parseEnv(base);
-    expect(parsed.ok && parsed.env.MES_AUTH).toBe('off');
+    expect(parsed.ok && parsed.env.MES_AUTH).toBe('on');
+    expect(parseEnv({ ...base, MES_AUTH: 'off' })).toMatchObject({
+      ok: true,
+      env: { MES_AUTH: 'off' },
+    });
     expect(parsed.ok && parsed.env.MES_COOKIE_SECURE).toBe('off');
     expect(parsed.ok && parsed.env.MES_BOOTSTRAP_ADMIN_PASSWORD).toBeUndefined();
     const short = 'too-short';
@@ -626,6 +636,31 @@ describe('user:create CLI (#168)', () => {
     expect(await userCreate(db, args, password)).toEqual({ ok: false, message: 'user ivy exists' });
     const { principal } = await identity.login({ username: 'ivy', password, kind: 'desk' });
     expect(principal.roles).toEqual(['quality', 'admin']);
+  });
+
+  it('disables a user with --disable (#170: the stack smoke disables its per-run user)', async () => {
+    expect(parseUserDisableArgs(['--disable'])).toBe('missing --username');
+    expect(parseUserDisableArgs(['--username', 'x'])).toBe('missing --disable');
+    expect(typeof parseUserDisableArgs(['--disable', '--username', 'x', '--role', 'admin'])).toBe(
+      'string',
+    );
+    expect(parseUserDisableArgs(['--disable', '--username', 'smoke-1'])).toEqual({
+      username: 'smoke-1',
+    });
+    const password = secret();
+    await identity.createUser(
+      { username: 'smoke-1', roles: ['operator'], password, mustChangePassword: false },
+      { system: 'test' },
+    );
+    const { token } = await identity.login({ username: 'smoke-1', password, kind: 'desk' });
+    expect(await userDisable(db, 'smoke-1')).toEqual({
+      ok: true,
+      message: 'disabled user smoke-1',
+    });
+    // Its session ended and it may not log in again.
+    expect(await identity.authenticate(tokenOf(token))).toBeUndefined();
+    await expect(identity.login({ username: 'smoke-1', password, kind: 'desk' })).rejects.toThrow();
+    expect(await userDisable(db, 'nobody-here')).toMatchObject({ ok: false });
   });
 
   it('runs as a process, reading the password from stdin', async () => {
@@ -1220,8 +1255,8 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
   });
 });
 
-describe('MES_AUTH=off (the default until #170)', () => {
-  it('serves reads, writes and the WebSocket without a session, as before; the session routes still need one', async () => {
+describe('MES_AUTH=off (diagnosis only, #170)', () => {
+  it('serves reads and the WebSocket without a session; every write needs a session and its permission; the session routes still need one', async () => {
     const http = await buildMesHttp({ ready: () => Promise.resolve(true), identity });
     const { app } = http;
     await app.listen({ host: '127.0.0.1', port: 0 });
@@ -1232,14 +1267,41 @@ describe('MES_AUTH=off (the default until #170)', () => {
     expect((await app.inject({ url: '/api/v1/equipment', headers: { host } })).statusCode).toBe(
       503,
     );
-    const write = await app.inject({
-      method: 'POST',
-      url: '/api/v1/alarms/ack',
-      headers: { host, origin: `http://${host}`, 'content-type': 'application/json' },
-      payload: JSON.stringify({ ids: ['1'] }),
-    });
-    // Through to the handler (its validation or the 503 of a module not attached), never 401/403.
-    expect([400, 503]).toContain(write.statusCode);
+    const headers = { host, origin: `http://${host}`, 'content-type': 'application/json' };
+    const ack = (cookie?: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/alarms/ack',
+        headers: cookie === undefined ? headers : { ...headers, cookie },
+        payload: JSON.stringify({ ids: ['1'] }),
+      });
+    // A write without a session: 401, whatever the route.
+    const anonymous = await ack();
+    expect(anonymous.statusCode).toBe(401);
+    expect(anonymous.json<{ type: string }>().type).toBe(PROBLEM_TYPES.unauthenticated);
+    for (const [method, url] of [
+      ['PUT', '/api/v1/downtime/cnc-01~1~1/coding'],
+      ['POST', '/api/v1/shifts/2026-10-12/A/notes'],
+      ['POST', '/api/v1/alarm-points/CNC-01/X/shelve'],
+    ] as const) {
+      const response = await app.inject({ method, url, headers, payload: '{}' });
+      expect([method, url, response.statusCode]).toEqual([method, url, 401]);
+    }
+    // A session without the permission (admin holds no alarm:ack): 403.
+    const sessionOf = async (username: string, roles: Role[]) => {
+      const password = await user(username, roles);
+      const { token } = await identity.login({ username, password, kind: 'desk' });
+      return `sft_session=${token}`;
+    };
+    const admin = await ack(await sessionOf('off-admin', ['admin']));
+    expect([admin.statusCode, admin.json<{ type: string }>().type]).toEqual([
+      403,
+      PROBLEM_TYPES.forbidden,
+    ]);
+    // A session with it: through to the handler (its validation or the 503 of a module not
+    // attached), never 401/403.
+    const operator = await ack(await sessionOf('off-operator', ['operator']));
+    expect([400, 503]).toContain(operator.statusCode);
     expect((await app.inject({ url: '/api/v1/session', headers: { host } })).statusCode).toBe(401);
     const socket = new WebSocket(`ws://${host}${WS_PATH}`);
     await new Promise((resolve, reject) => {
@@ -1272,8 +1334,8 @@ describe('MES_AUTH=off (the default until #170)', () => {
       '{}',
     );
     expect(noOrigin.status).toBe(403);
-    // With MES_AUTH=off no route needs a session (as before #168), but none answers a foreign
-    // Host or a write without Origin, Upgrade header or not.
+    // With MES_AUTH=off the reads need no session, but none answers a foreign Host or a write
+    // without Origin (before the session check), Upgrade header or not.
     await http.app.close();
   });
 

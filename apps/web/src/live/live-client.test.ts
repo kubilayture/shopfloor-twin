@@ -21,6 +21,34 @@ describe('LiveClient', () => {
     vi.useRealTimers();
   });
 
+  it('stops on a 4401 or 4403 close instead of reconnecting, and resubscribes after start (#170)', () => {
+    const { client, factory } = setup();
+    const closes: number[] = [];
+    client.onAuthClose((code) => closes.push(code));
+    client.subscribe('states');
+    client.start();
+    factory.last.open();
+    factory.last.drop(4401);
+    expect(client.status).toBe('stopped');
+    expect(closes).toEqual([4401]);
+    vi.advanceTimersByTime(60_000);
+    expect(factory.sockets).toHaveLength(1);
+    // Logged in again: the same subscriptions on a new socket.
+    client.start();
+    factory.last.open();
+    expect(factory.sockets).toHaveLength(2);
+    expect(factory.last.sent).toEqual([{ type: 'subscribe', topic: 'states' }]);
+    factory.last.drop(4403);
+    expect(closes).toEqual([4401, 4403]);
+    expect(client.status).toBe('stopped');
+    // An ordinary drop still reconnects.
+    client.start();
+    factory.last.open();
+    factory.last.drop(1006);
+    expect(client.status).toBe('reconnecting');
+    client.stop();
+  });
+
   it('subscribes once the socket opens and shares repeated subscriptions', () => {
     const { client, factory } = setup();
     const offA = client.subscribe('states');

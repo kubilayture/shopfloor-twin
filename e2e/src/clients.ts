@@ -505,8 +505,9 @@ export class ErpClient {
 
 /**
  * One HTTP request with exactly these headers (fetch adds or drops some, such as `Origin`):
- * resolves with the status and body. Each on a connection of its own (`agent: false`): the MES may
- * close a kept-alive connection after a logout, and a request reusing it would hang up (#178).
+ * resolves with the status and body. Each on a connection of its own (`agent: false`) and with the
+ * body's Content-Length: Node frames no body of a DELETE by itself, so on a kept-alive connection
+ * the server would read it as the start of the next request (#178).
  */
 export function rawRequest(
   method: string,
@@ -517,7 +518,15 @@ export function rawRequest(
   return new Promise((resolve, reject) => {
     const req = httpRequest(
       new URL(url),
-      { method, headers, timeout: 5_000, agent: false },
+      {
+        method,
+        headers: {
+          ...headers,
+          ...(body === undefined ? {} : { 'content-length': String(Buffer.byteLength(body)) }),
+        },
+        timeout: 5_000,
+        agent: false,
+      },
       (response) => {
         let text = '';
         response.setEncoding('utf8');

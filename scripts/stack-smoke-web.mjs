@@ -51,17 +51,26 @@ if (!script.ok || !(script.headers.get('cache-control') ?? '').includes('immutab
 if (script.headers.get('content-encoding') !== 'gzip') fail(`asset ${asset} not gzipped`);
 console.log('ok: web serves the app (SPA fallback, CSP, caching, gzip)');
 
-/** One request with exactly these headers (fetch would add or drop some). */
+/**
+ * One request with exactly these headers (fetch would add or drop some), plus the body's
+ * Content-Length: Node frames no body of a DELETE by itself, so on a kept-alive connection nginx
+ * would read it as the start of the next request and answer that one 400 (#178).
+ */
 function send(method, path, headers, body) {
+  const length = body === undefined ? {} : { 'content-length': String(Buffer.byteLength(body)) };
   return new Promise((resolve, reject) => {
-    const req = httpRequest(new URL(path, base), { method, headers }, (response) => {
-      let text = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk) => (text += chunk));
-      response.on('end', () =>
-        resolve({ status: response.statusCode, text, headers: response.headers }),
-      );
-    });
+    const req = httpRequest(
+      new URL(path, base),
+      { method, headers: { ...headers, ...length } },
+      (response) => {
+        let text = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => (text += chunk));
+        response.on('end', () =>
+          resolve({ status: response.statusCode, text, headers: response.headers }),
+        );
+      },
+    );
     req.on('error', reject);
     req.end(body);
   });
@@ -370,7 +379,9 @@ const supervisorName = process.env.SMOKE_SUPERVISOR_USERNAME;
 const supervisorSecret = process.env.SMOKE_SUPERVISOR_PASSWORD;
 if (!supervisorName || !supervisorSecret) fail('SMOKE_SUPERVISOR_USERNAME/PASSWORD not set');
 const supervisorLogin = await login(supervisorName, supervisorSecret);
-if (supervisorLogin.status !== 200) fail(`supervisor login answered ${supervisorLogin.status}`);
+if (supervisorLogin.status !== 200) {
+  fail(`supervisor login answered ${supervisorLogin.status}: ${supervisorLogin.text}`);
+}
 const desk = { origin: base.origin, ...json, cookie: supervisorLogin.cookie };
 const write = async (action, request) => {
   const answer = await send('POST', orderPath(action), desk, JSON.stringify(request));

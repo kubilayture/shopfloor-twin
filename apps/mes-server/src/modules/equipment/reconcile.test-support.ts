@@ -29,7 +29,7 @@ import { NO_SHIFT, shiftBuckets, shiftInstances, shiftSegments } from '@shopfloo
 import { attachConsumption } from '@shopfloor/trace-core';
 import type { Kysely } from 'kysely';
 import type { StartedTestContainer } from 'testcontainers';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import {
   cycleHourly,
   cycleHourlyRaw,
@@ -1977,15 +1977,16 @@ const deliveryTime = (d: Delivery): number =>
   Date.parse((JSON.parse(d.payload) as { sourceTime: string }).sourceTime);
 
 /**
- * Per-test limits: with execution and genealogy (#199) the golden week takes about 165 s in order
- * (a cut and two full trace comparisons of 2,200 units) and 205 s shuffled locally; quality-01's
- * shuffled test, with its two extra orderings, about 200 s. The e2e files run one after the other
- * (`fileParallelism: false` in `vitest.e2e.config.ts`), so the limits keep about twice that for a
- * loaded machine. The CI workflow's end-to-end job (40 minutes) grows with them; GitHub Actions
- * does not run at present (spending limit), and the local merge gate has no limit of its own.
+ * Per-test limits, about twice the golden week on a loaded machine (#218). Nearly all of a run is
+ * the delivery of the week's messages to ingest (Postgres in Docker); the checks after it take
+ * about 15 s in all. Measured on an 8-core M-series laptop, `reconciliation-week.e2e` alone:
+ * about 200 s for both tests on a quiet machine (Phase 6 measured 82 s + 198 s), 125 s + 225 s
+ * with other suites running (load 4 to 8), and 304 s + 566 s under one `yes` per core on top.
+ * Both limits together (30 min) leave the end-to-end job (45 min, with the other suites and the
+ * install) room to report a failure rather than be cancelled.
  */
-const IN_ORDER_MS = 360_000;
-const SHUFFLED_MS = 480_000;
+const IN_ORDER_MS = 600_000;
+const SHUFFLED_MS = 1_200_000;
 
 export interface Scenario {
   readonly seed: number;
@@ -2029,6 +2030,44 @@ export interface Scenario {
     /** `quality-01`'s required features, asserted to exist in the MES's genealogy. */
     readonly features?: boolean;
   };
+  /**
+   * How long each test takes on a quiet machine (ms), measured (#218): a run slower than
+   * `SLOW_FACTOR` times this is reported, never failed, so a slowdown shows despite the wide
+   * limits.
+   */
+  readonly quietMs?: { readonly inOrder: number; readonly shuffled: number };
+}
+
+/** A run slower than this many times its quiet baseline is reported with a warning (#218). */
+export const SLOW_FACTOR = 2.5;
+
+/**
+ * Logs how long a reconciliation test took and, past `SLOW_FACTOR` times its quiet baseline,
+ * warns (#218): a loaded machine, or a slowdown worth a look. Never fails the test; the limits
+ * above are for hangs.
+ */
+export function reportDuration(
+  title: string,
+  label: string,
+  tookMs: number,
+  quietMs: number | undefined,
+  warn: (line: string) => void = console.warn,
+): string {
+  const took = `${(tookMs / 1000).toFixed(1)} s`;
+  if (quietMs === undefined) {
+    const line = `${title}: ${label} took ${took} (no quiet baseline)`;
+    console.log(line);
+    return line;
+  }
+  const ratio = tookMs / quietMs;
+  const line = `${title}: ${label} took ${took}, ${ratio.toFixed(2)}× its quiet baseline of ${(quietMs / 1000).toFixed(0)} s`;
+  console.log(line);
+  if (ratio > SLOW_FACTOR) {
+    warn(
+      `SLOW (${SLOW_FACTOR.toFixed(1)}× quiet exceeded): ${line}. A loaded machine, or a slowdown: compare with an idle run.`,
+    );
+  }
+  return line;
 }
 
 /** What a genealogy reconciliation compares, pinned (#199). */
@@ -2057,7 +2096,13 @@ export async function golden(
   name: string,
   pinned: Pick<
     Scenario,
-    'oeeBuckets' | 'alarmComparisons' | 'settledToEnd' | 'shifts' | 'orders' | 'genealogy'
+    | 'oeeBuckets'
+    | 'alarmComparisons'
+    | 'settledToEnd'
+    | 'shifts'
+    | 'orders'
+    | 'quietMs'
+    | 'genealogy'
   > = {},
 ): Promise<Scenario> {
   const dir = join(GOLDENS, name);
@@ -2088,6 +2133,9 @@ export async function goldenWeek(): Promise<Scenario> {
     // 15 shift reports (#144), all final but Friday's shift C: every machine shuts down exactly at
     // its end, so its alarm KPI buckets (end + fleetingMs) stay provisional.
     shifts: { instances: 15, final: 14, compared: 255 },
+    // Without extra load (other suites of the machine running, load 3 to 8): 74 s + 125 s,
+    // 125 s + 225 s, 157 s + 300 s (#218).
+    quietMs: { inOrder: 100_000, shuffled: 200_000 },
     // Genealogy (#199) in schedule mode: every unit without an order or carton, the plant's lots
     // (stock.yaml); also at Wednesday 14:00 Istanbul against `traceAsOf`.
     genealogy: {
@@ -2143,6 +2191,15 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
     it(
       'in order: time per state, per machine and shift, equals the ground truth to the ms',
       async () => {
+        const startedAt = performance.now();
+        onTestFinished(() => {
+          reportDuration(
+            title,
+            'in order',
+            performance.now() - startedAt,
+            (span as Scenario | undefined)?.quietMs?.inOrder,
+          );
+        });
         span = await scenario();
         run = await headless(span);
         if (span.golden) {
@@ -2279,6 +2336,15 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
     it(
       'shuffled delivery with duplicates stores identical intervals',
       async () => {
+        const startedAt = performance.now();
+        onTestFinished(() => {
+          reportDuration(
+            title,
+            'shuffled',
+            performance.now() - startedAt,
+            (span as Scenario | undefined)?.quietMs?.shuffled,
+          );
+        });
         const { facts, anchors, end } = unsMessages(run);
         const next = random(2026);
         const { db, equipment, ingest, masterData, alarms, send } = await mes();

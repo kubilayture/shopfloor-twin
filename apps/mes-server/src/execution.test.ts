@@ -33,7 +33,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Database } from './db/database.ts';
 import { buildMesHttp } from './http.ts';
 import { PLANT_CONFIG, UnsFeed, freshDatabase } from './modules/equipment/test-support.ts';
-import { Execution, ExecutionError } from './modules/execution/index.ts';
+import { Execution, ExecutionError, type ExecutionIngest } from './modules/execution/index.ts';
 import { Identity } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData, erpMasterData } from './modules/master-data/index.ts';
@@ -126,7 +126,10 @@ interface Harness {
   readonly db: Kysely<Database>;
   readonly ingest: Ingest;
   readonly orders: Orders;
-  readonly execution: Execution;
+  /** The running execution module (replaced by `restart`). */
+  execution: Execution;
+  /** Stops the execution module and starts a new one (a restarted MES), on `ingest` if given. */
+  restart(ingest?: ExecutionIngest): Promise<Execution>;
   readonly erp: FakeErp;
   readonly clock: { now: number };
   readonly line: Line;
@@ -261,23 +264,31 @@ async function harness(name: string, options: { gapGraceMs?: number } = {}): Pro
   });
   await orders.start();
   cleanups.push(() => orders.stop());
-  const execution = new Execution({
+  const make = async (source: ExecutionIngest = ingest): Promise<Execution> => {
+    const execution = new Execution({
+      db,
+      ingest: source,
+      masterData,
+      orders,
+      rework: { test: 'OP40', back: 'OP30' },
+      clock: () => new Date(PLANT_T0),
+      tickMs: 0,
+    });
+    await execution.start();
+    cleanups.push(() => execution.stop());
+    orders.useBlankCounter(execution);
+    return execution;
+  };
+  const harnessed: Harness = {
     db,
     ingest,
-    masterData,
     orders,
-    rework: { test: 'OP40', back: 'OP30' },
-    clock: () => new Date(PLANT_T0),
-    tickMs: 0,
-  });
-  await execution.start();
-  cleanups.push(() => execution.stop());
-  orders.useBlankCounter(execution);
-  return {
-    db,
-    ingest,
-    orders,
-    execution,
+    execution: await make(),
+    restart: async (source) => {
+      await harnessed.execution.stop();
+      harnessed.execution = await make(source);
+      return harnessed.execution;
+    },
     erp,
     clock,
     line,
@@ -287,6 +298,7 @@ async function harness(name: string, options: { gapGraceMs?: number } = {}): Pro
       requestId: 'req-o',
     },
   };
+  return harnessed;
 }
 
 /** Imports, releases and dispatches an order of `quantity` VB-100 to CNC-01. */
@@ -769,6 +781,176 @@ describe('the execution API (#175)', () => {
         })
       ).statusCode,
     ).toBe(404);
+  });
+});
+
+describe('execution on final data: gaps, ended runs, restarts and failures (#175 review)', () => {
+  it('completes an order whose washer fact was lost in a written-off gap and never filled, with a violation', async () => {
+    const h = await harness('nofill', { gapGraceMs: 0 });
+    const l = h.line;
+    await send(h, [l.state('cnc-01', 'Idle', 'NO-ORDER')]);
+    await dispatched(h, 'Y-1', 1);
+    const run = [
+      l.job('cnc-01', 'accepted', 'Y-1', 1),
+      l.job('cnc-01', 'started', 'Y-1', 1),
+      l.cycle('cnc-01', 1),
+      l.job('cnc-01', 'completed', 'Y-1', 1),
+      l.cycle('wsh-01', 1),
+      l.cycle('asm-01', 1),
+      l.cycle('lkt-01', 1),
+      l.cycle('pck-01', 1),
+      l.state('wsh-01', 'Starved'),
+    ];
+    // WSH-01's cycle (its seq 1) never arrives: a gap below its Starved fact.
+    run.splice(4, 1);
+    await send(h, run);
+    await settle(h);
+    // Not written off yet: the OP20 fact may still come, OP20 to OP50 wait.
+    expect((await confirmationsOf(h, 'Y-1')).map((c) => c.operation)).toEqual(['OP10']);
+    await h.ingest.sweep();
+    await settle(h);
+    // Written off: the missing OP20 record is a proven violation, and the packed unit is past every
+    // operation, so the order completes (OP20 confirmed without it) instead of never.
+    expect((await h.orders.order('Y-1'))?.status).toBe('completed');
+    expect((await confirmationsOf(h, 'Y-1')).map((c) => [c.operation, c.kind, c.yield])).toEqual([
+      ['OP10', 'final', 1],
+      ['OP20', 'final', 0],
+      ['OP30', 'final', 1],
+      ['OP40', 'final', 1],
+      ['OP50', 'final', 1],
+    ]);
+    const [incident] = await h.execution.incidents({ open: true });
+    expect(incident?.message).toContain('missing-predecessor');
+  });
+
+  it('keeps a lost unit open while a lagging machine can still report it, then completes the order short', async () => {
+    const h = await harness('lagging');
+    const l = h.line;
+    await send(h, [l.state('cnc-01', 'Idle', 'NO-ORDER')]);
+    await dispatched(h, 'Y-2', 1);
+    await send(h, [
+      l.job('cnc-01', 'accepted', 'Y-2', 1),
+      l.job('cnc-01', 'started', 'Y-2', 1),
+      l.cycle('cnc-01', 1),
+      l.job('cnc-01', 'completed', 'Y-2', 1),
+    ]);
+    const washed = l.cycle('wsh-01', 1);
+    // The simulator restarts: CNC-01 reports the new run first.
+    const next = new Line(new UnsFeed(paths), E2);
+    await send(h, [next.state('cnc-01', 'Idle', 'NO-ORDER')]);
+    await settle(h);
+    expect((await h.execution.units({ orderId: 'Y-2' })).units.map((u) => u.status)).toEqual([
+      'lost',
+    ]);
+    // The washer has not reported the new run: it may still deliver the old run's cycle.
+    expect((await h.orders.order('Y-2'))?.status).toBe('in-progress');
+    await send(h, [washed]);
+    await settle(h);
+    const [unit] = (await h.execution.units({ orderId: 'Y-2' })).units;
+    expect([unit?.status, unit?.position]).toEqual(['lost', 'after:OP20']);
+    expect((await h.orders.order('Y-2'))?.status).toBe('in-progress');
+    // Every machine after it reports the new run: nothing more can come; the order ends short.
+    await send(h, [
+      next.state('wsh-01', 'Starved'),
+      next.state('asm-01', 'Starved'),
+      next.state('lkt-01', 'Starved'),
+      next.state('pck-01', 'Starved'),
+    ]);
+    await settle(h);
+    const order = await h.orders.order('Y-2');
+    expect([order?.status, order?.short]).toEqual(['completed', true]);
+    expect((await confirmationsOf(h, 'Y-2')).map((c) => [c.operation, c.yield])).toEqual([
+      ['OP10', 1],
+      ['OP20', 1],
+      ['OP30', 0],
+      ['OP40', 0],
+      ['OP50', 0],
+    ]);
+  });
+
+  it('after an MES restart catches up, marks units of a run that ended meanwhile lost and confirms nothing twice', async () => {
+    const h = await harness('restart');
+    const l = h.line;
+    await send(h, [l.state('cnc-01', 'Idle', 'NO-ORDER')]);
+    await dispatched(h, 'Y-3', 2);
+    await send(h, [
+      l.job('cnc-01', 'accepted', 'Y-3', 2),
+      l.job('cnc-01', 'started', 'Y-3', 2),
+      l.cycle('cnc-01', 1),
+      l.cycle('wsh-01', 1),
+      l.cycle('cnc-01', 2),
+      l.job('cnc-01', 'completed', 'Y-3', 2),
+      l.cycle('asm-01', 1),
+      l.cycle('lkt-01', 1),
+      l.cycle('pck-01', 1),
+    ]);
+    await settle(h);
+    // OP10 is complete (both blanks machined); part 2 waits after OP10.
+    expect((await confirmationsOf(h, 'Y-3')).map((c) => c.operation)).toEqual(['OP10']);
+    const posted = h.erp.posts.length;
+    // The MES is down while part 2's washer cycle arrives and the simulator restarts.
+    await h.execution.stop();
+    const next = new Line(new UnsFeed(paths), E2);
+    await send(h, [
+      l.cycle('wsh-01', 2),
+      ...['cnc-01', 'wsh-01', 'asm-01', 'lkt-01', 'pck-01'].map((m) => next.state(m, 'Starved')),
+    ]);
+    await h.restart();
+    await settle(h);
+    const units = (await h.execution.units({ orderId: 'Y-3' })).units;
+    expect(units.map((u) => [u.partId, u.status, u.position])).toEqual([
+      [1, 'packed', 'done'],
+      [2, 'lost', 'after:OP20'],
+    ]);
+    const order = await h.orders.order('Y-3');
+    expect([order?.status, order?.short]).toEqual(['completed', true]);
+    const confirmations = await confirmationsOf(h, 'Y-3');
+    expect(confirmations.map((c) => [c.operation, c.n, c.yield])).toEqual([
+      ['OP10', 1, 2],
+      ['OP20', 1, 2],
+      ['OP30', 1, 1],
+      ['OP40', 1, 1],
+      ['OP50', 1, 1],
+    ]);
+    // Restarted again, nothing is confirmed twice.
+    await h.restart();
+    await settle(h);
+    expect(await confirmationsOf(h, 'Y-3')).toEqual(confirmations);
+    expect(h.erp.posts.filter((p) => p.key === 'Y-3~OP10~conf~1')).toHaveLength(1);
+    expect(h.erp.posts.length).toBeGreaterThan(posted);
+  });
+
+  it('keeps the facts heard of when a tick fails and handles them at the next one', async () => {
+    const h = await harness('failure');
+    let fail = false;
+    const real = h.ingest;
+    const failing: ExecutionIngest = {
+      onStored: (listener) => real.onStored(listener),
+      cycleFacts: (options) => {
+        if (fail) {
+          fail = false;
+          return Promise.reject(new Error('injected failure'));
+        }
+        return real.cycleFacts(options);
+      },
+      cycleFactCounts: () => real.cycleFactCounts(),
+      jobFacts: (options) => real.jobFacts(options),
+      stateFacts: (equipment, epoch, window) => real.stateFacts(equipment, epoch, window),
+      deviceProgress: (equipment) => real.deviceProgress(equipment),
+      newestDeviceEpochs: () => real.newestDeviceEpochs(),
+      cyclesBetween: (equipment, epoch, after, before) =>
+        real.cyclesBetween(equipment, epoch, after, before),
+    };
+    await h.restart(failing);
+    const l = h.line;
+    await send(h, [l.cycle('cnc-01', 5), l.cycle('wsh-01', 5)]);
+    fail = true;
+    await expect(h.execution.tick()).rejects.toThrow('injected failure');
+    expect((await h.execution.units()).units).toEqual([]);
+    await h.execution.tick();
+    expect(
+      (await h.execution.units()).units.map((u) => [u.partId, u.records.length, u.position]),
+    ).toEqual([[5, 2, 'after:OP20']]);
   });
 });
 

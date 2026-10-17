@@ -46,10 +46,12 @@ Per order operation, on read: `in` (completed cycles, every pass) = `good` + `sc
 
 ### Completion (5b, H1)
 
-- **OP10** when the order's jobs are done: every command settled, every job `completed` with its CNC final through the `completed` fact, and each OP10 cycle between the job's `started` and `completed` facts a unit of it. A job lost with its run counts only once a later command (a re-dispatch) exists, an abandoned command always: a lost job alone keeps the order open for the supervisor (ADR-0029).
+- **OP10** when the order's jobs are done: every command settled, every job `completed` with its CNC final through the `completed` fact, and each OP10 cycle between the job's `started` and `completed` facts a unit of it. A job lost with its run counts only once a later command (a re-dispatch) has a job the device accepted, an abandoned command always: a lost job alone keeps the order open for the supervisor (ADR-0029).
 - **OP20** when every unit passed it for good or was scrapped.
 - **OP30 and OP40** only when every unit passed OP40 for good or was scrapped: a unit with one leak failure can still come back to both.
-- **OP50** when every unit is packed or scrapped; a unit lost with its device run counts as done for every operation.
+- **OP50** when every unit is packed or scrapped.
+- **Routing suspects and violations (review of PR #188):** a unit with an open suspect is done for no operation from the suspect's on (the rework operation and the test together): the fact that would explain it may still arrive in an open gap, and judging it now would send a short final confirmation and a correction later. Once the suspect is proven a violation (the gap written off, the fact never filled), the unit counts as past every operation before its latest record, and a packed unit as past them all, so the order completes instead of never.
+- **Lost units:** a unit in WIP of an older run than the newest is `lost` (marked every tick, so also after an epoch changed while the MES was down). It counts as done only once every machine of its remaining operations has reported a newer epoch than the unit's (as records are judged final), because a lagging machine can still deliver the old run's facts of it.
 - Every record an operation's completion rests on is at or below its machine's final-through. The completion time is the operation's latest record (OP30 and OP40 together), never before the previous operation's. The order is completed (`Orders.complete`, `completed` posted, `short` when packed good < quantity) when OP50 is.
 
 ### Confirmations (6b)
@@ -60,7 +62,17 @@ When an order operation is complete, `Orders.confirm` writes, in one transaction
 
 A unit in WIP has a routing position from its records: `after:OPxx` after a good cycle, `rework:OP30` after a leak failure. No fact says whether such a unit waits in a buffer or is in the next machine's cycle, so the position is the routing segment, refined only where a fact tells: `at:{machine}` when the machine of its last cycle ends `Blocked` with it (its last cycle there, no later cycle). A blank a CNC holds whose OP10 cycle has not completed is no unit yet; the MES counts it per job (`inMachine`) from the CNC's states after the job's last OP10 cycle (`holdsBlank`): `Running` holds one; `Starved`, `Blocked`, a changeover `Setup` and `Idle NO-ORDER` hold none; breaks, shift ends, stops, failures and a missing operator keep what the machine held. With no decisive state the CNC was running at its last cycle's end and took the next blank without a state change.
 
-The same count replaces #174's conservative lost-job count (ADR-0029 note): a lost job's blanks are its OP10 units plus the blank `holdsBlank` finds, once every OP10 cycle of the job is a unit (`BlankCounter`, injected into the orders module); until then the conservative count stays.
+The same count replaces #174's conservative lost-job count (ADR-0029 note): a lost job's blanks are its OP10 units plus the blank `holdsBlank` finds, once every OP10 cycle of the job is a unit (`BlankCounter`, injected into the orders module). The exact count wins once known, also over a higher conservative count recorded earlier; while the units are still being built the command stays live (not final) so the exact count can replace the conservative one at a later tick, whatever the order of the two modules' ticks.
+
+### Robustness
+
+- A tick takes the facts it handles out of the pending sets and puts them back when it fails (a lost connection, a deadlock), so a failed tick loses nothing it heard of; units are locked in part order.
+- Start-up catches up from the tables (every unit of the newest run, and of older runs whose records lag their facts), then marks lost units and judges suspects as any tick does; confirmations are idempotent (a correction only when totals differ from the stored ones), so a restart sends nothing twice.
+
+### Known limits
+
+- `short` is decided when the order is completed and posted once with `completed`; a correction that later changes packed good does not post the status again (the ERP sees the corrected yields in the confirmations).
+- `scrap.yaml` can't be empty: its schema needs at least one reason and the cross-check needs each machine scrap reason as a node.
 
 ### Scrap records
 

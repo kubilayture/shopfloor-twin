@@ -280,7 +280,18 @@ export function orderTotals(
 
 /** A unit as completion reads it. */
 export interface CompletionUnit {
+  /**
+   * `lost` only once no machine of its remaining operations can still report it (the caller
+   * judges it; a lost unit a lagging machine may still report is `wip` here).
+   */
   readonly status: UnitStatus;
+  /**
+   * The operation of an open suspect (a routing break not proven yet): its fact may still arrive and
+   * change the unit from that operation on. Null without one.
+   */
+  readonly suspect: string | null;
+  /** A routing break proven on final data (the missing fact will not come, or the repeat is real). */
+  readonly violation: boolean;
   readonly records: readonly {
     readonly equipment: string;
     readonly epoch: number;
@@ -296,12 +307,16 @@ export interface CompletionUnit {
  * to it, from final data only.
  * - OP10 when its jobs are complete (`jobsDone`, judged by the caller: every job `completed` and
  *   its CNC final through that fact, every OP10 cycle of the jobs a unit);
- * - OP20 when every unit passed it for good or was scrapped at OP10;
+ * - OP20 when every unit passed it for good or was scrapped;
  * - the rework operation and the test only once every unit passed the test for good or was
  *   scrapped (a unit with one failure is still open for both);
  * - the last operation when every unit is packed or scrapped.
- * A unit lost with its device run counts as done (it contributes what it did). Every record an
- * operation's completion rests on must be at or below its machine's final-through (`settled`).
+ * A unit with an open suspect is done for no operation from the suspect's on (its rework group
+ * included): the fact that would explain it
+ * may still arrive and change its passes. Once proven a violation, the unit counts as past every
+ * operation before its latest record (a packed unit as past them all): the missing fact will not
+ * come. A unit lost with its device run counts as done (it contributes what it did). Every record
+ * an operation's completion rests on must be at or below its machine's final-through (`settled`).
  * The time is the latest record of the operation (and of the test for the rework operation, and
  * vice versa), never before the previous operation's.
  */
@@ -314,6 +329,7 @@ export function completion(
   const result = new Map<string, number | null>();
   const [firstOperation = 'OP10', ...rest] = model.operations;
   const lastOperation = model.operations.at(-1) ?? 'OP50';
+  const position = (op: string): number => model.operations.indexOf(op);
   const records = units.flatMap((u) => u.records);
   const latest = (operations: readonly string[]): number =>
     Math.max(
@@ -322,12 +338,26 @@ export function completion(
     );
   const allSettled = (operations: readonly string[]): boolean =>
     records.filter((r) => operations.includes(r.operation)).every(settled);
-  const passedGood = (unit: CompletionUnit, operation: string): boolean =>
-    unit.records.some((r) => r.operation === operation && r.result === 'good');
-  const scrappedAt = (unit: CompletionUnit, operation?: string): boolean =>
-    unit.records.some(
-      (r) => r.result === 'scrap' && (operation === undefined || r.operation === operation),
+  const passedGood = (unit: CompletionUnit, operation: string): boolean => {
+    if (unit.status === 'packed') return true;
+    if (unit.records.some((r) => r.operation === operation && r.result === 'good')) return true;
+    if (!unit.violation) return false;
+    // A proven break: the unit is past every operation before its latest record.
+    const last = unit.records.reduce<CompletionUnit['records'][number] | undefined>(
+      (found, r) => (!found || r.at >= found.at ? r : found),
+      undefined,
     );
+    return last !== undefined && position(operation) < position(last.operation);
+  };
+  const scrapped = (unit: CompletionUnit): boolean => unit.status === 'scrapped';
+  const reworkGroup = [model.back, model.test];
+  const blocked = (unit: CompletionUnit, group: readonly string[]): boolean => {
+    if (unit.suspect === null) return false;
+    const from = reworkGroup.includes(unit.suspect)
+      ? Math.min(...reworkGroup.map(position))
+      : position(unit.suspect);
+    return group.some((op) => position(op) >= from);
+  };
   let previous: number | null = null;
   if (jobsDone && allSettled([firstOperation])) {
     const at = latest([firstOperation]);
@@ -342,11 +372,11 @@ export function completion(
       for (const unit of units) {
         if (unit.status === 'lost') continue;
         const ok =
-          operation === lastOperation
-            ? unit.status === 'packed' || unit.status === 'scrapped'
-            : group.length > 1
-              ? passedGood(unit, model.test) || scrappedAt(unit)
-              : passedGood(unit, operation) || scrappedAt(unit);
+          !blocked(unit, group) &&
+          (scrapped(unit) ||
+            (operation === lastOperation
+              ? unit.status === 'packed'
+              : passedGood(unit, group.length > 1 ? model.test : operation)));
         if (!ok) {
           done = false;
           break;

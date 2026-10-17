@@ -219,6 +219,8 @@ describe('completion (H1)', () => {
   });
   const packed: CompletionUnit = {
     status: 'packed',
+    suspect: null,
+    violation: false,
     records: [
       record('OP10', 1),
       record('OP20', 2),
@@ -229,6 +231,8 @@ describe('completion (H1)', () => {
   };
   const reworked: CompletionUnit = {
     status: 'wip',
+    suspect: null,
+    violation: false,
     records: [record('OP10', 2), record('OP20', 3), record('OP30', 4), record('OP40', 6, 'rework')],
   };
   const all = () => true;
@@ -247,10 +251,81 @@ describe('completion (H1)', () => {
   it('completes every operation once every unit is packed or scrapped, at the latest record', () => {
     const scrappedAgain: CompletionUnit = {
       status: 'scrapped',
+      suspect: null,
+      violation: false,
       records: [...reworked.records, record('OP30', 8), record('OP40', 9, 'scrap')],
     };
     const done = completion([packed, scrappedAgain], true, all, MODEL);
     expect(Object.fromEntries(done)).toEqual({ OP10: 2, OP20: 3, OP30: 9, OP40: 9, OP50: 9 });
+  });
+
+  it('keeps OP30 to OP50 open while a unit has an open suspect: its second OP30 pass may still be in a gap (#175 review)', () => {
+    // Leak failure, then the test passed, then packed; the second OP30 pass is in an open gap of
+    // asm-01, so buildUnit suspects a missing OP30 before the second test.
+    seqs = {};
+    const unit = buildUnit(
+      [
+        fact('cnc-01', 1),
+        fact('wsh-01', 2),
+        fact('asm-01', 3),
+        fact('lkt-01', 4, 'rework'),
+        fact('lkt-01', 6),
+        fact('pck-01', 7),
+      ],
+      operationOf,
+      starts([]),
+      MODEL,
+    );
+    expect(unit.suspect).toMatchObject({ kind: 'missing-predecessor', operation: 'OP30' });
+    const asUnit = (violation: boolean): CompletionUnit => ({
+      status: unit.status,
+      suspect: violation ? null : 'OP30',
+      violation,
+      records: unit.records.map((r) => ({ ...r })),
+    });
+    // Open: nothing after OP20 completes, so no short confirmation goes out early.
+    expect(Object.fromEntries(completion([packed, asUnit(false)], true, all, MODEL))).toEqual({
+      OP10: 1,
+      OP20: 2,
+      OP30: null,
+      OP40: null,
+      OP50: null,
+    });
+    // Proven (asm-01 final through it, the gap written off): the packed unit is past them all.
+    expect(Object.fromEntries(completion([packed, asUnit(true)], true, all, MODEL))).toEqual({
+      OP10: 1,
+      OP20: 2,
+      OP30: 6,
+      OP40: 6,
+      OP50: 7,
+    });
+  });
+
+  it('completes once a fact lost in a written-off gap is proven missing: a packed unit without its OP20 record (#175 review)', () => {
+    const noWasher: CompletionUnit = {
+      status: 'packed',
+      suspect: null,
+      violation: true,
+      records: [record('OP10', 1), record('OP30', 3), record('OP40', 4), record('OP50', 5)],
+    };
+    expect(Object.fromEntries(completion([noWasher], true, all, MODEL))).toEqual({
+      OP10: 1,
+      OP20: 1,
+      OP30: 4,
+      OP40: 4,
+      OP50: 5,
+    });
+    // A unit in WIP with a proven violation counts as past the operations before its latest
+    // record only: OP20 (missing) yes, OP30 and later not yet.
+    const stuck: CompletionUnit = {
+      ...noWasher,
+      status: 'wip',
+      records: noWasher.records.slice(0, 2),
+    };
+    expect(Object.fromEntries(completion([stuck], true, all, MODEL))).toMatchObject({
+      OP20: 1,
+      OP30: null,
+    });
   });
 
   it('waits for the jobs and for every record to be at or below its machine’s final-through', () => {

@@ -1245,15 +1245,23 @@ export class Orders {
       readings.set(row.command_id, { row, reading });
       // Final once its run's facts are refused (a newer epoch reached the device stream), or its
       // job completed and was confirmed: nothing can change it any more.
+      // A lost job's blanks: the exact count from the execution module's units wins once known
+      // (#175 review); until then the running maximum of the conservative count, and the command
+      // stays live so that the exact count can still replace it.
+      const counted =
+        reading.job === 'lost' && device ? await this.#lostStarted(row, reading, device) : null;
+      const lostStarted =
+        counted === null
+          ? null
+          : counted.exact
+            ? counted.count
+            : Math.max(row.lost_started ?? 0, counted.count);
       const final =
-        (device?.epoch !== null &&
+        ((device?.epoch !== null &&
           device?.epoch !== undefined &&
           device.epoch > row.device_epoch) ||
-        (reading.job === 'completed' && reading.confirmed);
-      const lostStarted =
-        reading.job === 'lost' && device
-          ? Math.max(row.lost_started ?? 0, await this.#lostStarted(row, reading, device))
-          : null;
+          (reading.job === 'completed' && reading.confirmed)) &&
+        counted?.pending !== true;
       const record = { ...reading, final, lostStarted };
       if (this.#differs(row, record)) changed.push({ row, reading: record });
     }
@@ -1354,15 +1362,18 @@ export class Orders {
    *   stream (while the run's epoch is still the stream's) or as a gap incident of the run;
    * - else none if it never started, or its OP10 cycles before the next job's `started` fact,
    *   plus one that may have been in the machine, at most its quantity.
-   * The caller keeps the running maximum while late facts may still arrive (#175's units can tell
-   * it exactly).
+   * Exact (`exact`) from the execution module's units once every OP10 cycle of the job is a unit
+   * (#175); `pending` while they are still being built, so the caller keeps the command live and
+   * lets the exact count replace the conservative one. Otherwise the caller keeps the running
+   * maximum.
    */
   async #lostStarted(
     row: CommandRow,
     reading: CommandReading,
     device: DeviceProgress,
-  ): Promise<number> {
-    if (!reading.confirmed || reading.accepted === null) return row.quantity;
+  ): Promise<{ count: number; exact: boolean; pending: boolean }> {
+    const sure = (count: number) => ({ count, exact: false, pending: false });
+    if (!reading.confirmed || reading.accepted === null) return sure(row.quantity);
     const from = reading.started?.seq ?? reading.accepted.seq;
     let known: boolean;
     if (device.epoch === row.device_epoch) {
@@ -1372,7 +1383,7 @@ export class Orders {
       const { incidents } = await this.#ingest.settled(row.equipment, row.device_epoch);
       known = !incidents.some((incident) => incident.seqTo >= from);
     }
-    if (!known) return row.quantity;
+    if (!known) return sure(row.quantity);
     if (reading.started === null) {
       // Accepted, never started: one blank may have been taken without its `started` fact
       // having been raised yet only if it was the CNC's head job (an earlier job not completed
@@ -1389,7 +1400,7 @@ export class Orders {
           .map((f) => f.commandId),
       );
       for (const f of jobs) if (f.transition === 'completed') earlier.delete(f.commandId);
-      if (earlier.size > 0) return 0;
+      if (earlier.size > 0) return sure(0);
       const movedOn =
         jobs.some(
           (f) =>
@@ -1400,7 +1411,7 @@ export class Orders {
             fromSeq: acceptedSeq + 1,
           })
         ).some((f) => f.state === 'Idle' && f.cause === 'NO-ORDER');
-      return movedOn ? 0 : Math.min(1, row.quantity);
+      return sure(movedOn ? 0 : Math.min(1, row.quantity));
     }
     const started = reading.started;
     // #175: the execution module's units count the job's blanks exactly (its OP10 units, plus one
@@ -1412,7 +1423,9 @@ export class Orders {
       quantity: row.quantity,
       startedSeq: started.seq,
     });
-    if (exact !== undefined) return Math.min(row.quantity, exact);
+    if (exact !== undefined) {
+      return { count: Math.min(row.quantity, exact), exact: true, pending: false };
+    }
     const later = (
       await this.#ingest.jobFacts({ equipment: row.equipment, epoch: row.device_epoch })
     )
@@ -1424,7 +1437,12 @@ export class Orders {
       started.seq,
       later?.seq ?? null,
     );
-    return Math.min(row.quantity, cycles + 1);
+    // Pending while a blank counter is attached: its units are still being built.
+    return {
+      count: Math.min(row.quantity, cycles + 1),
+      exact: false,
+      pending: this.#blanks !== undefined,
+    };
   }
 
   /** Incidents and order changes that follow from a command's new reading. */

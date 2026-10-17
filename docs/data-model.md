@@ -1887,6 +1887,7 @@ Units: one part of one simulator run, keyed (device epoch, partId), with its ser
 | Check | `unit_violation_check` | `CHECK ((violation = ANY (ARRAY['missing-predecessor'::text, 'repeated'::text, 'after-terminal'::text])))` |
 | Index | `unit_order` | `execution.unit USING btree (order_id, status)` |
 | Index | `unit_suspect` | `execution.unit USING btree (epoch) WHERE (suspect IS NOT NULL)` |
+| Index | `unit_wip` | `execution.unit USING btree (epoch) WHERE (status = 'wip'::text)` |
 
 ## Schema public
 

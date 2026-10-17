@@ -151,6 +151,10 @@ export interface UnitRecord {
   readonly lastAt: Date;
   readonly terminalAt: Date | null;
   readonly violation: RoutingViolation | null;
+  /** A routing break not proven yet (judged once the expected machines are final through it). */
+  readonly suspect: Exclude<RoutingViolation, 'after-terminal'> | null;
+  /** The operation whose fact would explain the suspect. */
+  readonly suspectOperation: string | null;
   readonly records: readonly {
     readonly operation: string;
     readonly equipment: string;
@@ -361,12 +365,29 @@ export class Execution implements BlankCounter {
   async tick(): Promise<void> {
     if (!this.#started || this.#stopping) return;
     await this.#serial(async () => {
-      const progress = new Map<string, DeviceProgress>();
-      const dirty = await this.#collectDirty();
-      for (const [epoch, parts] of dirty) await this.#rebuild(epoch, [...parts]);
-      await this.#markLost();
-      await this.#checkSuspects(progress);
-      await this.#evaluateOrders(progress);
+      // What this round handles is taken out of the pending sets, and put back if the round
+      // fails, so a failed tick (a lost connection, a deadlock) loses no fact heard of.
+      const cycles = [...this.#pendingCycles];
+      this.#pendingCycles.clear();
+      const starts = this.#pendingStarts.splice(0);
+      const orders = [...this.#dirtyOrders];
+      try {
+        const progress = new Map<string, DeviceProgress>();
+        const dirty = await this.#collectDirty(cycles, starts);
+        for (const [epoch, parts] of dirty) await this.#rebuild(epoch, [...parts]);
+        await this.#markLost();
+        await this.#checkSuspects(progress);
+        await this.#evaluateOrders(progress);
+      } catch (error) {
+        for (const [key, seqs] of cycles) {
+          const pending = this.#pendingCycles.get(key) ?? new Set<number>();
+          for (const seq of seqs) pending.add(seq);
+          this.#pendingCycles.set(key, pending);
+        }
+        this.#pendingStarts.unshift(...starts);
+        for (const id of orders) this.#dirtyOrders.add(id);
+        throw error;
+      }
     });
   }
 
@@ -703,7 +724,10 @@ export class Execution implements BlankCounter {
   }
 
   /** The units the facts heard of touch: their own, and the OP10 cycles a `started` fact re-attributes. */
-  async #collectDirty(): Promise<Map<number, Set<number>>> {
+  async #collectDirty(
+    cycles: readonly (readonly [string, ReadonlySet<number>])[],
+    starts: readonly JobFact[],
+  ): Promise<Map<number, Set<number>>> {
     const dirty = new Map<number, Set<number>>();
     const add = (epoch: number, partId: number) => {
       let parts = dirty.get(epoch);
@@ -713,8 +737,6 @@ export class Execution implements BlankCounter {
       }
       parts.add(partId);
     };
-    const cycles = [...this.#pendingCycles];
-    this.#pendingCycles.clear();
     for (const [key, seqs] of cycles) {
       const [equipment = '', epochText = '0'] = key.split('\u0000');
       const epoch = Number(epochText);
@@ -729,7 +751,6 @@ export class Execution implements BlankCounter {
         }
       }
     }
-    const starts = this.#pendingStarts.splice(0);
     const byRun = new Map<string, JobFact[]>();
     for (const start of starts) {
       const key = `${start.equipment}\u0000${String(start.epoch)}`;
@@ -824,6 +845,8 @@ export class Execution implements BlankCounter {
             .selectAll()
             .where('epoch', '=', epoch)
             .where('part_id', 'in', ids)
+            // In one order, so two rounds locking overlapping units can't deadlock.
+            .orderBy('part_id')
             .forUpdate()
             .execute()
         ).map((row) => [row.part_id, row]),
@@ -923,10 +946,12 @@ export class Execution implements BlankCounter {
 
   /** Units in WIP of an older device run than the newest are lost (ADR-0029 "Simulator restart"). */
   async #markLost(): Promise<void> {
-    const before = this.#newestEpoch;
     await this.#refreshNewest();
     const newest = this.#newestEpoch;
-    if (newest === undefined || newest === before) return;
+    // Every tick, not only when the newest epoch moves: an epoch that changed while the MES was
+    // down, or units of the old run rebuilt by a lagging machine's late facts, are caught too
+    // (cheap: `execution.unit_wip` holds only the units in WIP).
+    if (newest === undefined) return;
     const rows = await this.#db
       .updateTable('execution.unit')
       .set({ status: 'lost', updated_at: sql<Date>`clock_timestamp()` })
@@ -1073,9 +1098,17 @@ export class Execution implements BlankCounter {
         settledOf.set(record.equipment, await this.#progress(progress, record.equipment));
       }
     }
-    const done = completion(
-      units.map((u) => ({
-        status: u.status,
+    const completionUnits = [];
+    for (const u of units) {
+      completionUnits.push({
+        // A lost unit counts as done only once no machine of its remaining operations can still
+        // report it (each is past its epoch); until then it may still move.
+        status:
+          u.status === 'lost' && !(await this.#lostFinal(u, progress))
+            ? ('wip' as const)
+            : u.status,
+        suspect: u.violation === null ? u.suspectOperation : null,
+        violation: u.violation !== null,
         records: u.records.map((r) => ({
           equipment: r.equipment,
           epoch: u.epoch,
@@ -1084,7 +1117,10 @@ export class Execution implements BlankCounter {
           at: r.at.getTime(),
           result: r.result,
         })),
-      })),
+      });
+    }
+    const done = completion(
+      completionUnits,
       jobsDone,
       (record) => {
         const device = settledOf.get(record.equipment);
@@ -1102,9 +1138,29 @@ export class Execution implements BlankCounter {
   }
 
   /**
+   * Whether a lost unit can no longer move: every machine of the operations still ahead of it has
+   * reported a newer epoch than the unit's (as `settled` judges records), so none of them can still
+   * deliver a fact of the unit's run.
+   */
+  async #lostFinal(unit: UnitRecord, progress: Map<string, DeviceProgress>): Promise<boolean> {
+    const operations = this.#model.operations;
+    const [kind = '', operation = ''] = unit.position.split(':');
+    const from =
+      kind === 'rework' ? operations.indexOf(operation) : operations.indexOf(operation) + 1;
+    if (kind !== 'rework' && kind !== 'after') return true;
+    for (const op of operations.slice(Math.max(0, from))) {
+      for (const machine of this.#machines.get(op) ?? []) {
+        const device = await this.#progress(progress, machine);
+        if (device.epoch === null || device.epoch <= unit.epoch) return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Whether an order's jobs are done for OP10 (plan H1): every command settled; every job
    * `completed` with its CNC final through the `completed` fact and each of its OP10 cycles a unit;
-   * a job lost with its run counts only once a later command (a re-dispatch) exists, an abandoned
+   * a job lost with its run counts only once a later command (a re-dispatch) made a job, an abandoned
    * command always (the supervisor wrote it off); at least one such job.
    */
   async #jobsDone(
@@ -1114,11 +1170,12 @@ export class Execution implements BlankCounter {
   ): Promise<boolean> {
     if (commands.length === 0 || commands.some((c) => !c.settled)) return false;
     let jobs = 0;
-    const lastN = Math.max(...commands.map((c) => c.n));
     for (const command of commands) {
-      // Written off by a supervisor, or lost with its run and followed by a re-dispatch: done. A
-      // lost job alone keeps the order open for the supervisor's re-dispatch (ADR-0029).
-      if (command.state === 'abandoned' || (command.job === 'lost' && command.n < lastN)) {
+      // Written off by a supervisor, or lost with its run and followed by a re-dispatch the device
+      // accepted (a later command with a job): done. A lost job alone, or followed only by
+      // commands that made no job, keeps the order open for the supervisor (ADR-0029).
+      const redispatched = commands.some((c) => c.n > command.n && c.job !== null);
+      if (command.state === 'abandoned' || (command.job === 'lost' && redispatched)) {
         jobs++;
         continue;
       }
@@ -1290,6 +1347,8 @@ export class Execution implements BlankCounter {
       lastAt: row.last_at,
       terminalAt: row.terminal_at,
       violation: row.violation,
+      suspect: row.suspect,
+      suspectOperation: row.suspect_operation,
       records: (records.get(`${String(row.epoch)}:${String(row.part_id)}`) ?? []).sort(
         (a, b) =>
           a.at.getTime() - b.at.getTime() ||

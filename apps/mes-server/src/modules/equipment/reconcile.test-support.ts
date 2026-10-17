@@ -1955,6 +1955,36 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         await alarms.stop();
         await equipment.stop();
         await ingest.stop();
+        if (span.orders !== undefined && span.golden !== undefined) {
+          // More orderings, judged on finer steps (#175 review): other seeds, units, completion
+          // and confirmations brought up to date every 97 deliveries.
+          for (const seed of [175, 31_415]) {
+            const m = await mes();
+            const { before, after } = splitAtFirstJob(facts);
+            await m.send([...anchors, ...before]);
+            const again = await ordersStack(m, span.golden, run);
+            await dispatchScenario(again);
+            const shuffled = random(seed);
+            const mixed = shuffle([...after, ...after.filter(() => shuffled() < 0.1)], shuffled);
+            for (let i = 0; i < mixed.length; i += 97) {
+              await m.send(mixed.slice(i, i + 97));
+              await again.orders.tick();
+              await again.execution.tick();
+              await again.orders.postNow();
+            }
+            await m.send([end]);
+            await m.equipment.flush();
+            await settleOrders(again);
+            expect(await expectOrders(again, m.ingest, run)).toEqual(span.orders);
+            expect(await storedExecution(m.db)).toEqual(await storedExecution(reference));
+            console.log(`${title}: shuffled with seed ${String(seed)}, equal the in-order run`);
+            await again.execution.stop();
+            await again.orders.stop();
+            await m.alarms.stop();
+            await m.equipment.stop();
+            await m.ingest.stop();
+          }
+        }
       },
       SHUFFLED_MS,
     );

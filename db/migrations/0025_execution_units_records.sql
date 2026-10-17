@@ -44,6 +44,8 @@ CREATE TABLE execution.unit (
 );
 CREATE INDEX unit_order ON execution.unit (order_id, status);
 CREATE INDEX unit_suspect ON execution.unit (epoch) WHERE suspect IS NOT NULL;
+-- Units in WIP by epoch: those of an older run than the newest are marked lost every tick.
+CREATE INDEX unit_wip ON execution.unit (epoch) WHERE status = 'wip';
 
 -- One record per cycle fact of a unit: (unit, operation, pass) with the machine, the cycle's
 -- completion time (its `sourceTime`; cycle facts carry no start, so none is invented), result and

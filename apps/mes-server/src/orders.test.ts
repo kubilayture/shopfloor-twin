@@ -204,7 +204,12 @@ async function harness(
     sweepMs: 0,
     hashParams: { N: 1024, r: 8, p: 1 },
   }).createUser(
-    { username: 'sam', roles: ['supervisor'], password: 'a-long-test-password' },
+    {
+      username: 'sam',
+      roles: ['supervisor'],
+      password: 'a-long-test-password',
+      mustChangePassword: false,
+    },
     { system: 'test' },
   );
   BY = { by: { userId: user.id, username: 'sam', roles: ['supervisor'] }, requestId: 'req-1' };

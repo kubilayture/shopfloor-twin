@@ -656,6 +656,57 @@ describe('execution: units, completion and confirmations (#175)', () => {
     expect(incident?.message).toContain('OP20');
     expect((await h.execution.units()).units[0]?.violation).toBe('missing-predecessor');
   });
+
+  it('judges a round only by the progress read before its rebuild: a cycle stored meanwhile is no skipped operation (#178)', async () => {
+    const h = await harness('progress_first');
+    const l = h.line;
+    // The live reconciliation's race: while a round rebuilds a unit from its OP30 cycle, the
+    // washer's OP20 cycle of the same unit and a later washer fact are stored. The washer is then
+    // final through the OP30 cycle, but the round's unit doesn't hold its OP20 record yet.
+    await send(h, [l.cycle('cnc-01', 9)]);
+    await settle(h);
+    // In plant time: the washer's cycle, the assembly's, then the washer's next state.
+    const washerCycle = l.cycle('wsh-01', 9);
+    const assembly = l.cycle('asm-01', 9);
+    const washer = [washerCycle, l.state('wsh-01', 'Starved')];
+    // Armed for the round after the assembly's cycle, not the restart's catch-up.
+    let armed = false;
+    let pending = true;
+    const ingest = h.ingest;
+    const source: ExecutionIngest = {
+      onStored: (listener) => ingest.onStored(listener),
+      cycleFacts: async (options) => {
+        const facts = await ingest.cycleFacts(options);
+        if (armed && pending && options.partIds?.includes(9)) {
+          pending = false;
+          await send(h, washer);
+        }
+        return facts;
+      },
+      cycleFactCounts: () => ingest.cycleFactCounts(),
+      jobFacts: (options) => ingest.jobFacts(options),
+      stateFacts: (equipment, epoch, window) => ingest.stateFacts(equipment, epoch, window),
+      deviceProgress: (equipment) => ingest.deviceProgress(equipment),
+      announcedProgress: (equipment) => ingest.announcedProgress(equipment),
+      newestDeviceEpochs: () => ingest.newestDeviceEpochs(),
+      cyclesBetween: (equipment, epoch, after, before) =>
+        ingest.cyclesBetween(equipment, epoch, after, before),
+    };
+    await h.restart(source);
+    await send(h, [assembly]);
+    armed = true;
+    await h.execution.tick();
+    expect(pending).toBe(false);
+    expect(await h.execution.incidents()).toEqual([]);
+    // The next round holds the washer's cycle: the unit passed OP10, OP20 and OP30 in order.
+    await settle(h);
+    expect(await h.execution.incidents()).toEqual([]);
+    const [unit] = (await h.execution.units()).units;
+    expect([unit?.violation, unit?.records.map((r) => r.operation)]).toEqual([
+      null,
+      ['OP10', 'OP20', 'OP30'],
+    ]);
+  });
 });
 
 describe('the execution API (#175)', () => {

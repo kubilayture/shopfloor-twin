@@ -955,6 +955,19 @@ export class Ingest {
   }
 
   /**
+   * `deviceProgress` of several equipment, read in the message queue (#178): every fact the
+   * answer counts has been stored and announced to the listeners, so a listener that keeps what it
+   * hears (the execution module's pending cycles) already holds each of them when this resolves.
+   */
+  async announcedProgress(equipment: readonly string[]): Promise<Map<string, DeviceProgress>> {
+    return this.#enqueue(async () => {
+      const progress = new Map<string, DeviceProgress>();
+      for (const id of equipment) progress.set(id, await this.deviceProgress(id));
+      return progress;
+    });
+  }
+
+  /**
    * The newest device epoch ingest knows for each equipment (#174): from its facts, state anchors
    * (retained events and snapshots), alarm anchors and alarm snapshots. A command for an older
    * epoch can't be accepted any more (the device refuses it, ADR-0030).

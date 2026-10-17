@@ -314,6 +314,18 @@ export class TraceTruth {
 }
 
 /**
+ * A trace cut asked for a plant time after the run's simulation time (`?asOf`, control API 1.6):
+ * the trace then is not known yet. Its own class, so the control API answers it with 400 and any
+ * other error stays a 500.
+ */
+export class AsOfAfterSimTimeError extends Error {
+  constructor(asOf: SimTime, simTime: SimTime) {
+    super(`asOf must not be after the simulation time ${isoTime(simTime)}, got ${isoTime(asOf)}`);
+    this.name = 'AsOfAfterSimTimeError';
+  }
+}
+
+/**
  * The trace result as it stood at plant time `t` (#208 review, control API 1.6 `?asOf`): the tree
  * through `trace-core`'s `traceAsOf`, the counterfactual and log order of the readings it keeps,
  * and the drifts applied before `t`, one ended at or after `t` still active then. Equal to the

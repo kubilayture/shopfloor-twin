@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { PacerState, PacerStatus } from '../live/pacer.ts';
 import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { isoTime } from '../headless/serialize.ts';
+import { AsOfAfterSimTimeError } from '../headless/trace-truth.ts';
 import type { LiveGroundTruth } from '../live/run.ts';
 import type {
   FailureInjection,
@@ -602,8 +603,8 @@ export interface ControlAppOptions {
   };
   /** The live run's ground truth (#100); the route exists only when given. */
   /**
-   * `traceAsOf` (1.6): cut the `trace` section at that plant time; throws a `RangeError` when it
-   * is after the simulation time.
+   * `traceAsOf` (1.6): cut the `trace` section at that plant time; throws an
+   * `AsOfAfterSimTimeError` when it is after the simulation time (400; any other error is a 500).
    */
   readonly groundTruth?: (traceAsOf?: number) => GroundTruthReport;
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
@@ -829,7 +830,7 @@ export async function buildControlApp({
         try {
           return groundTruth(at);
         } catch (error) {
-          if (!(error instanceof RangeError)) throw error;
+          if (!(error instanceof AsOfAfterSimTimeError)) throw error;
           return reply.code(400).send({ error: 'Bad Request', message: error.message });
         }
       },

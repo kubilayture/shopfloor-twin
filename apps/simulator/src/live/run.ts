@@ -4,6 +4,7 @@ import { isoTime } from '../headless/serialize.ts';
 import { applyDispatches, type DispatchSpec } from '../headless/run.ts';
 import { GroundTruth, type GroundTruthSummary } from '../headless/summary.ts';
 import {
+  AsOfAfterSimTimeError,
   TraceTruth,
   traceResultAsOf,
   traceSection,
@@ -145,10 +146,8 @@ export function createLiveRun(options: LiveOptions): LiveRun {
   });
   const groundTruth = (traceAsOf?: SimTime): LiveGroundTruth => {
     const now = simulation.now;
-    if (traceAsOf !== undefined && (!Number.isSafeInteger(traceAsOf) || traceAsOf > now)) {
-      throw new RangeError(
-        `asOf must not be after the simulation time ${isoTime(now)}, got ${String(traceAsOf)}`,
-      );
+    if (traceAsOf !== undefined && traceAsOf > now) {
+      throw new AsOfAfterSimTimeError(traceAsOf, now);
     }
     const summary = truth.snapshot(now, line, lotIds);
     const currentBucket = truth.currentBucket;

@@ -232,6 +232,33 @@ describe('control API (#54)', () => {
       });
       expect(refused.statusCode, bad).toBe(400);
     }
+    expect(
+      (
+        await served.inject({
+          method: 'GET',
+          url: '/api/v1/ground-truth?asOf=2026-10-12T11:10:00.001Z',
+        })
+      ).json<{ message: string }>().message,
+    ).toBe(
+      'asOf must not be after the simulation time 2026-10-12T11:10:00.000Z, got 2026-10-12T11:10:00.001Z',
+    );
+    // Only that refusal is a 400: any other error of the ground truth (a RangeError included) is
+    // a server error.
+    const broken = await buildControlApp({
+      pacer: run.pacer,
+      hub: new EventHub(),
+      ready: () => true,
+      groundTruth: () => {
+        throw new RangeError('a defect in the truth');
+      },
+      logger: false,
+    });
+    const failed = await broken.inject({
+      method: 'GET',
+      url: `/api/v1/ground-truth?asOf=${asOf}`,
+    });
+    expect(failed.statusCode).toBe(500);
+    await broken.close();
   });
 
   it('refuses control until every OPC UA server listens, but reports status', async () => {

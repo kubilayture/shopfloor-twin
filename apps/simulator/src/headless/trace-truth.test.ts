@@ -8,7 +8,10 @@ import { DEFAULT_RULES } from '@shopfloor/spc-core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
-import type { OrdersSummary } from './order-truth.ts';
+import type { ProductionLine } from '../plant/line.ts';
+import { OrderTruth, type OrdersSummary } from './order-truth.ts';
+import { isoTime } from './serialize.ts';
+import { derive } from './trace-derive.test-support.ts';
 import {
   DEFAULT_DRIFT_WINDOW,
   TraceTruth,
@@ -332,5 +335,66 @@ describe('trace truth fold (#208)', () => {
       },
     ]);
     expect(section.units.count).toBe(2);
+  });
+
+  it("closes a short order's last carton at the order's completion, a scrap after its last pack", () => {
+    // PO-1 (VB-100 × 3): units 1 and 2 are packed, then unit 3 is scrapped at OP10, the order's
+    // last terminal event; the partial carton closes then, not at its last member's pack.
+    const job = (at: number, transition: 'accepted' | 'started' | 'completed'): PlantEvent => ({
+      type: 'job',
+      at,
+      machineId: 'cnc-01',
+      transition,
+      commandId: 'PO-1~OP10~1',
+      orderId: 'PO-1',
+      product: 'VB-100',
+      quantity: 3,
+    });
+    const downstream = (partId: number, from: number): PlantEvent[] => [
+      cycle(from, 'wsh-01', partId),
+      consumed(from + 1, 'asm-01', partId, 'SK-1', 'SK-A'),
+      consumed(from + 1, 'asm-01', partId, 'SP-100', 'SP-A'),
+      cycle(from + 2, 'asm-01', partId),
+      cycle(from + 3, 'lkt-01', partId, 'good', leak(2.0)),
+      cycle(from + 4, 'pck-01', partId),
+    ];
+    const events: PlantEvent[] = [
+      job(T0, 'accepted'),
+      job(T0, 'started'),
+      consumed(T0 + 1_000, 'cnc-01', 1, 'BLANK-100', 'BL-A'),
+      cycle(T0 + 2_000, 'cnc-01', 1, 'good', { serial: 'VB-100-000001' }),
+      consumed(T0 + 2_000, 'cnc-01', 2, 'BLANK-100', 'BL-A'),
+      cycle(T0 + 3_000, 'cnc-01', 2, 'good', { serial: 'VB-100-000002' }),
+      ...downstream(1, T0 + 10_000),
+      ...downstream(2, T0 + 20_000),
+      consumed(T0 + 30_000, 'cnc-01', 3, 'BLANK-100', 'BL-B'),
+      cycle(T0 + 40_000, 'cnc-01', 3, 'scrap', { serial: 'VB-100-000003', reason: 'DIMENSIONAL' }),
+      job(T0 + 40_000, 'completed'),
+    ];
+    const truth = new TraceTruth(config);
+    const orderTruth = new OrderTruth(config);
+    for (const event of events) {
+      truth.record(event);
+      orderTruth.record(event);
+    }
+    // Nothing is left on the line: every unit is packed or scrapped.
+    const summary = orderTruth.summary({ buffers: [], stations: [] } as unknown as ProductionLine);
+    const order = summary.orders['PO-1'];
+    expect([order?.packedGood, order?.quantity]).toEqual([2, 3]);
+    expect(order?.completedAt).toBe(isoTime(T0 + 40_000));
+    const section = traceSection(truth.build(summary));
+    const logged = events.map((e) => ({ ...e, at: isoTime(e.at) }));
+    const derived = derive(logged, summary);
+    expect(section.cartons).toEqual(derived.cartons);
+    expect(section.cartons).toEqual([
+      expect.objectContaining({
+        id: 'PO-1-C01',
+        status: 'closed',
+        closedAt: isoTime(T0 + 40_000),
+        members: expect.objectContaining({ count: 2 }) as unknown,
+      }),
+    ]);
+    // Later than the last member's pack (unit 2 at OP50).
+    expect(isoTime(T0 + 20_004) < (section.cartons[0]?.closedAt ?? '')).toBe(true);
   });
 });

@@ -13,6 +13,7 @@ import {
   placeCartons,
   traceUnit,
   type BomLine,
+  type Carton,
   type LotLink,
   type LotRef,
   type PlacedPack,
@@ -49,6 +50,15 @@ export interface GenealogyExecution {
     readonly partIds: readonly number[];
     readonly limit: number;
   }): Promise<{ units: UnitRecord[] }>;
+  /** Every unit's order and status, without records (the catch-up's comparison). */
+  unitStates(): Promise<
+    readonly {
+      readonly epoch: number;
+      readonly partId: number;
+      readonly orderId: string | null;
+      readonly status: UnitRecord['status'];
+    }[]
+  >;
 }
 
 /** The ERP's lot list (`ErpClient.lots`, #198). */
@@ -82,7 +92,10 @@ export interface GenealogyOptions {
     routings(): Promise<Routing[]>;
   };
   /** The crew signed on to a work center (`Shifts.crew`); none without it. */
-  readonly crew?: (workCenter: string) => Promise<readonly GenealogyCrew[]>;
+  readonly crew?: (
+    workCenter: string,
+    span: { readonly from: Date; readonly to: Date },
+  ) => Promise<readonly GenealogyCrew[]>;
   /** The ERP's lot list; without it no lot is imported. */
   readonly erp?: GenealogyErp;
   /** The packing rule's configuration (`config/plant/packing.yaml`). */
@@ -265,15 +278,7 @@ export class Genealogy {
    */
   async start(): Promise<void> {
     await this.#loadMaster();
-    this.#unsubscribe = this.#options.execution.onUnits((epoch, partIds) => {
-      let parts = this.#dirty.get(epoch);
-      if (!parts) {
-        parts = new Set();
-        this.#dirty.set(epoch, parts);
-      }
-      for (const id of partIds) parts.add(id);
-      this.#soon();
-    });
+    this.follow();
     this.#started = true;
     if (this.#options.erp) {
       await this.importLots().catch((error: unknown) => {
@@ -304,8 +309,30 @@ export class Genealogy {
     }
   }
 
+  /**
+   * Starts buffering the units the execution module announces (#199 review, M4): called before
+   * `Execution.start()`, so the units its catch-up and first round rebuild are not missed; `start()`
+   * calls it too. Idempotent.
+   */
+  follow(): void {
+    if (this.#unsubscribe) return;
+    this.#unsubscribe = this.#options.execution.onUnits((epoch, partIds) => {
+      this.#mark(epoch, partIds);
+      this.#soon();
+    });
+  }
+
   get started(): boolean {
     return this.#started;
+  }
+
+  #mark(epoch: number, partIds: Iterable<number>): void {
+    let parts = this.#dirty.get(epoch);
+    if (!parts) {
+      parts = new Set();
+      this.#dirty.set(epoch, parts);
+    }
+    for (const id of partIds) parts.add(id);
   }
 
   async stop(): Promise<void> {
@@ -359,7 +386,7 @@ export class Genealogy {
 
   /**
    * Imports the ERP's lot list (plan "Lots from the ERP"): every lot upserted by id in one
-   * transaction (quantity and status follow the list; a lot no longer listed is kept as
+   * transaction (material, quantity and status follow the list; a lot no longer listed is kept as
    * `retired`), and `unknown-lot` incidents of lots now listed closed, their units rebuilt (the
    * material check now has the lot). Returns the lots listed.
    */
@@ -368,6 +395,7 @@ export class Genealogy {
     if (!erp) return 0;
     const list = await erp.lots();
     const ids = list.lots.map((l) => l.id);
+    const changed: string[] = [];
     const known = await this.#db.transaction().execute(async (trx) => {
       const existing = new Map(
         (await trx.selectFrom('genealogy.material_lot').selectAll().forUpdate().execute()).map(
@@ -377,13 +405,17 @@ export class Genealogy {
       for (const lot of list.lots) {
         const before = existing.get(lot.id);
         if (before && before.material !== lot.material) {
+          // Logged once: the stored material follows the list, so the next import is equal. The
+          // lot's units are judged again against the material the ERP lists now (review L8).
           this.#log.warn(
             { lot: lot.id, was: before.material, now: lot.material },
-            'genealogy: the ERP changed a lot’s material; kept as first imported',
+            'genealogy: the ERP changed a lot’s material',
           );
+          changed.push(lot.id);
         }
         if (
           before?.quantity === lot.quantity &&
+          before.material === lot.material &&
           before.status === 'active' &&
           before.feed_id === list.feedId
         ) {
@@ -400,6 +432,7 @@ export class Genealogy {
           })
           .onConflict((c) =>
             c.column('id').doUpdateSet({
+              material: lot.material,
               quantity: lot.quantity,
               status: 'active',
               feed_id: list.feedId,
@@ -427,8 +460,14 @@ export class Genealogy {
         .returning('lot')
         .execute();
     });
-    // The units of lots that were unknown: rebuilt, so the lot's listed material is checked.
-    const lots = known.map((row) => row.lot).filter((lot): lot is string => lot !== null);
+    // The units of lots that were unknown or changed material: rebuilt, so the lot's listed
+    // material is checked.
+    const lots = [
+      ...new Set([
+        ...known.map((row) => row.lot).filter((lot): lot is string => lot !== null),
+        ...changed,
+      ]),
+    ];
     if (lots.length > 0) {
       const units = await this.#db
         .selectFrom('genealogy.genealogy_link')
@@ -437,14 +476,7 @@ export class Genealogy {
         .where('kind', '=', 'lot-unit')
         .where('lot', 'in', lots)
         .execute();
-      for (const unit of units) {
-        let parts = this.#dirty.get(unit.epoch);
-        if (!parts) {
-          parts = new Set();
-          this.#dirty.set(unit.epoch, parts);
-        }
-        parts.add(unit.part_id);
-      }
+      for (const unit of units) this.#mark(unit.epoch, [unit.part_id]);
       this.#soon();
     }
     return list.lots.length;
@@ -453,17 +485,21 @@ export class Genealogy {
   // ---- the processed watermark (#201's close guard, plan review round 2 HIGH C) ----
 
   /**
-   * Genealogy's contiguous processed-through sequence of a machine in a device epoch: every fact
-   * up to it (the device stream received without a gap, ADR-0018) is reflected in the links.
-   * `null` when nothing of that epoch is processed yet; an epoch older than the machine's newest
-   * processed one counts as processed through every number.
+   * Genealogy's contiguous processed-through sequence of a machine in a device epoch: the
+   * machine's final-through (`settledSeq`, ADR-0018) as the execution round genealogy caught up
+   * with read it. Every number up to it was received or written off as a gap (a reported gap
+   * counts: its facts are not coming), and every fact received up to it is reflected in the links;
+   * so it moves on past a written-off gap (review H1; `receivedThrough` would stop at the gap for
+   * the rest of the epoch). A fact of a written-off gap that arrives after all is a late fact
+   * (ADR-0018) and moves nothing back. `null` when nothing of that epoch is processed yet; an
+   * epoch older than the machine's newest processed one counts as processed through every number.
    */
   processedThrough(equipment: string, epoch: number): number | null {
     const device = this.#processed.get(equipment);
     if (device?.epoch === null || device?.epoch === undefined) return null;
     if (device.epoch > epoch) return Number.MAX_SAFE_INTEGER;
     if (device.epoch < epoch) return null;
-    return device.receivedThrough;
+    return device.settledSeq;
   }
 
   /** Whether every one of these facts is at or below genealogy's processed watermark. */
@@ -648,60 +684,53 @@ export class Genealogy {
     return rows.map(toLot);
   }
 
-  /** Serials, lots, cartons and orders whose id starts with `q` (case as given), at most `limit` each. */
+  /**
+   * Serials, lots (as imported), cartons and orders whose id starts with `q` (case as given), at
+   * most `limit` each, by id. A range on the id in byte order (`COLLATE "C"`), which the
+   * `*_prefix` indexes serve (review M6).
+   */
   async search(q: string, limit = 20): Promise<{ kind: SearchKind; id: string }[]> {
-    const prefix = `${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-    const like = (column: string) => sql<boolean>`${sql.ref(column)} LIKE ${prefix}`;
-    const [serials, lots, linked, cartons, orders] = await Promise.all([
+    const upper = prefixUpperBound(q);
+    const range = (column: string) =>
+      upper === null
+        ? sql<boolean>`${sql.ref(column)} COLLATE "C" >= ${q}`
+        : sql<boolean>`${sql.ref(column)} COLLATE "C" >= ${q} AND ${sql.ref(column)} COLLATE "C" < ${upper}`;
+    const byte = (column: string) => sql`${sql.ref(column)} COLLATE "C"`;
+    const [serials, lots, cartons, orders] = await Promise.all([
       this.#readDb
         .selectFrom('genealogy.serial_unit')
         .select('serial')
-        .distinct()
-        .where('serial', 'is not', null)
-        .where(like('serial'))
-        .orderBy('serial')
+        .groupBy('serial')
+        .where(range('serial'))
+        .orderBy(byte('serial'))
         .limit(limit)
         .execute(),
       this.#readDb
         .selectFrom('genealogy.material_lot')
         .select('id')
-        .where(like('id'))
-        .orderBy('id')
-        .limit(limit)
-        .execute(),
-      this.#readDb
-        .selectFrom('genealogy.genealogy_link')
-        .select('lot')
-        .distinct()
-        .where('kind', '=', 'lot-unit')
-        .where(like('lot'))
-        .orderBy('lot')
+        .where(range('id'))
+        .orderBy(byte('id'))
         .limit(limit)
         .execute(),
       this.#readDb
         .selectFrom('genealogy.carton')
         .select('id')
-        .where(like('id'))
-        .orderBy('id')
+        .where(range('id'))
+        .orderBy(byte('id'))
         .limit(limit)
         .execute(),
       this.#readDb
         .selectFrom('genealogy.serial_unit')
         .select('order_id')
-        .distinct()
-        .where('order_id', 'is not', null)
-        .where(like('order_id'))
-        .orderBy('order_id')
+        .groupBy('order_id')
+        .where(range('order_id'))
+        .orderBy(byte('order_id'))
         .limit(limit)
         .execute(),
     ]);
-    const lotIds = [...new Set([...lots.map((l) => l.id), ...linked.map((l) => l.lot ?? '')])]
-      .filter((id) => id !== '')
-      .sort(byText)
-      .slice(0, limit);
     return [
       ...serials.map((s) => ({ kind: 'serial' as const, id: s.serial ?? '' })),
-      ...lotIds.map((id) => ({ kind: 'lot' as const, id })),
+      ...lots.map((l) => ({ kind: 'lot' as const, id: l.id })),
       ...cartons.map((c) => ({ kind: 'carton' as const, id: c.id })),
       ...orders.map((o) => ({ kind: 'order' as const, id: o.order_id ?? '' })),
     ];
@@ -755,7 +784,12 @@ export class Genealogy {
     );
   }
 
-  /** Every unit of the newest device run, and of older runs whose records lag their facts. */
+  /**
+   * Catch-up at start: every unit of the newest device run, of older runs whose records lag their
+   * facts, and every unit whose order or status differs from the execution module's (a change
+   * announced while genealogy was not following, review M4); then the orders whose cartons are not
+   * settled (an open carton, or packs not all placed), not every order (review M5).
+   */
   async #catchUp(): Promise<void> {
     const counts = await this.#options.ingest.cycleFactCounts();
     const stored = await this.#db
@@ -771,6 +805,7 @@ export class Genealogy {
       const mine = stored.find((s) => s.equipment === count.equipment && s.epoch === count.epoch);
       if (count.epoch === newest || Number(mine?.n ?? 0) !== count.facts) epochs.add(count.epoch);
     }
+    const dirty = new Map<number, Set<number>>();
     for (const epoch of epochs) {
       const parts = new Set<number>();
       for (const count of counts.filter((c) => c.epoch === epoch && known.has(c.equipment))) {
@@ -781,16 +816,62 @@ export class Genealogy {
           parts.add(fact.partId);
         }
       }
-      await this.#rebuild(epoch, [...parts], this.#options.execution.processedThrough());
+      dirty.set(epoch, parts);
     }
-    // Every order with units: its cartons placed again at the first round.
-    const orders = await this.#db
-      .selectFrom('genealogy.serial_unit')
-      .select('order_id')
-      .distinct()
-      .where('order_id', 'is not', null)
-      .execute();
-    for (const row of orders) if (row.order_id !== null) this.#dirtyOrders.add(row.order_id);
+    const mine = new Map(
+      (
+        await this.#db
+          .selectFrom('genealogy.serial_unit')
+          .select(['epoch', 'part_id', 'order_id', 'status'])
+          .execute()
+      ).map((r) => [`${String(r.epoch)}/${String(r.part_id)}`, r]),
+    );
+    for (const unit of await this.#options.execution.unitStates()) {
+      const row = mine.get(`${String(unit.epoch)}/${String(unit.partId)}`);
+      if (row?.order_id === unit.orderId && row.status === unit.status) continue;
+      const parts = dirty.get(unit.epoch) ?? new Set<number>();
+      parts.add(unit.partId);
+      dirty.set(unit.epoch, parts);
+    }
+    const watermark = this.#options.execution.processedThrough();
+    for (const [epoch, parts] of dirty) await this.#rebuild(epoch, [...parts], watermark);
+    for (const id of await this.#unsettledOrders()) this.#dirtyOrders.add(id);
+  }
+
+  /** Orders with an open carton, or whose good packs are not all in its cartons. */
+  async #unsettledOrders(): Promise<string[]> {
+    const [open, packs, members] = await Promise.all([
+      this.#db
+        .selectFrom('genealogy.carton')
+        .select('order_id')
+        .distinct()
+        .where('status', '=', 'open')
+        .execute(),
+      this.#db
+        .selectFrom('genealogy.unit_record as r')
+        .innerJoin('genealogy.serial_unit as u', (j) =>
+          j.onRef('u.epoch', '=', 'r.epoch').onRef('u.part_id', '=', 'r.part_id'),
+        )
+        .select('u.order_id')
+        .select((eb) => eb.fn.countAll<string>().as('n'))
+        .where('u.order_id', 'is not', null)
+        .where('r.operation', '=', this.#options.packing.operation)
+        .where('r.result', '=', 'good')
+        .groupBy('u.order_id')
+        .execute(),
+      this.#db
+        .selectFrom('genealogy.carton')
+        .select('order_id')
+        .select((eb) => eb.fn.sum<string>('members').as('n'))
+        .groupBy('order_id')
+        .execute(),
+    ]);
+    const placed = new Map(members.map((m) => [m.order_id, Number(m.n)]));
+    const ids = new Set(open.map((o) => o.order_id));
+    for (const p of packs) {
+      if (p.order_id !== null && Number(p.n) !== (placed.get(p.order_id) ?? 0)) ids.add(p.order_id);
+    }
+    return [...ids].sort();
   }
 
   /** Rebuilds units of one device run from their execution records and cycle facts. */
@@ -819,9 +900,63 @@ export class Genealogy {
           orders.set(unit.orderId, await this.#options.orders.order(unit.orderId));
         }
       }
-      await this.#store(epoch, built, orders, watermark);
+      try {
+        await this.#store(epoch, built, orders, watermark);
+      } catch (error) {
+        await this.#isolate(epoch, built, orders, watermark, error);
+      }
       this.#rebuilt?.inc(built.length);
     }
+  }
+
+  /**
+   * A chunk of units that failed to store, unit by unit (review L10): a unit that fails on its own
+   * raises `rebuild-failed` (its rows stay as they were, the round goes on and the watermark with
+   * it, until the unit is announced again); when every unit fails, the cause is not the units (a
+   * lost connection, a deadlock) and the round fails, to be retried with everything it took.
+   */
+  async #isolate(
+    epoch: number,
+    built: readonly { unit: UnitRecord; records: TracedRecord[]; links: LotLink[] }[],
+    orders: ReadonlyMap<string, OrderRecord | undefined>,
+    watermark: ReadonlyMap<string, DeviceProgress>,
+    error: unknown,
+  ): Promise<void> {
+    if (built.length <= 1) {
+      const [one] = built;
+      if (!one) throw error;
+      await this.#rebuildFailed(epoch, one.unit, error);
+      return;
+    }
+    const failed: { unit: UnitRecord; error: unknown }[] = [];
+    for (const one of built) {
+      try {
+        await this.#store(epoch, [one], orders, watermark);
+      } catch (cause) {
+        failed.push({ unit: one.unit, error: cause });
+      }
+    }
+    if (failed.length === built.length) throw error;
+    for (const { unit, error: cause } of failed) await this.#rebuildFailed(epoch, unit, cause);
+  }
+
+  async #rebuildFailed(epoch: number, unit: UnitRecord, error: unknown): Promise<void> {
+    this.#log.error(
+      { err: error, epoch, partId: unit.partId },
+      'genealogy: rebuilding a unit failed; its rows are kept as they were',
+    );
+    const raised = await this.#db.transaction().execute((trx) =>
+      this.#raise(trx, {
+        type: 'rebuild-failed',
+        key: `rebuild-failed:${String(epoch)}:${String(unit.partId)}`,
+        lot: null,
+        epoch,
+        part_id: unit.partId,
+        equipment: null,
+        message: `unit ${String(epoch)}/${String(unit.partId)}${unit.serial ? ` (${unit.serial})` : ''}: its genealogy could not be rebuilt (${error instanceof Error ? error.message : String(error)}); its rows are kept as they were until it is rebuilt`,
+      }),
+    );
+    if (raised) this.#incidents?.inc({ type: 'rebuild-failed' });
   }
 
   async #store(
@@ -959,15 +1094,10 @@ export class Genealogy {
         const order = unit.orderId === null ? undefined : orders.get(unit.orderId);
         const bom = order ? order.bom.map(bomLine) : (this.#bomOf.get(unit.product) ?? []);
         const found = mismatches(list, bom, (lot) => listed.get(lot));
-        // Judged only once the unit's order is final (plan: incidents on final data): its first
-        // operation's machine final through that record, so no job fact still on its way can
-        // attribute it to another order (ADR-0031). Until then a mismatch may come from a
-        // provisional attribution, and the unit is looked at again next round.
-        const first = unit.records.find((r) => r.operation === this.#firstOperation);
-        const final =
-          first !== undefined &&
-          finalThrough(watermark.get(first.equipment), { epoch, seq: first.seq });
-        if (found.length > 0 && !final) {
+        // Judged only once the unit's order is final (plan: incidents on final data, see
+        // `#attributionFinal`). Until then a mismatch may come from a provisional attribution,
+        // and the unit is looked at again next round.
+        if (found.length > 0 && !this.#attributionFinal(epoch, unit.records, watermark)) {
           let parts = this.#unjudged.get(epoch);
           if (!parts) {
             parts = new Set();
@@ -1015,6 +1145,14 @@ export class Genealogy {
           .where('id', 'in', stale)
           .execute();
       }
+      await trx
+        .updateTable('genealogy.genealogy_incident')
+        .set({ closed_at: sql<Date>`clock_timestamp()`, resolution: 'rebuilt' })
+        .where('type', '=', 'rebuild-failed')
+        .where('closed_at', 'is', null)
+        .where('epoch', '=', epoch)
+        .where('part_id', 'in', ids)
+        .execute();
       const serials = [
         ...new Set(
           built.map((b) => b.unit.serial).filter((s): s is string => s !== null && s !== ''),
@@ -1050,6 +1188,32 @@ export class Genealogy {
     for (const type of raised) this.#incidents?.inc({ type });
   }
 
+  /**
+   * Whether a unit's order can no longer change (ADR-0031: the latest `started` fact below its
+   * first-operation cycle on that machine): its first operation's machine is final through that
+   * record, so no job fact on its way can attribute it to another order. A unit without a
+   * first-operation record (its fact lost, the gap written off) has no order for good once every
+   * machine of its records is final through them (review M3): judged with the product's BOM.
+   */
+  #attributionFinal(
+    epoch: number,
+    records: readonly {
+      readonly operation: string;
+      readonly equipment: string;
+      readonly seq: number;
+    }[],
+    watermark: ReadonlyMap<string, DeviceProgress>,
+  ): boolean {
+    const first = records.find((r) => r.operation === this.#firstOperation);
+    if (first !== undefined) {
+      return finalThrough(watermark.get(first.equipment), { epoch, seq: first.seq });
+    }
+    return (
+      records.length > 0 &&
+      records.every((r) => finalThrough(watermark.get(r.equipment), { epoch, seq: r.seq }))
+    );
+  }
+
   async #raise(
     trx: Transaction<Database>,
     incident: Omit<
@@ -1071,10 +1235,13 @@ export class Genealogy {
 
   /**
    * An order's cartons by the packing rule on final data (plan "Cartons"): its good packing
-   * cycles placed in order up to the first one its machine isn't final through, the last carton
-   * closed at the order's completion once every pack is placed. Rewrites the order's cartons and
-   * `unit-carton` links; keeps the order for the next round while a pack is not placed or a carton
-   * is open.
+   * cycles placed in order up to the first one not final, the last carton closed at the order's
+   * completion once every pack is placed. A pack is final when its machine is final through it
+   * and its unit's order is (`#attributionFinal`: a late job fact can move a unit to another
+   * order, review H2), so a closed carton's members never change but for a fact of a written-off
+   * gap. Rewrites the order's cartons and `unit-carton` links only when they differ from the
+   * stored ones (review M5); keeps the order for the next round while a pack is not placed or a
+   * carton is open.
    */
   async #placeOrder(
     orderId: string,
@@ -1096,12 +1263,33 @@ export class Genealogy {
       .where('r.operation', '=', operation)
       .where('r.result', '=', 'good')
       .execute();
+    const firsts = await this.#db
+      .selectFrom('genealogy.unit_record as r')
+      .innerJoin('genealogy.serial_unit as u', (j) =>
+        j.onRef('u.epoch', '=', 'r.epoch').onRef('u.part_id', '=', 'r.part_id'),
+      )
+      .select(['r.equipment', 'r.epoch', 'r.seq', 'r.part_id', 'r.operation'])
+      .where('u.order_id', '=', orderId)
+      .where('r.operation', '=', this.#firstOperation)
+      .execute();
+    const firstOf = new Map<string, (typeof firsts)[number][]>();
+    for (const f of firsts) {
+      const key = `${String(f.epoch)}/${String(f.part_id)}`;
+      firstOf.set(key, [...(firstOf.get(key) ?? []), f]);
+    }
     const placedPacks: PlacedPack[] = packs.map((p) => ({
       unit: { epoch: p.epoch, partId: p.part_id },
       orderId,
       at: p.completed_at.getTime(),
       seq: p.seq,
-      final: finalThrough(watermark.get(p.equipment), { epoch: p.epoch, seq: p.seq }),
+      final:
+        finalThrough(watermark.get(p.equipment), { epoch: p.epoch, seq: p.seq }) &&
+        (firstOf.get(`${String(p.epoch)}/${String(p.part_id)}`) ?? []).length > 0 &&
+        this.#attributionFinal(
+          p.epoch,
+          firstOf.get(`${String(p.epoch)}/${String(p.part_id)}`) ?? [],
+          watermark,
+        ),
     }));
     const completedAt =
       (order.status === 'completed' || order.status === 'closed') && order.completedAt !== null
@@ -1120,6 +1308,10 @@ export class Genealogy {
       return;
     }
     const { cartons } = placed;
+    const pending = !placed.complete || cartons.some((c) => c.status === 'open');
+    if (pending) this.#unsettled.add(orderId);
+    else this.#unsettled.delete(orderId);
+    if (await this.#sameCartons(orderId, cartons)) return;
     await this.#db.transaction().execute(async (trx) => {
       const old = (
         await trx
@@ -1199,8 +1391,44 @@ export class Genealogy {
         }
       }
     });
-    if (!placed.complete || cartons.some((c) => c.status === 'open')) this.#unsettled.add(orderId);
-    else this.#unsettled.delete(orderId);
+  }
+
+  /** Whether an order's stored cartons and members are these (nothing to write, review M5). */
+  async #sameCartons(orderId: string, cartons: readonly Carton[]): Promise<boolean> {
+    const [rows, links] = await Promise.all([
+      this.#db
+        .selectFrom('genealogy.carton')
+        .select(['id', 'number', 'status', 'closed_at', 'members'])
+        .where('order_id', '=', orderId)
+        .orderBy('number')
+        .execute(),
+      this.#db
+        .selectFrom('genealogy.genealogy_link as l')
+        .innerJoin('genealogy.carton as c', 'c.id', 'l.carton_id')
+        .select(['l.carton_id', 'l.epoch', 'l.part_id', 'l.position'])
+        .where('l.kind', '=', 'unit-carton')
+        .where('c.order_id', '=', orderId)
+        .orderBy('c.number')
+        .orderBy('l.position')
+        .execute(),
+    ]);
+    const stored = JSON.stringify({
+      cartons: rows.map((r) => [
+        r.id,
+        r.number,
+        r.status,
+        r.closed_at?.getTime() ?? null,
+        r.members,
+      ]),
+      members: links.map((l) => [l.carton_id, l.epoch, l.part_id, l.position]),
+    });
+    const wanted = JSON.stringify({
+      cartons: cartons.map((c, i) => [c.id, i + 1, c.status, c.closedAt, c.members.length]),
+      members: cartons.flatMap((c) =>
+        c.members.map((m, position) => [c.id, m.epoch, m.partId, position]),
+      ),
+    });
+    return stored === wanted;
   }
 
   // ---- internals: reads ----
@@ -1246,32 +1474,52 @@ export class Genealogy {
         }
       }
     }
-    const crew = new Map<string, readonly GenealogyCrew[]>();
-    const crewOf = async (workCenter: string): Promise<readonly GenealogyCrew[]> => {
-      let found = crew.get(workCenter);
-      if (!found) {
-        found = this.#options.crew ? await this.#options.crew(workCenter) : [];
-        crew.set(workCenter, found);
-      }
-      return found;
+    // The cycle of a record with a device operator, whose crew is shown: the fact carries no
+    // start, so the cycle is taken as its ideal length before completion.
+    const cycleOf = (product: string, r: Selectable<UnitRecordTable>) => {
+      const workCenter = this.#workCenterOf.get(r.equipment);
+      if (!r.operator_reported || r.operator === null || workCenter === undefined) return undefined;
+      const to = r.completed_at.getTime();
+      return { workCenter, from: to - (this.#idealCycle.get(product)?.get(r.operation) ?? 0), to };
     };
+    // Only the crew rows of the trace's time span, one read per work center (review L10).
+    const spans = new Map<string, { from: number; to: number }>();
+    for (const row of rows) {
+      for (const r of records.get(`${String(row.epoch)}/${String(row.part_id)}`) ?? []) {
+        const cycle = cycleOf(row.product, r);
+        if (!cycle) continue;
+        const span = spans.get(cycle.workCenter);
+        spans.set(cycle.workCenter, {
+          from: Math.min(span?.from ?? cycle.from, cycle.from),
+          to: Math.max(span?.to ?? cycle.to, cycle.to),
+        });
+      }
+    }
+    const crew = new Map<string, readonly GenealogyCrew[]>();
+    for (const [workCenter, span] of spans) {
+      crew.set(
+        workCenter,
+        this.#options.crew
+          ? await this.#options.crew(workCenter, {
+              from: new Date(span.from),
+              to: new Date(span.to),
+            })
+          : [],
+      );
+    }
     const units: TraceUnitRecord[] = [];
     for (const row of rows) {
       const list = records.get(`${String(row.epoch)}/${String(row.part_id)}`) ?? [];
       const traced = [];
       for (const r of list) {
-        let signedOn: readonly GenealogyCrew[] = [];
-        const workCenter = this.#workCenterOf.get(r.equipment);
-        if (r.operator_reported && r.operator !== null && workCenter !== undefined) {
-          // The fact carries no start: the cycle is taken as its ideal length before completion.
-          const start =
-            r.completed_at.getTime() - (this.#idealCycle.get(row.product)?.get(r.operation) ?? 0);
-          signedOn = (await crewOf(workCenter)).filter(
-            (c) =>
-              c.fromPlant.getTime() <= r.completed_at.getTime() &&
-              (c.toPlant === null || c.toPlant.getTime() >= start),
-          );
-        }
+        const cycle = cycleOf(row.product, r);
+        const signedOn = cycle
+          ? (crew.get(cycle.workCenter) ?? []).filter(
+              (c) =>
+                c.fromPlant.getTime() <= cycle.to &&
+                (c.toPlant === null || c.toPlant.getTime() >= cycle.from),
+            )
+          : [];
         traced.push({
           operation: r.operation,
           equipment: r.equipment,
@@ -1371,6 +1619,23 @@ const bomLine = (b: {
   operation: b.operation,
   usage: b.usage,
 });
+
+/**
+ * The smallest string above every string that starts with `q`, in code-point (UTF-8 byte) order:
+ * `q` with its last code point raised by one; `null` when there is none.
+ */
+export function prefixUpperBound(q: string): string | null {
+  // Code points, not graphemes: the order compared is the bytes' (UTF-8 keeps code-point order).
+  const points = Array.from(q);
+  while (points.length > 0) {
+    const last = (points.pop() ?? '').codePointAt(0) ?? 0;
+    if (last < 0x10ffff) {
+      const next = last + 1 === 0xd800 ? 0xe000 : last + 1;
+      return points.join('') + String.fromCodePoint(next);
+    }
+  }
+  return null;
+}
 
 function uniqueUnits(
   rows: readonly { epoch: number; part_id: number }[],

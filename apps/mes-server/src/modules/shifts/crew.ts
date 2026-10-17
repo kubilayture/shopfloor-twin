@@ -55,6 +55,8 @@ export interface CrewQuery {
   readonly epoch?: number;
   readonly shiftKey?: string;
   readonly sessionId?: string;
+  /** Only rows signed on at some point of this plant-time span (#199: a trace's crew). */
+  readonly during?: { readonly from: Date; readonly to: Date };
 }
 
 export async function readCrew(
@@ -68,6 +70,12 @@ export async function readCrew(
   if (query.epoch !== undefined) select = select.where('epoch', '=', query.epoch);
   if (query.shiftKey !== undefined) select = select.where('shift_key', '=', query.shiftKey);
   if (query.sessionId !== undefined) select = select.where('session_id', '=', query.sessionId);
+  if (query.during !== undefined) {
+    const { from, to } = query.during;
+    select = select
+      .where('from_plant_at', '<=', to)
+      .where((eb) => eb.or([eb('to_plant_at', 'is', null), eb('to_plant_at', '>=', from)]));
+  }
   const rows = await select.orderBy('work_center').orderBy('from_at').orderBy('id').execute();
   return rows.map(toCrew);
 }

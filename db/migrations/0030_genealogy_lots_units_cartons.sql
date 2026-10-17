@@ -19,6 +19,9 @@ CREATE TABLE genealogy.material_lot (
   imported_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
+-- The trace search by id prefix: a range in byte order (`id COLLATE "C" >= q AND < q's upper
+-- bound`), as on serials, orders and cartons below.
+CREATE INDEX material_lot_prefix ON genealogy.material_lot ((id COLLATE "C"));
 
 -- One row per unit (device epoch, partId) as the execution module keys it (ADR-0031), with its
 -- serial (not unique: the simulator's counter restarts per run, ADR-0034), product, order and
@@ -37,6 +40,10 @@ CREATE TABLE genealogy.serial_unit (
 CREATE INDEX serial_unit_serial ON genealogy.serial_unit (serial, epoch) WHERE serial IS NOT NULL;
 CREATE INDEX serial_unit_order ON genealogy.serial_unit (order_id) WHERE order_id IS NOT NULL;
 CREATE INDEX serial_unit_carton ON genealogy.serial_unit (carton_id) WHERE carton_id IS NOT NULL;
+CREATE INDEX serial_unit_serial_prefix ON genealogy.serial_unit ((serial COLLATE "C"))
+  WHERE serial IS NOT NULL;
+CREATE INDEX serial_unit_order_prefix ON genealogy.serial_unit ((order_id COLLATE "C"))
+  WHERE order_id IS NOT NULL;
 
 -- One row per operation record of a unit (execution's records, keyed by the cycle fact) with what
 -- the fact reported for traceability: whether it carried `lots` at all (false: not reported, as
@@ -117,14 +124,18 @@ CREATE TABLE genealogy.carton (
   CHECK ((status = 'closed') = (closed_at IS NOT NULL))
 );
 CREATE INDEX carton_open ON genealogy.carton (order_id) WHERE status = 'open';
+CREATE INDEX carton_prefix ON genealogy.carton ((id COLLATE "C"));
 
 -- Incidents of the module, at most one open per key: `unknown-lot` (a fact names a lot the MES has
 -- not imported; closed when an import lists it), `serial-reused` (one per pair of device epochs
 -- sharing a serial) and `material-mismatch` (a lot of a material the BOM doesn't list for that
--- operation and pass).
+-- operation and pass); `rebuild-failed` (a unit whose rebuild failed on its own, its rows kept
+-- as they were until it is announced again).
 CREATE TABLE genealogy.genealogy_incident (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  type TEXT NOT NULL CHECK (type IN ('unknown-lot', 'serial-reused', 'material-mismatch')),
+  type TEXT NOT NULL CHECK (
+    type IN ('unknown-lot', 'serial-reused', 'material-mismatch', 'rebuild-failed')
+  ),
   key TEXT NOT NULL,
   lot TEXT,
   epoch BIGINT,
@@ -139,8 +150,8 @@ CREATE TABLE genealogy.genealogy_incident (
 CREATE UNIQUE INDEX genealogy_incident_open ON genealogy.genealogy_incident (key)
   WHERE closed_at IS NULL;
 
--- Derived tables are rebuilt (rows replaced; the plan's grants count the incidents among them);
--- lots are kept, never deleted.
+-- Derived tables are rebuilt (rows replaced); lots and incidents are kept, never deleted (the
+-- incidents as execution's are, review L7: the plan's grant list counted them derived).
 GRANT SELECT, INSERT, UPDATE, DELETE ON genealogy.serial_unit, genealogy.unit_record,
-  genealogy.genealogy_link, genealogy.carton, genealogy.genealogy_incident TO mes_app;
-GRANT SELECT, INSERT, UPDATE ON genealogy.material_lot TO mes_app;
+  genealogy.genealogy_link, genealogy.carton TO mes_app;
+GRANT SELECT, INSERT, UPDATE ON genealogy.material_lot, genealogy.genealogy_incident TO mes_app;

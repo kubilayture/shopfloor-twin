@@ -513,3 +513,35 @@ export function expectQualityFeatures(
   );
   expect(actual.units.some((u) => u.status === 'wip')).toBe(true);
 }
+
+/**
+ * The invariant of placement on final data (#199 review H2): once closed, a carton keeps its
+ * members, their order and its closing time. `check()` after every round compares every carton
+ * seen closed with what it is now; returns how many were seen closed.
+ */
+export function closedCartonWatch(genealogy: Genealogy): { check(): Promise<number> } {
+  const seen = new Map<string, string>();
+  return {
+    async check() {
+      const [cartons, members] = await Promise.all([
+        genealogy.cartons(),
+        genealogy.cartonMembers(),
+      ]);
+      const now = new Map(
+        cartons.map((c) => [
+          c.id,
+          JSON.stringify({
+            status: c.status,
+            closedAt: c.closedAt?.toISOString() ?? null,
+            members: (members.get(c.id) ?? []).map((m) => [m.epoch, m.partId]),
+          }),
+        ]),
+      );
+      for (const [id, was] of seen) expect([id, now.get(id)]).toEqual([id, was]);
+      for (const c of cartons) {
+        if (c.status === 'closed' && !seen.has(c.id)) seen.set(c.id, now.get(c.id) ?? '');
+      }
+      return seen.size;
+    },
+  };
+}

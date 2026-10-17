@@ -62,6 +62,7 @@ import {
 } from '../realtime/index.ts';
 import { LONGEST_RECORDS, REPORT_BAD_ACTORS, Shifts } from '../shifts/index.ts';
 import {
+  closedCartonWatch,
   eventLogTrace,
   expectQualityFeatures,
   expectTruth,
@@ -1978,14 +1979,13 @@ const deliveryTime = (d: Delivery): number =>
 /**
  * Per-test limits: with execution and genealogy (#199) the golden week takes about 165 s in order
  * (a cut and two full trace comparisons of 2,200 units) and 205 s shuffled locally; quality-01's
- * shuffled test, with its two extra orderings, about 200 s, alone. Vitest runs the e2e files side
- * by side, so under load they take two to three times as long (quality-01's shuffled test passed
- * its every comparison and timed out at 480 s while the other suites and another worktree's tests
- * ran): the limits leave that room. The end-to-end job's limit grows with them (CI does not run
- * it; the local gate has none).
+ * shuffled test, with its two extra orderings, about 200 s. The e2e files run one after the other
+ * (`fileParallelism: false` in `vitest.e2e.config.ts`), so the limits keep about twice that for a
+ * loaded machine. The CI workflow's end-to-end job (40 minutes) grows with them; GitHub Actions
+ * does not run at present (spending limit), and the local merge gate has no limit of its own.
  */
-const IN_ORDER_MS = 600_000;
-const SHUFFLED_MS = 900_000;
+const IN_ORDER_MS = 360_000;
+const SHUFFLED_MS = 480_000;
 
 export interface Scenario {
   readonly seed: number;
@@ -2290,10 +2290,12 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           stack = await ordersStack({ db, ingest, masterData, equipment }, undefined, run);
           const copies = facts.filter(() => next() < 0.1);
           const mixed = shuffle([...facts, ...copies], next);
+          const watch = closedCartonWatch(stack.genealogy);
           for (let i = 0; i < mixed.length; i += 400) {
             await send(mixed.slice(i, i + 400));
             await stack.execution.tick();
             await stack.genealogy.tick();
+            await watch.check();
           }
           await send([end, ...mixed.slice(0, 500)]);
         } else if (span.orders !== undefined && span.golden !== undefined) {
@@ -2307,11 +2309,14 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           await dispatchScenario(stack);
           const copies = after.filter(() => next() < 0.1);
           const mixed = shuffle([...after, ...copies], next);
+          // A closed carton never changes its members, also on partial data (#199 review H2).
+          const watch = closedCartonWatch(stack.genealogy);
           for (let i = 0; i < mixed.length; i += 400) {
             await send(mixed.slice(i, i + 400));
             await stack.orders.tick();
             await stack.execution.tick();
             await stack.genealogy.tick();
+            await watch.check();
             await stack.orders.postNow();
           }
           await send([end, ...mixed.slice(0, 500)]);
@@ -2387,16 +2392,19 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
             await dispatchScenario(again);
             const shuffled = random(seed);
             const mixed = shuffle([...after, ...after.filter(() => shuffled() < 0.1)], shuffled);
+            const watch = closedCartonWatch(again.genealogy);
             for (let i = 0; i < mixed.length; i += 97) {
               await m.send(mixed.slice(i, i + 97));
               await again.orders.tick();
               await again.execution.tick();
               await again.genealogy.tick();
+              await watch.check();
               await again.orders.postNow();
             }
             await m.send([end]);
             await m.equipment.flush();
             await settleOrders(again);
+            expect(await watch.check()).toBeGreaterThan(0);
             expect(await expectOrders(again, m.ingest, run)).toEqual(span.orders);
             expect(await storedExecution(m.db)).toEqual(await storedExecution(reference));
             if (span.genealogy) {

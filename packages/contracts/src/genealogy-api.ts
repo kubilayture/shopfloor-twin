@@ -26,6 +26,7 @@ export const GENEALOGY_INCIDENT_TYPES = [
   'unknown-lot',
   'serial-reused',
   'material-mismatch',
+  'rebuild-failed',
 ] as const;
 export const TRACE_SEARCH_KINDS = ['serial', 'lot', 'carton', 'order'] as const;
 

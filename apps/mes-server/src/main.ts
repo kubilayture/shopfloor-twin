@@ -353,10 +353,9 @@ try {
     log: log.child({ module: 'execution' }),
   });
   execution = executionModule;
-  await executionModule.start();
-  ordersModule.useBlankCounter(executionModule);
   // Genealogy (#199): lots from the ERP's lot list on the ERP poll, and every unit's lots, records
-  // and carton, following the execution module's units.
+  // and carton, following the execution module's units: it follows them before execution starts,
+  // so the units execution's catch-up rebuilds are announced to it too.
   const genealogyModule = new Genealogy({
     db,
     readDb,
@@ -364,7 +363,7 @@ try {
     execution: executionModule,
     orders: ordersModule,
     masterData,
-    crew: (workCenter) => shiftsModule.crew({ workCenter }),
+    crew: (workCenter, during) => shiftsModule.crew({ workCenter, during }),
     ...(erp ? { erp } : {}),
     packing: plant.config.packing,
     lotPollMs: env.ERP_POLL_MS,
@@ -372,6 +371,9 @@ try {
     log: log.child({ module: 'genealogy' }),
   });
   genealogy = genealogyModule;
+  genealogyModule.follow();
+  await executionModule.start();
+  ordersModule.useBlankCounter(executionModule);
   await genealogyModule.start();
   // The operator terminal (#177): a session that ends (logout, a disabled user, a password
   // change, a new login) ends its crew rows; a crew row that ends closes its operator's activity

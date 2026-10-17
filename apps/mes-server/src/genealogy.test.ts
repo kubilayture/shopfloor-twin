@@ -34,7 +34,11 @@ import {
   type Delivery,
 } from './modules/equipment/test-support.ts';
 import { Execution } from './modules/execution/index.ts';
-import { Genealogy, type GenealogyCrew } from './modules/genealogy/index.ts';
+import {
+  Genealogy,
+  type GenealogyCrew,
+  type GenealogyExecution,
+} from './modules/genealogy/index.ts';
 import { Identity } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData, erpMasterData } from './modules/master-data/index.ts';
@@ -258,7 +262,10 @@ interface Harness {
   readonly feed: UnsFeed;
   readonly line: Line;
   readonly crew: GenealogyCrew[];
-  restart(): Promise<Genealogy>;
+  /** What the genealogy module logged (`warn` and `error`). */
+  readonly logged: string[];
+  /** Stops the genealogy module and starts a new one, on `execution` if given. */
+  restart(execution?: GenealogyExecution): Promise<Genealogy>;
   readonly by: {
     by: { userId: number; username: string; roles: 'supervisor'[] };
     requestId: string;
@@ -320,15 +327,21 @@ async function harness(
   cleanups.push(() => execution.stop());
   orders.useBlankCounter(execution);
   const crew: GenealogyCrew[] = [];
-  const make = async () => {
+  const logged: string[] = [];
+  const make = async (source: GenealogyExecution = execution) => {
     const genealogy = new Genealogy({
       db,
       ingest,
-      execution,
+      execution: source,
       orders,
       masterData,
       erp,
       crew: () => Promise.resolve(crew),
+      log: {
+        info: () => undefined,
+        warn: (_object, message) => logged.push(message),
+        error: (_object, message) => logged.push(message),
+      },
       packing: { operation: 'OP50', capacity: options.capacity ?? { ...plant.packing.capacity } },
       tickMs: 0,
       lotPollMs: 0,
@@ -347,9 +360,10 @@ async function harness(
     feed,
     line: new Line(feed, options.epoch ?? E1),
     crew,
-    restart: async () => {
+    logged,
+    restart: async (source) => {
       await h.genealogy.stop();
-      h.genealogy = await make();
+      h.genealogy = await make(source);
       return h.genealogy;
     },
     by: { by: { userId: sam.id, username: 'sam', roles: ['supervisor'] }, requestId: 'req' },
@@ -440,6 +454,20 @@ describe('genealogy: lots, links, incidents and cartons (#199)', () => {
     await h.genealogy.importLots();
     await h.genealogy.importLots();
     expect((await h.genealogy.lots()).map((lot) => lot.status)).toEqual(Array(6).fill('active'));
+    // The ERP changes a lot's material: logged once (not on every poll), the stored material
+    // follows, and the units of the lot are judged against it (review L8).
+    h.erp.lotList = h.erp.lotList.map((lot) =>
+      lot.id === 'B1' ? { ...lot, material: 'BLANK-200' } : lot,
+    );
+    await h.genealogy.importLots();
+    await h.genealogy.importLots();
+    await settle(h);
+    expect(h.logged.filter((m) => m.includes('changed a lot’s material'))).toHaveLength(1);
+    expect((await h.genealogy.lot('B1'))?.master?.material).toBe('BLANK-200');
+    const changed = await h.genealogy.incidents({ type: 'material-mismatch' });
+    expect(
+      changed.map((i) => [i.lot, i.message.includes('the ERP lists it as BLANK-200')]),
+    ).toEqual([['B1', true]]);
   });
 
   it('links lots per operation and pass with operator and reading, keeps absent apart from [] and null, and says when an answer is final', async () => {
@@ -510,6 +538,31 @@ describe('genealogy: lots, links, incidents and cartons (#199)', () => {
       ['OP30', 2, 'asm-01', 'good', ['K2'], 'op-mehmet', true, null, ['olga']],
       ['OP40', 2, 'lkt-01', 'good', [], null, false, 2.104, []],
       ['OP50', 1, 'pck-01', 'good', [], null, false, null, []],
+    ]);
+    // The links themselves: lot, operation, pass, machine and the cycle's time (review L10).
+    const links = await h.db
+      .selectFrom('genealogy.genealogy_link')
+      .select(['lot', 'material', 'operation', 'pass', 'equipment', 'position', 'at'])
+      .where('kind', '=', 'lot-unit')
+      .orderBy('at')
+      .orderBy('position')
+      .execute();
+    const times = (unit?.records ?? []).map((r) => r.at.getTime());
+    expect(
+      links.map((x) => [
+        x.lot,
+        x.material,
+        x.operation,
+        x.pass,
+        x.equipment,
+        x.position,
+        x.at.getTime(),
+      ]),
+    ).toEqual([
+      ['B1', 'BLANK-100', 'OP10', 1, 'cnc-01', 0, times[0]],
+      ['K1', 'SK-1', 'OP30', 1, 'asm-01', 0, times[2]],
+      ['P1', 'SP-100', 'OP30', 1, 'asm-01', 1, times[2]],
+      ['K2', 'SK-1', 'OP30', 2, 'asm-01', 0, times[4]],
     ]);
     const k2 = await h.genealogy.lot('K2');
     expect([k2?.consumed, k2?.units.map((u) => u.partId), k2?.orders, k2?.cartons]).toEqual([
@@ -746,5 +799,193 @@ describe('the trace API (#199)', () => {
     expect((await get('/api/v1/trace/cartons/NOPE')).status).toBe(404);
     expect((await get('/api/v1/trace/search')).status).toBe(400);
     expect((await get('/api/v1/genealogy-incidents?type=other')).status).toBe(400);
+  });
+});
+
+/** Every closed carton's members (by id), for the invariant that they never change. */
+const closedMembers = async (h: Harness) => {
+  const members = await h.genealogy.cartonMembers();
+  return new Map(
+    (await h.genealogy.cartons())
+      .filter((c) => c.status === 'closed')
+      .map((c) => [c.id, (members.get(c.id) ?? []).map((m) => m.partId)]),
+  );
+};
+
+describe('genealogy on partial data (#199 review)', () => {
+  it('places a pack only once its unit’s order is final, so a late job fact moves no closed carton’s member (H2)', async () => {
+    const h = await harness('h2', { capacity: { 'VB-100': 2, 'VB-200': 2 } });
+    await dispatched(h, 'X-1', 3);
+    await dispatched(h, 'X-2', 3);
+    const l = h.line;
+    const start = [l.job('cnc-01', 'accepted', 'X-1', 3), l.job('cnc-01', 'started', 'X-1', 3)];
+    const u1 = l.unit(1, { blank: 'B1', kit: 'K1' });
+    // X-1 ends after one unit, X-2 starts: its job facts arrive last.
+    const late = [
+      l.job('cnc-01', 'completed', 'X-1', 3),
+      l.job('cnc-01', 'accepted', 'X-2', 3),
+      l.job('cnc-01', 'started', 'X-2', 3),
+    ];
+    const u2 = l.unit(2, { blank: 'B1', kit: 'K1' });
+    const u3 = l.unit(3, { blank: 'B1', kit: 'K1' });
+    // Every machine final but the CNC (its job facts are missing).
+    const tail = l.settleAll().filter((d) => !d.topic.includes('cnc-01'));
+    await send(h, [...start, ...u1, ...u2, ...u3, ...tail]);
+    await settle(h);
+    // Units 2 and 3 count for X-1 for now, but their order is not final: not placed.
+    expect((await h.genealogy.serial('VB-100-000002'))?.units[0]?.orderId).toBe('X-1');
+    const before = await closedMembers(h);
+    expect(Object.fromEntries([...(await h.genealogy.cartonMembers())])).toEqual({
+      'X-1-C01': [{ epoch: E1, partId: 1 }],
+    });
+    await send(h, [...late, l.state('cnc-01', 'Idle')]);
+    await settle(h);
+    const after = await closedMembers(h);
+    for (const [id, members] of before) expect([id, after.get(id)]).toEqual([id, members]);
+    expect(
+      Object.fromEntries(
+        [...(await h.genealogy.cartonMembers())].map(([id, m]) => [id, m.map((x) => x.partId)]),
+      ),
+    ).toEqual({ 'X-1-C01': [1], 'X-2-C01': [2, 3] });
+    expect((await h.genealogy.cartons({ orderId: 'X-2' }))[0]?.status).toBe('closed');
+    expect(await incidents(h)).toEqual([]);
+  });
+
+  it('moves the processed watermark on past a written-off gap (H1)', async () => {
+    const h = await harness('h1', { capacity: { 'VB-100': 2, 'VB-200': 2 } });
+    await dispatched(h, 'X-1', 5);
+    const l = h.line;
+    await send(h, [
+      l.state('pck-01'),
+      l.job('cnc-01', 'accepted', 'X-1', 5),
+      l.job('cnc-01', 'started', 'X-1', 5),
+    ]);
+    const u1 = l.unit(1, { blank: 'B1', kit: 'K1' });
+    const lost = u1[4]; // PCK-01's cycle of unit 1 never arrives
+    await send(
+      h,
+      u1.filter((d) => d !== lost),
+    );
+    await settle(h);
+    await send(h, l.unit(2, { blank: 'B1', kit: 'K1' }));
+    await settle(h);
+    const gap = (JSON.parse(lost?.payload ?? '{}') as { seq: number }).seq;
+    expect(h.genealogy.processedThrough('pck-01', E1)).toBe(gap - 1);
+    // The gap is written off (an incident): every number up to the stream's end is settled.
+    await h.ingest.sweep(0);
+    await settle(h);
+    await send(h, [...l.unit(3, { blank: 'B1', kit: 'K1' }), ...l.settleAll()]);
+    await settle(h);
+    expect(h.genealogy.processedThrough('pck-01', E1)).toBe(l.seq('pck-01'));
+    expect(h.genealogy.covers([{ equipment: 'pck-01', epoch: E1, seq: l.seq('pck-01') }])).toBe(
+      true,
+    );
+    const trace = await h.genealogy.serial('VB-100-000003');
+    expect([trace?.final, trace?.units[0]?.carton]).toEqual([true, 'X-1-C01']);
+    expect(
+      Object.fromEntries(
+        [...(await h.genealogy.cartonMembers())].map(([id, m]) => [id, m.map((x) => x.partId)]),
+      ),
+    ).toEqual({ 'X-1-C01': [2, 3] });
+  });
+
+  it('judges a mismatch of a unit whose OP10 fact was lost once its machines are final through its records (M3)', async () => {
+    const h = await harness('m3');
+    const l = h.line;
+    // Schedule mode on CNC-02; unit 1's OP10 fact never arrives.
+    const lost = l.cycle('cnc-02', 1, { lots: [{ material: 'BLANK-100', lot: 'B1' }] });
+    await send(h, [
+      l.state('cnc-02'),
+      l.cycle('asm-01', 1, { lots: [{ material: 'SK-2', lot: 'K1' }], operator: 'op-ayse' }),
+    ]);
+    await send(h, [...l.settleAll()]);
+    await settle(h);
+    // The lost fact's gap is written off: the unit has no OP10 record for good, and every machine
+    // of its records is final through them. Judged with the product's BOM.
+    await h.ingest.sweep(0);
+    await settle(h);
+    expect(await h.genealogy.serial('VB-100-000001')).toBeUndefined();
+    const found = await h.genealogy.incidents({ type: 'material-mismatch' });
+    expect(found.map((i) => [i.partId, i.message.includes('product BOM: no order')])).toEqual([
+      [1, true],
+    ]);
+    expect(lost.topic).toContain('cnc-02');
+  });
+
+  it('catches up on start with the units execution changed while genealogy was not following (M4)', async () => {
+    const h = await harness('m4');
+    const l = h.line;
+    await send(h, [
+      l.cycle('cnc-02', 1, { lots: [{ material: 'BLANK-100', lot: 'B1' }] }),
+      l.state('cnc-02'),
+    ]);
+    await settle(h);
+    expect((await h.genealogy.serial('VB-100-000001'))?.units[0]?.status).toBe('wip');
+    await h.genealogy.stop();
+    // A new run: execution marks the old run's unit in WIP lost, and nobody follows.
+    const run2 = new Line(h.feed, E2);
+    await send(h, [run2.state('cnc-02')]);
+    await h.execution.tick();
+    await h.restart();
+    expect((await h.genealogy.serial('VB-100-000001'))?.units[0]?.status).toBe('lost');
+  });
+
+  it('rewrites no carton whose placement is unchanged (M5)', async () => {
+    const h = await harness('m5', { capacity: { 'VB-100': 2, 'VB-200': 2 } });
+    await dispatched(h, 'X-1', 2);
+    const l = h.line;
+    await send(h, [
+      l.job('cnc-01', 'accepted', 'X-1', 2),
+      l.job('cnc-01', 'started', 'X-1', 2),
+      ...l.unit(1, { blank: 'B1', kit: 'K1' }),
+      ...l.unit(2, { blank: 'B1', kit: 'K1' }),
+      l.job('cnc-01', 'completed', 'X-1', 2),
+      ...l.settleAll(),
+    ]);
+    await settle(h);
+    const stamp = async () =>
+      (await h.db.selectFrom('genealogy.carton').select(['id', 'updated_at']).execute()).map(
+        (r) => [r.id, r.updated_at.getTime()],
+      );
+    const first = await stamp();
+    expect(first).toHaveLength(1);
+    await send(h, [l.state('pck-01', 'Running')]);
+    await settle(h);
+    await h.restart();
+    await settle(h);
+    expect(await stamp()).toEqual(first);
+  });
+
+  it('keeps a unit whose rebuild fails on its own as it was, with an incident, and goes on (L10)', async () => {
+    const h = await harness('isolate');
+    const l = h.line;
+    const broken: GenealogyExecution = {
+      onUnits: (listener) => h.execution.onUnits(listener),
+      processedThrough: () => h.execution.processedThrough(),
+      unitStates: () => h.execution.unitStates(),
+      units: async (query) => {
+        const found = await h.execution.units(query);
+        // Unit 2 can't be stored (a status the table refuses).
+        return {
+          units: found.units.map((u) => (u.partId === 2 ? { ...u, status: 'bogus' as never } : u)),
+        };
+      },
+    };
+    await h.restart(broken);
+    await send(h, [
+      l.cycle('cnc-02', 1, { lots: [{ material: 'BLANK-100', lot: 'B1' }] }),
+      l.cycle('cnc-02', 2, { lots: [{ material: 'BLANK-100', lot: 'B1' }] }),
+      l.cycle('cnc-02', 3, { lots: [{ material: 'BLANK-100', lot: 'B1' }] }),
+      l.state('cnc-02'),
+    ]);
+    await settle(h);
+    expect((await h.genealogy.lot('B1'))?.units.map((u) => u.partId)).toEqual([1, 3]);
+    expect(await incidents(h)).toEqual([['rebuild-failed', null, 'open']]);
+    expect(h.genealogy.processedThrough('cnc-02', E1)).toBe(l.seq('cnc-02'));
+    // Rebuilt by a sound module, the incident closes.
+    await h.restart();
+    await settle(h);
+    expect((await h.genealogy.lot('B1'))?.units.map((u) => u.partId)).toEqual([1, 2, 3]);
+    expect(await incidents(h)).toEqual([['rebuild-failed', null, 'closed']]);
   });
 });

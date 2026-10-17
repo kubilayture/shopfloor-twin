@@ -8,7 +8,8 @@ type DefaultTimestamp = ColumnType<Date, Date | string | undefined, Date | strin
 
 export type LotStatus = 'active' | 'retired';
 export type CartonStatus = 'open' | 'closed';
-export type GenealogyIncidentType = 'unknown-lot' | 'serial-reused' | 'material-mismatch';
+export type GenealogyIncidentType =
+  'unknown-lot' | 'serial-reused' | 'material-mismatch' | 'rebuild-failed';
 export type LinkKind = 'lot-unit' | 'unit-carton';
 
 /** A cycle's measurement as the fact reported it (UNS `measurement`). */

@@ -116,14 +116,14 @@ export const DECLARED_GRANTS: {
       'execution.operation_record': ALL,
       'execution.scrap_record': KEEP,
       'execution.execution_incident': KEEP,
-      // Lots are kept, never deleted (a lot no longer listed is retired); everything else of the
-      // genealogy is derived and rebuilt, its incidents included (plan "Database roles", #199).
+      // Lots and incidents are kept, never deleted (a lot no longer listed is retired; incidents
+      // as execution's, #199 review L7); everything else of the genealogy is derived and rebuilt.
       'genealogy.material_lot': KEEP,
       'genealogy.serial_unit': ALL,
       'genealogy.unit_record': ALL,
       'genealogy.genealogy_link': ALL,
       'genealogy.carton': ALL,
-      'genealogy.genealogy_incident': ALL,
+      'genealogy.genealogy_incident': KEEP,
     },
     // The aggregates' sources, which a refresh reads; the aggregates themselves it owns.
     mes_cagg: {

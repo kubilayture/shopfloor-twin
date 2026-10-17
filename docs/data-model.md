@@ -135,7 +135,7 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `execution.unit` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `genealogy` | `mes_owner` | USAGE |  |
 | `genealogy.carton` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
-| `genealogy.genealogy_incident` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `genealogy.genealogy_incident` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `genealogy.genealogy_link` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `genealogy.material_lot` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `genealogy.serial_unit` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
@@ -2005,6 +2005,7 @@ Cartons per order by the packing rule (`packing.yaml`, `trace-core`), placed on 
 | Check | `carton_number_check` | `CHECK ((number >= 1))` |
 | Check | `carton_status_check` | `CHECK ((status = ANY (ARRAY['open'::text, 'closed'::text])))` |
 | Index | `carton_open` | `genealogy.carton USING btree (order_id) WHERE (status = 'open'::text)` |
+| Index | `carton_prefix` | `genealogy.carton USING btree (id COLLATE "C")` |
 
 ### genealogy.genealogy_incident
 
@@ -2028,7 +2029,7 @@ Incidents of the genealogy module: `unknown-lot` (closed when the import lists i
 | --- | --- | --- |
 | Primary key | `genealogy_incident_pkey` | `PRIMARY KEY (id)` |
 | Check | `genealogy_incident_check` | `CHECK (((closed_at IS NULL) = (resolution IS NULL)))` |
-| Check | `genealogy_incident_type_check` | `CHECK ((type = ANY (ARRAY['unknown-lot'::text, 'serial-reused'::text, 'material-mismatch'::text])))` |
+| Check | `genealogy_incident_type_check` | `CHECK ((type = ANY (ARRAY['unknown-lot'::text, 'serial-reused'::text, 'material-mismatch'::text, 'rebuild-failed'::text])))` |
 | Index | `genealogy_incident_open` | `genealogy.genealogy_incident USING btree (key) WHERE (closed_at IS NULL)` |
 
 ### genealogy.genealogy_link
@@ -2081,6 +2082,7 @@ Lots from the ERP’s lot list (`GET /api/v1/lots`): material, quantity received
 | Check | `material_lot_id_check` | `CHECK (((length(id) >= 1) AND (length(id) <= 128)))` |
 | Check | `material_lot_quantity_check` | `CHECK ((quantity >= 0))` |
 | Check | `material_lot_status_check` | `CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text])))` |
+| Index | `material_lot_prefix` | `genealogy.material_lot USING btree (id COLLATE "C")` |
 
 ### genealogy.serial_unit
 
@@ -2104,7 +2106,9 @@ One row per unit (device epoch, partId) with its serial (not unique across runs,
 | Check | `serial_unit_status_check` | `CHECK ((status = ANY (ARRAY['wip'::text, 'packed'::text, 'scrapped'::text, 'lost'::text])))` |
 | Index | `serial_unit_carton` | `genealogy.serial_unit USING btree (carton_id) WHERE (carton_id IS NOT NULL)` |
 | Index | `serial_unit_order` | `genealogy.serial_unit USING btree (order_id) WHERE (order_id IS NOT NULL)` |
+| Index | `serial_unit_order_prefix` | `genealogy.serial_unit USING btree (order_id COLLATE "C") WHERE (order_id IS NOT NULL)` |
 | Index | `serial_unit_serial` | `genealogy.serial_unit USING btree (serial, epoch) WHERE (serial IS NOT NULL)` |
+| Index | `serial_unit_serial_prefix` | `genealogy.serial_unit USING btree (serial COLLATE "C") WHERE (serial IS NOT NULL)` |
 
 ### genealogy.unit_record
 

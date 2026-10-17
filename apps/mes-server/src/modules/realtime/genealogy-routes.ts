@@ -247,7 +247,7 @@ export function genealogyRoutes(
       url: '/genealogy-incidents',
       summary: 'Incidents of the genealogy module, newest first',
       description:
-        'unknown-lot (a fact names a lot the ERP doesn’t list; closed when an import lists it), serial-reused (one per pair of device epochs sharing serials) and material-mismatch (a lot of a material the BOM doesn’t list for that operation and pass).',
+        'unknown-lot (a fact names a lot the ERP doesn’t list; closed when an import lists it), serial-reused (one per pair of device epochs sharing serials), material-mismatch (a lot of a material the BOM doesn’t list for that operation and pass, or the ERP lists with another material) and rebuild-failed (a unit whose genealogy could not be rebuilt; its rows kept as they were).',
       tags: ['genealogy'],
       query: z.strictObject({
         open: z

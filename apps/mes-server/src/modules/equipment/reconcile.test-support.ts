@@ -1813,12 +1813,16 @@ async function storedExecution(db: Kysely<Database>) {
 }
 
 /**
- * Per-test limits: the golden week takes about 70 s in order and 125 s shuffled locally. Both
- * limits together (10 min) leave the end-to-end job (20 min, with the gateway's test and the
+ * Per-test limits, about twice the golden week on a loaded machine (#218). Nearly all of a run is
+ * the delivery of the week's messages to ingest (Postgres in Docker); the checks after it take
+ * about 15 s in all. Measured on an 8-core M-series laptop, `reconciliation-week.e2e` alone:
+ * about 200 s for both tests on a quiet machine (Phase 6 measured 82 s + 198 s), 125 s + 225 s
+ * with other suites running (load 4 to 8), and 304 s + 566 s under one `yes` per core on top.
+ * Both limits together (30 min) leave the end-to-end job (45 min, with the other suites and the
  * install) room to report a failure rather than be cancelled.
  */
-const IN_ORDER_MS = 240_000;
-const SHUFFLED_MS = 360_000;
+const IN_ORDER_MS = 600_000;
+const SHUFFLED_MS = 1_200_000;
 
 export interface Scenario {
   readonly seed: number;

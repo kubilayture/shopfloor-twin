@@ -60,6 +60,12 @@ export const queryKeys = {
   orderExecution: (id: string) => ['order-execution', id] as const,
   orderScrap: (id: string) => ['order-scrap', id] as const,
   executionIncidents: (orderId: string) => ['execution-incidents', orderId] as const,
+  // Traceability (#202): every trace read starts with `trace` (one prefix to read again).
+  traceAll: ['trace'] as const,
+  traceSearch: (q: string) => ['trace', 'search', q] as const,
+  traceSerial: (serial: string) => ['trace', 'serial', serial] as const,
+  traceLot: (lot: string) => ['trace', 'lot', lot] as const,
+  traceCarton: (carton: string) => ['trace', 'carton', carton] as const,
 };
 
 /** Retries network and server errors a few times, never a refused request (4xx). */

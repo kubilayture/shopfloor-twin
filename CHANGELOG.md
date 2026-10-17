@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Added
 
+- Web traceability screens (#202): `/trace` search (serial, lot, carton or order by the start of its id), the serial page (backward trace: order, blank lot, components per pass, machines, device operator, MES crew, leak readings, carton; a choice when a serial names several units), the lot page (forward trace: units, orders, cartons, "where used with") and the carton page (members and their lots). Every page shows the answer's finality (`final`, `notFinal`) and its quality holds, with held units, lots and cartons marked; no hold action (those are #203's). Live through the `quality` and `orders` topics, polled while an answer can still change; `data-testid` hooks in `apps/web/README.md`.
 - MES quality holds (#201; ADR-0035, migration `0032`).
   - **Holds** on a lot, a serial, a carton or an order (`quality.hold`, UUID ids), their scope derived through the genealogy and growing with facts (a copy in `quality.hold_unit` for reads), `opened_plant_at` from the plant clock, and `held-material-consumed` (`quality.hold_incident`) when a held lot is consumed after the opening.
   - **Lifecycle:** open (and comment) with `quality:hold` (quality, supervisor), release or reject with `quality:release` (quality); reasons from `quality.yaml` `holdReasons`; a version per hold (409 `urn:shopfloor:hold-stale`, `urn:shopfloor:hold-decided`); `quality.hold_transition` append-only by trigger and grants; every transition and comment audited. A rejection changes no quantity.

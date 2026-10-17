@@ -2,6 +2,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 import { socketFactory } from '../test/fake-socket.ts';
 import { command, order, pushedCommand } from '../test/order-fixtures.ts';
+import { hold } from '../test/trace-fixtures.ts';
 import {
   applyMessage,
   connectLiveToCache,
@@ -57,6 +58,8 @@ describe('live orders', () => {
       ['order-execution', 'PO-7'],
       ['order-scrap', 'PO-7'],
       ['execution-incidents', 'PO-7'],
+      // The trace pages too: an order completing closes its last carton (#202).
+      ['trace'],
     ]);
     invalidate.mockClear();
     applyMessage(client, {
@@ -80,7 +83,19 @@ describe('live orders', () => {
       ['order-execution'],
       ['order-scrap'],
       ['execution-incidents'],
+      ['trace'],
     ]);
+  });
+
+  it('reads the trace pages again on a hold push and a confirmed quality subscription (#202)', () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const keys = () => invalidate.mock.calls.map(([filters]) => filters?.queryKey);
+    applyMessage(client, { type: 'subscribed', topic: 'quality', metric: null });
+    expect(keys()).toEqual([['trace']]);
+    invalidate.mockClear();
+    applyMessage(client, { type: 'quality-hold', event: 'scope', hold: hold() });
+    expect(keys()).toEqual([['quality'], ['trace']]);
   });
 
   it('forgets every pushed order and command on reset', () => {

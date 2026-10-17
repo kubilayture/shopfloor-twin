@@ -3,6 +3,8 @@ import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { useLayoutEffect, useRef } from 'react';
 import { requestHeadingFocus, useHeadingFocus } from '../components/heading-focus.ts';
 import { usePlantClock } from '../api/queries.ts';
+import { useAuth } from '../auth/auth.tsx';
+import { rolesText } from '../domain/identity.ts';
 import { ConnectionStatus } from '../components/connection-status.tsx';
 import { formatPlantTime } from '../domain/time.ts';
 import { useLiveSubscription } from '../live/live-context.tsx';
@@ -15,6 +17,38 @@ const NAV = [
   { id: 'alarm-kpi', to: '/alarms/kpi', label: 'Alarm KPIs' },
   { id: 'shifts', to: '/shifts', label: 'Shift reports' },
 ] as const;
+
+/** Who is logged in, the account page and the logout (#170). */
+function UserMenu() {
+  const auth = useAuth();
+  const user = auth.session?.user;
+  if (!user) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm" data-testid="user-menu">
+      <Link
+        to="/account"
+        className="underline-offset-4 hover:underline"
+        data-testid="nav-account"
+        title={rolesText(user.roles)}
+      >
+        <span className="font-semibold" data-testid="signed-in-user">
+          {user.username}
+        </span>{' '}
+        <span className="text-slate-300">({rolesText(user.roles)})</span>
+      </Link>
+      <button
+        type="button"
+        data-testid="logout"
+        className="rounded border border-slate-400 px-2 py-0.5 hover:bg-slate-800"
+        onClick={() => {
+          void auth.logOut();
+        }}
+      >
+        Log out
+      </button>
+    </div>
+  );
+}
 
 function PlantClock() {
   const { clock, site } = usePlantClock();
@@ -52,6 +86,8 @@ function useFocusOnNavigation() {
 export function RootLayout() {
   useLiveSubscription(STATES_TOPIC);
   useFocusOnNavigation();
+  const admin = useAuth().can('user:admin');
+  const nav = admin ? [...NAV, { id: 'users', to: '/admin/users', label: 'Users' } as const] : NAV;
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 print:min-h-0 print:bg-white">
       <a
@@ -68,7 +104,7 @@ export function RootLayout() {
             </Link>
             <nav aria-label="Screens">
               <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-                {NAV.map((item) => (
+                {nav.map((item) => (
                   <li key={item.to}>
                     <Link
                       to={item.to}
@@ -87,6 +123,7 @@ export function RootLayout() {
           <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
             <PlantClock />
             <ConnectionStatus />
+            <UserMenu />
           </div>
         </div>
       </header>

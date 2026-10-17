@@ -24,6 +24,7 @@ export class Stack {
   readonly project: string;
   readonly #env: Readonly<Record<string, string>>;
   #dir: string | undefined;
+  #bootstrapAdminPassword: string | undefined;
 
   constructor({ project, env }: StackOptions) {
     this.project = project;
@@ -42,12 +43,21 @@ export class Stack {
       MQTT_GATEWAY_PASSWORD: secret(),
       MQTT_MES_PASSWORD: secret(),
       ERP_API_TOKEN: secret(),
+      // The MES's first admin (#170): it must change this password at its first login.
+      MES_BOOTSTRAP_ADMIN_PASSWORD: secret(),
       ...this.#env,
     };
+    this.#bootstrapAdminPassword = values.MES_BOOTSTRAP_ADMIN_PASSWORD;
     const text = Object.entries(values)
       .map(([key, value]) => `${key}=${value}\n`)
       .join('');
     await writeFile(join(this.#dir, 'reconcile.env'), text, { mode: 0o600 });
+  }
+
+  /** The generated bootstrap admin password of this run (after `prepare()`). */
+  get bootstrapAdminPassword(): string {
+    if (this.#bootstrapAdminPassword === undefined) throw new Error('prepare() first');
+    return this.#bootstrapAdminPassword;
   }
 
   /** Runs `docker compose …` for this project; resolves with stdout. */

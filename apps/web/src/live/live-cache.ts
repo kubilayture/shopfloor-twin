@@ -463,7 +463,9 @@ export function connectLiveToCache(client: LiveClient, queryClient: QueryClient)
   setLiveQueryDefaults(queryClient);
   let wasLost = false;
   const stopStatus = client.onStatus(() => {
-    if (client.status === 'reconnecting') wasLost = true;
+    // Lost: a dropped connection (reconnecting) or a stop, such as a 4401 close or a logout
+    // (#170 review M2): pushes in between are missed either way.
+    if (client.status === 'reconnecting' || client.status === 'stopped') wasLost = true;
     else if (client.status === 'open' && wasLost) {
       wasLost = false;
       // Alarm upserts missed while the connection was lost may have changed fields the

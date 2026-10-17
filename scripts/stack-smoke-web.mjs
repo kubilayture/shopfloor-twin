@@ -6,6 +6,11 @@
 // Since #121 it checks the write refusals, and with SMOKE_WRITES=1 codes and clears one record.
 // Since #143 it checks the alarm write refusals too, and with SMOKE_WRITES=1 acknowledges one
 // alarm occurrence (skipped when the plant has raised none yet).
+// Since #170 every API route and the WebSocket need a session: the checks log in as
+// SMOKE_USERNAME / SMOKE_PASSWORD (an operator stack-smoke.sh creates per run) and check the
+// refusals of anonymous requests (401, WebSocket 4401) and of a permission the role lacks (403).
+// With SMOKE_WRITES=1 and MES_BOOTSTRAP_ADMIN_PASSWORD set, the bootstrap admin must change its
+// password before anything else (403, WebSocket 4403); the smoke never changes it.
 
 import { request as httpRequest } from 'node:http';
 
@@ -19,6 +24,10 @@ function fail(message) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const username = process.env.SMOKE_USERNAME;
+const password = process.env.SMOKE_PASSWORD;
+if (!username || !password) fail('SMOKE_USERNAME and SMOKE_PASSWORD must be set (stack-smoke.sh)');
 
 // The app shell, client-side routes and the headers nginx adds.
 const shell = await fetch(new URL('/', base));
@@ -42,11 +51,74 @@ if (!script.ok || !(script.headers.get('cache-control') ?? '').includes('immutab
 if (script.headers.get('content-encoding') !== 'gzip') fail(`asset ${asset} not gzipped`);
 console.log('ok: web serves the app (SPA fallback, CSP, caching, gzip)');
 
+/** One request with exactly these headers (fetch would add or drop some). */
+function send(method, path, headers, body) {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(new URL(path, base), { method, headers }, (response) => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => (text += chunk));
+      response.on('end', () =>
+        resolve({ status: response.statusCode, text, headers: response.headers }),
+      );
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+const json = { 'content-type': 'application/json' };
+
+/** Logs in through the web (the page's own origin); resolves with the `Cookie` header value. */
+async function login(name, secret) {
+  const answer = await send(
+    'POST',
+    '/api/v1/session',
+    { origin: base.origin, ...json },
+    JSON.stringify({ username: name, password: secret }),
+  );
+  if (answer.status !== 200) return { status: answer.status, text: answer.text };
+  const cookie = String(answer.headers['set-cookie'] ?? '').split(';')[0];
+  const setCookie = String(answer.headers['set-cookie']);
+  // A failure message never shows the token (#170 review L5).
+  const redacted = setCookie.replace(/=[^;,]*/, '=(redacted)');
+  if (!cookie.startsWith('sft_session=')) fail(`login set no session cookie: ${redacted}`);
+  if (!/HttpOnly/i.test(setCookie) || !/SameSite=Strict/i.test(setCookie)) {
+    fail(`session cookie not HttpOnly and SameSite=Strict: ${redacted}`);
+  }
+  return { status: 200, cookie, session: JSON.parse(answer.text) };
+}
+
+// Identity (#170): anonymous reads are refused, a login through the web sets the cookie.
+const anonymous = await fetch(new URL('/api/v1/equipment', base));
+const anonymousProblem = await anonymous.json().catch(() => ({}));
+if (anonymous.status !== 401 || anonymousProblem.type !== 'urn:shopfloor:unauthenticated') {
+  fail(`an anonymous read answered ${anonymous.status} ${JSON.stringify(anonymousProblem)}`);
+}
+console.log('ok: an anonymous read is refused (401 urn:shopfloor:unauthenticated)');
+const wrong = await login(username, `${password}-wrong`);
+if (wrong.status !== 401) fail(`a wrong password answered ${wrong.status}`);
+const signedIn = await login(username, password);
+if (signedIn.status !== 200)
+  fail(`login as ${username} answered ${signedIn.status}: ${signedIn.text}`);
+const cookie = signedIn.cookie;
+if (signedIn.session.user.username !== username || signedIn.session.user.mustChangePassword) {
+  fail(`unexpected session: ${JSON.stringify(signedIn.session.user)}`);
+}
+console.log(`ok: login through the web as ${username} (HttpOnly, SameSite=Strict cookie)`);
+const authed = { cookie };
+const getJson = async (path) => {
+  const response = await fetch(new URL(path, base), { headers: authed });
+  if (!response.ok) fail(`GET ${path} answered ${response.status}: ${await response.text()}`);
+  return response.json();
+};
+
 // REST through the proxy: every machine with a current state, within the deadline.
 const started = Date.now();
 let missing = MACHINES;
 while (missing.length > 0) {
-  const response = await fetch(new URL('/api/v1/equipment', base)).catch(() => undefined);
+  const response = await fetch(new URL('/api/v1/equipment', base), { headers: authed }).catch(
+    () => undefined,
+  );
   if (response?.ok) {
     const { equipment } = await response.json();
     const reported = new Set(equipment.filter((e) => e.current !== null).map((e) => e.id));
@@ -62,12 +134,17 @@ console.log(
   `ok: /api/v1/equipment through the web has all six machines' states (${Date.now() - started} ms)`,
 );
 
-/** Opens the WebSocket through nginx with this Origin; resolves with the first snapshot. */
-function snapshot(origin) {
+/**
+ * Opens the WebSocket through nginx with this Origin (and session cookie); resolves with the first
+ * snapshot, rejects with `closed <code>` when the MES closes it first; `session` null: no cookie.
+ */
+function snapshot(origin, session = cookie) {
   return new Promise((resolve, reject) => {
     const url = new URL('/api/v1/ws', base);
     url.protocol = 'ws:';
-    const socket = new WebSocket(url, { headers: { origin } });
+    const socket = new WebSocket(url, {
+      headers: { origin, ...(session === null ? {} : { cookie: session }) },
+    });
     const timer = setTimeout(() => {
       socket.close();
       reject(new Error('no snapshot within 10 s'));
@@ -81,6 +158,10 @@ function snapshot(origin) {
       clearTimeout(timer);
       socket.close();
       resolve(message);
+    });
+    socket.addEventListener('close', (event) => {
+      clearTimeout(timer);
+      reject(new Error(`closed ${event.code}`));
     });
     socket.addEventListener('error', () => {
       clearTimeout(timer);
@@ -104,6 +185,14 @@ const foreign = await snapshot('http://evil.test').then(
 if (foreign !== 'connection refused or failed') fail(`WebSocket from a foreign Origin: ${foreign}`);
 console.log('ok: WebSocket from a foreign Origin refused');
 
+// Without a session the MES accepts the upgrade and closes the socket at once with 4401.
+const anonymousSocket = await snapshot(base.origin, null).then(
+  () => 'snapshot',
+  (error) => error.message,
+);
+if (anonymousSocket !== 'closed 4401') fail(`WebSocket without a session: ${anonymousSocket}`);
+console.log('ok: WebSocket without a session closed with 4401');
+
 // Writes through the web (#121, ADR-0023): a foreign Origin, a missing Origin and a form content
 // type are refused, and nginx passes only GET, POST, PUT and DELETE under /api/. These refusals
 // change nothing, so they always run. With SMOKE_WRITES=1 (CI, or a disposable Compose project:
@@ -111,26 +200,11 @@ console.log('ok: WebSocket from a foreign Origin refused');
 // That leaves two permanent rows in the append-only audit, so it is off by default: a local run
 // must not write into a dev database.
 
-/** One request with exactly these headers (fetch would add or drop some). */
-function send(method, path, headers, body) {
-  return new Promise((resolve, reject) => {
-    const req = httpRequest(new URL(path, base), { method, headers }, (response) => {
-      let text = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk) => (text += chunk));
-      response.on('end', () => resolve({ status: response.statusCode, text }));
-    });
-    req.on('error', reject);
-    req.end(body);
-  });
-}
-const getJson = async (path) => (await fetch(new URL(path, base))).json();
-const json = { 'content-type': 'application/json' };
-const page = { origin: base.origin, ...json };
+const page = { origin: base.origin, ...json, cookie };
 
 // The guards answer before any route is looked up, so a record that doesn't exist will do.
 const refused = '/api/v1/downtime/cnc-01~0~0/coding';
-const body = JSON.stringify({ segments: [], codedBy: 'stack smoke', version: 0 });
+const body = JSON.stringify({ segments: [], version: 0 });
 for (const [name, headers, status] of [
   ['a foreign Origin', { origin: 'http://evil.test', ...json }, 403],
   ['no Origin', json, 403],
@@ -149,14 +223,14 @@ for (const [name, headers, status] of [
 // the stack under test, and toggling it would mean recreating the MES in the middle of the smoke.
 // The MES's own tests check the 405 for every alarm write (alarm-writes.test.ts).
 const alarmWrites = [
-  ['/api/v1/alarms/cnc-01~0~0/ack', { actor: 'stack smoke' }],
-  ['/api/v1/alarms/ack', { ids: ['cnc-01~0~0'], actor: 'stack smoke' }],
-  ['/api/v1/alarms/cnc-01~0~0/comments', { actor: 'stack smoke', text: 'refused' }],
+  ['/api/v1/alarms/cnc-01~0~0/ack', {}],
+  ['/api/v1/alarms/ack', { ids: ['cnc-01~0~0'] }],
+  ['/api/v1/alarms/cnc-01~0~0/comments', { text: 'refused' }],
   [
     '/api/v1/alarm-points/cnc-01/SPINDLE-OVERLOAD/shelve',
-    { actor: 'stack smoke', reason: 'refused', durationMs: 60_000, version: 0 },
+    { reason: 'refused', durationMs: 60_000, version: 0 },
   ],
-  ['/api/v1/alarm-points/cnc-01/SPINDLE-OVERLOAD/unshelve', { actor: 'stack smoke', version: 0 }],
+  ['/api/v1/alarm-points/cnc-01/SPINDLE-OVERLOAD/unshelve', { version: 0 }],
 ];
 for (const [path, request] of alarmWrites) {
   for (const [name, headers, status] of [
@@ -176,6 +250,21 @@ for (const [path, request] of alarmWrites) {
 }
 console.log('ok: alarm writes with a foreign Origin, no Origin or a form content type refused');
 
+// Identity (#170): the page's own origin without a session is 401; an operator may not shelve
+// (403 urn:shopfloor:forbidden, checked before the route reads its body).
+const noSession = await send('PUT', refused, { origin: base.origin, ...json }, body);
+if (noSession.status !== 401) fail(`a write without a session answered ${noSession.status}`);
+const shelve = await send(
+  'POST',
+  '/api/v1/alarm-points/cnc-01/SPINDLE-OVERLOAD/shelve',
+  page,
+  JSON.stringify({ reason: 'refused', durationMs: 60_000, version: 0 }),
+);
+if (shelve.status !== 403 || JSON.parse(shelve.text).type !== 'urn:shopfloor:forbidden') {
+  fail(`an operator's shelve answered ${shelve.status}: ${shelve.text}`);
+}
+console.log('ok: a write without a session is 401, a permission the role lacks 403');
+
 const patch = await send('PATCH', refused, page, body);
 if (patch.status !== 403) fail(`PATCH through the web answered ${patch.status}, not 403`);
 console.log('ok: nginx passes only GET, POST, PUT and DELETE under /api/ (PATCH refused, 403)');
@@ -183,6 +272,38 @@ console.log('ok: nginx passes only GET, POST, PUT and DELETE under /api/ (PATCH 
 if (process.env.SMOKE_WRITES !== '1') {
   console.log('skipped: a write through the web (set SMOKE_WRITES=1, on a disposable database)');
   process.exit(0);
+}
+
+// The bootstrap admin (#168, #170): on a fresh database it exists with a temporary password, so
+// every route but the session and password routes answers 403 until it is changed, and its socket
+// is closed with 4403. Logging in rotates nothing; the smoke never changes the password.
+const bootstrap = process.env.MES_BOOTSTRAP_ADMIN_PASSWORD;
+if (bootstrap) {
+  const admin = await login('admin', bootstrap);
+  if (admin.status !== 200 || !admin.session.user.mustChangePassword) {
+    fail(`bootstrap admin: ${admin.status} ${JSON.stringify(admin.session?.user ?? admin.text)}`);
+  }
+  const read = await fetch(new URL('/api/v1/equipment', base), {
+    headers: { cookie: admin.cookie },
+  });
+  const problem = await read.json();
+  if (read.status !== 403 || problem.type !== 'urn:shopfloor:password-change-required') {
+    fail(`the bootstrap admin read answered ${read.status} ${JSON.stringify(problem)}`);
+  }
+  const adminSocket = await snapshot(base.origin, admin.cookie).then(
+    () => 'snapshot',
+    (error) => error.message,
+  );
+  if (adminSocket !== 'closed 4403') fail(`the bootstrap admin's WebSocket: ${adminSocket}`);
+  await send(
+    'DELETE',
+    '/api/v1/session',
+    { origin: base.origin, ...json, cookie: admin.cookie },
+    '{}',
+  );
+  console.log('ok: the bootstrap admin must change its password first (403, WebSocket 4403)');
+} else {
+  console.log('skipped: the bootstrap admin check (MES_BOOTSTRAP_ADMIN_PASSWORD not set)');
 }
 
 const reasons = (await getJson('/api/v1/reason-codes')).reasons;
@@ -229,13 +350,13 @@ async function code(request, expectCodings) {
     if (answer.status !== 409 || attempt > 0) return answer;
   }
 }
-const coded = await code({ segments, codedBy: 'stack smoke' }, 0);
+const coded = await code({ segments }, 0);
 if (coded.status !== 200) fail(`coding ${record.id} answered ${coded.status}: ${coded.text}`);
 const codedRecord = JSON.parse(coded.text).record;
 if (codedRecord.reason !== reason || codedRecord.codings.length !== 1) {
   fail(`coding not applied: ${coded.text}`);
 }
-const cleared = await code({ segments: [], codedBy: 'stack smoke' }, 1);
+const cleared = await code({ segments: [] }, 1);
 if (cleared.status !== 200)
   fail(`clearing ${record.id} answered ${cleared.status}: ${cleared.text}`);
 if (JSON.parse(cleared.text).record.codings.length !== 0) fail('codings not cleared');
@@ -244,7 +365,7 @@ const actions = audit.entries
   .slice(0, 2)
   .map((e) => `${e.action}:${e.actor}`)
   .join(',');
-if (actions !== 'cleared:stack smoke,coded:stack smoke') fail(`audit: ${actions}`);
+if (actions !== `cleared:${username},coded:${username}`) fail(`audit: ${actions}`);
 console.log(
   `ok: write through the web with the page's origin (${record.id} coded, cleared, audited)`,
 );
@@ -265,20 +386,20 @@ if (occurrence === undefined) {
   process.exit(0);
 }
 const ackPath = `/api/v1/alarms/${encodeURIComponent(occurrence.id)}/ack`;
-const acked = await send('POST', ackPath, page, JSON.stringify({ actor: 'stack smoke' }));
+const acked = await send('POST', ackPath, page, '{}');
 if (acked.status !== 200)
   fail(`acknowledging ${occurrence.id} answered ${acked.status}: ${acked.text}`);
 const ackResult = JSON.parse(acked.text);
-if (!ackResult.changed || ackResult.occurrence.acknowledged?.by !== 'stack smoke') {
+if (!ackResult.changed || ackResult.occurrence.acknowledged?.by !== username) {
   fail(`acknowledgement not applied: ${acked.text}`);
 }
-const again = await send('POST', ackPath, page, JSON.stringify({ actor: 'stack smoke' }));
+const again = await send('POST', ackPath, page, '{}');
 if (again.status !== 200 || JSON.parse(again.text).changed !== false) {
   fail(`a second acknowledgement of ${occurrence.id} changed it: ${again.text}`);
 }
 const alarmHistory = await getJson(`/api/v1/alarms/${encodeURIComponent(occurrence.id)}/history`);
 const acks = alarmHistory.entries.filter((e) => e.source === 'audit' && e.transition === 'ack');
-if (acks.length !== 1 || acks[0].actor !== 'stack smoke' || acks[0].authenticated !== false) {
+if (acks.length !== 1 || acks[0].actor !== username || acks[0].authenticated !== true) {
   fail(`alarm audit: ${JSON.stringify(acks)}`);
 }
 console.log(

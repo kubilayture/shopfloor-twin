@@ -239,7 +239,11 @@ export interface RealtimeOptions {
    * answer 503 (the OpenAPI generator).
    */
   readonly identity?: IdentityApi;
-  /** `MES_AUTH=on`: every route but the login needs a session, and the WebSocket too. */
+  /**
+   * `MES_AUTH=on` (the environment's default since #170): every route but the login needs a
+   * session, and the WebSocket too. Off (the default here, for tests of reads): reads and the
+   * WebSocket are served without one; writes still need a session and their permission.
+   */
   readonly auth?: boolean;
   /** `MES_COOKIE_SECURE=on`: `Secure` cookie named `__Host-sft_session`. */
   readonly cookieSecure?: boolean;
@@ -661,20 +665,12 @@ export async function registerRealtime(
     return principal;
   };
   /**
-   * Who a write is by (#169): with `MES_AUTH=on` the session's user, whatever the body says; with
-   * `off`, the name typed into the body's old actor field (422 without one), until #170 removes
-   * those fields from the requests.
+   * Who a write is by: the session's user (#170). Every write needs a session, also with
+   * `MES_AUTH=off`, so the authentication hook has always set the principal before a handler runs.
    */
-  const writeBy = (request: FastifyRequest, typed: string | undefined, field: string): WriteBy => {
-    const principal = principals.get(request);
-    if (principal) {
-      return { userId: principal.userId, username: principal.username, roles: principal.roles };
-    }
-    if (auth) throw new HttpProblem(401, 'a session is needed', PROBLEM_TYPES.unauthenticated);
-    if (typed === undefined) {
-      throw new HttpProblem(422, `\`${field}\` is needed while MES_AUTH=off (no session)`);
-    }
-    return typed;
+  const writeBy = (request: FastifyRequest): WriteBy => {
+    const principal = principalOf(request);
+    return { userId: principal.userId, username: principal.username, roles: principal.roles };
   };
   const tokenOf = (request: FastifyRequest): Buffer | undefined =>
     parseToken(cookieValue(request.headers.cookie, cookieName));
@@ -682,14 +678,15 @@ export async function registerRealtime(
     (request.routeOptions.config as Partial<RouteConfig> | undefined)?.access ?? 'read';
   /**
    * Authentication (401) and permission (403), after the Host and Origin checks so a cross-site
-   * request never learns whether a session exists (ADR-0026). With `MES_AUTH=off` only the
-   * `session` routes need one.
+   * request never learns whether a session exists (ADR-0026). With `MES_AUTH=off` (#170) only the
+   * reads (`read`) and the WebSocket are served without one: every write still needs a session and
+   * its permission, so every write has a known user.
    */
   const authRefusal = async (
     request: FastifyRequest,
   ): Promise<{ status: number; detail: string; type?: ProblemType } | undefined> => {
     const access = accessOf(request);
-    if (access === 'public' || (!auth && access !== 'session')) return undefined;
+    if (access === 'public' || (!auth && access === 'read')) return undefined;
     if (!identity?.started) return { status: 503, detail: 'the MES is starting' };
     const token = tokenOf(request);
     const principal = token && (await identity.authenticate(token, { touch: true }));
@@ -1311,8 +1308,7 @@ export async function registerRealtime(
             '(not UNCODED); segments must not overlap; an empty list clears the codings. Time ' +
             'without a coding keeps the auto reason. `version` is the record’s `version` as read: ' +
             'it belongs to the coding set of the (equipment, epoch), and a mismatch is 409. ' +
-            'The actor is the session’s user; with MES_AUTH=off the typed `codedBy` ' +
-            '(unauthenticated). Audited; reasons never change OEE, only the Pareto and the ' +
+            'The actor is the session’s user. Audited; reasons never change OEE, only the Pareto and the ' +
             'reason view. Writes need an Origin of this host (or ' +
             'allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023).',
           tags: ['downtime'],
@@ -1325,7 +1321,7 @@ export async function registerRealtime(
         async ({ params, body, requestId, request }) => {
           const { sources } = ready();
           const key = recordKey(params.id);
-          const codedBy = writeBy(request, body.codedBy, 'codedBy');
+          const codedBy = writeBy(request);
           const { version } = await sources.coding
             .code(key, {
               segments: body.segments.map((segment) => ({
@@ -1502,8 +1498,7 @@ export async function registerRealtime(
           summary: 'Writes a handover note on a shift instance',
           description:
             'From the shift’s start until the end of the following shift (plant time); afterwards ' +
-            '409 (handover closed). The author is the session’s user; with MES_AUTH=off the ' +
-            'typed `author` (unauthenticated); audited. ' +
+            '409 (handover closed). The author is the session’s user; audited. ' +
             'Raises the report’s `revision.content`. Writes need an Origin of this host (or ' +
             'allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023).',
           tags: ['shifts'],
@@ -1515,7 +1510,7 @@ export async function registerRealtime(
         },
         LIMITS.writeBodyBytes,
         async ({ params, query, body, requestId, request }) => {
-          const author = writeBy(request, body.author, 'author');
+          const author = writeBy(request);
           const instance = await stored(params, query.epoch);
           const note = await shiftsOf()
             .createNote(instance.epoch, instance.key, { ...body, author, requestId })
@@ -1560,7 +1555,7 @@ export async function registerRealtime(
         },
         LIMITS.writeBodyBytes,
         async ({ params, body, requestId, request }) => {
-          const author = writeBy(request, body.author, 'author');
+          const author = writeBy(request);
           const found = await noteOf(params);
           const note = await shiftsOf()
             .editNote(found.epoch, found.shiftKey, found.id, { ...body, author, requestId })
@@ -1883,8 +1878,8 @@ export async function registerRealtime(
           : error;
       const guarded =
         'Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when ' +
-        'sent, and application/json (ADR-0023). The actor is the session’s user; with MES_AUTH=off ' +
-        'the typed `actor` (unauthenticated). Audited in alarms.alarm_transition and ' +
+        'sent, and application/json (ADR-0023). The actor is the session’s user. ' +
+        'Audited in alarms.alarm_transition and ' +
         'identity.audit_log with wall time, plant time and the request id. Operator ' +
         'actions never change alarm KPIs or their revisions (every raise counts).';
       const occurrenceAfterWrite = async (id: string) => {
@@ -1916,7 +1911,7 @@ export async function registerRealtime(
         },
         LIMITS.writeBodyBytes,
         async ({ body, requestId, request }) => {
-          const actor = writeBy(request, body.actor, 'actor');
+          const actor = writeBy(request);
           const results = await alarmsOf()
             .acknowledge(body.ids, { actor, comment: body.comment, requestId })
             .catch((error: unknown) => {
@@ -1948,7 +1943,7 @@ export async function registerRealtime(
         async ({ params, body, requestId, request }) => {
           const [result] = await alarmsOf()
             .acknowledge([params.id], {
-              actor: writeBy(request, body.actor, 'actor'),
+              actor: writeBy(request),
               comment: body.comment,
               requestId,
             })
@@ -1980,7 +1975,7 @@ export async function registerRealtime(
         async ({ params, body, requestId, request }) => {
           const comment = await alarmsOf()
             .comment(params.id, {
-              actor: writeBy(request, body.actor, 'actor'),
+              actor: writeBy(request),
               text: body.text,
               requestId,
             })
@@ -2047,7 +2042,7 @@ export async function registerRealtime(
           knownPoint(params.equipment);
           const point = await alarmsOf()
             .shelve(params.equipment, params.code, {
-              actor: writeBy(request, body.actor, 'actor'),
+              actor: writeBy(request),
               reason: body.reason,
               durationMs: body.durationMs,
               version: body.version,
@@ -2081,7 +2076,7 @@ export async function registerRealtime(
           knownPoint(params.equipment);
           const point = await alarmsOf()
             .unshelve(params.equipment, params.code, {
-              actor: writeBy(request, body.actor, 'actor'),
+              actor: writeBy(request),
               version: body.version,
               requestId,
             })

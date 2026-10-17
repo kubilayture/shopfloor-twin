@@ -121,7 +121,7 @@ export interface HandoverNote {
   readonly category: NoteCategory;
   readonly text: string;
   readonly retracted: boolean;
-  /** Who wrote it first, and who wrote the current version (user names, or names as typed). */
+  /** Who wrote it first and the current version: user names (names as typed before #170). */
   readonly createdBy: string;
   readonly author: string;
   readonly version: number;
@@ -146,7 +146,7 @@ export interface HandoverAuditEntry {
 }
 
 export interface NoteRequest {
-  /** The session's user, or (`MES_AUTH=off`, until #170) the name as typed (unauthenticated). */
+  /** The session's user (#170); a typed name (unauthenticated) only in the module's tests. */
   readonly author: WriteBy;
   readonly text: string;
   readonly category: NoteCategory;

@@ -7,6 +7,7 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import { expect, test } from '@playwright/test';
 import { MesClient, rawRequest } from '../../src/clients.ts';
+import { logIn, reconcileUser } from '../login.ts';
 
 /**
  * Phase 6 exit criteria 3 and 5, the operator part (#147): after shift A of `alarms-01` is final
@@ -22,7 +23,8 @@ import { MesClient, rawRequest } from '../../src/clients.ts';
 const webUrl = process.env.RECONCILE_WEB_URL;
 const results = process.env.RECONCILE_RESULTS;
 const shiftKey = process.env.RECONCILE_SHIFT ?? '2026-10-12/A';
-const ACTOR = 'reconcile e2e';
+/** Every write's actor is the logged-in user (#170), audited as authenticated. */
+const ACTOR = reconcileUser;
 const COMMENT = 'Coolant line checked after the flood (#147).';
 const SHELVE_REASON = 'Known fault under repair (#147)';
 
@@ -72,8 +74,8 @@ test('alarms acknowledged, commented, shelved and unshelved through the UI, audi
   test.skip(!webUrl, 'runs inside pnpm test:reconcile, after the drain');
   test.setTimeout(180_000);
   const base = webUrl ?? '';
-  // The API as the page reads it: through nginx, same origin.
-  const api = new MesClient(base);
+  // The API as the page reads it: through nginx, same origin, with the page's session.
+  const api = new MesClient(base, await logIn(page));
   const shift = await api.shiftOee(shiftKey);
   const { start, end } = shift;
   const scopes = [
@@ -122,7 +124,8 @@ test('alarms acknowledged, commented, shelved and unshelved through the UI, audi
   );
 
   await page.goto('/alarms?view=active');
-  await page.getByTestId('operator-name').fill(ACTOR);
+  // No name to type any more (#170): the MES takes the actor from the session.
+  await expect(page.getByTestId('operator-name')).toHaveCount(0);
   const list = page.getByTestId('alarm-list');
   await expect(list).toHaveAttribute('data-view', 'active');
   for (const alarm of shiftAlarms) {
@@ -221,7 +224,7 @@ test('alarms acknowledged, commented, shelved and unshelved through the UI, audi
       alarm.id,
     ).toEqual(alarm.id === commented.id ? ['comment', 'ack'] : ['ack']);
     for (const entry of audit) {
-      expect([entry.actor, entry.authenticated], alarm.id).toEqual([ACTOR, false]);
+      expect([entry.actor, entry.authenticated], alarm.id).toEqual([ACTOR, true]);
       expect(entry.requestId, alarm.id).toMatch(/\S/);
       expect(entry.recordedAt, alarm.id).not.toBeNull();
     }
@@ -232,8 +235,8 @@ test('alarms acknowledged, commented, shelved and unshelved through the UI, audi
     (e) => e.action === 'shelve' || e.action === 'unshelve',
   );
   expect(shelfEntries.map((e) => [e.action, e.actor, e.authenticated, e.version])).toEqual([
-    ['unshelve', ACTOR, false, 2],
-    ['shelve', ACTOR, false, 1],
+    ['unshelve', ACTOR, true, 2],
+    ['shelve', ACTOR, true, 1],
   ]);
   for (const entry of shelfEntries) expect(entry.requestId).toMatch(/\S/);
   expect(shelfEntries[1]?.after).toMatchObject({ reason: SHELVE_REASON, durationMs: 15 * 60_000 });
@@ -253,7 +256,7 @@ test('alarms acknowledged, commented, shelved and unshelved through the UI, audi
   // Writes the MES must refuse (ADR-0023), on an alarm already acknowledged: a guard that let one
   // through would answer 200 with `changed: false`, never change anything.
   const ack = `${base}/api/v1/alarms/${encodeURIComponent(single.id)}/ack`;
-  const body = JSON.stringify({ actor: ACTOR });
+  const body = '{}';
   const json = { 'content-type': 'application/json' };
   const refusals: Record<string, { status: number; type: string }> = {};
   for (const [name, headers] of [
@@ -263,6 +266,8 @@ test('alarms acknowledged, commented, shelved and unshelved through the UI, audi
       'form content type',
       { origin: new URL(base).origin, 'content-type': 'application/x-www-form-urlencoded' },
     ],
+    // The page's own origin and JSON, but no session (#170).
+    ['no session', { origin: new URL(base).origin, ...json }],
   ] as const) {
     const answer = await rawRequest('POST', ack, headers, body);
     refusals[name] = {
@@ -274,6 +279,7 @@ test('alarms acknowledged, commented, shelved and unshelved through the UI, audi
     'foreign Origin': { status: 403, type: PROBLEM_TYPES.writeOrigin },
     'no Origin': { status: 403, type: PROBLEM_TYPES.writeOrigin },
     'form content type': { status: 415, type: PROBLEM_TYPES.writeNotJson },
+    'no session': { status: 401, type: PROBLEM_TYPES.unauthenticated },
   });
   expect(
     (await api.alarmHistory(single.id)).entries.filter((e) => e.source === 'audit'),

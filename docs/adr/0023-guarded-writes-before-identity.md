@@ -101,3 +101,7 @@ Identity arrives as ADR-0026. What changes for writes, and what stays:
 ## Note: database roles and one audit log (#169)
 
 The promise above is kept (ADR-0027): the MES connects as `mes_app`, which owns no table, so it can no longer disable an audit trigger, truncate an audit or change the schema (42501), and the append-only triggers still refuse everyone else. Writes take their actor from the session with `MES_AUTH=on` (the typed field is ignored) and from the typed field with `off` (then required, 422 without it); every write is audited in `identity.audit_log` in its own transaction, and the downtime and note audits are frozen legacy, copied into it.
+
+## Note: actor from the session (#170)
+
+The free-text `codedBy`, `actor` and `author` are removed from the requests (sending one is 400): every write takes its actor from the session, also with `MES_AUTH=off`, which now only opens reads and the WebSocket (ADR-0026, notes). `MES_AUTH=on` is the default.

@@ -2,6 +2,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   PASSWORD_LENGTH,
   ROLES,
+  SESSION_ABSOLUTE_MS,
+  SESSION_IDLE_MS,
   USERNAME_PATTERN,
   passwordLength,
   permissionsOf,
@@ -26,9 +28,9 @@ const MINUTE = 60_000;
 /** Session lifetimes and the failed-login rules (Phase 7 plan, "Identity"). */
 export const IDENTITY_LIMITS = {
   /** Idle timeout per session kind. */
-  idleMs: { desk: 60 * MINUTE, terminal: 15 * MINUTE } as Readonly<Record<SessionKind, number>>,
+  idleMs: SESSION_IDLE_MS,
   /** Absolute lifetime of a session. */
-  absoluteMs: 12 * 60 * MINUTE,
+  absoluteMs: SESSION_ABSOLUTE_MS,
   /** A session's last use is written at most this often (its idle expiry moves with it). */
   touchMs: MINUTE,
   /** Consecutive failures that lock a normal account, and for how long. */
@@ -84,8 +86,9 @@ export type Actor = Pick<Principal, 'userId' | 'username' | 'roles'> | { readonl
 export type SessionUser = Pick<Principal, 'userId' | 'username' | 'roles'>;
 
 /**
- * Who a module write is by (#169): the session's user, or (only with `MES_AUTH=off`, until #170
- * removes the request fields) a name as typed, recorded as unauthenticated.
+ * Who a module write is by (#169): the session's user. Since #170 the API passes nothing else (the
+ * typed request fields are gone and every write needs a session); a name as typed, recorded as
+ * unauthenticated, remains only for the modules' own tests, which write without the HTTP layer.
  */
 export type WriteBy = SessionUser | string;
 
@@ -99,7 +102,7 @@ export const isAuthenticated = (by: WriteBy): boolean => typeof by !== 'string';
 export const auditActor = (by: WriteBy): AuditActor =>
   typeof by === 'string' ? { typed: by } : by;
 
-/** An audit row's actor: an `Actor`, or a name typed without a session (`MES_AUTH=off`). */
+/** An audit row's actor: an `Actor`, or a name typed without a session (module tests; legacy). */
 export type AuditActor = Actor | { readonly typed: string };
 
 export interface User {

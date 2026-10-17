@@ -7,6 +7,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import {
   acknowledgeAlarm,
   acknowledgeAlarms,
@@ -41,7 +42,6 @@ import {
   stateText,
   type AlarmView,
 } from '../domain/alarms.ts';
-import { loadCodedBy, saveCodedBy } from '../domain/downtime.ts';
 import { formatClockSeconds, formatDuration, formatPlantTime } from '../domain/time.ts';
 import type { WriteFailure } from '../domain/writes.ts';
 import { dropLiveOccurrences, upsertOccurrence, upsertPoint } from '../live/live-cache.ts';
@@ -63,11 +63,6 @@ const HOUR = 3_600_000;
 export const HISTORY_MS = 24 * HOUR;
 
 type Message = WriteFailure | { readonly kind: 'saved'; readonly text: string };
-
-const NO_ACTOR: Message = {
-  kind: 'invalid',
-  text: 'Enter your name under Operator first: every alarm action is recorded with it.',
-};
 
 function MessageLine({ message, testId }: { readonly message: Message; readonly testId: string }) {
   return (
@@ -120,13 +115,11 @@ function ShelfSection({
   occurrence,
   point,
   detailShelf,
-  actor,
   onWrite,
 }: {
   readonly occurrence: AlarmOccurrenceDto;
   readonly point: AlarmPointDto | undefined;
   readonly detailShelf: AlarmPointDto['shelf'] | undefined;
-  readonly actor: string;
   readonly onWrite: (message: Message) => void;
 }) {
   const queryClient = useQueryClient();
@@ -134,6 +127,8 @@ function ShelfSection({
   const reasonId = useId();
   const durationId = useId();
   const [reason, setReason] = useState('');
+  const canShelve = useCan('alarm:shelve');
+  useUnsavedDraft(reason.trim() !== '');
   // Presets capped at the MES's real limit (#160); none until the configuration arrived.
   const config = useAlarmConfig();
   const presets = config ? shelvePresets(config) : [];
@@ -167,14 +162,12 @@ function ShelfSection({
     mutationFn: ({ action, version }: { action: 'shelve' | 'unshelve'; version: number }) =>
       action === 'shelve'
         ? shelvePoint(occurrence.equipment, occurrence.code, {
-            actor: actor.trim(),
             reason: reason.trim(),
             durationMs: Number(duration ?? 0),
             version,
           })
-        : unshelvePoint(occurrence.equipment, occurrence.code, { actor: actor.trim(), version }),
+        : unshelvePoint(occurrence.equipment, occurrence.code, { version }),
     onSuccess: (result, { action }) => {
-      saveCodedBy(actor);
       upsertPoint(queryClient, result.point);
       setBase(undefined);
       setReason('');
@@ -198,10 +191,6 @@ function ShelfSection({
   });
 
   const submit = (action: 'shelve' | 'unshelve') => {
-    if (actor.trim() === '') {
-      onWrite(NO_ACTOR);
-      return;
-    }
     if (stale) {
       onWrite({
         kind: 'conflict',
@@ -265,22 +254,34 @@ function ShelfSection({
             {shelf.until ? <time dateTime={shelf.until}>{formatPlantTime(shelf.until)}</time> : '–'}{' '}
             plant time.
           </p>
-          <div>
-            <button
-              type="button"
-              data-testid="unshelve"
-              className={buttonClass}
-              disabled={write.isPending}
-              onClick={() => {
-                submit('unshelve');
-              }}
-            >
-              {write.isPending ? 'Unshelving…' : 'Unshelve'}
-            </button>
-          </div>
+          {canShelve ? (
+            <div>
+              <button
+                type="button"
+                data-testid="unshelve"
+                className={buttonClass}
+                disabled={write.isPending}
+                onClick={() => {
+                  submit('unshelve');
+                }}
+              >
+                {write.isPending ? 'Unshelving…' : 'Unshelve'}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
-      {shelf && !shelf.shelved ? (
+      {shelf && !shelf.shelved && !canShelve ? (
+        <p
+          className="mt-2 text-sm"
+          data-testid="shelf-state"
+          data-shelved="false"
+          data-version={shelf.version}
+        >
+          Not shelved.
+        </p>
+      ) : null}
+      {shelf && !shelf.shelved && canShelve ? (
         <form
           noValidate
           aria-label="Shelve the point"
@@ -352,20 +353,18 @@ function ShelfSection({
 
 function CommentForm({
   id,
-  actor,
   onWrite,
 }: {
   readonly id: string;
-  readonly actor: string;
   readonly onWrite: (message: Message) => void;
 }) {
   const queryClient = useQueryClient();
   const textId = useId();
   const [text, setText] = useState('');
+  useUnsavedDraft(text.trim() !== '');
   const write = useMutation({
-    mutationFn: () => commentAlarm(id, { actor: actor.trim(), text: text.trim() }),
+    mutationFn: () => commentAlarm(id, { text: text.trim() }),
     onSuccess: (result) => {
-      saveCodedBy(actor);
       upsertOccurrence(queryClient, result.occurrence);
       setText('');
       onWrite({ kind: 'saved', text: 'Comment added.' });
@@ -383,8 +382,7 @@ function CommentForm({
       className="mt-2 flex flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (actor.trim() === '') onWrite(NO_ACTOR);
-        else if (text.trim() === '') onWrite({ kind: 'invalid', text: 'Write a comment first.' });
+        if (text.trim() === '') onWrite({ kind: 'invalid', text: 'Write a comment first.' });
         else write.mutate();
       }}
     >
@@ -479,13 +477,11 @@ function AlarmPanel({
   occurrence,
   point,
   machineName,
-  actor,
   onClose,
 }: {
   readonly occurrence: AlarmOccurrenceDto;
   readonly point: AlarmPointDto | undefined;
   readonly machineName: string;
-  readonly actor: string;
   readonly onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -493,6 +489,9 @@ function AlarmPanel({
   const [message, setMessage] = useState<Message | undefined>(undefined);
   const ackCommentId = useId();
   const [ackComment, setAckComment] = useState('');
+  const canAck = useCan('alarm:ack');
+  const canComment = useCan('alarm:comment');
+  useUnsavedDraft(ackComment.trim() !== '');
   const detail = useQuery({
     queryKey: queryKeys.alarm(occurrence.id),
     queryFn: ({ signal }) => getAlarm(occurrence.id, signal),
@@ -520,11 +519,9 @@ function AlarmPanel({
   const ack = useMutation({
     mutationFn: () =>
       acknowledgeAlarm(occurrence.id, {
-        actor: actor.trim(),
         ...(ackComment.trim() === '' ? {} : { comment: ackComment.trim() }),
       }),
     onSuccess: (result) => {
-      saveCodedBy(actor);
       upsertOccurrence(queryClient, result.occurrence);
       setAckComment('');
       setMessage({
@@ -612,7 +609,7 @@ function AlarmPanel({
         <dd>
           {occurrence.acknowledged ? (
             <>
-              by {occurrence.acknowledged.by} (not authenticated) at{' '}
+              by {occurrence.acknowledged.by} at{' '}
               <time dateTime={occurrence.acknowledged.at}>
                 {formatPlantTime(occurrence.acknowledged.at)}
               </time>{' '}
@@ -636,15 +633,14 @@ function AlarmPanel({
           <MessageLine message={message} testId="alarm-message" />
         </div>
       ) : null}
-      {acknowledgeable(occurrence) ? (
+      {canAck && acknowledgeable(occurrence) ? (
         <form
           noValidate
           aria-label="Acknowledge the alarm"
           className="mt-3 flex flex-wrap items-end gap-2"
           onSubmit={(event) => {
             event.preventDefault();
-            if (actor.trim() === '') setMessage(NO_ACTOR);
-            else ack.mutate();
+            ack.mutate();
           }}
         >
           <div className="flex min-w-0 flex-col gap-1">
@@ -677,7 +673,6 @@ function AlarmPanel({
         occurrence={occurrence}
         point={point}
         detailShelf={detail.data?.shelf}
-        actor={actor}
         onWrite={setMessage}
       />
       <section aria-labelledby="alarm-comments-title" className="mt-4" data-testid="comments">
@@ -689,13 +684,14 @@ function AlarmPanel({
             <li key={comment.id} data-testid="comment" className="rounded bg-slate-50 p-2">
               <p>{comment.text}</p>
               <p className="text-xs text-slate-700">
-                {comment.actor} (not authenticated),{' '}
+                {comment.actor}
+                {comment.authenticated ? '' : ' (not authenticated)'},{' '}
                 <time dateTime={comment.at}>{formatPlantTime(comment.at)}</time> (wall time)
               </p>
             </li>
           ))}
         </ol>
-        <CommentForm id={occurrence.id} actor={actor} onWrite={setMessage} />
+        {canComment ? <CommentForm id={occurrence.id} onWrite={setMessage} /> : null}
       </section>
       <AlarmHistoryList id={occurrence.id} />
     </section>
@@ -783,8 +779,7 @@ export function AlarmList() {
   const navigate = useNavigate({ from: '/alarms' });
   const queryClient = useQueryClient();
   const view: AlarmView = search.view ?? 'active';
-  const actorId = useId();
-  const [actor, setActor] = useState(loadCodedBy);
+  const mayAck = useCan('alarm:ack');
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [message, setMessage] = useState<Message | undefined>(undefined);
   const selectAll = useRef<HTMLInputElement>(null);
@@ -868,13 +863,12 @@ export function AlarmList() {
   const selectedOccurrence = listed && read ? newerOccurrence(read, listed) : (listed ?? read);
 
   const afterAck = () => {
-    saveCodedBy(actor);
     void queryClient.invalidateQueries({ queryKey: queryKeys.alarmsAll });
     void queryClient.invalidateQueries({ queryKey: ['alarm'] });
     void queryClient.invalidateQueries({ queryKey: ['alarm-history'] });
   };
   const ackOne = useMutation({
-    mutationFn: (id: string) => acknowledgeAlarm(id, { actor: actor.trim() }),
+    mutationFn: (id: string) => acknowledgeAlarm(id, {}),
     onSuccess: (result) => {
       upsertOccurrence(queryClient, result.occurrence);
       afterAck();
@@ -890,7 +884,7 @@ export function AlarmList() {
     },
   });
   const ackMany = useMutation({
-    mutationFn: (ids: string[]) => acknowledgeAlarms({ ids, actor: actor.trim() }),
+    mutationFn: (ids: string[]) => acknowledgeAlarms({ ids }),
     onSuccess: (result) => {
       // The answer carries no occurrences: forget their pushed copies, so the lists read again
       // below (and the pushes of the acknowledgements) decide what they show.
@@ -910,13 +904,6 @@ export function AlarmList() {
       setMessage(ackFailure(error));
     },
   });
-
-  const needActor = (): boolean => {
-    if (actor.trim() !== '') return false;
-    setMessage(NO_ACTOR);
-    document.getElementById(actorId)?.focus();
-    return true;
-  };
 
   const toggle = (id: string, on: boolean) => {
     setSelected((current) => {
@@ -945,26 +932,6 @@ export function AlarmList() {
         {positions.map((position) => (
           <FloodBanner key={position.id} id={position.id} name={position.name} />
         ))}
-      </div>
-      <div className="mt-3 flex flex-col gap-1">
-        <label htmlFor={actorId} className="text-sm font-medium">
-          Operator
-        </label>
-        <input
-          id={actorId}
-          data-testid="operator-name"
-          value={actor}
-          maxLength={MES_API_LIMITS.alarmActor}
-          autoComplete="name"
-          onChange={(event) => {
-            setActor(event.target.value);
-          }}
-          className={`${inputClass} max-w-xs`}
-        />
-        <p className="text-xs text-slate-700">
-          Recorded as typed with every acknowledgement, shelf and comment, not authenticated (until
-          login comes). Remembered on this browser.
-        </p>
       </div>
       {[
         { what: 'the active alarms', query: active },
@@ -1016,7 +983,7 @@ export function AlarmList() {
           data-view={view}
           className="min-w-0 rounded-b-lg rounded-tr-lg border border-slate-300 bg-white"
         >
-          {view === 'active' || view === 'shelved' ? (
+          {mayAck && (view === 'active' || view === 'shelved') ? (
             <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 p-2">
               <button
                 type="button"
@@ -1024,7 +991,6 @@ export function AlarmList() {
                 className={primaryClass}
                 disabled={chosen.length === 0 || ackMany.isPending}
                 onClick={() => {
-                  if (needActor()) return;
                   if (chosen.length > MES_API_LIMITS.alarmAckBulk) {
                     setMessage({
                       kind: 'invalid',
@@ -1098,7 +1064,7 @@ export function AlarmList() {
               <tbody>
                 {shown.map((occurrence) => {
                   const name = machineName(occurrence.equipment);
-                  const canAck = acknowledgeable(occurrence);
+                  const canAck = mayAck && acknowledgeable(occurrence);
                   return (
                     <tr
                       key={occurrence.id}
@@ -1158,7 +1124,6 @@ export function AlarmList() {
                               disabled={ackOne.isPending}
                               aria-label={`Acknowledge ${occurrence.code} on ${name}`}
                               onClick={() => {
-                                if (needActor()) return;
                                 setMessage(undefined);
                                 ackOne.mutate(occurrence.id);
                               }}
@@ -1207,7 +1172,6 @@ export function AlarmList() {
                 pointKey(selectedOccurrence.equipment, selectedOccurrence.code),
               )}
               machineName={machineName(selectedOccurrence.equipment)}
-              actor={actor}
               onClose={() => {
                 const id = selectedOccurrence.id;
                 void navigate({ search: (previous) => ({ ...previous, alarm: undefined }) }).then(

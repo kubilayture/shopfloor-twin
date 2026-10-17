@@ -32,7 +32,7 @@ export interface Coding {
   readonly to: Date;
   readonly reason: string;
   readonly comment: string;
-  /** The session's user name, or (`MES_AUTH=off`) the name as typed. */
+  /** The session's user name; the name as typed in codings written before #170. */
   readonly codedBy: string;
   /** Wall time of the write. */
   readonly codedAt: Date;
@@ -86,7 +86,7 @@ export interface CodeRequest {
     readonly reason: string;
     readonly comment?: string | undefined;
   }[];
-  /** The session's user, or (`MES_AUTH=off`, until #170) the name as typed. */
+  /** The session's user (#170); a typed name only in the module's own tests. */
   readonly codedBy: WriteBy;
   /** The coding set's version the client saw (409 when it moved on). */
   readonly version: number;

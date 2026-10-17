@@ -8,10 +8,12 @@ import {
   getJson,
   getSeries,
   listEquipment,
+  serverClockOffsetMs,
 } from './client.ts';
 import { shouldRetry } from './queries.ts';
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -90,6 +92,37 @@ describe('getJson', () => {
     const abort = new DOMException('aborted', 'AbortError');
     vi.stubGlobal('fetch', () => Promise.reject(abort));
     await expect(getJson('/a', equipmentListSchema)).rejects.toBe(abort);
+  });
+});
+
+describe('the MES clock offset and the HTTP cache (#170)', () => {
+  it('reads every answer uncached and takes the offset only from fast answers', async () => {
+    const inits: (RequestInit | undefined)[] = [];
+    let date = '';
+    let roundTripMs = 0;
+    let now = Date.parse('2026-10-15T08:00:00.000Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    vi.stubGlobal('fetch', (_input: RequestInfo | URL, init?: RequestInit) => {
+      inits.push(init);
+      now += roundTripMs;
+      return Promise.resolve(
+        new Response(JSON.stringify({ equipment: [] }), {
+          headers: { 'content-type': 'application/json', date },
+        }),
+      );
+    });
+    // The MES's clock about 90 s ahead, answered within 200 ms: `Date` (whole seconds) minus the
+    // midpoint of the round trip.
+    roundTripMs = 200;
+    date = new Date(now + 90_100).toUTCString();
+    await getJson('/equipment', equipmentListSchema);
+    expect(inits[0]?.cache).toBe('no-store');
+    expect(serverClockOffsetMs()).toBe(89_900);
+    // A slow answer (2 s) says nothing about the clock: the offset stays.
+    roundTripMs = 2_000;
+    date = new Date(now + 500_000).toUTCString();
+    await getJson('/equipment', equipmentListSchema);
+    expect(serverClockOffsetMs()).toBe(89_900);
   });
 });
 

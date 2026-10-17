@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { expect, test } from '@playwright/test';
+import { logIn } from './login.ts';
 import { SimulatorClient } from '../src/clients.ts';
 import { percentile } from '../src/compare.ts';
 import { judgeLatency, pageActivityProblems, type Change } from '../src/latency.ts';
@@ -27,6 +28,7 @@ test('the overview shows every machine’s latest state within 2 s at 60×', asy
   test.setTimeout(SAMPLE_MS + 90_000);
   const sim = new SimulatorClient(simUrl ?? '');
 
+  await logIn(page);
   await page.goto('/');
   await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
     timeout: 30_000,

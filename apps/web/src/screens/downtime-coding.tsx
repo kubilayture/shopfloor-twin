@@ -8,6 +8,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { useEffect, useId, useRef, useState } from 'react';
+import { useCan, useUnsavedDraft } from '../auth/auth.tsx';
 import {
   getDowntime,
   getDowntimeAudit,
@@ -25,13 +26,11 @@ import {
   codingFailure,
   initialSegments,
   joinSegment,
-  loadCodedBy,
   mergeRecords,
   plantTimeInRecord,
   reasonName,
   reasonOptions,
   recordEnd,
-  saveCodedBy,
   splitSegments,
   validateDraft,
   writeVersion,
@@ -332,11 +331,11 @@ function CodingForm({
   // What the draft started from: a newer record with the same codings only moves the version
   // (adopted); one with other codings makes the draft stale, and it is never sent as it is.
   const [base, setBase] = useState<DraftBase>(() => draftBase(record));
-  const [codedBy, setCodedBy] = useState(loadCodedBy);
   const [errors, setErrors] = useState<string[]>([]);
   const [message, setMessage] = useState<Message | undefined>(undefined);
-  const codedById = useId();
   const version = writeVersion(base, record);
+  // Unsaved while the segments differ from the record's codings (#170: kept under a re-login).
+  useUnsavedDraft(JSON.stringify(segments) !== JSON.stringify(initialSegments(record)));
 
   const restart = (from: DowntimeRecordDto) => {
     setSegments(initialSegments(from));
@@ -345,9 +344,8 @@ function CodingForm({
 
   const save = useMutation({
     mutationFn: ({ clear, at }: { clear: boolean; at: number }) =>
-      putCoding(record.id, codingBody({ segments: clear ? [] : segments, codedBy }, at)),
+      putCoding(record.id, codingBody({ segments: clear ? [] : segments }, at)),
     onSuccess: (result) => {
-      saveCodedBy(codedBy);
       upsertRecord(queryClient, result.record);
       restart(result.record);
       setMessage({ kind: 'saved', text: `Saved (version ${String(result.version)}).` });
@@ -378,7 +376,7 @@ function CodingForm({
       setErrors(['Reload the draft first: the codings of this record changed meanwhile.']);
       return;
     }
-    const problems = validateDraft({ segments: clear ? [] : segments, codedBy }, record, options);
+    const problems = validateDraft({ segments: clear ? [] : segments }, record, options);
     setErrors(problems);
     if (problems.length > 0) return;
     save.mutate({ clear, at: version });
@@ -401,25 +399,6 @@ function CodingForm({
         }}
       />
       <SegmentEditor segments={segments} options={options} onChange={setSegments} />
-      <div className="flex flex-col gap-1">
-        <label htmlFor={codedById} className="text-sm font-medium">
-          Coded by
-        </label>
-        <input
-          id={codedById}
-          data-testid="coded-by"
-          value={codedBy}
-          maxLength={MES_API_LIMITS.codedBy}
-          autoComplete="name"
-          onChange={(event) => {
-            setCodedBy(event.target.value);
-          }}
-          className={`${inputClass} max-w-xs`}
-        />
-        <p className="text-xs text-slate-700">
-          Recorded as typed, not authenticated (until login comes). Remembered on this browser.
-        </p>
-      </div>
       {version === undefined ? (
         <div
           role="alert"
@@ -522,6 +501,7 @@ function RecordPanel({
   readonly onClose: () => void;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
+  const canCode = useCan('downtime:code');
   useEffect(() => {
     heading.current?.focus();
   }, [record.id]);
@@ -583,13 +563,22 @@ function RecordPanel({
       <p className="mt-2 text-xs text-slate-700">
         Reasons change the Pareto and the reason view, never OEE.
       </p>
-      <CodingForm
-        key={record.id}
-        record={record}
-        reasons={reasons}
-        options={options}
-        shiftQueryKey={shiftQueryKey}
-      />
+      {canCode ? (
+        <CodingForm
+          key={record.id}
+          record={record}
+          reasons={reasons}
+          options={options}
+          shiftQueryKey={shiftQueryKey}
+        />
+      ) : (
+        <>
+          <p data-testid="coding-not-allowed" className="mt-3 text-sm text-slate-800">
+            Your role cannot code downtime: the record and its history are shown read-only.
+          </p>
+          <AuditHistory id={record.id} {...(reasons ? { reasons } : {})} />
+        </>
+      )}
     </section>
   );
 }

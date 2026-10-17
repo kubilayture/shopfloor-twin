@@ -124,11 +124,11 @@ describe('live merge (monotonic upserts by id)', () => {
   });
 
   it('explains a body the request schema refused, briefly', () => {
-    const parsed = z.object({ actor: z.string().min(1) }).safeParse({ actor: '' });
+    const parsed = z.object({ reason: z.string().min(1) }).safeParse({ reason: '' });
     if (parsed.success) throw new Error('expected a refusal');
     const failure = shelfFailure(parsed.error, 'shelve');
     expect(failure.kind).toBe('invalid');
-    expect(failure.text).toMatch(/^Not shelved: check the form \(actor: /);
+    expect(failure.text).toMatch(/^Not shelved: check the form \(reason: /);
     expect(failure.text).not.toContain('"code"');
   });
 

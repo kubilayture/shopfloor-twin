@@ -74,7 +74,22 @@ const ID4 = `cnc-01~${String(E1)}~4`;
 
 const HOST = 'localhost:4700';
 const ORIGIN = `http://${HOST}`;
-const JSON_WRITE = { host: HOST, origin: ORIGIN, 'content-type': 'application/json' };
+/**
+ * A write's headers; each `world()` adds the session cookie of its `ayse` (#170: every write has a
+ * session, also with MES_AUTH=off). A test that builds two worlds writes through the modules.
+ */
+const JSON_WRITE: Record<string, string> = {
+  host: HOST,
+  origin: ORIGIN,
+  'content-type': 'application/json',
+};
+/** The session cookies of the latest world's users (supervisors). */
+const cookies: Record<string, string> = {};
+/** A write's headers as another user of the latest world. */
+const as = (username: string): Record<string, string> => ({
+  ...JSON_WRITE,
+  cookie: cookies[username] ?? '',
+});
 
 let container: StartedTestContainer;
 let serverUrl: string;
@@ -106,6 +121,7 @@ const clear = (epoch: number, seq: number, at: number, code = CP) =>
 interface World {
   db: Kysely<Database>;
   alarms: Alarms;
+  identity: Identity;
   app: FastifyInstance;
   sources: ApiSources;
   send: (...deliveries: Delivery[]) => Promise<void>;
@@ -171,8 +187,24 @@ async function world(): Promise<World> {
     coding: new DowntimeCoding({ db, equipment, codable: () => Promise.resolve(true) }),
     alarms,
   };
+  const identity = new Identity({ db, sweepMs: 0, hashParams: { N: 1024, r: 8, p: 1 } });
+  await identity.start();
+  cleanup.push(() => {
+    identity.stop();
+    return Promise.resolve();
+  });
+  for (const username of ['ayse', 'bora']) {
+    const password = randomBytes(15).toString('base64url');
+    await identity.createUser(
+      { username, roles: ['supervisor'], password, mustChangePassword: false },
+      { system: 'test' },
+    );
+    const { token } = await identity.login({ username, password, kind: 'desk' });
+    cookies[username] = `sft_session=${token}`;
+  }
+  JSON_WRITE.cookie = cookies.ayse ?? '';
   const front = async (options: Parameters<typeof buildMesHttp>[0]) => {
-    const http = await buildMesHttp(options);
+    const http = await buildMesHttp({ identity, ...options });
     await http.realtime.attach(sources);
     cleanup.push(() => http.app.close());
     return http.app;
@@ -181,6 +213,7 @@ async function world(): Promise<World> {
     ready: () => Promise.resolve(true),
     push: { oeeMs: 100 },
     writeRate: { perSecond: 1000, burst: 1000 },
+    userWriteRate: { perSecond: 1000, burst: 1000 },
   });
   const send = async (...deliveries: Delivery[]) => {
     for (const d of deliveries) await ingest.deliver(d.topic, d.payload);
@@ -192,7 +225,7 @@ async function world(): Promise<World> {
     raise(E1, 4, t(20), SO),
     state(E1, 5, t(70), 'Stopped'),
   );
-  return { db, alarms, app, sources, send, front };
+  return { db, alarms, identity, app, sources, send, front };
 }
 
 const post = (
@@ -228,14 +261,11 @@ const transitions = (db: Kysely<Database>) =>
 
 /** Every alarm write route, with a valid body. */
 const WRITES: readonly [string, unknown][] = [
-  [`/alarms/${ID2}/ack`, { actor: 'guard test' }],
-  ['/alarms/ack', { ids: [ID2], actor: 'guard test' }],
-  [`/alarms/${ID2}/comments`, { actor: 'guard test', text: 'hello' }],
-  [
-    `/alarm-points/cnc-01/${CP}/shelve`,
-    { actor: 'guard test', reason: 'r', durationMs: MINUTE, version: 0 },
-  ],
-  [`/alarm-points/cnc-01/${CP}/unshelve`, { actor: 'guard test', version: 0 }],
+  [`/alarms/${ID2}/ack`, {}],
+  ['/alarms/ack', { ids: [ID2] }],
+  [`/alarms/${ID2}/comments`, { text: 'hello' }],
+  [`/alarm-points/cnc-01/${CP}/shelve`, { reason: 'r', durationMs: MINUTE, version: 0 }],
+  [`/alarm-points/cnc-01/${CP}/unshelve`, { version: 0 }],
 ];
 
 describe('alarm write guards (ADR-0023)', () => {
@@ -261,9 +291,11 @@ describe('alarm write guards (ADR-0023)', () => {
           Object.keys(response.headers).filter((h) => h.startsWith('access-control-')),
         ).toEqual([]);
       }
-      const big = await post(app, url, { ...(body as object), actor: 'x'.repeat(17 * 1024) });
+      const big = await post(app, url, { ...(body as object), pad: 'x'.repeat(17 * 1024) });
       expect([url, big.statusCode]).toEqual([url, 413]);
-      for (const bad of ['{not json', { ...(body as object), extra: 1 }, { actor: ' ' }]) {
+      // A typed actor (before #170) is refused like any other unknown field.
+      const typed = { ...(body as object), actor: 'mallory' };
+      for (const bad of ['{not json', { ...(body as object), extra: 1 }, typed]) {
         expect([url, (await post(app, url, bad)).statusCode]).toEqual([url, 400]);
       }
     }
@@ -294,10 +326,10 @@ describe('alarm write guards (ADR-0023)', () => {
       writeRate: { perSecond: 1, burst: 2 },
     });
     const statuses = [
-      (await post(limited, '/alarms/ack', { ids: [ID2, ID4], actor: 'a' })).statusCode,
-      (await post(limited, `/alarms/${ID2}/comments`, { actor: 'a', text: 'b' })).statusCode,
+      (await post(limited, '/alarms/ack', { ids: [ID2, ID4] })).statusCode,
+      (await post(limited, `/alarms/${ID2}/comments`, { text: 'b' })).statusCode,
     ];
-    const third = await post(limited, `/alarms/${ID4}/ack`, { actor: 'a' });
+    const third = await post(limited, `/alarms/${ID4}/ack`, {});
     expect([...statuses, third.statusCode]).toEqual([200, 200, 429]);
     expect(third.headers['retry-after']).toBe('1');
   });
@@ -307,7 +339,7 @@ describe('acknowledging alarms (#143)', () => {
   it('acknowledges one occurrence monotonically: the second time is changed: false and not audited', async () => {
     const { app, db } = await world();
     expect(await list(app, 'active')).toEqual([ID4, ID2]);
-    const first = await post(app, `/alarms/${ID4}/ack`, { actor: 'Ayşe', comment: 'on it' });
+    const first = await post(app, `/alarms/${ID4}/ack`, { comment: 'on it' });
     expect(first.statusCode).toBe(200);
     const requestId = first.headers['x-request-id'];
     expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
@@ -317,14 +349,14 @@ describe('acknowledging alarms (#143)', () => {
       occurrence: {
         id: ID4,
         state: 'acked-active',
-        acknowledged: { by: 'Ayşe', plantAt: iso(t(70)), comment: 'on it' },
+        acknowledged: { by: 'ayse', plantAt: iso(t(70)), comment: 'on it' },
       },
     });
     const again = acknowledgeResultSchema.parse(
-      (await post(app, `/alarms/${ID4}/ack`, { actor: 'Bora' })).json(),
+      (await post(app, `/alarms/${ID4}/ack`, {}, as('bora'))).json(),
     );
     // Monotonic: the first acknowledgement stays.
-    expect(again).toMatchObject({ changed: false, occurrence: { acknowledged: { by: 'Ayşe' } } });
+    expect(again).toMatchObject({ changed: false, occurrence: { acknowledged: { by: 'ayse' } } });
     expect(await transitions(db)).toEqual([
       {
         action: 'ack',
@@ -332,8 +364,8 @@ describe('acknowledging alarms (#143)', () => {
         code: SO,
         epoch: E1,
         seq: 4,
-        actor: 'Ayşe',
-        authenticated: false,
+        actor: 'ayse',
+        authenticated: true,
         plant_at: new Date(t(70)),
         plant_epoch: E1,
         request_id: requestId,
@@ -343,14 +375,14 @@ describe('acknowledging alarms (#143)', () => {
     // The lists: acknowledged and still active; the cleared one stays active until acknowledged.
     expect(await list(app, 'acknowledged')).toEqual([ID4]);
     expect(await list(app, 'active')).toEqual([ID2]);
-    expect((await post(app, `/alarms/${ID2}/ack`, { actor: 'Ayşe' })).statusCode).toBe(200);
+    expect((await post(app, `/alarms/${ID2}/ack`, {})).statusCode).toBe(200);
     expect(await list(app, 'active')).toEqual([]);
     expect(await list(app, 'history')).toEqual([ID2]);
     // Unknown occurrences.
     for (const id of [`cnc-01~${String(E1)}~99`, `zzz~1~1`]) {
-      expect((await post(app, `/alarms/${id}/ack`, { actor: 'a' })).statusCode).toBe(404);
+      expect((await post(app, `/alarms/${id}/ack`, {})).statusCode).toBe(404);
     }
-    expect((await post(app, '/alarms/nope/ack', { actor: 'a' })).statusCode).toBe(400);
+    expect((await post(app, '/alarms/nope/ack', {})).statusCode).toBe(400);
   });
 
   it('acknowledges in bulk with ON CONFLICT DO NOTHING: audit rows only for the rows inserted, an unknown id changes nothing', async () => {
@@ -362,11 +394,10 @@ describe('acknowledging alarms (#143)', () => {
     // An unknown id: 404 and nothing at all changes (one transaction).
     const unknown = await post(app, '/alarms/ack', {
       ids: [ID2, `cnc-01~${String(E1)}~99`],
-      actor: 'bulk',
     });
     expect(unknown.statusCode).toBe(404);
     expect((await transitions(db)).length).toBe(1);
-    const bulk = await post(app, '/alarms/ack', { ids: [ID2, ID4, ID6, ID2], actor: 'bulk' });
+    const bulk = await post(app, '/alarms/ack', { ids: [ID2, ID4, ID6, ID2] });
     expect(bulk.statusCode).toBe(200);
     expect(bulkAcknowledgeResultSchema.parse(bulk.json())).toEqual({
       results: [
@@ -391,15 +422,15 @@ describe('acknowledging alarms (#143)', () => {
     const audit = await transitions(db);
     expect(audit.map((a) => [a.action, a.seq, a.actor])).toEqual([
       ['ack', 4, 'first'],
-      ['ack', 2, 'bulk'],
-      ['ack', 6, 'bulk'],
+      ['ack', 2, 'ayse'],
+      ['ack', 6, 'ayse'],
       ['ack', 7, audit[3]?.actor],
     ]);
     expect(await db.selectFrom('alarms.occurrence_state').select('seq').execute()).toHaveLength(4);
     // At most 100 ids, at least one.
     const ids = Array.from({ length: 101 }, (_, i) => `cnc-01~${String(E1)}~${String(i + 1)}`);
-    expect((await post(app, '/alarms/ack', { ids, actor: 'a' })).statusCode).toBe(400);
-    expect((await post(app, '/alarms/ack', { ids: [], actor: 'a' })).statusCode).toBe(400);
+    expect((await post(app, '/alarms/ack', { ids })).statusCode).toBe(400);
+    expect((await post(app, '/alarms/ack', { ids: [] })).statusCode).toBe(400);
   });
 
   it('keeps acknowledgements insert-only and the audit append-only', async () => {
@@ -433,38 +464,33 @@ describe('comments (#143)', () => {
   it('adds comments, lists them with the occurrence and in its history, audited', async () => {
     const { app } = await world();
     const response = await post(app, `/alarms/${ID4}/comments`, {
-      actor: 'Ayşe',
       text: '  coolant low  ',
     });
     expect(response.statusCode).toBe(200);
     const result = commentResultSchema.parse(response.json());
     expect(result).toMatchObject({
-      comment: { text: 'coolant low', actor: 'Ayşe', authenticated: false, plantAt: iso(t(70)) },
+      comment: { text: 'coolant low', actor: 'ayse', authenticated: true, plantAt: iso(t(70)) },
       occurrence: { id: ID4, comments: 1, state: 'unacked-active' },
     });
     expect(result.comment.requestId).toBe(response.headers['x-request-id']);
-    await post(app, `/alarms/${ID4}/comments`, { actor: 'Bora', text: 'fixed' });
+    await post(app, `/alarms/${ID4}/comments`, { text: 'fixed' }, as('bora'));
     const detail = alarmDetailSchema.parse((await get(app, `/alarms/${ID4}`)).body);
     expect(detail.comments.map((c) => [c.actor, c.text])).toEqual([
-      ['Ayşe', 'coolant low'],
-      ['Bora', 'fixed'],
+      ['ayse', 'coolant low'],
+      ['bora', 'fixed'],
     ]);
     expect(detail.occurrence.comments).toBe(2);
     const history = alarmHistorySchema.parse((await get(app, `/alarms/${ID4}/history`)).body);
     expect(history.entries.map((e) => [e.source, e.transition, e.actor, e.detail])).toEqual([
       ['fact', 'raised', null, null],
-      ['audit', 'comment', 'Ayşe', { text: 'coolant low' }],
-      ['audit', 'comment', 'Bora', { text: 'fixed' }],
+      ['audit', 'comment', 'ayse', { text: 'coolant low' }],
+      ['audit', 'comment', 'bora', { text: 'fixed' }],
     ]);
-    for (const body of [
-      { actor: 'a', text: '' },
-      { actor: 'a', text: 'x'.repeat(501) },
-      { actor: 'a' },
-    ]) {
+    for (const body of [{ text: '' }, { text: 'x'.repeat(501) }, {}]) {
       expect((await post(app, `/alarms/${ID4}/comments`, body)).statusCode).toBe(400);
     }
     const missing = `/alarms/cnc-01~${String(E1)}~99/comments`;
-    expect((await post(app, missing, { actor: 'a', text: 'b' })).statusCode).toBe(404);
+    expect((await post(app, missing, { text: 'b' })).statusCode).toBe(404);
   });
 });
 
@@ -484,7 +510,6 @@ describe('shelving alarm points (#143)', () => {
       activeOccurrence: ID4,
     });
     const shelved = await post(app, shelvePath, {
-      actor: 'Ayşe',
       reason: 'sensor fault, maintenance called',
       durationMs: 60 * MINUTE,
       version: 0,
@@ -493,7 +518,7 @@ describe('shelving alarm points (#143)', () => {
     expect(shelfResultSchema.parse(shelved.json()).point.shelf).toMatchObject({
       shelved: true,
       version: 1,
-      by: 'Ayşe',
+      by: 'ayse',
       epoch: E1,
       plantAt: iso(t(70)),
       until: iso(t(130)),
@@ -502,28 +527,28 @@ describe('shelving alarm points (#143)', () => {
     expect(await list(app, 'active')).toEqual([ID2]);
     expect(await list(app, 'shelved')).toEqual([ID4]);
     // A stale version is 409 and changes nothing.
-    const stale = await post(app, unshelvePath, { actor: 'Bora', version: 0 });
+    const stale = await post(app, unshelvePath, { version: 0 }, as('bora'));
     expect(stale.statusCode).toBe(409);
     expect(problemSchema.parse(stale.json())).toMatchObject({
       type: PROBLEM_TYPES.shelfStale,
       detail: expect.stringMatching(/version is 1, not 0/) as unknown,
     });
     expect(
-      (await post(app, shelvePath, { actor: 'B', reason: 'r', durationMs: MINUTE, version: 0 }))
+      (await post(app, shelvePath, { reason: 'r', durationMs: MINUTE, version: 0 }, as('bora')))
         .statusCode,
     ).toBe(409);
     // Shelving a shelved point replaces its shelf.
-    const longer = await post(app, shelvePath, {
-      actor: 'Bora',
-      reason: 'longer',
-      durationMs: 2 * 60 * MINUTE,
-      version: 1,
-    });
+    const longer = await post(
+      app,
+      shelvePath,
+      { reason: 'longer', durationMs: 2 * 60 * MINUTE, version: 1 },
+      as('bora'),
+    );
     expect(shelfResultSchema.parse(longer.json()).point.shelf).toMatchObject({
       version: 2,
       until: iso(t(190)),
     });
-    const unshelved = await post(app, unshelvePath, { actor: 'Bora', version: 2 });
+    const unshelved = await post(app, unshelvePath, { version: 2 }, as('bora'));
     expect(shelfResultSchema.parse(unshelved.json()).point.shelf).toMatchObject({
       shelved: false,
       version: 3,
@@ -533,34 +558,34 @@ describe('shelving alarm points (#143)', () => {
     expect(await list(app, 'active')).toEqual([ID4, ID2]);
     expect(await list(app, 'shelved')).toEqual([]);
     // Not shelved: 422.
-    expect((await post(app, unshelvePath, { actor: 'B', version: 3 })).statusCode).toBe(422);
+    expect((await post(app, unshelvePath, { version: 3 }, as('bora'))).statusCode).toBe(422);
     const audit = alarmPointAuditSchema.parse(
       (await get(app, `/alarm-points/cnc-01/${SO}/audit`)).body,
     );
     expect(audit.entries.map((e) => [e.action, e.actor, e.version, e.authenticated])).toEqual([
-      ['unshelve', 'Bora', 3, false],
-      ['shelve', 'Bora', 2, false],
-      ['shelve', 'Ayşe', 1, false],
+      ['unshelve', 'bora', 3, true],
+      ['shelve', 'bora', 2, true],
+      ['shelve', 'ayse', 1, true],
     ]);
     expect(audit.entries[2]?.requestId).toBe(shelved.headers['x-request-id']);
     expect(audit.entries[1]?.before).toMatchObject({
       shelved: true,
       reason: 'sensor fault, maintenance called',
     });
-    expect((await transitions(db)).every((row) => !row.authenticated)).toBe(true);
+    expect((await transitions(db)).every((row) => row.authenticated)).toBe(true);
     // The occurrence's history holds the shelf transitions while it was active.
     const history = alarmHistorySchema.parse((await get(app, `/alarms/${ID4}/history`)).body);
     expect(history.entries.map((e) => [e.transition, e.actor])).toEqual([
       ['raised', null],
-      ['shelve', 'Ayşe'],
-      ['shelve', 'Bora'],
-      ['unshelve', 'Bora'],
+      ['shelve', 'ayse'],
+      ['shelve', 'bora'],
+      ['unshelve', 'bora'],
     ]);
   });
 
   it('caps the duration at maxShelveMs and needs a known point', async () => {
     const { app } = await world();
-    const body = { actor: 'a', reason: 'r', version: 0 };
+    const body = { reason: 'r', version: 0 };
     for (const [durationMs, status] of [
       [plant.alarms.maxShelveMs + 1, 422],
       [plant.alarms.maxShelveMs, 200],
@@ -588,7 +613,7 @@ describe('shelving alarm points (#143)', () => {
 
   it('ends a shelf when the plant clock passes its limit, in plant time, audited by system', async () => {
     const { app, db, send } = await world();
-    await post(app, shelvePath, { actor: 'Ayşe', reason: 'r', durationMs: 5 * MINUTE, version: 0 });
+    await post(app, shelvePath, { reason: 'r', durationMs: 5 * MINUTE, version: 0 });
     // Wall time means nothing: only the plant clock (04:10 + 5 min = 04:15) ends it.
     await send(state(E1, 6, t(75, -1)));
     expect(await list(app, 'shelved')).toEqual([ID4]);
@@ -619,7 +644,7 @@ describe('shelving alarm points (#143)', () => {
 
   it('ends every shelf of an old epoch when a newer epoch begins (plant time starts over), also across a restart', async () => {
     const { app, db, send, alarms, sources } = await world();
-    await post(app, shelvePath, { actor: 'a', reason: 'r', durationMs: 60 * MINUTE, version: 0 });
+    await post(app, shelvePath, { reason: 'r', durationMs: 60 * MINUTE, version: 0 });
     await alarms.stop();
     // The new run starts while the MES is away; at start-up the shelf ends.
     await send(state(E2, 1, t(80)));
@@ -656,7 +681,7 @@ describe('shelving alarm points (#143)', () => {
   it("books an unshelve that lands after a newer epoch began, before the shelf was ended, to the shelf's own epoch (#156)", async () => {
     const { app, db, send, alarms, sources } = await world();
     // Shelved at 04:10 (E1) for an hour; the E1 clock reaches 04:13.
-    await post(app, shelvePath, { actor: 'a', reason: 'r', durationMs: 60 * MINUTE, version: 0 });
+    await post(app, shelvePath, { reason: 'r', durationMs: 60 * MINUTE, version: 0 });
     await send(state(E1, 6, t(73)));
     await alarms.flush();
     // The window: E2 begins, and the unshelve lands before `endShelves` has run for it.
@@ -725,20 +750,12 @@ describe('operator writes never change KPIs (#143)', () => {
     const { app, db } = await world();
     const before = await snapshot(app);
     const revisionsBefore = await db.selectFrom('alarms.kpi_revision').selectAll().execute();
-    expect((await post(app, '/alarms/ack', { ids: [ID2, ID4], actor: 'a' })).statusCode).toBe(200);
-    expect((await post(app, `/alarms/${ID4}/comments`, { actor: 'a', text: 'b' })).statusCode).toBe(
-      200,
-    );
+    expect((await post(app, '/alarms/ack', { ids: [ID2, ID4] })).statusCode).toBe(200);
+    expect((await post(app, `/alarms/${ID4}/comments`, { text: 'b' })).statusCode).toBe(200);
     for (const [path, body] of [
-      [
-        `/alarm-points/cnc-01/${SO}/shelve`,
-        { actor: 'a', reason: 'r', durationMs: MINUTE, version: 0 },
-      ],
-      [`/alarm-points/cnc-01/${SO}/unshelve`, { actor: 'a', version: 1 }],
-      [
-        `/alarm-points/cnc-01/${CP}/shelve`,
-        { actor: 'a', reason: 'r', durationMs: MINUTE, version: 0 },
-      ],
+      [`/alarm-points/cnc-01/${SO}/shelve`, { reason: 'r', durationMs: MINUTE, version: 0 }],
+      [`/alarm-points/cnc-01/${SO}/unshelve`, { version: 1 }],
+      [`/alarm-points/cnc-01/${CP}/shelve`, { reason: 'r', durationMs: MINUTE, version: 0 }],
     ] as const) {
       expect((await post(app, path, body)).statusCode).toBe(200);
     }
@@ -794,16 +811,15 @@ describe('alarm push (#143)', () => {
     };
     socket.send(JSON.stringify({ type: 'subscribe', topic: 'alarms' }));
     await until((m) => m.type === 'subscribed');
-    await post(app, `/alarms/${ID4}/ack`, { actor: 'Ayşe' });
+    await post(app, `/alarms/${ID4}/ack`, {});
     expect(await until((m) => m.type === 'alarm' && m.event === 'acknowledged')).toMatchObject({
-      occurrence: { id: ID4, state: 'acked-active', acknowledged: { by: 'Ayşe' } },
+      occurrence: { id: ID4, state: 'acked-active', acknowledged: { by: 'ayse' } },
     });
-    await post(app, `/alarms/${ID4}/comments`, { actor: 'Ayşe', text: 'x' });
+    await post(app, `/alarms/${ID4}/comments`, { text: 'x' });
     expect(await until((m) => m.type === 'alarm' && m.event === 'commented')).toMatchObject({
       occurrence: { id: ID4, comments: 1 },
     });
     await post(app, `/alarm-points/cnc-01/${SO}/shelve`, {
-      actor: 'Ayşe',
       reason: 'r',
       durationMs: MINUTE,
       version: 0,
@@ -812,12 +828,12 @@ describe('alarm push (#143)', () => {
       point: { code: SO, shelf: { shelved: true, version: 1 } },
     });
     expect(await until((m) => m.type === 'alarm' && m.event === 'shelf')).toMatchObject({
-      occurrence: { id: ID4, shelved: true, acknowledged: { by: 'Ayşe' } },
+      occurrence: { id: ID4, shelved: true, acknowledged: { by: 'ayse' } },
     });
     // A device upsert carries the operator's state too; the clock passing `until` unshelves.
     await send(clear(E1, 6, t(70, 30_000), SO));
     expect(await until((m) => m.type === 'alarm' && m.event === 'cleared')).toMatchObject({
-      occurrence: { id: ID4, state: 'closed', shelved: true, acknowledged: { by: 'Ayşe' } },
+      occurrence: { id: ID4, state: 'closed', shelved: true, acknowledged: { by: 'ayse' } },
     });
     await send(state(E1, 7, t(71)));
     expect(await until((m) => m.type === 'alarm-point' && m.event === 'expire')).toMatchObject({
@@ -1146,15 +1162,9 @@ describe('the bounded operator measures query (#156)', () => {
   });
 });
 
-describe('actors from the session (MES_AUTH=on, #169)', () => {
-  it('takes the user from the session, ignores a typed actor, and audits both logs', async () => {
-    const { db, front } = await world();
-    const identity = new Identity({ db, sweepMs: 0, hashParams: { N: 1024, r: 8, p: 1 } });
-    await identity.start();
-    cleanup.push(() => {
-      identity.stop();
-      return Promise.resolve();
-    });
+describe('actors from the session (#169, #170)', () => {
+  it('takes the user from the session with MES_AUTH=on, refuses a typed actor, and audits both logs', async () => {
+    const { db, identity, front } = await world();
     const password = randomBytes(15).toString('base64url');
     await identity.createUser(
       { username: 'deniz', roles: ['maintenance'], password, mustChangePassword: false },
@@ -1167,13 +1177,15 @@ describe('actors from the session (MES_AUTH=on, #169)', () => {
     });
     const app = await front({
       ready: () => Promise.resolve(true),
-      identity,
       auth: true,
       writeRate: { perSecond: 1000, burst: 1000 },
     });
     const headers = { ...JSON_WRITE, cookie: `sft_session=${token}` };
-    // A typed actor is ignored; none is needed.
-    const ack = await post(app, `/alarms/${ID2}/ack`, { actor: 'mallory' }, headers);
+    // A typed actor (before #170) is no longer part of any request: 400, nothing written.
+    const typed = await post(app, `/alarms/${ID2}/ack`, { actor: 'mallory' }, headers);
+    expect(typed.statusCode).toBe(400);
+    expect(await transitions(db)).toEqual([]);
+    const ack = await post(app, `/alarms/${ID2}/ack`, {}, headers);
     expect(ack.statusCode, ack.body).toBe(200);
     const comment = await post(app, `/alarms/${ID2}/comments`, { text: 'checked' }, headers);
     expect(comment.statusCode, comment.body).toBe(200);
@@ -1213,22 +1225,45 @@ describe('actors from the session (MES_AUTH=on, #169)', () => {
       row('alarm.shelve', 'alarm-point', `cnc-01/${SO}`, shelve.headers['x-request-id']),
     ]);
     // Without a session: 401, nothing written.
-    const anonymous = await post(app, `/alarms/${ID2}/comments`, { actor: 'x', text: 'y' });
-    expect(anonymous.statusCode).toBe(401);
+    const anonymous = { host: HOST, origin: ORIGIN, 'content-type': 'application/json' };
+    const refused = await post(app, `/alarms/${ID2}/comments`, { text: 'y' }, anonymous);
+    expect(refused.statusCode).toBe(401);
     expect(await transitions(db)).toHaveLength(3);
   });
 
-  it('needs the typed actor while MES_AUTH=off (422 without one)', async () => {
-    const { app, db } = await world();
-    const missing = await post(app, `/alarms/${ID2}/ack`, {});
-    expect(missing.statusCode).toBe(422);
-    expect(missing.json<{ detail: string }>().detail).toMatch(/`actor` is needed/);
-    expect((await post(app, `/alarms/${ID2}/ack`, { actor: 'Ayşe' })).statusCode).toBe(200);
+  it('needs a session and its permission for every alarm write also with MES_AUTH=off, and still reads', async () => {
+    const { app, db, identity } = await world();
+    const anonymous = { host: HOST, origin: ORIGIN, 'content-type': 'application/json' };
+    for (const [url, body] of WRITES) {
+      const response = await post(app, url, body, anonymous);
+      expect([url, response.statusCode]).toEqual([url, 401]);
+      expect(problemSchema.parse(response.json()).type).toBe(PROBLEM_TYPES.unauthenticated);
+    }
+    // A role without `alarm:shelve` (quality): 403 for the shelve, its acknowledgement goes through.
+    const password = randomBytes(15).toString('base64url');
+    await identity.createUser(
+      { username: 'quinn', roles: ['quality'], password, mustChangePassword: false },
+      { system: 'test' },
+    );
+    const { token } = await identity.login({ username: 'quinn', password, kind: 'desk' });
+    const quality = { ...anonymous, cookie: `sft_session=${token}` };
+    const shelve = await post(
+      app,
+      `/alarm-points/cnc-01/${CP}/shelve`,
+      { reason: 'r', durationMs: MINUTE, version: 0 },
+      quality,
+    );
+    expect(shelve.statusCode).toBe(403);
+    expect(problemSchema.parse(shelve.json()).type).toBe(PROBLEM_TYPES.forbidden);
+    expect(await transitions(db)).toEqual([]);
+    expect((await post(app, `/alarms/${ID2}/ack`, {}, quality)).statusCode).toBe(200);
     const audit = await db
       .selectFrom('identity.audit_log')
-      .select(['username', 'user_id', 'authenticated'])
+      .select(['username', 'authenticated'])
       .where('action', '=', 'alarm.ack')
       .execute();
-    expect(audit).toEqual([{ username: 'Ayşe', user_id: null, authenticated: false }]);
+    expect(audit).toEqual([{ username: 'quinn', authenticated: true }]);
+    // Reads need no session.
+    expect(await list(app, 'active')).toEqual([ID4]);
   });
 });

@@ -26,7 +26,7 @@ export interface MesHttpOptions {
   readonly writeRate?: { readonly perSecond: number; readonly burst: number };
   /** Identity (#168): sessions, login and users; see `RealtimeOptions`. */
   readonly identity?: IdentityApi;
-  /** `MES_AUTH=on`: a session on every route but the login, and on the WebSocket. */
+  /** `MES_AUTH=on`: a session on every route but the login, and on the WebSocket (`RealtimeOptions`). */
   readonly auth?: boolean;
   /** `MES_COOKIE_SECURE=on`. */
   readonly cookieSecure?: boolean;
@@ -89,8 +89,8 @@ export async function buildMesHttp({
           'coding, alarm acknowledgement, shelving and comments, handover notes) with their ' +
           'audits. Identity (Phase 7, ADR-0026): login sets the session cookie sft_session ' +
           '(POST /session); with MES_AUTH=on every route but the login needs it (401) and the ' +
-          'permission each route names (403); with MES_AUTH=off (the default until #170) only ' +
-          'the session routes do. Writes are guarded (ADR-0023: Origin of this host, ' +
+          'permission each route names (403); MES_AUTH=off (diagnosis only) serves reads and the ' +
+          'WebSocket without one, never a write. Writes are guarded (ADR-0023: Origin of this host, ' +
           'Sec-Fetch-Site, application/json, 16 KiB, a global and a per-user rate limit, ' +
           'MES_WRITES=off answers 405); bound to loopback by default. Errors are RFC 9457 ' +
           'problem details. ' +

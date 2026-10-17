@@ -90,7 +90,7 @@ function asEntry(event: PlantEvent, seq: number): RingEntry {
 
 beforeAll(async () => {
   config = await loadDefaultConfig();
-  const { port } = await onFreePort(async (port) => {
+  const { port } = await onFreePort((port) => {
     clock = new ManualClock();
     events.length = 0;
     washer = new WasherModbusServer({ config, epoch: EPOCH, port });
@@ -106,7 +106,7 @@ beforeAll(async () => {
       },
     });
     washer.attach(run);
-    await washer.start();
+    return washer;
   });
   client = new ModbusRTU();
   await client.connectTCP('127.0.0.1', { port });

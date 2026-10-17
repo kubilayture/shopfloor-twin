@@ -29,8 +29,8 @@ import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import type { PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
-import { PlantServers } from './plant-servers.ts';
 import { onFreeOpcuaPorts, temporaryPki } from '../testing.ts';
+import { PlantServers } from './plant-servers.ts';
 import { callLoadOrder, connect, wait } from './testing.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
@@ -39,6 +39,8 @@ const EPOCH = 1_791_000_000;
 const WALL = Date.UTC(2026, 9, 16, 12);
 let servers: PlantServers;
 let run: LiveRun;
+/** Set once the servers have started, so that `afterAll` stops only what `beforeAll` started. */
+let started: { readonly servers: PlantServers; readonly run: LiveRun } | undefined;
 let removePki: (() => Promise<void>) | undefined;
 const plantEvents: PlantEvent[] = [];
 
@@ -46,7 +48,7 @@ beforeAll(async () => {
   const config = await loadDefaultConfig();
   const pki = await temporaryPki('load-order');
   removePki = pki.remove;
-  ({ portOffset: offset } = await onFreeOpcuaPorts(async (portOffset) => {
+  ({ portOffset: offset } = await onFreeOpcuaPorts((portOffset) => {
     plantEvents.length = 0;
     servers = new PlantServers({
       config,
@@ -70,14 +72,18 @@ beforeAll(async () => {
       },
     });
     servers.attach(run);
-    await servers.start();
+    return servers;
   }));
+  started = { servers, run };
 }, 60_000);
 
 afterAll(async () => {
-  run.pacer.stop();
-  await servers.stop();
-  await removePki?.();
+  try {
+    started?.run.pacer.stop();
+    await started?.servers.stop();
+  } finally {
+    await removePki?.();
+  }
 });
 
 interface Call {

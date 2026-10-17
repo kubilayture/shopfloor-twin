@@ -27,9 +27,9 @@ import {
   type PlantEvent,
 } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
+import { onFreeOpcuaPorts, temporaryPki } from '../testing.ts';
 import { machineryItemState, machineryOperationMode } from './machinery-state.ts';
 import { PlantServers, alarmCodes } from './plant-servers.ts';
-import { onFreeOpcuaPorts, temporaryPki } from '../testing.ts';
 import { connect, wait } from './testing.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
@@ -38,6 +38,8 @@ let config: PlantConfig;
 let servers: PlantServers;
 let run: LiveRun;
 let clock: ManualClock;
+/** Set once the servers have started, so that `afterAll` stops only what `beforeAll` started. */
+let started: { readonly servers: PlantServers; readonly run: LiveRun } | undefined;
 let removePki: (() => Promise<void>) | undefined;
 const plantEvents: PlantEvent[] = [];
 
@@ -45,7 +47,7 @@ beforeAll(async () => {
   config = await loadDefaultConfig();
   const pki = await temporaryPki('opcua');
   removePki = pki.remove;
-  ({ portOffset: offset } = await onFreeOpcuaPorts(async (portOffset) => {
+  ({ portOffset: offset } = await onFreeOpcuaPorts((portOffset) => {
     clock = new ManualClock();
     plantEvents.length = 0;
     servers = new PlantServers({
@@ -66,14 +68,18 @@ beforeAll(async () => {
       },
     });
     servers.attach(run);
-    await servers.start();
+    return servers;
   }));
+  started = { servers, run };
 }, 60_000);
 
 afterAll(async () => {
-  run.pacer.stop();
-  await servers.stop();
-  await removePki?.();
+  try {
+    started?.run.pacer.stop();
+    await started?.servers.stop();
+  } finally {
+    await removePki?.();
+  }
 });
 
 describe('OPC UA servers (ADR-0008, ADR-0009)', () => {

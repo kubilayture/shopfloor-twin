@@ -25,9 +25,12 @@ let run: LiveRun | undefined;
 let removePki: (() => Promise<void>) | undefined;
 
 afterAll(async () => {
-  run?.pacer.stop();
-  await servers?.stop();
-  await removePki?.();
+  try {
+    run?.pacer.stop();
+    await servers?.stop();
+  } finally {
+    await removePki?.();
+  }
 });
 
 describe('live orders-01 dispatched over OPC UA (#172, B3)', () => {
@@ -39,11 +42,10 @@ describe('live orders-01 dispatched over OPC UA (#172, B3)', () => {
 
     const pki = await temporaryPki('live-dispatch');
     removePki = pki.remove;
-    const {
-      portOffset,
-      value: { plant, live, events },
-    } = await onFreeOpcuaPorts(async (portOffset) => {
-      const plant = new PlantServers({
+    let live: LiveRun | undefined;
+    let events: PlantEvent[] = [];
+    const { portOffset, value: plant } = await onFreeOpcuaPorts((portOffset) => {
+      const attempt = new PlantServers({
         config: options.config,
         start: options.start,
         portOffset,
@@ -52,9 +54,8 @@ describe('live orders-01 dispatched over OPC UA (#172, B3)', () => {
         wallClock: () => WALL,
         pkiFolder: pki.folder,
       });
-      servers = plant;
-      const events: PlantEvent[] = [];
-      const live = createLiveRun({
+      const attemptEvents: PlantEvent[] = [];
+      live = createLiveRun({
         config: options.config,
         seed: options.seed,
         start: options.start,
@@ -62,15 +63,17 @@ describe('live orders-01 dispatched over OPC UA (#172, B3)', () => {
         clock: new ManualClock(),
         production: 'orders',
         onEvent: (event) => {
-          events.push(event);
-          plant.record(event);
+          attemptEvents.push(event);
+          attempt.record(event);
         },
       });
-      run = live;
-      plant.attach(live);
-      await plant.start();
-      return { plant, live, events };
+      events = attemptEvents;
+      attempt.attach(live);
+      return attempt;
     });
+    servers = plant;
+    if (!live) throw new Error('the run was not created');
+    run = live;
 
     // The live order: attached and idle at the start time, every job dispatched and accepted
     // through LoadOrder, then the injections, then the run resumes.

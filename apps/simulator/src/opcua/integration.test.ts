@@ -46,6 +46,8 @@ let config: PlantConfig;
 let servers: PlantServers;
 let run: LiveRun;
 let clock: ManualClock;
+/** Set once the servers have started, so that `afterAll` stops only what `beforeAll` started. */
+let started: { readonly servers: PlantServers; readonly run: LiveRun } | undefined;
 let removePki: (() => Promise<void>) | undefined;
 const plantEvents: PlantEvent[] = [];
 
@@ -66,7 +68,7 @@ beforeAll(async () => {
   config = await loadDefaultConfig();
   const pki = await temporaryPki('integration');
   removePki = pki.remove;
-  ({ portOffset: offset } = await onFreeOpcuaPorts(async (portOffset) => {
+  ({ portOffset: offset } = await onFreeOpcuaPorts((portOffset) => {
     clock = new ManualClock();
     plantEvents.length = 0;
     servers = new PlantServers({
@@ -87,16 +89,20 @@ beforeAll(async () => {
       },
     });
     servers.attach(run);
-    await servers.start();
+    return servers;
   }));
+  started = { servers, run };
   run.pacer.start();
   run.pacer.pause();
 }, 60_000);
 
 afterAll(async () => {
-  run.pacer.stop();
-  await servers.stop();
-  await removePki?.();
+  try {
+    started?.run.pacer.stop();
+    await started?.servers.stop();
+  } finally {
+    await removePki?.();
+  }
 });
 
 const DATA_TYPES: Record<DocumentedVariable['type'], number> = {

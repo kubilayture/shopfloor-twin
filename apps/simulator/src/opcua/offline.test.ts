@@ -7,6 +7,8 @@ import { PlantServers } from './plant-servers.ts';
 
 let offset: number;
 let servers: PlantServers;
+/** Set once the servers have started, so that `afterAll` stops only what `beforeAll` started. */
+let started: PlantServers | undefined;
 let removePki: (() => Promise<void>) | undefined;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -15,20 +17,24 @@ beforeAll(async () => {
   const config = await loadDefaultConfig();
   const pki = await temporaryPki('offline');
   removePki = pki.remove;
-  ({ portOffset: offset } = await onFreeOpcuaPorts(async (portOffset) => {
-    servers = new PlantServers({
-      config,
-      start: Date.UTC(2026, 9, 12, 3),
-      portOffset,
-      pkiFolder: pki.folder,
-    });
-    await servers.start();
-  }));
+  ({ portOffset: offset, value: servers } = await onFreeOpcuaPorts(
+    (portOffset) =>
+      new PlantServers({
+        config,
+        start: Date.UTC(2026, 9, 12, 3),
+        portOffset,
+        pkiFolder: pki.folder,
+      }),
+  ));
+  started = servers;
 }, 60_000);
 
 afterAll(async () => {
-  await servers.stop();
-  await removePki?.();
+  try {
+    await started?.stop();
+  } finally {
+    await removePki?.();
+  }
 });
 
 describe('OPC UA offline fault (#76, plan section 4)', () => {

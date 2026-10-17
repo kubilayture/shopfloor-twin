@@ -9,8 +9,8 @@ import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import type { ProductionMode } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
-import { PlantServers } from './plant-servers.ts';
 import { onFreeOpcuaPorts, temporaryPki } from '../testing.ts';
+import { PlantServers } from './plant-servers.ts';
 import { callLoadOrder, connect } from './testing.ts';
 
 const T0 = Date.UTC(2026, 9, 12, 3);
@@ -27,6 +27,8 @@ const CALL = {
   expiresAt: WALL + 60_000,
 };
 let servers: PlantServers;
+/** Set once the servers have started, so that `afterAll` stops only what `beforeAll` started. */
+let started: PlantServers | undefined;
 let removePki: (() => Promise<void>) | undefined;
 const runs: LiveRun[] = [];
 
@@ -50,24 +52,28 @@ beforeAll(async () => {
   const config = await loadDefaultConfig();
   const pki = await temporaryPki('load-order-state');
   removePki = pki.remove;
-  ({ portOffset: offset } = await onFreeOpcuaPorts(async (portOffset) => {
-    servers = new PlantServers({
-      config,
-      start: T0,
-      portOffset,
-      epoch: EPOCH,
-      production: 'orders',
-      wallClock: () => WALL,
-      pkiFolder: pki.folder,
-    });
-    await servers.start();
-  }));
+  ({ portOffset: offset, value: servers } = await onFreeOpcuaPorts(
+    (portOffset) =>
+      new PlantServers({
+        config,
+        start: T0,
+        portOffset,
+        epoch: EPOCH,
+        production: 'orders',
+        wallClock: () => WALL,
+        pkiFolder: pki.folder,
+      }),
+  ));
+  started = servers;
 }, 60_000);
 
 afterAll(async () => {
-  for (const run of runs) run.pacer.stop();
-  await servers.stop();
-  await removePki?.();
+  try {
+    for (const run of runs) run.pacer.stop();
+    await started?.stop();
+  } finally {
+    await removePki?.();
+  }
 });
 
 describe('LoadOrder refusals for the run state over OPC UA (#172)', () => {

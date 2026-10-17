@@ -65,6 +65,28 @@ describe('orders list', () => {
     expect(screen.getByTestId('order-row-PO-1003')).toBeTruthy();
   });
 
+  it('updates a row after a command push, and a read wins over a push of the same version', async () => {
+    const first = order('PO-1001', { status: 'dispatched', version: 3 });
+    const state = orderState([first]);
+    const server = orderMes(state);
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/orders');
+    await app.open();
+    await screen.findByTestId('order-row-PO-1001');
+    // A push of the order as read: kept, as is its later REST read of the same version.
+    await app.push({ type: 'order', event: 'updated', order: first });
+    // The device accepted the job: the MES re-reads the order with its blanks dispatched.
+    state.orders = [{ ...first, dispatched: 20, remaining: 0 }];
+    await app.push({
+      type: 'command',
+      event: 'updated',
+      command: pushedCommand(command('PO-1001', 1, { updatedAt: '2026-10-15T06:02:00.000Z' })),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('order-row-PO-1001').dataset.dispatched).toBe('20');
+    });
+  });
+
   it('forgets pushed copies when it lets go of the topic and after a lost connection', async () => {
     const first = order('PO-1001');
     const server = orderMes(orderState([first]));
@@ -413,6 +435,50 @@ describe('order detail', () => {
     await waitFor(() => {
       expect(reads()).toBeGreaterThan(before);
     });
+  });
+
+  it('sends one write for a double submit', async () => {
+    const base = order('PO-1001', { version: 3 });
+    const server = orderMes(orderState([base]), () =>
+      written(base, { status: 'released', version: 4 }),
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/orders/PO-1001');
+    fireEvent.click(await screen.findByTestId('action-release'));
+    const form = screen.getByTestId('action-form-release');
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    await screen.findByTestId('action-done');
+    expect(server.posts()).toHaveLength(1);
+  });
+
+  it('shows an admin the order read-only (no order permission)', async () => {
+    const base = order('PO-1001', { status: 'completed' });
+    vi.stubGlobal('fetch', orderMes(orderState([base])).fetch);
+    await renderApp('/orders/PO-1001', { session: sessionOf(['admin']) });
+    expect(await screen.findByTestId('order-read-only')).toBeTruthy();
+    expect(screen.queryByTestId('action-close')).toBeNull();
+  });
+
+  it('hides the abandon buttons while another action form is open', async () => {
+    const base = order('PO-1001', { status: 'in-progress', version: 7, remaining: 5 });
+    const lostJob = command('PO-1001', 1, { job: 'lost' });
+    const state = orderState([base], {
+      details: { 'PO-1001': detail(base, { commands: [lostJob] }) },
+    });
+    vi.stubGlobal('fetch', orderMes(state).fetch);
+    await renderApp('/orders/PO-1001');
+    const abandon = `abandon-${lostJob.commandId}`;
+    await screen.findByTestId(abandon);
+    fireEvent.click(screen.getByTestId('action-redispatch'));
+    expect(screen.getByTestId('action-form-redispatch')).toBeTruthy();
+    expect(screen.queryByTestId(abandon)).toBeNull();
+    fireEvent.click(screen.getByTestId('action-back'));
+    // Back: the abandon starts its own form, fresh.
+    fireEvent.click(screen.getByTestId(abandon));
+    const form = screen.getByTestId('action-form-abandon');
+    expect(form.dataset.version).toBe('7');
+    expect(screen.queryByTestId('action-form-redispatch')).toBeNull();
   });
 
   it('says when the MES has no such order', async () => {

@@ -16,6 +16,7 @@ import {
   isStaleDraft,
   mergeCommands,
   mergeOrders,
+  newestOrder,
   orderFailure,
   unsettledCommands,
 } from './orders.ts';
@@ -82,6 +83,27 @@ describe('orders domain', () => {
     expect(filterStatuses('closed')).toEqual(['closed']);
   });
 
+  it('keeps the read at an equal version and updatedAt, a later push otherwise', () => {
+    const read = order('A', { version: 3, dispatched: 20 });
+    expect(newestOrder(read, { ...read, dispatched: 0 })).toBe(read);
+    const later = { ...read, dispatched: 0, updatedAt: '2026-10-15T07:00:00.000Z' };
+    expect(newestOrder(read, later)).toBe(later);
+    expect(newestOrder(read, { ...read, version: 2 })).toBe(read);
+    const sent = command('A', 1, { state: 'sent' });
+    // A push of the same command at the same updatedAt never hides the read's results.
+    expect(mergeCommands('A', [sent], { [sent.commandId]: pushedCommand(sent) })[0]).toBe(sent);
+  });
+
+  it('leaves out pushed-only orders after the last one of a truncated read', () => {
+    const a = order('A', { plannedStart: '2026-10-15T07:00:00.000Z' });
+    const pushed = {
+      B: order('B', { plannedStart: '2026-10-15T06:00:00.000Z' }),
+      C: order('C', { plannedStart: '2026-10-15T09:00:00.000Z' }),
+    };
+    expect(mergeOrders([a], pushed, [], true).map((o) => o.id)).toEqual(['B', 'A']);
+    expect(mergeOrders([a], pushed, [], false).map((o) => o.id)).toEqual(['B', 'A', 'C']);
+  });
+
   it('overlays newer pushed commands of the order and adds new ones', () => {
     const first = command('A', 1, { state: 'sent' });
     const merged = mergeCommands('A', [first], {
@@ -118,6 +140,9 @@ describe('orders domain', () => {
     expect(draftProblems({ ...draft, quantity: '2.5' }, base)).toHaveLength(1);
     expect(draftProblems({ ...draft, quantity: '6' }, base)[0]).toContain('5 blanks');
     expect(draftProblems({ ...draft, quantity: '5' }, base)).toEqual([]);
+    for (const quantity of ['1e1', '0x2', '+3', '-1', '3 4']) {
+      expect(draftProblems({ ...draft, quantity }, base)).toHaveLength(1);
+    }
     expect(
       draftProblems({ ...draftFor('cancel', base), reason: 'x'.repeat(501) }, base),
     ).toHaveLength(1);

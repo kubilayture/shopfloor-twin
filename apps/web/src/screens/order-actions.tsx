@@ -182,6 +182,7 @@ export function ActionForm({
   const quantityId = useId();
   const submit = useRef<HTMLButtonElement>(null);
   const form = useRef<HTMLFormElement>(null);
+  const sending = useRef(false);
   // The form takes focus when it opens (and the browser brings it into view).
   useEffect(() => {
     form.current?.focus();
@@ -192,6 +193,9 @@ export function ActionForm({
   const text = ACTION_TEXT[draft.action];
   const write = useMutation({
     mutationFn: (from: ActionDraft) => writeOrder(order.id, bodyOf(from)),
+    onSettled: () => {
+      sending.current = false;
+    },
     onSuccess: (result: OrderWriteResult) => {
       upsertOrder(queryClient, result.order);
       if (result.command) upsertCommand(queryClient, result.command);
@@ -221,11 +225,13 @@ export function ActionForm({
       className="flex flex-col gap-2 rounded-lg border border-slate-400 bg-white p-3"
       onSubmit={(event) => {
         event.preventDefault();
-        if (stale || !applies || write.isPending) return;
+        // A ref, not `isPending`: two submits before the next render both see it false.
+        if (stale || !applies || sending.current) return;
         const found = draftProblems(draft, order);
         setInvalid(found);
         if (found.length > 0) return;
         setFailure(undefined);
+        sending.current = true;
         write.mutate(draft);
       }}
       onKeyDown={(event) => {
@@ -346,7 +352,7 @@ export function ActionForm({
         </button>
         <button
           type="button"
-          data-testid="action-cancel"
+          data-testid="action-back"
           className={buttonClass}
           onClick={() => {
             onClose();

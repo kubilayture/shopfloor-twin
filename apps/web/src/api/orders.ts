@@ -53,11 +53,16 @@ export function getOrderScrap(
   return getJson(`/scrap-records?orderId=${segment(id)}`, scrapRecordListSchema, signal);
 }
 
-/** Every execution incident (at most 500, newest first); the screen keeps one order's. */
+/** One order's execution incidents (routing violations), newest first. */
 export function getExecutionIncidents(
+  orderId: string,
   signal?: AbortSignal,
 ): Promise<z.output<typeof executionIncidentListSchema>> {
-  return getJson('/execution-incidents', executionIncidentListSchema, signal);
+  return getJson(
+    `/execution-incidents?orderId=${segment(orderId)}`,
+    executionIncidentListSchema,
+    signal,
+  );
 }
 
 /** The supervisor's writes on an order, each with the version read (409 `order-stale`). */

@@ -433,8 +433,20 @@ export function resetLiveOrders(queryClient: QueryClient): void {
  * so the order's open screen reads them again (only active queries refetch). Prefixes of
  * `queryKeys` in api/queries.ts, which imports this module.
  */
+/**
+ * Every read of the orders screens (prefixes of `queryKeys.orders`, `order`, `orderExecution`,
+ * `orderScrap` and `executionIncidents` in api/queries.ts, which imports this module).
+ */
+export const ORDER_READS = [
+  'orders',
+  'order',
+  'order-execution',
+  'order-scrap',
+  'execution-incidents',
+] as const;
+
 function orderReadsStale(queryClient: QueryClient, orderId: string): void {
-  for (const prefix of ['order', 'order-execution', 'order-scrap']) {
+  for (const prefix of ['order', 'order-execution', 'order-scrap', 'execution-incidents']) {
     void queryClient.invalidateQueries({ queryKey: [prefix, orderId] });
   }
 }
@@ -527,8 +539,17 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
     case 'command':
       upsertCommand(queryClient, message.command);
       orderReadsStale(queryClient, message.command.orderId);
+      // The list shows the order's `dispatched`: read it again too (#176 review H1).
+      void queryClient.invalidateQueries({ queryKey: ['orders'] });
       return;
     case 'subscribed':
+      // `orders` has no snapshot: a change between the screen's read and the subscription taking
+      // effect would never arrive, so the order reads are read again once it has (#176 review).
+      if (message.topic === 'orders') {
+        for (const prefix of ORDER_READS)
+          void queryClient.invalidateQueries({ queryKey: [prefix] });
+      }
+      return;
     case 'unsubscribed':
     case 'error':
       return;

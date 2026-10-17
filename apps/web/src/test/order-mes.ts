@@ -50,7 +50,14 @@ export function orderMes(state: OrderState, write: Write = () => json({})) {
       return Promise.resolve(json({ orders, truncated: false }));
     }
     if (path === '/api/v1/execution-incidents') {
-      return Promise.resolve(json({ incidents: state.executionIncidents }));
+      const orderId = url.searchParams.get('orderId');
+      return Promise.resolve(
+        json({
+          incidents: state.executionIncidents.filter(
+            (incident) => orderId === null || incident.orderId === orderId,
+          ),
+        }),
+      );
     }
     if (path === '/api/v1/scrap-records') {
       return Promise.resolve(json({ records: [], truncated: false }));

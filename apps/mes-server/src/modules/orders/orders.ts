@@ -1269,6 +1269,7 @@ export class Orders {
     const commands = new Set<string>();
     for (const orderId of new Set(changed.map((c) => c.row.order_id))) {
       const order = await this.#lock(trx, orderId);
+      const blanksBefore = await this.#orderBlanks(trx, orderId);
       let flags: Partial<{
         dispatch_failed: boolean;
         dispatch_lost: boolean;
@@ -1282,7 +1283,12 @@ export class Orders {
         flags = { ...flags, ...(await this.#effects(trx, order, row, reading)) };
       }
       const status = flags.status ?? order.status;
+      // `dispatched` and `inFlight` are read from the commands: when they move, the order has
+      // changed too, so its version, `updated_at` and push move with them (#176 review H1).
+      const blanksAfter = await this.#orderBlanks(trx, orderId);
       const changes =
+        blanksAfter.dispatched !== blanksBefore.dispatched ||
+        blanksAfter.inFlight !== blanksBefore.inFlight ||
         flags.status !== undefined ||
         (flags.dispatch_failed === true && !order.dispatch_failed) ||
         (flags.dispatch_lost === true && !order.dispatch_lost);
@@ -1301,6 +1307,24 @@ export class Orders {
       }
     }
     return { readings, orders: [...orders], commands: [...commands] };
+  }
+
+  /** The order's counted and in-flight blanks, as `#records` derives them for the API. */
+  async #orderBlanks(
+    trx: Transaction<Database>,
+    orderId: string,
+  ): Promise<{ dispatched: number; inFlight: number }> {
+    const commands = await trx
+      .selectFrom('orders.dispatch_command')
+      .select(['quantity', 'job', 'lost_started', 'settled', 'state', 'rejection'])
+      .where('order_id', '=', orderId)
+      .execute();
+    return {
+      dispatched: commands.reduce((sum, c) => sum + countedBlanks(c), 0),
+      inFlight: commands
+        .filter((c) => !c.settled && c.job === null)
+        .reduce((sum, c) => sum + c.quantity, 0),
+    };
   }
 
   #differs(row: CommandRow, reading: Recorded): boolean {

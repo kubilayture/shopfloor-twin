@@ -4,6 +4,7 @@ import { createContext, use, useEffect, useSyncExternalStore, type ReactNode } f
 import {
   liveKeys,
   resetLiveAlarms,
+  ORDER_READS,
   resetLiveOrders,
   resetLiveShifts,
   type LiveAlarmKpi,
@@ -103,15 +104,7 @@ export function useOrdersTopic(): void {
   const queryClient = useQueryClient();
   useEffect(() => {
     resetLiveOrders(queryClient);
-    // Prefixes of `queryKeys.orders`, `order`, `orderExecution`, `orderScrap` and
-    // `executionIncidents` (api/queries.ts imports this module).
-    for (const prefix of [
-      'orders',
-      'order',
-      'order-execution',
-      'order-scrap',
-      'execution-incidents',
-    ]) {
+    for (const prefix of ORDER_READS) {
       void queryClient.invalidateQueries({ queryKey: [prefix] });
     }
     const release = client.subscribe(ORDERS_TOPIC);

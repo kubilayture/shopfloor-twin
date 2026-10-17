@@ -59,7 +59,7 @@ export const queryKeys = {
   order: (id: string) => ['order', id] as const,
   orderExecution: (id: string) => ['order-execution', id] as const,
   orderScrap: (id: string) => ['order-scrap', id] as const,
-  executionIncidents: ['execution-incidents'] as const,
+  executionIncidents: (orderId: string) => ['execution-incidents', orderId] as const,
 };
 
 /** Retries network and server errors a few times, never a refused request (4xx). */

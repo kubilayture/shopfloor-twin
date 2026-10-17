@@ -35,7 +35,9 @@ export function OrderList() {
     queryFn: ({ signal }) => getOrders(statuses, signal),
   });
   const pushed = useLiveOrders()?.orders;
-  const orders = read.data ? mergeOrders(read.data.orders, pushed, statuses) : [];
+  const orders = read.data
+    ? mergeOrders(read.data.orders, pushed, statuses, read.data.truncated)
+    : [];
 
   return (
     <section aria-labelledby="order-list-title">
@@ -130,6 +132,7 @@ export function OrderList() {
                   data-testid={`order-row-${order.id}`}
                   data-status={order.status}
                   data-version={String(order.version)}
+                  data-dispatched={String(order.dispatched)}
                   className="border-t border-slate-200"
                 >
                   <th scope="row" className={cell}>

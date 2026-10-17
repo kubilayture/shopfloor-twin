@@ -47,14 +47,39 @@ describe('live orders', () => {
     expect(orders(client)?.commands['PO-1~OP10~1']?.state).toBe('accepted');
   });
 
-  it('reads the pushed order again (its detail, execution and scrap)', () => {
+  it('reads the pushed order again; a command push also reads the list again', () => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     applyMessage(client, { type: 'order', event: 'updated', order: order('PO-7') });
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+    const keys = () => invalidate.mock.calls.map(([filters]) => filters?.queryKey);
+    expect(keys()).toEqual([
       ['order', 'PO-7'],
       ['order-execution', 'PO-7'],
       ['order-scrap', 'PO-7'],
+      ['execution-incidents', 'PO-7'],
+    ]);
+    invalidate.mockClear();
+    applyMessage(client, {
+      type: 'command',
+      event: 'updated',
+      command: pushedCommand(command('PO-7')),
+    });
+    expect(keys()).toContainEqual(['orders']);
+    expect(keys()).toContainEqual(['order', 'PO-7']);
+  });
+
+  it('reads every order read again once the orders subscription is confirmed', () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    applyMessage(client, { type: 'subscribed', topic: 'states', metric: null });
+    expect(invalidate).not.toHaveBeenCalled();
+    applyMessage(client, { type: 'subscribed', topic: 'orders', metric: null });
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+      ['orders'],
+      ['order'],
+      ['order-execution'],
+      ['order-scrap'],
+      ['execution-incidents'],
     ]);
   });
 

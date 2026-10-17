@@ -72,7 +72,7 @@ export const COMMAND_STATE_TEXT: Readonly<
   failed: {
     label: 'Failed',
     meaning:
-      'No final answer after its last expiry plus the margin: an incident. Not final; a re-dispatch waits until it is settled.',
+      'No final answer by the expiry of its first unanswered delivery plus the margin: an incident. Not final; a re-dispatch waits until it is settled.',
     tone: 'bad',
   },
   accepted: { label: 'Accepted', meaning: 'The job exists on the device.', tone: 'good' },
@@ -137,9 +137,15 @@ export function isNewerOrder(incoming: OrderDto, known: OrderDto): boolean {
   return Date.parse(incoming.updatedAt) >= Date.parse(known.updatedAt);
 }
 
-/** The newer of a read and a pushed copy of one order. */
+/**
+ * The newer of a read and a pushed copy of one order. A pushed copy wins only when strictly newer
+ * (a higher version, or the same version changed later): at an equal version and `updatedAt` the
+ * read wins, as it may carry what a push of the same version did not (#176 review H1).
+ */
 export function newestOrder(read: OrderDto, pushed: OrderDto | undefined): OrderDto {
-  return pushed && isNewerOrder(pushed, read) ? pushed : read;
+  if (!pushed) return read;
+  if (pushed.version !== read.version) return pushed.version > read.version ? pushed : read;
+  return Date.parse(pushed.updatedAt) > Date.parse(read.updatedAt) ? pushed : read;
 }
 
 /** A command has no version: the later `updatedAt` wins (the MES moves it with every change). */
@@ -147,26 +153,31 @@ export function isNewerCommand(incoming: CommandDto, known: CommandDto): boolean
   return Date.parse(incoming.updatedAt) >= Date.parse(known.updatedAt);
 }
 
+const byPlannedStart = (a: OrderDto, b: OrderDto): number =>
+  Date.parse(a.plannedStart) - Date.parse(b.plannedStart) || a.id.localeCompare(b.id);
+
 /**
  * The list on screen: the read orders with newer pushed copies, and pushed orders the read does
- * not have (imported since) when their status is one shown; by planned start, then id.
+ * not have (imported since) when their status is one shown; by planned start, then id. When the
+ * read was truncated, a pushed-only order that sorts after the last one read is left out: the
+ * MES may hold others before it that the read cut off, so it would show out of place.
  */
 export function mergeOrders(
   read: readonly OrderDto[],
   pushed: Readonly<Record<string, OrderDto>> | undefined,
   statuses: readonly OrderStatus[],
+  truncated = false,
 ): OrderDto[] {
   const shown = (order: OrderDto) => statuses.length === 0 || statuses.includes(order.status);
+  const last = [...read].sort(byPlannedStart).at(-1);
   const byId = new Map<string, OrderDto>();
   for (const order of read) byId.set(order.id, newestOrder(order, pushed?.[order.id]));
   for (const order of Object.values(pushed ?? {})) {
-    if (!byId.has(order.id)) byId.set(order.id, order);
+    if (byId.has(order.id)) continue;
+    if (truncated && last && byPlannedStart(order, last) > 0) continue;
+    byId.set(order.id, order);
   }
-  return [...byId.values()]
-    .filter(shown)
-    .sort(
-      (a, b) => Date.parse(a.plannedStart) - Date.parse(b.plannedStart) || a.id.localeCompare(b.id),
-    );
+  return [...byId.values()].filter(shown).sort(byPlannedStart);
 }
 
 /**
@@ -183,7 +194,8 @@ export function mergeCommands(
     const live = pushed?.[command.commandId];
     byId.set(
       command.commandId,
-      live?.orderId === orderId && isNewerCommand(live, command)
+      // Strictly later only: at the same `updatedAt` the read (with its results) wins.
+      live?.orderId === orderId && Date.parse(live.updatedAt) > Date.parse(command.updatedAt)
         ? { ...command, ...live }
         : command,
     );
@@ -304,7 +316,9 @@ export const isDirtyDraft = (draft: ActionDraft): boolean =>
 export function draftProblems(draft: ActionDraft, order: OrderDto): string[] {
   const found: string[] = [];
   if (draft.action === 'redispatch' && draft.quantity.trim() !== '') {
-    const quantity = Number(draft.quantity);
+    // Digits only: `Number` would take `1e2`, `0x10` or ` 5 ` as numbers.
+    const digits = draft.quantity.trim();
+    const quantity = /^\d{1,9}$/.test(digits) ? Number(digits) : Number.NaN;
     if (!Number.isSafeInteger(quantity) || quantity < 1) {
       found.push('The quantity is a whole number of blanks, at least 1.');
     } else if (quantity > order.remaining) {

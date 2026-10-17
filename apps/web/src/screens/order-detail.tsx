@@ -220,6 +220,9 @@ function Actions({
         </div>
       ) : (
         <ActionForm
+          // A new draft (another action, command or version) starts a new form: no state of the
+          // previous one carries over (#176 review M2).
+          key={`${open.action}:${open.commandId}:${String(open.version)}`}
           order={order}
           commands={commands}
           targets={targets}
@@ -352,13 +355,16 @@ function CommandRow({
 function Commands({
   order,
   commands,
+  formOpen,
   onAbandon,
 }: {
   readonly order: OrderDto;
   readonly commands: readonly CommandDetailDto[];
+  /** An action form is open: no second one is started from a command (#176 review M2). */
+  readonly formOpen: boolean;
   readonly onAbandon: (commandId: string) => void;
 }) {
-  const mayAbandon = useOrderPermissions().abandon;
+  const mayAbandon = useOrderPermissions().abandon && !formOpen;
   return (
     <Section id="order-commands" title="Commands and results">
       {commands.length === 0 ? (
@@ -724,8 +730,8 @@ function OrderDetail({ id }: { readonly id: string }) {
     enabled: read.data !== undefined,
   });
   const executionIncidents = useQuery({
-    queryKey: queryKeys.executionIncidents,
-    queryFn: ({ signal }) => getExecutionIncidents(signal),
+    queryKey: queryKeys.executionIncidents(id),
+    queryFn: ({ signal }) => getExecutionIncidents(id, signal),
     refetchInterval: EXECUTION_POLL_MS,
     enabled: read.data !== undefined,
   });
@@ -786,16 +792,12 @@ function OrderDetail({ id }: { readonly id: string }) {
           <Commands
             order={order}
             commands={commands}
+            formOpen={open !== undefined}
             onAbandon={(commandId) => {
               setOpen(draftFor('abandon', order, commandId));
             }}
           />
-          <Incidents
-            detail={detail}
-            execution={(executionIncidents.data?.incidents ?? []).filter(
-              (incident) => incident.orderId === id,
-            )}
-          />
+          <Incidents detail={detail} execution={executionIncidents.data?.incidents ?? []} />
           <Confirmations confirmations={detail.confirmations} />
           <Scrap id={id} />
           <ErpMessages detail={detail} />

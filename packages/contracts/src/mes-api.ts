@@ -11,6 +11,7 @@ import { ORDERS_TOPIC, orderPushMessages } from './orders-api.ts';
 import { crewMemberSchema, terminalPushMessages, terminalTopicSchema } from './terminal-api.ts';
 
 export * from './execution-api.ts';
+export * from './genealogy-api.ts';
 export * from './orders-api.ts';
 export * from './terminal-api.ts';
 

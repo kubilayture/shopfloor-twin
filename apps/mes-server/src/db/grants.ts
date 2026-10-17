@@ -39,6 +39,7 @@ export const DECLARED_GRANTS: {
       identity: ['USAGE'],
       orders: ['USAGE'],
       execution: ['USAGE'],
+      genealogy: ['USAGE'],
     },
     mes_cagg: { ingest: ['USAGE'], equipment: ['USAGE'] },
   },
@@ -115,6 +116,14 @@ export const DECLARED_GRANTS: {
       'execution.operation_record': ALL,
       'execution.scrap_record': KEEP,
       'execution.execution_incident': KEEP,
+      // Lots are kept, never deleted (a lot no longer listed is retired); everything else of the
+      // genealogy is derived and rebuilt, its incidents included (plan "Database roles", #199).
+      'genealogy.material_lot': KEEP,
+      'genealogy.serial_unit': ALL,
+      'genealogy.unit_record': ALL,
+      'genealogy.genealogy_link': ALL,
+      'genealogy.carton': ALL,
+      'genealogy.genealogy_incident': ALL,
     },
     // The aggregates' sources, which a refresh reads; the aggregates themselves it owns.
     mes_cagg: {

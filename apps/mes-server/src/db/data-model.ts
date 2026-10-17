@@ -59,6 +59,12 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
       'Every part tracked through the routing from the device’s cycle facts (#175, ADR-0031): units keyed (device epoch, partId) and attributed to an order by the job facts, one operation record per cycle with its rework pass, the scrap records an operator or quality user codes, and routing-violation incidents. Units and records are derived and rebuilt from facts; quantities, material and completion are computed on read.',
   },
   {
+    name: 'genealogy',
+    owner: 'genealogy',
+    about:
+      'Lots imported from the ERP’s lot list, every unit (device epoch, partId) with its serial, the lots each of its cycles consumed per operation and pass, the device operator and reading per record, cartons formed by the packing rule on final data, and the module’s incidents (#199, ADR-0034). Everything but the lots is derived from the execution module’s units and the cycle facts and rebuilt per unit; the trace queries read it.',
+  },
+  {
     name: 'public',
     owner: 'the migration runner',
     about: 'Bookkeeping of the migration runner (ADR-0016).',
@@ -184,6 +190,18 @@ const TABLES: Readonly<Record<string, string>> = {
     'Every machine scrap (OP10 DIMENSIONAL, OP40 second LEAK) with the coding a person gives it from the scrap reason tree (version per record, audited in identity.audit_log); kept, never deleted (#175).',
   'execution.execution_incident':
     'Routing-violation incidents of the execution module (a predecessor missing or an operation repeated once the expected machine is final through it, a record after the terminal one), open at most once per key (#175).',
+  'genealogy.material_lot':
+    'Lots from the ERP’s lot list (`GET /api/v1/lots`): material, quantity received, `active` or `retired` (no longer listed, kept), the feed it came with (#199).',
+  'genealogy.serial_unit':
+    'One row per unit (device epoch, partId) with its serial (not unique across runs, ADR-0034), product, order and status as execution has them, and its carton; rebuilt with the unit (#199).',
+  'genealogy.unit_record':
+    'One row per operation record of a unit with what its cycle fact reported for traceability: whether it carried lots, the device operator (reported or not) and the measurement; replaced when its unit is rebuilt (#199).',
+  'genealogy.genealogy_link':
+    'Typed edges: `lot-unit` (a lot reference of a cycle fact: lot, material, unit, operation, pass, machine, the fact’s key, its place in the list, time) and `unit-carton` (a unit’s place in its carton); rebuilt with units and cartons (#199).',
+  'genealogy.carton':
+    'Cartons per order by the packing rule (`packing.yaml`, `trace-core`), placed on final packing data: `{orderId}-C{nn}`, capacity, open or closed and when, members (#199).',
+  'genealogy.genealogy_incident':
+    'Incidents of the genealogy module: `unknown-lot` (closed when the import lists it), `serial-reused` (one per pair of device epochs) and `material-mismatch` (a lot the BOM doesn’t list for that operation and pass), open at most once per key (#199).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

@@ -23,6 +23,7 @@
     "@shopfloor/oee-core": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/shift-calendar": "workspace:*",
+    "@shopfloor/trace-core": "workspace:*",
     "fastify": "catalog:",
     "kysely": "catalog:",
     "mqtt": "catalog:",
@@ -33,7 +34,6 @@
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",
     "@shopfloor/test-kit": "workspace:*",
-    "@shopfloor/trace-core": "workspace:*",
     "@shopfloor/tsconfig": "workspace:*",
     "@types/node": "catalog:",
     "@types/pg": "catalog:",

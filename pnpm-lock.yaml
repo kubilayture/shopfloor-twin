@@ -441,6 +441,9 @@ importers:
       '@shopfloor/shift-calendar':
         specifier: workspace:*
         version: link:../../packages/shift-calendar
+      '@shopfloor/trace-core':
+        specifier: workspace:*
+        version: link:../../packages/trace-core
       fastify:
         specifier: 'catalog:'
         version: 5.12.5
@@ -466,9 +469,6 @@ importers:
       '@shopfloor/test-kit':
         specifier: workspace:*
         version: link:../../packages/test-kit
-      '@shopfloor/trace-core':
-        specifier: workspace:*
-        version: link:../../packages/trace-core
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig

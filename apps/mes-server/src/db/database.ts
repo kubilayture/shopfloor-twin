@@ -6,6 +6,7 @@ import type { IdentityTables } from '../modules/identity/index.ts';
 import type { IngestTables } from '../modules/ingest/index.ts';
 import type { MasterDataTables } from '../modules/master-data/index.ts';
 import type { ExecutionTables } from '../modules/execution/index.ts';
+import type { GenealogyTables } from '../modules/genealogy/index.ts';
 import type { OrdersTables } from '../modules/orders/index.ts';
 import type { ShiftsTables } from '../modules/shifts/index.ts';
 
@@ -29,7 +30,8 @@ export type Database = PublicTables &
   ShiftsTables &
   IdentityTables &
   OrdersTables &
-  ExecutionTables;
+  ExecutionTables &
+  GenealogyTables;
 
 /**
  * BIGINT columns (epochs, sequence numbers, ids, counts) are read as numbers, not strings: every

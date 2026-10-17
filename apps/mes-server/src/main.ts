@@ -13,6 +13,7 @@ import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 import { DowntimeFeed, Oee } from './modules/oee/index.ts';
 import { Execution } from './modules/execution/index.ts';
+import { Genealogy } from './modules/genealogy/index.ts';
 import { ErpClient, MqttCommandPublisher, Orders } from './modules/orders/index.ts';
 import { Shifts } from './modules/shifts/index.ts';
 
@@ -74,6 +75,7 @@ let alarms: Alarms | undefined;
 let shifts: Shifts | undefined;
 let orders: Orders | undefined;
 let execution: Execution | undefined;
+let genealogy: Genealogy | undefined;
 let publisher: MqttCommandPublisher | undefined;
 
 const { app, registry, realtime } = await buildMesHttp({
@@ -126,6 +128,7 @@ async function shutdown(signal: string): Promise<void> {
   for (const close of [
     () => app.close(),
     async () => ingest?.stop(),
+    async () => genealogy?.stop(),
     async () => execution?.stop(),
     async () => orders?.stop(),
     async () => publisher?.close(),
@@ -306,15 +309,17 @@ try {
     log: log.child({ module: 'orders', part: 'publisher' }),
   });
   const equipmentModule = equipment;
+  const erp =
+    env.ERP_URL !== undefined && env.ERP_API_TOKEN !== undefined
+      ? new ErpClient({ url: env.ERP_URL, token: env.ERP_API_TOKEN })
+      : undefined;
   const ordersModule = new Orders({
     db,
     readDb,
     ingest,
     masterData,
     publisher,
-    ...(env.ERP_URL !== undefined && env.ERP_API_TOKEN !== undefined
-      ? { erp: new ErpClient({ url: env.ERP_URL, token: env.ERP_API_TOKEN }) }
-      : {}),
+    ...(erp ? { erp } : {}),
     clock: () => equipmentModule.watermarks()[0]?.watermark,
     erpPollMs: env.ERP_POLL_MS,
     timings: {
@@ -350,6 +355,24 @@ try {
   execution = executionModule;
   await executionModule.start();
   ordersModule.useBlankCounter(executionModule);
+  // Genealogy (#199): lots from the ERP's lot list on the ERP poll, and every unit's lots, records
+  // and carton, following the execution module's units.
+  const genealogyModule = new Genealogy({
+    db,
+    readDb,
+    ingest,
+    execution: executionModule,
+    orders: ordersModule,
+    masterData,
+    crew: (workCenter) => shiftsModule.crew({ workCenter }),
+    ...(erp ? { erp } : {}),
+    packing: plant.config.packing,
+    lotPollMs: env.ERP_POLL_MS,
+    registry,
+    log: log.child({ module: 'genealogy' }),
+  });
+  genealogy = genealogyModule;
+  await genealogyModule.start();
   // The operator terminal (#177): a session that ends (logout, a disabled user, a password
   // change, a new login) ends its crew rows; a crew row that ends closes its operator's activity
   // intervals at that work center; intervals left open while the MES was down are closed now.
@@ -392,6 +415,7 @@ try {
     shifts: shiftsModule,
     orders: ordersModule,
     execution: executionModule,
+    genealogy: genealogyModule,
   });
   log.info({ writes: env.MES_WRITES }, 'operator writes (downtime coding, alarms, handover notes)');
   await ingest.start();

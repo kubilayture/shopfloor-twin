@@ -15167,6 +15167,1161 @@
         }
       }
     },
+    "/api/v1/trace/serials/{serial}": {
+      "get": {
+        "summary": "Backward trace of a serial",
+        "tags": [
+          "genealogy"
+        ],
+        "description": "Every unit with the serial (serials repeat across simulator runs, ADR-0034), newest device epoch first: per operation and pass its machine, time, result, lots, device operator and MES crew, reading, order and carton. `final` is true once every machine of the routing is final through the answer’s latest record and genealogy has processed it; `notFinal` names the others (facts may still arrive). Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[^/\\s]+$"
+            },
+            "in": "path",
+            "name": "serial",
+            "required": true,
+            "description": "A serial (DMC), e.g. VB-100-000042"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "serial": {
+                      "type": "string"
+                    },
+                    "units": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Units are keyed (device epoch, partId); serials repeat across runs"
+                          },
+                          "partId": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "serial": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "product": {
+                            "type": "string"
+                          },
+                          "orderId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "wip",
+                              "packed",
+                              "scrapped",
+                              "lost"
+                            ]
+                          },
+                          "carton": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "records": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "operation": {
+                                  "type": "string"
+                                },
+                                "pass": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "1, or 2 at OP30 and OP40 after a leak-test failure sent the unit back"
+                                },
+                                "equipment": {
+                                  "type": "string"
+                                },
+                                "epoch": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "seq": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991,
+                                  "description": "The cycle fact in the machine’s device sequence"
+                                },
+                                "at": {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                  "description": "Plant time the cycle completed"
+                                },
+                                "result": {
+                                  "type": "string",
+                                  "enum": [
+                                    "good",
+                                    "scrap",
+                                    "rework"
+                                  ]
+                                },
+                                "reason": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "lots": {
+                                  "anyOf": [
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "material": {
+                                            "type": "string"
+                                          },
+                                          "lot": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "material",
+                                          "lot"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "The lots consumed for the unit on this cycle, in consumption order; [] when none; null when the fact reported none (WSH-01 on Modbus, a gateway before UNS 1.4, or fields ingest dropped)"
+                                },
+                                "operator": {
+                                  "description": "The device operator at the cycle’s start; null when none or not reported",
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "operatorReported": {
+                                  "type": "boolean",
+                                  "description": "Whether the fact carried the operator field"
+                                },
+                                "reading": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "characteristic": {
+                                          "type": "string"
+                                        },
+                                        "value": {
+                                          "type": "number"
+                                        },
+                                        "unit": {
+                                          "type": "string"
+                                        },
+                                        "upperLimit": {
+                                          "type": "number"
+                                        }
+                                      },
+                                      "required": [
+                                        "characteristic",
+                                        "value",
+                                        "unit",
+                                        "upperLimit"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "The measurement the cycle reported (the leak test), else null"
+                                },
+                                "crew": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "userId": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "username": {
+                                        "type": "string"
+                                      },
+                                      "from": {
+                                        "type": "string",
+                                        "format": "date-time",
+                                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                        "description": "Plant time of the sign-on"
+                                      },
+                                      "to": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "userId",
+                                      "username",
+                                      "from",
+                                      "to"
+                                    ],
+                                    "additionalProperties": false,
+                                    "description": "A crew row of the MES signed on to the work center during the cycle (not reconciled)"
+                                  },
+                                  "description": "MES users signed on to the machine’s work center during the cycle, where it has a device operator"
+                                }
+                              },
+                              "required": [
+                                "operation",
+                                "pass",
+                                "equipment",
+                                "epoch",
+                                "seq",
+                                "at",
+                                "result",
+                                "reason",
+                                "lots",
+                                "operator",
+                                "operatorReported",
+                                "reading",
+                                "crew"
+                              ],
+                              "additionalProperties": false,
+                              "description": "One cycle of a unit with what it consumed and measured"
+                            }
+                          }
+                        },
+                        "required": [
+                          "epoch",
+                          "partId",
+                          "serial",
+                          "product",
+                          "orderId",
+                          "status",
+                          "carton",
+                          "records"
+                        ],
+                        "additionalProperties": false,
+                        "description": "A unit traced back: its records, lots, operators, readings and carton"
+                      },
+                      "description": "Every unit with this serial, newest epoch first"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Every machine of the routing is final through the answer’s latest record (ADR-0018) and genealogy has processed it"
+                    },
+                    "notFinal": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The machines whose processed final-through is below the answer’s latest record"
+                    }
+                  },
+                  "required": [
+                    "serial",
+                    "units",
+                    "final",
+                    "notFinal"
+                  ],
+                  "additionalProperties": false,
+                  "description": "`GET /trace/serials/{serial}`: backward trace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note, order, order operation or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/trace/lots/{lot}": {
+      "get": {
+        "summary": "Forward trace of a lot",
+        "tags": [
+          "genealogy"
+        ],
+        "description": "The units that consumed the lot at any operation and pass (at most 5000, `truncated` when more), their orders and cartons, the pieces consumed, the lot as imported from the ERP, and the other lots of the same units. `final` is true once every machine of the routing is final through the answer’s latest record and genealogy has processed it; `notFinal` names the others (facts may still arrive). Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[^/\\s]+$"
+            },
+            "in": "path",
+            "name": "lot",
+            "required": true,
+            "description": "A lot id, e.g. BL100-2610-01"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "lot": {
+                      "type": "string"
+                    },
+                    "material": {
+                      "type": "string",
+                      "description": "As the facts or the lot list name it"
+                    },
+                    "master": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "material": {
+                              "type": "string"
+                            },
+                            "quantity": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Quantity received, as the ERP lists it"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "active",
+                                "retired"
+                              ],
+                              "description": "retired: no longer in the ERP’s lot list (kept, never deleted)"
+                            },
+                            "importedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                              "description": "Wall time of the first import"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "material",
+                            "quantity",
+                            "status",
+                            "importedAt"
+                          ],
+                          "additionalProperties": false,
+                          "description": "A material lot imported from the ERP’s lot list"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The imported lot; null if never imported"
+                    },
+                    "consumed": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Pieces consumed: lot references over every record of every unit"
+                    },
+                    "units": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "partId": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "serial": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "orderId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "carton": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "wip",
+                              "packed",
+                              "scrapped",
+                              "lost"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "epoch",
+                          "partId",
+                          "serial",
+                          "orderId",
+                          "carton",
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "By (epoch, partId)"
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    },
+                    "orders": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "cartons": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "withLots": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "material": {
+                            "type": "string"
+                          },
+                          "lot": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "material",
+                          "lot"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "“Where used with”: every other lot the same units consumed, by lot id"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Every machine of the routing is final through the answer’s latest record (ADR-0018) and genealogy has processed it"
+                    },
+                    "notFinal": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The machines whose processed final-through is below the answer’s latest record"
+                    }
+                  },
+                  "required": [
+                    "lot",
+                    "material",
+                    "master",
+                    "consumed",
+                    "units",
+                    "truncated",
+                    "orders",
+                    "cartons",
+                    "withLots",
+                    "final",
+                    "notFinal"
+                  ],
+                  "additionalProperties": false,
+                  "description": "`GET /trace/lots/{lot}`: forward trace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note, order, order operation or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/trace/cartons/{carton}": {
+      "get": {
+        "summary": "A carton with its members",
+        "tags": [
+          "genealogy"
+        ],
+        "description": "A carton formed by the packing rule on final data (packing.yaml): its members in placement order and every lot they consumed. `final` is true once every machine of the routing is final through the answer’s latest record and genealogy has processed it; `notFinal` names the others (facts may still arrive). Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[^/\\s]+$"
+            },
+            "in": "path",
+            "name": "carton",
+            "required": true,
+            "description": "A carton id, e.g. PO-2610-101-C01"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "carton": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "{orderId}-C{nn}"
+                        },
+                        "orderId": {
+                          "type": "string"
+                        },
+                        "product": {
+                          "type": "string"
+                        },
+                        "capacity": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "open",
+                            "closed"
+                          ]
+                        },
+                        "closedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Plant time: its last member’s, or the order’s completion"
+                        },
+                        "members": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "orderId",
+                        "product",
+                        "capacity",
+                        "status",
+                        "closedAt",
+                        "members"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "units": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "partId": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "serial": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "orderId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "carton": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "wip",
+                              "packed",
+                              "scrapped",
+                              "lost"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "epoch",
+                          "partId",
+                          "serial",
+                          "orderId",
+                          "carton",
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "In placement order"
+                    },
+                    "lots": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "material": {
+                            "type": "string"
+                          },
+                          "lot": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "material",
+                          "lot"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Every lot its members consumed, by lot id"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Every machine of the routing is final through the answer’s latest record (ADR-0018) and genealogy has processed it"
+                    },
+                    "notFinal": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "The machines whose processed final-through is below the answer’s latest record"
+                    }
+                  },
+                  "required": [
+                    "carton",
+                    "units",
+                    "lots",
+                    "final",
+                    "notFinal"
+                  ],
+                  "additionalProperties": false,
+                  "description": "`GET /trace/cartons/{id}`: a carton and its members"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note, order, order operation or route",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/trace/search": {
+      "get": {
+        "summary": "Serials, lots, cartons and orders by the start of their id",
+        "tags": [
+          "genealogy"
+        ],
+        "description": "At most 20 of each kind, by id. Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "description": "The start of an id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "q": {
+                      "type": "string"
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "serial",
+                              "lot",
+                              "carton",
+                              "order"
+                            ]
+                          },
+                          "id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "q",
+                    "results"
+                  ],
+                  "additionalProperties": false,
+                  "description": "`GET /trace/search?q=`: serials, lots, cartons and orders starting with q"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/genealogy-incidents": {
+      "get": {
+        "summary": "Incidents of the genealogy module, newest first",
+        "tags": [
+          "genealogy"
+        ],
+        "description": "unknown-lot (a fact names a lot the ERP doesn’t list; closed when an import lists it), serial-reused (one per pair of device epochs sharing serials) and material-mismatch (a lot of a material the BOM doesn’t list for that operation and pass). Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "in": "query",
+            "name": "open",
+            "required": false,
+            "description": "Only the incidents still open"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "unknown-lot",
+                "serial-reused",
+                "material-mismatch"
+              ]
+            },
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "description": "Only this type"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "incidents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "unknown-lot",
+                              "serial-reused",
+                              "material-mismatch"
+                            ]
+                          },
+                          "lot": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "epoch": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "partId": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "equipment": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "detectedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          },
+                          "closedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "resolution": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "type",
+                          "lot",
+                          "epoch",
+                          "partId",
+                          "equipment",
+                          "message",
+                          "detectedAt",
+                          "closedAt",
+                          "resolution"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "incidents"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/shifts/{date}/{shift}": {
       "get": {
         "summary": "One shift instance: status, finality and the report’s composite revision",

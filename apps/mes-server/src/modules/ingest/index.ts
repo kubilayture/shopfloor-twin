@@ -76,6 +76,8 @@
  *   device epochs: without `epoch`, every run's cycles of the lot.
  * - A cycle whose trace fields the contract refuses is stored without them; the delivery and
  *   what was dropped go to `rejected_message` as `trace-dropped` (the fact's own transaction).
+ * - `CycleFact.measurement` (#199): the cycle's measurement as reported (the leak test's reading),
+ *   for the genealogy's backward trace.
  */
 export { INGEST_TOPICS, Ingest, baselineState } from './ingest.ts';
 export { resolveAlarmBaseline } from './alarm-baseline.ts';

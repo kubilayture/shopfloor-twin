@@ -180,6 +180,8 @@ export interface CycleFact {
   readonly lots?: readonly LotRef[];
   /** The station's operator at the cycle's start (1.4): undefined when not reported. */
   readonly operator?: string | null;
+  /** The cycle's measurement as reported (the leak test's reading, #199), else null. */
+  readonly measurement: CycleComplete['value']['measurement'];
 }
 
 /** The filters of `Ingest.cycleFacts`; a device epoch, a lot, or both are required. */
@@ -1099,6 +1101,7 @@ export class Ingest {
         serial: value.serial,
         result: value.result,
         reason: value.reason,
+        measurement: value.measurement,
         ...(value.lots === undefined ? {} : { lots: value.lots }),
         ...(value.operator === undefined ? {} : { operator: value.operator }),
       };

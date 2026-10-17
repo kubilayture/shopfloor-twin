@@ -18,5 +18,13 @@ reconciliationSuite(
       alarmComparisons: 60,
       shifts: { instances: 6, final: 5, compared: 102 },
       orders: { units: 402, confirmations: 35, orders: 8 },
+      genealogy: {
+        units: 402,
+        lots: 6,
+        cartons: 31,
+        final: 364,
+        cut: '2026-10-12T11:00:00.000Z',
+        atCut: { units: 128, lots: 6, cartons: 9, final: 74 },
+      },
     }),
 );

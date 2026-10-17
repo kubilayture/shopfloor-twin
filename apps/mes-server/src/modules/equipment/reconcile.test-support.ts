@@ -16,7 +16,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { EquipmentPath, MachineState } from '@shopfloor/contracts';
-import { confirmationKey, expandErpDataset, type FeedEntry } from '@shopfloor/contracts/erp-api';
+import {
+  confirmationKey,
+  expandErpDataset,
+  type FeedEntry,
+  type Lot,
+  type LotList,
+} from '@shopfloor/contracts/erp-api';
 import { HOUR, availabilityLoss, oeeFromTotals, sumTotals } from '@shopfloor/oee-core';
 import { UNCODED, idealCycleMs, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
 import { NO_SHIFT, shiftBuckets, shiftInstances, shiftSegments } from '@shopfloor/shift-calendar';
@@ -35,6 +41,7 @@ import type { Database } from '../../db/database.ts';
 import { startDatabase } from '../../testing.ts';
 import { Alarms, type AlarmKpiBucket, type AlarmScope } from '../alarms/index.ts';
 import { Execution } from '../execution/index.ts';
+import { Genealogy } from '../genealogy/index.ts';
 import { Identity, type WriteBy } from '../identity/index.ts';
 import { Ingest } from '../ingest/index.ts';
 import { MasterData, erpMasterData } from '../master-data/index.ts';
@@ -54,6 +61,17 @@ import {
   shiftOeeDto,
 } from '../realtime/index.ts';
 import { LONGEST_RECORDS, REPORT_BAD_ACTORS, Shifts } from '../shifts/index.ts';
+import {
+  eventLogTrace,
+  expectQualityFeatures,
+  expectTruth,
+  mesProjection,
+  projection,
+  projectionAsOf,
+  sortCartons,
+  type TraceJson,
+  type TraceProjection,
+} from './genealogy-reconcile.test-support.ts';
 import { Equipment, downtimeRules } from './index.ts';
 import {
   PLANT_CONFIG,
@@ -1284,9 +1302,16 @@ class GoldenErp implements ErpApi {
   readonly feedId = 'b'.repeat(32);
   readonly posts: { kind: 'status' | 'confirmation'; key: string; body: unknown }[] = [];
   readonly #entries: readonly FeedEntry[];
+  readonly #lots: readonly Lot[];
 
-  constructor(entries: readonly FeedEntry[]) {
+  constructor(entries: readonly FeedEntry[], lots: readonly Lot[]) {
     this.#entries = entries;
+    this.#lots = lots;
+  }
+
+  /** The lot list (`GET /api/v1/lots`, #198): the dataset's lots, else `stock.yaml`'s (#199). */
+  lots(): Promise<LotList> {
+    return Promise.resolve({ feedId: this.feedId, lots: this.#lots.map((l) => ({ ...l })) });
   }
 
   feed(after: number, limit: number): Promise<FeedPage> {
@@ -1348,26 +1373,36 @@ interface ScenarioFile {
 interface OrdersStack {
   readonly orders: Orders;
   readonly execution: Execution;
+  readonly genealogy: Genealogy;
   readonly erp: GoldenErp;
   readonly scenario: ScenarioFile;
   readonly by: { readonly by: WriteBy; readonly requestId: string };
 }
 
 /**
- * The orders and execution modules over a reconciliation's database, with the scenario's ERP
- * dataset behind a fake ERP and a recording command sink in place of the broker. Commands live
- * for an hour (wall time), so a slow replay never declares one failed.
+ * The orders, execution and genealogy modules over a reconciliation's database, with the
+ * scenario's ERP dataset behind a fake ERP and a recording command sink in place of the broker.
+ * Commands live for an hour (wall time), so a slow replay never declares one failed. Without a
+ * scenario (schedule mode, #199) the ERP has no orders and the plant's lots (`stock.yaml`, as the
+ * ERP mock's default dataset).
  */
 async function ordersStack(
   m: { db: Kysely<Database>; ingest: Ingest; masterData: MasterData; equipment: Equipment },
-  dir: string,
+  dir: string | undefined,
   run: Run,
 ): Promise<OrdersStack> {
-  const scenario = JSON.parse(await readFile(join(dir, 'scenario.json'), 'utf8')) as ScenarioFile;
-  const dataset: unknown = JSON.parse(await readFile(join(dir, scenario.erp.dataset), 'utf8'));
-  const expanded = expandErpDataset(dataset, erpMasterData(plant));
-  if (!expanded.ok) throw new Error(expanded.issues.join('\n'));
-  const erp = new GoldenErp(expanded.feed);
+  let scenario: ScenarioFile = { erp: { dataset: '', release: [] }, dispatches: [] };
+  let entries: FeedEntry[] = [];
+  let lots: readonly Lot[] = erpMasterData(plant).lots;
+  if (dir !== undefined) {
+    scenario = JSON.parse(await readFile(join(dir, 'scenario.json'), 'utf8')) as ScenarioFile;
+    const dataset: unknown = JSON.parse(await readFile(join(dir, scenario.erp.dataset), 'utf8'));
+    const expanded = expandErpDataset(dataset, erpMasterData(plant));
+    if (!expanded.ok) throw new Error(expanded.issues.join('\n'));
+    entries = expanded.feed;
+    lots = expanded.lots;
+  }
+  const erp = new GoldenErp(entries, lots);
   const user = await new Identity({
     db: m.db,
     sweepMs: 0,
@@ -1409,9 +1444,23 @@ async function ordersStack(
   });
   await execution.start();
   orders.useBlankCounter(execution);
+  // Genealogy (#199): the ERP's lot list imported at its start, before any cycle fact.
+  const genealogy = new Genealogy({
+    db: m.db,
+    ingest: m.ingest,
+    execution,
+    orders,
+    masterData: m.masterData,
+    erp,
+    packing: plant.packing,
+    tickMs: 0,
+    lotPollMs: 0,
+  });
+  await genealogy.start();
   return {
     orders,
     execution,
+    genealogy,
     erp,
     scenario,
     by: {
@@ -1461,11 +1510,15 @@ function splitAtFirstJob(facts: readonly Delivery[]): {
     : { before: facts.slice(0, at), after: facts.slice(at) };
 }
 
-/** Brings commands, units, completion and confirmations up to date, then posts the ERP outbox. */
+/**
+ * Brings commands, units, completion and confirmations up to date, then the genealogy (units and
+ * cartons, #199), then posts the ERP outbox.
+ */
 async function settleOrders(stack: OrdersStack): Promise<void> {
   for (let round = 0; round < 2; round++) {
     await stack.orders.tick();
     await stack.execution.tick();
+    await stack.genealogy.tick();
   }
   while ((await stack.orders.postNow()) > 0) {
     // Posts the outbox in batches until nothing is pending.
@@ -1812,13 +1865,124 @@ async function storedExecution(db: Kysely<Database>) {
   };
 }
 
+// ---- Genealogy (#199): lots, units, cartons against the trace ground truth (trace.json) ----
+
+/** The golden's `trace.json` and the expected trace derived from the run's event log. */
+async function traceTruth(
+  dir: string,
+  run: Run,
+): Promise<{
+  truth: TraceJson;
+  expected: TraceProjection;
+  cutTrace: ReturnType<typeof eventLogTrace>;
+}> {
+  const truth = JSON.parse(await readFile(join(dir, 'trace.json'), 'utf8')) as TraceJson;
+  const trace = eventLogTrace(run.events, plant, truth.orders, EPOCH);
+  const expected = projection(trace);
+  // The derivation is the truth's: its units hash to unitsTraceSha256, its lots and cartons equal.
+  expectTruth(expected, truth);
+  return { truth, expected, cutTrace: trace };
+}
+
 /**
- * Per-test limits: the golden week takes about 70 s in order and 125 s shuffled locally. Both
- * limits together (10 min) leave the end-to-end job (20 min, with the gateway's test and the
- * install) room to report a failure rather than be cancelled.
+ * Plan "Ground truth and reconciliation" (exit criteria 1 and 2, #199): through the MES's trace
+ * answers (a forward trace of every lot of the ERP's list, a backward trace of every serial they
+ * return), every unit's serial, product, order, status, carton and records (operation, pass,
+ * machine, time, result, reason, lots, device operator, reading) equal the truth's; per lot its
+ * material, pieces consumed, units, orders and cartons; every carton's members in placement
+ * order, status and closing time; no genealogy incident. A serial's answer is final exactly when
+ * every machine's last fact is at or after its latest record. Returns the counts compared.
  */
-const IN_ORDER_MS = 240_000;
-const SHUFFLED_MS = 360_000;
+async function expectGenealogy(
+  genealogy: Genealogy,
+  expected: TraceProjection,
+  truth: TraceJson,
+  settled: ReadonlyMap<string, number>,
+  features = false,
+): Promise<GenealogyPins> {
+  const scale = {
+    operation: plant.process.leakTest.operation,
+    resolution: plant.process.leakTest.resolution,
+    modbus: new Set(
+      plant.plant.areas.flatMap((a) =>
+        a.workCenters.flatMap((w) =>
+          w.equipment.filter((e) => e.interface === 'modbus').map((e) => e.id),
+        ),
+      ),
+    ),
+  };
+  const actual = await mesProjection(genealogy, scale);
+  expect(actual.units).toEqual(expected.units);
+  expect(actual.lots).toEqual(expected.lots);
+  expect(sortCartons(actual.cartons, truth.orders)).toEqual(expected.cartons);
+  expect(await genealogy.incidents()).toEqual([]);
+  if (features) {
+    const blanks = new Set(plant.products.products.map((p) => p.blank));
+    expectQualityFeatures(actual, (material) => blanks.has(material));
+  }
+  const machines = [...settled.values()];
+  const bound = machines.length === 0 ? Number.NEGATIVE_INFINITY : Math.min(...machines);
+  expect(actual.finals.map((f) => f.final)).toEqual(actual.finals.map((f) => f.latest <= bound));
+  return {
+    units: actual.units.length,
+    lots: actual.lots.length,
+    cartons: actual.cartons.length,
+    final: actual.finals.filter((f) => f.final).length,
+  };
+}
+
+/** Every genealogy row without wall-clock columns, in key order (shuffled = in order). */
+async function storedGenealogy(db: Kysely<Database>) {
+  return {
+    units: await db
+      .selectFrom('genealogy.serial_unit')
+      .select(['epoch', 'part_id', 'serial', 'product', 'order_id', 'status', 'carton_id'])
+      .orderBy('epoch')
+      .orderBy('part_id')
+      .execute(),
+    records: await db
+      .selectFrom('genealogy.unit_record')
+      .selectAll()
+      .orderBy('equipment')
+      .orderBy('epoch')
+      .orderBy('seq')
+      .execute(),
+    links: await db
+      .selectFrom('genealogy.genealogy_link')
+      .selectAll()
+      .orderBy('kind')
+      .orderBy('epoch')
+      .orderBy('part_id')
+      .orderBy('equipment')
+      .orderBy('seq')
+      .orderBy('position')
+      .execute(),
+    cartons: await db
+      .selectFrom('genealogy.carton')
+      .select(['id', 'order_id', 'number', 'product', 'capacity', 'status', 'closed_at', 'members'])
+      .orderBy('id')
+      .execute(),
+    lots: await db
+      .selectFrom('genealogy.material_lot')
+      .select(['id', 'material', 'quantity', 'status', 'feed_id'])
+      .orderBy('id')
+      .execute(),
+    incidents: await db.selectFrom('genealogy.genealogy_incident').select(['key']).execute(),
+  };
+}
+
+/** A delivery's plant time (its `sourceTime`; telemetry and snapshots have one too). */
+const deliveryTime = (d: Delivery): number =>
+  Date.parse((JSON.parse(d.payload) as { sourceTime: string }).sourceTime);
+
+/**
+ * Per-test limits: with execution and genealogy (#199) the golden week takes about 165 s in order
+ * (a cut and two full trace comparisons of 2,200 units) and 205 s shuffled locally; quality-01's
+ * shuffled test, with its two extra orderings, about 200 s. The end-to-end job's limit grows
+ * with them (CI does not run it; the local gate has none).
+ */
+const IN_ORDER_MS = 360_000;
+const SHUFFLED_MS = 480_000;
 
 export interface Scenario {
   readonly seed: number;
@@ -1846,6 +2010,33 @@ export interface Scenario {
    * execution modules, reconciled per order, operation and unit; the pinned comparison counts.
    */
   readonly orders?: OrdersPins;
+  /**
+   * Genealogy (#199): units, lots and cartons against the golden's `trace.json`, in order and
+   * shuffled; the pinned counts. In schedule mode the orders and execution modules run too (no
+   * orders, the plant's lots).
+   */
+  readonly genealogy?: GenealogyPins & {
+    /**
+     * A plant time the in-order replay stops at first (ISO): with every fact before it delivered,
+     * the MES's genealogy equals `traceAsOf(truth, cut)` (#199, plan HIGH B).
+     */
+    readonly cut?: string;
+    /** The counts compared at the cut. */
+    readonly atCut?: GenealogyPins;
+    /** `quality-01`'s required features, asserted to exist in the MES's genealogy. */
+    readonly features?: boolean;
+  };
+}
+
+/** What a genealogy reconciliation compares, pinned (#199). */
+export interface GenealogyPins {
+  /** Units traced back (every unit with a record). */
+  readonly units: number;
+  /** Lots consumed, each traced forward. */
+  readonly lots: number;
+  readonly cartons: number;
+  /** Backward traces whose answer is final. */
+  readonly final: number;
 }
 
 /** What an orders-mode reconciliation compares, pinned (#175). */
@@ -1863,7 +2054,7 @@ export async function golden(
   name: string,
   pinned: Pick<
     Scenario,
-    'oeeBuckets' | 'alarmComparisons' | 'settledToEnd' | 'shifts' | 'orders'
+    'oeeBuckets' | 'alarmComparisons' | 'settledToEnd' | 'shifts' | 'orders' | 'genealogy'
   > = {},
 ): Promise<Scenario> {
   const dir = join(GOLDENS, name);
@@ -1894,6 +2085,17 @@ export async function goldenWeek(): Promise<Scenario> {
     // 15 shift reports (#144), all final but Friday's shift C: every machine shuts down exactly at
     // its end, so its alarm KPI buckets (end + fleetingMs) stay provisional.
     shifts: { instances: 15, final: 14, compared: 255 },
+    // Genealogy (#199) in schedule mode: every unit without an order or carton, the plant's lots
+    // (stock.yaml); also at Wednesday 14:00 Istanbul against `traceAsOf`.
+    genealogy: {
+      units: 2200,
+      lots: 7,
+      cartons: 0,
+      // Every machine shuts down at the end of the last shift, after every record.
+      final: 2200,
+      cut: '2026-10-14T11:00:00.000Z',
+      atCut: { units: 1251, lots: 4, cartons: 0, final: 1247 },
+    },
   };
 }
 
@@ -1948,6 +2150,45 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const { db, equipment, ingest, masterData, alarms, send } = await mes();
         reference = db;
         let stack: OrdersStack | undefined;
+        const genealogyTruth =
+          span.genealogy !== undefined && span.golden !== undefined
+            ? await traceTruth(span.golden, run)
+            : undefined;
+        /**
+         * The rest of the run; with a genealogy cut (#199), first the facts before it, then the
+         * MES's genealogy against `traceAsOf(truth, cut)`, then the others.
+         */
+        const deliverRest = async (rest: readonly Delivery[]) => {
+          const cut = span.genealogy?.cut;
+          if (stack && genealogyTruth && cut !== undefined) {
+            const at = Date.parse(cut);
+            await send(rest.filter((d) => deliveryTime(d) < at));
+            await settleOrders(stack);
+            const settled = new Map<string, number>();
+            for (const event of run.events) {
+              if (
+                event.machineId &&
+                DEVICE_FACTS.includes(event.type) &&
+                Date.parse(event.at) < at
+              ) {
+                settled.set(event.machineId, Date.parse(event.at));
+              }
+            }
+            const counts = await expectGenealogy(
+              stack.genealogy,
+              projectionAsOf(genealogyTruth.cutTrace, at),
+              genealogyTruth.truth,
+              settled,
+            );
+            if (span.genealogy?.atCut !== undefined) expect(counts).toEqual(span.genealogy.atCut);
+            console.log(
+              `${title}: in order, at ${cut} (traceAsOf): ${String(counts.units)} units, ${String(counts.lots)} lots and ${String(counts.cartons)} cartons equal the cut truth; ${String(counts.final)} backward traces final`,
+            );
+            await send([...rest.filter((d) => deliveryTime(d) >= at), end]);
+          } else {
+            await send([...rest, end]);
+          }
+        };
         if (span.orders !== undefined && span.golden !== undefined) {
           // Orders mode (#175, B3): the machines' first facts, then the MES dispatches the released
           // orders while the CNCs are idle at the start time, then the rest of the run.
@@ -1955,7 +2196,12 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           await send([...anchors, ...before]);
           stack = await ordersStack({ db, ingest, masterData, equipment }, span.golden, run);
           await dispatchScenario(stack);
-          await send([...after, end]);
+          await deliverRest(after);
+        } else if (span.genealogy !== undefined) {
+          // Schedule mode with genealogy (#199): execution and genealogy follow the facts.
+          await send(anchors);
+          stack = await ordersStack({ db, ingest, masterData, equipment }, undefined, run);
+          await deliverRest(facts);
         } else {
           await send([...anchors, ...facts, end]);
         }
@@ -1993,13 +2239,30 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         console.log(
           `${title}: in order, lots and operator of every cycle equal the event log's (${String(traced.tracedCycles)} cycles with ${String(traced.lots)} lots, ${String(traced.operatorCycles)} with an operator, ${String(traced.operatorChanged)} whose operator changed before the cycle ended)`,
         );
-        if (stack && span.orders) {
+        if (stack) {
           await settleOrders(stack);
-          const counts = await expectOrders(stack, ingest, run);
-          expect(counts).toEqual(span.orders);
-          console.log(
-            `${title}: in order, ${String(counts.units)} units, ${String(counts.orders)} orders and ${String(counts.confirmations)} confirmations equal the ground truth`,
-          );
+          if (span.orders) {
+            const counts = await expectOrders(stack, ingest, run);
+            expect(counts).toEqual(span.orders);
+            console.log(
+              `${title}: in order, ${String(counts.units)} units, ${String(counts.orders)} orders and ${String(counts.confirmations)} confirmations equal the ground truth`,
+            );
+          }
+          if (genealogyTruth && span.genealogy) {
+            const counts = await expectGenealogy(
+              stack.genealogy,
+              genealogyTruth.expected,
+              genealogyTruth.truth,
+              lastFacts(run),
+              span.genealogy.features,
+            );
+            const { units, lots, cartons, final } = span.genealogy;
+            expect(counts).toEqual({ units, lots, cartons, final });
+            console.log(
+              `${title}: in order, ${String(counts.units)} units, ${String(counts.lots)} lots and ${String(counts.cartons)} cartons equal trace.json; ${String(counts.final)} backward traces final`,
+            );
+          }
+          await stack.genealogy.stop();
           await stack.execution.stop();
           await stack.orders.stop();
         }
@@ -2017,7 +2280,20 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const next = random(2026);
         const { db, equipment, ingest, masterData, alarms, send } = await mes();
         let stack: OrdersStack | undefined;
-        if (span.orders !== undefined && span.golden !== undefined) {
+        if (span.orders === undefined && span.genealogy !== undefined) {
+          // Schedule mode with genealogy (#199): shuffled with 10 % duplicates, units and cartons
+          // brought up to date every 400 deliveries (judged on partial, reordered data).
+          await send(anchors);
+          stack = await ordersStack({ db, ingest, masterData, equipment }, undefined, run);
+          const copies = facts.filter(() => next() < 0.1);
+          const mixed = shuffle([...facts, ...copies], next);
+          for (let i = 0; i < mixed.length; i += 400) {
+            await send(mixed.slice(i, i + 400));
+            await stack.execution.tick();
+            await stack.genealogy.tick();
+          }
+          await send([end, ...mixed.slice(0, 500)]);
+        } else if (span.orders !== undefined && span.golden !== undefined) {
           // Orders mode (#175): dispatched at the idle start as in order, then the rest shuffled
           // with 10 % duplicates, units, completion and confirmations brought up to date every 400
           // deliveries, so they are judged on partial, reordered data all along (a confirmation
@@ -2032,6 +2308,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
             await send(mixed.slice(i, i + 400));
             await stack.orders.tick();
             await stack.execution.tick();
+            await stack.genealogy.tick();
             await stack.orders.postNow();
           }
           await send([end, ...mixed.slice(0, 500)]);
@@ -2063,14 +2340,33 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         );
         await checkReports('shuffled', { db, equipment, ingest, masterData, alarms });
         await expectCycleLots(ingest, run);
-        if (stack && span.orders) {
+        if (stack) {
           await settleOrders(stack);
-          expect(await expectOrders(stack, ingest, run)).toEqual(span.orders);
-          // The very units, records, scrap records and confirmations as delivered in order.
-          expect(await storedExecution(db)).toEqual(await storedExecution(reference));
-          console.log(
-            `${title}: shuffled, units, records and confirmations equal the in-order run`,
-          );
+          if (span.orders) {
+            expect(await expectOrders(stack, ingest, run)).toEqual(span.orders);
+            // The very units, records, scrap records and confirmations as delivered in order.
+            expect(await storedExecution(db)).toEqual(await storedExecution(reference));
+            console.log(
+              `${title}: shuffled, units, records and confirmations equal the in-order run`,
+            );
+          }
+          if (span.genealogy && span.golden) {
+            const traced = await traceTruth(span.golden, run);
+            const counts = await expectGenealogy(
+              stack.genealogy,
+              traced.expected,
+              traced.truth,
+              lastFacts(run),
+            );
+            const { units, lots, cartons, final } = span.genealogy;
+            expect(counts).toEqual({ units, lots, cartons, final });
+            // The very genealogy rows as delivered in order.
+            expect(await storedGenealogy(db)).toEqual(await storedGenealogy(reference));
+            console.log(
+              `${title}: shuffled, ${String(counts.units)} units, ${String(counts.lots)} lots and ${String(counts.cartons)} cartons equal trace.json and the in-order run`,
+            );
+          }
+          await stack.genealogy.stop();
           await stack.execution.stop();
           await stack.orders.stop();
         }
@@ -2092,6 +2388,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
               await m.send(mixed.slice(i, i + 97));
               await again.orders.tick();
               await again.execution.tick();
+              await again.genealogy.tick();
               await again.orders.postNow();
             }
             await m.send([end]);
@@ -2099,7 +2396,11 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
             await settleOrders(again);
             expect(await expectOrders(again, m.ingest, run)).toEqual(span.orders);
             expect(await storedExecution(m.db)).toEqual(await storedExecution(reference));
+            if (span.genealogy) {
+              expect(await storedGenealogy(m.db)).toEqual(await storedGenealogy(reference));
+            }
             console.log(`${title}: shuffled with seed ${String(seed)}, equal the in-order run`);
+            await again.genealogy.stop();
             await again.execution.stop();
             await again.orders.stop();
             await m.alarms.stop();

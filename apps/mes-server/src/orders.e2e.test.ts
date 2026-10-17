@@ -654,9 +654,9 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
     );
     await until('the job lost', async () => (await command(sent.commandId)).job === 'lost');
     const order = await orders.order(sent.orderId);
-    // Accepted at the head of its CNC, never started, nothing showing the CNC moved on: one
-    // blank may have been taken, so it counts (short, never over).
-    expect(order).toMatchObject({ dispatchLost: true, dispatched: 1 });
+    // Accepted behind the earlier cases' jobs on cnc-01 (the idle run completes none) and never
+    // started: it took no blank (at the head of its queue it would count one).
+    expect(order).toMatchObject({ dispatchLost: true, dispatched: 0 });
     const again = await orders.redispatch(
       sent.orderId,
       { version: order?.version ?? 0, equipment: 'cnc-01' },

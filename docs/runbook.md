@@ -37,6 +37,9 @@ Output:
 
 - `events.jsonl`: one JSON object per line. The first line is the run header (`sim-run/1`: seed, start, end, SHA-256 of the configuration); every other line is an event (`sim-event/1`).
 - `summary.json`: the ground truth (`sim-summary/2`): time in every state per machine, in total and per shift instance; cycles per result; parts started, finished and scrapped by reason; remaining quantity per lot; and the OEE section (inputs per machine, shift bucket and UTC hour; A, P, Q and OEE per machine, work center and shift bucket).
+- `trace.json` (#208): the traceability and SPC ground truth (`sim-trace/1`): every unit's records with lots, operator, leak reading and carton (hashed), lots forward, cartons, the leak test's control limits, points (hashed) and signal episodes, and per leak-test drift its first episode and the counterfactual readings.
+
+`--scenario NAME` runs a golden scenario instead (its seed, span, configuration, stock and injections); `--end ISO-8601` (#208, with `--scenario` only) stops it earlier, e.g. `pnpm sim:headless --scenario quality-01 --end 2026-10-12T14:00:00+03:00` for the shift-A reference of the live `quality` pass (its event log is a prefix of the full run's). `node apps/simulator/src/headless/drift-search.ts quality-01 --from … --to …` reruns probe P4's search of the drift's start (`docs/simulation-model.md`).
 
 A week takes about 0.2 s and about 6 MB of events. The files are written under temporary names and renamed at the end, so a failed run never leaves a mix of old and new files. Invalid options exit with status 2, other failures with status 1. The event and summary formats are described in `docs/simulation-model.md`.
 
@@ -269,14 +272,15 @@ It ends with one record for the pull request's "Gate" section, also written to `
 
 A commit after the gate reruns the jobs its files touch, with `GATE_STEPS` (a comma list of `verify`, `golden`, `e2e`, `smoke`, `reconcile`), and the pull request names them:
 
-| Files changed                                                 | Rerun                               |
-| ------------------------------------------------------------- | ----------------------------------- |
-| Documentation only (`docs/`, `*.md`)                          | `verify` (formatting)               |
-| `apps/simulator`, `packages/sim-core`, `config/plant`         | `verify,golden,e2e,smoke,reconcile` |
-| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`   | `verify,e2e,smoke,reconcile`        |
-| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*` | `verify,smoke,reconcile`            |
-| `e2e/` (reconciliation, Playwright)                           | `verify,reconcile`                  |
-| `scripts/stack-smoke*`                                        | `verify,smoke`                      |
+| Files changed                                                   | Rerun                               |
+| --------------------------------------------------------------- | ----------------------------------- |
+| Documentation only (`docs/`, `*.md`)                            | `verify` (formatting)               |
+| `apps/simulator`, `packages/sim-core`, `config/plant`           | `verify,golden,e2e,smoke,reconcile` |
+| `packages/spc-core`, `packages/trace-core` (shape `trace.json`) | `verify,golden,e2e,smoke,reconcile` |
+| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`     | `verify,e2e,smoke,reconcile`        |
+| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*`   | `verify,smoke,reconcile`            |
+| `e2e/` (reconciliation, Playwright)                             | `verify,reconcile`                  |
+| `scripts/stack-smoke*`                                          | `verify,smoke`                      |
 
 ## Full stack (Compose)
 

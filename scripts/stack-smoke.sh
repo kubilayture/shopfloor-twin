@@ -184,12 +184,12 @@ for _ in $(seq 1 45); do
         then payload -> 'value' -> 'lots' end), -1) || ':' ||
       coalesce(jsonb_typeof(payload -> 'value' -> 'operator'), 'absent')
     from ingest.equipment_event where event_type = 'cycle' and equipment in ('cnc-01', 'cnc-02')
-    order by source_time desc limit 1")
+    order by ingested_at desc limit 1")
   asm_lot=$(as_app -c "select payload -> 'value' -> 'lots' -> 0 ->> 'lot'
     from ingest.equipment_event where event_type = 'cycle' and equipment = 'asm-01'
       and payload -> 'value' -> 'lots' @> '[{}]'
       and jsonb_typeof(payload -> 'value' -> 'operator') = 'string'
-    order by source_time desc limit 1")
+    order by ingested_at desc limit 1")
   case "$cnc_trace" in array:[1-9]*:null) [ -n "$asm_lot" ] && break ;; esac
   sleep 2
 done

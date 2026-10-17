@@ -444,6 +444,17 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
   if (orders !== (scenario.production === 'orders')) {
     throw new Error(`${goldenName} is not a scenario for the ${pass} pass`);
   }
+  // Every injection here is posted as a failure (`/faults/failure`). A `leak-drift` (#196, a
+  // scenario entry with `kind`, as in quality-01) is not one: the live quality pass (#204) posts it
+  // to `/faults/drift/{machine}` and runs on the scenario's own stock. Refused here, not misread.
+  const drifts = (scenario.injections ?? []).filter(
+    (injection) => (injection as { kind?: unknown }).kind !== undefined,
+  );
+  if (drifts.length > 0) {
+    throw new Error(
+      `${goldenName}: ${String(drifts.length)} injection(s) with a kind (leak-drift) need the quality pass (#204)`,
+    );
+  }
   const loaded = await loadPlantConfig(join(REPO, 'config/plant'));
   if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
   const shifts = loaded.config.shifts;

@@ -72,7 +72,7 @@ const app = await buildControlApp({
     failure: { inject: (request) => run.injectFailure(request), list: () => run.injections() },
     drift: { inject: (request) => run.injectLeakDrift(request), list: () => run.drifts() },
   },
-  groundTruth: () => ({ epoch: servers.epoch, ...run.groundTruth() }),
+  groundTruth: (traceAsOf) => ({ epoch: servers.epoch, ...run.groundTruth(traceAsOf) }),
   logger: { level: env.LOG_LEVEL },
 });
 const log = app.log;

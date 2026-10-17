@@ -1,0 +1,13 @@
+# Cartons (Phase 8 plan "Genealogy", ADR-0034). Not a simulation input and not part of any golden
+# summary: the MES forms cartons by this rule (`trace-core`'s packing rule) and the simulator's
+# trace ground truth (`trace.json`, #208) applies the same rule.
+#
+# operation: the operation whose good cycles pack a unit (the routing's last).
+# capacity: units per carton, per product (assumptions). An order's good packing cycles fill its
+# cartons in plant-time order; a carton closes when full, and the order's last carton when the
+# order is complete, so a short order has a partial carton.
+
+operation: OP50
+capacity:
+  VB-100: 20
+  VB-200: 12

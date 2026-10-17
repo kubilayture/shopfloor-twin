@@ -78,6 +78,10 @@ describe('OPC UA collector: operator at the cycle start across a shift change (#
       await wait(250);
     }
     await simulator.post('/api/v1/pause');
+    expect(
+      Date.parse(simulator.events.at(-1)?.at ?? ''),
+      'the simulator reached 14:06 within the deadline',
+    ).toBeGreaterThanOrEqual(UNTIL);
     await wait(1_500);
 
     // From the simulator's own events: ASM-01's operator events, and each part's first

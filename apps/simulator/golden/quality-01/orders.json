@@ -1,0 +1,184 @@
+{
+  "orders": [
+    {
+      "orderNumber": "PO-2610-101",
+      "revision": 1,
+      "product": "VB-100",
+      "quantity": 40,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-12T14:00:00+03:00",
+      "priority": 2
+    },
+    {
+      "orderNumber": "PO-2610-102",
+      "revision": 1,
+      "product": "VB-100",
+      "quantity": 40,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-12T14:00:00+03:00",
+      "priority": 2
+    },
+    {
+      "orderNumber": "PO-2610-103",
+      "revision": 1,
+      "product": "VB-100",
+      "quantity": 60,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-12T14:00:00+03:00",
+      "priority": 2
+    },
+    {
+      "orderNumber": "PO-2610-104",
+      "revision": 1,
+      "product": "VB-100",
+      "quantity": 60,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-12T14:00:00+03:00",
+      "priority": 2
+    },
+    {
+      "orderNumber": "PO-2610-105",
+      "revision": 1,
+      "product": "VB-100",
+      "quantity": 400,
+      "plannedStart": "2026-10-12T06:00:00+03:00",
+      "dueDate": "2026-10-14T06:00:00+03:00",
+      "priority": 3
+    },
+    {
+      "orderNumber": "PO-2610-106",
+      "revision": 1,
+      "product": "VB-200",
+      "quantity": 36,
+      "plannedStart": "2026-10-13T06:00:00+03:00",
+      "dueDate": "2026-10-13T14:00:00+03:00",
+      "priority": 2
+    },
+    {
+      "orderNumber": "PO-2610-107",
+      "revision": 1,
+      "product": "VB-200",
+      "quantity": 300,
+      "plannedStart": "2026-10-13T06:00:00+03:00",
+      "dueDate": "2026-10-15T06:00:00+03:00",
+      "priority": 3
+    }
+  ],
+  "lots": [
+    {
+      "id": "BL100-Q01-01",
+      "material": "BLANK-100",
+      "quantity": 50
+    },
+    {
+      "id": "BL100-Q01-02",
+      "material": "BLANK-100",
+      "quantity": 70
+    },
+    {
+      "id": "BL100-Q01-03",
+      "material": "BLANK-100",
+      "quantity": 900
+    },
+    {
+      "id": "BL200-Q01-01",
+      "material": "BLANK-200",
+      "quantity": 60
+    },
+    {
+      "id": "BL200-Q01-02",
+      "material": "BLANK-200",
+      "quantity": 400
+    },
+    {
+      "id": "SK1-Q01-01",
+      "material": "SK-1",
+      "quantity": 60
+    },
+    {
+      "id": "SK1-Q01-02",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-03",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-04",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-05",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-06",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-07",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-08",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-09",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-10",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-11",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-12",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-13",
+      "material": "SK-1",
+      "quantity": 12
+    },
+    {
+      "id": "SK1-Q01-14",
+      "material": "SK-1",
+      "quantity": 1000
+    },
+    {
+      "id": "SK2-Q01-01",
+      "material": "SK-2",
+      "quantity": 40
+    },
+    {
+      "id": "SK2-Q01-02",
+      "material": "SK-2",
+      "quantity": 400
+    },
+    {
+      "id": "SP100-Q01-01",
+      "material": "SP-100",
+      "quantity": 1200
+    },
+    {
+      "id": "SP200-Q01-01",
+      "material": "SP-200",
+      "quantity": 500
+    }
+  ]
+}

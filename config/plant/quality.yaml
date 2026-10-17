@@ -1,0 +1,18 @@
+# SPC characteristics (Phase 8 plan "SPC", ADR-0032). Not a simulation input and not part of any
+# golden summary: the MES's `quality` module charts them, and the simulator's trace ground truth
+# (`trace.json`, #208) derives the same charts with `spc-core`. The specification limit is the
+# leak test's `upperLimit` in process.yaml (not repeated here); readings are whole steps of its
+# `resolution`.
+#
+# subgroupSize: first-pass readings per X̄-R subgroup, in plant-time order.
+# baselineSubgroups: complete subgroups limit version 1 is estimated from (then frozen).
+# rules: Nelson rules enabled per chart (ADR-0032 defaults); on MR and R only rule 1 applies.
+
+characteristics:
+  - id: leak-rate
+    name: Leak rate (pressure decay)
+    equipment: lkt-01
+    operation: OP40
+    subgroupSize: 5
+    baselineSubgroups: 20
+    rules: { I: [1, 2, 5], MR: [], Xbar: [1, 2, 5], R: [1] }

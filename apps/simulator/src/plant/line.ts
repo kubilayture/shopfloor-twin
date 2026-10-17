@@ -10,6 +10,7 @@ import {
   type JobTransition,
 } from '@shopfloor/contracts';
 import {
+  LEAK_TEST_CHARACTERISTIC,
   driftIssues,
   driftSteps,
   injectionIssues,
@@ -1678,7 +1679,7 @@ export class ProductionLine {
       const config = this.#config.process.leakTest;
       const reading = station.leak.measure(this.#now);
       const measurement = {
-        characteristic: 'leak-rate',
+        characteristic: LEAK_TEST_CHARACTERISTIC,
         value: reading.value,
         unit: config.unit,
         upperLimit: config.upperLimit,

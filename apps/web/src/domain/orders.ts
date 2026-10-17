@@ -333,7 +333,7 @@ export function draftProblems(draft: ActionDraft, order: OrderDto): string[] {
 
 /** A failed order write: the kinds of `writeFailure` and the orders module's 409s. */
 export interface OrderFailure {
-  readonly kind: WriteFailure['kind'] | 'stale' | 'state' | 'unsettled';
+  readonly kind: WriteFailure['kind'] | 'stale' | 'state' | 'unsettled' | 'sign-off';
   readonly text: string;
   /** The problem type the MES answered, shown as is (`urn:shopfloor:…`). */
   readonly type: string | undefined;
@@ -358,6 +358,14 @@ export function orderFailure(error: unknown): OrderFailure {
         kind: 'state',
         type,
         text: `Not done: the order's status does not allow this now (409, ${detail}).`,
+      };
+    }
+    if (type === PROBLEM_TYPES.signOffMissing) {
+      // #177: a close needs every operation signed off at its work center's terminal.
+      return {
+        kind: 'sign-off',
+        type,
+        text: `Not closed: not every operation is signed off at its terminal yet (409, ${detail}). Operators sign off each completed operation at their work center's terminal; then close again.`,
       };
     }
     if (type === PROBLEM_TYPES.commandsUnsettled) {

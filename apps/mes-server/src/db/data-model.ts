@@ -148,7 +148,7 @@ const TABLES: Readonly<Record<string, string>> = {
   'shifts.handover_audit':
     'Frozen legacy audit of every note create and edit until #169 (before, after, actor as typed, wall and plant time, request id, version): its rows were copied into `identity.audit_log` (migration 0018); triggers refuse INSERT, UPDATE, DELETE and TRUNCATE, and the MES may only read it (#144, ADR-0023, ADR-0027).',
   'shifts.crew_assignment':
-    'Who is signed on at a work center during a shift instance: user, work center, the terminal session, wall and plant time of sign-on and end, and why it ended (sign-off, session end, shift end); at most one open row per user and work center (#169; written from #177).',
+    'Who is signed on at a work center during a shift instance: user, work center, the terminal session, wall and plant time of sign-on and end, and why it ended (sign-off, session end, shift end, replaced by a sign-on from another session); at most one open row per user and work center (#169; written from the terminal since #177).',
   'identity.role':
     'The five roles (operator, maintenance, quality, supervisor, admin), as `ROLES` in contracts; what each may do is `ROLE_PERMISSIONS` there (#168).',
   'identity.user_account':
@@ -163,7 +163,7 @@ const TABLES: Readonly<Record<string, string>> = {
   'orders.production_order':
     'One row per ERP order number at the revision held: product, quantity, planned start and due date (plant time), status (imported, rejected, released, dispatched, in-progress, completed, closed, cancelled), the flags short, dispatch-failed and dispatch-lost, the ERP’s routing and BOM, and the version a supervisor write names (#174).',
   'orders.order_operation':
-    'The routing operations of an order with their work centers; rebuilt when a new revision replaces an order only imported (#174; #175 adds its tracking).',
+    'The routing operations of an order with their work centers; rebuilt when a new revision replaces an order only imported (#174; #175 adds its tracking); a version raised by every terminal write on it and the operator’s sign-off (user, wall and plant time), allowed once the operation has its final confirmation (#177).',
   'orders.dispatch_command':
     'The command outbox: one `cmd/load-order` per dispatch (`{order}~OP10~{n}`) with its CNC, job, notBefore and device epoch, its queue position, and its reading (state, settled, failed, acceptance and confirmation by the job fact, the job’s state and times, blanks a lost job started, seqAfterExpiry) (#174, ADR-0029).',
   'orders.command_attempt':
@@ -174,6 +174,8 @@ const TABLES: Readonly<Record<string, string>> = {
     'Incidents of the orders module (ERP feed changed, ERP conflict or refusal, command failed or unconfirmed, unknown or duplicate job, dispatch lost), open at most once per key (#174).',
   'orders.confirmation':
     'Confirmations sent to the ERP per order operation: the final one (n = 1, totals) and corrections (n ≥ 2, signed deltas against the sum of the earlier ones), each with the totals it sums to; written with its outbound message, append-only by grants (#175).',
+  'orders.operation_activity':
+    'Operator activity on an order operation: intervals of work (from a start or resume) and pause (with its reason), per user, with wall and plant times and why each ended (paused, resumed, the operation signed off, the operator’s crew row ended); the operator’s time, never the machine’s; at most one open interval per user and operation (#177).',
   'execution.unit':
     'Units: one part of one simulator run, keyed (device epoch, partId), with its serial, the order its OP10 cycle’s job gives, status (wip, packed, scrapped, lost), position in WIP and any routing suspect or violation; derived and rebuilt from cycle and job facts (#175).',
   'execution.operation_record':

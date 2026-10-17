@@ -8,9 +8,11 @@ import {
   passwordLength,
 } from './identity.ts';
 import { ORDERS_TOPIC, orderPushMessages } from './orders-api.ts';
+import { crewMemberSchema, terminalPushMessages, terminalTopicSchema } from './terminal-api.ts';
 
 export * from './execution-api.ts';
 export * from './orders-api.ts';
+export * from './terminal-api.ts';
 
 // The MES API's responses and WebSocket messages (#97, ADR-0019), shared by `mes-server`, which
 // generates docs/api/mes.openapi.json and mes-realtime.schema.json from them, and `web`, which
@@ -137,6 +139,22 @@ export const PROBLEM_TYPES = {
   commandsUnsettled: 'urn:shopfloor:commands-unsettled',
   /** 409 (#175): the scrap record's `version` sent is not its current one. */
   scrapStale: 'urn:shopfloor:scrap-stale',
+  /** 409 (#177): a close while an operation of the order is not signed off at its terminal. */
+  signOffMissing: 'urn:shopfloor:sign-off-missing',
+  /** 409: the order operation's `version` sent is not its current one. */
+  operationStale: 'urn:shopfloor:operation-stale',
+  /**
+   * 409: the operation doesn't allow the terminal write: a start while working, a pause while not
+   * working, a sign-off before the MES has it complete or after it was signed off, an order not
+   * dispatched yet or closed.
+   */
+  operationState: 'urn:shopfloor:operation-state',
+  /** 409: a terminal write by an operator not signed on at the work center with this session. */
+  notSignedOn: 'urn:shopfloor:not-signed-on',
+  /** 409: a sign-on with a desk session (log in at the terminal: a `terminal` session). */
+  terminalSessionRequired: 'urn:shopfloor:terminal-session-required',
+  /** 409: a sign-on while the plant clock is in no shift instance. */
+  noShift: 'urn:shopfloor:no-shift',
 } as const;
 
 export type ProblemType = (typeof PROBLEM_TYPES)[keyof typeof PROBLEM_TYPES];
@@ -1289,6 +1307,11 @@ export const shiftReportSchema = z
         .describe('The plant and every operator position'),
     }),
     notes: z.array(noteWithHistorySchema),
+    crew: z
+      .array(crewMemberSchema)
+      .describe(
+        'Who signed on at a terminal during the shift (#177), by work center and sign-on; rows close at the shift end at the latest',
+      ),
   })
   .describe(
     'The shift report (ADR-0025), computed on read: final when its inputs are, with the composite revision',
@@ -1388,6 +1411,7 @@ const topic = z.union([
   telemetryTopic,
   oeeTopic,
   alarmKpiTopic,
+  terminalTopicSchema,
 ]);
 
 export const clientMessageSchema = z
@@ -1507,6 +1531,7 @@ export const serverMessageSchema = z
       note: handoverNoteSchema,
     }),
     ...orderPushMessages,
+    ...terminalPushMessages,
     z.object({ type: z.literal('telemetry'), ...telemetrySample.shape }),
     z.object({ type: z.literal('clock'), ...clockSchema.shape }),
     z.object({

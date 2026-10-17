@@ -8,11 +8,14 @@
  * - `Orders.start()` / `stop()`; `onChange(listener)`: order and command upserts (push `orders`).
  * - Reads: `list(query)`, `order(id)`, `detail(id)`, `commands(filter)`, `incidents(query)`.
  * - Writes (a version per order, 409 `order-stale`; audited through `Identity.audit`): `release`,
- *   `dispatch`, `cancel`, `redispatch`, `close`; `complete(id, { short, at })` and
+ *   `dispatch`, `cancel`, `redispatch`, `close` (every operation signed off first, #177); `complete(id, { short, at })` and
  *   `confirm(id, operation, totals, at)` are the execution module's seams (#175): the order's
  *   completion, and a final confirmation or a correction with the deltas through the ERP outbox;
  *   `confirmations(id)` reads them back; `useBlankCounter(counter)` counts a lost job's blanks from
  *   the execution module's units.
+ * - The operator terminal (#177): `operations(filter)`, `activities(filter)`; `startWork`,
+ *   `pauseWork`, `resumeWork`, `signOff` (a version per order operation, 409 `operation-stale`,
+ *   audited); `endActivities(who)` and `endOrphanedActivities(signedOn)` when crew rows end.
  * - `importNow()`, `postNow()`, `tick()`: one round of the ERP feed, the ERP outbox and the
  *   commands (the timers call them; tests call them directly).
  * - `readCommand` (pure): ADR-0029's reading of a command; `chooseCnc`/`estimateFinish` (pure):
@@ -44,6 +47,14 @@ export type {
   OrdersOptions,
   WriteContext,
 } from './orders.ts';
+export { OPERATION_AUDIT_ENTITY } from './operations.ts';
+export type {
+  ActivityRecord,
+  OperationRecord,
+  TerminalAction,
+  TerminalRequest,
+  TerminalWriteContext,
+} from './operations.ts';
 export { MqttCommandPublisher } from './publisher.ts';
 export type { CommandPublisher, MqttPublisherOptions } from './publisher.ts';
 export { ORDERS_COLUMNS } from './tables.ts';

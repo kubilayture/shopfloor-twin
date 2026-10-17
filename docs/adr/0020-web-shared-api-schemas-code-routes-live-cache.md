@@ -57,3 +57,8 @@ DOM for tests: (a) Vitest browser mode with Playwright; (b) jsdom; (c) happy-dom
 - **Routes:** `/orders` (a validated `status` filter) and `/orders/$id` in `src/routes/orders.ts`: thirteen routes; the terminal's two make fifteen, still code-based.
 - **Live data:** the `orders` topic has no snapshot, like `alarms` and `shifts`: `['live', 'orders']` holds order upserts (the higher `version` wins) and command upserts (the later `updatedAt` wins), emptied when a screen takes or lets go of the topic and after a lost connection or a stopped client. A push of an order or one of its commands also invalidates that order's detail, execution and scrap reads, because the push carries none of them; execution has no push of its own yet, so those reads are also polled every 10 s while an order is open (#177 may replace the polling with a push).
 - **Writes:** each supervisor action is a form whose draft keeps the order `version` it started from, as the coding and note drafts do; a draft on an older version is never sent with the newer one. The detail screen is keyed by the order id.
+
+## Notes (#177): the terminal routes
+
+- Two more routes in `src/routes/terminal.ts`: `/terminal` (the work center picker, inside the app's layout, linked for users with `terminal:operate`) and `/terminal/$workCenter`. The shell shows the latter on its own, like `/login`: the screen signs operators on itself (a `terminal` session) and never keeps a page under a re-login, since the next person at a shared tablet is usually someone else.
+- The screen is built for a tablet (375–1024 px, touch targets of at least 56 px) and needs nothing beyond the app's CSP (`script-src 'self'`, `style-src 'self'`, no inline styles).

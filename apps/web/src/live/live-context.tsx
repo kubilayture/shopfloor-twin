@@ -1,4 +1,10 @@
-import { ALARMS_TOPIC, ORDERS_TOPIC, SHIFTS_TOPIC } from '@shopfloor/contracts/mes-api';
+import {
+  ALARMS_TOPIC,
+  ORDERS_TOPIC,
+  SHIFTS_TOPIC,
+  terminalTopic,
+  type TerminalViewDto,
+} from '@shopfloor/contracts/mes-api';
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, use, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import {
@@ -92,6 +98,27 @@ export function useShiftsTopic(): void {
       resetLiveShifts(queryClient);
     };
   }, [client, queryClient]);
+}
+
+/**
+ * Holds `terminal:<workCenter>` (#177) and returns the view it pushes. The pushed copy is dropped
+ * when the screen lets go, so a later visit (perhaps by someone else) starts from a fresh
+ * snapshot, never from what was shown before.
+ */
+export function useLiveTerminal(workCenter: string): TerminalViewDto | undefined {
+  const client = useLiveClient();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const key = liveKeys.terminal(workCenter);
+    queryClient.removeQueries({ queryKey: key, exact: true });
+    const release = client.subscribe(terminalTopic(workCenter));
+    return () => {
+      release();
+      queryClient.removeQueries({ queryKey: key, exact: true });
+    };
+  }, [client, queryClient, workCenter]);
+  return useQuery<TerminalViewDto>({ queryKey: liveKeys.terminal(workCenter), queryFn: skipToken })
+    .data;
 }
 
 /**

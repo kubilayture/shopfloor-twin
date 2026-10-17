@@ -1,8 +1,9 @@
 import type { FloodEpisode } from '@shopfloor/alarm-core';
-import { ORDERS_TOPIC } from '@shopfloor/contracts/mes-api';
+import { ORDERS_TOPIC, type TerminalViewDto } from '@shopfloor/contracts/mes-api';
 import { Counter, Gauge, Histogram, type Registry } from 'prom-client';
 import type { AlarmEvent, AlarmKpiBucket, AlarmScope } from '../alarms/index.ts';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
+import type { ExecutionChange } from '../execution/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
 import type { DowntimeChange, OeeBucket, OeeChange, OeeScope } from '../oee/index.ts';
 import { alarmKpiDto, floodEpisodeDto, occurrenceDto, pointDto } from './alarm-dto.ts';
@@ -86,9 +87,21 @@ export interface PushSources {
   readonly shifts?: {
     onChange(listener: (change: ShiftChange) => void): () => void;
   };
-  /** Order and command changes (#174). */
+  /** Order and command changes (#174); operation changes of the terminal (#177). */
   readonly orders?: {
     onChange(listener: (change: OrderChange) => void): () => void;
+  };
+  /** Units, quantities and scrap records changed (#175): the terminal topics follow them. */
+  readonly execution?: {
+    onChange(listener: (change: ExecutionChange) => void): () => void;
+  };
+  /**
+   * The operator terminal (#177): the work centers `terminal:<id>` may name with their machines,
+   * and the view of one.
+   */
+  readonly terminal?: {
+    readonly topics: ReadonlyMap<string, { readonly members: readonly string[] }>;
+    view(workCenter: string): Promise<TerminalViewDto>;
   };
 }
 
@@ -105,6 +118,8 @@ export interface PushOptions {
   readonly retryMs?: number;
   /** At most one OEE delta per topic this often (1 s, plan "API, push and web"). */
   readonly oeeMs?: number;
+  /** At most one terminal view per topic this often (500 ms; plan: counts within 2 s, #177). */
+  readonly terminalMs?: number;
   /** OEE topics per client (16); alarm KPI topics count separately against the same limit. */
   readonly maxOeeTopics?: number;
   readonly maxClients?: number;
@@ -143,6 +158,8 @@ interface Client {
 
 const MAX_HOLDS = 4;
 
+const PACED_NAMES = { oee: 'OEE', 'alarm-kpi': 'alarm KPI', terminal: 'terminal' } as const;
+
 /**
  * One paced topic with subscribers (`oee:<id>`, `alarm-kpi:<scope>`): what it last pushed and
  * whether it must be computed. At most one delta per `oeeMs`.
@@ -150,7 +167,7 @@ const MAX_HOLDS = 4;
 interface PacedTopic {
   /** The topic's name, e.g. `oee:cnc-01` or `alarm-kpi:plant`. */
   readonly name: string;
-  readonly kind: 'oee' | 'alarm-kpi';
+  readonly kind: 'oee' | 'alarm-kpi' | 'terminal';
   readonly members: ReadonlySet<string>;
   /** The snapshot and the delta message, and their content as JSON (compared for deltas). */
   readonly compute: () => Promise<{ snapshot: ServerMessage; delta: ServerMessage; json: string }>;
@@ -221,6 +238,7 @@ export class PushHub {
       clockMs: options.clockMs ?? 1_000,
       retryMs: options.retryMs ?? 100,
       oeeMs: options.oeeMs ?? 1_000,
+      terminalMs: options.terminalMs ?? 500,
       maxOeeTopics: options.maxOeeTopics ?? LIMITS.oeeTopics,
       maxClients: options.maxClients ?? 64,
       maxSubscriptions: options.maxSubscriptions ?? 64,
@@ -289,6 +307,26 @@ export class PushHub {
         sources.orders.onChange((change) => {
           this.#onOrder(change);
         }),
+      );
+    }
+    if (sources.execution) {
+      this.#detach.push(
+        sources.execution.onChange((change) => {
+          // A scrap record names its machine: only that work center's view changes. An order's
+          // units may be anywhere on the line.
+          if (change.type === 'scrap') this.#terminalsOf(change.record.equipment);
+          else this.#terminalsDirty();
+        }),
+      );
+    }
+    if (sources.terminal && !sources.oee && !sources.alarms) {
+      this.#timers.push(
+        setInterval(
+          () => {
+            this.#oeeTick();
+          },
+          Math.max(10, Math.floor(this.#options.terminalMs / 4)),
+        ).unref(),
       );
     }
     if (sources.alarms) {
@@ -426,6 +464,10 @@ export class PushHub {
     }
     if (request.topic.startsWith('alarm-kpi:')) {
       this.#alarmKpiRequest(client, sources, request);
+      return;
+    }
+    if (request.topic.startsWith('terminal:')) {
+      this.#terminalRequest(client, sources, request);
       return;
     }
     if (request.topic === STATES_TOPIC) {
@@ -569,7 +611,52 @@ export class PushHub {
     });
   }
 
+  /**
+   * `terminal:<workCenter>` (#177): the work center's whole terminal view as a snapshot, then as an
+   * update whenever it changed (orders, operations, execution, crew, its machines' states), at most
+   * once per `terminalMs`.
+   */
+  #terminalRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    const id = request.topic.slice('terminal:'.length);
+    const terminal = sources.terminal;
+    const known = terminal?.topics.get(id);
+    if (!terminal || !known) {
+      this.#send(client, {
+        type: 'error',
+        code: terminal ? 'unknown-equipment' : 'unknown-topic',
+        detail: terminal ? `no work center ${id}` : 'terminal push is not available',
+      });
+      return;
+    }
+    const name = request.topic;
+    this.#pacedRequest(client, request, 'terminal', known.members, async () => {
+      const view = await terminal.view(id);
+      return {
+        snapshot: { type: 'snapshot', topic: name, view },
+        delta: { type: 'terminal', topic: name, view },
+        json: JSON.stringify(view),
+      };
+    });
+  }
+
+  /** The terminal topics whose work center holds the machine are computed again. */
+  #terminalsOf(equipment: string): void {
+    for (const topic of this.#paced.values()) {
+      if (topic.kind === 'terminal' && topic.members.has(equipment)) topic.dirty = true;
+    }
+  }
+
+  /** Every terminal topic is computed again (an order, operation or execution change). */
+  #terminalsDirty(workCenter?: string): void {
+    for (const topic of this.#paced.values()) {
+      if (topic.kind !== 'terminal') continue;
+      if (workCenter === undefined || topic.name === `terminal:${workCenter}`) topic.dirty = true;
+    }
+  }
+
   #onOrder(change: OrderChange): void {
+    this.#terminalsDirty();
+    if (change.type === 'operation') return;
     let data: string | undefined;
     const key =
       change.type === 'order' ? `order:${change.order.id}` : `command:${change.command.commandId}`;
@@ -585,6 +672,10 @@ export class PushHub {
   }
 
   #onShift(change: ShiftChange): void {
+    if (change.type === 'crew') {
+      this.#terminalsDirty(change.crew.workCenter);
+      return;
+    }
     let data: string | undefined;
     const key =
       change.type === 'instance'
@@ -648,7 +739,7 @@ export class PushHub {
       this.#send(client, {
         type: 'error',
         code: 'too-many-subscriptions',
-        detail: `at most ${String(this.#options.maxOeeTopics)} ${kind === 'oee' ? 'OEE' : 'alarm KPI'} topics`,
+        detail: `at most ${String(this.#options.maxOeeTopics)} ${PACED_NAMES[kind]} topics`,
       });
       return;
     }
@@ -736,21 +827,23 @@ export class PushHub {
     const clockKey = clock && `${String(clock.epoch)}|${String(clock.watermark.getTime())}`;
     for (const topic of this.#paced.values()) {
       if (topic.kind === 'alarm-kpi' && topic.clock !== clockKey) topic.dirty = true;
-      if (
-        topic.awaiting.size > 0 ||
-        (topic.dirty && now - topic.computedAt >= this.#options.oeeMs)
-      ) {
+      if (topic.awaiting.size > 0 || (topic.dirty && now - topic.computedAt >= this.#pace(topic))) {
         topic.clock = clockKey;
         this.#computePaced(topic);
       }
     }
   }
 
+  /** How often a paced topic may push: `terminalMs` for terminal views, else `oeeMs`. */
+  #pace(topic: PacedTopic): number {
+    return topic.kind === 'terminal' ? this.#options.terminalMs : this.#options.oeeMs;
+  }
+
   #computePaced(topic: PacedTopic): void {
     if (!this.#sources || topic.inFlight) return;
     // A snapshot for a new subscriber may come early; deltas to the others keep their pace.
     const now = Date.now();
-    const deltaDue = now - topic.deltaAt >= this.#options.oeeMs;
+    const deltaDue = now - topic.deltaAt >= this.#pace(topic);
     const started = performance.now();
     topic.inFlight = true;
     topic.dirty = false;
@@ -951,6 +1044,10 @@ export class PushHub {
       .join('|');
     if (this.#lastState.get(current.equipment) === key) return;
     this.#lastState.set(current.equipment, key);
+    // A terminal view shows its machines' states (#177).
+    for (const topic of this.#paced.values()) {
+      if (topic.kind === 'terminal' && topic.members.has(current.equipment)) topic.dirty = true;
+    }
     let data: string | undefined;
     for (const client of this.#clients) {
       if (!client.states) continue;

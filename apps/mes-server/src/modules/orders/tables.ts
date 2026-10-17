@@ -54,6 +54,38 @@ export interface OrderOperationTable {
   operation: string;
   position: number;
   work_center: string;
+  /** Raised by every terminal write on the operation (#177). */
+  version: Defaulted<number>;
+  /** The operator's sign-off (#177): user id and name, wall and plant time. */
+  signed_off_user_id: ColumnType<number | null, number | null | undefined, number | null>;
+  signed_off_by: ColumnType<string | null, string | null | undefined, string | null>;
+  signed_off_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  signed_off_plant_at: ColumnType<
+    Date | null,
+    Date | string | null | undefined,
+    Date | string | null
+  >;
+}
+
+/** Why an operator's activity interval ended (#177). */
+export type ActivityEndReason = 'paused' | 'resumed' | 'signed-off' | 'crew-ended';
+
+/** One interval of an operator's work or pause on an order operation (#177). */
+export interface OperationActivityTable {
+  id: Generated<number>;
+  order_id: string;
+  operation: string;
+  work_center: string;
+  user_id: number;
+  username: string;
+  kind: 'work' | 'pause';
+  reason: string | null;
+  comment: string | null;
+  from_at: Timestamp;
+  from_plant_at: Timestamp;
+  to_at: NullableTimestamp;
+  to_plant_at: NullableTimestamp;
+  end_reason: ActivityEndReason | null;
 }
 
 export interface DispatchCommandTable {
@@ -165,6 +197,7 @@ export interface OrdersTables {
   'orders.erp_message_log': ErpMessageLogTable;
   'orders.order_incident': OrderIncidentTable;
   'orders.confirmation': ConfirmationTable;
+  'orders.operation_activity': OperationActivityTable;
 }
 
 export const ORDERS_COLUMNS = {
@@ -196,7 +229,17 @@ export const ORDERS_COLUMNS = {
     'closed_at',
     'cancelled_at',
   ],
-  'orders.order_operation': ['order_id', 'operation', 'position', 'work_center'],
+  'orders.order_operation': [
+    'order_id',
+    'operation',
+    'position',
+    'work_center',
+    'version',
+    'signed_off_user_id',
+    'signed_off_by',
+    'signed_off_at',
+    'signed_off_plant_at',
+  ],
   'orders.dispatch_command': [
     'command_id',
     'order_id',
@@ -279,5 +322,21 @@ export const ORDERS_COLUMNS = {
     'confirmed_at',
     'idempotency_key',
     'created_at',
+  ],
+  'orders.operation_activity': [
+    'id',
+    'order_id',
+    'operation',
+    'work_center',
+    'user_id',
+    'username',
+    'kind',
+    'reason',
+    'comment',
+    'from_at',
+    'from_plant_at',
+    'to_at',
+    'to_plant_at',
+    'end_reason',
   ],
 } as const;

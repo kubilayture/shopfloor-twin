@@ -18,6 +18,7 @@ import {
   type JobState,
   type OrderIncidentType,
   type OrderStatus,
+  type PauseReason,
   type ProblemType,
 } from '@shopfloor/contracts/mes-api';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
@@ -45,6 +46,18 @@ import {
 } from './command-state.ts';
 import { chooseCnc, type CncQueue, type ProductTimes } from './dispatch-rule.ts';
 import type { ErpApi } from './erp-client.ts';
+import {
+  endActivities,
+  endOrphanedActivities,
+  readActivities,
+  readOperations,
+  terminalWrite,
+  type ActivityRecord,
+  type OperationRecord,
+  type TerminalAction,
+  type TerminalRequest,
+  type TerminalWriteContext,
+} from './operations.ts';
 import type { CommandPublisher } from './publisher.ts';
 import type {
   ConfirmationTable,
@@ -307,6 +320,12 @@ export type OrderChange =
       readonly type: 'command';
       readonly event: 'created' | 'updated';
       readonly command: CommandRecord;
+    }
+  | {
+      /** A terminal write or a crew end changed an operation's activities or sign-off (#177). */
+      readonly type: 'operation';
+      readonly event: 'updated';
+      readonly operation: OperationRecord;
     };
 
 export interface OrderQuery {
@@ -543,11 +562,20 @@ export class Orders {
 
   /** Commands (with their attempts) of an order, or all, in queue order. */
   async commands(
-    filter: { readonly orderId?: string; readonly commandIds?: readonly string[] } = {},
+    filter: {
+      readonly orderId?: string;
+      /** Only the commands of these orders (#177: the terminal's candidates). */
+      readonly orderIds?: readonly string[];
+      readonly commandIds?: readonly string[];
+    } = {},
     db: Kysely<Database> = this.#readDb,
   ): Promise<CommandRecord[]> {
     let select = db.selectFrom('orders.dispatch_command').selectAll();
     if (filter.orderId !== undefined) select = select.where('order_id', '=', filter.orderId);
+    if (filter.orderIds !== undefined) {
+      if (filter.orderIds.length === 0) return [];
+      select = select.where('order_id', 'in', [...filter.orderIds]);
+    }
     if (filter.commandIds !== undefined) {
       if (filter.commandIds.length === 0) return [];
       select = select.where('command_id', 'in', [...filter.commandIds]);
@@ -626,7 +654,11 @@ export class Orders {
     }).then((r) => r.order);
   }
 
-  /** `completed → closed`; posts `closed`. (#177 adds the operators' sign-off as a condition.) */
+  /**
+   * `completed → closed`; posts `closed`. Every operation of the order must be signed off at its
+   * terminal first (#177: the operators' sign-off, then the supervisor's close); 409
+   * `sign-off-missing` names those that are not.
+   */
   async close(
     id: string,
     request: { readonly version: number },
@@ -634,6 +666,22 @@ export class Orders {
   ): Promise<OrderRecord> {
     return this.#write(id, request.version, context, 'order.close', async (trx, row, plantAt) => {
       expectStatus(row, ['completed'], 'close');
+      const missing = await trx
+        .selectFrom('orders.order_operation')
+        .select(['operation', 'work_center'])
+        .where('order_id', '=', id)
+        .where('signed_off_at', 'is', null)
+        .orderBy('position')
+        .execute();
+      if (missing.length > 0) {
+        throw new OrderError(
+          'conflict',
+          `order ${id}: not signed off at the terminal yet: ${missing
+            .map((m) => `${m.operation} (${m.work_center})`)
+            .join(', ')}`,
+          PROBLEM_TYPES.signOffMissing,
+        );
+      }
       await this.#statusMessage(trx, row, 'closed', plantAt);
       return { set: { status: 'closed', closed_at: plantAt } };
     }).then((r) => r.order);
@@ -836,6 +884,139 @@ export class Orders {
     const order = await this.#emitOrder(changed, 'updated');
     if (!order) throw new Error('unreachable: no order');
     return order;
+  }
+
+  // ---- the operator terminal (#177) ----
+
+  /** Order operations with their version, completion, sign-off and open activities. */
+  async operations(
+    filter: {
+      readonly orderIds?: readonly string[];
+      readonly workCenter?: string;
+      readonly operation?: string;
+    } = {},
+  ): Promise<OperationRecord[]> {
+    return readOperations(this.#readDb, filter);
+  }
+
+  /** Activity intervals, newest first. */
+  async activities(
+    filter: {
+      readonly orderId?: string;
+      readonly operation?: string;
+      readonly userId?: number;
+      readonly open?: boolean;
+      readonly limit?: number;
+    } = {},
+  ): Promise<ActivityRecord[]> {
+    return readActivities(this.#readDb, filter);
+  }
+
+  /**
+   * The operator starts work on an order operation (no interval of theirs open on it: `activity`
+   * null as read; another one open is 409 `operation-stale`).
+   */
+  async startWork(
+    id: string,
+    operation: string,
+    request: { readonly activity: number | null },
+    context: TerminalWriteContext,
+  ): Promise<OperationRecord> {
+    return this.#terminal(id, operation, 'start', request, context);
+  }
+
+  /** The operator pauses their work on it, with a reason (`activity`: their open work interval). */
+  async pauseWork(
+    id: string,
+    operation: string,
+    request: {
+      readonly activity: number | null;
+      readonly reason: PauseReason;
+      readonly comment?: string | undefined;
+    },
+    context: TerminalWriteContext,
+  ): Promise<OperationRecord> {
+    return this.#terminal(id, operation, 'pause', request, context);
+  }
+
+  /** The operator resumes their paused work on it (`activity`: their open pause). */
+  async resumeWork(
+    id: string,
+    operation: string,
+    request: { readonly activity: number | null },
+    context: TerminalWriteContext,
+  ): Promise<OperationRecord> {
+    return this.#terminal(id, operation, 'resume', request, context);
+  }
+
+  /**
+   * Signs the operation off: only once the MES has it complete (its final confirmation is
+   * written); closes every open interval on it. A close needs every operation signed off.
+   */
+  async signOff(
+    id: string,
+    operation: string,
+    request: { readonly version: number },
+    context: TerminalWriteContext,
+  ): Promise<OperationRecord> {
+    return this.#terminal(id, operation, 'sign-off', request, context);
+  }
+
+  /**
+   * Closes an operator's open intervals at a work center started by `until` (the crew row's end,
+   * wall time): their crew row there ended.
+   */
+  async endActivities(who: {
+    readonly userId: number;
+    readonly workCenter: string;
+    readonly until: Date;
+  }): Promise<number> {
+    const touched = await endActivities(this.#db, who, this.#plantNow());
+    await this.#emitOperations(touched);
+    return touched.length;
+  }
+
+  /**
+   * Closes every open interval whose operator has no open crew row at its work center
+   * (`{userId}|{workCenter}` in `signedOn`, read after `before`, database time) and started before
+   * it: crew rows that ended while the MES was down, or whose notice was lost.
+   */
+  async endOrphanedActivities(signedOn: ReadonlySet<string>, before: Date): Promise<number> {
+    const touched = await endOrphanedActivities(this.#db, signedOn, before, this.#plantNow());
+    await this.#emitOperations(touched);
+    return touched.length;
+  }
+
+  async #terminal(
+    id: string,
+    operation: string,
+    action: TerminalAction,
+    request: TerminalRequest,
+    context: TerminalWriteContext,
+  ): Promise<OperationRecord> {
+    if (!this.#started) throw new OrderError('conflict', 'the orders module is starting');
+    const plantAt = this.#plantNow();
+    const refusal = await this.#db
+      .transaction()
+      .execute((trx) => terminalWrite(trx, id, operation, action, request, context, plantAt));
+    if (refusal) throw new OrderError(refusal.kind, refusal.message, refusal.type);
+    const [record] = await readOperations(this.#db, { orderIds: [id], operation });
+    if (!record) throw new Error('unreachable: no operation');
+    this.#emit({ type: 'operation', event: 'updated', operation: record });
+    return record;
+  }
+
+  async #emitOperations(
+    touched: readonly { readonly orderId: string; readonly operation: string }[],
+  ): Promise<void> {
+    const seen = new Set<string>();
+    for (const { orderId, operation } of touched) {
+      const key = `${orderId}/${operation}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const [record] = await readOperations(this.#db, { orderIds: [orderId], operation });
+      if (record) this.#emit({ type: 'operation', event: 'updated', operation: record });
+    }
   }
 
   // ---- confirmations (#175, ADR-0028, ADR-0031) ----

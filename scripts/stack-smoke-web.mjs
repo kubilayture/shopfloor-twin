@@ -78,10 +78,12 @@ async function login(name, secret) {
   );
   if (answer.status !== 200) return { status: answer.status, text: answer.text };
   const cookie = String(answer.headers['set-cookie'] ?? '').split(';')[0];
-  if (!cookie.startsWith('sft_session=')) fail(`login set no session cookie: ${cookie}`);
   const setCookie = String(answer.headers['set-cookie']);
+  // A failure message never shows the token (#170 review L5).
+  const redacted = setCookie.replace(/=[^;,]*/, '=(redacted)');
+  if (!cookie.startsWith('sft_session=')) fail(`login set no session cookie: ${redacted}`);
   if (!/HttpOnly/i.test(setCookie) || !/SameSite=Strict/i.test(setCookie)) {
-    fail(`session cookie not HttpOnly and SameSite=Strict: ${setCookie}`);
+    fail(`session cookie not HttpOnly and SameSite=Strict: ${redacted}`);
   }
   return { status: 200, cookie, session: JSON.parse(answer.text) };
 }

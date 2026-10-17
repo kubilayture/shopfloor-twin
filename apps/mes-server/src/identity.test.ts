@@ -38,7 +38,13 @@ import {
 import { WS_PATH, cookieValue } from './modules/realtime/index.ts';
 import { OPENAPI_FILE } from './openapi.ts';
 import { startDatabase } from './testing.ts';
-import { parseUserCreateArgs, passwordFromStdin, userCreate } from './user-cli.ts';
+import {
+  parseUserCreateArgs,
+  parseUserDisableArgs,
+  passwordFromStdin,
+  userCreate,
+  userDisable,
+} from './user-cli.ts';
 
 const MINUTE = 60_000;
 const REPO = resolve(import.meta.dirname, '../../..');
@@ -630,6 +636,31 @@ describe('user:create CLI (#168)', () => {
     expect(await userCreate(db, args, password)).toEqual({ ok: false, message: 'user ivy exists' });
     const { principal } = await identity.login({ username: 'ivy', password, kind: 'desk' });
     expect(principal.roles).toEqual(['quality', 'admin']);
+  });
+
+  it('disables a user with --disable (#170: the stack smoke disables its per-run user)', async () => {
+    expect(parseUserDisableArgs(['--disable'])).toBe('missing --username');
+    expect(parseUserDisableArgs(['--username', 'x'])).toBe('missing --disable');
+    expect(typeof parseUserDisableArgs(['--disable', '--username', 'x', '--role', 'admin'])).toBe(
+      'string',
+    );
+    expect(parseUserDisableArgs(['--disable', '--username', 'smoke-1'])).toEqual({
+      username: 'smoke-1',
+    });
+    const password = secret();
+    await identity.createUser(
+      { username: 'smoke-1', roles: ['operator'], password, mustChangePassword: false },
+      { system: 'test' },
+    );
+    const { token } = await identity.login({ username: 'smoke-1', password, kind: 'desk' });
+    expect(await userDisable(db, 'smoke-1')).toEqual({
+      ok: true,
+      message: 'disabled user smoke-1',
+    });
+    // Its session ended and it may not log in again.
+    expect(await identity.authenticate(tokenOf(token))).toBeUndefined();
+    await expect(identity.login({ username: 'smoke-1', password, kind: 'desk' })).rejects.toThrow();
+    expect(await userDisable(db, 'nobody-here')).toMatchObject({ ok: false });
   });
 
   it('runs as a process, reading the password from stdin', async () => {

@@ -11,6 +11,7 @@
     "start": "node src/main.ts",
     "migrate": "node src/db/cli.ts",
     "user:create": "node src/user-cli.ts",
+    "user:disable": "node src/user-cli.ts --disable",
     "openapi": "node src/openapi.ts",
     "data-model": "node src/db/data-model.ts"
   },

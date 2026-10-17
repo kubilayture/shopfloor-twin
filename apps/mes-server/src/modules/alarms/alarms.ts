@@ -203,7 +203,7 @@ export interface AlarmPointChange {
 
 /** What an alarm write names (#143). */
 export interface AlarmWriteRequest {
-  /** The session's user, or (`MES_AUTH=off`, until #170) the name as typed (unauthenticated). */
+  /** The session's user (#170); a typed name (unauthenticated) only in the module's tests. */
   readonly actor: WriteBy;
   /** The HTTP request's id, for the audit. */
   readonly requestId?: string | undefined;

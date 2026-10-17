@@ -15,11 +15,23 @@ export async function logIn(page: Page): Promise<string> {
   if (reconcileUser === '' || reconcilePassword === '') {
     throw new Error('RECONCILE_USERNAME and RECONCILE_PASSWORD are not set');
   }
-  await page.goto('/login');
-  await page.getByTestId('login-username').fill(reconcileUser);
-  await page.getByTestId('login-password').fill(reconcilePassword);
-  await page.getByTestId('login-submit').click();
-  await expect(page.getByTestId('signed-in-user')).toHaveText(reconcileUser);
+  // The trace (kept on failure) must not hold the password (#170 review L5): its fill and the
+  // login request are left out by ending the runner's trace chunk without saving it, and a new
+  // chunk starts after the login. Without tracing both calls throw and nothing changes.
+  const tracing = page.context().tracing;
+  const paused = await tracing.stopChunk().then(
+    () => true,
+    () => false,
+  );
+  try {
+    await page.goto('/login');
+    await page.getByTestId('login-username').fill(reconcileUser);
+    await page.getByTestId('login-password').fill(reconcilePassword);
+    await page.getByTestId('login-submit').click();
+    await expect(page.getByTestId('signed-in-user')).toHaveText(reconcileUser);
+  } finally {
+    if (paused) await tracing.startChunk({ title: 'after the login' });
+  }
   const session = (await page.context().cookies()).find((c) => c.name === 'sft_session');
   if (!session) throw new Error('the login set no session cookie');
   // HttpOnly (no script reads it) and SameSite=Strict (ADR-0026).

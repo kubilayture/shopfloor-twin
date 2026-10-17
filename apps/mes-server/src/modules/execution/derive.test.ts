@@ -328,6 +328,33 @@ describe('completion (H1)', () => {
     });
   });
 
+  it('does not read a second break still in an open gap as missing once the first is proven (#175 review, LOW-5)', () => {
+    // OP20 missing (proven: wsh-01 final through) and OP40's good test missing in a gap lkt-01
+    // has not closed: only the proven one counts as passed.
+    const twoBreaks: CompletionUnit = {
+      status: 'packed',
+      suspect: null,
+      violation: true,
+      records: [record('OP10', 1), record('OP30', 3), record('OP50', 5)],
+    };
+    const lktOpen = (operation: string) => operation !== 'OP40';
+    expect(Object.fromEntries(completion([twoBreaks], true, all, MODEL, lktOpen))).toEqual({
+      OP10: 1,
+      OP20: 1,
+      OP30: null,
+      OP40: null,
+      OP50: null,
+    });
+    // lkt-01 final through it too: the missing test is proven missing as well.
+    expect(Object.fromEntries(completion([twoBreaks], true, all, MODEL, all))).toEqual({
+      OP10: 1,
+      OP20: 1,
+      OP30: 3,
+      OP40: 3,
+      OP50: 5,
+    });
+  });
+
   it('waits for the jobs and for every record to be at or below its machine’s final-through', () => {
     expect(completion([packed], false, all, MODEL).get('OP50')).toBeNull();
     const notOp50 = (r: { equipment: string }) => r.equipment !== 'OP50';

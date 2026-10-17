@@ -596,8 +596,8 @@ export class Execution implements BlankCounter {
   // ---- BlankCounter (the orders module's lost-job count) ----
 
   /**
-   * The blanks a job started (ADR-0029 note, ADR-0031): its OP10 units, plus one if its CNC still
-   * holds a blank of it (`holdsBlank` on the CNC's states after the job's last OP10 cycle).
+   * The blanks a lost job started (ADR-0029 note, ADR-0031): its OP10 units, exactly, plus one
+   * while it had blanks left and no later job started (a fact lost at the run's end may hide it).
    * Undefined while its OP10 cycles are not all units yet (the conservative count applies then).
    */
   async blanksStarted(job: {
@@ -631,11 +631,14 @@ export class Execution implements BlankCounter {
       .execute();
     if (records.length !== cycles) return undefined;
     if (next !== null || records.length >= job.quantity) return records.length;
-    const lastSeq = Math.max(job.startedSeq, ...records.map((r) => r.seq));
-    const states = await this.#ingest.stateFacts(job.equipment, job.deviceEpoch, {
-      fromSeq: lastSeq + 1,
-    });
-    return records.length + (holdsBlank(states) ? 1 : 0);
+    // The run ended (this counts lost jobs only): whatever the CNC's last received facts say, a
+    // fact lost at the run's very end has no later number to show it missing. After a "none held"
+    // state (Starved, Blocked, a changeover, Idle NO-ORDER) the machine's next move is a fact of
+    // its own (Running when it takes a blank), and so is the end of a break, a shift or a stop
+    // that may follow; any of them may be that lost tail. So one more blank may have been taken
+    // while the job had blanks left and no later job started, at most its quantity (#175 review,
+    // LOW-6: never under-count, an order may end short but never over).
+    return Math.min(job.quantity, records.length + 1);
   }
 
   // ---- internals: units ----
@@ -1119,6 +1122,11 @@ export class Execution implements BlankCounter {
         })),
       });
     }
+    // Every machine's progress, for a violated unit's skipped operations (`finalThrough`).
+    const machines = new Map<string, DeviceProgress>();
+    for (const list of this.#machines.values()) {
+      for (const machine of list) machines.set(machine, await this.#progress(progress, machine));
+    }
     const done = completion(
       completionUnits,
       jobsDone,
@@ -1133,6 +1141,17 @@ export class Execution implements BlankCounter {
         );
       },
       this.#model,
+      (operation, epoch, at) =>
+        (this.#machines.get(operation) ?? []).every((machine) => {
+          const device = machines.get(machine);
+          if (device?.epoch === null || device?.epoch === undefined) return false;
+          if (device.epoch > epoch) return true;
+          return (
+            device.epoch === epoch &&
+            device.settledTime !== null &&
+            device.settledTime.getTime() >= at
+          );
+        }),
     );
     return { units, commands, totals, completion: done };
   }

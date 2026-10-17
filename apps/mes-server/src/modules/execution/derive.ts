@@ -314,8 +314,9 @@ export interface CompletionUnit {
  * A unit with an open suspect is done for no operation from the suspect's on (its rework group
  * included): the fact that would explain it
  * may still arrive and change its passes. Once proven a violation, the unit counts as past every
- * operation before its latest record (a packed unit as past them all): the missing fact will not
- * come. A unit lost with its device run counts as done (it contributes what it did). Every record
+ * operation before its latest record that it passed for good, or whose machines are all final
+ * through that record (a second break still in an open gap is not read as missing); a packed unit
+ * without a violation is past them all. A unit lost with its device run counts as done (it contributes what it did). Every record
  * an operation's completion rests on must be at or below its machine's final-through (`settled`).
  * The time is the latest record of the operation (and of the test for the rework operation, and
  * vice versa), never before the previous operation's.
@@ -325,6 +326,8 @@ export function completion(
   jobsDone: boolean,
   settled: (record: { equipment: string; epoch: number; seq: number }) => boolean,
   model: RoutingModel,
+  /** Whether every machine of an operation is final through a plant time of a run (or past it). */
+  finalThrough: (operation: string, epoch: number, at: number) => boolean = () => true,
 ): Map<string, number | null> {
   const result = new Map<string, number | null>();
   const [firstOperation = 'OP10', ...rest] = model.operations;
@@ -339,15 +342,20 @@ export function completion(
   const allSettled = (operations: readonly string[]): boolean =>
     records.filter((r) => operations.includes(r.operation)).every(settled);
   const passedGood = (unit: CompletionUnit, operation: string): boolean => {
-    if (unit.status === 'packed') return true;
     if (unit.records.some((r) => r.operation === operation && r.result === 'good')) return true;
-    if (!unit.violation) return false;
-    // A proven break: the unit is past every operation before its latest record.
+    if (!unit.violation) return unit.status === 'packed';
+    // A proven break: the unit is past every operation before its latest record, but an
+    // operation it skipped only once that operation's machines are final through its latest
+    // record: a second break whose fact is still in an open gap must not be read as missing.
     const last = unit.records.reduce<CompletionUnit['records'][number] | undefined>(
       (found, r) => (!found || r.at >= found.at ? r : found),
       undefined,
     );
-    return last !== undefined && position(operation) < position(last.operation);
+    return (
+      last !== undefined &&
+      position(operation) < position(last.operation) &&
+      finalThrough(operation, last.epoch, last.at)
+    );
   };
   const scrapped = (unit: CompletionUnit): boolean => unit.status === 'scrapped';
   const reworkGroup = [model.back, model.test];

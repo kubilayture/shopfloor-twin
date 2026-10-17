@@ -612,7 +612,7 @@ describe('execution: units, completion and confirmations (#175)', () => {
     );
   });
 
-  it('marks units of an ended run lost and counts a lost job’s blanks exactly from its units and states', async () => {
+  it('marks units of an ended run lost and counts a lost job’s blanks from its units plus a possible lost tail', async () => {
     const h = await harness('epoch');
     const l = h.line;
     await send(h, [l.state('cnc-01', 'Idle', 'NO-ORDER')]);
@@ -630,10 +630,11 @@ describe('execution: units, completion and confirmations (#175)', () => {
     await send(h, [next.state('cnc-01', 'Idle', 'NO-ORDER')]);
     await settle(h);
     const command = (await h.orders.commands({ orderId: 'X-4' }))[0];
-    // The conservative count would be 2 (one more possibly in the machine); the units and the
-    // Starved state say 1.
-    expect([command?.job, command?.lostStarted]).toEqual(['lost', 1]);
-    expect((await h.orders.order('X-4'))?.dispatched).toBe(1);
+    // One unit, and the CNC's last received fact of the run says it held no blank (Starved); but a
+    // Running lost at the run's very end has no later number to show it missing, so one more
+    // blank counts (#175 review, LOW-6): an order may end short, never over.
+    expect([command?.job, command?.lostStarted]).toEqual(['lost', 2]);
+    expect((await h.orders.order('X-4'))?.dispatched).toBe(2);
     expect((await h.execution.units({ orderId: 'X-4' })).units.map((u) => u.status)).toEqual([
       'lost',
     ]);

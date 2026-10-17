@@ -58,12 +58,12 @@ const ERROR_TEXT: Readonly<Record<number, string>> = {
   400: 'Invalid path, query parameters or body',
   401: 'No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated',
   403: 'Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)',
-  404: 'Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note, order, order operation or route',
+  404: 'Unknown equipment, work center, metric, shift, shift instance, record, alarm, alarm point, handover note, order, order operation, SPC characteristic, limit version, signal or route',
   405: 'Writes are turned off (MES_WRITES=off; the login, logout and password change stay open); type urn:shopfloor:writes-off',
-  409: 'The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale); or a close before every operation is signed off (urn:shopfloor:sign-off-missing); or a terminal write on an operation that changed (urn:shopfloor:operation-stale) or whose state does not allow it (urn:shopfloor:operation-state), by an operator not signed on at the work center (urn:shopfloor:not-signed-on), a sign-on without a terminal session (urn:shopfloor:terminal-session-required) or outside a shift (urn:shopfloor:no-shift)',
+  409: 'The version sent is not the current one (type urn:shopfloor:coding-stale, shelf-stale or note-stale): read again and retry; or the handover of the shift is closed (plant time, or a newer epoch; urn:shopfloor:handover-closed) or not open yet (urn:shopfloor:handover-not-open); or a user of that name exists (urn:shopfloor:user-exists), or the change would leave no enabled admin; or an order changed (urn:shopfloor:order-stale), is in a status the write does not apply to (urn:shopfloor:order-state), or has an earlier command not settled (urn:shopfloor:commands-unsettled); or a scrap record changed (urn:shopfloor:scrap-stale); or a close before every operation is signed off (urn:shopfloor:sign-off-missing); or a terminal write on an operation that changed (urn:shopfloor:operation-stale) or whose state does not allow it (urn:shopfloor:operation-state), by an operator not signed on at the work center (urn:shopfloor:not-signed-on), a sign-on without a terminal session (urn:shopfloor:terminal-session-required) or outside a shift (urn:shopfloor:no-shift); or an SPC characteristic changed (urn:shopfloor:limits-stale), a limit version is ended already (urn:shopfloor:limits-ended) or version 1 does not exist yet (urn:shopfloor:limits-v1-missing); or a signal changed (urn:shopfloor:signal-stale), is withdrawn (urn:shopfloor:signal-withdrawn) or acknowledged already (urn:shopfloor:signal-acknowledged)',
   413: 'Body larger than 16 KiB',
   415: 'Content-Type is not application/json; type urn:shopfloor:write-not-json',
-  422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected; a dispatch to equipment that is not a CNC or has no known device run, or a re-dispatch beyond the remaining blanks)',
+  422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected; a dispatch to equipment that is not a CNC or has no known device run, or a re-dispatch beyond the remaining blanks; a limit window without final first-pass readings, a moving range or a complete subgroup)',
   429: "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
   503: 'The MES is starting',
 };
@@ -94,6 +94,8 @@ export interface RouteSpec<P extends z.ZodType, Q extends z.ZodType, R extends z
   readonly errors: readonly ErrorStatus[];
   /** Default `read`. */
   readonly access?: Access;
+  /** The route answers 304 to a matching `If-None-Match` (its handler sets `ETag`). */
+  readonly etag?: boolean;
 }
 
 /**
@@ -221,6 +223,7 @@ export function getRoute<P extends z.ZodType, Q extends z.ZodType, R extends z.Z
     params: z.output<P>;
     query: z.output<Q>;
     request: FastifyRequest;
+    reply: FastifyReply;
   }) => z.input<R> | Promise<z.input<R>>,
 ): void {
   const access = spec.access ?? 'read';
@@ -240,17 +243,21 @@ export function getRoute<P extends z.ZodType, Q extends z.ZodType, R extends z.Z
           description: 'OK',
           content: { 'application/json': { schema: jsonSchema(spec.response, 'output') } },
         },
+        ...(spec.etag === true
+          ? { 304: { description: 'Not modified: `If-None-Match` names the current `ETag`' } }
+          : {}),
         ...errorResponses(spec.errors, access),
       },
     },
     validatorCompiler: validator({ params: spec.params, querystring: spec.query }),
     // Responses are typed by the handler's return type; JSON.stringify keeps them as built.
     serializerCompiler: () => (data: unknown) => JSON.stringify(data),
-    handler: async (request) =>
+    handler: async (request, reply) =>
       handler({
         params: request.params as z.output<P>,
         query: request.query as z.output<Q>,
         request,
+        reply,
       }),
   });
 }

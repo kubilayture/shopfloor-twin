@@ -441,6 +441,9 @@ importers:
       '@shopfloor/shift-calendar':
         specifier: workspace:*
         version: link:../../packages/shift-calendar
+      '@shopfloor/spc-core':
+        specifier: workspace:*
+        version: link:../../packages/spc-core
       fastify:
         specifier: 'catalog:'
         version: 5.12.5

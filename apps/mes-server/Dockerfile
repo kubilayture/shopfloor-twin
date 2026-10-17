@@ -19,6 +19,7 @@ COPY packages/contracts/package.json packages/contracts/
 COPY packages/oee-core/package.json packages/oee-core/
 COPY packages/plant-config/package.json packages/plant-config/
 COPY packages/shift-calendar/package.json packages/shift-calendar/
+COPY packages/spc-core/package.json packages/spc-core/
 # Production dependencies of the server and its workspace packages only; no lifecycle scripts.
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts --filter @shopfloor/mes-server...
 
@@ -36,6 +37,7 @@ COPY packages/contracts/src packages/contracts/src
 COPY packages/oee-core/src packages/oee-core/src
 COPY packages/plant-config/src packages/plant-config/src
 COPY packages/shift-calendar/src packages/shift-calendar/src
+COPY packages/spc-core/src packages/spc-core/src
 COPY apps/mes-server/src apps/mes-server/src
 USER node
 EXPOSE 4700

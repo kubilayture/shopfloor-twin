@@ -32,6 +32,11 @@ export const envSchema = z.object({
       }
     }),
   SIM_CONFIG_DIR: text.default(DEFAULT_CONFIG),
+  /**
+   * A stock file in place of `SIM_CONFIG_DIR/stock.yaml` (#196, ADR-0033), e.g. a golden
+   * scenario's own `stock.yaml` for a live run of that scenario. Left out, the configuration's.
+   */
+  SIM_STOCK: text.optional(),
   SIM_AUTOSTART: z.enum(['true', 'false']).default('true'),
   /** `schedule` (default, Phases 1–6) or `orders` (#172): CNCs run only `LoadOrder` jobs. */
   SIM_PRODUCTION: z.enum(PRODUCTION_MODES).default('schedule'),

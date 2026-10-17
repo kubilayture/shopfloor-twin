@@ -10,7 +10,10 @@ import {
   type JobTransition,
 } from '@shopfloor/contracts';
 import {
+  driftIssues,
+  driftSteps,
   injectionIssues,
+  type DriftIssueCode,
   type InjectionIssueCode,
   type PlantConfig,
 } from '@shopfloor/plant-config';
@@ -47,6 +50,11 @@ type StationEvent =
   | { readonly type: 'maintenance-end'; readonly station: string }
   | { readonly type: 'calibration-due'; readonly station: string }
   | { readonly type: 'inject-failure'; readonly station: string; readonly injection: number }
+  | {
+      readonly type: 'drift-start' | 'drift-end';
+      readonly station: string;
+      readonly injection: number;
+    }
   | { readonly type: 'wake'; readonly station: string };
 
 export type LineEvent =
@@ -113,6 +121,21 @@ export type PlantEvent =
       readonly machineId: string;
       readonly injection: number;
       readonly code: string;
+    }
+  | {
+      /**
+       * A leak-test drift injection (#196, ADR-0033) began adding `shift` to the tester's readings
+       * (`applied`), or stopped (`ended`): at its `until` (`endedBy: 'until'`) or at the start of
+       * the tester's calibration before it (`endedBy: 'calibration'`). A drift still active at the
+       * end of a run has no `ended` line. Only runs with a drift injection write it.
+       */
+      readonly type: 'leak-drift';
+      readonly at: SimTime;
+      readonly machineId: string;
+      readonly injection: number;
+      readonly transition: 'applied' | 'ended';
+      readonly shift: number;
+      readonly endedBy?: DriftEnd;
     }
   | {
       readonly type: 'operator';
@@ -288,6 +311,54 @@ export type InjectFailureResult =
       readonly reason: string;
     };
 
+/** What ended a leak drift (#196): its `until`, or a calibration before it. */
+export type DriftEnd = 'until' | 'calibration';
+
+/** A leak-test drift injection (#196, ADR-0033) and what became of it. */
+export interface LeakDrift {
+  /** Numbered with the failure injections, in the order the line accepted them. */
+  readonly id: number;
+  readonly machine: string;
+  /** Pa/min (the tester's unit) added to every reading while active. */
+  readonly shift: number;
+  readonly at: SimTime;
+  readonly until: SimTime;
+  /** `scheduled` until `at`, `active` until it ends, then `ended`. */
+  readonly status: 'scheduled' | 'active' | 'ended';
+  readonly appliedAt?: SimTime;
+  readonly endedAt?: SimTime;
+  readonly endedBy?: DriftEnd;
+}
+
+export interface InjectDriftRequest {
+  readonly machine: string;
+  readonly shift: number;
+  /** Simulation time; the current time when left out. */
+  readonly at?: SimTime | undefined;
+  readonly until: SimTime;
+}
+
+export type InjectDriftResult =
+  | { readonly ok: true; readonly drift: LeakDrift }
+  | {
+      readonly ok: false;
+      readonly code: DriftIssueCode | 'in-the-past';
+      readonly reason: string;
+    };
+
+interface Drift {
+  readonly id: number;
+  readonly machine: string;
+  readonly shift: number;
+  readonly steps: number;
+  readonly at: SimTime;
+  readonly until: SimTime;
+  status: LeakDrift['status'];
+  appliedAt: SimTime | undefined;
+  endedAt: SimTime | undefined;
+  endedBy: DriftEnd | undefined;
+}
+
 interface Injection {
   readonly id: number;
   readonly machine: string;
@@ -384,6 +455,9 @@ export class ProductionLine {
   readonly #repairQueue: Station[] = [];
   readonly #crew: Crew;
   readonly #injections: Injection[] = [];
+  readonly #drifts: Drift[] = [];
+  /** Failure injections and drifts share one numbering (#196): ids in acceptance order. */
+  #nextInjectionId = 1;
   readonly #jobs: Job[] = [];
   /** Orders mode: every job this run accepted, by command id, line-wide (the dedup table). */
   readonly #acceptedCommands = new Map<string, Job>();
@@ -559,6 +633,12 @@ export class ProductionLine {
         break;
       case 'inject-failure':
         this.#onInjection(station, this.#injection(event.injection), simulation);
+        break;
+      case 'drift-start':
+        this.#startDrift(station, this.#drift(event.injection));
+        break;
+      case 'drift-end':
+        this.#endDrift(station, this.#drift(event.injection), 'until');
         break;
       case 'wake':
         this.#startInShift(station, simulation);
@@ -817,7 +897,7 @@ export class ProductionLine {
       };
     }
     const injection: Injection = {
-      id: this.#injections.length + 1,
+      id: this.#nextInjectionId++,
       machine: request.machine,
       code: request.code,
       at,
@@ -854,11 +934,130 @@ export class ProductionLine {
   }
 
   #injection(id: number): Injection {
-    const injection = this.#injections[id - 1];
+    const injection = this.#injections.find((i) => i.id === id);
     if (!injection) {
       throw new RangeError(`unknown injection ${String(id)}`);
     }
     return injection;
+  }
+
+  /**
+   * Accepts a leak-test drift injection (#196, ADR-0033: control API 1.5 and scenario
+   * `injections` with `kind: 'leak-drift'`) and schedules its start at `at` (now when left out)
+   * and its end at `until`. Refused: another machine than the leak tester, a shift that is not a
+   * non-zero whole multiple of the tester's resolution, an `until` not after `at`, a time in the
+   * past, `at` or `until` (before `runEnd`, when given) on a calendar boundary. No random draw
+   * changes: the reading still draws one normal, and the shift is added in whole resolution
+   * steps after rounding, so the reading without the drift is exactly the logged one minus
+   * `shift`.
+   */
+  injectLeakDrift(
+    request: InjectDriftRequest,
+    simulation: Simulation<LineEvent>,
+    runEnd?: SimTime,
+  ): InjectDriftResult {
+    this.#now = simulation.now;
+    const at = request.at ?? simulation.now;
+    const [issue] = driftIssues(this.#config, { ...request, at }, runEnd);
+    const steps = driftSteps(request.shift, this.#config.process.leakTest.resolution);
+    if (issue || steps === undefined) {
+      return {
+        ok: false,
+        code: issue?.code ?? 'invalid-shift',
+        reason: issue?.message ?? 'invalid shift',
+      };
+    }
+    if (at < simulation.now) {
+      return {
+        ok: false,
+        code: 'in-the-past',
+        reason: `${new Date(at).toISOString()} is before the simulation time ${new Date(simulation.now).toISOString()}`,
+      };
+    }
+    const drift: Drift = {
+      id: this.#nextInjectionId++,
+      machine: request.machine,
+      shift: request.shift,
+      steps,
+      at,
+      until: request.until,
+      status: 'scheduled',
+      appliedAt: undefined,
+      endedAt: undefined,
+      endedBy: undefined,
+    };
+    this.#drifts.push(drift);
+    simulation.schedule(at, { type: 'drift-start', station: request.machine, injection: drift.id });
+    simulation.schedule(drift.until, {
+      type: 'drift-end',
+      station: request.machine,
+      injection: drift.id,
+    });
+    return { ok: true, drift: this.#driftView(drift) };
+  }
+
+  /** Every drift injection accepted so far, in order, with its outcome. */
+  drifts(): LeakDrift[] {
+    return this.#drifts.map((drift) => this.#driftView(drift));
+  }
+
+  #driftView(drift: Drift): LeakDrift {
+    return {
+      id: drift.id,
+      machine: drift.machine,
+      shift: drift.shift,
+      at: drift.at,
+      until: drift.until,
+      status: drift.status,
+      ...(drift.appliedAt === undefined ? {} : { appliedAt: drift.appliedAt }),
+      ...(drift.endedAt === undefined ? {} : { endedAt: drift.endedAt }),
+      ...(drift.endedBy === undefined ? {} : { endedBy: drift.endedBy }),
+    };
+  }
+
+  #drift(id: number): Drift {
+    const drift = this.#drifts.find((d) => d.id === id);
+    if (!drift) {
+      throw new RangeError(`unknown drift injection ${String(id)}`);
+    }
+    return drift;
+  }
+
+  #startDrift(station: Station, drift: Drift): void {
+    if (!station.leak) {
+      throw new RangeError(`${station.id} is not a leak tester`);
+    }
+    drift.status = 'active';
+    drift.appliedAt = this.#now;
+    station.leak.addShift(drift.steps);
+    this.#onEvent({
+      type: 'leak-drift',
+      at: this.#now,
+      machineId: station.id,
+      injection: drift.id,
+      transition: 'applied',
+      shift: drift.shift,
+    });
+  }
+
+  /** Ends an active drift; one that already ended (by a calibration) stays as it is. */
+  #endDrift(station: Station, drift: Drift, endedBy: DriftEnd): void {
+    if (drift.status !== 'active' || !station.leak) {
+      return;
+    }
+    drift.status = 'ended';
+    drift.endedAt = this.#now;
+    drift.endedBy = endedBy;
+    station.leak.addShift(-drift.steps);
+    this.#onEvent({
+      type: 'leak-drift',
+      at: this.#now,
+      machineId: station.id,
+      injection: drift.id,
+      transition: 'ended',
+      shift: drift.shift,
+      endedBy,
+    });
   }
 
   /** An injection falls due: it takes effect only in Running, else it is held (#140). */
@@ -996,6 +1195,10 @@ export class ProductionLine {
       return;
     }
     if (station.leak?.calibrationDue(this.#now)) {
+      // A calibration ends every drift active on the tester, at its start (#196).
+      for (const drift of this.#drifts) {
+        if (drift.machine === station.id) this.#endDrift(station, drift, 'calibration');
+      }
       this.#occupy(
         station,
         'Maintenance',

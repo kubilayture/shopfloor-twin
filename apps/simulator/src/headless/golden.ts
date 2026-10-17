@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { checkInjections, formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
+import { basename, join, resolve } from 'node:path';
+import {
+  checkInjections,
+  formatIssues,
+  loadPlantConfig,
+  type InjectionSpec,
+} from '@shopfloor/plant-config';
 import { PRODUCTION_MODES, type ProductionMode } from '../plant/line.ts';
 import { runHeadless, summaryDocument, type DispatchSpec, type HeadlessOptions } from './run.ts';
 
@@ -13,13 +18,31 @@ export interface Scenario {
   readonly start: string;
   readonly days: number;
   readonly config: string;
-  /** Failure injections (#140): `at` is ISO 8601 with an offset or Z. */
-  readonly injections?: readonly {
-    readonly at: string;
-    readonly machine: string;
-    readonly code: string;
-    readonly repairMs?: number;
-  }[];
+  /**
+   * Failure injections (#140) and leak drifts (#196, `kind: 'leak-drift'`, with `until` and
+   * `shift`): times are ISO 8601 with an offset or Z.
+   */
+  readonly injections?: readonly (
+    | {
+        readonly kind?: undefined;
+        readonly at: string;
+        readonly machine: string;
+        readonly code: string;
+        readonly repairMs?: number;
+      }
+    | {
+        readonly kind: 'leak-drift';
+        readonly at: string;
+        readonly until: string;
+        readonly machine: string;
+        readonly shift: number;
+      }
+  )[];
+  /**
+   * The scenario's own stock file (#196, ADR-0033): a file name in the scenario's folder, read in
+   * place of the configuration's `stock.yaml`. Left out, the configuration's stock is used.
+   */
+  readonly stock?: string;
   /** `schedule` when left out; `orders` (#172) runs only the dispatched jobs. */
   readonly production?: ProductionMode;
   /** Orders mode (#172): `notBefore` is ISO 8601 with an offset or Z. */
@@ -40,23 +63,58 @@ export interface Scenario {
   readonly erp?: { readonly dataset: string; readonly release: readonly string[] };
 }
 
-export const readScenario = (name: string): Scenario =>
-  JSON.parse(readFileSync(join(GOLDEN, name, 'scenario.json'), 'utf8')) as Scenario;
+/** A scenario of the golden folder (or of `folder`, a folder of scenario folders, in tests). */
+export const readScenario = (name: string, folder = GOLDEN): Scenario =>
+  JSON.parse(readFileSync(join(folder, name, 'scenario.json'), 'utf8')) as Scenario;
+
+/** The path of a scenario's own stock file, if it names one (#196); only a file of its folder. */
+export function scenarioStock(
+  name: string,
+  scenario: Scenario = readScenario(name),
+  folder = GOLDEN,
+): string | undefined {
+  if (scenario.stock === undefined) return undefined;
+  if (basename(scenario.stock) !== scenario.stock || scenario.stock.startsWith('.')) {
+    throw new Error(`${name}/scenario.json: stock must be a file name in the scenario's folder`);
+  }
+  return join(folder, name, scenario.stock);
+}
 
 /** The scenario's run options: configuration, seed, span and injections in integer ms. */
-export async function scenarioOptions(name: string): Promise<HeadlessOptions> {
-  const scenario = readScenario(name);
-  const loaded = await loadPlantConfig(join(REPO, scenario.config));
+export async function scenarioOptions(name: string, folder = GOLDEN): Promise<HeadlessOptions> {
+  const scenario = readScenario(name, folder);
+  const loaded = await loadPlantConfig(join(REPO, scenario.config), {
+    stock: scenarioStock(name, scenario, folder),
+  });
   if (!loaded.ok) {
     throw new Error(formatIssues(loaded.issues));
   }
   const start = Temporal.Instant.from(scenario.start).epochMilliseconds;
-  const injections = (scenario.injections ?? []).map((injection) => ({
-    machine: injection.machine,
-    code: injection.code,
-    at: Temporal.Instant.from(injection.at).epochMilliseconds,
-    ...(injection.repairMs === undefined ? {} : { repairMs: injection.repairMs }),
-  }));
+  const instant = (iso: string): number => Temporal.Instant.from(iso).epochMilliseconds;
+  (scenario.injections ?? []).forEach((injection, index) => {
+    const kind: unknown = injection.kind;
+    if (kind !== undefined && kind !== 'leak-drift') {
+      throw new Error(
+        `${name}/scenario.json: injections[${String(index)}]: unknown kind ${JSON.stringify(kind)} (a failure injection has no kind; a drift is "leak-drift")`,
+      );
+    }
+  });
+  const injections = (scenario.injections ?? []).map((injection): InjectionSpec =>
+    injection.kind === 'leak-drift'
+      ? {
+          kind: injection.kind,
+          machine: injection.machine,
+          shift: injection.shift,
+          at: instant(injection.at),
+          until: instant(injection.until),
+        }
+      : {
+          machine: injection.machine,
+          code: injection.code,
+          at: instant(injection.at),
+          ...(injection.repairMs === undefined ? {} : { repairMs: injection.repairMs }),
+        },
+  );
   const production = scenario.production ?? 'schedule';
   if (!PRODUCTION_MODES.includes(production)) {
     throw new Error(`${name}/scenario.json: unknown production mode "${production}"`);
@@ -69,7 +127,8 @@ export async function scenarioOptions(name: string): Promise<HeadlessOptions> {
     quantity: dispatch.quantity,
     notBefore: Temporal.Instant.from(dispatch.notBefore).epochMilliseconds,
   }));
-  const issues = checkInjections(loaded.config, injections);
+  const end = start + scenario.days * 86_400_000;
+  const issues = checkInjections(loaded.config, injections, end);
   if (issues.length > 0) {
     throw new Error(
       `${name}/scenario.json: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
@@ -79,7 +138,7 @@ export async function scenarioOptions(name: string): Promise<HeadlessOptions> {
     config: loaded.config,
     seed: scenario.seed,
     start,
-    end: start + scenario.days * 86_400_000,
+    end,
     ...(injections.length === 0 ? {} : { injections }),
     ...(production === 'schedule' ? {} : { production }),
     ...(dispatches.length === 0 ? {} : { dispatches }),

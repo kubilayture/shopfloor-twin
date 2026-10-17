@@ -97,6 +97,26 @@ describe('quality model units', () => {
     tester.calibrate(T0 + 7 * DAY);
     expect(tester.measure(T0 + 7 * DAY).drift).toBe(0);
   });
+
+  it('adds an injected shift in exact resolution steps, drawing nothing extra (#196)', () => {
+    const plain = new LeakTester(defaults.process.leakTest, new RandomSource(5).stream('leak'), T0);
+    const shifted = new LeakTester(
+      defaults.process.leakTest,
+      new RandomSource(5).stream('leak'),
+      T0,
+    );
+    const steps = (value: number) => Math.round(value / defaults.process.leakTest.resolution);
+    for (let i = 0; i < 300; i++) {
+      if (i === 100) shifted.addShift(600);
+      if (i === 200) shifted.addShift(-600);
+      const a = plain.measure(T0 + i * HOUR);
+      const b = shifted.measure(T0 + i * HOUR);
+      expect(steps(b.value) - steps(a.value)).toBe(i >= 100 && i < 200 ? 600 : 0);
+      expect(b.value).toBe(Number(b.value.toFixed(3)));
+      expect(b.pass).toBe(b.value <= defaults.process.leakTest.upperLimit);
+    }
+    expect(shifted.shiftSteps).toBe(0);
+  });
 });
 
 describe('tool wear and OP10 scrap (plan section 3)', () => {

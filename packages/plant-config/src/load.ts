@@ -11,10 +11,9 @@ type FileName = keyof typeof PLANT_FILES;
 const FILE_NAMES = Object.keys(PLANT_FILES) as FileName[];
 
 async function readYaml(
-  dir: string,
+  path: string,
   file: FileName,
 ): Promise<{ data?: unknown; issue?: ConfigIssue }> {
-  const path = join(dir, `${file}.yaml`);
   try {
     return { data: parse(await readFile(path, 'utf8')) };
   } catch (error) {
@@ -48,8 +47,19 @@ export function validatePlantConfig(raw: Record<FileName, unknown>): LoadResult 
   return crossIssues.length > 0 ? { ok: false, issues: crossIssues } : { ok: true, config };
 }
 
-export async function loadPlantConfig(dir: string): Promise<LoadResult> {
-  const reads = await Promise.all(FILE_NAMES.map((file) => readYaml(dir, file)));
+export interface LoadOptions {
+  /**
+   * Another stock file in place of `<dir>/stock.yaml` (Phase 8, ADR-0033): a golden scenario's own
+   * `stock` or the live simulator's `SIM_STOCK`. It is validated and cross-checked like the
+   * plant's, and it is what the run header's `configSha256` hashes.
+   */
+  readonly stock?: string | undefined;
+}
+
+export async function loadPlantConfig(dir: string, options: LoadOptions = {}): Promise<LoadResult> {
+  const pathOf = (file: FileName): string =>
+    file === 'stock' && options.stock !== undefined ? options.stock : join(dir, `${file}.yaml`);
+  const reads = await Promise.all(FILE_NAMES.map((file) => readYaml(pathOf(file), file)));
   const readIssues = reads.flatMap((read) => (read.issue ? [read.issue] : []));
   if (readIssues.length > 0) {
     return { ok: false, issues: readIssues };

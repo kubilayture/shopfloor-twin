@@ -441,4 +441,27 @@ describe('loading files', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('reads another stock file in place of stock.yaml, validated and cross-checked (ADR-0033)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'plant-config-'));
+    try {
+      const stock = join(dir, 'small-lots.yaml');
+      await writeFile(
+        stock,
+        'lots:\n  - { id: BL100-A, material: BLANK-100, quantity: 5 }\n  - { id: SK1-A, material: SK-1, quantity: 3 }\n',
+      );
+      const result = await loadPlantConfig(DEFAULT_DIR, { stock });
+      expect(result.ok && result.config.stock.lots).toEqual([
+        { id: 'BL100-A', material: 'BLANK-100', quantity: 5 },
+        { id: 'SK1-A', material: 'SK-1', quantity: 3 },
+      ]);
+      await writeFile(stock, 'lots:\n  - { id: X-1, material: UNOBTAINIUM, quantity: 1 }\n');
+      const unknown = await loadPlantConfig(DEFAULT_DIR, { stock });
+      expect(unknown.ok ? '' : formatIssues(unknown.issues)).toContain('UNOBTAINIUM');
+      const missing = await loadPlantConfig(DEFAULT_DIR, { stock: join(dir, 'none.yaml') });
+      expect(missing.ok ? '' : formatIssues(missing.issues)).toContain('stock.yaml: ');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

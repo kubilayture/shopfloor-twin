@@ -15,6 +15,7 @@ import {
 } from '@shopfloor/contracts';
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { HOUR, SECOND } from '@shopfloor/sim-core';
+import { attachConsumption } from '@shopfloor/trace-core';
 import {
   AttributeIds,
   BrowseDirection,
@@ -321,6 +322,112 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
         expect(c.times, machine.id).toEqual(emitted.map((e) => e.at));
       }
     }
+    await Promise.all(
+      clients.map(async (c) => {
+        await c.subscription.terminate();
+        await c.connection.close();
+      }),
+    );
+  }, 120_000);
+
+  it('carries the lots and the operator of every cycle as fields a generic client reads (address space 1.2, #196)', async () => {
+    const machines = ['cnc-01', 'cnc-02', 'asm-01', 'lkt-01'];
+    const fieldNames = ['Sequence', 'MachineId', 'PartId', 'LotMaterials', 'LotIds', 'Operator'];
+    interface Received {
+      readonly partId: number;
+      readonly materials: unknown;
+      readonly lots: unknown;
+      readonly operator: unknown;
+      readonly arrays: boolean;
+    }
+    const clients = await Promise.all(
+      machines.map(async (machine) => {
+        const connection = await connect(port(machine));
+        const namespaces = await connection.session.readNamespaceArray();
+        const ns = String(namespaces.indexOf(SHOPFLOOR_NAMESPACE_URI));
+        const subscription = await connection.session.createSubscription2({
+          requestedPublishingInterval: 100,
+          requestedMaxKeepAliveCount: 20,
+          requestedLifetimeCount: 600,
+          maxNotificationsPerPublish: 0,
+          publishingEnabled: true,
+          priority: 1,
+        });
+        const cycles: Received[] = [];
+        const others: Received[] = [];
+        let last = 0;
+        const item = await subscription.monitor(
+          { nodeId: resolveNodeId('i=2253'), attributeId: AttributeIds.EventNotifier },
+          {
+            samplingInterval: 0,
+            queueSize: 5_000,
+            discardOldest: false,
+            filter: constructEventFilter(fieldNames.map((f) => `${ns}:${f}`)),
+          },
+          TimestampsToReturn.Both,
+        );
+        item.on('changed', (values: unknown) => {
+          const variants = values as { value: unknown; dataType: number; arrayType: number }[];
+          const [sequence, machineId, partId, materials, lots, operator] = variants;
+          if (machineId?.value !== machine) return;
+          last = Number(sequence?.value);
+          const received = {
+            partId: Number(partId?.value),
+            materials: materials?.value === null ? null : [...(materials?.value as string[])],
+            lots: lots?.value === null ? null : [...(lots?.value as string[])],
+            operator: operator?.value,
+            arrays: materials?.arrayType === 1 && lots?.arrayType === 1,
+          };
+          (partId?.dataType === DataType.Null ? others : cycles).push(received);
+        });
+        return { machine, connection, subscription, cycles, others, last: () => last };
+      }),
+    );
+    await wait(300);
+    const startIndex = plantEvents.length;
+    // Into shift B, so ASM-01's operator changes on the way.
+    await play(Math.ceil((T0 + 9 * HOUR - run.simulation.now) / SPEED));
+    const lastSeq = new Map(servers.servers.map((s) => [s.machineId, s.sequence]));
+    for (let deadline = Date.now() + 30_000; Date.now() < deadline;) {
+      if (clients.every((c) => c.last() >= (lastSeq.get(c.machine) ?? 0))) break;
+      await wait(100);
+    }
+    // The truth: trace-core's fold over the whole event stream (consumption before the window
+    // attaches to cycles inside it).
+    const attachments = attachConsumption(plantEvents);
+    for (const c of clients) {
+      const expected = plantEvents.flatMap((event, index) => {
+        if (index < startIndex || event.type !== 'cycle-complete' || event.machineId !== c.machine)
+          return [];
+        const attachment = attachments[index];
+        return [
+          {
+            partId: event.partId,
+            materials: attachment?.lots.map((lot) => lot.material),
+            lots: attachment?.lots.map((lot) => lot.lot),
+            operator: attachment?.operator ?? '',
+            arrays: true,
+          },
+        ];
+      });
+      expect(expected.length, c.machine).toBeGreaterThan(10);
+      expect(c.cycles, c.machine).toEqual(expected);
+      // Other event types have no such fields: they arrive as Null, not as empty arrays.
+      expect(
+        c.others.every((o) => o.materials === null && o.lots === null),
+        c.machine,
+      ).toBe(true);
+    }
+    expect(clients.reduce((sum, c) => sum + c.others.length, 0)).toBeGreaterThan(0);
+    const byMachine = new Map(clients.map((c) => [c.machine, c.cycles]));
+    expect(byMachine.get('cnc-01')?.every((r) => (r.materials as string[]).length === 1)).toBe(
+      true,
+    );
+    expect(byMachine.get('cnc-01')?.every((r) => r.operator === '')).toBe(true);
+    expect(byMachine.get('lkt-01')?.every((r) => (r.lots as string[]).length === 0)).toBe(true);
+    const operators = new Set(byMachine.get('asm-01')?.map((r) => r.operator));
+    expect(operators.size).toBeGreaterThanOrEqual(2);
+    expect(operators.has('')).toBe(false);
     await Promise.all(
       clients.map(async (c) => {
         await c.subscription.terminate();

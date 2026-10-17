@@ -1,6 +1,6 @@
 # Simulator control API
 
-Version 1.4 (Phase 7; 1.0 in Phase 2, 1.1 adds `GET /api/v1/ground-truth`, #100; 1.2 adds its `oee` section, #117; 1.3 adds failure injection and the `alarms` section, #140; 1.4 adds the production mode, `productionMode` and the `orders` section, #172). The OpenAPI document's `info.version` is `1.4.0`. Source of truth in code: `apps/simulator/src/control/`. The OpenAPI description is generated into `docs/api/simulator-control.openapi.json`; a test fails when it drifts from the routes (`pnpm --filter @shopfloor/simulator openapi` rewrites it). Any change bumps the version here and needs a changelog entry.
+Version 1.5 (Phase 8; 1.0 in Phase 2, 1.1 adds `GET /api/v1/ground-truth`, #100; 1.2 adds its `oee` section, #117; 1.3 adds failure injection and the `alarms` section, #140; 1.4 adds the production mode, `productionMode` and the `orders` section, #172; 1.5 adds the leak-test drift injection, #196). The OpenAPI document's `info.version` is `1.5.0`. Source of truth in code: `apps/simulator/src/control/`. The OpenAPI description is generated into `docs/api/simulator-control.openapi.json`; a test fails when it drifts from the routes (`pnpm --filter @shopfloor/simulator openapi` rewrites it). Any change bumps the version here and needs a changelog entry.
 
 The simulation console (Phase 9) is the client. The MES never uses this API: it sees the plant only through OPC UA and MQTT (plan section 5).
 
@@ -55,6 +55,21 @@ Infrastructure faults for resilience tests (plan section 4), brought forward fro
 - `injection` is `{ id, machine, code, at, repairMs?, status, heldAt?, appliedAt? }`: `id` counts from 1 in the order accepted; `status` is `scheduled`, `held` (waiting for the machine to enter `Running`) or `applied` (the machine went `Down`). Times are ISO 8601 UTC.
 - The event stream carries `injection-held` and `injection-applied` events (`{ machineId, injection, code }`) beside the state change and alarm they cause.
 
+### Leak-test drift injection (1.5)
+
+The plan's "cause sensor drift" (section 4) as a bounded sensor fault (Phase 8 plan, "Leak drift injection and scenario stock", ADR-0033).
+
+| Method and path                       | Body                    | Success                 | Errors                                                                                                                                                                                                                                               |
+| ------------------------------------- | ----------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/v1/faults/drift/{machine}` | `{ shift, at?, until }` | 200 `{ drift }`         | 404 unknown machine; 400 not the leak tester, `shift` not a non-zero whole multiple of the resolution, `until` not after `at`, an invalid time or extra fields; 409 `at` in the past or `at`/`until` on a calendar boundary, or the run has finished |
+| `GET /api/v1/faults/drifts`           | none                    | 200 `{ drifts: [...] }` | none                                                                                                                                                                                                                                                 |
+
+- `shift` (Pa/min, the tester's unit) is added to the mean of every LKT-01 reading from `at` (the current time when left out) until `until` or the tester's next calibration, whichever comes first. It must be a non-zero whole multiple of the tester's `resolution` (0.001 Pa/min), at most 1,000,000 steps, positive or negative. `until` is required and after `at`; in a live run without an end it is always checked against the calendar.
+- No random draw changes: the reading still draws one normal, and the shift is added in whole resolution steps to the rounded reading, so the reading the same draw gives without the drift is exactly the logged value minus `shift`, and a run is identical to the run without the drift up to `at`. The result decides pass or fail as any reading does.
+- `at` and `until` must not coincide with a calendar boundary, as for failure injections (`until` only while it falls inside the run). Posting a scenario's injections in list order before resuming reproduces the headless run; drifts and failure injections share one numbering.
+- `drift` is `{ id, machine, shift, at, until, status, appliedAt?, endedAt?, endedBy? }`: `status` is `scheduled`, `active` or `ended`; `endedBy` is `until` or `calibration`. Times are ISO 8601 UTC.
+- The event stream carries `leak-drift` events (`{ machineId, injection, transition: applied | ended, shift, endedBy? }`): `applied` when it starts, `ended` at `until` (`endedBy: until`) or at the start of a calibration before it (`endedBy: calibration`). A drift still active at the end of a run has no `ended` event.
+
 ## WebSocket: plant events
 
 `GET /api/v1/events` upgrades to a WebSocket. Every plant event is sent as one text message in exactly the format of a headless event-log line (`schema: sim-event/1`, run-wide `seq`, ISO `at`, sorted keys; see `docs/simulation-model.md`, Event log).
@@ -95,6 +110,7 @@ The simulator validates its environment at start-up. With any invalid value it n
 | `SIM_CONFIG_DIR`    | `config/plant` in the repository | Plant configuration directory                                                |
 | `SIM_AUTOSTART`     | `true`                           | `false` starts idle; the run begins with `POST /api/v1/resume`               |
 | `SIM_PRODUCTION`    | `schedule`                       | `orders` (#172): the CNCs run only the jobs `LoadOrder` gives them           |
+| `SIM_STOCK`         | `SIM_CONFIG_DIR/stock.yaml`      | Another stock file (#196), e.g. a golden scenario's own `stock.yaml`         |
 | `OPCUA_HOST`        | `localhost`                      | Host name the OPC UA servers advertise and bind                              |
 | `OPCUA_PORT_OFFSET` | 0                                | Added to the OPC UA ports 4841–4845                                          |
 | `OPCUA_PKI_DIR`     | `./.pki`                         | Certificate store, one folder per machine                                    |

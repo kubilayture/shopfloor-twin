@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ShopFloor Twin simulator control API",
-    "version": "1.4.0",
+    "version": "1.5.0",
     "description": "Controls the pacing of the live simulation and streams its plant events. Plant events: WebSocket at /api/v1/events (see docs/contracts/simulator-control-api.md)."
   },
   "components": {
@@ -3330,6 +3330,288 @@
                   },
                   "required": [
                     "injections"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/faults/drift/{machine}": {
+      "post": {
+        "summary": "Inject a leak-test sensor drift, from now or a simulation time until a time",
+        "tags": [
+          "faults"
+        ],
+        "description": "Adds `shift` to the leak tester's readings from `at` until `until` or the tester's next calibration, whichever comes first (#196, ADR-0033). No random draw changes, so the readings without the drift are exactly the logged ones minus `shift`. The event log gets a `leak-drift` line when it applies and when it ends. 404: unknown machine; 400: not the leak tester, a shift that is not a non-zero whole multiple of the tester's resolution, an `until` not after `at`, or an invalid time; 409: `at` in the past or `at`/`until` on a calendar boundary, or the run has finished.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "shift": {
+                    "type": "number",
+                    "description": "Pa/min added to the reading's mean: a non-zero whole multiple of the tester's resolution (0.001)"
+                  },
+                  "at": {
+                    "description": "Simulation time, ISO 8601 with an offset or Z; the current time when left out",
+                    "type": "string"
+                  },
+                  "until": {
+                    "type": "string",
+                    "description": "Simulation time after `at`, ISO 8601 with an offset or Z; the drift ends then or at the tester's next calibration, whichever comes first"
+                  }
+                },
+                "required": [
+                  "shift",
+                  "until"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "machine",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "drift": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Numbered with the failure injections, in acceptance order"
+                        },
+                        "machine": {
+                          "type": "string"
+                        },
+                        "shift": {
+                          "type": "number",
+                          "description": "Added to every reading while active, in the tester's unit (Pa/min)"
+                        },
+                        "at": {
+                          "type": "string",
+                          "description": "When it starts"
+                        },
+                        "until": {
+                          "type": "string",
+                          "description": "When it ends, unless a calibration ends it first"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "scheduled",
+                            "active",
+                            "ended"
+                          ],
+                          "description": "active: readings carry the shift; ended: by `until` or by a calibration"
+                        },
+                        "appliedAt": {
+                          "type": "string",
+                          "description": "ISO 8601 UTC"
+                        },
+                        "endedAt": {
+                          "type": "string",
+                          "description": "ISO 8601 UTC"
+                        },
+                        "endedBy": {
+                          "type": "string",
+                          "enum": [
+                            "until",
+                            "calibration"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "machine",
+                        "shift",
+                        "at",
+                        "until",
+                        "status"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "drift"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/faults/drifts": {
+      "get": {
+        "summary": "Every leak-test drift injection of the run, in order, with its outcome",
+        "tags": [
+          "faults"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "drifts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Numbered with the failure injections, in acceptance order"
+                          },
+                          "machine": {
+                            "type": "string"
+                          },
+                          "shift": {
+                            "type": "number",
+                            "description": "Added to every reading while active, in the tester's unit (Pa/min)"
+                          },
+                          "at": {
+                            "type": "string",
+                            "description": "When it starts"
+                          },
+                          "until": {
+                            "type": "string",
+                            "description": "When it ends, unless a calibration ends it first"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "scheduled",
+                              "active",
+                              "ended"
+                            ],
+                            "description": "active: readings carry the shift; ended: by `until` or by a calibration"
+                          },
+                          "appliedAt": {
+                            "type": "string",
+                            "description": "ISO 8601 UTC"
+                          },
+                          "endedAt": {
+                            "type": "string",
+                            "description": "ISO 8601 UTC"
+                          },
+                          "endedBy": {
+                            "type": "string",
+                            "enum": [
+                              "until",
+                              "calibration"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "machine",
+                          "shift",
+                          "at",
+                          "until",
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "drifts"
                   ],
                   "additionalProperties": false
                 }

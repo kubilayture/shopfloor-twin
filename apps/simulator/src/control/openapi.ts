@@ -26,6 +26,12 @@ export async function generateOpenApi(): Promise<string> {
         },
         list: () => [],
       },
+      drift: {
+        inject: () => {
+          throw new Error('not served');
+        },
+        list: () => [],
+      },
     },
     groundTruth: () => {
       throw new Error('not served');

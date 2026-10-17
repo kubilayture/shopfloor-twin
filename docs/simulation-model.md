@@ -361,6 +361,19 @@ Source: `apps/simulator/src/plant/quality.ts` and `line.ts`. Parameters: `config
 - First-test failure rate: about 0.4% right after calibration, rising to about 2% after 7 days of drift.
 - Calibration every `calibrationIntervalDays` (7) is planned `Maintenance` with cause `CALIBRATION` for `calibrationMinutes` (20). It starts between parts, and resets the drift.
 
+### Leak-test drift injection (#196)
+
+Source: `injectLeakDrift` in `apps/simulator/src/plant/line.ts` and `LeakTester.addShift` in `quality.ts` (Phase 8 plan, "Leak drift injection and scenario stock", ADR-0033). The plan's "cause sensor drift" (section 4), as a sensor fault bounded in time: it names the leak tester, a `shift` in Pa/min, a start `at` and an end `until`. It comes from the control API (`POST /api/v1/faults/drift/{machine}`, 1.5) or from a scenario's `injections` list as `{ kind: "leak-drift", at, until, machine, shift }`.
+
+- **What it does:** from `at` it adds `shift` to the mean of every LKT-01 reading, until `until` or the start of the tester's next calibration, whichever comes first. The reading still passes or fails against `upperLimit`, so a large drift makes reworks and leak scrap like any high reading.
+- **Exact in integer steps:** `shift` must be a non-zero whole multiple of `resolution` (0.001 Pa/min; at most 1,000,000 steps, either sign). The tester adds `shift / resolution` steps to the rounded reading, which equals adding `shift` to the mean before rounding, without floating-point noise: the reading the same draw gives without the drift is exactly the logged steps minus `shift / resolution`.
+- **No random draw changes:** the reading still draws one normal from `lkt-01/quality/leak`, so the run before `at` is identical to the run without the drift, and with readings that can't fail the two runs make the same parts (tested).
+- **Events:** `leak-drift` `applied` at `at`; `leak-drift` `ended` with `endedBy: until` at `until`, or with `endedBy: calibration` at the calibration's start (the line just before LKT-01 enters `Maintenance CALIBRATION`); none if the drift is still active at the end of the run (`until` at or after the end is allowed: the drift then lasts to the end). Both are simulation events scheduled when the drift is accepted, after the failure injections of the same list position, sharing their numbering (`injection` id). Only runs with a drift write the event.
+- **Calendar boundaries:** `at`, and `until` while it falls inside the run, must not coincide with a shift or break boundary (`driftIssues` in `plant-config`), the rule of failure injections. A headless run refuses an `at` outside [start, end).
+- **Several drifts** on the tester add up while they overlap; a calibration ends every active one. A drift applied during a running calibration survives it and is ended by the next one; the reading of the cycle that frees the tester at the calibration's instant still carries the drift (it comes before the `ended` line).
+
+**Validation** (`apps/simulator/src/plant/leak-drift.test.ts`, `quality.test.ts`): with readings that can't fail, the drifted run has the same events as the plain one except the readings' values, and exactly the readings between `applied` and `ended` are 600 steps higher; with the default limit the run is identical up to `at`; a drift past the run's end writes no `ended` line; a calibration inside the drift ends it with `endedBy: calibration` at the calibration's start; the shared numbering and the refusals.
+
 ### Alarms
 
 The model raises alarms and clears them; the lifecycle (acknowledge, shelve, history) belongs to the MES (ADR-0010).
@@ -410,12 +423,17 @@ Source: `apps/simulator/src/plant/materials.ts` and `line.ts`. Parameters: `conf
 - **Rework:** a reworked part consumes only its `reworkComponents` (default: the seal kit). A reworked VB-100 therefore has two SK-1 consumptions and one SP-100.
 - **Lot order:** lots of a material are used first in, first out, in file order.
 - **Genealogy events:** every unit consumed emits a `material-consumed` event with machine, part id, material and lot. Joined with the serial on `cycle-complete`, this gives the serial → blank lot → component lots genealogy that the MES rebuilds in Phase 8 (plan section 3).
+- **On the device (#196, ADR-0033):** `material-consumed` is not an OPC UA event. The machine server attaches each part's lots to that part's `CycleCompleteEventType` on the same machine (`LotMaterials`, `LotIds`), with ASM-01's operator at the cycle's start (the part's first consumption there), by `trace-core`'s `ConsumptionTracker`; no device sequence number moves. Material taken for a cycle still running at the end of a run is reported by no cycle.
 
 ### Shortage and blocked lots
 
 - When no usable lot of a needed material is left, the station is `Starved` with cause `MATERIAL:<material>`, for example `MATERIAL:SK-1`.
 - ASM-01 checks its components **before** taking the part from the buffer, so the part stays in the buffer and the line upstream fills and blocks, as it would in a real plant.
 - A lot can be blocked and released (`ProductionLine.blockLot`, used by the control API in Phase 9 to simulate a quality hold). A blocked lot is skipped as if it were empty. Releasing it wakes every starved station.
+
+### Scenario-local stock (#196)
+
+A golden scenario may name its own stock file, `stock` in `scenario.json` (a file name in the scenario's folder), read in place of `config/plant/stock.yaml`; a live run reads `SIM_STOCK` (default: `stock.yaml` of `SIM_CONFIG_DIR`). It is validated and cross-checked like the plant's (`loadPlantConfig(dir, { stock })`), and it is what the run header's `configSha256` hashes, so only a scenario with its own stock has another hash. Small lots let a two-day scenario change lots mid-order (Phase 8's `quality-01`) without changing `stock.yaml`, a simulation input of every golden. A scenario with an ERP dataset whose `lots` are listed must list exactly its stock (tested for every golden scenario; without `lots` the ERP mock serves the plant's `stock.yaml`).
 
 ### Validation
 
@@ -447,7 +465,7 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 
 ### Event log (`events.jsonl`)
 
-- **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the simulation sections of the validated plant configuration (`SIMULATION_FILES` in `plant-config`). Any change to a value in those files changes the hash; `oee.yaml`, `reasons.yaml` and `alarms.yaml` are not simulation inputs and are not hashed (ADR-0021, ADR-0024). A run with failure injections also lists them (`injections: [{ at, machine, code, repairMs? }]`); a run without has no such field, so its header is unchanged (#140). An orders-mode run adds `production: "orders"` and its `dispatches` (#172); a schedule-mode header has neither, so `week-01`'s and `alarms-01`'s headers and `events.sha256` are unchanged. The event schema stays `sim-event/1`: `job` is a new event type that only orders-mode runs write.
+- **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the simulation sections of the validated plant configuration (`SIMULATION_FILES` in `plant-config`). Any change to a value in those files changes the hash; `oee.yaml`, `reasons.yaml` and `alarms.yaml` are not simulation inputs and are not hashed (ADR-0021, ADR-0024). A run with failure injections also lists them (`injections: [{ at, machine, code, repairMs? }]`); a run without has no such field, so its header is unchanged (#140). A leak-test drift is listed in the same list, in scenario order, as `{ kind: "leak-drift", at, until, machine, shift }` (#196); an entry without `kind` is a failure injection, so existing headers are unchanged. An orders-mode run adds `production: "orders"` and its `dispatches` (#172); a schedule-mode header has neither, so `week-01`'s and `alarms-01`'s headers and `events.sha256` are unchanged. The event schema stays `sim-event/1`: `job` is a new event type that only orders-mode runs write.
 - **Every other line is one event** with `schema: sim-event/1`, a run-wide sequence number `seq` starting at 1, and `at` in ISO 8601 UTC. Lines are in simulation-time order; events at the same millisecond keep the order in which the model produced them.
 - **No raw floats leave the model:** durations are rounded to whole milliseconds before scheduling (ADR-0006), and measurements are rounded to instrument resolution. The last bits of `Math.log`, `Math.cos` and `**` can differ between CPU architectures; the first golden run in CI (Linux x86) differed from a local run (macOS ARM) in exactly the unrounded leak readings.
 - **Byte stability:** keys are sorted at every level (string order, except that integer-like keys come first in numeric order, as JSON objects always do), and undefined fields are dropped. Values that are not plain JSON (`Map`, `Set`, `Temporal` objects, functions) are rejected instead of being written as `{}`. One function, `stableStringify`, writes every line, so the bytes depend only on the data, never on how an object was built.
@@ -465,6 +483,7 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 | `injection-held`             | `machineId`, `injection` (its id), `code`                                                                     | A failure injection falls due while the machine is not `Running`  |
 | `injection-applied`          | `machineId`, `injection`, `code`                                                                              | A failure injection takes effect: the machine goes `Down` now     |
 | `job`                        | `machineId`, `transition` (`accepted`, `started`, `completed`), `commandId`, `orderId`, `product`, `quantity` | Orders mode only (#172): a job is accepted, started or completed  |
+| `leak-drift`                 | `machineId`, `injection`, `transition` (`applied`, `ended`), `shift`, `endedBy?` (`until`, `calibration`)     | Only runs with a drift (#196): a leak-test drift starts or ends   |
 
 These are the simulator's internal facts, the "truth". They are not the UNS payloads of plan section 5; the MES sees the plant only through OPC UA and MQTT from Phase 2 on.
 

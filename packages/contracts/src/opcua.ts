@@ -82,7 +82,22 @@ export const OPCUA_EVENT_TYPES = {
 export const OPCUA_EVENT_FIELDS = {
   common: ['Sequence', 'MachineId'],
   stateChange: ['FromState', 'ToState', 'Cause'],
-  cycleComplete: ['Product', 'PartId', 'Serial', 'Result', 'Reason', 'MeasurementValue'],
+  /**
+   * Address space 1.2 (#196, ADR-0033) adds `LotMaterials` and `LotIds` (two `String[]` of equal
+   * length, the lots consumed for the part on this machine in consumption order) and `Operator`
+   * (the station's operator when the cycle started, empty where a machine has none).
+   */
+  cycleComplete: [
+    'Product',
+    'PartId',
+    'Serial',
+    'Result',
+    'Reason',
+    'MeasurementValue',
+    'LotMaterials',
+    'LotIds',
+    'Operator',
+  ],
   alarm: ['AlarmCode', 'Transition'],
   job: ['Transition', 'CommandId', 'OrderId', 'Product', 'Quantity'],
 } as const;
@@ -104,7 +119,13 @@ export const OPCUA_EVENT_FIELD_TYPES = {
   CommandId: 'String',
   OrderId: 'String',
   Quantity: 'UInt32',
+  LotMaterials: 'String',
+  LotIds: 'String',
+  Operator: 'String',
 } as const satisfies Record<string, 'String' | 'UInt32' | 'Double'>;
+
+/** Event fields that are one-dimensional arrays of their type (`valueRank` 1); the rest are scalars. */
+export const OPCUA_EVENT_ARRAY_FIELDS: readonly string[] = ['LotMaterials', 'LotIds'];
 
 export const opcuaNodeId = (machineId: string, path: string): string =>
   `nsu=${SHOPFLOOR_NAMESPACE_URI};s=${machineId}.${path}`;

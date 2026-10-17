@@ -8,7 +8,14 @@ import type { PacerState, PacerStatus } from '../live/pacer.ts';
 import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { isoTime } from '../headless/serialize.ts';
 import type { LiveGroundTruth } from '../live/run.ts';
-import type { FailureInjection, InjectFailureRequest, InjectFailureResult } from '../plant/line.ts';
+import type {
+  FailureInjection,
+  InjectDriftRequest,
+  InjectDriftResult,
+  InjectFailureRequest,
+  InjectFailureResult,
+  LeakDrift,
+} from '../plant/line.ts';
 import { PRODUCTION_MODES } from '../plant/line.ts';
 import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
 import type { EventHub } from './event-hub.ts';
@@ -16,9 +23,9 @@ import type { EventHub } from './event-hub.ts';
 /**
  * The contract version (docs/contracts/simulator-control-api.md); 1.2 adds the OEE ground truth,
  * 1.3 failure injection and the alarm ground truth (#140), 1.4 the production mode and the order
- * ground truth (#172).
+ * ground truth (#172), 1.5 the leak-test drift injection (#196).
  */
-export const CONTROL_API_VERSION = '1.4.0';
+export const CONTROL_API_VERSION = '1.5.0';
 export const API_PREFIX = '/api/v1';
 export const EVENTS_PATH = `${API_PREFIX}/events`;
 /** A WebSocket client that falls this far behind is disconnected rather than buffered without bound. */
@@ -319,6 +326,40 @@ export const injectBodySchema = z
   })
   .strict();
 
+export const driftSchema = z.object({
+  id: count.describe('Numbered with the failure injections, in acceptance order'),
+  machine: z.string(),
+  shift: z.number().describe("Added to every reading while active, in the tester's unit (Pa/min)"),
+  at: isoSchema.describe('When it starts'),
+  until: isoSchema.describe('When it ends, unless a calibration ends it first'),
+  status: z
+    .enum(['scheduled', 'active', 'ended'])
+    .describe('active: readings carry the shift; ended: by `until` or by a calibration'),
+  appliedAt: isoSchema.optional(),
+  endedAt: isoSchema.optional(),
+  endedBy: z.enum(['until', 'calibration']).optional(),
+});
+
+export const driftBodySchema = z
+  .object({
+    shift: z
+      .number()
+      .describe(
+        "Pa/min added to the reading's mean: a non-zero whole multiple of the tester's resolution (0.001)",
+      ),
+    at: z
+      .string()
+      .optional()
+      .describe('Simulation time, ISO 8601 with an offset or Z; the current time when left out'),
+    until: z
+      .string()
+      .describe(
+        'Simulation time after `at`, ISO 8601 with an offset or Z; the drift ends then or at the ' +
+          "tester's next calibration, whichever comes first",
+      ),
+  })
+  .strict();
+
 export const groundTruthSchema = z.object({
   epoch: count.describe('Run epoch (Unix seconds), as the devices publish it (ADR-0015)'),
   productionMode: z.enum(PRODUCTION_MODES).describe('The production mode of the run (#172)'),
@@ -401,6 +442,11 @@ export interface ControlAppOptions {
     readonly failure?: {
       readonly inject: (request: InjectFailureRequest) => InjectFailureResult;
       readonly list: () => readonly FailureInjection[];
+    };
+    /** Leak-test drift injection (#196): schedules a drift, and lists them with their outcome. */
+    readonly drift?: {
+      readonly inject: (request: InjectDriftRequest) => InjectDriftResult;
+      readonly list: () => readonly LeakDrift[];
     };
   };
   /** The live run's ground truth (#100); the route exists only when given. */
@@ -736,6 +782,101 @@ export async function buildControlApp({
         },
       },
       () => ({ injections: failure.list().map(injectionJson) }),
+    );
+  }
+
+  const drift = faults.drift;
+  if (drift) {
+    const driftJson = (view: LeakDrift) => ({
+      id: view.id,
+      machine: view.machine,
+      shift: view.shift,
+      at: isoTime(view.at),
+      until: isoTime(view.until),
+      status: view.status,
+      ...(view.appliedAt === undefined ? {} : { appliedAt: isoTime(view.appliedAt) }),
+      ...(view.endedAt === undefined ? {} : { endedAt: isoTime(view.endedAt) }),
+      ...(view.endedBy === undefined ? {} : { endedBy: view.endedBy }),
+    });
+    app.post(
+      `${API_PREFIX}/faults/drift/:machine`,
+      {
+        schema: {
+          tags: ['faults'],
+          summary: 'Inject a leak-test sensor drift, from now or a simulation time until a time',
+          description:
+            "Adds `shift` to the leak tester's readings from `at` until `until` or the tester's " +
+            'next calibration, whichever comes first (#196, ADR-0033). No random draw changes, ' +
+            'so the readings without the drift are exactly the logged ones minus `shift`. The ' +
+            'event log gets a `leak-drift` line when it applies and when it ends. 404: unknown ' +
+            'machine; 400: not the leak tester, a shift that is not a non-zero whole multiple of ' +
+            "the tester's resolution, an `until` not after `at`, or an invalid time; 409: `at` in " +
+            'the past or `at`/`until` on a calendar boundary, or the run has finished.',
+          params: json(z.object({ machine: z.string() })),
+          body: json(driftBodySchema),
+          response: {
+            200: json(z.object({ drift: driftSchema })),
+            400: json(errorSchema),
+            404: json(errorSchema),
+            409: json(errorSchema),
+          },
+        },
+      },
+      (request, reply) => {
+        const { machine } = request.params as { machine: string };
+        const body = request.body as { shift: number; at?: string; until: string };
+        if (pacer.state === 'finished') {
+          return conflict(reply, 'the run has finished');
+        }
+        const instant = (value: string): number | undefined => {
+          try {
+            return Temporal.Instant.from(value).epochMilliseconds;
+          } catch {
+            return undefined;
+          }
+        };
+        const badTime = (name: string, value: string) =>
+          reply.code(400).send({
+            error: 'Bad Request',
+            message: `${name} must be ISO 8601 with an offset or Z, got "${value}"`,
+          });
+        const at = body.at === undefined ? undefined : instant(body.at);
+        if (body.at !== undefined && at === undefined) return badTime('at', body.at);
+        const until = instant(body.until);
+        if (until === undefined) return badTime('until', body.until);
+        const result = drift.inject({
+          machine,
+          shift: body.shift,
+          until,
+          ...(at === undefined ? {} : { at }),
+        });
+        if (result.ok) {
+          return { drift: driftJson(result.drift) };
+        }
+        switch (result.code) {
+          case 'unknown-machine':
+            return reply.code(404).send({ error: 'Not Found', message: result.reason });
+          case 'in-the-past':
+          case 'calendar-boundary':
+            return conflict(reply, result.reason);
+          case 'not-a-leak-tester':
+          case 'invalid-shift':
+          case 'invalid-time':
+          case 'invalid-until':
+            return reply.code(400).send({ error: 'Bad Request', message: result.reason });
+        }
+      },
+    );
+    app.get(
+      `${API_PREFIX}/faults/drifts`,
+      {
+        schema: {
+          tags: ['faults'],
+          summary: 'Every leak-test drift injection of the run, in order, with its outcome',
+          response: { 200: json(z.object({ drifts: z.array(driftSchema) })) },
+        },
+      },
+      () => ({ drifts: drift.list().map(driftJson) }),
     );
   }
 

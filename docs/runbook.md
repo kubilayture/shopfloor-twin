@@ -58,7 +58,7 @@ Runs the plant live and exposes the five OPC UA machines (contract: `docs/contra
 pnpm sim:serve
 ```
 
-Configuration comes from environment variables, validated at start-up. Examples: `SIM_SPEED=30`, `SIM_SEED=7`, `SIM_AUTOSTART=false`, `SIM_PRODUCTION=orders` (#172: the CNCs run only the jobs OPC UA `LoadOrder` gives them; `schedule` is the default), `OPCUA_PORT_OFFSET=100`, `CONTROL_PORT=4800`. The full list is in the contract.
+Configuration comes from environment variables, validated at start-up. Examples: `SIM_SPEED=30`, `SIM_SEED=7`, `SIM_AUTOSTART=false`, `SIM_PRODUCTION=orders` (#172: the CNCs run only the jobs OPC UA `LoadOrder` gives them; `schedule` is the default), `SIM_STOCK=apps/simulator/golden/<scenario>/stock.yaml` (#196: a scenario's own stock in place of `config/plant/stock.yaml`), `OPCUA_PORT_OFFSET=100`, `CONTROL_PORT=4800`. The full list is in the contract.
 
 ```bash
 SIM_SPEED=30 SIM_AUTOSTART=false pnpm sim:serve

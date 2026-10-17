@@ -17,6 +17,8 @@ COPY packages/oee-core/package.json packages/oee-core/
 COPY packages/plant-config/package.json packages/plant-config/
 COPY packages/shift-calendar/package.json packages/shift-calendar/
 COPY packages/sim-core/package.json packages/sim-core/
+COPY packages/spc-core/package.json packages/spc-core/
+COPY packages/trace-core/package.json packages/trace-core/
 # Production dependencies of the simulator and its workspace packages only; no lifecycle scripts.
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts --filter @shopfloor/simulator...
 
@@ -34,6 +36,8 @@ COPY packages/oee-core/src packages/oee-core/src
 COPY packages/plant-config/src packages/plant-config/src
 COPY packages/shift-calendar/src packages/shift-calendar/src
 COPY packages/sim-core/src packages/sim-core/src
+COPY packages/spc-core/src packages/spc-core/src
+COPY packages/trace-core/src packages/trace-core/src
 COPY apps/simulator/src apps/simulator/src
 RUN mkdir -p /var/lib/simulator/pki && chown node:node /var/lib/simulator/pki
 USER node

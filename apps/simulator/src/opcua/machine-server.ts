@@ -1,5 +1,6 @@
 import {
   LOAD_ORDER_INPUTS,
+  OPCUA_EVENT_ARRAY_FIELDS,
   OPCUA_EVENT_FIELD_TYPES,
   OPCUA_EVENT_FIELDS,
   OPCUA_EVENT_TYPES,
@@ -16,6 +17,7 @@ import {
   OPCUACertificateManager,
   OPCUAServer,
   StatusCodes,
+  VariantArrayType,
   nodesets,
   promoteToStateMachine,
   type AddressSpace,
@@ -27,6 +29,7 @@ import {
   type VariantOptions,
 } from 'node-opcua';
 import type { SimTime } from '@shopfloor/sim-core';
+import { ConsumptionTracker, type Attachment } from '@shopfloor/trace-core';
 import type {
   LoadOrderRequest,
   LoadOrderResult,
@@ -110,6 +113,11 @@ export class MachineServer {
   /** Orders mode (#172): each accepted command's job fact, its sequence number and plant time. */
   readonly #acceptedJobs = new Map<string, { readonly seq: number; readonly at: SimTime }>();
   #queuedJobs = 0;
+  /**
+   * Lots and operator per cycle (#196, ADR-0033): trace-core's fold over this machine's events,
+   * the same one the MES's golden harness runs over the event log.
+   */
+  readonly #consumption = new ConsumptionTracker();
   #machine: UAObject | undefined;
   #eventTypes: Partial<Record<keyof typeof OPCUA_EVENT_TYPES, UAEventType>> = {};
   #itemState: ReturnType<typeof promoteToStateMachine> | undefined;
@@ -220,12 +228,15 @@ export class MachineServer {
     if (!('machineId' in event) || event.machineId !== this.machineId) {
       return;
     }
+    // Every event passes the fold; only `cycle-complete` returns what attaches to it. No event
+    // here takes a sequence number it did not take before #196.
+    const attachment = this.#consumption.record(event);
     switch (event.type) {
       case 'state':
         this.#onState(event.from, event.to, event.cause, event.at);
         break;
       case 'cycle-complete':
-        this.#onCycle(event);
+        this.#onCycle(event, attachment ?? { lots: [], operator: null });
         break;
       case 'operator':
         this.#set('operator', event.operatorId ?? '', event.at);
@@ -242,6 +253,7 @@ export class MachineServer {
       case 'repair-end':
       case 'injection-held':
       case 'injection-applied':
+      case 'leak-drift':
         break;
     }
   }
@@ -270,7 +282,7 @@ export class MachineServer {
     });
   }
 
-  #onCycle(event: Extract<PlantEvent, { type: 'cycle-complete' }>): void {
+  #onCycle(event: Extract<PlantEvent, { type: 'cycle-complete' }>, attachment: Attachment): void {
     const sequence = this.#next(event.at);
     this.#counters.produced++;
     this.#counters[event.result]++;
@@ -295,6 +307,17 @@ export class MachineServer {
           dataType: DataType.Double,
           value: event.measurement?.value ?? Number.NaN,
         },
+        lotMaterials: {
+          dataType: DataType.String,
+          arrayType: VariantArrayType.Array,
+          value: attachment.lots.map((lot) => lot.material),
+        },
+        lotIds: {
+          dataType: DataType.String,
+          arrayType: VariantArrayType.Array,
+          value: attachment.lots.map((lot) => lot.lot),
+        },
+        operator: { dataType: DataType.String, value: attachment.operator ?? '' },
       },
     );
   }
@@ -575,10 +598,12 @@ export class MachineServer {
       if (!existing) {
         for (const field of [...OPCUA_EVENT_FIELDS.common, ...OPCUA_EVENT_FIELDS[kind]]) {
           const dataType = OPCUA_EVENT_FIELD_TYPES[field];
+          const array = OPCUA_EVENT_ARRAY_FIELDS.includes(field);
           ns.addVariable({
             propertyOf: eventType,
             browseName: field,
             dataType,
+            ...(array ? { valueRank: 1, arrayDimensions: [0] } : {}),
             modellingRule: 'Mandatory',
           });
         }

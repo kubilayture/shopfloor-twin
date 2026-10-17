@@ -125,7 +125,7 @@ describe('runHeadless (plan section 4, headless mode)', () => {
     expect(configHash(structuredClone(config))).toBe(configHash(config));
   });
 
-  it('hashes only the simulation sections: OEE, reason, scrap and alarm configuration do not change it (ADR-0021, ADR-0024, #175)', async () => {
+  it('hashes only the simulation sections: OEE, reason, scrap, alarm, packing and quality configuration do not change it (ADR-0021, ADR-0024, #175, #208)', async () => {
     const changed = structuredClone(config);
     changed.oee.microStopThresholdMs = 1;
     changed.reasons.rules.reverse();
@@ -134,9 +134,13 @@ describe('runHeadless (plan section 4, headless mode)', () => {
     changed.alarms.definitions.reverse();
     changed.alarms.positions.pop();
     changed.scrap.reasons.reverse();
+    changed.packing.capacity['VB-100'] = 7;
+    for (const characteristic of changed.quality.characteristics) characteristic.subgroupSize = 4;
     expect(configHash(changed)).toBe(configHash(config));
     const simulationOnly = Object.fromEntries(
-      Object.entries(config).filter(([k]) => !['oee', 'reasons', 'alarms', 'scrap'].includes(k)),
+      Object.entries(config).filter(
+        ([k]) => !['oee', 'reasons', 'alarms', 'scrap', 'packing', 'quality'].includes(k),
+      ),
     );
     expect(createHash('sha256').update(stableStringify(simulationOnly)).digest('hex')).toBe(
       configHash(config),

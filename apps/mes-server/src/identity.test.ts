@@ -789,6 +789,16 @@ const ROUTES: Readonly<Record<string, Permission | 'session' | 'public'>> = {
   'POST /api/v1/quality/characteristics/{id}/limits': 'spc:limits',
   'POST /api/v1/quality/characteristics/{id}/limits/{version}/end': 'spc:limits',
   'POST /api/v1/quality/signals/{id}/ack': 'spc:ack',
+  // Quality holds (#201).
+  'GET /api/v1/quality/holds': 'read',
+  'GET /api/v1/quality/holds/{id}': 'read',
+  'GET /api/v1/quality/hold-reasons': 'read',
+  'GET /api/v1/quality/hold-incidents': 'read',
+  'GET /api/v1/quality/signals/{id}/hold-suggestion': 'read',
+  'POST /api/v1/quality/holds': 'quality:hold',
+  'POST /api/v1/quality/holds/{id}/comments': 'quality:hold',
+  'POST /api/v1/quality/holds/{id}/release': 'quality:release',
+  'POST /api/v1/quality/holds/{id}/reject': 'quality:release',
 };
 
 /** Path parameters filled in so the route matches (the handler may still answer 400 or 404). */
@@ -888,7 +898,7 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     );
     const api = routes.filter((route) => route.includes(' /api/v1/'));
     expect(api.sort()).toEqual(Object.keys(ROUTES).sort());
-    expect(api).toHaveLength(81);
+    expect(api).toHaveLength(90);
     expect(routes.filter((r) => !r.includes(' /api/v1/')).sort()).toEqual([
       'GET /health/live',
       'GET /health/ready',

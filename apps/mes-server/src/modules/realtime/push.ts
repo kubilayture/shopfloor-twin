@@ -8,9 +8,10 @@ import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
 import type { DowntimeChange, OeeBucket, OeeChange, OeeScope } from '../oee/index.ts';
 import { alarmKpiDto, floodEpisodeDto, occurrenceDto, pointDto } from './alarm-dto.ts';
 import type { OrderChange } from '../orders/index.ts';
-import type { QualityChange } from '../quality/index.ts';
+import type { HoldChange, QualityChange } from '../quality/index.ts';
 import type { ShiftChange } from '../shifts/index.ts';
 import { commandDto, orderDto } from './order-dto.ts';
+import { holdDto } from './hold-routes.ts';
 import { characteristicDto, signalDto } from './quality-dto.ts';
 import { bucketDto, recordDto } from './oee-dto.ts';
 import { handoverNoteDto, shiftRecordDto } from './shift-dto.ts';
@@ -96,6 +97,10 @@ export interface PushSources {
   /** SPC signal episodes and characteristic changes (#200): the `quality` topic. */
   readonly quality?: {
     onChange(listener: (change: QualityChange) => void): () => void;
+  };
+  /** Quality holds (#201): `quality-hold` messages on the `quality` topic. */
+  readonly holds?: {
+    onChange(listener: (change: HoldChange) => void): () => void;
   };
   /** Units, quantities and scrap records changed (#175): the terminal topics follow them. */
   readonly execution?: {
@@ -333,6 +338,13 @@ export class PushHub {
       this.#detach.push(
         sources.quality.onChange((change) => {
           this.#onQuality(change);
+        }),
+      );
+    }
+    if (sources.holds) {
+      this.#detach.push(
+        sources.holds.onChange((change) => {
+          this.#onHold(change);
         }),
       );
     }
@@ -661,12 +673,23 @@ export class PushHub {
     if (!client.quality) {
       this.#dropPending(client, 'spc-signal:');
       this.#dropPending(client, 'spc-characteristic:');
+      this.#dropPending(client, 'quality-hold:');
     }
     this.#send(client, {
       type: request.type === 'subscribe' ? 'subscribed' : 'unsubscribed',
       topic: QUALITY_TOPIC,
       metric: null,
     });
+  }
+
+  /** A hold's transition, comment or scope change (#201), keyed by hold id. */
+  #onHold(change: HoldChange): void {
+    let data: string | undefined;
+    for (const client of this.#clients) {
+      if (!client.quality) continue;
+      data ??= message({ type: 'quality-hold', event: change.event, hold: holdDto(change.hold) });
+      this.#enqueue(client, `quality-hold:${change.hold.id}`, data);
+    }
   }
 
   #onQuality(change: QualityChange): void {

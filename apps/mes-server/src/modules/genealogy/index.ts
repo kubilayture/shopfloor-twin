@@ -14,6 +14,9 @@
  *   every trace answer carries `final` and the machines not final through its latest record.
  * - `processedThrough(equipment, epoch)` / `covers(facts)`: the contiguous processed watermark the
  *   quality module's close guard requires (plan review round 2 HIGH C, #201).
+ * - For quality holds (#201): `scope(subject, { orderId, db })` (the units a lot, serial, carton or
+ *   order covers now, from the links, in the caller's transaction), `lotConsumptions(lot)`,
+ *   `units(keys)`, `finalityAt(at, epochs)`.
  * - Pure (`derive.ts`): `traceUnit`, `mismatches`, `placeCartons`, `finality`, `finalThrough`.
  */
 export { finalThrough, finality, mismatches, placeCartons, traceUnit } from './derive.ts';
@@ -40,8 +43,10 @@ export type {
   GenealogyIngest,
   GenealogyLog,
   GenealogyOptions,
+  LotConsumption,
   LotTrace,
   MaterialLot,
+  ScopeSubject,
   SearchKind,
   SerialTrace,
   TraceUnitRecord,

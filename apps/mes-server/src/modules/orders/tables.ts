@@ -141,9 +141,10 @@ export type ErpMessageStatus =
 export interface ErpMessageLogTable {
   id: Generated<number>;
   direction: 'in' | 'out';
-  kind: 'feed-entry' | 'status' | 'confirmation';
-  order_id: string;
-  revision: number;
+  kind: 'feed-entry' | 'status' | 'confirmation' | 'quality-notification';
+  /** Null only for a quality notification (#201): it is about a hold, not an order. */
+  order_id: string | null;
+  revision: number | null;
   idempotency_key: string | null;
   feed_id: string | null;
   feed_seq: number | null;
@@ -156,6 +157,9 @@ export interface ErpMessageLogTable {
   receipt: ColumnType<unknown, string | null, string | null>;
   created_at: DefaultTimestamp;
   updated_at: DefaultTimestamp;
+  /** A quality notification's subject: the hold (#201). */
+  subject_kind: ColumnType<'hold' | null, 'hold' | null | undefined, 'hold' | null>;
+  subject_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface OrderIncidentTable {
@@ -295,6 +299,8 @@ export const ORDERS_COLUMNS = {
     'receipt',
     'created_at',
     'updated_at',
+    'subject_kind',
+    'subject_id',
   ],
   'orders.order_incident': [
     'id',

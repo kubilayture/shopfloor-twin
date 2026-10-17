@@ -6,7 +6,8 @@ import { golden, reconciliationSuite } from './reconcile.test-support.ts';
 // (states, OEE, alarms, shift reports, orders and execution), and its genealogy (#199) against
 // trace.json: every unit, lot and carton, in order and shuffled, its required features found in
 // the MES's answers, and at Monday 14:00 Istanbul (the end of shift A) against `traceAsOf` of the
-// truth.
+// truth. The golden hold cases (#201): at that cut a lot, a carton and an order are held, and
+// once every fact is in each hold's scope equals the truth's units of its subject.
 reconciliationSuite(
   'reconciliation with the headless ground truth: quality-01 traceability (#199)',
   // 6 shift buckets of 8 OEE buckets; no failure injection (the drift is a sensor fault, no alarm);
@@ -27,6 +28,19 @@ reconciliationSuite(
         cut: '2026-10-12T11:00:00.000Z',
         atCut: { units: 204, lots: 14, cartons: 8, final: 184 },
         features: true,
+        // The golden hold cases (#201), opened at the cut (Monday 14:00): the first blank lot in
+        // use across it (84 units before, 396 consumed after: one held-material-consumed each),
+        // the first closed carton, the first completed order; its close refused while held.
+        holds: {
+          lot: 'BL100-Q01-03',
+          lotUnitsAtCut: 84,
+          lotUnits: 480,
+          consumedAfter: 396,
+          carton: 'PO-2610-101-C01',
+          cartonUnits: 20,
+          order: 'PO-2610-101',
+          orderUnits: 40,
+        },
       },
     }),
 );

@@ -17,8 +17,17 @@ export interface ErpApi {
   /** A feed page after `after`; `cursor-ahead` when the ERP answered 409 erp-cursor-ahead. */
   feed(after: number, limit: number): Promise<FeedPage>;
   /** Posts a message; the outcome tells the outbox whether to retry. */
-  post(kind: 'status' | 'confirmation', key: string, body: unknown): Promise<PostOutcome>;
+  post(kind: ErpMessageKind, key: string, body: unknown): Promise<PostOutcome>;
 }
+
+/** The kinds of outbound ERP message (a quality notification since #201). */
+export type ErpMessageKind = 'status' | 'confirmation' | 'quality-notification';
+
+const PATHS: Readonly<Record<ErpMessageKind, string>> = {
+  status: 'order-status',
+  confirmation: 'confirmations',
+  'quality-notification': 'quality-notifications',
+};
 
 export type FeedPage =
   | { readonly kind: 'page'; readonly page: OrderFeed }
@@ -112,26 +121,26 @@ export class ErpClient implements ErpApi {
   }
 
   async post(
-    kind: 'status' | 'confirmation',
+    kind: ErpMessageKind,
     key: string,
-    /** A `StatusMessageRequest` or a `ConfirmationRequest`, as stored in the outbox. */
+    /**
+     * A `StatusMessageRequest`, a `ConfirmationRequest` or a `QualityNotificationRequest`, as
+     * stored in the outbox.
+     */
     body: unknown,
   ): Promise<PostOutcome> {
     let response: Response;
     try {
-      response = await fetch(
-        `${this.#url}/api/v1/${kind === 'status' ? 'order-status' : 'confirmations'}`,
-        {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${this.#token}`,
-            'content-type': 'application/json',
-            'idempotency-key': key,
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(this.#timeoutMs),
+      response = await fetch(`${this.#url}/api/v1/${PATHS[kind]}`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.#token}`,
+          'content-type': 'application/json',
+          'idempotency-key': key,
         },
-      );
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
     } catch (error) {
       return { kind: 'retry', detail: error instanceof Error ? error.message : String(error) };
     }

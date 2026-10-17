@@ -131,6 +131,12 @@ export const DECLARED_GRANTS: {
       'quality.measurement': ALL,
       'quality.control_limit': APPEND,
       'quality.spc_signal': ALL,
+      // Holds (#201): kept (their state changes in place); transitions append-only (a trigger
+      // refuses the rest); the scope copy derived and rebuilt; incidents kept, never changed.
+      'quality.hold': KEEP,
+      'quality.hold_transition': APPEND,
+      'quality.hold_unit': ALL,
+      'quality.hold_incident': APPEND,
     },
     // The aggregates' sources, which a refresh reads; the aggregates themselves it owns.
     mes_cagg: {

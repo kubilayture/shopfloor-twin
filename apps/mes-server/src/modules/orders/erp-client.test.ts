@@ -110,6 +110,27 @@ describe('ErpClient (ADR-0028)', () => {
     });
     await client().post('confirmation', 'PO-1~OP10~conf~1', {});
     expect(requests.at(-1)?.url).toBe('/api/v1/confirmations');
+    // A quality notification (#201), answered with its own receipt kind.
+    const notified = {
+      idempotencyKey: 'h-1~opened~1',
+      kind: 'quality-notification',
+      holdId: 'h-1',
+      receivedSeq: 2,
+      receivedAt: receipt.receivedAt,
+    };
+    answer = (_req, res) => {
+      res.writeHead(201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(notified));
+    };
+    expect(await client().post('quality-notification', 'h-1~opened~1', {})).toEqual({
+      kind: 'stored',
+      status: 201,
+      receipt: notified,
+    });
+    expect(requests.at(-1)).toMatchObject({
+      url: '/api/v1/quality-notifications',
+      key: 'h-1~opened~1',
+    });
     answer = (_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"not":"a receipt"}');

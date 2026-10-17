@@ -19,6 +19,19 @@
  * - Reads: `characteristics()`, `characteristic(id)`, `limits(id)`, `chart(id)` (points and
  *   subgroups derived on read), `measurements(id, query)`, `signals(query)`, `signal(id)`.
  * - Pure (`derive.ts`): `passesOf`, `versionsOf`, `isFinal`, `planSignals`.
+ * - `signalWindow(id)`: the readings since the last in-control point before an episode (#201).
+ *
+ * Quality holds (#201, Phase 8 plan "Quality holds", ADR-0035), `Holds`:
+ * - `open` (`quality:hold`; the advisory lock first, shared with `Orders.close`), `comment`
+ *   (`quality:hold`, not notified), `decide(id, 'release' | 'reject')` (`quality:release`); a
+ *   version per hold (409 `hold-stale`, `hold-decided`); `quality.hold_transition` append-only;
+ *   audited `hold.open`, `hold.comment`, `hold.release`, `hold.reject`; ERP notifications through
+ *   `Orders.enqueueErpMessage` in the same transaction.
+ * - `closeGuard()`: the orders module's `CloseGuard` (genealogy's watermark, then the scope derived
+ *   at check time from the open holds' subjects and the genealogy links).
+ * - `tick()`: the scope copy (`hold_unit`) and `held-material-consumed`; `onChange` for push.
+ * - Reads: `list`, `hold`, `detail`, `incidents`, `holdsOn(units, subjects)` (trace answers and
+ *   carton `held`), `suggestion(signalId)`, `reasons()`.
  */
 export {
   isFinal,
@@ -66,5 +79,30 @@ export type {
   QualityWriteContext,
   SignalRecord,
 } from './quality.ts';
+export { HOLD_AUDIT_ENTITY, HOLD_CLOSE_LOCK, Holds } from './holds.ts';
+export type {
+  HoldChange,
+  HoldDetail,
+  HoldIncidentRecord,
+  HoldRecord,
+  HoldRef,
+  HoldScopeUnit,
+  HoldSubject,
+  HoldSuggestion,
+  HoldTransitionRecord,
+  HoldsGenealogy,
+  HoldsIngest,
+  HoldsLog,
+  HoldsOptions,
+  HoldsOrders,
+} from './holds.ts';
+export type { SignalWindow } from './quality.ts';
 export { QUALITY_COLUMNS } from './tables.ts';
-export type { QualityTables, SignalStatus } from './tables.ts';
+export type {
+  HoldState,
+  HoldSubjectKind,
+  HoldTransitionKind,
+  QualityTables,
+  SignalStatus,
+  StoredScope,
+} from './tables.ts';

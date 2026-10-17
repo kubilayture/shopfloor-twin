@@ -173,6 +173,25 @@ export interface SignalRecord {
   readonly rowVersion: number;
 }
 
+/** The readings since the last in-control point before an episode (#201: a suggested hold scope). */
+export interface SignalWindow {
+  readonly signal: SignalRecord;
+  /** The last in-control point before the episode; null: from its segment's start. */
+  readonly after: Position | null;
+  /** The episode's last triggering point. */
+  readonly through: Position;
+  /** Every reading (retests included) after `after` through `through`, in chart order. */
+  readonly readings: readonly {
+    readonly epoch: number;
+    readonly partId: number;
+    readonly pass: number;
+    readonly at: number;
+    readonly seq: number;
+  }[];
+  /** The episode's `extentFinal`. */
+  readonly final: boolean;
+}
+
 /** A measurement as the module reports it. */
 export interface MeasurementRecord {
   readonly epoch: number;
@@ -584,6 +603,56 @@ export class Quality {
       .where('id', '=', id)
       .executeTakeFirst();
     return row && toSignal(row);
+  }
+
+  /**
+   * The readings tested since the last in-control point before a signal episode (#201, plan
+   * "Signals and people": the hold a quality user may open from it): every reading, retests
+   * included, after the episode's chart's last point that fired no rule before the episode's first
+   * point (in its segment; none: from the segment's start) through its last triggering point.
+   * `final` is the episode's `extentFinal` (its last point won't move but for a written-off gap's
+   * fact). Undefined for an unknown or withdrawn signal, or one whose point the chart no longer has.
+   */
+  async signalWindow(id: number): Promise<SignalWindow | undefined> {
+    const signal = await this.signal(id);
+    if (!signal || signal.status === 'withdrawn') return undefined;
+    const view = await this.chart(signal.characteristic);
+    if (!view) return undefined;
+    const points = view.chart.points[signal.chart];
+    const same = (p: Position, r: PointRef) =>
+      p.epoch === r.epoch && p.at === r.at && p.seq === r.seq;
+    const index = points.findIndex((p) => same(p.position, signal.first));
+    const first = points[index];
+    if (!first) return undefined;
+    let after: Position | null = null;
+    for (let i = index - 1; i >= 0; i--) {
+      const point = points[i];
+      if (point?.segment !== first.segment) break;
+      if (point.rules.length === 0) {
+        after = point.position;
+        break;
+      }
+    }
+    const through: Position = {
+      epoch: signal.last.epoch,
+      at: signal.last.at,
+      seq: signal.last.seq,
+    };
+    const readings = [...view.chart.firstPass, ...view.chart.retests]
+      .filter(
+        (r) =>
+          comparePositions(r, through) <= 0 &&
+          (after === null ? r.epoch === first.position.epoch : comparePositions(r, after) > 0),
+      )
+      .sort(comparePositions)
+      .map((r) => ({ ...keyParts(r.key), at: r.at, seq: r.seq }));
+    return {
+      signal,
+      after,
+      through,
+      readings,
+      final: signal.extentFinal,
+    };
   }
 
   // ---- writes ----

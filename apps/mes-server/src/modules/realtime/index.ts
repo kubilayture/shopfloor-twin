@@ -32,7 +32,9 @@ export {
   shiftReportDto,
 } from './shift-dto.ts';
 export { cartonTraceDto, lotTraceDto, serialTraceDto, traceUnitDto } from './genealogy-routes.ts';
-export type { GenealogyApi } from './genealogy-routes.ts';
+export type { GenealogyApi, TraceHolds, TraceHoldsApi } from './genealogy-routes.ts';
+export { holdDetailDto, holdDto, holdSuggestionDto } from './hold-routes.ts';
+export type { HoldsApi } from './hold-routes.ts';
 export {
   characteristicDto,
   limitVersionDto,

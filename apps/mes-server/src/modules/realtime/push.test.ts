@@ -3,7 +3,13 @@ import { Registry } from 'prom-client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
-import type { CharacteristicRecord, QualityChange, SignalRecord } from '../quality/index.ts';
+import type {
+  CharacteristicRecord,
+  HoldChange,
+  HoldRecord,
+  QualityChange,
+  SignalRecord,
+} from '../quality/index.ts';
 import { PushHub, type PushOptions, type PushSources } from './push.ts';
 import { serverMessageSchema, type ServerMessage } from './schemas.ts';
 
@@ -490,6 +496,56 @@ describe('the quality topic (#200)', () => {
     emit({ type: 'signal', event: 'updated', signal: signal('final') });
     await tick();
     expect(socket.types().slice(3)).toEqual(['unsubscribed']);
+  });
+
+  it('pushes a hold’s transitions and scope changes by hold id on the quality topic (#201)', async () => {
+    const fake = fakeSources();
+    const listeners = new Set<(change: HoldChange) => void>();
+    const hub = new PushHub({ clockMs: 60_000, heartbeatMs: 60_000 });
+    hubs.push(hub);
+    hub.attach({
+      ...fake.sources,
+      quality: { onChange: () => () => undefined },
+      holds: {
+        onChange: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+    });
+    const hold: HoldRecord = {
+      id: '00000000-0000-4000-8000-000000000001',
+      subject: { kind: 'lot', id: 'K1' },
+      state: 'open',
+      reason: 'SUSPECT-LOT',
+      openedBy: 'quinn',
+      openedAt: new Date(T0),
+      openedPlantAt: new Date(T0),
+      decidedBy: null,
+      decidedAt: null,
+      decidedPlantAt: null,
+      decisionReason: null,
+      transitions: 1,
+      version: 1,
+      scope: { units: 1, cartons: 1, orders: 1 },
+      heldMaterialConsumed: 0,
+    };
+    const socket = new FakeSocket();
+    hub.connect(socket);
+    socket.request({ type: 'subscribe', topic: 'quality' });
+    for (const listener of listeners) listener({ type: 'hold', event: 'opened', hold });
+    for (const listener of listeners) {
+      listener({
+        type: 'hold',
+        event: 'scope',
+        hold: { ...hold, scope: { units: 2, cartons: 1, orders: 1 } },
+      });
+    }
+    await tick();
+    expect(socket.sent).toMatchObject([
+      { type: 'subscribed', topic: 'quality' },
+      { type: 'quality-hold', event: 'scope', hold: { id: hold.id, scope: { units: 2 } } },
+    ]);
   });
 
   it('answers unknown-topic without a quality source', () => {

@@ -68,7 +68,7 @@ const SCHEMAS: readonly { name: string; owner: string; about: string }[] = [
     name: 'quality',
     owner: 'quality',
     about:
-      'SPC (#200, ADR-0032): the characteristics of `quality.yaml`, one measurement per cycle fact of the characteristic’s machine with its pass, control limit versions as append-only events (version 1 automatic from the baseline, never re-derived), and the signal episodes derived from the first-pass readings with their finality, withdrawal and acknowledgement. Points and subgroups are derived on read.',
+      'SPC (#200, ADR-0032): the characteristics of `quality.yaml`, one measurement per cycle fact of the characteristic’s machine with its pass, control limit versions as append-only events (version 1 automatic from the baseline, never re-derived), and the signal episodes derived from the first-pass readings with their finality, withdrawal and acknowledgement. Points and subgroups are derived on read. Quality holds (#201, ADR-0035): a hold on a lot, serial, carton or order with append-only transitions, its scope derived from the genealogy (a copy kept for reads) and `held-material-consumed` incidents.',
   },
   {
     name: 'public',
@@ -181,7 +181,7 @@ const TABLES: Readonly<Record<string, string>> = {
   'orders.command_attempt':
     'Every delivery of a command published, with its own expiresAt and the command envelope’s epoch and seq; written before the publish; append-only (#174).',
   'orders.erp_message_log':
-    'Feed entries imported (in) and messages to the ERP (out, an outbox with its Idempotency-Key, attempts, last error and the ERP’s receipt); a 409 is an incident and never retried (#174, ADR-0028).',
+    'Feed entries imported (in) and messages to the ERP (out, an outbox with its Idempotency-Key, attempts, last error and the ERP’s receipt); a 409 is an incident and never retried (#174, ADR-0028). Quality notifications (#201) are about a hold (`subject_kind` `hold`, `subject_id`), with no order or revision.',
   'orders.order_incident':
     'Incidents of the orders module (ERP feed changed, ERP conflict or refusal, command failed or unconfirmed, unknown or duplicate job, dispatch lost), open at most once per key (#174).',
   'orders.confirmation':
@@ -216,6 +216,14 @@ const TABLES: Readonly<Record<string, string>> = {
     'Control limit versions as append-only events: `created` (frozen limits, window and the first position it applies to) and `ended`; a trigger refuses UPDATE, DELETE and TRUNCATE to every role, the owner included (only the owner or a superuser could disable it, in a migration) (#200, ADR-0032).',
   'quality.spc_signal':
     'Signal episodes keyed (characteristic, limit version, chart, rule, first triggering point) with their extent and whether it is final, `provisional` until the tester is final through the triggering point, `final`, or `withdrawn` with a reason; the acknowledgement stays on the episode (#200, ADR-0032).',
+  'quality.hold':
+    'Quality holds on a lot, serial, carton or order (#201, ADR-0035): id a UUID (unique forever: the ERP’s store outlives this database), state `open`, `released` or `rejected`, the opening and decision with user, wall and plant time and reason (`quality.yaml`), the number of transitions and the version a write names (409 hold-stale); kept, never deleted.',
+  'quality.hold_transition':
+    'Every transition (`opened` n = 1, `released`, `rejected`) and comment of a hold, with its user, reason, comment, wall and plant time and the scope counts its ERP notification carried; append-only: a trigger refuses UPDATE, DELETE and TRUNCATE to every role (#201).',
+  'quality.hold_unit':
+    'A hold’s scope as last derived from the genealogy (units with their order and carton, and when each joined), for reads; rebuilt while the hold is open or rejected, kept as it stood once released. The close guard never reads it: it derives the scope at check time (#201).',
+  'quality.hold_incident':
+    '`held-material-consumed`: a lot under a hold consumed after the hold opened (and before a release), one per fact, lot and hold; kept, never deleted (#201).',
   'public.schema_migrations': 'Applied migrations and their checksums.',
 };
 

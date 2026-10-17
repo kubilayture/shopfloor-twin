@@ -23,6 +23,10 @@ export const QUALITY_LIMITS = {
    * `all=true` (or a `from`/`to` range) answers more.
    */
   chartRecent: 500,
+  /** Holds one `GET /quality/holds` answers at most (newest first); more sets `truncated`. */
+  holds: 500,
+  /** Units of a hold's scope one `GET /quality/holds/{id}` lists at most. */
+  holdUnits: 5_000,
 } as const;
 
 /** The charts of a characteristic, as `spc-core` names them. */
@@ -315,6 +319,198 @@ export const limitsWriteResultSchema = z.object({
   limits: limitVersionSchema,
 });
 
+// ---- Quality holds (#201, plan "Quality holds", ADR-0035) ----
+
+/** What a hold is on; its scope is derived through the genealogy and grows with facts. */
+export const HOLD_SUBJECT_KINDS = ['lot', 'serial', 'carton', 'order'] as const;
+export type HoldSubjectKind = (typeof HOLD_SUBJECT_KINDS)[number];
+
+/**
+ * A hold's state: `open`; `released` (use as is); `rejected` (quality wants the units scrapped or
+ * reworked outside the MES: quantities don't change, cartons stay held, the ERP is told).
+ */
+export const HOLD_STATES = ['open', 'released', 'rejected'] as const;
+export type HoldState = (typeof HOLD_STATES)[number];
+
+export const HOLD_TRANSITION_KINDS = ['opened', 'commented', 'released', 'rejected'] as const;
+
+/** The transitions a reason of `quality.yaml` can be given for. */
+export const HOLD_REASON_USES = ['open', 'release', 'reject'] as const;
+
+// The id formats the ERP accepts for each kind (`@shopfloor/contracts/erp-api`): a lot id, a
+// serial or carton id, an ERP order number.
+const LOT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const UNIT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const ORDER_NUMBER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
+const HOLD_REASON = /^[A-Z0-9][A-Z0-9_-]{0,63}$/;
+
+export const holdSubjectSchema = z
+  .discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('lot'), id: z.string().regex(LOT_ID) }),
+    z.strictObject({ kind: z.literal('serial'), id: z.string().regex(UNIT_ID) }),
+    z.strictObject({ kind: z.literal('carton'), id: z.string().regex(UNIT_ID) }),
+    z.strictObject({ kind: z.literal('order'), id: z.string().regex(ORDER_NUMBER) }),
+  ])
+  .describe('A lot, a serial (every unit with it), a carton or an order (its ERP order number)');
+
+const holdReason = z.string().regex(HOLD_REASON).describe('A hold reason code of quality.yaml');
+
+export const holdScopeCountsSchema = z
+  .object({
+    units: int,
+    cartons: int,
+    orders: int,
+    asOf: time.nullable().describe('Plant time the counts stand at'),
+    final: z
+      .boolean()
+      .describe('Every machine final through `asOf` when written; the scope can still grow'),
+  })
+  .describe('The scope counts a transition’s ERP notification carried (provisional)');
+
+export const holdSchema = z
+  .object({
+    id: z.string().describe('A UUID, unique forever'),
+    subject: holdSubjectSchema,
+    state: z.enum(HOLD_STATES),
+    reason: holdReason.describe('The opening’s reason'),
+    openedBy: z.string(),
+    openedAt: time.describe('Wall time'),
+    openedPlantAt: time
+      .nullable()
+      .describe(
+        'The plant clock when it opened: a held lot consumed after it raises held-material-consumed',
+      ),
+    decidedBy: z.string().nullable(),
+    decidedAt: time.nullable().describe('Wall time of the release or rejection'),
+    decidedPlantAt: time.nullable(),
+    decisionReason: holdReason.nullable(),
+    transitions: int.describe('Transitions and comments so far'),
+    version: int.min(1).describe('The version a comment, release or rejection must name'),
+    scope: z
+      .object({ units: int, cartons: int, orders: int })
+      .describe('The scope as last derived from the genealogy (it grows with facts)'),
+    heldMaterialConsumed: int.describe('held-material-consumed incidents'),
+  })
+  .describe('A quality hold');
+
+export const holdListSchema = z.object({
+  holds: z.array(holdSchema).describe('Newest first'),
+  truncated: z.boolean(),
+});
+
+export const holdTransitionSchema = z.object({
+  n: int.min(1),
+  kind: z.enum(HOLD_TRANSITION_KINDS),
+  reason: holdReason.nullable(),
+  comment: z.string().nullable(),
+  by: z.string(),
+  at: time.describe('Wall time'),
+  plantAt: time.nullable(),
+  scope: holdScopeCountsSchema.nullable().describe('Null for a comment (not notified)'),
+  notification: z
+    .object({
+      idempotencyKey: z.string().describe('{holdId}~{transition}~{n}'),
+      status: z.string().describe('pending, sent, conflict or refused'),
+      attempts: int,
+      lastError: z.string().nullable(),
+    })
+    .nullable()
+    .describe('Its quality notification to the ERP (outbox); null for a comment'),
+});
+
+export const holdUnitSchema = z.object({
+  epoch: int,
+  partId: int,
+  serial: z.string().nullable(),
+  orderId: z.string().nullable(),
+  carton: z.string().nullable(),
+  joinedAt: time.describe('Wall time it joined the scope'),
+});
+
+export const holdIncidentSchema = z.object({
+  id: int,
+  type: z.literal('held-material-consumed'),
+  lot: z.string(),
+  equipment: z.string(),
+  epoch: int,
+  seq: int,
+  partId: int,
+  operation: z.string().nullable(),
+  pass: int.nullable(),
+  consumedAt: time.describe('Plant time of the consuming cycle'),
+  message: z.string(),
+  detectedAt: time.describe('Wall time'),
+});
+
+export const holdDetailSchema = z
+  .object({
+    hold: holdSchema,
+    transitions: z.array(holdTransitionSchema),
+    units: z.array(holdUnitSchema).describe('By (epoch, partId)'),
+    unitsTruncated: z.boolean(),
+    orders: z.array(z.string()),
+    cartons: z.array(z.string()),
+    incidents: z.array(holdIncidentSchema),
+  })
+  .describe('A hold with its transitions, its scope as last derived and its incidents');
+
+const holdComment = z.string().trim().min(1).max(QUALITY_LIMITS.comment);
+
+export const holdOpenRequestSchema = z
+  .strictObject({ subject: holdSubjectSchema, reason: holdReason, comment: holdComment.optional() })
+  .describe('Opens a hold; the scope follows the genealogy from now on');
+
+export const holdCommentRequestSchema = z
+  .strictObject({
+    version: int.min(1).describe('The hold’s `version` read (409 urn:shopfloor:hold-stale)'),
+    comment: holdComment,
+  })
+  .describe('A comment on a hold (audited, not notified)');
+
+export const holdDecisionRequestSchema = z
+  .strictObject({
+    version: int.min(1).describe('The hold’s `version` read (409 urn:shopfloor:hold-stale)'),
+    reason: holdReason,
+    comment: holdComment.optional(),
+  })
+  .describe('Releases (use as is) or rejects an open hold');
+
+export const holdReasonListSchema = z.object({
+  reasons: z.array(
+    z.object({ id: z.string(), name: z.string(), for: z.array(z.enum(HOLD_REASON_USES)) }),
+  ),
+});
+
+export const holdSuggestionSchema = z
+  .object({
+    signal: int,
+    characteristic: z.string(),
+    chart: z.enum(SPC_CHART_NAMES),
+    rule: int,
+    after: spcPositionSchema
+      .nullable()
+      .describe('The last in-control point before the episode; null: from its segment’s start'),
+    through: spcPositionSchema.describe('The episode’s last triggering point'),
+    readings: int.describe('Readings (every pass) after `after` through `through`'),
+    units: z.array(
+      z.object({
+        epoch: int,
+        partId: int,
+        serial: z.string().nullable(),
+        orderId: z.string().nullable(),
+        carton: z.string().nullable(),
+      }),
+    ),
+    orders: z.array(z.string()),
+    cartons: z.array(z.string()),
+    final: z
+      .boolean()
+      .describe('The episode’s extent is final (`extentFinal`): the window won’t move'),
+  })
+  .describe(
+    'The units tested since the last in-control point before a signal episode: a suggested scope; no hold is opened by itself',
+  );
+
 export const QUALITY_TOPIC = 'quality';
 
 /**
@@ -332,6 +528,13 @@ export const qualityPushMessages = [
         'What happened to the episode since the last message about it; `removed`: a provisional, unacknowledged episode a late reading re-derived away (deleted)',
       ),
     signal: spcSignalSchema,
+  }),
+  z.object({
+    type: z.literal('quality-hold'),
+    event: z
+      .enum(['opened', 'commented', 'released', 'rejected', 'scope'])
+      .describe('A transition or comment, or its scope or incidents changed (#201)'),
+    hold: holdSchema,
   }),
   z.object({
     type: z.literal('spc-characteristic'),
@@ -357,3 +560,15 @@ export type LimitsCreateRequest = z.infer<typeof limitsCreateRequestSchema>;
 export type LimitsEndRequest = z.infer<typeof limitsEndRequestSchema>;
 export type SignalAckRequest = z.infer<typeof signalAckRequestSchema>;
 export type LimitsWriteResult = z.infer<typeof limitsWriteResultSchema>;
+export type HoldSubjectDto = z.infer<typeof holdSubjectSchema>;
+export type HoldDto = z.infer<typeof holdSchema>;
+export type HoldList = z.infer<typeof holdListSchema>;
+export type HoldTransitionDto = z.infer<typeof holdTransitionSchema>;
+export type HoldUnitDto = z.infer<typeof holdUnitSchema>;
+export type HoldIncidentDto = z.infer<typeof holdIncidentSchema>;
+export type HoldDetailDto = z.infer<typeof holdDetailSchema>;
+export type HoldOpenRequest = z.infer<typeof holdOpenRequestSchema>;
+export type HoldCommentRequest = z.infer<typeof holdCommentRequestSchema>;
+export type HoldDecisionRequest = z.infer<typeof holdDecisionRequestSchema>;
+export type HoldReasonList = z.infer<typeof holdReasonListSchema>;
+export type HoldSuggestionDto = z.infer<typeof holdSuggestionSchema>;

@@ -170,6 +170,17 @@ export const PROBLEM_TYPES = {
   signalAcknowledged: 'urn:shopfloor:signal-acknowledged',
   /** 409 (#200): the signal is withdrawn; it can't be acknowledged. */
   signalWithdrawn: 'urn:shopfloor:signal-withdrawn',
+  /** 409 (#201): the hold's `version` sent is not its current one. */
+  holdStale: 'urn:shopfloor:hold-stale',
+  /** 409 (#201): a release or rejection of a hold that is decided already. */
+  holdDecided: 'urn:shopfloor:hold-decided',
+  /** 409 (#201): an order's close while a unit of it (or the order itself) is in an open hold. */
+  qualityHold: 'urn:shopfloor:quality-hold',
+  /**
+   * 409 (#201), retryable: an order's close before genealogy has processed every fact of its
+   * units (a link not written yet could put a held lot in the order); retry after `Retry-After`.
+   */
+  genealogyPending: 'urn:shopfloor:genealogy-pending',
 } as const;
 
 export type ProblemType = (typeof PROBLEM_TYPES)[keyof typeof PROBLEM_TYPES];

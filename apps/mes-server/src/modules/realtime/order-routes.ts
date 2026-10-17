@@ -1,5 +1,6 @@
 import {
   MES_API_LIMITS as LIMITS,
+  PROBLEM_TYPES,
   abandonRequestSchema,
   ORDER_LIMITS,
   ORDER_STATUSES,
@@ -180,12 +181,16 @@ export function orderRoutes(
         errors: WRITE_ERRORS,
       },
       LIMITS.writeBodyBytes,
-      async ({ params, body: parsed, requestId, request }) => {
+      async ({ params, body: parsed, requestId, request, reply }) => {
         const by = await deps.writer(request);
         const result = await run(deps.orders(), params.id, parsed as never, {
           by,
           requestId,
         }).catch((error: unknown) => {
+          // Retryable (#201): genealogy catches up within about a second.
+          if (error instanceof OrderError && error.type === PROBLEM_TYPES.genealogyPending) {
+            void reply.header('retry-after', '2');
+          }
           throw problemOf(error);
         });
         return {
@@ -242,7 +247,7 @@ export function orderRoutes(
   write(
     'close',
     'Closes a completed order',
-    'completed → closed; posts `closed` to the ERP.',
+    'completed → closed; posts `closed` to the ERP. Refused (409 urn:shopfloor:quality-hold) while an open quality hold covers a unit of the order or the order itself, and (409 urn:shopfloor:genealogy-pending, with Retry-After) while genealogy has not processed every fact of its units (#201); the check and hold opening serialize on one lock. Every operation must be signed off at its terminal (409 urn:shopfloor:sign-off-missing).',
     orderWriteRequestSchema,
     async (orders, id, body: z.output<typeof orderWriteRequestSchema>, context) => ({
       order: await orders.close(id, body, context),

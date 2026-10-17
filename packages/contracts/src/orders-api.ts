@@ -211,8 +211,10 @@ export const erpMessageSchema = z
   .object({
     id: int,
     direction: z.enum(['in', 'out']),
-    kind: z.enum(['feed-entry', 'status', 'confirmation']),
-    revision: int,
+    kind: z
+      .enum(['feed-entry', 'status', 'confirmation', 'quality-notification'])
+      .describe('A quality notification (#201) is about a hold, never listed under an order'),
+    revision: int.nullable().describe('Null only for a quality notification'),
     idempotencyKey: z.string().nullable(),
     status: z
       .string()

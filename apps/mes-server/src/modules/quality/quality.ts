@@ -503,6 +503,14 @@ export class Quality {
     return result;
   }
 
+  /** Each characteristic's machine, from the configuration (no read; #203, the terminal). */
+  machines(): { readonly characteristic: string; readonly equipment: string }[] {
+    return [...this.#states.values()].map((s) => ({
+      characteristic: s.config.id,
+      equipment: s.config.equipment,
+    }));
+  }
+
   async characteristic(id: string): Promise<CharacteristicRecord | undefined> {
     const state = this.#states.get(id);
     return state && this.#summary(state.config, this.#readDb);

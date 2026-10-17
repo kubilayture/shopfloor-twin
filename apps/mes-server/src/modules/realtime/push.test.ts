@@ -548,6 +548,116 @@ describe('the quality topic (#200)', () => {
     ]);
   });
 
+  it('computes the terminal views again on a signal, a hold or a genealogy change (#203)', async () => {
+    const fake = fakeSources();
+    const quality = new Set<(change: QualityChange) => void>();
+    const holds = new Set<(change: HoldChange) => void>();
+    const genealogy = new Set<(change: { type: 'units' }) => void>();
+    let views = 0;
+    const hub = new PushHub({ clockMs: 60_000, heartbeatMs: 60_000, terminalMs: 100 });
+    hubs.push(hub);
+    const on =
+      <T>(set: Set<(change: T) => void>) =>
+      (listener: (change: T) => void) => {
+        set.add(listener);
+        return () => set.delete(listener);
+      };
+    hub.attach({
+      ...fake.sources,
+      quality: { onChange: on(quality) },
+      holds: { onChange: on(holds) },
+      genealogy: { onChange: on(genealogy) },
+      terminal: {
+        topics: new Map([['line-a1', { members: ['lkt-01'] }]]),
+        view: () => {
+          views += 1;
+          return Promise.resolve({
+            workCenter: { id: 'line-a1', name: 'Line A1' },
+            shift: null,
+            machines: [],
+            crew: [],
+            orders: [],
+            queue: [],
+            scrapRecords: [],
+            truncated: false,
+            quality: { holds: [], signals: [], lots: [], truncated: views % 2 === 0 },
+          });
+        },
+      },
+    });
+    const socket = new FakeSocket();
+    hub.connect(socket);
+    socket.request({ type: 'subscribe', topic: 'terminal:line-a1' });
+    await advance(200);
+    expect(views).toBe(1);
+    const point = { epoch: 1, partId: 7, pass: 1, at: T0, seq: 7 };
+    const changes: (() => void)[] = [
+      () => {
+        for (const l of quality) {
+          l({
+            type: 'signal',
+            event: 'opened',
+            signal: {
+              id: 3,
+              characteristic: 'leak-rate',
+              version: 1,
+              chart: 'I',
+              rule: 1,
+              first: point,
+              last: point,
+              points: 1,
+              closedBy: null,
+              baseline: false,
+              extentFinal: false,
+              status: 'provisional',
+              detectedAt: new Date(T0),
+              detectedPlantAt: null,
+              finalAt: null,
+              withdrawnAt: null,
+              withdrawnReason: null,
+              acknowledged: null,
+              rowVersion: 1,
+            },
+          });
+        }
+      },
+      () => {
+        for (const l of genealogy) l({ type: 'units' });
+      },
+      () => {
+        for (const l of holds) {
+          l({
+            type: 'hold',
+            event: 'scope',
+            hold: {
+              id: '00000000-0000-4000-8000-000000000001',
+              subject: { kind: 'lot', id: 'K1' },
+              state: 'open',
+              reason: 'SUSPECT-LOT',
+              openedBy: 'quinn',
+              openedAt: new Date(T0),
+              openedPlantAt: null,
+              decidedBy: null,
+              decidedAt: null,
+              decidedPlantAt: null,
+              decisionReason: null,
+              transitions: 1,
+              version: 1,
+              scope: { units: 1, cartons: 0, orders: 1 },
+              heldMaterialConsumed: 0,
+            },
+          });
+        }
+      },
+    ];
+    for (const [i, change] of changes.entries()) {
+      change();
+      await advance(200);
+      expect(views).toBe(i + 2);
+    }
+    expect(socket.types().filter((t) => t === 'terminal').length).toBe(3);
+  });
+
   it('answers unknown-topic without a quality source', () => {
     const { connect } = setup();
     const socket = connect();

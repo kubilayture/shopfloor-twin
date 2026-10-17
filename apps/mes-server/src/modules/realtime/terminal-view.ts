@@ -4,15 +4,20 @@ import {
   type TerminalMachineDto,
   type TerminalOperationDto,
   type TerminalOrderDto,
+  type TerminalQualityDto,
   type TerminalViewDto,
 } from '@shopfloor/contracts/mes-api';
 import type { CurrentState } from '../equipment/index.ts';
 import type { Execution, OrderExecutionRecord } from '../execution/index.ts';
+import type { Genealogy } from '../genealogy/index.ts';
 import type { EquipmentInfo } from '../master-data/index.ts';
 import type { ActivityRecord, OperationRecord, OrderRecord, Orders } from '../orders/index.ts';
+import type { Holds, Quality, SignalRecord } from '../quality/index.ts';
 import type { Shifts } from '../shifts/index.ts';
 import { scrapRecordDto } from './execution-routes.ts';
+import { holdDto } from './hold-routes.ts';
 import { orderDto } from './order-dto.ts';
+import { signalDto } from './quality-dto.ts';
 import { crewDto } from './shift-dto.ts';
 
 // The operator terminal's view of a work center (#177, plan "Operator terminal: Shows"): per
@@ -28,6 +33,72 @@ export interface TerminalViewSources {
   readonly orders: Pick<Orders, 'list' | 'operations' | 'commands'>;
   readonly execution?: Pick<Execution, 'orderExecution' | 'scrapRecords'>;
   readonly shifts?: Pick<Shifts, 'crew' | 'currentInstance'>;
+  /** SPC episodes of the work center's machines (#203); none without it. */
+  readonly quality?: Pick<Quality, 'machines' | 'signals'>;
+  /** Open holds touching its orders (#203); none without them. */
+  readonly holds?: Pick<Holds, 'openOnOrders'>;
+  /** The lots of each machine's last cycle (#203); none without it. */
+  readonly genealogy?: Pick<Genealogy, 'lastLots'>;
+}
+
+/** Signals one characteristic's read takes, newest first, before the terminal filters them. */
+const SIGNAL_READ = 200;
+
+/**
+ * What quality says about the work center (#203, plan "Operator terminal"): the open holds that
+ * touch its orders, the episodes of its machines' characteristics that are open or not yet
+ * acknowledged (neither withdrawn nor baseline ones: those existed before anyone could act), and
+ * the lots of each machine's last cycle that reported lots. Read-only.
+ */
+async function terminalQuality(
+  sources: TerminalViewSources,
+  machines: readonly string[],
+  orderIds: readonly string[],
+): Promise<TerminalQualityDto> {
+  let truncated = false;
+  const holds = sources.holds
+    ? await sources.holds.openOnOrders(orderIds, TERMINAL_LIMITS.holds).then((found) => {
+        truncated ||= found.truncated;
+        return found.holds.map((h) => ({ hold: holdDto(h.hold), orders: h.orders }));
+      })
+    : [];
+  const here = new Set(machines);
+  const signals: SignalRecord[] = [];
+  if (sources.quality) {
+    for (const { characteristic, equipment } of sources.quality.machines()) {
+      if (!here.has(equipment)) continue;
+      const found = await sources.quality.signals({
+        characteristic,
+        status: ['provisional', 'final'],
+        limit: SIGNAL_READ,
+      });
+      signals.push(
+        ...found.signals.filter(
+          (s) => !s.baseline && (s.closedBy === null || s.acknowledged === null),
+        ),
+      );
+    }
+  }
+  signals.sort((a, b) => b.first.at - a.first.at || b.id - a.id);
+  if (signals.length > TERMINAL_LIMITS.signals) truncated = true;
+  const lots = sources.genealogy ? await sources.genealogy.lastLots(machines) : [];
+  return {
+    holds,
+    signals: signals.slice(0, TERMINAL_LIMITS.signals).map(signalDto),
+    lots: lots
+      .filter((l) => l.lots.length > 0)
+      .map((l) => ({
+        equipment: l.equipment,
+        operation: l.operation,
+        epoch: l.epoch,
+        partId: l.partId,
+        serial: l.serial,
+        pass: l.pass,
+        at: iso(l.at),
+        lots: l.lots.map((x) => ({ lot: x.lot, material: x.material })),
+      })),
+    truncated,
+  };
 }
 
 const iso = (date: Date): string => date.toISOString();
@@ -248,6 +319,11 @@ export async function terminalView(
   const crew = sources.shifts
     ? await sources.shifts.crew({ workCenter: workCenter.id, open: true })
     : [];
+  const quality = await terminalQuality(
+    sources,
+    machines.map((m) => m.id),
+    here.map((o) => o.id),
+  );
   return {
     workCenter: { id: workCenter.id, name: workCenter.name },
     shift: instance
@@ -270,5 +346,6 @@ export async function terminalView(
       active.length > TERMINAL_LIMITS.orders ||
       queued.length > TERMINAL_LIMITS.orders ||
       scrapTruncated,
+    quality,
   };
 }

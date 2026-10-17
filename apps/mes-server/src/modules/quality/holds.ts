@@ -703,6 +703,65 @@ export class Holds {
   }
 
   /**
+   * Open holds that touch one of these orders (#203, the terminal's banners): on the order itself,
+   * or with a unit of it in the scope as last derived (`hold_unit`: a display, never a decision),
+   * each with the orders of `orderIds` it touches; newest first, at most `limit`.
+   */
+  async openOnOrders(
+    orderIds: readonly string[],
+    limit = 10,
+  ): Promise<{ holds: { hold: HoldRecord; orders: string[] }[]; truncated: boolean }> {
+    if (orderIds.length === 0) return { holds: [], truncated: false };
+    const db = this.#readDb;
+    const ids = [...new Set(orderIds)];
+    const touched = new Map<string, Set<string>>();
+    const add = (hold: string, order: string) => {
+      const set = touched.get(hold);
+      if (set) set.add(order);
+      else touched.set(hold, new Set([order]));
+    };
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const [byUnit, bySubject] = await Promise.all([
+        db
+          .selectFrom('quality.hold_unit as u')
+          .innerJoin('quality.hold as h', 'h.id', 'u.hold_id')
+          .select(['h.id', 'u.order_id'])
+          .distinct()
+          .where('h.state', '=', 'open')
+          .where('u.order_id', 'in', chunk)
+          .execute(),
+        db
+          .selectFrom('quality.hold')
+          .select(['id', 'subject_id'])
+          .where('state', '=', 'open')
+          .where('subject_kind', '=', 'order')
+          .where('subject_id', 'in', chunk)
+          .execute(),
+      ]);
+      for (const row of byUnit) if (row.order_id !== null) add(row.id, row.order_id);
+      for (const row of bySubject) add(row.id, row.subject_id);
+    }
+    if (touched.size === 0) return { holds: [], truncated: false };
+    const rows = await db
+      .selectFrom('quality.hold')
+      .selectAll()
+      .where('id', 'in', [...touched.keys()])
+      .orderBy('opened_at', 'desc')
+      .orderBy('id')
+      .limit(limit + 1)
+      .execute();
+    const records = await this.#records(db, rows.slice(0, limit));
+    return {
+      holds: records.map((hold) => ({
+        hold,
+        orders: [...(touched.get(hold.id) ?? [])].sort(byText),
+      })),
+      truncated: rows.length > limit,
+    };
+  }
+
+  /**
    * The units tested since the last in-control point before a signal episode, with their orders
    * and cartons: the scope a quality user may hold (plan "Signals and people"); never a hold by
    * itself. Undefined for an unknown or withdrawn signal.

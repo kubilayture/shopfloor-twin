@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { scrapRecordSchema } from './execution-api.ts';
 import { orderSchema } from './orders-api.ts';
+import { holdSchema, spcSignalSchema } from './quality-api.ts';
 
 // The MES's operator terminal API (#177, Phase 7 plan "Operator terminal"): sign-on and the crew
 // per work center and shift, the orders at a work center with their counts, an operator's start,
@@ -20,6 +21,10 @@ export const TERMINAL_LIMITS = {
   scrapRecords: 50,
   /** Characters of a pause's comment. */
   comment: 500,
+  /** Open quality holds one terminal view shows at most (newest first, #203). */
+  holds: 10,
+  /** SPC signal episodes one terminal view shows at most (newest first, #203). */
+  signals: 10,
 } as const;
 
 /** Why an operator pauses work on an order operation. */
@@ -150,6 +155,45 @@ export const terminalMachineSchema = z
   })
   .describe('A machine of the work center');
 
+export const terminalHoldSchema = z
+  .object({
+    hold: holdSchema,
+    orders: z
+      .array(z.string())
+      .describe('The orders of this work center it covers (its subject, or units in its scope)'),
+  })
+  .describe('An open quality hold touching an order of the work center (#203, read-only)');
+
+export const terminalLotsSchema = z
+  .object({
+    equipment: z.string(),
+    operation: z.string(),
+    epoch: int,
+    partId: int,
+    serial: z.string().nullable(),
+    pass: int,
+    at: time.describe('Plant time the cycle completed'),
+    lots: z.array(z.object({ lot: z.string(), material: z.string().nullable() })),
+  })
+  .describe('The lots a machine’s last cycle that reported lots consumed, as genealogy has it');
+
+export const terminalQualitySchema = z
+  .object({
+    holds: z
+      .array(terminalHoldSchema)
+      .describe('Open holds that touch an order shown here (active or queued), newest first'),
+    signals: z
+      .array(spcSignalSchema)
+      .describe(
+        'SPC episodes of this work center’s machines that are open or not acknowledged yet (withdrawn and baseline ones left out), newest first',
+      ),
+    lots: z
+      .array(terminalLotsSchema)
+      .describe('Per machine, the component lots of its last cycle that reported lots'),
+    truncated: z.boolean().describe('More holds or signals than shown'),
+  })
+  .describe('What quality says about this work center (#203): read-only, no terminal write');
+
 export const terminalViewSchema = z
   .object({
     workCenter: z.object({ id: z.string(), name: z.string() }),
@@ -171,6 +215,7 @@ export const terminalViewSchema = z
       .array(scrapRecordSchema)
       .describe('Uncoded scrap records of operations at this work center, newest first'),
     truncated: z.boolean().describe('More orders or scrap records than the view shows'),
+    quality: terminalQualitySchema,
   })
   .describe("A work center's terminal view (also the push topic's content)");
 
@@ -235,6 +280,9 @@ export type TerminalOrderDto = z.infer<typeof terminalOrderSchema>;
 export type TerminalQueueEntryDto = z.infer<typeof terminalQueueEntrySchema>;
 export type TerminalMachineDto = z.infer<typeof terminalMachineSchema>;
 export type TerminalViewDto = z.infer<typeof terminalViewSchema>;
+export type TerminalHoldDto = z.infer<typeof terminalHoldSchema>;
+export type TerminalLotsDto = z.infer<typeof terminalLotsSchema>;
+export type TerminalQualityDto = z.infer<typeof terminalQualitySchema>;
 export type OperationWriteRequest = z.infer<typeof operationWriteRequestSchema>;
 export type ActivityWriteRequest = z.infer<typeof activityWriteRequestSchema>;
 export type PauseRequest = z.input<typeof pauseRequestSchema>;

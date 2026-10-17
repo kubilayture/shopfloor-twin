@@ -219,6 +219,23 @@ export interface LotConsumption {
 const PART_BATCH = 300;
 /** Units a forward trace or a carton answers at most. */
 export const TRACE_UNIT_LIMIT = 5_000;
+
+/** A round of genealogy rebuilt units (#203). */
+export interface GenealogyChange {
+  readonly type: 'units';
+}
+
+/** A machine's last cycle that reported lots, with them (#203). */
+export interface LastLots {
+  readonly equipment: string;
+  readonly operation: string;
+  readonly epoch: number;
+  readonly partId: number;
+  readonly serial: string | null;
+  readonly pass: number;
+  readonly at: Date;
+  readonly lots: readonly { readonly lot: string; readonly material: string | null }[];
+}
 const silent: GenealogyLog = {
   info: () => undefined,
   warn: () => undefined,
@@ -289,6 +306,7 @@ export class Genealogy {
   #stopping = false;
   #kick: NodeJS.Timeout | undefined;
   #unsubscribe: (() => void) | undefined;
+  readonly #listeners = new Set<(change: GenealogyChange) => void>();
 
   constructor(options: GenealogyOptions) {
     this.#options = options;
@@ -419,6 +437,7 @@ export class Genealogy {
         const cutoff = this.#placementCutoff(processed);
         for (const id of orders) await this.#placeOrder(id, processed, cutoff);
         this.#processed = processed;
+        if (dirty.length > 0) this.#emit({ type: 'units' });
       } catch (error) {
         // What this round took is put back, so a failed round (a lost connection, a deadlock)
         // loses no unit or order it heard of.
@@ -868,6 +887,77 @@ export class Genealogy {
       members.set(id, [...(members.get(id) ?? []), { epoch: row.epoch, partId: row.part_id }]);
     }
     return members;
+  }
+
+  /**
+   * Called after a round that rebuilt units (#203: the terminal's lots in use follow it). Returns
+   * the unsubscribe.
+   */
+  onChange(listener: (change: GenealogyChange) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #emit(change: GenealogyChange): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener(change);
+      } catch (error) {
+        this.#log.error({ err: error }, 'genealogy listener failed');
+      }
+    }
+  }
+
+  /**
+   * Per machine, its last cycle that reported lots (newest epoch, then device sequence)
+   * with the lots it consumed, as genealogy has them (#203: the terminal's "lots in use"; a round
+   * behind the facts). Machines without such a cycle are left out.
+   */
+  async lastLots(equipment: readonly string[]): Promise<LastLots[]> {
+    const found: LastLots[] = [];
+    for (const machine of equipment) {
+      const record = await this.#readDb
+        .selectFrom('genealogy.unit_record')
+        .selectAll()
+        .where('equipment', '=', machine)
+        .where('lots_reported', '=', true)
+        // The primary key (equipment, epoch, seq) backwards: a machine's sequence follows its
+        // cycles, so its newest is its last.
+        .orderBy('epoch', 'desc')
+        .orderBy('seq', 'desc')
+        .limit(1)
+        .executeTakeFirst();
+      if (!record) continue;
+      const [links, unit] = await Promise.all([
+        this.#readDb
+          .selectFrom('genealogy.genealogy_link')
+          .select(['lot', 'material'])
+          .where('kind', '=', 'lot-unit')
+          .where('epoch', '=', record.epoch)
+          .where('part_id', '=', record.part_id)
+          .where('equipment', '=', machine)
+          .where('seq', '=', record.seq)
+          .orderBy('position')
+          .execute(),
+        this.#readDb
+          .selectFrom('genealogy.serial_unit')
+          .select(['serial'])
+          .where('epoch', '=', record.epoch)
+          .where('part_id', '=', record.part_id)
+          .executeTakeFirst(),
+      ]);
+      found.push({
+        equipment: machine,
+        operation: record.operation,
+        epoch: record.epoch,
+        partId: record.part_id,
+        serial: unit?.serial ?? null,
+        pass: record.pass,
+        at: record.completed_at,
+        lots: links.flatMap((l) => (l.lot === null ? [] : [{ lot: l.lot, material: l.material }])),
+      });
+    }
+    return found;
   }
 
   /** The lots imported from the ERP, by id. */

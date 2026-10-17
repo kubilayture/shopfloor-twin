@@ -788,6 +788,45 @@ describe('the close guard (#201, review rounds 1–3)', () => {
     expect((await h.holds.holdsOn([{ epoch: E1, partId: 1 }])).all[0]?.state).toBe('rejected');
   });
 
+  it('answers the terminal: open holds touching orders, and each machine’s last lots (#203)', async () => {
+    const h = await harness('terminal_quality');
+    const changes: string[] = [];
+    h.genealogy.onChange((change) => changes.push(change.type));
+    await completed(h, 'X-1', { blank: 'B1', kit: 'K1' });
+    expect(changes).toContain('units');
+    expect(await h.holds.openOnOrders([])).toEqual({ holds: [], truncated: false });
+    expect((await h.holds.openOnOrders(['X-1'])).holds).toEqual([]);
+    const lot = await h.holds.open(
+      { subject: { kind: 'lot', id: 'K1' }, reason: 'SUSPECT-LOT' },
+      h.qa,
+    );
+    await dispatched(h, 'X-2', 1);
+    const order = await h.holds.open(
+      { subject: { kind: 'order', id: 'X-2' }, reason: 'OTHER' },
+      h.qa,
+    );
+    await h.holds.tick();
+    const found = await h.holds.openOnOrders(['X-1', 'X-2', 'X-1']);
+    expect(found.holds.map((x) => [x.hold.id, x.orders])).toEqual([
+      [order.id, ['X-2']],
+      [lot.id, ['X-1']],
+    ]);
+    expect((await h.holds.openOnOrders(['X-1', 'X-2'], 1)).truncated).toBe(true);
+    // A released hold no longer shows.
+    await h.holds.decide(lot.id, 'release', { version: 1, reason: 'CONFORMS' }, h.qa);
+    expect((await h.holds.openOnOrders(['X-1'])).holds).toEqual([]);
+    // The lots of each machine's last cycle that reported lots; none for a machine without.
+    const lots = await h.genealogy.lastLots(['asm-01', 'cnc-01', 'wsh-01']);
+    expect(lots.map((l) => [l.equipment, l.operation, l.partId, l.serial, l.pass])).toEqual([
+      ['asm-01', 'OP30', 1, 'VB-100-000001', 1],
+      ['cnc-01', 'OP10', 1, 'VB-100-000001', 1],
+    ]);
+    expect(lots[0]?.lots).toEqual([
+      { lot: 'K1', material: 'SK-1' },
+      { lot: 'P1', material: 'SP-100' },
+    ]);
+  });
+
   it('refuses a close while genealogy has not processed every fact of the order’s units (409 genealogy-pending, retryable)', async () => {
     const h = await harness('pending');
     // Execution has completed the order from its facts; genealogy has not processed them yet.

@@ -77,6 +77,11 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `execution.operation_record`
   - `execution.scrap_record`
   - `execution.unit`
+- [`quality`](#schema-quality)
+  - `quality.characteristic`
+  - `quality.control_limit`
+  - `quality.measurement`
+  - `quality.spc_signal`
 - [`public`](#schema-public)
   - `public.schema_migrations`
 
@@ -170,6 +175,11 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `orders.order_operation` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `orders.production_order` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `public.schema_migrations` | `mes_owner` | SELECT |  |
+| `quality` | `mes_owner` | USAGE |  |
+| `quality.characteristic` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `quality.control_limit` | `mes_owner` | INSERT, SELECT |  |
+| `quality.measurement` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `quality.spc_signal` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `shifts` | `mes_owner` | USAGE |  |
 | `shifts.crew_assignment` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `shifts.handover_audit` | `mes_owner` | SELECT |  |
@@ -370,6 +380,32 @@ erDiagram
     bigint part_id PK
   }
   unit ||--o{ operation_record : "epoch, part_id"
+```
+
+Schema quality:
+
+```mermaid
+erDiagram
+  characteristic {
+    text id PK
+  }
+  control_limit {
+    text characteristic FK, PK
+    integer n PK
+  }
+  measurement {
+    text equipment PK
+    bigint epoch PK
+    bigint seq PK
+    text characteristic FK
+  }
+  spc_signal {
+    bigint id PK
+    text characteristic FK
+  }
+  characteristic ||--o{ control_limit : "characteristic"
+  characteristic ||--o{ measurement : "characteristic"
+  characteristic ||--o{ spc_signal : "characteristic"
 ```
 
 The other schemas have no foreign keys; their references are by value, as described above.
@@ -1943,6 +1979,163 @@ Units: one part of one simulator run, keyed (device epoch, partId), with its ser
 | Index | `unit_order` | `execution.unit USING btree (order_id, status)` |
 | Index | `unit_suspect` | `execution.unit USING btree (epoch) WHERE (suspect IS NOT NULL)` |
 | Index | `unit_wip` | `execution.unit USING btree (epoch) WHERE (status = 'wip'::text)` |
+
+## Schema quality
+
+Owner: quality. SPC (#200, ADR-0032): the characteristics of `quality.yaml`, one measurement per cycle fact of the characteristic’s machine with its pass, control limit versions as append-only events (version 1 automatic from the baseline, never re-derived), and the signal episodes derived from the first-pass readings with their finality, withdrawal and acknowledgement. Points and subgroups are derived on read.
+
+### quality.characteristic
+
+SPC characteristics seeded from `quality.yaml` (the leak test’s unit, resolution and upper specification from process.yaml), with the version a limit write names (it rises with each limit write and each notice raised), the `baseline-changed` notice and the basis (hash) of the re-estimate that raised it, kept when the notice is cleared (#200).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `text` | not null |  |
+| `name` | `text` | not null |  |
+| `equipment` | `text` | not null |  |
+| `operation` | `text` | not null |  |
+| `unit` | `text` | not null |  |
+| `resolution` | `double precision` | not null |  |
+| `upper_spec` | `double precision` | not null |  |
+| `subgroup_size` | `integer` | not null |  |
+| `baseline_subgroups` | `integer` | not null |  |
+| `rules` | `jsonb` | not null |  |
+| `version` | `integer` | not null | `1` |
+| `notice_kind` | `text` | null |  |
+| `notice_at` | `timestamp with time zone` | null |  |
+| `notice_detail` | `text` | null |  |
+| `notice_basis` | `text` | null |  |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `characteristic_pkey` | `PRIMARY KEY (id)` |
+| Check | `characteristic_baseline_subgroups_check` | `CHECK ((baseline_subgroups >= 1))` |
+| Check | `characteristic_check` | `CHECK (((notice_kind IS NULL) = (notice_at IS NULL)))` |
+| Check | `characteristic_check1` | `CHECK (((notice_kind IS NULL) = (notice_detail IS NULL)))` |
+| Check | `characteristic_id_check` | `CHECK ((id ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::text))` |
+| Check | `characteristic_notice_kind_check` | `CHECK ((notice_kind = 'baseline-changed'::text))` |
+| Check | `characteristic_resolution_check` | `CHECK ((resolution > (0)::double precision))` |
+| Check | `characteristic_subgroup_size_check` | `CHECK (((subgroup_size >= 2) AND (subgroup_size <= 10)))` |
+| Check | `characteristic_version_check` | `CHECK ((version >= 1))` |
+
+### quality.control_limit
+
+Control limit versions as append-only events: `created` (frozen limits, window and the first position it applies to) and `ended`; a trigger refuses UPDATE, DELETE and TRUNCATE to every role, the owner included (only the owner or a superuser could disable it, in a migration) (#200, ADR-0032).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `characteristic` | `text` | not null |  |
+| `n` | `integer` | not null |  |
+| `kind` | `text` | not null |  |
+| `version` | `integer` | not null |  |
+| `plant_at` | `timestamp with time zone` | not null |  |
+| `position_epoch` | `bigint` | null |  |
+| `position_at` | `timestamp with time zone` | null |  |
+| `position_seq` | `bigint` | null |  |
+| `limits` | `jsonb` | null |  |
+| `comment` | `text` | null |  |
+| `actor` | `text` | not null |  |
+| `recorded_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `control_limit_pkey` | `PRIMARY KEY (characteristic, n)` |
+| Foreign key | `control_limit_characteristic_fkey` | `FOREIGN KEY (characteristic) REFERENCES quality.characteristic(id)` |
+| Check | `control_limit_check` | `CHECK (((kind = 'created'::text) = (limits IS NOT NULL)))` |
+| Check | `control_limit_check1` | `CHECK (((position_epoch IS NULL) = (position_at IS NULL)))` |
+| Check | `control_limit_check2` | `CHECK (((position_epoch IS NULL) = (position_seq IS NULL)))` |
+| Check | `control_limit_check3` | `CHECK (((kind = 'created'::text) OR (position_epoch IS NOT NULL)))` |
+| Check | `control_limit_kind_check` | `CHECK ((kind = ANY (ARRAY['created'::text, 'ended'::text])))` |
+| Check | `control_limit_n_check` | `CHECK ((n >= 1))` |
+| Check | `control_limit_version_check` | `CHECK ((version >= 1))` |
+| Index | `control_limit_version` | `quality.control_limit USING btree (characteristic, version, kind)` |
+
+### quality.measurement
+
+One reading per cycle fact of the characteristic’s machine, keyed by the fact, with its pass (1, 2 after a rework) and its value in resolution steps; derived and rebuilt per part (#200).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `seq` | `bigint` | not null |  |
+| `characteristic` | `text` | not null |  |
+| `part_id` | `bigint` | not null |  |
+| `pass` | `integer` | not null |  |
+| `measured_at` | `timestamp with time zone` | not null |  |
+| `value` | `double precision` | not null |  |
+| `steps` | `bigint` | not null |  |
+| `unit` | `text` | not null |  |
+| `upper_limit` | `double precision` | not null |  |
+| `result` | `text` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `measurement_pkey` | `PRIMARY KEY (equipment, epoch, seq)` |
+| Unique | `measurement_characteristic_epoch_part_id_pass_key` | `UNIQUE (characteristic, epoch, part_id, pass)` |
+| Foreign key | `measurement_characteristic_fkey` | `FOREIGN KEY (characteristic) REFERENCES quality.characteristic(id)` |
+| Check | `measurement_part_id_check` | `CHECK ((part_id >= 1))` |
+| Check | `measurement_pass_check` | `CHECK ((pass >= 1))` |
+| Check | `measurement_result_check` | `CHECK ((result = ANY (ARRAY['good'::text, 'scrap'::text, 'rework'::text])))` |
+| Index | `measurement_chart` | `quality.measurement USING btree (characteristic, epoch, measured_at, seq)` |
+
+### quality.spc_signal
+
+Signal episodes keyed (characteristic, limit version, chart, rule, first triggering point) with their extent and whether it is final, `provisional` until the tester is final through the triggering point, `final`, or `withdrawn` with a reason; the acknowledgement stays on the episode (#200, ADR-0032).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `characteristic` | `text` | not null |  |
+| `limit_version` | `integer` | not null |  |
+| `chart` | `text` | not null |  |
+| `rule` | `integer` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `part_id` | `bigint` | not null |  |
+| `pass` | `integer` | not null |  |
+| `first_at` | `timestamp with time zone` | not null |  |
+| `first_seq` | `bigint` | not null |  |
+| `last_epoch` | `bigint` | not null |  |
+| `last_part_id` | `bigint` | not null |  |
+| `last_pass` | `integer` | not null |  |
+| `last_at` | `timestamp with time zone` | not null |  |
+| `last_seq` | `bigint` | not null |  |
+| `points` | `integer` | not null |  |
+| `closed_epoch` | `bigint` | null |  |
+| `closed_part_id` | `bigint` | null |  |
+| `closed_pass` | `integer` | null |  |
+| `closed_at` | `timestamp with time zone` | null |  |
+| `closed_seq` | `bigint` | null |  |
+| `baseline` | `boolean` | not null |  |
+| `extent_final` | `boolean` | not null |  |
+| `status` | `text` | not null |  |
+| `detected_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `detected_plant_at` | `timestamp with time zone` | null |  |
+| `final_at` | `timestamp with time zone` | null |  |
+| `withdrawn_at` | `timestamp with time zone` | null |  |
+| `withdrawn_reason` | `text` | null |  |
+| `ack_by` | `text` | null |  |
+| `ack_at` | `timestamp with time zone` | null |  |
+| `ack_plant_at` | `timestamp with time zone` | null |  |
+| `ack_comment` | `text` | null |  |
+| `row_version` | `integer` | not null | `1` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `spc_signal_pkey` | `PRIMARY KEY (id)` |
+| Unique | `spc_signal_characteristic_limit_version_chart_rule_epoch_pa_key` | `UNIQUE (characteristic, limit_version, chart, rule, epoch, part_id, pass)` |
+| Foreign key | `spc_signal_characteristic_fkey` | `FOREIGN KEY (characteristic) REFERENCES quality.characteristic(id)` |
+| Check | `spc_signal_chart_check` | `CHECK ((chart = ANY (ARRAY['I'::text, 'MR'::text, 'Xbar'::text, 'R'::text])))` |
+| Check | `spc_signal_check` | `CHECK (((closed_epoch IS NULL) = (closed_at IS NULL)))` |
+| Check | `spc_signal_check1` | `CHECK (((status = 'withdrawn'::text) = (withdrawn_at IS NOT NULL)))` |
+| Check | `spc_signal_check2` | `CHECK (((ack_by IS NULL) = (ack_at IS NULL)))` |
+| Check | `spc_signal_limit_version_check` | `CHECK ((limit_version >= 1))` |
+| Check | `spc_signal_points_check` | `CHECK ((points >= 1))` |
+| Check | `spc_signal_row_version_check` | `CHECK ((row_version >= 1))` |
+| Check | `spc_signal_rule_check` | `CHECK (((rule >= 1) AND (rule <= 8)))` |
+| Check | `spc_signal_status_check` | `CHECK ((status = ANY (ARRAY['provisional'::text, 'final'::text, 'withdrawn'::text])))` |
+| Index | `spc_signal_first` | `quality.spc_signal USING btree (characteristic, first_at, id)` |
 
 ## Schema public
 

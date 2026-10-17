@@ -23,6 +23,7 @@
     "@shopfloor/oee-core": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/shift-calendar": "workspace:*",
+    "@shopfloor/spc-core": "workspace:*",
     "fastify": "catalog:",
     "kysely": "catalog:",
     "mqtt": "catalog:",

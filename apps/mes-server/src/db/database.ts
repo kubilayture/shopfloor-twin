@@ -7,6 +7,7 @@ import type { IngestTables } from '../modules/ingest/index.ts';
 import type { MasterDataTables } from '../modules/master-data/index.ts';
 import type { ExecutionTables } from '../modules/execution/index.ts';
 import type { OrdersTables } from '../modules/orders/index.ts';
+import type { QualityTables } from '../modules/quality/index.ts';
 import type { ShiftsTables } from '../modules/shifts/index.ts';
 
 /** Tables of `public` that the MES itself owns (module schemas add their own types). */
@@ -29,7 +30,8 @@ export type Database = PublicTables &
   ShiftsTables &
   IdentityTables &
   OrdersTables &
-  ExecutionTables;
+  ExecutionTables &
+  QualityTables;
 
 /**
  * BIGINT columns (epochs, sequence numbers, ids, counts) are read as numbers, not strings: every

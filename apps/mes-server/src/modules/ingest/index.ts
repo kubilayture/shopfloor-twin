@@ -76,6 +76,9 @@
  *   device epochs: without `epoch`, every run's cycles of the lot.
  * - A cycle whose trace fields the contract refuses is stored without them; the delivery and
  *   what was dropped go to `rejected_message` as `trace-dropped` (the fact's own transaction).
+ *
+ * For quality (#200, ADR-0032):
+ * - `CycleFact.measurement`: the reading a cycle carries (the leak test's), null when none.
  */
 export { INGEST_TOPICS, Ingest, baselineState } from './ingest.ts';
 export { resolveAlarmBaseline } from './alarm-baseline.ts';

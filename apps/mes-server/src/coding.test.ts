@@ -879,7 +879,15 @@ describe('codings after a re-cut (#121)', () => {
       segments: [{ from: iso('06:00'), to: iso('06:30'), reason: 'BREAKDOWN/PRESS-FAULT' }],
       version: first.version,
     });
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Until the write waits for the holder's lock (it read its record by then), however long a
+    // loaded machine takes to get it there, not a fixed 300 ms (#212).
+    for (const deadline = Date.now() + 30_000; ;) {
+      const waiting = await sql<{ n: number }>`SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock'`.execute(db);
+      if ((waiting.rows[0]?.n ?? 0) > 0) break;
+      if (Date.now() > deadline) throw new Error('the write never waited for the coding set');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     // A rebuild deleting the record must wait for the write (here: give up after 300 ms).
     await expect(
       db.transaction().execute(async (trx) => {

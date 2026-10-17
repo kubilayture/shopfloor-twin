@@ -161,7 +161,7 @@ describe('login (#170)', () => {
       () => {
         expect(app.history.location.pathname).toBe('/login');
       },
-      { timeout: 4_000 },
+      { timeout: 15_000 },
     );
     expect(screen.getByTestId('login-reason').dataset.reason).toBe('idle');
     expect(mes.calls.some((c) => c.method === 'DELETE' && c.path === '/api/v1/session')).toBe(true);

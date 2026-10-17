@@ -31,7 +31,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     // CI runs these beside the Testcontainers suites on two cores; tests take milliseconds alone.
-    testTimeout: 15_000,
+    testTimeout: 30_000,
     setupFiles: ['src/test/setup.ts'],
     coverage: {
       provider: 'v8',

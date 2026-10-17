@@ -88,7 +88,7 @@ describe('explicit refresh of an hourly aggregate (#118, ADR-0022)', () => {
     }
     // Nothing runs on the caller's path.
     expect(r.status()).toMatchObject({ refreshes: 0 });
-    for (let waited = 0; windows.length === 0 && waited < 5_000; waited += 20) {
+    for (let waited = 0; windows.length === 0 && waited < 30_000; waited += 20) {
       await new Promise((done) => setTimeout(done, 20));
     }
     expect(Date.now() - began).toBeGreaterThanOrEqual(950);

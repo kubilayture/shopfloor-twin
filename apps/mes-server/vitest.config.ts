@@ -6,7 +6,8 @@ export default defineConfig({
     exclude: ['**/node_modules/**', '**/*.e2e.test.ts'],
     // These files start processes and containers; in parallel they starve a 2-core CI runner.
     fileParallelism: false,
-    testTimeout: 60_000,
+    // Generous: the suites share the machine with other runs (#212); a hang still fails by name.
+    testTimeout: 120_000,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

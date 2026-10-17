@@ -439,7 +439,7 @@ describe('the operator terminal (#177)', () => {
     fireEvent.click(await screen.findByTestId('terminal-pause-O-1-OP30'));
     fireEvent.click(screen.getByTestId('terminal-reason-O-1-OP30-quality'));
     // Nobody touches the screen: the session times out here and at the MES.
-    await screen.findByRole('heading', { name: 'Sign on' }, { timeout: 5_000 });
+    await screen.findByRole('heading', { name: 'Sign on' }, { timeout: 15_000 });
     await waitFor(() => {
       expect(mes.calls.some((c) => c.method === 'DELETE' && c.path === '/api/v1/session')).toBe(
         true,

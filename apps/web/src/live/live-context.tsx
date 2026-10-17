@@ -146,7 +146,8 @@ export function useOrdersTopic(): void {
 
 /**
  * Holds what the trace pages follow (#202). Genealogy has no push: `quality` brings hold changes
- * (opened, decided, scope grown) and `orders` an order completing (its last carton closes); each
+ * (opened, decided, scope grown) and `orders` an order completed or closed (its last carton
+ * closes); each
  * reads the trace answers again (`connectLiveToCache`), and so does the confirmed subscription,
  * as neither topic has a snapshot. Everything else a trace shows grows with facts and is polled
  * (`tracePollMs`). The orders topic is held as the orders screens hold it (`useOrdersTopic`), so

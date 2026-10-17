@@ -1,3 +1,6 @@
+import { resolve } from 'node:path';
+import { BLANK_OPERATION } from '@shopfloor/contracts/mes-api';
+import { loadPlantConfig } from '@shopfloor/plant-config';
 import { describe, expect, it } from 'vitest';
 import {
   finalThrough,
@@ -249,5 +252,15 @@ describe('finality (#199)', () => {
     expect(finalThrough(device, { epoch: 1, seq: 99 })).toBe(true);
     expect(finalThrough(device, { epoch: 3, seq: 1 })).toBe(false);
     expect(finalThrough(undefined, { epoch: 1, seq: 1 })).toBe(false);
+  });
+});
+
+describe('BLANK_OPERATION (#202)', () => {
+  it('is the first operation of the plant configuration’s routing', async () => {
+    const loaded = await loadPlantConfig(
+      resolve(import.meta.dirname, '../../../../../config/plant'),
+    );
+    if (!loaded.ok) throw new Error('plant config');
+    expect(loaded.config.products.operations[0]).toBe(BLANK_OPERATION);
   });
 });

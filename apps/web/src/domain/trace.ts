@@ -1,4 +1,5 @@
 import {
+  BLANK_OPERATION,
   GENEALOGY_LIMITS,
   type HoldRefDto,
   type LotRefDto,
@@ -34,19 +35,30 @@ export const UNIT_KEY = /^\d{1,15}-\d{1,15}$/;
 export const TRACE_POLL_MOVING_MS = 5_000;
 /** Polling of a settled answer: a lot is still consumed, a hold's scope still grows. */
 export const TRACE_POLL_SETTLED_MS = 30_000;
+/** A forward trace of this many units or more is never read every 5 s (each read is large). */
+export const LOT_FAST_POLL_UNITS = 500;
 
 /**
- * How often a trace answer is read again. Genealogy has no push (holds and orders do, and read it
- * again at once): while the answer is not final, or what it shows can still grow, every 5 s;
- * otherwise every 30 s (a forward trace grows as long as the lot is used).
+ * How often a trace answer is read again (`refetchInterval`). Genealogy has no push (holds and
+ * orders do, and read it again at once): while the answer is moving every 5 s, otherwise every
+ * 30 s. Never after a failed read or a 404: the page offers **Try again**, and a push still reads
+ * it again.
  */
-export function tracePollMs(moving: boolean): number {
+export function tracePoll(failed: boolean, moving: boolean): number | false {
+  if (failed) return false;
   return moving ? TRACE_POLL_MOVING_MS : TRACE_POLL_SETTLED_MS;
 }
 
 /** Whether a backward trace can still change: not final, or a unit still in work. */
 export const serialMoving = (trace: { final: boolean; units: readonly TraceUnitDto[] }): boolean =>
   !trace.final || trace.units.some((unit) => unit.status === 'wip');
+
+/**
+ * Whether a forward trace is read every 5 s: not final and small. A lot keeps growing as long as
+ * it is used, so a settled or large one is read every 30 s.
+ */
+export const lotMoving = (trace: { final: boolean; units: readonly unknown[] }): boolean =>
+  !trace.final && trace.units.length < LOT_FAST_POLL_UNITS;
 
 export const UNIT_STATUS_TEXT: Readonly<Record<TraceUnitDto['status'], string>> = {
   wip: 'In work',
@@ -85,33 +97,32 @@ export function operatorText(record: TraceRecordDto): string {
 }
 
 /**
- * The blank lots of a unit: the lots of its first operation (the CNC's, where the serial is
- * marked). `null` when that cycle's fact reported no lot field; `[]` when it reported none.
+ * The blank lots of a unit: the lots of its record at the routing's first operation
+ * (`BLANK_OPERATION`, OP10: the CNC takes the blank and marks the serial), never whichever record
+ * came first. `no-record` when the unit has no such record (a later operation's lots are never
+ * taken for the blank); `null` when its fact reported no lot field; `[]` when it reported none.
  */
-export function blankLots(unit: TraceUnitDto): readonly LotRefDto[] | null {
-  const first = firstOperation(unit);
-  if (first === undefined) return [];
-  const records = unit.records.filter((record) => record.operation === first);
+export function blankLots(unit: TraceUnitDto): readonly LotRefDto[] | null | 'no-record' {
+  const records = unit.records.filter((record) => record.operation === BLANK_OPERATION);
+  if (records.length === 0) return 'no-record';
   if (records.every((record) => record.lots === null)) return null;
   return distinctLots(records.flatMap((record) => record.lots ?? []));
 }
 
-/** The components of a unit per pass: every later operation's cycle that consumed a lot. */
+/**
+ * The components of a unit per pass: every record after the first operation that consumed a lot
+ * or did not report its lots (`lots: null`, shown as not reported); records that reported none
+ * (`[]`) are left out.
+ */
 export function componentPasses(
   unit: TraceUnitDto,
-): readonly { readonly record: TraceRecordDto; readonly lots: readonly LotRefDto[] }[] {
-  const first = firstOperation(unit);
+): readonly { readonly record: TraceRecordDto; readonly lots: readonly LotRefDto[] | null }[] {
   return unit.records
-    .filter((record) => record.operation !== first && (record.lots?.length ?? 0) > 0)
-    .map((record) => ({ record, lots: record.lots ?? [] }));
-}
-
-function firstOperation(unit: TraceUnitDto): string | undefined {
-  let first: TraceRecordDto | undefined;
-  for (const record of unit.records) {
-    if (!first || Date.parse(record.at) < Date.parse(first.at)) first = record;
-  }
-  return first?.operation;
+    .filter(
+      (record) =>
+        record.operation !== BLANK_OPERATION && (record.lots === null || record.lots.length > 0),
+    )
+    .map((record) => ({ record, lots: record.lots }));
 }
 
 /** Lots by lot id, first occurrence kept. */
@@ -134,6 +145,9 @@ export const blocking = (holds: readonly HoldRefDto[]): boolean =>
 export const overLimit = (reading: NonNullable<TraceRecordDto['reading']>): boolean =>
   reading.value > reading.upperLimit;
 
-/** The open holds' screen of #203 (a plain link until that route exists in this app). */
+/**
+ * The holds screen of #203. Plain `<a href>` links until that route exists in this app (a typed
+ * `Link` can't name an unregistered route); #203 converts them to `Link`s.
+ */
 export const holdHref = (id: string): string => `/quality/holds/${encodeURIComponent(id)}`;
 export const HOLDS_HREF = '/quality/holds';

@@ -30,6 +30,14 @@ export const GENEALOGY_INCIDENT_TYPES = [
 ] as const;
 export const TRACE_SEARCH_KINDS = ['serial', 'lot', 'carton', 'order'] as const;
 
+/**
+ * The routing's first operation (master data `routings[0].operations[0]`, the first of
+ * `products.yaml`'s `operations`): where the CNC takes a blank and marks the serial, so a unit's
+ * blank lot is its record of this operation (#202). The genealogy module's fallback; a
+ * `mes-server` test pins it to the plant configuration.
+ */
+export const BLANK_OPERATION = 'OP10';
+
 export const lotRefDtoSchema = z.object({ material: z.string(), lot: z.string() });
 
 export const materialLotSchema = z

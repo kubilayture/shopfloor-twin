@@ -58,9 +58,13 @@ describe('live orders', () => {
       ['order-execution', 'PO-7'],
       ['order-scrap', 'PO-7'],
       ['execution-incidents', 'PO-7'],
-      // The trace pages too: an order completing closes its last carton (#202).
-      ['trace'],
     ]);
+    // The trace pages only for a completed or closed order: its last carton closes (#202).
+    for (const status of ['completed', 'closed'] as const) {
+      invalidate.mockClear();
+      applyMessage(client, { type: 'order', event: 'updated', order: order('PO-7', { status }) });
+      expect(keys()).toContainEqual(['trace']);
+    }
     invalidate.mockClear();
     applyMessage(client, {
       type: 'command',

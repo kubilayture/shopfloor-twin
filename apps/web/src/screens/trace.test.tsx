@@ -118,6 +118,8 @@ describe('serial page (backward trace)', () => {
     expect(screen.getByTestId('unit-components-OP30-1').textContent).toContain('SK1-2610-01');
     expect(screen.getByTestId('unit-components-OP30-1').textContent).toContain('SP100-2610-01');
     expect(screen.getByTestId('unit-components-OP30-2').textContent).toContain('SK1-2610-02');
+    // OP20's fact reported no lot field: listed as not reported, never dropped.
+    expect(screen.getByTestId('unit-components-OP20-1').textContent).toContain('Not reported');
     expect(screen.getByTestId('trace-records').dataset.count).toBe('6');
     // Lots: not reported (null) and none ([]) are told apart.
     const washer = screen.getByTestId('record-OP20-1');
@@ -256,7 +258,16 @@ describe('serial page (backward trace)', () => {
       expect(screen.getByTestId(`hold-${HOLD_ID}`).dataset.state).toBe('released');
     });
     expect(screen.getByTestId('trace-unit').dataset.held).toBe('false');
-    // An order push (its last carton closes as it completes) reads it again too.
+    // An order pushed completed (its last carton closes) reads it again; another order change
+    // (released) does not.
+    const quiet = server.readsOf(SERIAL_PATH);
+    await app.push({
+      type: 'order',
+      event: 'updated',
+      order: order('PO-1001', { status: 'released', version: 2 }),
+    });
+    await settle(() => undefined);
+    expect(server.readsOf(SERIAL_PATH)).toBe(quiet);
     const after = server.readsOf(SERIAL_PATH);
     await app.push({
       type: 'order',
@@ -282,6 +293,98 @@ describe('serial page (backward trace)', () => {
     await renderApp('/trace/serials/VB-100-000042');
     expect((await screen.findByTestId('unit-blank-lots')).dataset.reported).toBe('false');
     expect(screen.getByTestId('unit-components-empty')).toBeTruthy();
+  });
+
+  it('says No OP10 record rather than take OP30’s seal-kit lots for the blank', async () => {
+    const assembly = record({
+      operation: 'OP30',
+      equipment: 'ASM-01',
+      lots: [{ material: 'SK-1', lot: 'SK1-2610-01' }],
+    });
+    const server = traceMes(
+      traceState({
+        serials: {
+          'VB-100-000042': serialTrace({ units: [unit({ status: 'wip', records: [assembly] })] }),
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/trace/serials/VB-100-000042');
+    const blank = await screen.findByTestId('unit-blank-lots');
+    expect(blank.dataset.reported).toBe('no-record');
+    expect(blank.textContent).toBe('No OP10 record');
+    expect(within(blank).queryByTestId('lot-link-SK1-2610-01')).toBeNull();
+    // The seal kit is a component of OP30.
+    expect(screen.getByTestId('unit-components-OP30-1').textContent).toContain('SK1-2610-01');
+  });
+
+  it('shows No component consumed yet only when every later record reported none', async () => {
+    const server = traceMes(
+      traceState({
+        serials: {
+          'VB-100-000042': serialTrace({
+            units: [unit({ records: [record(), record({ operation: 'OP20', lots: [] })] })],
+          }),
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    await renderApp('/trace/serials/VB-100-000042');
+    expect(await screen.findByTestId('unit-components-empty')).toBeTruthy();
+    expect(screen.queryByTestId('unit-components')).toBeNull();
+  });
+
+  it('round-trips ids with ?, # and % through links, the URL and the API path', async () => {
+    const odd = 'A?B#C%D';
+    const encoded = encodeURIComponent(odd);
+    const server = traceMes(
+      traceState({
+        search: {
+          A: [
+            { kind: 'serial', id: odd },
+            { kind: 'lot', id: odd },
+          ],
+        },
+        serials: { [odd]: serialTrace({ serial: odd, units: [unit({ serial: odd })] }) },
+        lots: { [odd]: lotTrace({ lot: odd }) },
+      }),
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/trace?q=A');
+    fireEvent.click(await screen.findByTestId(`trace-result-serial-${odd}`));
+    expect((await screen.findByTestId('trace-serial')).dataset.serial).toBe(odd);
+    await screen.findByTestId('trace-unit');
+    expect(server.reads).toContain(`/api/v1/trace/serials/${encoded}`);
+    // Back to the search, then the lot of the same id.
+    await settle(() => {
+      app.history.back();
+    });
+    fireEvent.click(await screen.findByTestId(`trace-result-lot-${odd}`));
+    expect((await screen.findByTestId('trace-lot')).dataset.lot).toBe(odd);
+    expect(server.reads).toContain(`/api/v1/trace/lots/${encoded}`);
+    // Opened from the URL directly.
+    await settle(() => {
+      app.history.push(`/trace/serials/${encoded}`);
+    });
+    expect((await screen.findByTestId('trace-serial')).dataset.serial).toBe(odd);
+  });
+
+  it('releases the quality and orders topics when the page goes', async () => {
+    const server = traceMes(traceState({ serials: { 'VB-100-000042': serialTrace() } }));
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/trace/serials/VB-100-000042');
+    await app.open();
+    await screen.findByTestId('trace-unit');
+    expect(subscribed(app)).toEqual(expect.arrayContaining(['quality', 'orders']));
+    await settle(() => {
+      app.history.push('/trace');
+    });
+    await waitFor(() => {
+      const released = app.factory.last.sent
+        .filter((m) => m.type === 'unsubscribe')
+        .map((m) => m.topic);
+      expect(released).toEqual(expect.arrayContaining(['quality', 'orders']));
+    });
   });
 });
 

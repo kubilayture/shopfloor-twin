@@ -6,7 +6,7 @@ import { queryKeys } from '../api/queries.ts';
 import { getLotTrace } from '../api/trace.ts';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
-import { TRACE_ID, blocking, tracePollMs, unitKey } from '../domain/trace.ts';
+import { TRACE_ID, blocking, lotMoving, tracePoll, unitKey } from '../domain/trace.ts';
 import { useTraceTopics } from '../live/live-context.tsx';
 import {
   BackToSearch,
@@ -162,7 +162,11 @@ function LotTrace({ lot }: { readonly lot: string }) {
   const read = useQuery({
     queryKey: queryKeys.traceLot(lot),
     queryFn: ({ signal }) => getLotTrace(lot, signal),
-    refetchInterval: (query) => tracePollMs(query.state.data?.final !== true),
+    refetchInterval: (query) =>
+      tracePoll(
+        query.state.status === 'error',
+        query.state.data === undefined || lotMoving(query.state.data),
+      ),
   });
   const missing = read.error instanceof ApiError && read.error.status === 404;
   const trace = read.data;

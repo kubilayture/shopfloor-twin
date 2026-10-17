@@ -456,7 +456,7 @@ function orderReadsStale(queryClient: QueryClient, orderId: string): void {
 
 /**
  * The trace reads (#202, `queryKeys.traceAll` in api/queries.ts, which imports this module): a
- * hold push, an order push or a confirmed subscription makes them stale; only an open trace page
+ * hold push, an order pushed `completed` or `closed`, or a confirmed subscription makes them stale; only an open trace page
  * refetches (a read under way is restarted, so it can't answer from before the change).
  */
 export const TRACE_READS = ['trace'] as const;
@@ -563,7 +563,10 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       upsertOrder(queryClient, message.order);
       orderReadsStale(queryClient, message.order.id);
       // An order completing closes its last carton (ADR-0034); genealogy has no push of its own.
-      traceReadsStale(queryClient);
+      // Other order changes (release, dispatch, start) change no trace answer.
+      if (message.order.status === 'completed' || message.order.status === 'closed') {
+        traceReadsStale(queryClient);
+      }
       return;
     case 'command':
       upsertCommand(queryClient, message.command);

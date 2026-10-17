@@ -289,6 +289,7 @@ export function Holds({
       <p className="text-sm text-slate-700">
         Holds on {what}, by the scope the MES last derived; the scope grows as facts arrive. Holds
         are opened, released and rejected on the{' '}
+        {/* Plain links until #203 adds `/quality/holds`; #203 converts them to `Link`s. */}
         <a href={HOLDS_HREF} className={linkClass} data-testid="holds-screen-link">
           holds screen
         </a>

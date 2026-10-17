@@ -4,6 +4,7 @@ import {
   TRACE_ID,
   TRACE_POLL_MOVING_MS,
   TRACE_POLL_SETTLED_MS,
+  LOT_FAST_POLL_UNITS,
   UNIT_KEY,
   blankLots,
   blocking,
@@ -13,7 +14,8 @@ import {
   operatorText,
   overLimit,
   serialMoving,
-  tracePollMs,
+  lotMoving,
+  tracePoll,
   unitKey,
   validQuery,
 } from './trace.ts';
@@ -40,24 +42,49 @@ describe('trace helpers (#202)', () => {
     expect(UNIT_KEY.test('3/42')).toBe(false);
   });
 
-  it('polls a moving answer faster than a settled one', () => {
-    expect(tracePollMs(true)).toBe(TRACE_POLL_MOVING_MS);
-    expect(tracePollMs(false)).toBe(TRACE_POLL_SETTLED_MS);
+  it('polls a moving answer faster than a settled one, and never after a failed read', () => {
+    expect(tracePoll(false, true)).toBe(TRACE_POLL_MOVING_MS);
+    expect(tracePoll(false, false)).toBe(TRACE_POLL_SETTLED_MS);
+    expect(tracePoll(true, true)).toBe(false);
+    expect(tracePoll(true, false)).toBe(false);
     expect(serialMoving({ final: true, units: [unit()] })).toBe(false);
     expect(serialMoving({ final: false, units: [unit()] })).toBe(true);
     expect(serialMoving({ final: true, units: [unit({ status: 'wip' })] })).toBe(true);
+    // A forward trace: fast only while not final and small.
+    expect(lotMoving({ final: false, units: [] })).toBe(true);
+    expect(lotMoving({ final: true, units: [] })).toBe(false);
+    expect(lotMoving({ final: false, units: new Array(LOT_FAST_POLL_UNITS).fill(0) })).toBe(false);
   });
 
-  it('reads the blank lot from the first operation and the components per pass', () => {
+  it('reads the blank lot from the OP10 record only, never from another first record', () => {
     expect(blankLots(unit())).toEqual([{ material: 'BLANK-100', lot: 'BL100-2610-01' }]);
-    expect(blankLots(unit({ records: [] }))).toEqual([]);
+    expect(blankLots(unit({ records: [] }))).toBe('no-record');
     expect(blankLots(unit({ records: [record({ lots: null })] }))).toBeNull();
-    // Out of order in the answer: the earliest cycle is the first operation.
-    const later = record({ operation: 'OP30', at: '2026-10-15T06:00:00.000Z', lots: [] });
+    expect(blankLots(unit({ records: [record({ lots: [] })] }))).toEqual([]);
+    // No OP10 record: OP30's seal-kit lots, the earliest record here, are not the blank.
+    const assembly = record({
+      operation: 'OP30',
+      equipment: 'ASM-01',
+      lots: [{ material: 'SK-1', lot: 'SK1-2610-01' }],
+    });
+    expect(blankLots(unit({ records: [assembly] }))).toBe('no-record');
+    // Out of order in the answer: the OP10 record still gives the blank.
+    const later = record({ operation: 'OP30', at: '2026-10-15T04:00:00.000Z', lots: [] });
     expect(blankLots(unit({ records: [later, record()] }))).toHaveLength(1);
+  });
+
+  it('keeps components not reported and leaves out records that reported none', () => {
     const passes = componentPasses(unit());
-    expect(passes.map(({ record: r }) => operationText(r))).toEqual(['OP30', 'OP30 (pass 2)']);
-    expect(passes[0]?.lots).toHaveLength(2);
+    // OP20 (WSH-01) reported no lot field; the OP40 records reported none.
+    expect(passes.map(({ record: r }) => operationText(r))).toEqual([
+      'OP20',
+      'OP30',
+      'OP30 (pass 2)',
+    ]);
+    expect(passes[0]?.lots).toBeNull();
+    expect(passes[1]?.lots).toHaveLength(2);
+    const none = unit({ records: [record(), record({ operation: 'OP20', lots: [] })] });
+    expect(componentPasses(none)).toEqual([]);
   });
 
   it('tells operators apart: an id, none, or not reported', () => {

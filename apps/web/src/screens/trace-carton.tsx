@@ -6,7 +6,7 @@ import { queryKeys } from '../api/queries.ts';
 import { getCartonTrace } from '../api/trace.ts';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
-import { TRACE_ID, tracePollMs, unitKey } from '../domain/trace.ts';
+import { TRACE_ID, tracePoll, unitKey } from '../domain/trace.ts';
 import { useTraceTopics } from '../live/live-context.tsx';
 import {
   BackToSearch,
@@ -112,7 +112,10 @@ function CartonTrace({ carton }: { readonly carton: string }) {
     queryFn: ({ signal }) => getCartonTrace(carton, signal),
     refetchInterval: (query) => {
       const data = query.state.data;
-      return tracePollMs(data === undefined || !data.final || data.carton.status === 'open');
+      return tracePoll(
+        query.state.status === 'error',
+        data === undefined || !data.final || data.carton.status === 'open',
+      );
     },
   });
   const missing = read.error instanceof ApiError && read.error.status === 404;

@@ -1,4 +1,9 @@
-import type { SerialTraceDto, TraceRecordDto, TraceUnitDto } from '@shopfloor/contracts/mes-api';
+import {
+  BLANK_OPERATION,
+  type SerialTraceDto,
+  type TraceRecordDto,
+  type TraceUnitDto,
+} from '@shopfloor/contracts/mes-api';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams, useSearch } from '@tanstack/react-router';
 import { ApiError } from '../api/client.ts';
@@ -16,7 +21,7 @@ import {
   operatorText,
   overLimit,
   serialMoving,
-  tracePollMs,
+  tracePoll,
   unitKey,
 } from '../domain/trace.ts';
 import { formatPlantTime } from '../domain/time.ts';
@@ -164,25 +169,26 @@ function Records({ unit }: { readonly unit: TraceUnitDto }) {
   );
 }
 
+function BlankLots({ unit }: { readonly unit: TraceUnitDto }) {
+  const lots = blankLots(unit);
+  if (lots === 'no-record') {
+    return (
+      <span data-testid="unit-blank-lots" data-reported="no-record" className="text-slate-700">
+        No {BLANK_OPERATION} record
+      </span>
+    );
+  }
+  return <LotList lots={lots} testId="unit-blank-lots" />;
+}
+
 function Materials({ unit }: { readonly unit: TraceUnitDto }) {
   const components = componentPasses(unit);
   return (
     <Section id="trace-materials" title="Materials">
-      <Facts
-        items={[
-          [
-            'Blank lot',
-            unit.records.length === 0 ? (
-              'No cycle yet'
-            ) : (
-              <LotList key="blank" lots={blankLots(unit)} testId="unit-blank-lots" />
-            ),
-          ],
-        ]}
-      />
+      <Facts items={[['Blank lot', <BlankLots key="blank" unit={unit} />]]} />
       {components.length === 0 ? (
         <p className="mt-1 text-sm" data-testid="unit-components-empty">
-          No component consumed yet.
+          No component consumed yet (no later record reported a lot).
         </p>
       ) : (
         <ul className="mt-1 flex flex-col gap-1 text-sm" data-testid="unit-components">
@@ -294,7 +300,10 @@ function SerialTrace({ serial, unit }: { readonly serial: string; readonly unit?
     queryKey: queryKeys.traceSerial(serial),
     queryFn: ({ signal }) => getSerialTrace(serial, signal),
     refetchInterval: (query) =>
-      tracePollMs(query.state.data === undefined || serialMoving(query.state.data)),
+      tracePoll(
+        query.state.status === 'error',
+        query.state.data === undefined || serialMoving(query.state.data),
+      ),
   });
   const missing = read.error instanceof ApiError && read.error.status === 404;
   const trace = read.data;

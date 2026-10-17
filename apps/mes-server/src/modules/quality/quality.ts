@@ -247,6 +247,10 @@ interface State {
   earliest: Position | null;
   /** The tester's progress the episodes were last derived with. */
   progress: string;
+  /** The stored episode rows, as the last write left them (null: read them first). */
+  signals: Selectable<SpcSignalTable>[] | null;
+  /** A `readings` summary is due for push. */
+  summaryDue: boolean;
 }
 
 /**
@@ -274,6 +278,8 @@ export class Quality {
   #timer: NodeJS.Timeout | undefined;
   #kick: NodeJS.Timeout | undefined;
   #queue: Promise<unknown> = Promise.resolve();
+  /** The `readings` summaries being read for push, off the derivation's path. */
+  #summaries: Promise<void> = Promise.resolve();
   #started = false;
   #stopping = false;
   #unsubscribe: (() => void) | undefined;
@@ -293,6 +299,8 @@ export class Quality {
         readingsChanged: false,
         earliest: null,
         progress: '',
+        signals: null,
+        summaryDue: false,
       });
     }
     const registers = options.registry ? [options.registry] : [];
@@ -351,6 +359,7 @@ export class Quality {
     clearTimeout(this.#kick);
     this.#unsubscribe?.();
     await this.#queue.catch(() => undefined);
+    await this.#summaries;
   }
 
   /**
@@ -748,6 +757,8 @@ export class Quality {
           requestId: context.requestId,
           plantAt: plantAt ?? undefined,
         });
+        const state = this.#states.get(row.characteristic);
+        if (state) state.signals = null;
         return toSignal(updated);
       }),
     );
@@ -827,6 +838,7 @@ export class Quality {
     for (const state of this.#states.values()) {
       await this.#reloadVersions(state);
       state.readings.clear();
+      state.signals = null;
       for (const count of counts.filter((c) => c.equipment === state.config.equipment)) {
         const facts = await this.#ingest.cycleFacts({
           epoch: count.epoch,
@@ -980,13 +992,29 @@ export class Quality {
     state.earliest = null;
     state.progress = signature;
     this.#derived?.observe((performance.now() - started) / 1_000);
-    if (readingsChanged) {
-      this.#emit({
-        type: 'characteristic',
-        event: 'readings',
-        characteristic: await this.#summary(config, this.#db),
-      });
-    }
+    if (readingsChanged) this.#summarySoon(state);
+  }
+
+  /**
+   * The `readings` summary of a characteristic for push, read off the derivation's path (it adds
+   * nothing the episodes need) and coalesced: one read for any number of derivations meanwhile.
+   */
+  #summarySoon(state: State): void {
+    if (state.summaryDue) return;
+    state.summaryDue = true;
+    this.#summaries = this.#summaries.then(async () => {
+      state.summaryDue = false;
+      if (this.#stopping) return;
+      try {
+        this.#emit({
+          type: 'characteristic',
+          event: 'readings',
+          characteristic: await this.#summary(state.config, this.#db),
+        });
+      } catch (error) {
+        this.#log.error({ err: error }, 'quality: reading a characteristic summary failed');
+      }
+    });
   }
 
   /** Limit version 1 (automatic, `system`): created at its baseline's last reading (ADR-0032). */
@@ -1080,12 +1108,14 @@ export class Quality {
   /** Brings the stored episodes in line with the derived ones, in one transaction. */
   async #writeSignals(state: State, derived: ReturnType<typeof derivedSignals>): Promise<void> {
     const id = state.config.id;
-    const stored = await this.#db
+    // The stored rows as the last write left them: every write to them goes through this
+    // module's queue, which drops the copy.
+    state.signals ??= await this.#db
       .selectFrom('quality.spc_signal')
       .selectAll()
       .where('characteristic', '=', id)
       .execute();
-    const plan = planSignals(derived, stored.map(toStored));
+    const plan = planSignals(derived, state.signals.map(toStored));
     if (
       plan.inserts.length === 0 &&
       plan.updates.length === 0 &&
@@ -1097,6 +1127,7 @@ export class Quality {
     const plantAt = this.#options.clock?.() ?? null;
     const changes: QualityChange[] = [];
     const now = sql<Date>`clock_timestamp()`;
+    state.signals = null;
     await this.#db.transaction().execute(async (trx) => {
       if (plan.deletes.length > 0) {
         const removed = await trx

@@ -46,15 +46,15 @@ const PERMISSION: Readonly<Record<ActionDraft['action'], Permission>> = {
 function effectText(draft: ActionDraft, order: OrderDto): string {
   switch (draft.action) {
     case 'release':
-      return 'Releases the order for dispatch and posts `released` to the ERP.';
+      return 'Releases the order for dispatch and tells the ERP it is released.';
     case 'dispatch':
       return `Sends the whole order (${String(order.quantity)} blanks) as one job to a CNC. The command goes out through the MES's outbox; its state shows below.`;
     case 'redispatch':
       return `Sends the remainder again as a new command: at most ${String(order.remaining)} blanks (the order quantity minus the blanks the device accepted).`;
     case 'cancel':
-      return 'Cancels the order (not dispatched yet) and posts `cancelled` to the ERP.';
+      return 'Cancels the order (not dispatched yet) and tells the ERP it is cancelled.';
     case 'close':
-      return 'Closes the completed order and posts `closed` to the ERP.';
+      return 'Closes the completed order and tells the ERP it is closed.';
     case 'abandon':
       return `Writes off ${draft.commandId}: its device run has ended. It becomes abandoned (settled, its incidents closed) and its whole quantity counts as dispatched, so the order can end short, never over.`;
   }

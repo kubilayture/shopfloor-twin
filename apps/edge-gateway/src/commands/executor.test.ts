@@ -24,22 +24,28 @@ import { opcuaProxies, startSimulator, type RunningSimulator, type TcpProxy } fr
 import { CommandExecutor, type CommandExecutorOptions } from './executor.ts';
 import { CommandStore } from './store.ts';
 
-const SIM = { opcuaOffset: 3400, modbusPort: 8420, controlPort: 8210 };
-const PROXY_OFFSET = 3450;
+// The simulator's ports and the proxies' OPC UA block are chosen at runtime (#212).
+const SIM_ENV = { SIM_PRODUCTION: 'orders' };
 const DEADLINE_MS = 1_500;
 const NOT_BEFORE = '2026-10-12T03:00:00.000Z';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function until(what: string, condition: () => boolean, timeoutMs = 20_000): Promise<void> {
+/** Polls a condition with a generous deadline (#212); the error names what it waited for. */
+async function until(what: string, condition: () => boolean, timeoutMs = 60_000): Promise<void> {
   for (const deadline = Date.now() + timeoutMs; !condition();) {
     if (Date.now() > deadline) throw new Error(`timed out after ${String(timeoutMs)} ms: ${what}`);
     await wait(50);
   }
 }
 
-let simulator: RunningSimulator;
-let proxies: Map<string, TcpProxy>;
+let simulator: RunningSimulator | undefined;
+let proxies = new Map<string, TcpProxy>();
+
+const sim = (): RunningSimulator => {
+  if (!simulator) throw new Error('no simulator');
+  return simulator;
+};
 const dir = mkdtempSync(join(tmpdir(), 'gateway-commands-'));
 const facts: UnsPublication[] = [];
 const results: CommandResultPublication[] = [];
@@ -132,7 +138,7 @@ const answers = (commandId: string): CommandResultValue[] =>
 
 /** The `accepted` job facts of a command id in every simulator run so far (the ground truth). */
 const acceptedFacts = (commandId: string): number =>
-  [...pastEvents, simulator.events]
+  [...pastEvents, sim().events]
     .flat()
     .filter((e) => e.type === 'job' && e.transition === 'accepted' && e.commandId === commandId)
     .length;
@@ -153,8 +159,9 @@ beforeAll(async () => {
   if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
   const config = loaded.config;
   paths = new Map(equipmentPaths(config));
-  simulator = await startSimulator(SIM, { SIM_PRODUCTION: 'orders' });
-  proxies = await opcuaProxies(OPCUA_MACHINES, PROXY_OFFSET, SIM.opcuaOffset);
+  simulator = await startSimulator(undefined, SIM_ENV);
+  const block = await opcuaProxies(OPCUA_MACHINES, simulator.opcuaOffset);
+  proxies = block.proxies;
   const certificateManager = new OPCUACertificateManager({
     rootFolder: join(dir, 'pki'),
     automaticallyAcceptUnknownCertificate: true,
@@ -169,7 +176,7 @@ beforeAll(async () => {
         machine,
         path,
         host: 'localhost',
-        portOffset: PROXY_OFFSET,
+        portOffset: block.offset,
         publisher: {
           publish: (publication) => {
             facts.push(publication);
@@ -192,14 +199,15 @@ beforeAll(async () => {
   store = new CommandStore(join(dir, 'gateway.db'));
   executor = newExecutor();
   executor.start();
-}, 120_000);
+}, 180_000);
 
+// Also after a failed beforeAll: whatever was started is stopped, the simulator above all (#212).
 afterAll(async () => {
-  await executor.stop();
-  store.close();
+  await (executor as CommandExecutor | undefined)?.stop();
+  (store as CommandStore | undefined)?.close();
   await Promise.all(collectors.map((c) => c.stop()));
   for (const proxy of proxies.values()) await proxy.close();
-  await simulator.stop();
+  await simulator?.stop();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -354,10 +362,10 @@ describe('LoadOrder through the command executor (#173, ADR-0029)', () => {
     deliver(cut, 'cnc-02');
     await until('the device accepted it', () => acceptedFacts(id) === 1);
     proxy.cut();
-    await until('answered', () => answers(id).length === 1, 40_000);
+    await until('answered', () => answers(id).length === 1, 60_000);
     expect(answers(id)[0]).toMatchObject({ result: 'duplicate' });
     expect(acceptedFacts(id)).toBe(1);
-  }, 60_000);
+  }, 120_000);
 
   it('reports unknown while it cannot settle after expiresAt, never expired on its own, then settles with Duplicate', async () => {
     const proxy = proxies.get('cnc-01');
@@ -367,17 +375,17 @@ describe('LoadOrder through the command executor (#173, ADR-0029)', () => {
     proxy.hold();
     deliver(held);
     await until('the device accepted it', () => acceptedFacts(id) === 1);
-    await until('unknown reported', () => answers(id).length === 1, 15_000);
+    await until('unknown reported', () => answers(id).length === 1, 60_000);
     expect(answers(id)[0]).toMatchObject({ result: 'unknown', seqAfterExpiry: null });
     expect(executor.pending.settling).toBe(1);
     proxy.release();
-    await until('settled', () => answers(id).length >= 2, 20_000);
+    await until('settled', () => answers(id).length >= 2, 60_000);
     const settled = answers(id).at(-1);
     expect(settled).toMatchObject({ result: 'duplicate', acceptedSeq: acceptedSeq(id) });
     expect(answers(id).some((a) => a.result === 'expired')).toBe(false);
     await until('settling ends', () => executor.pending.settling === 0);
     expect(acceptedFacts(id)).toBe(1);
-  }, 60_000);
+  }, 120_000);
 
   it('processes again what a crash left between the call and its result: Duplicate, one job', async () => {
     const proxy = proxies.get('cnc-01');
@@ -392,11 +400,11 @@ describe('LoadOrder through the command executor (#173, ADR-0029)', () => {
     proxy.cut();
     executor = newExecutor();
     executor.start();
-    await until('answered after the restart', () => answers(id).length === 1, 40_000);
+    await until('answered after the restart', () => answers(id).length === 1, 60_000);
     expect(answers(id)[0]).toMatchObject({ result: 'duplicate' });
     expect(acceptedFacts(id)).toBe(1);
     await until('the inbox empty', () => store.pending().length === 0);
-  }, 60_000);
+  }, 120_000);
 
   it('answers rejected (epoch-mismatch) without calling when the simulator restarted mid-call', async () => {
     const proxy = proxies.get('cnc-01');
@@ -407,13 +415,21 @@ describe('LoadOrder through the command executor (#173, ADR-0029)', () => {
     proxy.hold();
     deliver(restarted);
     await until('the device accepted it', () => acceptedFacts(id) === 1);
-    pastEvents.push(simulator.events);
-    await simulator.stop();
+    pastEvents.push(sim().events);
+    await sim().stop();
+    simulator = undefined;
     await wait(1_100); // a new run gets a new epoch (Unix seconds)
-    simulator = await startSimulator(SIM, { SIM_PRODUCTION: 'orders' });
+    // The new run may come up on other ports (#212): the proxies send the gateway's sessions there.
+    const next = await startSimulator(undefined, SIM_ENV);
+    simulator = next;
+    for (const machine of OPCUA_MACHINES) {
+      proxies
+        .get(machine.id)
+        ?.retarget({ host: 'localhost', port: machine.port + next.opcuaOffset });
+    }
     proxy.cut();
     for (const other of proxies.values()) other.cut();
-    await until('answered', () => answers(id).length === 1, 60_000);
+    await until('answered', () => answers(id).length === 1, 90_000);
     expect(answers(id)[0]).toMatchObject({
       result: 'rejected',
       code: 'epoch-mismatch',
@@ -421,6 +437,6 @@ describe('LoadOrder through the command executor (#173, ADR-0029)', () => {
     });
     expect(epochOf('cnc-01')).not.toBe(oldEpoch);
     expect(acceptedFacts(id)).toBe(1); // in the old run only
-    expect(simulator.events.filter((e) => e.type === 'job')).toEqual([]);
-  }, 120_000);
+    expect(sim().events.filter((e) => e.type === 'job')).toEqual([]);
+  }, 240_000);
 });

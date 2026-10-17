@@ -62,6 +62,9 @@ const send = async (...deliveries: { topic: string; payload: string }[]): Promis
   for (const d of deliveries) await ingest.deliver(d.topic, d.payload);
 };
 
+/** Every paced delta the push hub sent, on its own clock (#212). */
+const pacedDeltas: { topic: string; at: number }[] = [];
+
 beforeAll(async () => {
   let serverUrl: string;
   ({ url: serverUrl, container } = await startDatabase());
@@ -104,7 +107,11 @@ beforeAll(async () => {
   downtime = new DowntimeFeed({ equipment, debounceMs: 20 });
   const http = await buildMesHttp({
     ready: () => Promise.resolve(true),
-    push: { clockMs: 50, oeeMs: 200 },
+    push: {
+      clockMs: 50,
+      oeeMs: 200,
+      onPacedDelta: (topic, at) => pacedDeltas.push({ topic, at }),
+    },
   });
   app = http.app;
   attach = () =>
@@ -154,7 +161,7 @@ async function client() {
   });
   const until = async (
     predicate: (m: ServerMessage) => boolean,
-    timeoutMs = 5_000,
+    timeoutMs = 30_000,
   ): Promise<ServerMessage> => {
     const deadline = Date.now() + timeoutMs;
     for (let seen = 0; ;) {
@@ -653,6 +660,7 @@ describe('MES WebSocket push (#97)', () => {
   });
 
   it('pushes OEE buckets at most once per interval per topic, and downtime records (#120)', async () => {
+    const deltasBefore = pacedDeltas.length;
     const ws = await client();
     ws.send({ type: 'subscribe', topic: 'oee:cell-m1' });
     const snapshot = await ws.until((m) => m.type === 'snapshot' && m.topic === 'oee:cell-m1');
@@ -699,11 +707,18 @@ describe('MES WebSocket push (#97)', () => {
       await new Promise((resolve) => setTimeout(resolve, 60));
     }
     await ws.until((m) => m.type === 'oee' && m.hour?.inputs.stateMs.Idle === 3 * MINUTE);
-    // At most one delta per topic per interval (200 ms here, 1 s by default).
-    const times = ws.messages.flatMap((m, i) => (m.type === 'oee' ? [ws.received[i] ?? 0] : []));
-    expect(times.length).toBeGreaterThan(1);
-    for (let i = 1; i < times.length; i++) {
-      expect((times[i] ?? 0) - (times[i - 1] ?? 0)).toBeGreaterThanOrEqual(150);
+    // At most one delta per topic per interval (200 ms here, 1 s by default), on the server's own
+    // clock: when a loaded machine delivers two deltas closer together than the server sent them
+    // is not the pace (#212). The client got several, and none the server did not send.
+    const received = ws.messages.filter((m) => m.type === 'oee').length;
+    const sent = pacedDeltas
+      .slice(deltasBefore)
+      .filter((d) => d.topic === 'oee:cell-m1')
+      .map((d) => d.at);
+    expect(received).toBeGreaterThan(1);
+    expect(received).toBeLessThanOrEqual(sent.length);
+    for (let i = 1; i < sent.length; i++) {
+      expect((sent[i] ?? 0) - (sent[i - 1] ?? 0)).toBeGreaterThanOrEqual(200);
     }
     ws.socket.close();
   });

@@ -39,7 +39,7 @@ import {
   paretoSchema,
   problemSchema,
 } from './modules/realtime/schemas.ts';
-import { startDatabase } from './testing.ts';
+import { backendPid, blockedBy, startDatabase } from './testing.ts';
 
 const E1 = 1_760_000_000;
 const MINUTE = 60_000;
@@ -862,8 +862,8 @@ describe('codings after a re-cut (#121)', () => {
     );
     // Another write holds the coding set, so this one waits after reading its record.
     let release = (): void => undefined;
-    let locked = (): void => undefined;
-    const isLocked = new Promise<void>((resolve) => (locked = resolve));
+    let locked: (pid: number) => void = () => undefined;
+    const isLocked = new Promise<number>((resolve) => (locked = resolve));
     const holder = db.transaction().execute(async (trx) => {
       await trx
         .selectFrom('equipment.downtime_coding_set')
@@ -871,27 +871,32 @@ describe('codings after a re-cut (#121)', () => {
         .where('equipment', '=', 'asm-01')
         .forUpdate()
         .execute();
-      locked();
+      locked(await backendPid(trx));
       await new Promise<void>((resolve) => (release = resolve));
     });
-    await isLocked;
+    const holderPid = await isLocked;
     const write = put(id, {
       segments: [{ from: iso('06:00'), to: iso('06:30'), reason: 'BREAKDOWN/PRESS-FAULT' }],
       version: first.version,
     });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    // A rebuild deleting the record must wait for the write (here: give up after 300 ms).
-    await expect(
-      db.transaction().execute(async (trx) => {
-        await sql`SET LOCAL lock_timeout = '300ms'`.execute(trx);
-        await trx
-          .deleteFrom('equipment.downtime_record')
-          .where('equipment', '=', 'asm-01')
-          .where('start_time', '=', new Date(at('06:00')))
-          .execute();
-      }),
-    ).rejects.toThrow(/lock timeout/);
-    release();
+    try {
+      // Until the write waits for the holder's lock (it read its record by then), however long a
+      // loaded machine takes to get it there, not a fixed 300 ms (#212).
+      await blockedBy(db, holderPid, 'the write waiting for the coding set');
+      // A rebuild deleting the record must wait for the write (here: give up after 300 ms).
+      await expect(
+        db.transaction().execute(async (trx) => {
+          await sql`SET LOCAL lock_timeout = '300ms'`.execute(trx);
+          await trx
+            .deleteFrom('equipment.downtime_record')
+            .where('equipment', '=', 'asm-01')
+            .where('start_time', '=', new Date(at('06:00')))
+            .execute();
+        }),
+      ).rejects.toThrow(/lock timeout/);
+    } finally {
+      release(); // also when a step above failed: the holder must not keep its transaction open
+    }
     await holder;
     expect((await write).statusCode).toBe(200);
     expect((await records('asm-01')).find((r) => r.id === id)?.codings).toHaveLength(1);

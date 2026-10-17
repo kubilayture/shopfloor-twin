@@ -53,7 +53,8 @@ import {
   type ShiftChange,
   type ShiftsSources,
 } from './modules/shifts/index.ts';
-import { startDatabase } from './testing.ts';
+import { timed } from '@shopfloor/test-kit/timing';
+import { backendPid, blockedBy, startDatabase } from './testing.ts';
 
 const T0 = Date.parse('2026-10-17T10:00:00.000Z');
 /** Monday 2026-10-12 06:00 local: shift A (03:00–11:00Z) is running. */
@@ -641,8 +642,8 @@ describe('operator activity and operation sign-off (#177)', () => {
     };
     const work = await h.orders.startWork('D-1', 'OP40', { activity: null }, omar);
     const id = work.activities[0]?.id ?? 0;
-    let closing: () => void = () => undefined;
-    const closed = new Promise<void>((resolve) => {
+    let closing: (pid: number) => void = () => undefined;
+    const closed = new Promise<number>((resolve) => {
       closing = resolve;
     });
     let go: () => void = () => undefined;
@@ -659,15 +660,19 @@ describe('operator activity and operation sign-off (#177)', () => {
         })
         .where('id', '=', id)
         .execute();
-      closing();
+      closing(await backendPid(trx));
       await proceed;
     });
-    await closed;
+    const crewEndPid = await closed;
     const pause = h.orders
       .pauseWork('D-1', 'OP40', { activity: id, reason: 'break' }, omar)
       .catch((e: unknown) => e);
-    await new Promise((r) => setTimeout(r, 200));
-    go();
+    try {
+      // Until the write waits for the crew end's lock, not a fixed 200 ms (#212).
+      await blockedBy(h.db, crewEndPid, 'the pause waiting for the crew end');
+    } finally {
+      go(); // also when the wait failed: the crew end must not keep its transaction open
+    }
     await crewEnd;
     expect(await pause).toMatchObject({ type: PROBLEM_TYPES.operationStale });
     const [kept] = await h.orders.activities({ orderId: 'D-1', operation: 'OP40' });
@@ -859,6 +864,9 @@ describe('the terminal view after a change (#190 re-review)', () => {
   });
 
   it('pushes the counts of a change within a pace with terminalMs > 0, also after the last cycle', async () => {
+    const PACE_MS = 2_000;
+    /** Every paced delta, as the server computed it: when it started, and what it read (#212). */
+    const cellDeltas: { topic: string; at: number; delta: ServerMessage }[] = [];
     const h = await harness('memo');
     await h.shifts.tick();
     await started(h, 'M-1');
@@ -866,7 +874,12 @@ describe('the terminal view after a change (#190 re-review)', () => {
       ready: () => Promise.resolve(true),
       identity: h.identity,
       auth: true,
-      push: { heartbeatMs: 3_600_000, clockMs: 3_600_000, terminalMs: 2_000 },
+      push: {
+        heartbeatMs: 3_600_000,
+        clockMs: 3_600_000,
+        terminalMs: PACE_MS,
+        onPacedDelta: (topic, at, delta) => cellDeltas.push({ topic, at, delta }),
+      },
     });
     cleanups.push(() => http.app.close());
     const none = () => () => undefined;
@@ -911,18 +924,134 @@ describe('the terminal view after a change (#190 re-review)', () => {
       'view' in m &&
       m.topic === 'terminal:cell-m1' &&
       m.view.orders[0]?.operations[0]?.counts.scrap === 1;
-    // Cell M1's view first; a pace later Line A1's, which keeps the order's execution in the memo.
+    const cellM1At = () =>
+      sent.flatMap((m, i) => ('view' in m && m.topic === 'terminal:cell-m1' ? [i] : [])).length;
+    // Cell M1's view first. Then everything of the order's end but the execution module's
+    // reading of it: the scrap cycle, the job completed and the CNC idle are stored, and the
+    // orders module has taken them in. Whatever that changes for Cell M1 is pushed now, so its
+    // pace is over before the scrap arrives (#212 review): the scrap must not wait out a pace
+    // that an earlier change started.
     subscribe('terminal:cell-m1');
-    await until(() => sent.some((m) => m.type === 'snapshot'), 5_000);
-    await new Promise((r) => setTimeout(r, 2_100));
+    await until(() => sent.some((m) => m.type === 'snapshot'), 30_000);
+    await send(h, [
+      h.line.cycle('cnc-01', 1, 'scrap', 'DIMENSIONAL'),
+      h.line.job('cnc-01', 'completed', 'M-1'),
+      h.line.state('cnc-01', 'Idle', 'NO-ORDER'),
+    ]);
+    for (let round = 0; round < 2; round++) await h.orders.tick();
+    while ((await h.orders.postNow()) > 0) {
+      // until nothing is pending
+    }
+    // Quiet for more than a pace: no Cell M1 message for 2.1 s.
+    for (let seen = -1; seen !== cellM1At();) {
+      seen = cellM1At();
+      await new Promise((r) => setTimeout(r, 2_100));
+    }
+    // Line A1's view, which keeps the order's execution (still without the scrap) in the memo.
     subscribe('terminal:line-a1');
-    await until(() => sent.filter((m) => m.type === 'snapshot').length === 2, 5_000);
+    await until(() => sent.filter((m) => m.type === 'snapshot').length === 2, 30_000);
     expect(sent.some(scrapAtCell)).toBe(false);
-    // The order's last cycle (a scrap at OP10), inside Line A1's window: Cell M1 is due at once
-    // and must not read the kept execution. Nothing changes afterwards.
+    // The execution module reads the last cycle (a scrap at OP10), inside Line A1's window, and
+    // reports its change (which drops the memo). From then on Cell M1 must not read the kept
+    // execution: every Cell M1 view computed after the change has the scrap. Nothing changes
+    // afterwards.
+    let changedAt: number | undefined;
+    const stop = h.execution.onChange(() => {
+      changedAt ??= Date.now();
+    });
+    const { maxLagMs } = await timed(async () => {
+      await settle(h);
+      await until(() => sent.some(scrapAtCell), 30_000);
+    });
+    stop();
+    if (changedAt === undefined) throw new Error('the execution module reported no change');
+    const changed = changedAt;
+    const cell = cellDeltas.filter((d) => d.topic === 'terminal:cell-m1');
+    const after = cell.filter((d) => d.at > changed);
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.filter((d) => !scrapAtCell(d.delta)).map((d) => d.at - changed)).toEqual([]);
+    // Within 1.5 s of when Cell M1 could first push after the change (the change itself, or a
+    // pace after a delta that an earlier change of the same round started), plus whatever a
+    // loaded machine delayed the scheduler meanwhile (#212).
+    const before = cell.filter((d) => d.at <= changed).at(-1)?.at;
+    const allowed = Math.max(changed, before === undefined ? 0 : before + PACE_MS);
+    expect((after[0]?.at ?? Infinity) - allowed).toBeLessThan(1_500 + maxLagMs);
+  }, 180_000);
+
+  it('drops the kept execution on every change of the execution module (no clock involved)', async () => {
+    // The wiring `execution.onChange → memoized.clear()` on its own (#190, review of PR #215): with
+    // a pace of an hour, the memo never expires and no delta is ever due, so only that clear can
+    // make a later snapshot read the execution again.
+    const h = await harness('memo_clear');
+    await h.shifts.tick();
+    await started(h, 'M-1');
+    let reads = 0;
+    const orderExecution = h.execution.orderExecution.bind(h.execution);
+    h.execution.orderExecution = (orderId) => {
+      reads++;
+      return orderExecution(orderId);
+    };
+    const http = await buildMesHttp({
+      ready: () => Promise.resolve(true),
+      identity: h.identity,
+      auth: true,
+      push: { heartbeatMs: 3_600_000, clockMs: 3_600_000, terminalMs: 3_600_000 },
+    });
+    cleanups.push(() => http.app.close());
+    const none = () => () => undefined;
+    await http.realtime.attach({
+      masterData: new MasterData(h.db),
+      equipment: {
+        currentStates: () => [],
+        currentState: () => undefined,
+        onChange: none,
+        watermark: () => undefined,
+        watermarks: () => [],
+      },
+      ingest: { onStored: none, telemetryMetrics: () => Promise.resolve([]) },
+      oee: { workCenters: () => Promise.resolve([]), onChange: none },
+      coding: {},
+      orders: h.orders,
+      execution: h.execution,
+      shifts: h.shifts,
+    } as unknown as ApiSources);
+    /** A new subscriber of `topic`: resolves with its snapshot. */
+    const snapshotOf = async (topic: string): Promise<ServerMessage> => {
+      const sent: ServerMessage[] = [];
+      const emitter = new EventEmitter();
+      const socket = Object.assign(emitter, {
+        bufferedAmount: 0,
+        send: (data: string) => {
+          sent.push(serverMessageSchema.parse(JSON.parse(data)));
+        },
+        ping: () => undefined,
+        close: () => undefined,
+        terminate: () => undefined,
+      }) as unknown as PushSocket;
+      http.realtime.push.connect(socket);
+      emitter.emit('message', Buffer.from(JSON.stringify({ type: 'subscribe', topic })), false);
+      for (;;) {
+        const snapshot = sent.find((m) => m.type === 'snapshot');
+        if (snapshot) return snapshot;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    const scrapOf = (m: ServerMessage) =>
+      'view' in m ? m.view.orders[0]?.operations[0]?.counts.scrap : undefined;
+
+    expect(scrapOf(await snapshotOf('terminal:cell-m1'))).toBe(0);
+    await snapshotOf('terminal:line-a1');
+    const kept = reads;
+    expect(kept).toBeGreaterThan(0);
+    // Without a change, a new subscriber's snapshot comes from the memo.
+    expect(scrapOf(await snapshotOf('terminal:cell-m1'))).toBe(0);
+    expect(reads).toBe(kept);
+    // The order's last cycle, a scrap: the execution module changes, the memo is dropped, and the
+    // next snapshot reads the execution again and shows the scrap.
     await finished(h, 'M-1', 1);
-    await until(() => sent.some(scrapAtCell), 1_500);
-  }, 30_000);
+    expect(scrapOf(await snapshotOf('terminal:cell-m1'))).toBe(1);
+    expect(reads).toBeGreaterThan(kept);
+  });
 });
 
 describe('the terminal API and push (#177)', () => {
@@ -1055,7 +1184,7 @@ describe('the terminal API and push (#177)', () => {
     subscribe('terminal:nowhere');
     subscribe('terminal:line-a1');
     const until = async (check: () => boolean) => {
-      for (let deadline = Date.now() + 5_000; !check();) {
+      for (let deadline = Date.now() + 60_000; !check();) {
         if (Date.now() > deadline) throw new Error('timed out');
         await new Promise((r) => setTimeout(r, 20));
       }
@@ -1154,7 +1283,7 @@ describe('the terminal API and push (#177)', () => {
     const out = await call(olga, 'DELETE', '/session', {});
     expect(out.statusCode).toBe(200);
     await until(() => h.crewChanges.some((c) => c.event === 'ended'));
-    for (let deadline = Date.now() + 5_000; ;) {
+    for (let deadline = Date.now() + 60_000; ;) {
       const open = await h.orders.activities({ orderId: 'C-1', operation: 'OP40', open: true });
       if (open.length === 0) break;
       if (Date.now() > deadline) throw new Error('activity still open');

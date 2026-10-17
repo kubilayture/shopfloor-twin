@@ -1,4 +1,4 @@
-import { rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { OPCUACertificateManager } from 'node-opcua';
@@ -18,13 +18,15 @@ import { OpcuaCollector } from './collector.ts';
  * at the cycle's start (ADR-0033), not the one at its end.
  */
 
-const PORTS = { opcuaOffset: 3800, modbusPort: 8820, controlPort: 8600 };
+// The simulator's ports are chosen at runtime by `startSimulator` (#212).
 const START = '2026-10-12T13:40:00+03:00';
 const SHIFT_CHANGE = Date.parse('2026-10-12T14:00:00+03:00');
 const UNTIL = Date.parse('2026-10-12T14:06:00+03:00');
 const ASM = OPCUA_MACHINES.find((m) => m.id === 'asm-01');
 
-let simulator: RunningSimulator;
+let simulator: RunningSimulator | undefined;
+// This run's own client certificate store: a fixed name would be wiped by a parallel run (#212).
+const pki = mkdtempSync(join(tmpdir(), 'shopfloor-twin-gw-client-pki-operator-'));
 let collector: OpcuaCollector;
 const published: UnsPublication[] = [];
 
@@ -36,9 +38,7 @@ beforeAll(async () => {
   if (!ASM) throw new Error('no asm-01');
   const path = equipmentPaths(loaded.config).get(ASM.id);
   if (!path) throw new Error('no path for asm-01');
-  simulator = await startSimulator(PORTS, { SIM_START: START });
-  const pki = join(tmpdir(), 'shopfloor-twin-gw-client-pki-operator');
-  rmSync(pki, { recursive: true, force: true });
+  simulator = await startSimulator(undefined, { SIM_START: START });
   const certificateManager = new OPCUACertificateManager({
     rootFolder: pki,
     automaticallyAcceptUnknownCertificate: true,
@@ -48,7 +48,7 @@ beforeAll(async () => {
     machine: ASM,
     path,
     host: 'localhost',
-    portOffset: PORTS.opcuaOffset,
+    portOffset: simulator.opcuaOffset,
     publisher: {
       publish: (publication) => {
         published.push(publication);
@@ -61,18 +61,31 @@ beforeAll(async () => {
   });
   await collector.prepare();
   await collector.start();
-}, 120_000);
+}, 180_000);
 
+// Also after a failed beforeAll: whatever was started is stopped (#212).
 afterAll(async () => {
-  await collector.stop();
-  await simulator.stop();
+  await (collector as OpcuaCollector | undefined)?.stop();
+  await simulator?.stop();
+  rmSync(pki, { recursive: true, force: true });
 });
+
+/** ASM-01's device facts in the simulator's stream, and those the collector published. */
+const asmFacts = (sim: RunningSimulator): number =>
+  sim.events.filter(
+    (e) =>
+      e.machineId === 'asm-01' &&
+      (e.type === 'state' || e.type === 'cycle-complete' || e.type === 'alarm'),
+  ).length;
+const asmPublished = (): number =>
+  published.filter((p) => p.message.source.id === 'asm-01' && p.message.scope === 'device').length;
 
 describe('OPC UA collector: operator at the cycle start across a shift change (#197)', () => {
   it('publishes the operator at the start of a cycle that completes after the operator changed', async () => {
+    if (!simulator) throw new Error('no simulator');
     await simulator.post('/api/v1/resume');
-    // 60×: 26 simulated minutes, to 14:06.
-    for (let deadline = Date.now() + 60_000; Date.now() < deadline;) {
+    // 60×: 26 simulated minutes, to 14:06; a generous deadline for a loaded machine (#212).
+    for (let deadline = Date.now() + 120_000; Date.now() < deadline;) {
       const last = simulator.events.at(-1);
       if (last && Date.parse(last.at) >= UNTIL) break;
       await wait(250);
@@ -82,7 +95,18 @@ describe('OPC UA collector: operator at the cycle start across a shift change (#
       Date.parse(simulator.events.at(-1)?.at ?? ''),
       'the simulator reached 14:06 within the deadline',
     ).toBeGreaterThanOrEqual(UNTIL);
-    await wait(1_500);
+    // Paused: every ASM-01 fact published, seen twice a second apart (count-based, #212). Gives
+    // up quietly after a minute, so the assertions below show what is missing.
+    const sim = simulator;
+    for (let check = 0, deadline = Date.now() + 60_000; check < 2 && Date.now() < deadline;) {
+      if (asmPublished() === asmFacts(sim)) {
+        check++;
+        await wait(1_000);
+      } else {
+        check = 0;
+        await wait(100);
+      }
+    }
 
     // From the simulator's own events: ASM-01's operator events, and each part's first
     // consumption there.
@@ -130,5 +154,5 @@ describe('OPC UA collector: operator at the cycle start across a shift change (#
       // Shift A's operator, when its staffing event is in the stream (it may be history).
       if (before) expect(message?.value.operator).toBe(before.operator);
     }
-  }, 120_000);
+  }, 300_000);
 });

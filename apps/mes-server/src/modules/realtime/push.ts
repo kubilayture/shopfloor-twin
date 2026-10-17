@@ -129,6 +129,16 @@ export interface PushOptions {
   readonly requestsPerSecond?: number;
   readonly requestBurst?: number;
   readonly registry?: Registry;
+  /**
+   * Called for every paced delta sent, with its topic, the wall time its computation started
+   * (the time the pace is measured from) and the message. For tests: they check the pace and
+   * what each computation read on the server's own clock, not on when a loaded machine happened
+   * to deliver the messages (#212). An error it throws is ignored: an observer never changes
+   * what is pushed.
+   *
+   * @internal
+   */
+  readonly onPacedDelta?: (topic: string, wallMs: number, delta: ServerMessage) => void;
 }
 
 interface Client {
@@ -218,7 +228,8 @@ const message = (value: ServerMessage): string => JSON.stringify(value);
  * the older of the same key, so a slow client costs bounded memory and sees the latest values.
  */
 export class PushHub {
-  readonly #options: Required<Omit<PushOptions, 'registry'>>;
+  readonly #options: Required<Omit<PushOptions, 'registry' | 'onPacedDelta'>>;
+  readonly #onPacedDelta: PushOptions['onPacedDelta'];
   readonly #clients = new Set<Client>();
   readonly #lastState = new Map<string, string>();
   readonly #metrics: ReturnType<typeof createMetrics> | undefined;
@@ -245,6 +256,7 @@ export class PushHub {
       requestsPerSecond: options.requestsPerSecond ?? 10,
       requestBurst: options.requestBurst ?? 20,
     };
+    this.#onPacedDelta = options.onPacedDelta;
     this.#metrics = options.registry && createMetrics(options.registry, () => this.#clients.size);
     this.#timers.push(
       setInterval(() => {
@@ -867,7 +879,14 @@ export class PushHub {
             }
           }
           topic.awaiting.clear();
-          if (delta !== undefined) topic.deltaAt = now;
+          if (delta !== undefined) {
+            topic.deltaAt = now;
+            try {
+              this.#onPacedDelta?.(topic.name, now, update);
+            } catch {
+              // An observer's error is not the push's.
+            }
+          }
           if (deltaDue || json === topic.last) topic.last = json;
           // A change held back for the pace goes out with the next computation.
           else topic.dirty = true;

@@ -1,4 +1,4 @@
-import { rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -33,23 +33,46 @@ import type { Publisher, UnsPublication } from '../publisher.ts';
 import { startSimulator, type RunningSimulator, type SimEvent } from '../testing.ts';
 import { OpcuaCollector, readAlarmSnapshot } from './collector.ts';
 
-// Clear of the Compose stack (TimescaleDB on 5442, broker on 1883, simulator on 4800–5020).
-const PORTS = { opcuaOffset: 3100, modbusPort: 8120, controlPort: 7900 };
+// The simulator's ports are chosen at runtime by `startSimulator` (#212): clear of the Compose
+// stack and of every other suite running at the same time.
 let simulator: RunningSimulator;
 let config: PlantConfig;
 const published: UnsPublication[] = [];
 const incidents: IncidentInput[] = [];
 const collectors: OpcuaCollector[] = [];
 const baselines = new Map<string, number>();
+// The client certificate store of this run only: a fixed name would be wiped by a parallel run.
+const pki = mkdtempSync(join(tmpdir(), 'shopfloor-twin-gw-client-pki-'));
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function until(condition: () => boolean, timeoutMs: number): Promise<void> {
+/** Polls a condition with a generous deadline (#212); the error names what it waited for. */
+async function until(what: string, condition: () => boolean, timeoutMs = 60_000): Promise<void> {
   for (const deadline = Date.now() + timeoutMs; !condition();) {
-    if (Date.now() > deadline) throw new Error('timed out waiting');
+    if (Date.now() > deadline) throw new Error(`timed out after ${String(timeoutMs)} ms: ${what}`);
     await wait(100);
   }
 }
+
+/**
+ * Waits until `caughtUp` holds twice, a second apart: the collectors and the event stream agree.
+ * Gives up quietly after the deadline, so the exact assertions that follow show the difference.
+ */
+async function settled(caughtUp: () => boolean, timeoutMs = 60_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (let check = 0; check < 2 && Date.now() < deadline;) {
+    if (caughtUp()) {
+      check++;
+      await wait(1_000);
+    } else {
+      check = 0;
+      await wait(100);
+    }
+  }
+}
+
+const disconnects = (machineId: string): number =>
+  incidents.filter((i) => i.equipment === machineId && i.type === 'disconnected').length;
 
 const snapshotsOf = (machineId: string): number =>
   published.filter(
@@ -129,11 +152,9 @@ beforeAll(async () => {
   const loaded = await loadPlantConfig(resolve(import.meta.dirname, '../../../../config/plant'));
   if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
   config = loaded.config;
-  simulator = await startSimulator(PORTS);
+  simulator = await startSimulator();
   const paths = equipmentPaths(config);
   const sequences = new TopicSequences(1_800_000_000);
-  const pki = join(tmpdir(), 'shopfloor-twin-gw-client-pki');
-  rmSync(pki, { recursive: true, force: true });
   const certificateManager = new OPCUACertificateManager({
     rootFolder: pki,
     automaticallyAcceptUnknownCertificate: true,
@@ -147,7 +168,7 @@ beforeAll(async () => {
         machine,
         path,
         host: 'localhost',
-        portOffset: PORTS.opcuaOffset,
+        portOffset: simulator.opcuaOffset,
         publisher,
         sequences,
         incidents: { report: (incident) => incidents.push(incident) },
@@ -168,19 +189,29 @@ beforeAll(async () => {
   // connected and are history to the collectors; device sequence k + baseline is stream fact k.
   for (const collector of collectors) baselines.set(collector.machineId, collector.baseline);
   expect(simulator.events).toEqual([]);
-}, 120_000);
+}, 180_000);
 
 afterAll(async () => {
   await Promise.all(collectors.map((c) => c.stop()));
-  await simulator.stop();
+  // Possibly undefined after a failed beforeAll; the process is still stopped then (#212).
+  await (simulator as RunningSimulator | undefined)?.stop();
+  rmSync(pki, { recursive: true, force: true });
 });
+
+/** Every fact the simulator emitted for every machine has been published (count-based, #212). */
+const allPublished = (): boolean =>
+  OPCUA_MACHINES.every(
+    (machine) => deviceMessages(machine.id).length === deviceFacts(machine.id).length,
+  );
 
 describe('OPC UA collector (#76)', () => {
   it('publishes every state change, cycle and alarm of all five machines as valid UNS messages, at 60×', async () => {
     await simulator.post('/api/v1/resume');
     await wait(20_000); // 20 simulated minutes
+    const emitted = () => OPCUA_MACHINES.reduce((n, m) => n + deviceFacts(m.id).length, 0);
+    await until('more than 30 facts', () => emitted() > 30);
     await simulator.post('/api/v1/pause');
-    await wait(1_500);
+    await settled(allPublished);
 
     for (const publication of published) {
       const parsed = parseUnsMessage(JSON.parse(JSON.stringify(publication.message)));
@@ -251,7 +282,7 @@ describe('OPC UA collector (#76)', () => {
     // CNC blanks at least; ASM-01's components once a part has reached it.
     expect(traced).toBeGreaterThan(0);
     expect(incidents.filter((i) => i.type === 'sequence-gap')).toEqual([]);
-  }, 120_000);
+  }, 240_000);
 
   it('samples telemetry and publishes a snapshot of every machine on connect', () => {
     const topics = new Set(published.map((p) => p.topic));
@@ -290,21 +321,30 @@ describe('OPC UA collector (#76)', () => {
     const collector = collectors.find((c) => c.machineId === 'cnc-01');
     if (!collector) throw new Error('no cnc-01 collector');
     const snapshotsBefore = snapshotsOf('cnc-01');
+    const disconnectsBefore = disconnects('cnc-01');
     await simulator.post('/api/v1/resume');
-    // Longer than the 5 s session timeout: the session is gone, a new one must be created.
+    // Longer than the 5 s session timeout: the session is gone, a new one must be created. The
+    // outage lasts 9 s from the moment the collector noticed it, however late that was (#212).
     await simulator.post('/api/v1/faults/opcua/cnc-01', { offline: true });
+    await until('the long outage noticed', () => disconnects('cnc-01') === disconnectsBefore + 1);
     await wait(9_000);
     await simulator.post('/api/v1/faults/opcua/cnc-01', { offline: false });
-    await until(() => collector.connected, 20_000);
+    await until('reconnected after the long outage', () => collector.connected);
     await wait(3_000);
     // A short one: the session survives and the server republishes what it kept.
     await simulator.post('/api/v1/faults/opcua/cnc-01', { offline: true });
+    await until('the short outage noticed', () => disconnects('cnc-01') === disconnectsBefore + 2);
     await wait(1_500);
     await simulator.post('/api/v1/faults/opcua/cnc-01', { offline: false });
-    await until(() => collector.connected, 20_000);
+    await until('reconnected after the short outage', () => collector.connected);
     await wait(3_000);
     await simulator.post('/api/v1/pause');
-    await wait(3_000);
+    // Every fact of cnc-01 published or written off, seen twice a second apart (count-based).
+    const accounted = () =>
+      deviceMessages('cnc-01').length +
+        collector.lost.reduce((n, r) => n + r.to - r.from + 1, 0) ===
+      deviceFacts('cnc-01').length;
+    await settled(accounted);
 
     const kinds = incidents.filter((i) => i.equipment === 'cnc-01').map((i) => i.type);
     expect(kinds.filter((k) => k === 'disconnected')).toHaveLength(2);
@@ -322,7 +362,7 @@ describe('OPC UA collector (#76)', () => {
       .filter((i) => i.equipment === 'cnc-01' && i.type === 'sequence-gap')
       .reduce((sum, i) => sum + (i.lost ?? 0), 0);
     expect(reportedLost).toBe(lost.length);
-  }, 180_000);
+  }, 300_000);
 
   it('publishes an alarm snapshot on every resync, consistent with the facts up to its asOfSeq (#141)', () => {
     for (const machine of OPCUA_MACHINES) {

@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { timed } from '../test/timing.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sessionKey } from '../auth/auth.tsx';
 import { NEW_PASSWORD, PASSWORD, fakeMes } from '../test/fake-mes.ts';
@@ -147,22 +148,32 @@ describe('login (#170)', () => {
   });
 
   it('warns before the session ends and logs out at its end (idle timeout here)', async () => {
-    const ending = {
-      ...sessionOf(['supervisor']),
-      expiresAt: new Date(Date.now() + 1_500).toISOString(),
-    };
-    const mes = fakeMes({ signedIn: true, session: () => ending });
-    vi.stubGlobal('fetch', mes.fetch);
-    const app = await renderApp('/', { session: ending });
-    await app.open();
-    const warning = await screen.findByTestId('idle-warning');
-    expect(warning.dataset.absolute).toBe('true');
-    await waitFor(
-      () => {
-        expect(app.history.location.pathname).toBe('/login');
-      },
-      { timeout: 4_000 },
-    );
+    // At its end: within about 3 s of a session that ends after 1.5 s, plus whatever a loaded
+    // machine delayed the scheduler meanwhile; a long deadline only to wait (#212).
+    const {
+      value: mes,
+      elapsedMs,
+      maxLagMs,
+    } = await timed(async () => {
+      const ending = {
+        ...sessionOf(['supervisor']),
+        expiresAt: new Date(Date.now() + 1_500).toISOString(),
+      };
+      const mes = fakeMes({ signedIn: true, session: () => ending });
+      vi.stubGlobal('fetch', mes.fetch);
+      const rendered = await renderApp('/', { session: ending });
+      await rendered.open();
+      const warning = await screen.findByTestId('idle-warning');
+      expect(warning.dataset.absolute).toBe('true');
+      await waitFor(
+        () => {
+          expect(rendered.history.location.pathname).toBe('/login');
+        },
+        { timeout: 15_000 },
+      );
+      return mes;
+    });
+    expect(elapsedMs).toBeLessThan(3_000 + maxLagMs);
     expect(screen.getByTestId('login-reason').dataset.reason).toBe('idle');
     expect(mes.calls.some((c) => c.method === 'DELETE' && c.path === '/api/v1/session')).toBe(true);
   });

@@ -3,6 +3,7 @@ import { checkAlarms, plantAlarms } from './alarms.ts';
 import { checkReasons, plantCauses } from './reasons.ts';
 import { checkScrap } from './scrap.ts';
 import type { PlantConfig } from './schema.ts';
+import { checkPacking, checkQuality } from './trace.ts';
 
 export interface ConfigIssue {
   file: string;
@@ -294,6 +295,20 @@ export function crossCheck(config: PlantConfig): ConfigIssue[] {
   );
   for (const issue of checkAlarms(config.alarms, workCenters, plantAlarms(config))) {
     report('alarms', issue.path, issue.message);
+  }
+
+  // Packing and SPC characteristics (#208, ADR-0032, ADR-0034).
+  const productIdList = config.products.products.map((product) => product.id);
+  for (const issue of checkPacking(config.packing, operations, productIdList)) {
+    report('packing', issue.path, issue.message);
+  }
+  const equipmentOperation = new Map(allEquipment.map((item) => [item.id, item.operation]));
+  for (const issue of checkQuality(
+    config.quality,
+    config.process.leakTest.operation,
+    equipmentOperation,
+  )) {
+    report('quality', issue.path, issue.message);
   }
 
   return issues;

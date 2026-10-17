@@ -7,12 +7,15 @@ import {
   confirmationKey,
   statusKey,
   confirmationListSchema,
+  erpLotViewSchema,
   erpOrderViewSchema,
   erpProblemSchema,
   feedEntrySchema,
   lotListSchema,
   messageReceiptSchema,
   orderFeedSchema,
+  qualityNotificationKey,
+  qualityNotificationListSchema,
   statusMessageListSchema,
 } from '@shopfloor/contracts/erp-api';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -176,12 +179,31 @@ describe('ERP mock API', () => {
     }
   });
 
-  it('serves the lots', async () => {
+  it("serves the lots with the feed's identity", async () => {
     const { base } = await start(storePath());
     const lots = lotListSchema.parse(
       await (await fetch(`${base}/api/v1/lots`, { headers: auth })).json(),
     );
     expect(lots.lots).toEqual(dataset.lots);
+    const feed = orderFeedSchema.parse(
+      await (await fetch(`${base}/api/v1/orders`, { headers: auth })).json(),
+    );
+    expect(lots.feedId).toBe(feed.feedId);
+  });
+
+  it('changes the feed identity when only the lots change', () => {
+    const store = new ErpStore(':memory:');
+    cleanups.push(() => {
+      store.close();
+    });
+    const before = new Erp(dataset, store).feedId;
+    const fewer = new Erp({ ...dataset, lots: dataset.lots.slice(1) }, store).feedId;
+    const smaller = new Erp(
+      { ...dataset, lots: dataset.lots.map((lot, i) => (i === 0 ? { ...lot, quantity: 1 } : lot)) },
+      store,
+    ).feedId;
+    expect(new Set([before, fewer, smaller]).size).toBe(3);
+    expect(new Erp(dataset, store).feedId).toBe(before);
   });
 
   it('takes a confirmation once: 201, then 200 with the same receipt, 409 for another body', async () => {
@@ -568,6 +590,288 @@ describe('ERP mock API', () => {
     });
     expect((await problem(response, 500)).detail).toBe('internal error');
     expect(logs.some((line) => line.includes('"msg":"request failed"'))).toBe(true);
+  });
+});
+
+const notification = (
+  transition: 'opened' | 'released' | 'rejected',
+  extra: Record<string, unknown> = {},
+) => ({
+  holdId: 'H-1',
+  transition,
+  transitionNo: transition === 'opened' ? 1 : 2,
+  subject: { kind: 'lot', id: 'SK1-2610-01' },
+  reason: transition === 'opened' ? 'SUSPECT-LOT' : 'USE-AS-IS',
+  user: 'quality.anna',
+  occurredAt: '2026-10-12T10:15:00+03:00',
+  scope: { units: 42, cartons: 2, orders: 1 },
+  scopeAsOf: '2026-10-12T10:14:30+03:00',
+  scopeFinal: false,
+  ...extra,
+});
+
+type Notification = ReturnType<typeof notification>;
+
+const keyOf = (body: Notification) =>
+  qualityNotificationKey(body.holdId, body.transition, body.transitionNo);
+
+const notify = (base: string, body: Notification, key = keyOf(body)) =>
+  post(base, '/api/v1/quality-notifications', body, { 'idempotency-key': key });
+
+async function lotView(base: string, id: string) {
+  const response = await fetch(`${base}/api/v1/lots/${id}`, { headers: auth });
+  expect(response.status).toBe(200);
+  return erpLotViewSchema.parse(await response.json());
+}
+
+describe('quality notifications and the lot view (Phase 8)', () => {
+  it('takes a notification once: 201, then 200 with the same receipt, 409 for another body, also after a restart', async () => {
+    const file = storePath();
+    const first = await start(file);
+    const opened = notification('opened');
+    const created = await notify(first.base, opened);
+    expect(created.status).toBe(201);
+    const receipt = messageReceiptSchema.parse(await created.json());
+    expect(receipt).toEqual({
+      idempotencyKey: 'H-1~opened~1',
+      kind: 'quality-notification',
+      holdId: 'H-1',
+      receivedSeq: 1,
+      receivedAt: '2026-10-16T08:00:00.000Z',
+    });
+    // Keys in another order and the times in UTC: the same body.
+    const sameInUtc = Object.fromEntries(
+      Object.entries({
+        ...opened,
+        occurredAt: '2026-10-12T07:15:00Z',
+        scopeAsOf: '2026-10-12T07:14:30.000Z',
+      }).reverse(),
+    ) as Notification;
+    const replay = await notify(first.base, sameInUtc);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(receipt);
+    // The scope counts grew: another body under the key of one transition.
+    const grown = notification('opened', { scope: { units: 43, cartons: 2, orders: 1 } });
+    const conflict = await problem(await notify(first.base, grown), 409);
+    expect(conflict.type).toBe(ERP_PROBLEM_TYPES.idempotencyConflict);
+    await first.stop();
+
+    const second = await start(file);
+    const again = await notify(second.base, opened);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual(receipt);
+    const list = qualityNotificationListSchema.parse(
+      await (await fetch(`${second.base}/api/v1/quality-notifications`, { headers: auth })).json(),
+    );
+    expect(list.notifications).toEqual([
+      {
+        receipt,
+        body: {
+          ...opened,
+          occurredAt: '2026-10-12T07:15:00.000Z',
+          scopeAsOf: '2026-10-12T07:14:30.000Z',
+        },
+      },
+    ]);
+    const metrics = await (await fetch(`${second.base}/metrics`)).text();
+    expect(metrics).toContain('erp_messages_stored{kind="quality-notification"} 1');
+    expect(metrics).toContain(
+      'erp_message_posts_total{kind="quality-notification",outcome="replayed"} 1',
+    );
+  });
+
+  it('takes a notification only under the key built from its body', async () => {
+    const { base } = await start(storePath());
+    const opened = notification('opened');
+    for (const key of ['H-1~opened~2', 'H-2~opened~1', 'H-1~released~1', 'ORD-1001~OP10~conf~1']) {
+      const refused = await problem(await notify(base, opened, key), 422);
+      expect(refused.type).toBe(ERP_PROBLEM_TYPES.keyMismatch);
+      expect(refused.detail).toContain('expected H-1~opened~1');
+    }
+    expect((await notify(base, opened)).status).toBe(201);
+    // A notification's key on a status message, and a status key here: neither is that message's key.
+    const onStatus = await post(base, '/api/v1/order-status', status('accepted'), {
+      'idempotency-key': 'H-1~opened~1',
+    });
+    expect((await problem(onStatus, 422)).type).toBe(ERP_PROBLEM_TYPES.keyMismatch);
+    const metrics = await (await fetch(`${base}/metrics`)).text();
+    expect(metrics).toContain(
+      'erp_message_posts_total{kind="quality-notification",outcome="key-mismatch"} 4',
+    );
+  });
+
+  it('refuses invalid notifications, a comment among them, and subjects the ERP does not hold', async () => {
+    const { base } = await start(storePath());
+    const invalid = async (body: Record<string, unknown>, key = 'H-1~opened~1') =>
+      problem(
+        await post(base, '/api/v1/quality-notifications', body, { 'idempotency-key': key }),
+        422,
+      );
+    // `opened` is transition 1, a decision 2 and above.
+    expect((await invalid(notification('opened', { transitionNo: 2 }))).detail).toContain(
+      'transitionNo',
+    );
+    await invalid(notification('released', { transitionNo: 1 }), 'H-1~released~1');
+    // A comment is not notified; no other field is taken either.
+    await invalid(notification('opened', { transition: 'commented' }), 'H-1~commented~1');
+    await invalid({ ...notification('opened'), extra: 1 });
+    await invalid(notification('opened', { holdId: 'H~1' }), 'H~1~opened~1');
+    await invalid(notification('opened', { subject: { kind: 'pallet', id: 'P1' } }));
+    await invalid(notification('opened', { user: 'Not A User' }));
+    await invalid(notification('opened', { scope: { units: -1, cartons: 0, orders: 0 } }));
+    await invalid(notification('opened', { scopeAsOf: '2026-10-12T10:14:30' }));
+    expect(
+      (
+        await problem(
+          await post(base, '/api/v1/quality-notifications', notification('opened')),
+          400,
+        )
+      ).detail,
+    ).toBe('the Idempotency-Key header is required');
+
+    // A lot not in the lot list, an order not in the feed: refused, the key stays unused.
+    for (const subject of [
+      { kind: 'lot', id: 'SK1-9999-99' },
+      { kind: 'order', id: 'ORD-9999' },
+    ]) {
+      const refused = await problem(await notify(base, notification('opened', { subject })), 422);
+      expect(refused.type).toBe(ERP_PROBLEM_TYPES.unknownSubject);
+    }
+    expect((await notify(base, notification('opened'))).status).toBe(201);
+    // Serials and cartons are the MES's own: not checked. An order of the feed is known.
+    for (const [holdId, subject] of [
+      ['H-2', { kind: 'serial', id: 'VB-100-000123' }],
+      ['H-3', { kind: 'carton', id: 'ORD-1001-C07' }],
+      ['H-4', { kind: 'order', id: 'ORD-1001' }],
+    ] as const) {
+      expect((await notify(base, notification('opened', { holdId, subject }))).status).toBe(201);
+    }
+    const metrics = await (await fetch(`${base}/metrics`)).text();
+    expect(metrics).toContain(
+      'erp_message_posts_total{kind="quality-notification",outcome="unknown-subject"} 2',
+    );
+    expect(metrics).toContain(
+      'erp_message_posts_total{kind="quality-notification",outcome="created"} 4',
+    );
+  });
+
+  it('takes one decision per hold, only after its opening, on the same subject', async () => {
+    const { base } = await start(storePath());
+    const released = notification('released');
+    const early = await problem(await notify(base, released), 422);
+    expect(early.type).toBe(ERP_PROBLEM_TYPES.holdSequence);
+    expect((await notify(base, notification('opened'))).status).toBe(201);
+    const elsewhere = notification('released', { subject: { kind: 'lot', id: 'SK2-2610-01' } });
+    const moved = await problem(await notify(base, elsewhere), 422);
+    expect(moved.type).toBe(ERP_PROBLEM_TYPES.holdSequence);
+    expect(moved.detail).toContain('was opened on lot SK1-2610-01');
+    expect((await notify(base, released)).status).toBe(201);
+    expect((await notify(base, released)).status).toBe(200);
+    // A second decision: under its own key (another transition or number) it is refused.
+    for (const second of [
+      notification('rejected'),
+      notification('rejected', { transitionNo: 3 }),
+      notification('released', { transitionNo: 3 }),
+    ]) {
+      const refused = await problem(await notify(base, second), 409);
+      expect(refused.type).toBe(ERP_PROBLEM_TYPES.holdDecided);
+    }
+    const list = qualityNotificationListSchema.parse(
+      await (
+        await fetch(`${base}/api/v1/quality-notifications?holdId=H-1`, { headers: auth })
+      ).json(),
+    );
+    expect(list.notifications.map((n) => n.receipt.idempotencyKey)).toEqual([
+      'H-1~opened~1',
+      'H-1~released~2',
+    ]);
+    const none = qualityNotificationListSchema.parse(
+      await (
+        await fetch(`${base}/api/v1/quality-notifications?holdId=H-9`, { headers: auth })
+      ).json(),
+    );
+    expect(none.notifications).toEqual([]);
+    await problem(
+      await fetch(`${base}/api/v1/quality-notifications?holdId=H~1`, { headers: auth }),
+      400,
+    );
+  });
+
+  it('serves a lot with the holds on it: blocked while one is open or rejected', async () => {
+    const { base } = await start(storePath());
+    const feed = orderFeedSchema.parse(
+      await (await fetch(`${base}/api/v1/orders`, { headers: auth })).json(),
+    );
+    const before = await lotView(base, 'SK1-2610-01');
+    expect(before).toEqual({
+      feedId: feed.feedId,
+      lot: { id: 'SK1-2610-01', material: 'SK-1', quantity: 1800 },
+      blocked: false,
+      holds: [],
+    });
+    await problem(await fetch(`${base}/api/v1/lots/NO-SUCH-LOT`, { headers: auth }), 404);
+    await problem(await fetch(`${base}/api/v1/lots/%E0%A4%A`, { headers: auth }), 404);
+
+    expect((await notify(base, notification('opened'))).status).toBe(201);
+    // A hold on a serial of that lot is not a hold on the lot.
+    const serial = notification('opened', {
+      holdId: 'H-2',
+      subject: { kind: 'serial', id: 'VB-100-000001' },
+    });
+    expect((await notify(base, serial)).status).toBe(201);
+    const open = await lotView(base, 'SK1-2610-01');
+    expect(open.blocked).toBe(true);
+    expect(open.holds).toEqual([
+      {
+        holdId: 'H-1',
+        state: 'open',
+        reason: 'SUSPECT-LOT',
+        openedBy: 'quality.anna',
+        openedAt: '2026-10-12T07:15:00.000Z',
+        decidedBy: null,
+        decidedAt: null,
+        scope: { units: 42, cartons: 2, orders: 1 },
+        scopeAsOf: '2026-10-12T07:14:30.000Z',
+        scopeFinal: false,
+        notifications: [1],
+      },
+    ]);
+
+    // Released: used as is, no longer blocked; the scope is the release's.
+    const released = notification('released', {
+      user: 'quality.bert',
+      occurredAt: '2026-10-12T12:00:00Z',
+      scope: { units: 45, cartons: 3, orders: 2 },
+      scopeAsOf: '2026-10-12T11:59:00Z',
+      scopeFinal: true,
+    });
+    expect((await notify(base, released)).status).toBe(201);
+    const after = await lotView(base, 'SK1-2610-01');
+    expect(after.blocked).toBe(false);
+    expect(after.holds[0]).toMatchObject({
+      state: 'released',
+      reason: 'USE-AS-IS',
+      openedBy: 'quality.anna',
+      decidedBy: 'quality.bert',
+      decidedAt: '2026-10-12T12:00:00.000Z',
+      scope: { units: 45, cartons: 3, orders: 2 },
+      scopeFinal: true,
+      notifications: [1, 3],
+    });
+
+    // A second hold, rejected: blocked again.
+    const second = (transition: 'opened' | 'rejected') =>
+      notification(transition, { holdId: 'H-5', reason: 'LEAK-RISK' });
+    expect((await notify(base, second('opened'))).status).toBe(201);
+    expect((await notify(base, second('rejected'))).status).toBe(201);
+    const rejected = await lotView(base, 'SK1-2610-01');
+    expect(rejected.blocked).toBe(true);
+    expect(rejected.holds.map((h) => [h.holdId, h.state])).toEqual([
+      ['H-1', 'released'],
+      ['H-5', 'rejected'],
+    ]);
+    // Other lots are untouched.
+    expect((await lotView(base, 'SK2-2610-01')).blocked).toBe(false);
   });
 });
 

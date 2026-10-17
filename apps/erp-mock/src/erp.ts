@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import {
   toErpOrder,
   type ConfirmationRequest,
+  type ErpHold,
+  type ErpLotView,
   type ErpMasterData,
   type ErpOrder,
   type ErpOrderView,
@@ -10,10 +12,41 @@ import {
   type OperationTotals,
   type OrderFeed,
   type ParsedErpOrderInput,
+  type QualityNotificationRequest,
   type StatusMessageRequest,
 } from '@shopfloor/contracts/erp-api';
 import type { Dataset } from './dataset.ts';
 import { canonicalJson, type ErpStore } from './store.ts';
+
+/** Why the ERP refuses a quality notification (ADR-0028 amendment); the key stays unused. */
+export interface NotificationRefusal {
+  readonly reason: 'unknown-subject' | 'hold-sequence' | 'hold-decided';
+  readonly detail: string;
+}
+
+/** Folds one hold's notifications, in the order received, into the ERP's view of it. */
+export function holdOf(
+  notifications: readonly { receivedSeq: number; body: QualityNotificationRequest }[],
+): ErpHold | undefined {
+  const opened = notifications.find((n) => n.body.transition === 'opened');
+  const latest = notifications.at(-1);
+  if (opened === undefined || latest === undefined) return undefined;
+  const decision = notifications.find((n) => n.body.transition !== 'opened');
+  const state = decision === undefined ? 'open' : decision.body.transition;
+  return {
+    holdId: opened.body.holdId,
+    state: state === 'opened' ? 'open' : state,
+    reason: latest.body.reason,
+    openedBy: opened.body.user,
+    openedAt: opened.body.occurredAt,
+    decidedBy: decision?.body.user ?? null,
+    decidedAt: decision?.body.occurredAt ?? null,
+    scope: latest.body.scope,
+    scopeAsOf: latest.body.scopeAsOf,
+    scopeFinal: latest.body.scopeFinal,
+    notifications: notifications.map((n) => n.receivedSeq),
+  };
+}
 
 export type AddOrderResult =
   | { readonly ok: true; readonly entry: FeedEntry }
@@ -35,6 +68,7 @@ const sum = (lines: Iterable<readonly [string, number]>): { key: string; quantit
 export class Erp {
   readonly #feed: FeedEntry[];
   readonly #lots: readonly Lot[];
+  readonly #lotById: ReadonlyMap<string, Lot>;
   readonly #master: ErpMasterData;
   readonly #store: ErpStore;
   /** The feed's identity (`OrderFeed.feedId`). */
@@ -52,6 +86,7 @@ export class Erp {
     }
     this.#feed = [...dataset.feed, ...added];
     this.#lots = dataset.lots;
+    this.#lotById = new Map(dataset.lots.map((lot) => [lot.id, lot]));
     this.#master = dataset.master;
     this.#store = store;
     // Orders added later only append, so they keep the feed's identity; a new dataset or a new
@@ -127,6 +162,71 @@ export class Erp {
       return `order ${body.orderNumber} revision ${String(body.revision)} has no operation ${body.operation}`;
     }
     return undefined;
+  }
+
+  /**
+   * Why a new quality notification can't be stored, or undefined: a lot or order subject the ERP
+   * doesn't hold, a decision on a hold whose `opened` it hasn't received (or received for another
+   * subject), a second decision on a hold.
+   */
+  notificationRefusal(body: QualityNotificationRequest): NotificationRefusal | undefined {
+    const { subject } = body;
+    if (subject.kind === 'lot' && !this.#lotById.has(subject.id)) {
+      return { reason: 'unknown-subject', detail: `lot ${subject.id} is not in the lot list` };
+    }
+    if (subject.kind === 'order' && this.revisions(subject.id).length === 0) {
+      return { reason: 'unknown-subject', detail: `order ${subject.id} is unknown` };
+    }
+    if (body.transition === 'opened') return undefined;
+    const stored = this.#store
+      .notifications(body.holdId)
+      .map((n) => n.body as QualityNotificationRequest);
+    const opened = stored.find((n) => n.transition === 'opened');
+    if (opened === undefined) {
+      return {
+        reason: 'hold-sequence',
+        detail: `hold ${body.holdId} is ${body.transition} but its opened notification was not received`,
+      };
+    }
+    if (opened.subject.kind !== subject.kind || opened.subject.id !== subject.id) {
+      return {
+        reason: 'hold-sequence',
+        detail: `hold ${body.holdId} was opened on ${opened.subject.kind} ${opened.subject.id}, not ${subject.kind} ${subject.id}`,
+      };
+    }
+    const decided = stored.find((n) => n.transition !== 'opened');
+    if (decided !== undefined) {
+      return {
+        reason: 'hold-decided',
+        detail: `hold ${body.holdId} is ${decided.transition} already (transition ${String(decided.transitionNo)})`,
+      };
+    }
+    return undefined;
+  }
+
+  /**
+   * The ERP's view of a lot: master data and the holds on it from the notifications received;
+   * blocked while one of them is open or rejected. Undefined for a lot not in the lot list.
+   */
+  lotView(id: string): ErpLotView | undefined {
+    const lot = this.#lotById.get(id);
+    if (lot === undefined) return undefined;
+    const byHold = new Map<string, { receivedSeq: number; body: QualityNotificationRequest }[]>();
+    for (const { receipt, body } of this.#store.notifications()) {
+      const notification = body as QualityNotificationRequest;
+      if (notification.subject.kind !== 'lot' || notification.subject.id !== id) continue;
+      const list = byHold.get(notification.holdId) ?? [];
+      list.push({ receivedSeq: receipt.receivedSeq, body: notification });
+      byHold.set(notification.holdId, list);
+    }
+    const holds = [...byHold.values()].flatMap((list) => holdOf(list) ?? []);
+    holds.sort((a, b) => (a.notifications[0] ?? 0) - (b.notifications[0] ?? 0));
+    return {
+      feedId: this.feedId,
+      lot,
+      blocked: holds.some((h) => h.state !== 'released'),
+      holds,
+    };
   }
 
   /** The ERP's view of an order: its latest revision, the status messages and the confirmed totals. */

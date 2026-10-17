@@ -4,6 +4,9 @@ import {
   confirmationRequestSchema,
   expandErpDataset,
   idempotencyKeySchema,
+  messageReceiptSchema,
+  qualityNotificationKey,
+  qualityNotificationRequestSchema,
   routingAndBom,
   statusKey,
   statusMessageRequestSchema,
@@ -80,6 +83,12 @@ describe('ERP dataset', () => {
     const bad = expandErpDataset({ orders: [order('A~1', 1)] }, master);
     expect(bad.ok || bad.issues[0]).toMatch(/^orders\.0\.orderNumber/);
     expect(expandErpDataset({ orders: [order('A-1', 1, { extra: 1 })] }, master).ok).toBe(false);
+  });
+
+  it('refuses a lot listed twice: the per-lot view needs one lot per id', () => {
+    const lot = { id: 'L1', material: 'BLANK-100', quantity: 1 };
+    const twice = expandErpDataset({ orders: [], lots: [lot, { ...lot, quantity: 2 }] }, master);
+    expect(twice).toEqual({ ok: false, issues: ['lots.1: lot L1 is listed twice'] });
   });
 
   it('needs a work center for every operation', () => {
@@ -160,5 +169,66 @@ describe('ERP messages', () => {
     expect(idempotencyKeySchema.safeParse('has space').success).toBe(false);
     expect(idempotencyKeySchema.safeParse('').success).toBe(false);
     expect(idempotencyKeySchema.safeParse('x'.repeat(201)).success).toBe(false);
+  });
+});
+
+describe('ERP quality notifications', () => {
+  const opened = {
+    holdId: '17',
+    transition: 'opened',
+    transitionNo: 1,
+    subject: { kind: 'lot', id: 'SK1-2610-01' },
+    reason: 'SUSPECT-LOT',
+    user: 'quality.anna',
+    occurredAt: '2026-10-12T10:15:00+03:00',
+    scope: { units: 3, cartons: 0, orders: 1 },
+    scopeAsOf: '2026-10-12T10:14:00+03:00',
+    scopeFinal: false,
+  };
+  const check = (body: object) => qualityNotificationRequestSchema.safeParse(body).success;
+
+  it('builds the key from the hold, the transition and its number', () => {
+    expect(qualityNotificationKey('17', 'opened', 1)).toBe('17~opened~1');
+    expect(qualityNotificationKey('H-1', 'rejected', 2)).toBe('H-1~rejected~2');
+    const key = qualityNotificationKey('H.1_x', 'released', 12);
+    expect(idempotencyKeySchema.safeParse(key).success).toBe(true);
+  });
+
+  it('numbers `opened` 1 and a decision 2 and above, and normalises times to UTC', () => {
+    const parsed = qualityNotificationRequestSchema.parse(opened);
+    expect(parsed.occurredAt).toBe('2026-10-12T07:15:00.000Z');
+    expect(parsed.scopeAsOf).toBe('2026-10-12T07:14:00.000Z');
+    expect(check({ ...opened, transitionNo: 2 })).toBe(false);
+    expect(check({ ...opened, transition: 'released', transitionNo: 2 })).toBe(true);
+    expect(check({ ...opened, transition: 'rejected', transitionNo: 1 })).toBe(false);
+    // A comment is no transition the ERP is told of.
+    expect(check({ ...opened, transition: 'commented' })).toBe(false);
+  });
+
+  it('takes the four subjects with their own ids, and provisional scope counts', () => {
+    for (const subject of [
+      { kind: 'serial', id: 'VB-100-000123' },
+      { kind: 'carton', id: 'ORD-1001-C100' },
+      { kind: 'order', id: 'ORD-1001' },
+    ]) {
+      expect(check({ ...opened, subject })).toBe(true);
+    }
+    expect(check({ ...opened, subject: { kind: 'lot', id: 'A.1' } })).toBe(false);
+    expect(check({ ...opened, subject: { kind: 'order', id: 'A~1' } })).toBe(false);
+    expect(check({ ...opened, holdId: 'H~1' })).toBe(false);
+    expect(check({ ...opened, scopeFinal: undefined })).toBe(false);
+    expect(check({ ...opened, scope: { units: 1, cartons: 0 } })).toBe(false);
+    expect(check({ ...opened, comment: 'x'.repeat(501) })).toBe(false);
+    expect(check({ ...opened, comment: 'seal kit supplier recall' })).toBe(true);
+  });
+
+  it('tells receipts apart by kind', () => {
+    const base = { idempotencyKey: 'k', receivedSeq: 1, receivedAt: '2026-10-16T08:00:00.000Z' };
+    const receipt = (extra: object) =>
+      messageReceiptSchema.safeParse({ ...base, ...extra }).success;
+    expect(receipt({ kind: 'quality-notification', holdId: '17' })).toBe(true);
+    expect(receipt({ kind: 'quality-notification', orderNumber: 'A' })).toBe(false);
+    expect(receipt({ kind: 'status', orderNumber: 'A' })).toBe(true);
+    expect(receipt({ kind: 'status', holdId: '17' })).toBe(false);
   });
 });

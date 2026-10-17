@@ -915,6 +915,34 @@ describe('the command outbox and the reading of commands (ADR-0029)', () => {
     expect(await h.orders.incidents()).toEqual([]);
   });
 
+  it('raises the order version and pushes it when an acceptance changes its dispatched blanks', async () => {
+    const h = await harness('outbox_blanks');
+    await stateAt(h, 'cnc-01', 1);
+    const one = await dispatched(h, 'P-1');
+    expect(one.order).toMatchObject({ dispatched: 0, inFlight: 4 });
+    await h.orders.tick();
+    const [first] = h.sink.of('P-1~OP10~1');
+    if (!first) throw new Error('not published');
+    h.changes.length = 0;
+    // Accepted: no status or flag changes (still `dispatched`), only the counted blanks.
+    await result(h, first, 'cnc-01', { result: 'accepted', acceptedSeq: 2 });
+    await h.orders.tick();
+    const after = await h.orders.order('P-1');
+    expect(after).toMatchObject({ status: 'dispatched', dispatched: 4, inFlight: 0 });
+    expect(after?.version).toBeGreaterThan(one.order.version);
+    expect(after?.updatedAt.getTime()).toBeGreaterThanOrEqual(one.order.updatedAt.getTime());
+    const pushed = h.changes.filter((c) => c.type === 'order' && c.order.id === 'P-1');
+    expect(pushed.at(-1)).toMatchObject({
+      type: 'order',
+      order: { dispatched: 4, version: after?.version },
+    });
+    // Nothing moved since: no further version or push.
+    h.changes.length = 0;
+    await h.orders.tick();
+    expect((await h.orders.order('P-1'))?.version).toBe(after?.version);
+    expect(h.changes.filter((c) => c.type === 'order')).toEqual([]);
+  });
+
   it('resends without an answer, pauses while the gateway is offline or the broker away, and publishes after a restart', async () => {
     const h = await harness('resend');
     await stateAt(h, 'cnc-01', 1);

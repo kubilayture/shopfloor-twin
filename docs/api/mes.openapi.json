@@ -14705,6 +14705,16 @@
           {
             "schema": {
               "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
+            },
+            "in": "query",
+            "name": "orderId",
+            "required": false,
+            "description": "Only the incidents of this order"
+          },
+          {
+            "schema": {
+              "type": "string",
               "enum": [
                 "true",
                 "false"

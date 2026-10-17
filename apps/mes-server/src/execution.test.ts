@@ -750,6 +750,10 @@ describe('the execution API (#175)', () => {
       executionIncidentListSchema.parse(await get('/api/v1/execution-incidents?open=true'))
         .incidents,
     ).toEqual([]);
+    expect(
+      executionIncidentListSchema.parse(await get('/api/v1/execution-incidents?orderId=A-1'))
+        .incidents,
+    ).toEqual([]);
     const [record] = scrapRecordListSchema.parse(
       await get('/api/v1/scrap-records?uncoded=true'),
     ).records;
@@ -822,6 +826,11 @@ describe('execution on final data: gaps, ended runs, restarts and failures (#175
     ]);
     const [incident] = await h.execution.incidents({ open: true });
     expect(incident?.message).toContain('missing-predecessor');
+    // Filtered by order (#176): the order detail reads only its own.
+    expect((await h.execution.incidents({ orderId: 'Y-1' })).map((i) => i.id)).toEqual([
+      incident?.id,
+    ]);
+    expect(await h.execution.incidents({ orderId: 'Y-9' })).toEqual([]);
   });
 
   it('keeps a lost unit open while a lagging machine can still report it, then completes the order short', async () => {

@@ -16,6 +16,7 @@ const NAV = [
   { id: 'alarms', to: '/alarms', label: 'Alarms' },
   { id: 'alarm-kpi', to: '/alarms/kpi', label: 'Alarm KPIs' },
   { id: 'shifts', to: '/shifts', label: 'Shift reports' },
+  { id: 'orders', to: '/orders', label: 'Orders' },
 ] as const;
 
 /** Who is logged in, the account page and the logout (#170). */

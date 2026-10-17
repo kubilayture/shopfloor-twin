@@ -52,6 +52,14 @@ export const queryKeys = {
   shiftNotes: (key: string, epoch: number) => ['shift-notes', key, epoch] as const,
   /** Keyed by the note's version too: a new version reads its history again. */
   noteAudit: (noteId: number, version: number) => ['note-audit', noteId, version] as const,
+  // Orders (#176): the list per status filter, one order's detail and its execution reads.
+  ordersAll: ['orders'] as const,
+  orders: (statuses: string) => ['orders', statuses] as const,
+  orderAll: ['order'] as const,
+  order: (id: string) => ['order', id] as const,
+  orderExecution: (id: string) => ['order-execution', id] as const,
+  orderScrap: (id: string) => ['order-scrap', id] as const,
+  executionIncidents: (orderId: string) => ['execution-incidents', orderId] as const,
 };
 
 /** Retries network and server errors a few times, never a refused request (4xx). */

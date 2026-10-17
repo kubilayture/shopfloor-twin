@@ -53,7 +53,18 @@ function snapshot(
 const scenarioArb = fc
   .record({
     closed: fc.option(fc.integer({ min: 7 * HOUR, max: SPAN - 1 }), { nil: null }),
-    base: fc.integer({ min: 0, max: 6 * HOUR }),
+    // Biased toward boundaries (#192): a base just before a whole hour, offsets on multiples of
+    // the windows (plus a few ms) and durations of a window or an hour put raises, ends and window
+    // edges on hour ends and on each other.
+    base: fc.oneof(
+      fc.integer({ min: 0, max: 6 * HOUR }),
+      fc
+        .record({
+          hour: fc.integer({ min: 1, max: 6 }),
+          before: fc.integer({ min: 0, max: 1_500 }),
+        })
+        .map(({ hour, before }) => hour * HOUR - before),
+    ),
     raises: fc.array(
       fc.record({
         equipment: fc.constantFrom('a', 'b', 'c'),
@@ -61,8 +72,25 @@ const scenarioArb = fc
         offset: fc.oneof(
           fc.integer({ min: 0, max: 1_500_000 }),
           fc.integer({ min: 0, max: 3 * HOUR }),
+          fc
+            .record({
+              step: fc.constantFrom(CONFIG.windowMs, CONFIG.chatterWindowMs),
+              k: fc.integer({ min: 0, max: 18 }),
+              extra: fc.integer({ min: 0, max: 30 }),
+            })
+            .map(({ step, k, extra }) => k * step + extra),
         ),
-        duration: fc.constantFrom(500, 999, 1_000, 30_000, 3 * HOUR, -1),
+        duration: fc.constantFrom(
+          500,
+          999,
+          1_000,
+          30_000,
+          CONFIG.chatterWindowMs,
+          CONFIG.windowMs,
+          HOUR,
+          3 * HOUR,
+          -1,
+        ),
       }),
       { minLength: 2, maxLength: 18 },
     ),
@@ -93,6 +121,44 @@ const scenarioArb = fc
     return { ...scenario, limit, occurrences };
   })
   .filter((scenario) => scenario.occurrences.length >= 2);
+
+type Scenario = typeof scenarioArb extends fc.Arbitrary<infer T> ? T : never;
+
+/**
+ * The shrunk counterexample of seed -527283026 (#192): a late raise at 06:00:00.000 supersedes an
+ * occurrence of its point raised at 05:59:59.979, which changes hour 05:00.
+ */
+const SEED_527283026: Scenario = {
+  closed: null,
+  base: 21_599_979,
+  raises: [
+    { equipment: 'a', code: 'X', offset: 0, duration: 500 },
+    { equipment: 'a', code: 'X', offset: 21, duration: 500 },
+    { equipment: 'a', code: 'X', offset: 7_200_022, duration: 500 },
+  ],
+  pick: 1_396_686_825,
+  late: 'raise',
+  moved: null,
+  limit: SPAN,
+  occurrences: [
+    {
+      equipment: 'a',
+      code: 'X',
+      priority: 'high',
+      seq: 1,
+      raisedAt: 21_599_979,
+      clearedAt: 21_600_479,
+    },
+    {
+      equipment: 'a',
+      code: 'X',
+      priority: 'high',
+      seq: 2,
+      raisedAt: 21_600_000,
+      clearedAt: 21_600_500,
+    },
+  ],
+};
 
 describe('revision completeness', () => {
   it('revises every hour and range a late fact changes, in every scope', () => {
@@ -133,7 +199,7 @@ describe('revision completeness', () => {
           }
         }
       }),
-      { numRuns: 1_000 },
+      { numRuns: 1_000, examples: [[SEED_527283026]] },
     );
     // Each run recomputes every hour twice; on a loaded CI runner 1,000 runs take several seconds.
   }, 60_000);

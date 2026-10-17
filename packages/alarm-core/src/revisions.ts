@@ -41,7 +41,8 @@ const later = (a: Millis, b: Millis): Millis => (a > b ? a : b);
  *
  * - **Late raise at t:** [t, t + max(windowMs, chatterWindowMs)] (windows, floods and the
  *   chattering of later raises); its active span to its clear, or to the limit while open; the
- *   span of an earlier occurrence of the same point that it now supersedes; and every flood
+ *   span of an earlier occurrence of the same point that it now supersedes, from that
+ *   occurrence's raise to its clear (fleeting is decided in its raise's hour); and every flood
  *   episode in flood during [t, t + windowMs], to its end or the limit, since one raise can join
  *   two episodes and change the id and peak of every later hour of the joined one.
  * - **Moved end:** from the raise to the later of the two ends (open is the limit): active time,
@@ -66,7 +67,9 @@ export function revisionSpans(fact: LateFact, set: PreparedSet): Span[] {
       occurrence.raisedAt <= t &&
       (occurrence.clearedAt ?? limit) > t
     ) {
-      spans.push({ from: t, to: occurrence.clearedAt ?? limit });
+      // From its own raise: its end moves to t, which changes fleeting in its raise's hour and
+      // active at end of the hour that ends at t (#192).
+      spans.push({ from: occurrence.raisedAt, to: occurrence.clearedAt ?? limit });
     }
   }
   for (const episode of floodEpisodes(set)) {

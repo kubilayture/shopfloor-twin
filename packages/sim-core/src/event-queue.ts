@@ -6,7 +6,17 @@ export interface QueuedEvent<E> {
   readonly event: E;
 }
 
+/**
+ * The order of events at the same time (#235, ADR-0037 amendment): every `external` event (one
+ * given from outside the model, such as an injection or a console action, when it is accepted)
+ * comes before every `model` event of that time; within a lane, events keep the order they were
+ * pushed in.
+ */
+export type EventLane = 'external' | 'model';
+
 interface Entry<E> extends QueuedEvent<E> {
+  /** 0 for `external`, 1 for `model`. */
+  readonly rank: number;
   cancelled: boolean;
 }
 
@@ -16,7 +26,8 @@ export interface EventHandle {
 }
 
 const precedes = <E>(a: Entry<E>, b: Entry<E>): boolean =>
-  a.time < b.time || (a.time === b.time && a.sequence < b.sequence);
+  a.time < b.time ||
+  (a.time === b.time && (a.rank < b.rank || (a.rank === b.rank && a.sequence < b.sequence)));
 
 export class EventQueue<E> {
   readonly #heap: Entry<E>[] = [];
@@ -27,8 +38,14 @@ export class EventQueue<E> {
     return this.#bySequence.size;
   }
 
-  push(time: SimTime, event: E): EventHandle {
-    const entry: Entry<E> = { time, sequence: this.#nextSequence++, event, cancelled: false };
+  push(time: SimTime, event: E, lane: EventLane = 'model'): EventHandle {
+    const entry: Entry<E> = {
+      time,
+      sequence: this.#nextSequence++,
+      rank: lane === 'external' ? 0 : 1,
+      event,
+      cancelled: false,
+    };
     this.#heap.push(entry);
     this.#bySequence.set(entry.sequence, entry);
     this.#siftUp(this.#heap.length - 1);

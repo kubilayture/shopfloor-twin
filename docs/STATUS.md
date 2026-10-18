@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #230 merged (PR #251, `182e297`): the order and line OEE ground truth, `line-oee.json` beside the four goldens and `lineOee` in the live ground truth (cut by `?asOf`), control API 1.8, ADR-0036 amendment.
 - #234 merged (PR #249, `86592fb`): simulator console actions (`GET /lots`, `/operators`, `/actions`, lot block and release, forced absence, tool breakage), control API 1.7, ADR-0037; goldens byte-identical.
 - #228 merged (PR #248, `9a072cd`): the heavy-suite lock at `~/.cache/shopfloor-twin/heavy.lock` for every heavy command, the smoke on ephemeral host ports, host and Docker disk checks, images and build cache cleaned per run, limits on the database, the broker and `migrate`, the Phase 9 rerun rows.
 - #229 merged (PR #247, `02378b1`): `oee-core` order OEE over head-time windows, line throughput OEE (`aboveOne`), the bottleneck derived per product (ASM-01), first-pass yield; ADR-0036; reference cases in `docs/oee-reference-cases.md`; both configuration hashes and the goldens unchanged.
@@ -131,11 +132,11 @@
 
 ## In progress
 
-- #230 (P9-03) order and line OEE truth (branch `feat/230-line-oee-truth`, wave A; on #234's control API 1.7): `line-oee.json` (`sim-line-oee/1`) beside the four goldens and `lineOee` in the live ground truth, cut by `?asOf` (`lineOeeAsOf`); control API 1.8; ADR-0036 amended (`notBefore` is part of the head time; reference cases H17 and O11); every `summary.json`, `trace.json` and `events.sha256` byte-identical (log entry in `docs/phases/phase-09-log.md`).
+- #235 (P9-08) scenario timelines (branch `feat/235-scenario-timelines`, wave A; full gate before the pull request): `config/scenarios/*.yaml` with one schema in `plant-config` for timelines and the golden `scenario.json` (mapped onto `HeadlessOptions` unchanged), `pnpm sim:headless --timeline`, live playback (`SIM_TIMELINE`, `POST /api/v1/scenario` while idle, `GET /scenario`, `GET /scenarios`; control API 1.9 after #230's 1.8), `dispatch` headless only, infrastructure entries as pacer cues, the live event log `SIM_EVENT_LOG`, an `external` lane in `sim-core`'s event queue so a mid-run post for a later time equals headless; the example `monday-breakdown-and-recovery.yaml` played live at 1× to 60× gives the headless event log byte for byte; ADR-0037 amendment; goldens byte-identical (log entry in `docs/phases/phase-09-log.md`).
 
 ## Next up
 
-- Wave A: #235 (P9-08, timelines on #234's `ActionSpec`; its live test covers actions posted mid-run) and #236 (P9-09), and the wave A checkpoint in the phase log. P9-10 (#237) adds `GET /api/v1/actions` to the `/sim/` allowlist.
+- Wave A: #236 (P9-09, dispatch recording on #235's timelines), and the wave A checkpoint in the phase log. P9-10 (#237) adds `GET /api/v1/actions` and the scenario routes to the `/sim/` allowlist.
 
 ## Blockers and open questions for the owner
 

@@ -44,6 +44,13 @@ export async function generateOpenApi(): Promise<string> {
       lots: () => [],
       operators: () => ({ currentShift: null, operators: [], absences: [] }),
     },
+    scenario: {
+      load: () => {
+        throw new Error('not served');
+      },
+      view: () => undefined,
+      list: () => Promise.resolve([]),
+    },
   });
   await app.ready();
   const document = app.swagger();

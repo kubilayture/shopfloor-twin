@@ -1,9 +1,12 @@
-import { resolve } from 'node:path';
-import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
+import { basename, extname, resolve } from 'node:path';
+import { formatIssues, loadPlantConfig, readScenarioFile } from '@shopfloor/plant-config';
 import { buildControlApp } from './control/app.ts';
 import { parseEnv } from './control/env.ts';
 import { EventHub } from './control/event-hub.ts';
+import { timelinePath } from './headless/timeline.ts';
+import { EventLogWriter } from './live/event-log.ts';
 import { createLiveRun } from './live/run.ts';
+import { scenarioControl } from './live/timeline.ts';
 import { WasherModbusServer } from './modbus/washer-server.ts';
 import { PlantServers } from './opcua/plant-servers.ts';
 
@@ -28,6 +31,33 @@ if (!loaded.ok) {
 }
 
 const hub = new EventHub();
+// Subscribed before the run exists: line.start already emits events.
+// A failed write stops the log, never the run (#235 review): reported once, `sim_event_log_failed`.
+const reportEventLogError = (error: unknown): void => {
+  try {
+    log.error(error, 'live event log failed; SIM_EVENT_LOG is no longer written');
+  } catch {
+    // Before the logger exists.
+    console.error('live event log failed; SIM_EVENT_LOG is no longer written:', error);
+  }
+};
+let eventLog: EventLogWriter | undefined;
+if (env.SIM_EVENT_LOG !== undefined) {
+  try {
+    eventLog = new EventLogWriter(resolve(env.SIM_EVENT_LOG), { onError: reportEventLogError });
+  } catch (error) {
+    console.error(`SIM_EVENT_LOG ${env.SIM_EVENT_LOG}: ${String(error)}`);
+    process.exit(2);
+  }
+  const writer = eventLog;
+  hub.subscribe((line) => {
+    writer.append(line);
+  });
+  // Best effort on any exit; close() never throws and does nothing the second time.
+  process.on('exit', () => {
+    writer.close();
+  });
+}
 const servers = new PlantServers({
   config: loaded.config,
   start: env.SIM_START,
@@ -51,6 +81,15 @@ const run = createLiveRun({
   start: env.SIM_START,
   speed: env.SIM_SPEED,
   production: env.SIM_PRODUCTION,
+  infrastructure: {
+    opcuaOffline: (machineId, offline) => servers.setOffline(machineId, offline),
+    modbusSilent: (silent) => {
+      washer.silent = silent;
+    },
+    onError: (error) => {
+      log.error(error, 'timeline infrastructure fault failed');
+    },
+  },
   onEvent: (event) => {
     servers.record(event);
     washer.record(event);
@@ -59,6 +98,19 @@ const run = createLiveRun({
 });
 servers.attach(run);
 washer.attach(run);
+
+if (env.SIM_TIMELINE !== undefined) {
+  // Loaded before the run can start (#235); any refusal is a start-up error.
+  const path = timelinePath(env.SIM_TIMELINE, process.cwd(), resolve(env.SIM_SCENARIOS_DIR));
+  const read = await readScenarioFile(path);
+  const loaded = read.ok
+    ? run.loadTimeline(read.scenario, basename(path, extname(path)))
+    : { ok: false as const, reason: read.message };
+  if (!loaded.ok) {
+    console.error(`SIM_TIMELINE ${path}: ${loaded.reason}`);
+    process.exit(2);
+  }
+}
 
 const app = await buildControlApp({
   pacer: run.pacer,
@@ -79,6 +131,8 @@ const app = await buildControlApp({
     lots: () => run.lots(),
     operators: () => run.operators(),
   },
+  scenario: scenarioControl(run, resolve(env.SIM_SCENARIOS_DIR)),
+  ...(eventLog === undefined ? {} : { eventLogFailed: () => eventLog.failed }),
   logger: { level: env.LOG_LEVEL },
 });
 const log = app.log;
@@ -97,6 +151,8 @@ async function shutdown(signal: string): Promise<void> {
   for (const result of results) {
     if (result.status === 'rejected') log.error(result.reason);
   }
+  // After the servers, so a close that fails can't keep them up; close() never throws.
+  eventLog?.close();
   log.info('stopped');
   process.exit(signal === 'SIGINT' ? 130 : 0);
 }

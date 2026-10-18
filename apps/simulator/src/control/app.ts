@@ -4,6 +4,7 @@ import { STATUS_CODES } from 'node:http';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyReply } from 'fastify';
 import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
 import { z } from 'zod';
+import { MAX_TIMELINE_ENTRIES, TIMELINE_ACTIONS } from '@shopfloor/plant-config';
 import type { PacerState, PacerStatus } from '../live/pacer.ts';
 import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { isoTime } from '../headless/serialize.ts';
@@ -24,6 +25,7 @@ import type {
 } from '../plant/line.ts';
 import { PRODUCTION_MODES } from '../plant/line.ts';
 import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
+import type { ScenarioControl } from '../live/timeline.ts';
 import type { EventHub } from './event-hub.ts';
 
 /**
@@ -31,10 +33,13 @@ import type { EventHub } from './event-hub.ts';
  * 1.3 failure injection and the alarm ground truth (#140), 1.4 the production mode and the order
  * ground truth (#172), 1.5 the leak-test drift injection (#196), 1.6 the trace ground truth with
  * `?asOf` (#208), 1.7 the console actions and the lot and operator reads (#234), 1.8 the order
- * and line OEE ground truth `lineOee`, cut by `?asOf` too (#230).
+ * and line OEE ground truth `lineOee`, cut by `?asOf` too (#230), 1.9 the scenario timelines
+ * (#235).
  */
-export const CONTROL_API_VERSION = '1.8.0';
+export const CONTROL_API_VERSION = '1.9.0';
 export const API_PREFIX = '/api/v1';
+/** The largest `POST /scenario` body (#235 review): far above MAX_TIMELINE_ENTRIES entries. */
+export const SCENARIO_BODY_LIMIT = 512 * 1024;
 export const EVENTS_PATH = `${API_PREFIX}/events`;
 /** A WebSocket client that falls this far behind is disconnected rather than buffered without bound. */
 export const MAX_CLIENT_BUFFER_BYTES = 4 * 1024 * 1024;
@@ -743,6 +748,37 @@ export const groundTruthSchema = z.object({
     .describe('1.8: present when `lineOee` was cut at an earlier plant time (`?asOf`)'),
 });
 
+/** A loaded timeline and each entry's progress (#235, 1.9). */
+export const timelineSchema = z.object({
+  name: z.string().nullable().describe('The committed timeline, or null for one posted inline'),
+  description: z.string().nullable(),
+  entries: z.array(
+    z.object({
+      entry: z.string().describe('Where the entry is in the document, e.g. `timeline[3]`'),
+      action: z.enum(TIMELINE_ACTIONS),
+      at: isoSchema.optional().describe('Absent for operators-absent (applied at its shift start)'),
+      status: z
+        .enum(['scheduled', 'held', 'applied', 'active', 'ended', 'ignored', 'planned'])
+        .describe(
+          'A plant entry: its injection or console action status; an infrastructure entry: ' +
+            'scheduled, then applied, or active and ended for one with an `until`',
+        ),
+      id: count.optional().describe("The injection's or console action's id"),
+    }),
+  ),
+});
+
+export const scenarioBodySchema = z.union([
+  z.object({ name: z.string().describe('A committed timeline of config/scenarios') }).strict(),
+  z
+    .object({
+      timeline: z
+        .record(z.string(), z.unknown())
+        .describe('A timeline document (the YAML of config/scenarios as JSON), without `stock`'),
+    })
+    .strict(),
+]);
+
 /** The live ground truth with the run's epoch: what `GET /api/v1/ground-truth` returns. */
 export type GroundTruthReport = LiveGroundTruth & { readonly epoch: number };
 
@@ -803,6 +839,10 @@ export interface ControlAppOptions {
     readonly lots: () => readonly LotView[];
     readonly operators: () => OperatorsView;
   };
+  /** Scenario timelines (#235, 1.9): load one while idle, its progress, the committed ones. */
+  readonly scenario?: ScenarioControl;
+  /** True once the live event log (`SIM_EVENT_LOG`) failed to write (#235 review); a gauge. */
+  readonly eventLogFailed?: () => boolean;
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
   readonly version?: string;
 }
@@ -814,6 +854,8 @@ export async function buildControlApp({
   faults = {},
   groundTruth,
   console: consoleActions,
+  scenario,
+  eventLogFailed,
   logger = false,
   version = CONTROL_API_VERSION,
 }: ControlAppOptions): Promise<FastifyInstance> {
@@ -858,6 +900,10 @@ export async function buildControlApp({
           name: 'faults',
           description: 'Infrastructure faults for resilience tests, and failure injection',
         },
+        {
+          name: 'scenario',
+          description: 'Scenario timelines of config/scenarios, played live (1.9)',
+        },
       ],
     },
   });
@@ -872,7 +918,7 @@ export async function buildControlApp({
     },
   });
 
-  const metrics = createMetrics(pacer, hub);
+  const metrics = createMetrics(pacer, hub, eventLogFailed);
 
   const status = () => {
     const current = pacer.status();
@@ -1272,6 +1318,10 @@ export async function buildControlApp({
     registerConsoleRoutes(app, pacer, consoleActions);
   }
 
+  if (scenario) {
+    registerScenarioRoutes(app, pacer, scenario);
+  }
+
   app.get(EVENTS_PATH, { websocket: true, schema: { hide: true } }, (socket) => {
     metrics.clients.inc();
     const unsubscribe = hub.subscribe((line) => {
@@ -1584,7 +1634,103 @@ function registerConsoleRoutes(
   );
 }
 
-function createMetrics(pacer: PacerControl, hub: EventHub) {
+/** The scenario routes (#235, control API 1.9). */
+function registerScenarioRoutes(
+  app: FastifyInstance,
+  pacer: PacerControl,
+  scenario: ScenarioControl,
+): void {
+  app.post(
+    `${API_PREFIX}/scenario`,
+    {
+      // A timeline of at most MAX_TIMELINE_ENTRIES entries fits easily (#235 review).
+      bodyLimit: SCENARIO_BODY_LIMIT,
+      schema: {
+        tags: ['scenario'],
+        summary: 'Load a scenario timeline before the run starts',
+        description:
+          'Loads a committed timeline (`name`) or one given inline (`timeline`), only while the ' +
+          'run is idle and has no timeline, injection, drift or console action yet (body at most ' +
+          `${String(SCENARIO_BODY_LIMIT / 1024)} KiB; at most ${String(MAX_TIMELINE_ENTRIES)} entries). ` +
+          'Every plant entry is accepted at the start time, ' +
+          'injections then console actions, in timeline order, as a headless run of the same ' +
+          'timeline gives them, so the event log is the headless one at any speed. ' +
+          '`opcua-offline`, `modbus-silent`, `speed` and `pause` are applied by the pacer at their ' +
+          'time and never touch the plant model. 404: no committed timeline of that name; 400: ' +
+          'a document the schema refuses, a `dispatch` entry (headless only), an entry that does ' +
+          'not fit the configuration or the run; 409: the run is not idle, has a timeline, an ' +
+          'injection, drift or console action already, an earlier load failed part way, or the ' +
+          'timeline names another seed, start or production mode. 413: a body over the limit.',
+        body: json(scenarioBodySchema),
+        response: {
+          200: json(z.object({ scenario: timelineSchema })),
+          400: json(errorSchema),
+          404: json(errorSchema),
+          409: json(errorSchema),
+          413: json(errorSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      if (pacer.state === 'finished') {
+        return reply.code(409).send({ error: 'Conflict', message: 'the run has finished' });
+      }
+      const result = await scenario.load(
+        request.body as { name: string } | { timeline: Record<string, unknown> },
+      );
+      if (result.ok) return { scenario: result.timeline };
+      switch (result.code) {
+        case 'unknown-name':
+          return reply.code(404).send({ error: 'Not Found', message: result.reason });
+        case 'not-idle':
+        case 'already-loaded':
+        case 'has-inputs':
+        case 'failed':
+        case 'mismatch':
+          return reply.code(409).send({ error: 'Conflict', message: result.reason });
+        case 'parse':
+        case 'dispatch':
+        case 'invalid':
+        case 'unsupported':
+          return reply.code(400).send({ error: 'Bad Request', message: result.reason });
+      }
+    },
+  );
+
+  app.get(
+    `${API_PREFIX}/scenario`,
+    {
+      schema: {
+        tags: ['scenario'],
+        summary: "The loaded timeline and each entry's progress, or null",
+        response: { 200: json(z.object({ scenario: timelineSchema.nullable() })) },
+      },
+    },
+    () => ({ scenario: scenario.view() ?? null }),
+  );
+
+  app.get(
+    `${API_PREFIX}/scenarios`,
+    {
+      schema: {
+        tags: ['scenario'],
+        summary: 'The committed timelines of config/scenarios',
+        response: {
+          200: json(
+            z.object({
+              scenarios: z.array(
+                z.object({ name: z.string(), description: z.string().nullable() }),
+              ),
+            }),
+          ),
+        },
+      },
+    },
+    async () => ({ scenarios: await scenario.list() }),
+  );
+}
+
+function createMetrics(pacer: PacerControl, hub: EventHub, eventLogFailed?: () => boolean) {
   const registry = new Registry();
   collectDefaultMetrics({ register: registry });
   new Counter({
@@ -1647,5 +1793,15 @@ function createMetrics(pacer: PacerControl, hub: EventHub) {
       this.set(hub.seq);
     },
   });
+  if (eventLogFailed) {
+    new Gauge({
+      name: 'sim_event_log_failed',
+      help: '1 once the live event log (SIM_EVENT_LOG) failed to write and stopped',
+      registers: [registry],
+      collect() {
+        this.set(eventLogFailed() ? 1 : 0);
+      },
+    });
+  }
   return { registry, clients };
 }

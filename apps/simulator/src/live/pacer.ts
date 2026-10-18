@@ -29,6 +29,18 @@ export interface PacerOptions<E> {
   readonly onAdvance?: (simNow: SimTime) => void;
 }
 
+/**
+ * A pacing cue (#235, a live timeline's infrastructure entries): applied once the simulation has
+ * processed every event at or before `at`, with the simulation clock at `at`. `pause` pauses the
+ * run there, `speed` changes the speed there (the paced clock stays continuous), `call` runs a
+ * callback (an infrastructure fault). Cues never touch the event queue, so the event log is the
+ * same with or without them.
+ */
+export type PacerCue =
+  | { readonly at: SimTime; readonly kind: 'pause' }
+  | { readonly at: SimTime; readonly kind: 'speed'; readonly speed: number }
+  | { readonly at: SimTime; readonly kind: 'call'; readonly run: () => void };
+
 export interface PacerStatus {
   readonly state: PacerState;
   readonly speed: number;
@@ -59,6 +71,9 @@ export class LivePacer<E> {
   #lagMs = 0;
   #busy = false;
   readonly #deferred: (() => void)[] = [];
+  /** Pending cues by time, in the order they were added within a time. */
+  readonly #cues: PacerCue[] = [];
+  #onCue: (cue: PacerCue) => void = () => undefined;
 
   constructor({
     simulation,
@@ -95,6 +110,31 @@ export class LivePacer<E> {
     const target =
       this.#simAnchor + Math.floor((this.#clock.now() - this.#wallAnchor) * this.#speed);
     return this.#end === undefined ? target : Math.min(target, this.#end);
+  }
+
+  /**
+   * Adds a cue (#235). Refused at a time before the simulation time; a cue at or after the end
+   * never fires.
+   */
+  cue(cue: PacerCue): void {
+    if (cue.kind === 'speed') checkSpeed(cue.speed);
+    if (!Number.isSafeInteger(cue.at) || cue.at < this.#simulation.now) {
+      throw new RangeError(
+        `a cue must be at or after the simulation time ${String(this.#simulation.now)}, got ${String(cue.at)}`,
+      );
+    }
+    const index = this.#cues.findIndex((pending) => pending.at > cue.at);
+    this.#cues.splice(index < 0 ? this.#cues.length : index, 0, cue);
+  }
+
+  /** Called after each cue is applied (the live timeline's progress). */
+  set onCue(listener: (cue: PacerCue) => void) {
+    this.#onCue = listener;
+  }
+
+  /** Cues not applied yet. */
+  get pendingCues(): number {
+    return this.#cues.length;
   }
 
   status(): PacerStatus {
@@ -150,8 +190,11 @@ export class LivePacer<E> {
     if (this.#state === 'running') {
       this.#advanceTo(this.simNow());
       this.#speed = speed;
-      this.#anchor();
-      this.#scheduleNext();
+      // A pause cue on the way leaves the run paused, with no timer to reschedule.
+      if (this.#isRunning()) {
+        this.#anchor();
+        this.#scheduleNext();
+      }
     } else {
       this.#speed = speed;
     }
@@ -173,6 +216,11 @@ export class LivePacer<E> {
     });
     if (this.#state === 'idle') {
       this.#state = 'paused';
+    }
+    // Cues the step has reached: the run is paused already, so a pause cue changes nothing.
+    for (let cue = this.#cues[0]; cue && cue.at <= this.#simulation.now; cue = this.#cues[0]) {
+      this.#cues.shift();
+      this.#apply(cue);
     }
     return true;
   }
@@ -203,14 +251,63 @@ export class LivePacer<E> {
     this.#wallAnchor = this.#clock.now();
   }
 
-  #advanceTo(target: SimTime): void {
-    const limit = this.#end === undefined ? target : Math.min(target, this.#end - 1);
-    if (limit < this.#simulation.now) {
-      return;
+  /**
+   * Processes every event up to `target` (and before the end), applying each cue on the way once
+   * its time is reached. A speed cue moves the target with the new speed; a pause cue stops here.
+   * Returns the target finally reached.
+   */
+  #advanceTo(target: SimTime): SimTime {
+    let reached = target;
+    for (;;) {
+      const limit = this.#end === undefined ? reached : Math.min(reached, this.#end - 1);
+      const cue = this.#cues[0];
+      if (cue && cue.at <= limit) {
+        this.#process(() => {
+          this.#simulation.runUntil(cue.at, this.#handle);
+        });
+        this.#cues.shift();
+        this.#apply(cue);
+        if (!this.#isRunning()) {
+          return cue.at;
+        }
+        if (cue.kind === 'speed') {
+          reached = Math.max(cue.at, this.simNow());
+        }
+        continue;
+      }
+      if (limit >= this.#simulation.now) {
+        this.#process(() => {
+          this.#simulation.runUntil(limit, this.#handle);
+        });
+      }
+      return reached;
     }
-    this.#process(() => {
-      this.#simulation.runUntil(limit, this.#handle);
-    });
+  }
+
+  /** Applies one cue at its time (the simulation clock is there). */
+  #apply(cue: PacerCue): void {
+    switch (cue.kind) {
+      case 'pause':
+        if (this.#state === 'running') {
+          this.#cancelTimer();
+          this.#lagMs = 0;
+          this.#state = 'paused';
+        }
+        break;
+      case 'speed':
+        if (this.#state === 'running') {
+          // Re-anchored where the paced clock is now (at `at` when the cue is on time, a little
+          // past it after timer lateness), so the paced clock never jumps or goes back.
+          this.#simAnchor = Math.max(cue.at, this.simNow());
+          this.#wallAnchor = this.#clock.now();
+        }
+        this.#speed = cue.speed;
+        break;
+      case 'call':
+        cue.run();
+        break;
+    }
+    this.#onCue(cue);
   }
 
   #isRunning(): boolean {
@@ -246,11 +343,11 @@ export class LivePacer<E> {
     const target = this.simNow();
     const next = this.#simulation.nextEventTime;
     this.#lagMs = next !== undefined && next < target ? (target - next) / this.#speed : 0;
-    this.#advanceTo(target);
+    const reached = this.#advanceTo(target);
     if (!this.#isRunning()) {
       return;
     }
-    if (this.#end !== undefined && target >= this.#end) {
+    if (this.#end !== undefined && reached >= this.#end) {
       this.stop();
       return;
     }
@@ -259,10 +356,13 @@ export class LivePacer<E> {
 
   #scheduleNext(): void {
     this.#cancelTimer();
-    const next = this.#simulation.nextEventTime;
     const now = this.simNow();
-    const horizon =
-      next === undefined ? this.#end : this.#end === undefined ? next : Math.min(next, this.#end);
+    // The next event, the next cue (#235 review: a cue between sparse events is due on time) or
+    // the end, whichever comes first.
+    const candidates = [this.#simulation.nextEventTime, this.#cues[0]?.at, this.#end].filter(
+      (time): time is SimTime => time !== undefined,
+    );
+    const horizon = candidates.length === 0 ? undefined : Math.min(...candidates);
     const wait =
       horizon === undefined ? MAX_TIMER_MS : Math.ceil(Math.max(0, horizon - now) / this.#speed);
     this.#timer = this.#clock.setTimeout(

@@ -1,0 +1,43 @@
+# A headless-only timeline (#235): orders mode, the CNCs running only the jobs its `dispatch`
+# entries give at the start (as a golden scenario's `dispatches`), with a failure and a tool
+# breakage. A live run refuses it (dispatch entries are headless only: a live orders run is
+# dispatched by the MES through LoadOrder). Headless:
+#   pnpm sim:headless --timeline monday-orders-dispatch
+
+description: >-
+  Monday shift A in orders mode: two VB-100 jobs and one VB-200 job dispatched at the start, a
+  coolant fault on CNC-02 and a broken tool on CNC-01
+seed: 20261012
+start: '2026-10-12T06:00:00+03:00'
+days: 0.5
+config: config/plant
+production: orders
+
+timeline:
+  - action: dispatch
+    commandId: PO-2610-001~OP10~1
+    machine: cnc-01
+    orderId: PO-2610-001
+    product: VB-100
+    quantity: 40
+    notBefore: '2026-10-12T06:00:00+03:00'
+  - action: dispatch
+    commandId: PO-2610-002~OP10~1
+    machine: cnc-02
+    orderId: PO-2610-002
+    product: VB-100
+    quantity: 30
+    notBefore: '2026-10-12T06:00:00+03:00'
+  - action: dispatch
+    commandId: PO-2610-003~OP10~1
+    machine: cnc-02
+    orderId: PO-2610-003
+    product: VB-200
+    quantity: 20
+    notBefore: '2026-10-12T08:17:00+03:00'
+  - at: '2026-10-12T07:05:00+03:00'
+    action: failure
+    machine: cnc-02
+    code: COOLANT-PRESSURE
+    repairMs: 900000
+  - { at: '2026-10-12T09:12:00+03:00', action: tool-breakage, machine: cnc-01 }

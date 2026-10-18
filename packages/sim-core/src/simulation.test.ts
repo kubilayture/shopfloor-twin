@@ -60,6 +60,47 @@ describe('Simulation', () => {
     expect(seen).toEqual(['first', 'same-time follow-up']);
   });
 
+  it('runs external events of a time before its model events, each lane in push order (#235)', () => {
+    const simulation = new Simulation<string>(START);
+    simulation.schedule(START + SECOND, 'model 1');
+    simulation.schedule(START + SECOND, 'external 1', 'external');
+    simulation.schedule(START + SECOND, 'model 2', 'model');
+    simulation.schedule(START + SECOND, 'external 2', 'external');
+    simulation.schedule(START, 'earlier model');
+    const seen: string[] = [];
+    simulation.run((event, sim) => {
+      seen.push(event);
+      if (event === 'external 1') {
+        // A follow-up the model schedules at the current time stays behind the external events.
+        sim.scheduleIn(0, 'model follow-up');
+      }
+    });
+    expect(seen).toEqual([
+      'earlier model',
+      'external 1',
+      'external 2',
+      'model 1',
+      'model 2',
+      'model follow-up',
+    ]);
+  });
+
+  it('puts an external event accepted mid-run where it would be had it been accepted first', () => {
+    const order = (acceptLate: boolean): string[] => {
+      const simulation = new Simulation<string>(START);
+      if (!acceptLate) simulation.schedule(START + 2 * SECOND, 'action', 'external');
+      simulation.schedule(START + SECOND, 'model at 1 s');
+      simulation.schedule(START + 2 * SECOND, 'model at 2 s');
+      const seen: string[] = [];
+      simulation.runUntil(START + SECOND, (event) => seen.push(event));
+      if (acceptLate) simulation.schedule(START + 2 * SECOND, 'action', 'external');
+      simulation.run((event) => seen.push(event));
+      return seen;
+    };
+    expect(order(true)).toEqual(order(false));
+    expect(order(true)).toEqual(['model at 1 s', 'action', 'model at 2 s']);
+  });
+
   it('runs up to and including the end time, then stops with the clock at the end time', () => {
     const simulation = new Simulation<string>(START);
     simulation.scheduleIn(10 * SECOND, 'at end');

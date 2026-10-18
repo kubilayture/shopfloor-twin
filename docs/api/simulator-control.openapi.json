@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ShopFloor Twin simulator control API",
-    "version": "1.8.0",
+    "version": "1.9.0",
     "description": "Controls the pacing of the live simulation and streams its plant events. Plant events: WebSocket at /api/v1/events (see docs/contracts/simulator-control-api.md)."
   },
   "components": {
@@ -7503,6 +7503,388 @@
         }
       }
     },
+    "/api/v1/scenario": {
+      "post": {
+        "summary": "Load a scenario timeline before the run starts",
+        "tags": [
+          "scenario"
+        ],
+        "description": "Loads a committed timeline (`name`) or one given inline (`timeline`), only while the run is idle and has no timeline, injection, drift or console action yet (body at most 512 KiB; at most 1000 entries). Every plant entry is accepted at the start time, injections then console actions, in timeline order, as a headless run of the same timeline gives them, so the event log is the headless one at any speed. `opcua-offline`, `modbus-silent`, `speed` and `pause` are applied by the pacer at their time and never touch the plant model. 404: no committed timeline of that name; 400: a document the schema refuses, a `dispatch` entry (headless only), an entry that does not fit the configuration or the run; 409: the run is not idle, has a timeline, an injection, drift or console action already, an earlier load failed part way, or the timeline names another seed, start or production mode. 413: a body over the limit.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "description": "A committed timeline of config/scenarios"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "timeline": {
+                        "type": "object",
+                        "additionalProperties": {},
+                        "description": "A timeline document (the YAML of config/scenarios as JSON), without `stock`"
+                      }
+                    },
+                    "required": [
+                      "timeline"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scenario": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "nullable": true,
+                          "description": "The committed timeline, or null for one posted inline",
+                          "type": "string"
+                        },
+                        "description": {
+                          "nullable": true,
+                          "type": "string"
+                        },
+                        "entries": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "entry": {
+                                "type": "string",
+                                "description": "Where the entry is in the document, e.g. `timeline[3]`"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "failure",
+                                  "leak-drift",
+                                  "opcua-offline",
+                                  "modbus-silent",
+                                  "lot-block",
+                                  "lot-release",
+                                  "operators-absent",
+                                  "tool-breakage",
+                                  "dispatch",
+                                  "speed",
+                                  "pause"
+                                ]
+                              },
+                              "at": {
+                                "description": "Absent for operators-absent (applied at its shift start)",
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "scheduled",
+                                  "held",
+                                  "applied",
+                                  "active",
+                                  "ended",
+                                  "ignored",
+                                  "planned"
+                                ],
+                                "description": "A plant entry: its injection or console action status; an infrastructure entry: scheduled, then applied, or active and ended for one with an `until`"
+                              },
+                              "id": {
+                                "description": "The injection's or console action's id",
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "entry",
+                              "action",
+                              "status"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "description",
+                        "entries"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "scenario"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "The loaded timeline and each entry's progress, or null",
+        "tags": [
+          "scenario"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scenario": {
+                      "nullable": true,
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "nullable": true,
+                          "description": "The committed timeline, or null for one posted inline",
+                          "type": "string"
+                        },
+                        "description": {
+                          "nullable": true,
+                          "type": "string"
+                        },
+                        "entries": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "entry": {
+                                "type": "string",
+                                "description": "Where the entry is in the document, e.g. `timeline[3]`"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "failure",
+                                  "leak-drift",
+                                  "opcua-offline",
+                                  "modbus-silent",
+                                  "lot-block",
+                                  "lot-release",
+                                  "operators-absent",
+                                  "tool-breakage",
+                                  "dispatch",
+                                  "speed",
+                                  "pause"
+                                ]
+                              },
+                              "at": {
+                                "description": "Absent for operators-absent (applied at its shift start)",
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "scheduled",
+                                  "held",
+                                  "applied",
+                                  "active",
+                                  "ended",
+                                  "ignored",
+                                  "planned"
+                                ],
+                                "description": "A plant entry: its injection or console action status; an infrastructure entry: scheduled, then applied, or active and ended for one with an `until`"
+                              },
+                              "id": {
+                                "description": "The injection's or console action's id",
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "entry",
+                              "action",
+                              "status"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "description",
+                        "entries"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "scenario"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/scenarios": {
+      "get": {
+        "summary": "The committed timelines of config/scenarios",
+        "tags": [
+          "scenario"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scenarios": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "description"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "scenarios"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health/live": {
       "get": {
         "summary": "The process is up",
@@ -7622,6 +8004,10 @@
     {
       "name": "faults",
       "description": "Infrastructure faults for resilience tests, and failure injection"
+    },
+    {
+      "name": "scenario",
+      "description": "Scenario timelines of config/scenarios, played live (1.9)"
     }
   ]
 }

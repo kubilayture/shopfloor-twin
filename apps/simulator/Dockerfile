@@ -30,6 +30,7 @@ ENV NODE_ENV=production \
 WORKDIR /app
 COPY --from=deps /app ./
 COPY config/plant config/plant
+COPY config/scenarios config/scenarios
 COPY packages/alarm-core/src packages/alarm-core/src
 COPY packages/contracts/src packages/contracts/src
 COPY packages/oee-core/src packages/oee-core/src

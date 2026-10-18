@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { scenarioNames, scenarioOptions } from './golden.ts';
+import { loadTimeline, timelineNames, timelinePath } from './timeline.ts';
 import {
   lineOeeDocument,
   runHeadless,
@@ -22,7 +23,8 @@ import {
 const DEFAULT_CONFIG = resolve(import.meta.dirname, '../../../../config/plant');
 const USAGE =
   'Usage: headless [--seed 0..4294967295] [--days D] [--start ISO-8601 with offset] [--config DIR] [--out DIR]\n' +
-  '       headless --scenario NAME [--out DIR]   (a golden scenario of apps/simulator/golden, injections included)';
+  '       headless --scenario NAME [--out DIR]   (a golden scenario of apps/simulator/golden, injections included)\n' +
+  '       headless --timeline NAME|FILE [--out DIR]   (a timeline of config/scenarios, or a timeline file)';
 const FLUSH_BYTES = 1 << 20;
 
 function usage(problem: string): never {
@@ -37,6 +39,7 @@ function parse(): {
   config: string;
   out: string;
   scenario: string | undefined;
+  timeline: string | undefined;
   scenarioEnd: number | undefined;
 } {
   let values;
@@ -51,24 +54,31 @@ function parse(): {
         config: { type: 'string' },
         out: { type: 'string', default: 'runs/latest' },
         scenario: { type: 'string' },
+        timeline: { type: 'string' },
         end: { type: 'string' },
       },
     }));
   } catch (error) {
     return usage(error instanceof Error ? error.message : String(error));
   }
-  if (values.scenario !== undefined) {
-    // A scenario brings its own seed, span and configuration.
+  if (values.scenario !== undefined && values.timeline !== undefined) {
+    return usage('--scenario and --timeline exclude each other');
+  }
+  const named = values.scenario === undefined ? '--timeline' : '--scenario';
+  if (values.scenario !== undefined || values.timeline !== undefined) {
+    // A scenario or a timeline brings its own seed, span and configuration.
     const extra = (['seed', 'start', 'days', 'config'] as const).filter(
       (name) => values[name] !== undefined,
     );
     if (extra.length > 0) {
-      return usage(`--scenario takes no ${extra.map((name) => `--${name}`).join(', ')}`);
+      return usage(`${named} takes no ${extra.map((name) => `--${name}`).join(', ')}`);
     }
   }
   let scenarioEnd: number | undefined;
   if (values.end !== undefined) {
-    if (values.scenario === undefined) return usage('--end needs --scenario');
+    if (values.scenario === undefined && values.timeline === undefined) {
+      return usage('--end needs --scenario or --timeline');
+    }
     try {
       scenarioEnd = Temporal.Instant.from(values.end).epochMilliseconds;
     } catch {
@@ -104,13 +114,30 @@ function parse(): {
     config: values.config ?? DEFAULT_CONFIG,
     out: values.out,
     scenario: values.scenario,
+    timeline: values.timeline,
     scenarioEnd,
   };
 }
 
 const options = parse();
 let run: HeadlessOptions;
-if (options.scenario === undefined) {
+if (options.timeline !== undefined) {
+  // A timeline (#235): a name of config/scenarios or a file, relative to where pnpm was started.
+  const path = timelinePath(options.timeline, process.env.INIT_CWD ?? process.cwd());
+  try {
+    run = (await loadTimeline(path)).options;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    console.error(`committed timelines: ${timelineNames().join(', ') || '(none)'}`);
+    process.exit(1);
+  }
+  if (options.scenarioEnd !== undefined) {
+    if (options.scenarioEnd <= run.start || options.scenarioEnd > run.end) {
+      usage(`--end must be after the timeline's start and not after its end`);
+    }
+    run = { ...run, end: options.scenarioEnd };
+  }
+} else if (options.scenario === undefined) {
   const loaded = await loadPlantConfig(resolve(options.config));
   if (!loaded.ok) {
     console.error(formatIssues(loaded.issues));

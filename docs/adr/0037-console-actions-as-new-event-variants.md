@@ -1,6 +1,6 @@
 # ADR-0037: Console actions as new event variants that keep every draw
 
-- Status: accepted (#234: the console actions and their read routes, control API 1.7, as decided in the Phase 9 plan, "Console actions"; scenario playback (P9-08), dispatch recording (P9-09) and the console's access path (P9-10) amend this record)
+- Status: accepted (#234: the console actions and their read routes, control API 1.7, as decided in the Phase 9 plan, "Console actions"; amended by #235, scenario timelines and the order of an instant, control API 1.9; dispatch recording (P9-09) and the console's access path (P9-10) amend it further)
 - Date: 2026-10-18
 - Deciders: Claude (#234), within the Phase 9 plan and its review (rounds 1–3 and the final check); recorded for the owner under the standing instruction of 2026-10-15
 
@@ -53,4 +53,30 @@ How an action enters the run and the log:
 - Bad: control API 1.7 is the first free minor in merge order, not the 1.8 the plan's listing assumed: P9-03's ground-truth `lineOee` takes 1.8 if this merges first.
 - Bad: a lot block of a blocked lot, or a release of a free lot, is accepted and recorded (a `lot` event) although it changes nothing; refusing it would need the lot's state at a future `at`.
 - Follow-up for P9-10: `GET /api/v1/actions` is not in the plan's `/sim/` allowlist and must be added to it.
-- Follow-up for P9-08: a live post with `at` equal to the simulation time (or without `at`) runs after the events already processed in that millisecond, so it equals the headless run only when posted before the run starts; the timeline test must cover posts made mid-run.
+- Follow-up for P9-08 (closed by the amendment below): a live post with `at` equal to the simulation time (or without `at`) runs after the events already processed in that millisecond, so it equals the headless run only when posted before the run starts; the timeline test must cover posts made mid-run.
+
+## Amendment (#235): scenario timelines and the order of an instant
+
+P9-08 plays timelines of these actions headless and live (Phase 9 plan, "Scenario playback"; `docs/simulation-model.md`, "Scenario timelines"). It closes the follow-up above on posts made mid-run.
+
+- **Timelines map onto the same lists.** `config/scenarios/<name>.yaml` and a golden `scenario.json` are parsed by one schema in `plant-config` (`scenarioSchema`, `scenarioPlan`, `checkScenarioPlan`). A timeline's `lot-block`, `lot-release`, `operators-absent` and `tool-breakage` entries go to `actions` in timeline order, as `ActionSpec`s: the entry and log decisions above are unchanged, and the run header lists them under `actions`. `failure` and `leak-drift` go to `injections`, `dispatch` to `dispatches`, as before #235; `opcua-offline`, `modbus-silent`, `speed` and `pause` are live only and touch neither the model nor the log.
+- **A live timeline is accepted before the run starts.** `SIM_TIMELINE` or `POST /api/v1/scenario` (control API 1.9) only while the run is idle: every plant entry is accepted at the start time in the headless order, so a live timeline is the case "accepted before the run starts" this record already proved equal to headless. The infrastructure entries are pacer cues, applied when the simulation has processed every event at or before their time. A `dispatch` entry is refused live.
+- **Accepted actions are external events.** Options for an action posted mid-run, the open point above: (1) leave the FIFO queue and record what was posted where; (2) refuse a mid-run post for the simulation time; (3) an `external` lane in `sim-core`'s queue: at one millisecond every event accepted from outside (an injection, a drift's start and end, a lot action, a tool breakage) runs before every model event, in acceptance order. **Chosen: (3)**, with (1)'s recording left to P9-09 for dispatches. With a FIFO queue an action posted for a later time runs after any model event already queued for that millisecond, and the headless run, which accepts everything first, before it: the two logs differ (checked by hand: the mid-run test fails with the lane removed). With the lane both put it first. A post for the simulation time itself still runs after the events of that millisecond already processed, which no queue can undo; that order is now defined and tested, and option (2) would have refused the console's most common request ("now").
+- **The goldens keep their bytes:** a run that accepts everything before it starts changes only where an external event shares its millisecond with an event `line.start` queued, and none of the four goldens has one (`pnpm test:golden` unchanged).
+
+### Consequences of the amendment
+
+- Good: exit criterion 3 holds: a timeline with every live action kind, played live at 1× to 60× with its own pauses and speed changes, writes the headless event log byte for byte (`SIM_EVENT_LOG`), and a mid-run post for a later time equals the headless run with the same action.
+- Good: one schema and one mapping for both formats, so the console, the headless CLI and the goldens can't drift apart.
+- Bad: a post at the simulation time is reproduced by a headless run only when no event of that millisecond had been processed; replaying it exactly needs the recording P9-09 builds for dispatches.
+- Bad: the headless run gives every injection before every action, so an injection and an action of the same millisecond posted action first differ from it; posting in group order, or a timeline, avoids it.
+- Bad: a live run plays a timeline against its own configuration; the timeline's `config` and `stock` describe the headless run, and a stock of the timeline's own needs `SIM_STOCK` set to it.
+- Bad: control API 1.9, not 1.8: 1.8 is left to P9-03 (#230), still open when this was numbered.
+
+### Remaining differences from headless (review of #235)
+
+- **Posts before a load are refused, not reordered:** a live load is refused (409) once any injection, drift or console action was posted, even while idle, since the headless run would give those after the timeline's entries. A load the line refuses part way latches: no later load is taken.
+- **A live `main.ts` run has no end:** its event log is compared with the headless log up to the headless end, as a prefix; a drift's `until` boundary check uses the timeline's end.
+- **Cues and wall time:** a cue fires when its timer does (set for it as for the next event), so up to the timer's lateness late in wall time, never in simulation time; a speed cue re-anchors where the paced clock is, a pause cue leaves the simulation time at its time. A step applies the cues its event reaches after the event.
+- **Not every `scenario.json` is a timeline:** a timeline is in time order, and the headless run gives every injection before every action; a golden whose injections are not in time order, or whose same-millisecond injection and action must keep that cross-group order, can't be rewritten as a timeline entry for entry (the four goldens can, tested).
+- **Dispatches stay in the model lane:** a `LoadOrder` job's wake-up is a model event, accepted while idle in the headless order; mid-run dispatches and their replay are P9-09's (its probe Q2 decides whether they need the external lane).

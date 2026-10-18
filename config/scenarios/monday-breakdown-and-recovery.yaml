@@ -1,0 +1,47 @@
+# A scenario timeline (#235, docs/simulation-model.md "Scenario timelines"): one Monday of the
+# default plant with every action a live run plays. Headless:
+#   pnpm sim:headless --timeline monday-breakdown-and-recovery
+# Live: SIM_TIMELINE=monday-breakdown-and-recovery (with SIM_SEED=20261012 and the default
+# SIM_START), or POST /api/v1/scenario { "name": "monday-breakdown-and-recovery" } while idle.
+# The event log is the same both ways, at any speed: the infrastructure entries (opcua-offline,
+# modbus-silent, speed, pause) never touch the plant model. Times are Istanbul time (+03:00).
+
+description: >-
+  Monday at Gebze: a spindle overload on CNC-01 and its repair, CNC-02's OPC UA server offline for
+  ten minutes, the SK-1 lot blocked and released, a leak-test drift on LKT-01, a broken tool on
+  CNC-02, the washer's Modbus silent, a heater fault on WSH-01, both ASM-01 operators of shift B
+  absent, and the pacing slowed, sped up and paused twice
+seed: 20261012
+start: '2026-10-12T06:00:00+03:00'
+days: 1
+config: config/plant
+
+timeline:
+  - at: '2026-10-12T07:15:00+03:00'
+    action: failure
+    machine: cnc-01
+    code: SPINDLE-OVERLOAD
+    repairMs: 1800000
+  - at: '2026-10-12T07:40:00+03:00'
+    action: opcua-offline
+    machine: cnc-02
+    until: '2026-10-12T07:50:00+03:00'
+  - { at: '2026-10-12T08:05:00+03:00', action: lot-block, lot: SK1-2610-01 }
+  - at: '2026-10-12T08:25:00+03:00'
+    action: leak-drift
+    machine: lkt-01
+    until: '2026-10-12T09:10:00+03:00'
+    shift: 0.6
+  - { at: '2026-10-12T08:45:00+03:00', action: lot-release, lot: SK1-2610-01 }
+  - { at: '2026-10-12T09:00:00+03:00', action: pause }
+  - { at: '2026-10-12T09:00:05+03:00', action: speed, speed: 60 }
+  - { at: '2026-10-12T09:33:00+03:00', action: tool-breakage, machine: cnc-02 }
+  - at: '2026-10-12T11:20:00+03:00'
+    action: modbus-silent
+    until: '2026-10-12T11:30:00+03:00'
+  - { at: '2026-10-12T12:00:00+03:00', action: speed, speed: 2 }
+  - { at: '2026-10-12T12:30:00+03:00', action: speed, speed: 60 }
+  # No `at`: applied at the start of shift B (14:00), before its operator events.
+  - { action: operators-absent, shift: 2026-10-12/B, operators: [op-b1, op-b2] }
+  - { at: '2026-10-12T15:10:00+03:00', action: failure, machine: wsh-01, code: HEATER-FAULT }
+  - { at: '2026-10-12T16:00:00+03:00', action: pause }

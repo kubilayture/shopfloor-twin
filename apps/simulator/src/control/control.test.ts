@@ -665,6 +665,8 @@ describe('control API (#54)', () => {
       '/api/v1/operators/absent',
       '/api/v1/pause',
       '/api/v1/resume',
+      '/api/v1/scenario',
+      '/api/v1/scenarios',
       '/api/v1/speed',
       '/api/v1/status',
       '/api/v1/step',
@@ -699,6 +701,18 @@ describe('environment configuration (#54)', () => {
     expect(result.ok && result.env.SIM_STOCK).toBeUndefined();
     const stock = parseEnv({ SIM_STOCK: 'apps/simulator/golden/quality-01/stock.yaml' });
     expect(stock.ok && stock.env.SIM_STOCK).toBe('apps/simulator/golden/quality-01/stock.yaml');
+    // Timelines and the live event log (#235): neither unless set; the committed folder.
+    expect(result.ok && result.env.SIM_TIMELINE).toBeUndefined();
+    expect(result.ok && result.env.SIM_EVENT_LOG).toBeUndefined();
+    expect(result.ok && result.env.SIM_SCENARIOS_DIR).toMatch(/config\/scenarios$/);
+    const timeline = parseEnv({
+      SIM_TIMELINE: 'monday-breakdown-and-recovery',
+      SIM_EVENT_LOG: '/var/log/sim/events.jsonl',
+    });
+    expect(timeline.ok && timeline.env).toMatchObject({
+      SIM_TIMELINE: 'monday-breakdown-and-recovery',
+      SIM_EVENT_LOG: '/var/log/sim/events.jsonl',
+    });
   });
 
   it.each([

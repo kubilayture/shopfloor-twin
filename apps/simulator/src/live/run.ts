@@ -1,4 +1,4 @@
-import type { InjectionSpec, PlantConfig } from '@shopfloor/plant-config';
+import type { InjectionSpec, PlantConfig, Scenario } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { isoTime } from '../headless/serialize.ts';
 import { analysisConfigHash, applyDispatches, type DispatchSpec } from '../headless/run.ts';
@@ -31,6 +31,12 @@ import {
 import type { MachineState } from '../plant/machine-state.ts';
 import { ProcessValues } from '../plant/process-values.ts';
 import { LivePacer, type WallClock } from './pacer.ts';
+import {
+  LiveTimeline,
+  type InfrastructureHooks,
+  type TimelineLoadResult,
+  type TimelineView,
+} from './timeline.ts';
 
 export interface LiveOptions {
   readonly config: PlantConfig;
@@ -49,6 +55,8 @@ export interface LiveOptions {
    * dispatch through `LoadOrder` while the run is idle at its start time does the same.
    */
   readonly dispatches?: readonly DispatchSpec[];
+  /** The infrastructure faults a timeline's `opcua-offline` and `modbus-silent` entries use (#235). */
+  readonly infrastructure?: InfrastructureHooks;
 }
 
 /**
@@ -134,6 +142,13 @@ export interface LiveRun {
   lots(): LotView[];
   /** The roster, each operator's place in the current shift, and the forced absences. */
   operators(): OperatorsView;
+  /**
+   * Loads a scenario timeline while the run is idle (#235): every plant entry is accepted at the
+   * start time in the headless order, the infrastructure entries become pacer cues.
+   */
+  loadTimeline(scenario: Scenario, name?: string | null): TimelineLoadResult;
+  /** The loaded timeline with each entry's progress, or undefined. */
+  timeline(): TimelineView | undefined;
 }
 
 export function createLiveRun(options: LiveOptions): LiveRun {
@@ -177,6 +192,15 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     ...(options.end === undefined ? {} : { end: options.end }),
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.onAdvance ? { onAdvance: options.onAdvance } : {}),
+  });
+  const timeline = new LiveTimeline({
+    config: options.config,
+    seed: options.seed,
+    start: options.start,
+    line,
+    simulation,
+    pacer,
+    infrastructure: options.infrastructure ?? {},
   });
   const groundTruth = (asOf?: SimTime): LiveGroundTruth => {
     const now = simulation.now;
@@ -232,5 +256,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     actions: () => line.actions(),
     lots: () => line.lots(),
     operators: () => line.operators(),
+    loadTimeline: (scenario, name) => timeline.load(scenario, name ?? null),
+    timeline: () => timeline.view(),
   };
 }

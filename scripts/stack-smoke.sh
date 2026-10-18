@@ -255,5 +255,15 @@ if [ "${SMOKE_WRITES:-}" = 1 ]; then
     fail "user:create could not create the smoke supervisor"
   smoke_users="$smoke_users $SMOKE_SUPERVISOR_USERNAME"
   echo "ok: user:create made the supervisor $SMOKE_SUPERVISOR_USERNAME"
+  # And a quality user (#204): it releases the supervisor's smoke hold and is refused a limit
+  # version before version 1 exists. Disabled again by the exit trap.
+  SMOKE_QUALITY_USERNAME="smoke-qa-$(openssl rand -hex 4)"
+  SMOKE_QUALITY_PASSWORD=$(openssl rand -hex 16)
+  export SMOKE_QUALITY_USERNAME SMOKE_QUALITY_PASSWORD
+  printf '%s' "$SMOKE_QUALITY_PASSWORD" | docker compose exec -T mes \
+    node apps/mes-server/src/user-cli.ts --username "$SMOKE_QUALITY_USERNAME" --role quality >/dev/null ||
+    fail "user:create could not create the smoke quality user"
+  smoke_users="$smoke_users $SMOKE_QUALITY_USERNAME"
+  echo "ok: user:create made the quality user $SMOKE_QUALITY_USERNAME"
 fi
 node scripts/stack-smoke-web.mjs "$web" || fail "web checks failed"

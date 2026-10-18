@@ -345,6 +345,57 @@ if (imported === undefined) {
   );
 }
 
+// Phase 8 (#204): the trace and quality reads answer, and an operator's quality writes are refused
+// (403 forbidden) before anything is looked up: a hold opened, released or rejected, a limit
+// version, an acknowledgement. Read-only for the stack, so they always run.
+const search = await getJson('/api/v1/trace/search?q=VB');
+if (!Array.isArray(search.results)) fail(`GET /trace/search: ${JSON.stringify(search)}`);
+const characteristics = (await getJson('/api/v1/quality/characteristics')).characteristics;
+const leak = characteristics.find((c) => c.id === 'leak-rate');
+if (leak?.equipment !== 'lkt-01') {
+  fail(
+    `GET /quality/characteristics lists no leak-rate at lkt-01: ${JSON.stringify(characteristics)}`,
+  );
+}
+const holdReasons = (await getJson('/api/v1/quality/hold-reasons')).reasons;
+const openReason = holdReasons.find((r) => r.for.includes('open'))?.id;
+const releaseReason = holdReasons.find((r) => r.for.includes('release'))?.id;
+if (!openReason || !releaseReason) fail(`hold reasons: ${JSON.stringify(holdReasons)}`);
+const smokeLot = (await getJson('/api/v1/trace/search?q=SK1')).results.find(
+  (r) => r.kind === 'lot',
+);
+const anyLot = smokeLot?.id ?? 'SK1-2610-01';
+const phase8Refusals = [
+  ['POST', '/api/v1/quality/holds', { subject: { kind: 'lot', id: anyLot }, reason: openReason }],
+  [
+    'POST',
+    `/api/v1/quality/holds/${crypto.randomUUID()}/release`,
+    { version: 1, reason: releaseReason },
+  ],
+  [
+    'POST',
+    `/api/v1/quality/holds/${crypto.randomUUID()}/reject`,
+    { version: 1, reason: releaseReason },
+  ],
+  [
+    'POST',
+    '/api/v1/quality/characteristics/leak-rate/limits',
+    { version: 1, from: new Date(0).toISOString(), to: new Date().toISOString(), comment: 'smoke' },
+  ],
+  ['POST', '/api/v1/quality/signals/1/ack', { version: 1, comment: 'smoke' }],
+];
+for (const [method, path, request] of phase8Refusals) {
+  const answer = await send(method, path, page, JSON.stringify(request));
+  if (answer.status !== 403 || problemType(answer) !== 'urn:shopfloor:forbidden') {
+    fail(`an operator's ${method} ${path} answered ${answer.status}: ${answer.text}`);
+  }
+}
+const holdsAfter = (await getJson('/api/v1/quality/holds')).holds;
+if (holdsAfter.some((h) => h.openedBy === username)) fail('a refused hold write opened a hold');
+console.log(
+  `ok: trace search and quality characteristics answer; an operator may not open, release or reject a hold, write limits or acknowledge (403, ${String(phase8Refusals.length)} writes)`,
+);
+
 const patch = await send('PATCH', refused, page, body);
 if (patch.status !== 403) fail(`PATCH through the web answered ${patch.status}, not 403`);
 console.log('ok: nginx passes only GET, POST, PUT and DELETE under /api/ (PATCH refused, 403)');
@@ -420,6 +471,94 @@ if (imported === undefined) {
     `ok: a supervisor released and dispatched ${imported.id}; abandoning ${command.commandId} while its run goes on is 409 order-state`,
   );
 }
+
+// Phase 8 refusals that need a write (#204), on the disposable stack: the supervisor opens a hold
+// on a lot (quality:hold), a second open hold on the same subject and reason is 409 hold-exists,
+// the supervisor may not release it (quality:release is quality's only, 403); the quality user's
+// limit version before version 1 exists is 409 limits-v1-missing (the baseline needs 100 final
+// first-pass readings, hours of plant time; the smoke runs minutes after the start); the quality
+// user then releases the hold (cleanup), and its transitions name both users. A close refused for
+// `quality-hold` or `genealogy-pending` needs a completed order, which a schedule-mode stack never
+// has: the reconciliation's quality pass and #201's tests cover them.
+const qualityName = process.env.SMOKE_QUALITY_USERNAME;
+const qualitySecret = process.env.SMOKE_QUALITY_PASSWORD;
+const holdSupervisor = process.env.SMOKE_SUPERVISOR_USERNAME;
+const holdSupervisorSecret = process.env.SMOKE_SUPERVISOR_PASSWORD;
+if (!holdSupervisor || !holdSupervisorSecret || !qualityName || !qualitySecret) {
+  fail('SMOKE_SUPERVISOR_* and SMOKE_QUALITY_* must be set with SMOKE_WRITES=1');
+}
+const asSupervisor = await login(holdSupervisor, holdSupervisorSecret);
+const asQuality = await login(qualityName, qualitySecret);
+if (asSupervisor.status !== 200 || asQuality.status !== 200) {
+  fail(`supervisor or quality login: ${asSupervisor.status}, ${asQuality.status}`);
+}
+const supervisorDesk = { origin: base.origin, ...json, cookie: asSupervisor.cookie };
+const qualityDesk = { origin: base.origin, ...json, cookie: asQuality.cookie };
+let holdLot;
+for (const begun = Date.now(); ;) {
+  holdLot = (await getJson('/api/v1/trace/search?q=SK1')).results.find((r) => r.kind === 'lot')?.id;
+  if (holdLot !== undefined) break;
+  if (Date.now() - begun > DEADLINE_MS) fail('the MES imported no SK-1 lot from the ERP mock');
+  await sleep(1000);
+}
+const holdRequest = JSON.stringify({
+  subject: { kind: 'lot', id: holdLot },
+  reason: openReason,
+  comment: 'stack smoke',
+});
+const openedHold = await send('POST', '/api/v1/quality/holds', supervisorDesk, holdRequest);
+if (openedHold.status !== 200) {
+  fail(`the supervisor's hold answered ${openedHold.status}: ${openedHold.text}`);
+}
+const hold = JSON.parse(openedHold.text);
+const exists = await send('POST', '/api/v1/quality/holds', supervisorDesk, holdRequest);
+if (exists.status !== 409 || problemType(exists) !== 'urn:shopfloor:hold-exists') {
+  fail(`a second hold on ${holdLot} answered ${exists.status}: ${exists.text}`);
+}
+const decision = JSON.stringify({ version: hold.version, reason: releaseReason });
+const holdPath = `/api/v1/quality/holds/${encodeURIComponent(hold.id)}`;
+const supervisorRelease = await send('POST', `${holdPath}/release`, supervisorDesk, decision);
+if (
+  supervisorRelease.status !== 403 ||
+  problemType(supervisorRelease) !== 'urn:shopfloor:forbidden'
+) {
+  fail(`the supervisor's release answered ${supervisorRelease.status}: ${supervisorRelease.text}`);
+}
+const characteristic = (await getJson('/api/v1/quality/characteristics')).characteristics.find(
+  (c) => c.id === 'leak-rate',
+);
+if (characteristic.currentLimits !== null) {
+  fail(`version 1 exists already on a fresh stack: ${JSON.stringify(characteristic.baseline)}`);
+}
+const limitsWrite = await send(
+  'POST',
+  '/api/v1/quality/characteristics/leak-rate/limits',
+  qualityDesk,
+  JSON.stringify({
+    version: characteristic.version,
+    from: new Date(0).toISOString(),
+    to: new Date().toISOString(),
+    comment: 'stack smoke',
+  }),
+);
+if (limitsWrite.status !== 409 || problemType(limitsWrite) !== 'urn:shopfloor:limits-v1-missing') {
+  fail(`a limit version before version 1 answered ${limitsWrite.status}: ${limitsWrite.text}`);
+}
+const releasedHold = await send('POST', `${holdPath}/release`, qualityDesk, decision);
+if (releasedHold.status !== 200 || JSON.parse(releasedHold.text).state !== 'released') {
+  fail(`the quality user's release answered ${releasedHold.status}: ${releasedHold.text}`);
+}
+const holdDetail = await getJson(holdPath);
+const transitions = holdDetail.transitions.map((t) => `${t.kind}:${t.by}`);
+if (
+  JSON.stringify(transitions) !==
+  JSON.stringify([`opened:${holdSupervisor}`, `released:${qualityName}`])
+) {
+  fail(`hold transitions: ${JSON.stringify(transitions)}`);
+}
+console.log(
+  `ok: a supervisor's hold on ${holdLot}, a second one 409 hold-exists, the supervisor's release 403; limits before version 1 409 limits-v1-missing (${String(characteristic.baseline.final)} of ${String(characteristic.baseline.needed)} baseline readings); released by quality`,
+);
 
 const reasons = (await getJson('/api/v1/reason-codes')).reasons;
 const reason = reasons.find((r) => r.id !== 'UNCODED' && r.parent !== null)?.id;

@@ -360,6 +360,9 @@ describe('the operator terminal (#177)', () => {
     const signalList = screen.getByTestId('terminal-signals');
     for (const list of [holdList, signalList]) {
       expect([list.getAttribute('aria-live'), list.children.length]).toEqual(['polite', 0]);
+      // Never hidden while empty (#204 review): a live region with `display: none` is not one.
+      expect(list.className.split(/\s+/).filter((c) => /(^|:)hidden$/.test(c))).toEqual([]);
+      expect(list.hidden).toBe(false);
     }
     expect(screen.getByTestId('terminal-quality').dataset.empty).toBe('true');
     expect(screen.queryByTestId('terminal-lots')).toBeNull();

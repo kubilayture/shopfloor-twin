@@ -405,6 +405,54 @@ if (process.env.SMOKE_WRITES !== '1') {
   process.exit(0);
 }
 
+// A limit version before version 1 exists is 409 limits-v1-missing (#204), first among the writes:
+// version 1 needs 100 final first-pass readings (hours of plant time) and the smoke runs minutes
+// after the start. Tolerant of a slow machine (#204 review MEDIUM 6): if version 1 exists already,
+// or the write answers anything else and a second read finds version 1, the check is skipped and
+// logged, never failed; any other answer while version 1 is missing fails.
+const qualityName = process.env.SMOKE_QUALITY_USERNAME;
+const qualitySecret = process.env.SMOKE_QUALITY_PASSWORD;
+if (!qualityName || !qualitySecret) fail('SMOKE_QUALITY_* must be set with SMOKE_WRITES=1');
+const asQuality = await login(qualityName, qualitySecret);
+if (asQuality.status !== 200) fail(`quality login: ${asQuality.status}`);
+const qualityDesk = { origin: base.origin, ...json, cookie: asQuality.cookie };
+const leakRate = async () =>
+  (await getJson('/api/v1/quality/characteristics')).characteristics.find(
+    (c) => c.id === 'leak-rate',
+  );
+const before = await leakRate();
+if (before.currentLimits !== null) {
+  console.log(
+    `skipped: limits-v1-missing (version 1 exists already: ${JSON.stringify(before.baseline)})`,
+  );
+} else {
+  const limitsWrite = await send(
+    'POST',
+    '/api/v1/quality/characteristics/leak-rate/limits',
+    qualityDesk,
+    JSON.stringify({
+      version: before.version,
+      from: new Date(0).toISOString(),
+      to: new Date().toISOString(),
+      comment: 'stack smoke',
+    }),
+  );
+  if (
+    limitsWrite.status === 409 &&
+    problemType(limitsWrite) === 'urn:shopfloor:limits-v1-missing'
+  ) {
+    console.log(
+      `ok: a limit version before version 1 is 409 limits-v1-missing (${String(before.baseline.final)} of ${String(before.baseline.needed)} baseline readings)`,
+    );
+  } else if ((await leakRate()).currentLimits !== null) {
+    console.log(
+      `skipped: limits-v1-missing (version 1 was made meanwhile; the write answered ${limitsWrite.status})`,
+    );
+  } else {
+    fail(`a limit version before version 1 answered ${limitsWrite.status}: ${limitsWrite.text}`);
+  }
+}
+
 // The bootstrap admin (#168, #170): on a fresh database it exists with a temporary password, so
 // every route but the session and password routes answers 403 until it is changed, and its socket
 // is closed with 4403. Logging in rotates nothing; the smoke never changes the password.
@@ -474,26 +522,18 @@ if (imported === undefined) {
 
 // Phase 8 refusals that need a write (#204), on the disposable stack: the supervisor opens a hold
 // on a lot (quality:hold), a second open hold on the same subject and reason is 409 hold-exists,
-// the supervisor may not release it (quality:release is quality's only, 403); the quality user's
-// limit version before version 1 exists is 409 limits-v1-missing (the baseline needs 100 final
-// first-pass readings, hours of plant time; the smoke runs minutes after the start); the quality
-// user then releases the hold (cleanup), and its transitions name both users. A close refused for
+// the supervisor may not release it (quality:release is quality's only, 403); the quality user
+// then releases the hold (cleanup), and its transitions name both users. A close refused for
 // `quality-hold` or `genealogy-pending` needs a completed order, which a schedule-mode stack never
 // has: the reconciliation's quality pass and #201's tests cover them.
-const qualityName = process.env.SMOKE_QUALITY_USERNAME;
-const qualitySecret = process.env.SMOKE_QUALITY_PASSWORD;
 const holdSupervisor = process.env.SMOKE_SUPERVISOR_USERNAME;
 const holdSupervisorSecret = process.env.SMOKE_SUPERVISOR_PASSWORD;
-if (!holdSupervisor || !holdSupervisorSecret || !qualityName || !qualitySecret) {
-  fail('SMOKE_SUPERVISOR_* and SMOKE_QUALITY_* must be set with SMOKE_WRITES=1');
+if (!holdSupervisor || !holdSupervisorSecret) {
+  fail('SMOKE_SUPERVISOR_* must be set with SMOKE_WRITES=1');
 }
 const asSupervisor = await login(holdSupervisor, holdSupervisorSecret);
-const asQuality = await login(qualityName, qualitySecret);
-if (asSupervisor.status !== 200 || asQuality.status !== 200) {
-  fail(`supervisor or quality login: ${asSupervisor.status}, ${asQuality.status}`);
-}
+if (asSupervisor.status !== 200) fail(`supervisor login: ${asSupervisor.status}`);
 const supervisorDesk = { origin: base.origin, ...json, cookie: asSupervisor.cookie };
-const qualityDesk = { origin: base.origin, ...json, cookie: asQuality.cookie };
 let holdLot;
 for (const begun = Date.now(); ;) {
   holdLot = (await getJson('/api/v1/trace/search?q=SK1')).results.find((r) => r.kind === 'lot')?.id;
@@ -524,26 +564,6 @@ if (
 ) {
   fail(`the supervisor's release answered ${supervisorRelease.status}: ${supervisorRelease.text}`);
 }
-const characteristic = (await getJson('/api/v1/quality/characteristics')).characteristics.find(
-  (c) => c.id === 'leak-rate',
-);
-if (characteristic.currentLimits !== null) {
-  fail(`version 1 exists already on a fresh stack: ${JSON.stringify(characteristic.baseline)}`);
-}
-const limitsWrite = await send(
-  'POST',
-  '/api/v1/quality/characteristics/leak-rate/limits',
-  qualityDesk,
-  JSON.stringify({
-    version: characteristic.version,
-    from: new Date(0).toISOString(),
-    to: new Date().toISOString(),
-    comment: 'stack smoke',
-  }),
-);
-if (limitsWrite.status !== 409 || problemType(limitsWrite) !== 'urn:shopfloor:limits-v1-missing') {
-  fail(`a limit version before version 1 answered ${limitsWrite.status}: ${limitsWrite.text}`);
-}
 const releasedHold = await send('POST', `${holdPath}/release`, qualityDesk, decision);
 if (releasedHold.status !== 200 || JSON.parse(releasedHold.text).state !== 'released') {
   fail(`the quality user's release answered ${releasedHold.status}: ${releasedHold.text}`);
@@ -557,7 +577,7 @@ if (
   fail(`hold transitions: ${JSON.stringify(transitions)}`);
 }
 console.log(
-  `ok: a supervisor's hold on ${holdLot}, a second one 409 hold-exists, the supervisor's release 403; limits before version 1 409 limits-v1-missing (${String(characteristic.baseline.final)} of ${String(characteristic.baseline.needed)} baseline readings); released by quality`,
+  `ok: a supervisor's hold on ${holdLot}, a second one 409 hold-exists, the supervisor's release 403; released by quality`,
 );
 
 const reasons = (await getJson('/api/v1/reason-codes')).reasons;

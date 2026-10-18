@@ -55,6 +55,12 @@ const characteristic = process.env.RECONCILE_CHARACTERISTIC ?? 'leak-rate';
 const until = Date.parse(process.env.RECONCILE_SPC_UNTIL ?? '');
 /** The drift's first episode in the golden truth (identity), which must be judged. */
 const driftEpisode = process.env.RECONCILE_DRIFT_EPISODE ?? '';
+/**
+ * The simulation time the operator signs on at, at the earliest (review MEDIUM 2): an hour into the
+ * shift, so the units whose OP30 ran before it show that the crew is absent where nobody was
+ * signed on, not only present where somebody was. No episode forms before it.
+ */
+const crewFrom = Date.parse(process.env.RECONCILE_CREW_FROM ?? '');
 
 declare global {
   interface Window {
@@ -121,7 +127,14 @@ test('every SPC episode of the drifted shift appears on the SPC page and the Lin
   // The operator at Line A1 (a terminal session and the crew row), the quality user at the desk.
   const terminal = await (await browser.newContext()).newPage();
   const operator = account('operator');
+  // The sign-on's simulation time, read by this check (not by the MES): the reconciliation judges
+  // the crew on every unit's OP30 record by it (crew-window.json, review MEDIUM 2).
+  if (Number.isFinite(crewFrom)) {
+    while (Date.parse((await sim.status()).simTime) < crewFrom) await sleep(200);
+  }
+  const signOnFrom = (await sim.status()).simTime;
   await signOnAtTerminal(terminal, WORK_CENTER, operator);
+  const signOnTo = (await sim.status()).simTime;
   await expect(terminal.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
     timeout: 30_000,
   });
@@ -263,7 +276,10 @@ test('every SPC episode of the drifted shift appears on the SPC page and the Lin
       };
     });
     const agreement = snapshotAgreement(pageSnapshots, truth, PACING_MS, 500);
-    const observed = new Map([...truth.keys()].map((key) => [key, new Set([ABSENT, SHOWN])]));
+    // The values the truth was seen to hold per key (review MEDIUM 3), as terminal-live.spec.ts.
+    const observed = new Map(
+      [...truth.keys()].map((key) => [key, new Set(truth.get(key)?.map((c) => c.state))]),
+    );
     const values = pageValueProblems(shown, observed, agreement, {
       maxUnobserved: MAX_UNOBSERVED,
       minAgreement: MIN_AGREEMENT,
@@ -301,8 +317,16 @@ test('every SPC episode of the drifted shift appears on the SPC page and the Lin
   const terminalJudged = await judge(terminal, 'terminal', terminalTruth);
 
   // The operator signs off at the terminal: the crew row ends (the reconciliation checks it).
+  const signOffFrom = (await sim.status()).simTime;
   await terminal.getByTestId('terminal-sign-off').click();
   await expect(terminal.getByTestId('terminal-username')).toHaveValue('');
+  const signOffTo = (await sim.status()).simTime;
+  const crewWindow = {
+    operator: operator.username,
+    signOn: { from: signOnFrom, to: signOnTo },
+    signOff: { from: signOffFrom, to: signOffTo },
+  };
+  if (results) await writeFile(join(results, 'crew-window.json'), JSON.stringify(crewWindow));
 
   const summary = {
     characteristic,
@@ -317,6 +341,7 @@ test('every SPC episode of the drifted shift appears on the SPC page and the Lin
     desk: deskJudged.judgement,
     terminal: terminalJudged.judgement,
     operator: operator.username,
+    crewWindow,
   };
   console.log(`spc latency: ${JSON.stringify(summary)}`);
   if (results) await writeFile(join(results, 'spc-latency.json'), JSON.stringify(summary, null, 2));

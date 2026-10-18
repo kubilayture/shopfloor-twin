@@ -2,8 +2,9 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { account, logIn, signOnAtTerminal, type Account } from '../../login.ts';
-import { MesClient } from '../../../src/clients.ts';
+import { MesClient, SimulatorClient } from '../../../src/clients.ts';
 import type { TraceSerialCase } from '../../../src/quality-pass.ts';
+import { episodeIdentity, type TraceSectionJson } from '../../../src/trace-shapes.ts';
 
 /**
  * Phase 8 exit criterion 5, after the drain (#204), on the paused quality-01 stack:
@@ -20,6 +21,7 @@ import type { TraceSerialCase } from '../../../src/quality-pass.ts';
  * The reconciliation then checks the ERP's notifications and the audit log.
  */
 const mesUrl = process.env.RECONCILE_MES_URL ?? '';
+const simUrl = process.env.RECONCILE_SIM_URL ?? '';
 const results = process.env.RECONCILE_RESULTS;
 const traceCase = JSON.parse(process.env.RECONCILE_TRACE_CASE ?? 'null') as TraceSerialCase | null;
 /** The MES's id of the drift's first episode, and the serial of its triggering unit. */
@@ -59,7 +61,7 @@ test('a serial traces back with its crew; holds from an SPC episode and a lot; t
   test.setTimeout(300_000);
   expect(traceCase).not.toBeNull();
   if (!traceCase) return;
-  expect([signalId, signalSerial, lot, closeOrder].every((v) => v !== '')).toBe(true);
+  expect([simUrl, signalId, signalSerial, lot, closeOrder].every((v) => v !== '')).toBe(true);
   const quality = account('quality');
   const operator = account('operator');
 
@@ -82,9 +84,12 @@ test('a serial traces back with its crew; holds from an SPC episode and a lot; t
     const row = q.page.getByTestId(`record-${record.operation}-${String(record.pass)}`);
     await expect(row).toHaveAttribute('data-equipment', record.machine);
     await expect(row).toHaveAttribute('data-seq', String(record.seq));
+    await expect(row).toHaveAttribute('data-result', record.result);
     await expect(row.getByTestId('record-machine')).toContainText(record.machine, {
       ignoreCase: true,
     });
+    // Exactly the record's lots (review LOW 1): one link each, no other.
+    await expect(row.locator('[data-testid^="lot-link-"]')).toHaveCount(record.lots.length);
     for (const id of record.lots) await expect(row.getByTestId(`lot-link-${id}`)).toBeVisible();
     if (record.reading !== null) {
       await expect(row.getByTestId('record-reading')).toHaveAttribute(
@@ -138,7 +143,7 @@ test('a serial traces back with its crew; holds from an SPC episode and a lot; t
 
   // 3. The Line A1 terminal: both holds and the episode.
   const tablet = await (await browser.newContext()).newPage();
-  await signOnAtTerminal(tablet, 'line-a1', operator);
+  const tabletCookie = await signOnAtTerminal(tablet, 'line-a1', operator);
   await expect(tablet.getByTestId(`terminal-hold-${lotHoldId}`)).toHaveAttribute(
     'data-subject',
     `lot:${lot}`,
@@ -166,9 +171,51 @@ test('a serial traces back with its crew; holds from an SPC episode and a lot; t
     rows.map((r) => r.getAttribute('data-testid')?.slice('terminal-signal-'.length) ?? ''),
   );
   expect([...terminalSignals].sort()).toEqual([...shownSignals].sort());
+  // And the truth's ten newest episodes after the baseline (review LOW 2): none is acknowledged,
+  // so the terminal's ten are the truth's by identity (newest first; among equal times the later
+  // in the truth's list).
+  const truthTrace = (await new SimulatorClient(simUrl).groundTruthJson())
+    .trace as TraceSectionJson;
+  const truthNewest = truthTrace.spc.episodes
+    .map((episode, index) => ({ episode, index }))
+    .filter(({ episode }) => !episode.baseline)
+    .sort((a, b) => Date.parse(b.episode.at) - Date.parse(a.episode.at) || b.index - a.index)
+    .slice(0, 10)
+    .map(({ episode }) => episodeIdentity(episode))
+    .sort();
+  const identityOf = new Map(
+    (await mesQ.spcChart('leak-rate')).signals.map((s) => [
+      String(s.id),
+      episodeIdentity({
+        chart: s.chart,
+        rule: s.rule,
+        version: s.version,
+        partId: s.first.partId,
+        pass: s.first.pass,
+      }),
+    ]),
+  );
+  expect(terminalSignals.map((id) => identityOf.get(id) ?? `id ${id}`).sort()).toEqual(truthNewest);
+  // The holds: exactly the open holds touching the work center's orders (review LOW 2).
+  const workCenterOrders = new Set(
+    (await new MesClient(mesUrl, tabletCookie).terminal('line-a1')).orders.map((o) => o.order.id),
+  );
+  const openHolds = (await mesQ.holds()).holds.filter((h) => h.state === 'open');
+  const touching: string[] = [];
+  for (const hold of openHolds) {
+    const detail = await mesQ.hold(hold.id);
+    if (detail.orders.some((o) => workCenterOrders.has(o))) touching.push(hold.id);
+  }
+  const holdRows = tablet.locator('[data-testid^="terminal-hold-"]');
+  await expect(holdRows).toHaveCount(touching.length);
+  const terminalHolds = await holdRows.evaluateAll((rows) =>
+    rows.map((r) => r.getAttribute('data-testid')?.slice('terminal-hold-'.length) ?? ''),
+  );
+  expect([...terminalHolds].sort()).toEqual([...touching].sort());
   const terminal = {
-    holds: await tablet.locator('[data-testid^="terminal-hold-"]').count(),
+    holds: terminalHolds.length,
     signals: terminalSignals,
+    truthNewest,
   };
 
   // 4. Sign-offs at both terminals, then the close: refused while held, allowed after release.

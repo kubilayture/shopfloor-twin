@@ -13,7 +13,7 @@
  * session, one request at a time, Node's `fetch` and `performance.now()` (each request timed to the
  * last byte of its body): 200 backward traces of serials drawn at random (seeded, the seed in the
  * report) from every serial the forward traces return, and 200 forward traces of the largest lot
- * (by units). Before each series, 5 requests not counted (connection and caches warm), as the
+ * (by units). Before each series, 5 requests not counted (serials of their own, drawn after the timed ones), as the
  * report says. Recorded in e2e/results/trace-perf/report.json: p50, p95 and max per series, the
  * response payload sizes (min, median, max bytes), the database's size and the genealogy tables'.
  * Passes when both p95 are under 100 ms.
@@ -111,6 +111,7 @@ async function measure(
   base: string,
   cookie: string,
   paths: readonly string[],
+  warmUp: readonly string[],
   check: (text: string) => void,
 ): Promise<Series> {
   const get = async (path: string) => {
@@ -121,7 +122,7 @@ async function measure(
     if (response.status !== 200) throw new Error(`${path}: ${String(response.status)} ${text}`);
     return { ms, bytes: Buffer.byteLength(text), text };
   };
-  for (const path of paths.slice(0, WARM_UP)) check((await get(path)).text);
+  for (const path of warmUp) check((await get(path)).text);
   const times: number[] = [];
   const sizes: number[] = [];
   for (const path of paths) {
@@ -132,7 +133,7 @@ async function measure(
   }
   return {
     requests: times.length,
-    warmUp: WARM_UP,
+    warmUp: warmUp.length,
     ms: {
       p50: round(percentile(times, 50)),
       p95: round(percentile(times, 95)),
@@ -243,13 +244,22 @@ async function main(): Promise<boolean> {
       { length: REQUESTS },
       () => pool[Math.floor(draw() * pool.length)] ?? '',
     );
+    // Warm-up serials of their own (review LOW 3): none of them is timed.
+    const warmUpSerials = Array.from(
+      { length: WARM_UP },
+      () => pool[Math.floor(draw() * pool.length)] ?? '',
+    );
+    const note =
+      'week-01 runs in schedule mode: its units have no order and no carton, so neither answer lists any; the forward answer carries the lot\'s units and its "where used with" lots';
     report.data = {
       lots: lotIds.length,
       serials: pool.length,
+      drawnDistinct: new Set(drawn).size,
       largestLot: largest,
+      note,
     };
     log(
-      `${String(pool.length)} serials; largest lot ${largest.lot} (${String(largest.units)} units)`,
+      `pool of ${String(pool.length)} serials (${String(new Set(drawn).size)} distinct drawn, ${String(WARM_UP)} more to warm up); largest lot ${largest.lot} (${String(largest.units)} units); ${note}`,
     );
     if (pool.length === 0 || largest.units <= 0) throw new Error('nothing loaded to trace');
 
@@ -257,6 +267,7 @@ async function main(): Promise<boolean> {
       web,
       cookie,
       drawn.map((s) => `/api/v1/trace/serials/${encodeURIComponent(s)}`),
+      warmUpSerials.map((s) => `/api/v1/trace/serials/${encodeURIComponent(s)}`),
       (text) => {
         if (serialTraceSchema.parse(JSON.parse(text)).units.length === 0) {
           throw new Error('a backward trace without a unit');
@@ -268,6 +279,11 @@ async function main(): Promise<boolean> {
       cookie,
       Array.from(
         { length: REQUESTS },
+        () => `/api/v1/trace/lots/${encodeURIComponent(largest.lot)}`,
+      ),
+      // One lot is timed: its warm-up is the same query, not counted.
+      Array.from(
+        { length: WARM_UP },
         () => `/api/v1/trace/lots/${encodeURIComponent(largest.lot)}`,
       ),
       (text) => {

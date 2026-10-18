@@ -473,7 +473,8 @@ function QualityBanners({ view }: { readonly view: TerminalViewDto }) {
   const { holds, signals, lots, truncated } = view.quality;
   // The section and both live lists stay mounted while empty (#203 final review): a live region
   // inserted together with its first item is not announced, so the first hold or signal at a work
-  // center would pass unannounced. Empty lists take no space.
+  // center would pass unannounced. An empty list stays displayed (a live region must never be
+  // `display: none`, #204 review) and cancels the section's gap with a negative margin.
   return (
     <section
       aria-labelledby="terminal-quality"
@@ -485,7 +486,7 @@ function QualityBanners({ view }: { readonly view: TerminalViewDto }) {
         Quality
       </h2>
       <ul
-        className="flex flex-col gap-2 empty:hidden"
+        className="flex flex-col gap-2 empty:-mb-3"
         data-testid="terminal-holds"
         data-count={holds.length}
         aria-live="polite"
@@ -512,7 +513,7 @@ function QualityBanners({ view }: { readonly view: TerminalViewDto }) {
         ))}
       </ul>
       <ul
-        className="flex flex-col gap-2 empty:hidden"
+        className="flex flex-col gap-2 empty:-mb-3"
         data-testid="terminal-signals"
         data-count={signals.length}
         aria-live="polite"

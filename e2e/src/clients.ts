@@ -604,17 +604,27 @@ export class ErpClient {
    * The ERP's `erp_message_posts_total` summed over the message kinds (`/metrics`): posts stored
    * (`created`), answered from the store (`replayed`), and every other outcome.
    */
-  async postCounts(): Promise<{ created: number; replayed: number; other: number }> {
+  async postCounts(): Promise<{
+    created: number;
+    replayed: number;
+    other: number;
+    /** The same per message kind (#204 review: the replay is judged per kind too). */
+    byKind: Record<string, { created: number; replayed: number; other: number }>;
+  }> {
     const response = await fetch(`${this.base}/metrics`, { signal: AbortSignal.timeout(5_000) });
     const text = await response.text();
     const counts = { created: 0, replayed: 0, other: 0 };
+    const byKind: Record<string, { created: number; replayed: number; other: number }> = {};
     for (const match of text.matchAll(
-      /^erp_message_posts_total\{kind="[^"]*",outcome="([^"]*)"\} (\d+)$/gm,
+      /^erp_message_posts_total\{kind="([^"]*)",outcome="([^"]*)"\} (\d+)$/gm,
     )) {
-      const outcome = match[1] === 'created' || match[1] === 'replayed' ? match[1] : 'other';
-      counts[outcome] += Number(match[2]);
+      const kind = match[1] ?? '';
+      const outcome = match[2] === 'created' || match[2] === 'replayed' ? match[2] : 'other';
+      counts[outcome] += Number(match[3]);
+      const perKind = (byKind[kind] ??= { created: 0, replayed: 0, other: 0 });
+      perKind[outcome] += Number(match[3]);
     }
-    return counts;
+    return { ...counts, byKind };
   }
 
   /** The lot list (`GET /api/v1/lots`, #198): the dataset's lots. */

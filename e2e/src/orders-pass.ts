@@ -852,6 +852,8 @@ export async function repostOutbox(
   ctx: PassContext,
   ids: readonly string[],
   lots: readonly string[] = [],
+  /** Message kinds that must be among the messages posted again (#204 review LOW 4). */
+  requiredKinds: readonly string[] = [],
 ) {
   const unsent = () =>
     ctx.stack.sqlJson<number>(
@@ -868,11 +870,16 @@ export async function repostOutbox(
   // As after a crash between the ERP's answer and the MES's commit: the MES stopped, every sent
   // message pending again, the MES started.
   await ctx.stack.compose(['stop', 'mes']);
-  const reset = await ctx.stack.sqlJson<number>(
+  const resetByKind = await ctx.stack.sqlJson<Record<string, number>>(
     `WITH t AS (UPDATE orders.erp_message_log SET status = 'pending', next_attempt_at = NULL
-       WHERE direction = 'out' AND status = 'sent' RETURNING 1) SELECT count(*) FROM t`,
+       WHERE direction = 'out' AND status = 'sent' RETURNING kind)
+     SELECT coalesce(json_object_agg(kind, n), '{}') FROM (SELECT kind, count(*) AS n FROM t GROUP BY kind) AS k`,
   );
+  const reset = Object.values(resetByKind).reduce((a, n) => a + n, 0);
   if (reset === 0) ctx.fail('no sent message in the outbox to post again');
+  for (const kind of requiredKinds) {
+    if ((resetByKind[kind] ?? 0) === 0) ctx.fail(`no ${kind} message among those posted again`);
+  }
   ctx.log(`set ${String(reset)} sent messages back to pending; starting the MES again`);
   await ctx.stack.compose(['start', 'mes']);
   // The restarted container gets a new ephemeral host port (e2e/compose.reconcile.yml).
@@ -905,6 +912,28 @@ export async function repostOutbox(
   if (posts.replayed !== reset || posts.created !== 0 || posts.other !== 0) {
     ctx.fail(`ERP posts while the outbox was posted again: ${JSON.stringify({ reset, posts })}`);
   }
+  // Per kind too: each kind's messages set back to pending were replayed, none created.
+  const kinds = [...new Set([...Object.keys(resetByKind), ...Object.keys(postsAfter.byKind)])];
+  const postsByKind = Object.fromEntries(
+    kinds.map((kind) => {
+      const a = postsAfter.byKind[kind] ?? { created: 0, replayed: 0, other: 0 };
+      const b = postsBefore.byKind[kind] ?? { created: 0, replayed: 0, other: 0 };
+      return [
+        kind,
+        {
+          reset: resetByKind[kind] ?? 0,
+          replayed: a.replayed - b.replayed,
+          created: a.created - b.created,
+          other: a.other - b.other,
+        },
+      ];
+    }),
+  );
+  for (const [kind, d] of Object.entries(postsByKind)) {
+    if (d.replayed !== d.reset || d.created !== 0 || d.other !== 0) {
+      ctx.fail(`ERP ${kind} posts while the outbox was posted again: ${JSON.stringify(d)}`);
+    }
+  }
   const diffs = jsonDifferences(before, after);
   if (diffs.length > 0) {
     ctx.fail(
@@ -921,5 +950,6 @@ export async function repostOutbox(
     qualityNotifications: after.qualityNotifications.length,
     erpUnchanged: diffs.length === 0,
     erpPosts: posts,
+    erpPostsByKind: postsByKind,
   };
 }

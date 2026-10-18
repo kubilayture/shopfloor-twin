@@ -20,7 +20,13 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import type { SerialTraceDto, SpcChartDto, SpcSignalDto } from '@shopfloor/contracts/mes-api';
+import type {
+  LotTraceDto,
+  SerialTraceDto,
+  SpcChartDto,
+  SpcSignalDto,
+  TraceRecordDto,
+} from '@shopfloor/contracts/mes-api';
 import { CHARTS } from '@shopfloor/spc-core';
 import {
   buildTrace,
@@ -80,9 +86,13 @@ export async function referenceRun(
 
 /** What the MES answered, built into a trace (uncut), with the raw answers the checks need. */
 export interface MesTrace {
+  readonly epoch: number;
   readonly trace: Trace;
   readonly serials: readonly SerialTraceDto[];
+  /** Every forward-trace answer, one per lot of the ERP's list the MES answered. */
+  readonly lotAnswers: readonly LotTraceDto[];
   readonly lots: { readonly listed: number; readonly answered: number };
+  /** Every order the MES lists, by id. */
   readonly orders: readonly string[];
 }
 
@@ -101,11 +111,11 @@ export async function mesTrace(
 ): Promise<MesTrace> {
   const lotIds = (await ctx.erp.lots()).lots.map((l) => l.id);
   const serials = new Set<string>();
-  let answered = 0;
+  const lotAnswers: LotTraceDto[] = [];
   for (const id of lotIds) {
     const lot = await ctx.mes.traceLot(id);
     if (!lot) continue;
-    answered++;
+    lotAnswers.push(lot);
     if (lot.truncated) ctx.fail(`the forward trace of ${id} is truncated`);
     for (const unit of lot.units) {
       if (unit.epoch !== epoch) continue;
@@ -161,9 +171,11 @@ export async function mesTrace(
     });
   }
   return {
+    epoch,
     trace: buildTrace({ config, units: [...units.values()], orders }),
     serials: answers,
-    lots: { listed: lotIds.length, answered },
+    lotAnswers,
+    lots: { listed: lotIds.length, answered: lotAnswers.length },
     orders: listed.map((o) => o.id).sort(),
   };
 }
@@ -239,6 +251,16 @@ export interface TraceAsOfReport {
   readonly mesEqualsReference: boolean;
   readonly mesSpcEqualsReference: boolean;
   readonly mesCartonsEqual: boolean;
+  readonly mesLotsEqual: boolean;
+  readonly lots: {
+    readonly answered: number;
+    readonly listed: number;
+    readonly compared: number;
+    readonly extraUnitsAfterT: number;
+    readonly finalChecked: number;
+  };
+  readonly cartons: { readonly compared: number; readonly finalChecked: number };
+  readonly units: { readonly cartonsCompared: number; readonly statusesCompared: number };
   readonly drift: {
     readonly start: unknown;
     readonly firstEpisode: string | null;
@@ -290,6 +312,110 @@ export async function checkTraceAsOf(
   delete truthSection.drifts;
   const mesDiffs = jsonDifferences(truthSection, sectionOf(cutTrace), '', 50);
   note('MES (traceAsOf) ≠ reference', mesDiffs);
+
+  // 2a. Every order the truth names is the MES's, and no other (review LOW 5).
+  note(
+    'MES orders ≠ truth',
+    jsonDifferences([...truth.orders.map((o) => o.orderId)].sort(), [...mes.orders]),
+  );
+
+  // 2b. The MES's own forward traces (review HIGH 1), not only the serials they lead to: every lot
+  //     of the ERP's list answers (none skipped by a 404); per lot of the cut, its units of the run
+  //     that consumed it before T are the cut's, any other unit consumed it only at or after T;
+  //     its orders, its cartons closed before T and its pieces consumed before T are the cut's; a
+  //     lot whose units have every record before T answers final.
+  const lotDiffs: string[] = [];
+  const recordsOf = new Map<number, readonly TraceRecordDto[]>();
+  const statusOf = new Map<number, string>();
+  const cartonOf = new Map<number, string | null>();
+  const orderOf = new Map<number, string | null>();
+  for (const answer of mes.serials) {
+    for (const unit of answer.units) {
+      if (unit.epoch !== mes.epoch) continue;
+      recordsOf.set(unit.partId, unit.records);
+      statusOf.set(unit.partId, unit.status);
+      cartonOf.set(unit.partId, unit.carton);
+      orderOf.set(unit.partId, unit.orderId);
+    }
+  }
+  /** Pieces of `lot` a unit's records consumed before T and at or after it. */
+  const consumption = (partId: number, lot: string) => {
+    let before = 0;
+    let after = 0;
+    for (const r of recordsOf.get(partId) ?? []) {
+      const n = (r.lots ?? []).filter((l) => l.lot === lot).length;
+      if (Date.parse(r.at) < cut) before += n;
+      else after += n;
+    }
+    return { before, after };
+  };
+  if (mes.lots.answered !== mes.lots.listed) {
+    lotDiffs.push(
+      `${String(mes.lots.answered)} of the ERP's ${String(mes.lots.listed)} lots answered`,
+    );
+  }
+  const closedAtT = new Set(cutTrace.cartons.filter((c) => c.status === 'closed').map((c) => c.id));
+  const cutLots = new Map(cutTrace.lots.map((l) => [l.lot, l]));
+  let lotsCompared = 0;
+  let extraUnitsAfterT = 0;
+  let lotsFinalChecked = 0;
+  for (const answer of mes.lotAnswers) {
+    const expected = cutLots.get(answer.lot);
+    const units = answer.units.filter((u) => u.epoch === mes.epoch);
+    const before: number[] = [];
+    const extra: number[] = [];
+    let consumedAfter = 0;
+    for (const unit of units) {
+      const used = consumption(unit.partId, answer.lot);
+      consumedAfter += used.after;
+      if (used.before > 0) before.push(unit.partId);
+      else if (used.after > 0) extra.push(unit.partId);
+      else
+        lotDiffs.push(`${answer.lot}: unit ${String(unit.partId)} listed, no record consumed it`);
+    }
+    extraUnitsAfterT += extra.length;
+    const ordersBefore = [...new Set(before.map((id) => orderOf.get(id) ?? null))]
+      .filter((o): o is string => o !== null)
+      .sort();
+    const ordersExtra = new Set(extra.map((id) => orderOf.get(id) ?? null));
+    lotDiffs.push(
+      ...jsonDifferences(
+        {
+          units: expected ? expected.units.map((u) => u.partId) : [],
+          orders: expected ? [...expected.orders] : [],
+          cartons: expected ? expected.cartons.filter((c) => closedAtT.has(c)) : [],
+          consumed: expected?.consumed ?? 0,
+        },
+        {
+          units: [...before].sort((a, b) => a - b),
+          orders: ordersBefore,
+          cartons: answer.cartons.filter((c) => closedAtT.has(c)),
+          consumed: answer.consumed - consumedAfter,
+        },
+        `.lot ${answer.lot}`,
+      ),
+    );
+    const otherOrders = answer.orders.filter((o) => !ordersBefore.includes(o));
+    const unexplained = otherOrders.filter((o) => !ordersExtra.has(o));
+    if (unexplained.length > 0) {
+      lotDiffs.push(`${answer.lot}: orders ${unexplained.join(', ')} of no unit of the lot`);
+    }
+    if (expected) lotsCompared++;
+    const allBefore = units.every((u) =>
+      (recordsOf.get(u.partId) ?? []).every((r) => Date.parse(r.at) < cut),
+    );
+    if (units.length > 0 && allBefore) {
+      lotsFinalChecked++;
+      if (!answer.final) lotDiffs.push(`${answer.lot}: not final (${answer.notFinal.join(', ')})`);
+    }
+  }
+  for (const lot of cutLots.keys()) {
+    if (!mes.lotAnswers.some((a) => a.lot === lot)) lotDiffs.push(`${lot}: no forward trace`);
+  }
+  if (lotsCompared !== cutTrace.lots.length) {
+    lotDiffs.push(`${String(lotsCompared)} lots compared, ${String(cutTrace.lots.length)} cut`);
+  }
+  note('MES forward traces ≠ cut', lotDiffs);
 
   // 3. The MES's own SPC before T (not re-derived here): limits, points, episodes.
   const chart = await ctx.mes.spcChart(input.characteristic);
@@ -359,36 +485,81 @@ export async function checkTraceAsOf(
     .map((s) => `${episodeIdentity(signalShape(s))} ${s.status}`);
   note('MES SPC ≠ reference', spcDiffs);
 
-  // 4. The MES's own cartons closed before T: members in placement order and closing time.
+  // 4. The MES's own cartons (review MEDIUM 5): every carton of the cut, closed before T in the
+  //    MES exactly when closed at T, with its closing time and members in placement order (an open
+  //    one: its members placed before T first); a carton closed before T answers final. Each unit
+  //    with a pack before T has the carton the cut gives it, in both directions, and its status.
   const cartonDiffs: string[] = [];
   const closed = cutTrace.cartons.filter((c) => c.status === 'closed');
-  for (const carton of closed) {
+  let cartonsFinalChecked = 0;
+  for (const carton of cutTrace.cartons) {
     const answer = await ctx.mes.traceCarton(carton.id);
+    const closedBefore =
+      answer.carton.closedAt !== null && Date.parse(answer.carton.closedAt) < cut;
+    const members = answer.units.map((u) => u.partId);
+    const expectedMembers = carton.members.map((m) => m.partId);
+    if (closedBefore !== (carton.status === 'closed')) {
+      cartonDiffs.push(
+        `.carton ${carton.id}: closed at ${String(answer.carton.closedAt)} in the MES, ${carton.status} at T`,
+      );
+    }
     cartonDiffs.push(
       ...jsonDifferences(
         {
-          status: 'closed',
-          closedAt: carton.closedAt === null ? null : new Date(carton.closedAt).toISOString(),
-          members: carton.members.map((m) => m.partId),
+          closedAt:
+            carton.status === 'closed' && carton.closedAt !== null
+              ? new Date(carton.closedAt).toISOString()
+              : null,
+          members: expectedMembers,
         },
         {
-          status: answer.carton.status,
-          closedAt: answer.carton.closedAt === null ? null : at(answer.carton.closedAt),
-          members: answer.units.map((u) => u.partId),
+          closedAt: closedBefore && answer.carton.closedAt ? at(answer.carton.closedAt) : null,
+          members: carton.status === 'closed' ? members : members.slice(0, expectedMembers.length),
         },
         `.carton ${carton.id}`,
       ),
     );
+    if (carton.status === 'closed') {
+      cartonsFinalChecked++;
+      if (!answer.final) cartonDiffs.push(`.carton ${carton.id}: not final`);
+    }
   }
-  // And each unit's own carton as the MES placed it (placement is final once made).
-  const unitCarton = new Map(
-    mes.serials.flatMap((s) => s.units.map((u) => [u.partId, u.carton] as const)),
-  );
-  for (const unit of cutTrace.units) {
-    if (unit.carton !== null && unitCarton.get(unit.partId) !== unit.carton) {
+  const packOp = cutTrace.config.packOperation;
+  const cutUnits = new Map(cutTrace.units.map((u) => [u.partId, u]));
+  let cartonsCompared = 0;
+  let statusesCompared = 0;
+  for (const [partId, records] of recordsOf) {
+    const packedBefore = records.some(
+      (r) => r.operation === packOp && r.result === 'good' && Date.parse(r.at) < cut,
+    );
+    const cutUnit = cutUnits.get(partId);
+    if (packedBefore) {
+      cartonsCompared++;
+      if ((cutUnit?.carton ?? null) !== (cartonOf.get(partId) ?? null)) {
+        cartonDiffs.push(
+          `unit ${String(partId)}: MES carton ${String(cartonOf.get(partId))}, at T ${String(cutUnit?.carton)}`,
+        );
+      }
+    } else if ((cutUnit?.carton ?? null) !== null) {
       cartonDiffs.push(
-        `unit ${String(unit.partId)}: MES carton ${String(unitCarton.get(unit.partId))}, at T ${unit.carton}`,
+        `unit ${String(partId)}: a carton at T (${String(cutUnit?.carton)}) without a pack`,
       );
+    }
+    if (!cutUnit) continue;
+    statusesCompared++;
+    const status = statusOf.get(partId) ?? '';
+    if (cutUnit.status !== 'wip') {
+      if (status !== cutUnit.status) {
+        cartonDiffs.push(`unit ${String(partId)}: MES status ${status}, at T ${cutUnit.status}`);
+      }
+    } else if (status === 'packed' || status === 'scrapped') {
+      // Packed or scrapped since: by a record at or after T.
+      const decided = records.some(
+        (r) =>
+          Date.parse(r.at) >= cut &&
+          (r.result === 'scrap' || (r.operation === packOp && r.result === 'good')),
+      );
+      if (!decided) cartonDiffs.push(`unit ${String(partId)}: MES ${status}, wip at T`);
     }
   }
   note('MES cartons ≠ cut', cartonDiffs);
@@ -447,7 +618,9 @@ export async function checkTraceAsOf(
     counts.orders < 2 ||
     counts.firstPass < 140 ||
     counts.episodes === 0 ||
-    beforeCut.length === 0
+    beforeCut.length === 0 ||
+    lotsFinalChecked === 0 ||
+    cartonsCompared === 0
   ) {
     differences.push(`too little compared: ${JSON.stringify(counts)}`);
   }
@@ -460,6 +633,16 @@ export async function checkTraceAsOf(
     mesEqualsReference: mesDiffs.length === 0,
     mesSpcEqualsReference: spcDiffs.length === 0,
     mesCartonsEqual: cartonDiffs.length === 0,
+    mesLotsEqual: lotDiffs.length === 0,
+    lots: {
+      answered: mes.lots.answered,
+      listed: mes.lots.listed,
+      compared: lotsCompared,
+      extraUnitsAfterT,
+      finalChecked: lotsFinalChecked,
+    },
+    cartons: { compared: cutTrace.cartons.length, finalChecked: cartonsFinalChecked },
+    units: { cartonsCompared, statusesCompared },
     drift: {
       start,
       firstEpisode: truthFirst,
@@ -477,41 +660,124 @@ export async function checkTraceAsOf(
   };
 }
 
-/**
- * A serial for the trace page check (plan "Ground truth and reconciliation", live): a unit packed
- * before T whose OP30 pass 1 started while `operator` was signed on to Line A1 (its crew row on
- * that record), with its leak reading. Its records as the MES answered them, which step 2 of
- * `checkTraceAsOf` has shown equal to the truth's (`unitsTraceSha256`).
- */
-export function traceSerialCase(mes: MesTrace, cut: number, operator: string, operation: string) {
-  const cutTrace = traceAsOf(mes.trace, cut);
-  const packed = new Set(cutTrace.units.filter((u) => u.status === 'packed').map((u) => u.partId));
-  for (const answer of mes.serials) {
-    const [unit, ...others] = answer.units;
-    if (!unit || others.length > 0 || !packed.has(unit.partId)) continue;
-    const op30 = unit.records.find((r) => r.operation === 'OP30' && r.pass === 1);
-    const reading = unit.records.find((r) => r.operation === operation && r.reading !== null);
-    if (!op30?.crew.some((c) => c.username === operator) || !reading) continue;
-    return {
-      serial: answer.serial,
-      partId: unit.partId,
-      operator,
-      records: unit.records.map((r) => ({
-        operation: r.operation,
-        pass: r.pass,
-        machine: r.equipment,
-        seq: r.seq,
-        lots: (r.lots ?? []).map((l) => l.lot),
-        operator: r.operator,
-        reading: r.reading?.value ?? null,
-        crew: r.crew.map((c) => c.username),
-      })),
-    };
-  }
-  return undefined;
+/** The live check's operator at Line A1, in simulation time (review MEDIUM 2). */
+export interface CrewWindow {
+  readonly operator: string;
+  /** Simulation time read just before the sign-on and just after the terminal showed it. */
+  readonly signOn: { readonly from: string; readonly to: string };
+  /** The same around the sign-off. */
+  readonly signOff: { readonly from: string; readonly to: string };
 }
 
-export type TraceSerialCase = NonNullable<ReturnType<typeof traceSerialCase>>;
+/**
+ * Margin around the sign-on and sign-off (simulation time): a record's `at` is its cycle's
+ * completion, while the crew is taken at the cycle's start (an OP30 cycle lasts well under it), and
+ * the MES's plant clock trails the simulator's by up to a second of wall time (a minute at 60×).
+ */
+export const CREW_BAND_MS = 10 * 60_000;
+
+/**
+ * The crew on the trace (review MEDIUM 2, not circular): for every unit packed before T, the live
+ * check's operator is in its OP30 pass-1 record's crew exactly when that cycle ran while they were
+ * signed on to Line A1 by the simulator's clock, read by the browser check itself: `inside` when
+ * the record completed more than the band after the sign-on and more than the band before the
+ * sign-off; `outside` when it completed before the sign-on began, or more than the band after the
+ * sign-off ended; records in the bands are not judged. Then a serial for the trace page: a unit
+ * `inside`, single in its serial, with its leak reading; its records as the MES answered them,
+ * which `checkTraceAsOf` has shown equal to the truth's (`unitsTraceSha256`).
+ */
+export function checkCrew(
+  ctx: Pick<PassContext, 'fail'>,
+  mes: MesTrace,
+  cut: number,
+  window: CrewWindow,
+  operation: string,
+) {
+  const cutTrace = traceAsOf(mes.trace, cut);
+  const packed = new Set(cutTrace.units.filter((u) => u.status === 'packed').map((u) => u.partId));
+  const signOnTo = Date.parse(window.signOn.to);
+  const signOnFrom = Date.parse(window.signOn.from);
+  const signOffFrom = Date.parse(window.signOff.from);
+  const signOffTo = Date.parse(window.signOff.to);
+  const mismatches: string[] = [];
+  let inside = 0;
+  let outside = 0;
+  let banded = 0;
+  let chosen: TraceSerialCase | undefined;
+  for (const answer of mes.serials) {
+    for (const unit of answer.units) {
+      if (unit.epoch !== mes.epoch || !packed.has(unit.partId)) continue;
+      const op30 = unit.records.find((r) => r.operation === 'OP30' && r.pass === 1);
+      if (!op30) continue;
+      const done = Date.parse(op30.at);
+      const listed = op30.crew.some((c) => c.username === window.operator);
+      const isInside = done - CREW_BAND_MS > signOnTo && done + CREW_BAND_MS < signOffFrom;
+      const isOutside = done < signOnFrom || done - CREW_BAND_MS > signOffTo;
+      if (isInside) {
+        inside++;
+        if (!listed)
+          mismatches.push(`unit ${String(unit.partId)} (OP30 ${op30.at}): not in the crew`);
+        const reading = unit.records.find((r) => r.operation === operation && r.reading !== null);
+        if (listed && reading && answer.units.length === 1) {
+          chosen ??= {
+            serial: answer.serial,
+            partId: unit.partId,
+            operator: window.operator,
+            records: unit.records.map((r) => ({
+              operation: r.operation,
+              pass: r.pass,
+              machine: r.equipment,
+              seq: r.seq,
+              result: r.result,
+              lots: (r.lots ?? []).map((l) => l.lot),
+              operator: r.operator,
+              reading: r.reading?.value ?? null,
+              crew: r.crew.map((c) => c.username),
+            })),
+          };
+        }
+      } else if (isOutside) {
+        outside++;
+        if (listed) mismatches.push(`unit ${String(unit.partId)} (OP30 ${op30.at}): in the crew`);
+      } else {
+        banded++;
+      }
+    }
+  }
+  if (mismatches.length > 0) ctx.fail(`crew at OP30: ${mismatches.slice(0, 20).join('; ')}`);
+  if (inside === 0 || outside === 0) {
+    ctx.fail(`crew at OP30 judged on ${String(inside)} units inside, ${String(outside)} outside`);
+  }
+  if (!chosen) ctx.fail('no serial for the trace page');
+  return {
+    report: {
+      window,
+      bandMs: CREW_BAND_MS,
+      inside,
+      outside,
+      banded,
+      mismatches: mismatches.length,
+    },
+    traceCase: chosen,
+  };
+}
+
+export interface TraceSerialCase {
+  readonly serial: string;
+  readonly partId: number;
+  readonly operator: string;
+  readonly records: readonly {
+    readonly operation: string;
+    readonly pass: number;
+    readonly machine: string;
+    readonly seq: number;
+    readonly result: string;
+    readonly lots: readonly string[];
+    readonly operator: string | null;
+    readonly reading: number | null;
+    readonly crew: readonly string[];
+  }[];
+}
 
 /**
  * The quality notifications (exit criterion 5): every hold transition the MES notified (open,

@@ -144,7 +144,8 @@ import {
   checkTraceAsOf,
   mesTrace,
   referenceRun,
-  traceSerialCase,
+  checkCrew,
+  type CrewWindow,
 } from './quality-pass.ts';
 import { REPO, Stack } from './stack.ts';
 import { episodeIdentity, traceConfigOf, type TraceSectionJson } from './trace-shapes.ts';
@@ -201,6 +202,11 @@ const QUALITY_LOT = 'SK1-Q01-01';
 const QUALITY_CLOSE_ORDER = 'PO-2610-101';
 const CHARACTERISTIC = 'leak-rate';
 const SPC_BEFORE_END_MS = 5 * 60_000;
+/**
+ * The live check's operator signs on this long (simulated) after the start of shift A (#204
+ * review MEDIUM 2), so units whose OP30 ran before it test the crew's absence too.
+ */
+const CREW_FROM_MS = 60 * 60_000;
 /** Orders mode: a completed order to sign off and close, and the one whose scrap is coded. */
 const CLOSE_ORDER = 'PO-2610-001';
 const SCRAP_ORDER = 'PO-2610-007';
@@ -802,6 +808,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
                   RECONCILE_CHARACTERISTIC: CHARACTERISTIC,
                   RECONCILE_SPC_UNTIL: new Date(shift.to - SPC_BEFORE_END_MS).toISOString(),
                   RECONCILE_DRIFT_EPISODE: await goldenDriftEpisode(GOLDEN),
+                  RECONCILE_CREW_FROM: new Date(shift.from + CREW_FROM_MS).toISOString(),
                 }
               : {}),
             ...browserLogin,
@@ -1501,17 +1508,15 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
           log(`time cut at ${cutIso}: ${JSON.stringify(qualityReport.traceAsOf)}`);
           phase('traceAsOf');
 
-          // The live check's operator signed on to Line A1 through the shift: a packed serial
-          // whose OP30 cycle shows them; the drift's first episode and its triggering unit.
-          const operatorName = ORDER_USERS.operator.username;
-          const traceCase = traceSerialCase(
-            side,
-            cut,
-            operatorName,
-            loaded.config.process.leakTest.operation,
-          );
-          if (!traceCase)
-            fail(`no serial packed in ${shiftKey} with ${operatorName} on its OP30 crew`);
+          // The live check's operator at Line A1 by the simulator's clock (crew-window.json):
+          // in the OP30 crew of every unit packed before T exactly while signed on; the trace
+          // page's serial by that rule. Then the drift's first episode and its triggering unit.
+          const crewWindow = (await requiredJson('crew-window.json')) as CrewWindow | undefined;
+          const crew = crewWindow
+            ? checkCrew(ctx, side, cut, crewWindow, loaded.config.process.leakTest.operation)
+            : undefined;
+          qualityReport.crew = crew?.report;
+          const traceCase = crew?.traceCase;
           const chart = await mes.spcChart(CHARACTERISTIC);
           const driftKey = (
             qualityReport.traceAsOf as { drift: { mesFirstEpisode: string | null } }
@@ -1535,6 +1540,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             RECONCILE_WEB_URL: webUrl,
             RECONCILE_MES_URL: mes.base,
             RECONCILE_RESULTS: RESULTS_DIR,
+            RECONCILE_SIM_URL: sim.base,
             RECONCILE_TRACE_CASE: JSON.stringify(traceCase ?? null),
             RECONCILE_SIGNAL: String(signal?.id ?? ''),
             RECONCILE_SIGNAL_SERIAL: signalSerial ?? '',
@@ -1570,7 +1576,12 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             fail,
           });
           const orderIds = reference.section.orders.map((o) => o.orderId).sort();
-          qualityReport.repost = await repostOutbox(ctx, orderIds, [QUALITY_LOT]);
+          qualityReport.repost = await repostOutbox(
+            ctx,
+            orderIds,
+            [QUALITY_LOT],
+            ['quality-notification'],
+          );
           log(`outbox posted again: ${JSON.stringify(qualityReport.repost)}`);
           phase('repost');
         }

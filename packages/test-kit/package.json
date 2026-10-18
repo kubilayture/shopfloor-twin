@@ -9,7 +9,8 @@
     "./broker": "./src/broker.ts",
     "./processes": "./src/processes.ts",
     "./ports": "./src/ports.ts",
-    "./timing": "./src/timing.ts"
+    "./timing": "./src/timing.ts",
+    "./heavy-lock": "./src/heavy-lock.ts"
   },
   "scripts": {
     "typecheck": "tsc",

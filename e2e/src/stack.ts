@@ -12,6 +12,30 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 
+/** The images `docker-compose.yml` builds, one per application (the `migrate` step uses the MES's). */
+export const STACK_IMAGES = ['simulator', 'edge-gateway', 'mes-server', 'erp-mock', 'web'] as const;
+
+/**
+ * Removes a run's images under its tag (#228: every run removes what it built, also on failure),
+ * never the dev stack's tag `dev`. Images that don't exist are skipped.
+ */
+export async function removeImages(
+  tag: string,
+  images: readonly string[] = STACK_IMAGES,
+): Promise<void> {
+  if (tag === 'dev') {
+    console.error("not removing the dev stack's images (tag dev)");
+    return;
+  }
+  for (const image of images) {
+    await run('docker', ['image', 'rm', '--force', `shopfloor-twin/${image}:${tag}`]).catch(
+      (error: unknown) => {
+        console.error(`could not remove shopfloor-twin/${image}:${tag}`, error);
+      },
+    );
+  }
+}
+
 export const REPO = resolve(import.meta.dirname, '../..');
 
 export interface StackOptions {

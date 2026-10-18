@@ -304,6 +304,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:packages/eslint-config
+      '@shopfloor/test-kit':
+        specifier: workspace:*
+        version: link:packages/test-kit
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:packages/tsconfig
@@ -688,6 +691,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../packages/eslint-config
+      '@shopfloor/test-kit':
+        specifier: workspace:*
+        version: link:../packages/test-kit
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:../packages/tsconfig

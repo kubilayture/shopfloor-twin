@@ -55,17 +55,24 @@ export function appUrl(serverUrl: string, database: string): string {
 /**
  * Waits until some other session is blocked by the backend `holder` (`pg_blocking_pids`), so a
  * test of a lock race knows the waiting write got that far, however long a loaded machine took
- * (#212), instead of sleeping a fixed time.
+ * (#212), instead of sleeping a fixed time. With `holding` (a table), only a blocked session that
+ * already holds a lock on that table counts: a background round blocked by the same holder (the
+ * downtime coding's clip, say) must not pass for the write the test waits for (#228).
  */
 export async function blockedBy(
   db: QueryExecutorProvider,
   holder: number,
   what: string,
   timeoutMs = 30_000,
+  holding?: string,
 ): Promise<void> {
   for (const deadline = Date.now() + timeoutMs; ;) {
-    const { rows } = await sql<{ n: number }>`SELECT count(*)::int AS n FROM pg_stat_activity
-      WHERE pid <> pg_backend_pid() AND pg_blocking_pids(pid) @> ARRAY[${holder}::int]`.execute(db);
+    const { rows } = await sql<{ n: number }>`SELECT count(*)::int AS n FROM pg_stat_activity a
+      WHERE a.pid <> pg_backend_pid() AND pg_blocking_pids(a.pid) @> ARRAY[${holder}::int]
+        AND (${holding ?? null}::text IS NULL OR EXISTS (SELECT 1 FROM pg_locks l
+          WHERE l.pid = a.pid AND l.granted AND l.relation = to_regclass(${holding ?? null}::text)))`.execute(
+      db,
+    );
     if ((rows[0]?.n ?? 0) > 0) return;
     if (Date.now() > deadline) throw new Error(`timed out after ${String(timeoutMs)} ms: ${what}`);
     await new Promise((resolve) => setTimeout(resolve, 20));

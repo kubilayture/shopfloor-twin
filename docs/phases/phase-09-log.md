@@ -31,3 +31,12 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - **Review round 1** (minor changes): (1) a tool breakage on an OP10 machine without a tool (one the schedule doesn't list) was accepted and then threw at the event, aborting a headless run or the live pacer; now refused when accepted (`not-a-cnc`). (2) A breakage inside the machine's own `TOOL-CHANGE` setup chained a second change into one 16-minute setup; now a recorded no-op (`tool-breakage` with `ignored: tool-change-in-progress`, status `ignored`); a refusal wasn't chosen because a scheduled breakage can't know the machine's state at `at`. (3) The `<= end` mutants of the headless span checks survived; tests for an action at exactly the end and a shift starting exactly at it kill both (checked by hand). (4) A test pins the double block and the release of a free lot as recorded no-ops. (5) ADR-0037 notes 1.8 for P9-03, `GET /actions` for P9-10, and that a live post at the current time runs after the events already processed in that millisecond (P9-08's timeline test covers posts made mid-run).
   - **Review round 2** (approved, two notes folded in): a breakage during a product changeover is `applied` and its tool change follows (kills the mutant that marks changeover setups as tool changes, checked by hand); `docs/simulation-model.md` and ADR-0037 state the older caveat that a tool change right after a changeover (Setup → Setup) has no state event of its own, so the MES sees one longer Setup with the changeover's cause (behaviour unchanged).
   - Rebased onto `main` after #248 (`9a072cd`), no conflicts.
+  - **Gate** on `830754f` (`GATE_PROJECT=gate249`, `GATE_TAG=pr249`, `TURBO_FORCE=1`, under the heavy lock), `GATE-OK`; free at the start: host 34.9 GiB, Docker 79.4 GiB.
+
+    | Step      | Result | Time      | Notes                                          |
+    | --------- | ------ | --------- | ---------------------------------------------- |
+    | verify    | passed | 475.7 s   | `pnpm verify --concurrency=1`, uncached        |
+    | golden    | passed | 1.5 s     | all four goldens byte-identical                |
+    | e2e       | passed | 732.9 s   |                                                |
+    | smoke     | passed | 87.4 s    | web and MES on ephemeral ports 32967 and 32966 |
+    | reconcile | passed | 1,648.9 s | alarms OK, orders OK, quality OK               |

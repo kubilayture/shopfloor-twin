@@ -229,9 +229,22 @@ export interface QueuedJobWindow {
 
 /**
  * Head time and window of every job of one CNC's queue (acceptance order), each window paired with
- * its own successor in that queue (ADR-0036).
+ * its own successor in that queue (ADR-0036). The queue must hold every job dispatched to `machine`
+ * whose acceptance isn't refuted: the orders module's commands, also a job whose `accepted` fact and
+ * `acceptedAt` are both unknown, never the job facts alone. Such a job has no known `started`, so
+ * it keeps its predecessor's attribution boundary open; left out, its cycles would be taken for its
+ * predecessor's and give that job a wrong window. Throws when a job names another machine.
  */
-export function jobWindows(queue: readonly QueuedJob[], until: Millis): QueuedJobWindow[] {
+export function jobWindows(
+  queue: readonly QueuedJob[],
+  until: Millis,
+  machine: string,
+): QueuedJobWindow[] {
+  for (const job of queue) {
+    if (job.machine !== undefined && job.machine !== machine) {
+      throw new RangeError(`job ${job.id} is on ${job.machine}, not in the queue of ${machine}`);
+    }
+  }
   const heads = headTimes(queue);
   return queue.map((job, i) => {
     const head = heads[i] ?? { kind: 'waiting' };

@@ -177,12 +177,12 @@ const headText = (head: HeadTime): string =>
       ? 'waiting'
       : `unknown ${head.reason}`;
 
-describe('head-time reference cases (H1–H15)', () => {
+describe('head-time reference cases (H1–H16)', () => {
   const rows = table('Head times, Phase 9');
   const cases = [...new Set(rows.map((row) => cell(row, 'Case')))];
 
-  it('has the fifteen cases', () => {
-    expect(cases).toEqual(Array.from({ length: 15 }, (_, i) => `H${String(i + 1)}`));
+  it('has the sixteen cases', () => {
+    expect(cases).toEqual(Array.from({ length: 16 }, (_, i) => `H${String(i + 1)}`));
   });
 
   describe.each(cases)('case %s', (id) => {
@@ -191,7 +191,7 @@ describe('head-time reference cases (H1–H15)', () => {
       const jobs = queue.map(queuedJob);
       const until = time(cell(must(queue[0]), 'Until'));
       expect(queue.every((row) => time(cell(row, 'Until')) === until)).toBe(true);
-      const paired = jobWindows(jobs, until);
+      const paired = jobWindows(jobs, until, cell(must(queue[0]), 'Machine'));
       const actual = paired.map(({ head, window }) => {
         const windowText =
           window === undefined
@@ -273,7 +273,9 @@ describe('order OEE reference cases (O1–O10)', () => {
       ];
       return {
         id: job.id,
-        window: must(jobWindows(queue, until).find((paired) => paired.job === job)).window,
+        window: must(
+          jobWindows(queue, until, cell(row, 'Machine')).find((paired) => paired.job === job),
+        ).window,
         intervals: timeline(cell(row, 'States'), until),
         cycles: cycles(cell(row, 'Cycles')),
         operation: 'OP10',

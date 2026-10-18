@@ -199,7 +199,9 @@ describe('headTimes and jobWindow', () => {
       { id: 'J1', accepted: 0, started: 10, quantity: 2, cycleEnds: [100, 200, 300] },
       { id: 'J2', accepted: 5 },
     ];
-    expect(jobWindows(queue, 1000).map(({ head, window }) => [head.kind, window?.open])).toEqual([
+    expect(
+      jobWindows(queue, 1000, 'cnc-01').map(({ head, window }) => [head.kind, window?.open]),
+    ).toEqual([
       ['head', true],
       ['waiting', undefined],
     ]);
@@ -217,7 +219,7 @@ describe('headTimes and jobWindow', () => {
       },
       { id: 'J2', accepted: 5, completed: 500 },
     ];
-    const [first, second] = jobWindows(queue, 1000);
+    const [first, second] = jobWindows(queue, 1000, 'cnc-01');
     expect(first?.window).toMatchObject({
       from: 0,
       to: 1000,
@@ -242,7 +244,7 @@ describe('headTimes and jobWindow', () => {
       },
       { id: 'J2', accepted: 5 },
     ];
-    expect(jobWindows(queue, 1000)[0]?.window).toMatchObject({
+    expect(jobWindows(queue, 1000, 'cnc-01')[0]?.window).toMatchObject({
       to: 1000,
       endLost: true,
       lost: true,
@@ -261,7 +263,7 @@ describe('headTimes and jobWindow', () => {
       },
       { id: 'J2', accepted: 5, started: 260, completed: 500 },
     ];
-    const [first, second] = jobWindows(queue, 1000);
+    const [first, second] = jobWindows(queue, 1000, 'cnc-01');
     expect(first?.window).toMatchObject({
       from: 0,
       to: 200,
@@ -270,6 +272,17 @@ describe('headTimes and jobWindow', () => {
       lost: false,
     });
     expect(second?.head).toEqual({ kind: 'head', at: 200, source: 'previous-last-cycle' });
+  });
+
+  it('refuses a queue job on another CNC, and accepts jobs without a machine', () => {
+    const queue = [
+      { id: 'J1', machine: 'cnc-01', accepted: 0, completed: 10 },
+      { id: 'J2', accepted: 5 },
+    ];
+    expect(jobWindows(queue, 100, 'cnc-01')).toHaveLength(2);
+    expect(() => jobWindows(queue, 100, 'cnc-02')).toThrow(
+      /job J1 is on cnc-01, not in the queue of cnc-02/,
+    );
   });
 
   it('refuses a next job on another CNC', () => {

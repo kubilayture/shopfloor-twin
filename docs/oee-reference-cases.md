@@ -364,7 +364,7 @@ ASM-01 has no operator this shift and stays Idle `NO-OPERATOR` for the whole hou
 
 ## Phase 9: bottleneck, order OEE and line OEE
 
-Cases B1–B4, H1–H17, O1–O11, F1 and L1–L13 (#229, ADR-0036; H17 and O11 from #230, its amendment) check the derived bottleneck, the head time of a job, the order OEE over job windows, the first-pass yield across the routing and the line throughput OEE. They drive `packages/oee-core/src/order-line-reference-cases.test.ts` as the tables above drive theirs. The micro-stop threshold is the one above; order cases use `scheduledTime: orders`.
+Cases B1–B4, H1–H21, O1–O11, F1 and L1–L13 (#229, ADR-0036; H17–H21 and O11 from #230, its amendment) check the derived bottleneck, the head time of a job, the order OEE over job windows, the first-pass yield across the routing and the line throughput OEE. They drive `packages/oee-core/src/order-line-reference-cases.test.ts` as the tables above drive theirs. The micro-stop threshold is the one above; order cases use `scheduledTime: orders`.
 
 Times are plant clock times of one day (`hh:mm` or `hh:mm:ss`), read as ms from its midnight: only differences matter. A range `06:00–14:00` is half-open. Ideal cycle times are those of `config/plant/products.yaml`: OP10 VB-100 240 000 ms and VB-200 330 000 ms; OP30 VB-100 150 000 ms and VB-200 210 000 ms.
 
@@ -422,6 +422,14 @@ Rows of one case and machine are that CNC's queue in acceptance order. `Accepted
 | H17  | cnc-01  | J1  | 06:00    | 06:00       | –          | 06:25   | 07:40     | –        | –                   | 12:00 | 06:00 accepted                     | 06:00–07:40                      |
 | H17  | cnc-01  | J2  | 06:05    | 06:05       | 09:00      | 09:25   | 11:00     | –        | –                   | 12:00 | 09:00 notBefore                    | 09:00–11:00                      |
 | H17  | cnc-01  | J3  | 06:10    | 06:10       | 08:00      | 11:25   | 12:00     | –        | –                   | 12:00 | 11:00 previous-completed           | 11:00–12:00                      |
+| H18  | cnc-02  | J1  | –        | –           | 06:30      | 06:55   | –         | –        | –                   | 12:00 | unknown accepted-unknown           | 06:55–12:00 open headTimeUnknown |
+| H19  | cnc-01  | J1  | 06:00    | 06:00       | –          | 06:25   | –         | –        | –                   | 12:00 | 06:00 accepted                     | 06:00–12:00 open                 |
+| H19  | cnc-01  | J2  | 06:05    | 06:05       | 07:00      | –       | –         | –        | –                   | 12:00 | waiting                            | –                                |
+| H20  | cnc-02  | J1  | 06:00    | 06:00       | –          | 06:25   | 07:40     | –        | –                   | 12:00 | 06:00 accepted                     | 06:00–07:40                      |
+| H20  | cnc-02  | J2  | 08:00    | 08:00       | 07:50      | 08:25   | 10:00     | –        | –                   | 12:00 | 08:00 accepted                     | 08:00–10:00                      |
+| H21  | cnc-01  | J1  | 06:00    | 06:00       | –          | 06:25   | 07:40     | –        | –                   | 12:00 | 06:00 accepted                     | 06:00–07:40                      |
+| H21  | cnc-01  | J2  | 06:05    | 06:05       | 07:40      | 08:05   | 10:00     | –        | –                   | 12:00 | 07:40 previous-completed           | 07:40–10:00                      |
+| H21  | cnc-01  | J3  | 10:30    | 10:30       | 10:30      | 10:55   | 11:40     | –        | –                   | 12:00 | 10:30 accepted                     | 10:30–11:40                      |
 
 ## Inputs, Phase 9 order OEE
 
@@ -553,6 +561,7 @@ Three CNCs on OP10 at 500 000 ms: 500 000 ÷ 3 = 166 666.67 ms, kept exact as 50
 - **H15:** the same under plain reordering, nothing lost: J1's `completed` fact and J2's `started` fact have not arrived, and J2's first cycle (07:40) is counted in J1's three. J1's window is simply open, and J2 waits; nothing throws, and the arrival of the two facts settles both.
 - **H16:** one written-off gap covers J1's last cycle, J1's `completed` fact and J2's `accepted` and `started` facts (and no command result is known). J2 is still in the queue: the queue holds every job dispatched to the CNC whose acceptance isn't refuted (the orders module's commands), not only the jobs whose facts arrived. J2's `started` is unknown, so J1's attribution boundary stays open and its 2 attributed cycles, `quantity` of them, are not trusted (one may be J2's): J1 stays `endLost` and `lost`, open to the cut-off. Built from the job facts alone, the queue would hold J1 only, and J1 would close at 07:15, possibly on a cycle of J2, with nothing flagged.
 - **H17** (ADR-0036 amendment, #230): J2 is dispatched with `notBefore` 09:00. J1 completes at 07:40, but J2 waits for demand, not for the machine, until 09:00: max(06:05, 07:40, 09:00) = 09:00 (`notBefore`). The CNC's Idle `NO-ORDER` 07:40–09:00 belongs to no job, and J2's window 09:00–11:00 holds its changeover 09:00–09:25. J3's `notBefore` 08:00 is earlier than J2's completion: max(06:10, 11:00, 08:00) = 11:00 (`previous-completed`), so a `notBefore` that doesn't bind changes nothing.
+- **H18–H21** pin the amendment's rules (#251 review). **H18:** the acceptance is unknown (neither the fact nor `acceptedAt`) and the job has a `notBefore` of 06:30: the head time stays unknown (`accepted-unknown`), because `notBefore` alone never makes a head time known; the window starts at `started`, 06:55. **H19:** J1 is still running and J2, not started, has a `notBefore` of 07:00: J2 is `waiting`, whatever its `notBefore`. **H20:** J2 is accepted at 08:00, after J1's completion (07:40) and its own `notBefore` (07:50): max(08:00, 07:40, 07:50) = 08:00 (`accepted`). **H21:** J2's `notBefore` equals J1's completion, 07:40: a tie keeps `previous-completed`; J3's `notBefore` equals its acceptance, 10:30 (J2 completed at 10:00): a tie keeps `accepted`. `notBefore` is the source only when it is strictly later than both other terms.
 - The recovery from cycles (H9) needs the boundary closed: the next job's `started` fact known, or no later job on the CNC, and exactly `quantity` cycles attributed.
 
 ### Case O1 – one job

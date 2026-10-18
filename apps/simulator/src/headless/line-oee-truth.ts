@@ -262,14 +262,20 @@ export class LineOeeTruth {
   }
 
   /**
-   * The section at `now` (every event recorded so far), or, with `asOf`, as it stood at that plant
-   * time: only the events before it, cut there, as a run that ended at `asOf` gives it.
+   * The section as it stood at plant time `asOf`, or at `now` without it: only the events before
+   * the cut-off, cut there, as a run that ended then gives it. The cut-off is exclusive everywhere
+   * (a run covers [start, end)), so an event exactly at `now` that a live run has already processed
+   * belongs to the next read (#251 review).
    */
   build(now: SimTime, asOf?: SimTime): LineOeeSection {
+    const cut = asOf ?? now;
     // A cut before the start sees nothing, as at the start.
-    const until = Math.max(asOf ?? now, this.#start);
+    const until = Math.max(cut, this.#start);
+    const last = this.#records.at(-1);
     const records =
-      asOf === undefined ? this.#records : this.#records.filter((record) => record.at < asOf);
+      last === undefined || last.at < cut
+        ? this.#records
+        : this.#records.filter((record) => record.at < cut);
     return this.#section(records, until);
   }
 

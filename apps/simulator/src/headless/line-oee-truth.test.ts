@@ -403,6 +403,166 @@ describe('LineOeeTruth on synthetic events (#230)', () => {
     });
   });
 
+  // One order on both CNCs (#251 review): C1 on CNC-01 from the start, C2 on CNC-02 held by its
+  // notBefore until T0 + 30 min. Cycles of 4 min (the VB-100 ideal), packs at PCK-01.
+  const M = 60_000;
+  const S = (machineId: string, at: number, from: string, to: string, cause?: string) =>
+    ({ type: 'state', machineId, at, from, to, ...(cause ? { cause } : {}) }) as PlantEvent;
+  const job = (
+    machineId: string,
+    at: number,
+    transition: 'accepted' | 'started' | 'completed',
+    commandId: string,
+    quantity: number,
+  ): PlantEvent => ({
+    type: 'job',
+    at,
+    machineId,
+    transition,
+    commandId,
+    orderId: 'PO-1',
+    product: 'VB-100',
+    quantity,
+  });
+  const blank = (machineId: string, at: number, partId: number): PlantEvent => ({
+    type: 'material-consumed',
+    at,
+    machineId,
+    partId,
+    material: 'BLANK-100',
+    lotId: 'L1',
+  });
+  const op10 = (machineId: string, at: number, partId: number): PlantEvent => ({
+    type: 'cycle-complete',
+    at,
+    machineId,
+    product: 'VB-100',
+    partId,
+    serial: `S${String(partId)}`,
+    result: 'good',
+  });
+  const twoCncs = (): PlantEvent[] => [
+    S('cnc-01', T0, 'Off', 'Setup', 'CHANGEOVER'),
+    job('cnc-01', T0, 'accepted', 'C1', 2),
+    S('cnc-02', T0, 'Off', 'Idle', 'NO-ORDER'),
+    job('cnc-02', T0, 'accepted', 'C2', 1),
+    job('cnc-01', T0 + 25 * M, 'started', 'C1', 2),
+    S('cnc-01', T0 + 25 * M, 'Setup', 'Running'),
+    blank('cnc-01', T0 + 25 * M, 1),
+    op10('cnc-01', T0 + 29 * M, 1),
+    blank('cnc-01', T0 + 29 * M, 2),
+    S('cnc-02', T0 + 30 * M, 'Idle', 'Setup', 'CHANGEOVER'),
+    S('cnc-01', T0 + 31 * M, 'Running', 'Stopped', 'JAM'),
+    S('cnc-01', T0 + 31 * M + 20_000, 'Stopped', 'Running'),
+    op10('cnc-01', T0 + 33 * M, 2),
+    job('cnc-01', T0 + 33 * M, 'completed', 'C1', 2),
+    S('cnc-01', T0 + 33 * M, 'Running', 'Idle', 'NO-ORDER'),
+    job('cnc-02', T0 + 55 * M, 'started', 'C2', 1),
+    S('cnc-02', T0 + 55 * M, 'Setup', 'Running'),
+    blank('cnc-02', T0 + 55 * M, 3),
+    op10('cnc-02', T0 + 59 * M, 3),
+    job('cnc-02', T0 + 59 * M, 'completed', 'C2', 1),
+    S('cnc-02', T0 + 59 * M, 'Running', 'Idle', 'NO-ORDER'),
+    // Exactly on the hour boundary 04:00Z: in the 04:00 hour, not the 03:00 one.
+    pack(T0 + HOUR, 1),
+    pack(T0 + 80 * M, 2),
+    pack(T0 + 90 * M, 3),
+  ];
+  const ordersTruth = (events: readonly PlantEvent[]): LineOeeTruth => {
+    const truth = new LineOeeTruth(config, T0, 'orders', 'hash', (id) =>
+      id === 'C2' ? T0 + 30 * M : undefined,
+    );
+    for (const event of events) truth.record(event);
+    return truth;
+  };
+
+  it('starts an order on both CNCs at its earliest head time and sums its jobs (#251 review)', () => {
+    const section = ordersTruth(twoCncs()).build(T0 + 2 * HOUR);
+    const order = section.orders['PO-1'];
+    expect(order?.jobOee.C1).toMatchObject({
+      headTime: '2026-10-12T03:00:00.000Z',
+      headSource: 'accepted',
+      window: { from: '2026-10-12T03:00:00.000Z', to: '2026-10-12T03:33:00.000Z', open: false },
+      cycles: 2,
+    });
+    expect(order?.jobOee.C2).toMatchObject({
+      headTime: '2026-10-12T03:30:00.000Z',
+      headSource: 'notBefore',
+      window: { from: '2026-10-12T03:30:00.000Z', to: '2026-10-12T03:59:00.000Z', open: false },
+      cycles: 1,
+    });
+    // C1: Setup 25 min, Running 8 min with a 20 s micro-stop; C2: Setup 25 min, Running 4 min.
+    expect(order?.jobOee.C1?.oee?.totals.plannedBusyMs).toBe(33 * M);
+    expect(order?.jobOee.C2?.oee?.totals.plannedBusyMs).toBe(29 * M);
+    expect(order?.oee.totals).toMatchObject({
+      plannedBusyMs: 62 * M,
+      actualProductionMs: 12 * M,
+      microStopMs: 20_000,
+      idealMs: 3 * 240_000,
+      produced: 3,
+      good: 3,
+    });
+    expect(order?.oee.oee).toEqual({ fraction: '6/31', decimal: '0.1935' });
+    expect(order?.completedAt).toBe('2026-10-12T04:30:00.000Z');
+    expect(order?.firstPassYield).toMatchObject({ firstPassGood: 3, started: 3 });
+    // In progress from the earlier head time (C1's 03:00Z), not C2's.
+    expect(section.inProgress).toEqual([
+      {
+        orderId: 'PO-1',
+        from: '2026-10-12T03:00:00.000Z',
+        to: '2026-10-12T04:30:00.000Z',
+        open: false,
+      },
+    ]);
+    expect(order?.line).toMatchObject({ plannedBusyMs: 90 * M, idealMs: '450000/1' });
+    // The pack at 04:00:00.000Z is the 04:00 hour's.
+    expect(section.line.hours['2026-10-12T03:00:00.000Z']?.good).toEqual({});
+    expect(section.line.hours['2026-10-12T04:00:00.000Z']?.good).toEqual({ 'VB-100': 3 });
+    // After the order nothing is in progress: the 04:00 hour is planned only to 04:30.
+    expect(section.line.hours['2026-10-12T04:00:00.000Z']?.plannedBusyMs).toBe(30 * M);
+  });
+
+  it('cuts exactly on an event time, and keeps a short stop open at the cut provisional (#251 review)', () => {
+    const truth = ordersTruth(twoCncs());
+    // At C1's completion (03:33Z): the `completed` fact and the second cycle are the next read's.
+    const atCompletion = truth.build(T0 + 2 * HOUR, T0 + 33 * M);
+    const c1 = atCompletion.orders['PO-1']?.jobOee.C1;
+    expect(c1?.window).toEqual({
+      from: '2026-10-12T03:00:00.000Z',
+      to: '2026-10-12T03:33:00.000Z',
+      open: true,
+    });
+    expect(c1?.cycles).toBe(1);
+    // Inside the 20 s jam: the stop is open at the cut and below the threshold so far, so the
+    // job's and the order's OEE are provisional.
+    const inJam = truth.build(T0 + 2 * HOUR, T0 + 31 * M + 10_000);
+    expect(inJam.orders['PO-1']?.jobOee.C1?.oee).toMatchObject({
+      provisional: true,
+      totals: { microStopMs: 10_000 },
+    });
+    expect(inJam.orders['PO-1']?.oee.provisional).toBe(true);
+    // C2 is not head yet at 03:20Z (its notBefore is 03:30Z): no window, the order pending, and
+    // in progress from C1's head time.
+    const before = truth.build(T0 + 2 * HOUR, T0 + 20 * M);
+    expect(before.orders['PO-1']?.jobOee.C2?.window).toBeNull();
+    expect(before.orders['PO-1']?.pending).toBe(true);
+    expect(before.inProgress[0]?.from).toBe('2026-10-12T03:00:00.000Z');
+  });
+
+  it('clips a break to the run start when the run starts inside it (#251 review)', () => {
+    // Monday 10:10 Istanbul, inside shift A's break 10:00–10:30.
+    const start = Date.UTC(2026, 9, 12, 7, 10);
+    const truth = new LineOeeTruth(config, start, 'schedule', 'hash');
+    const section = truth.build(Date.UTC(2026, 9, 12, 8));
+    expect(section.plannedStops).toEqual([
+      { from: '2026-10-12T07:10:00.000Z', to: '2026-10-12T07:30:00.000Z', kind: 'break' },
+    ]);
+    expect(section.line.hours['2026-10-12T07:00:00.000Z']).toMatchObject({
+      from: '2026-10-12T07:10:00.000Z',
+      plannedBusyMs: 30 * M,
+    });
+  });
+
   it('refuses a job fact before its acceptance', () => {
     const truth = new LineOeeTruth(config, T0, 'orders', 'hash');
     truth.record({

@@ -184,4 +184,76 @@ describe('live ground truth (#100)', () => {
     expect(inside.orders['PO-2610-007']?.open).toBe(true);
     expect(inside.orders['PO-2610-007']?.line?.provisional).toBe(true);
   });
+
+  it('reads lineOee without asOf exactly as at simTime: events at simTime belong to the next read (#251 review)', async () => {
+    const options = await scenarioOptions('orders-01');
+    const run = createLiveRun({
+      config: options.config,
+      seed: options.seed,
+      start: options.start,
+      end: options.end,
+      production: 'orders',
+      dispatches: options.dispatches ?? [],
+      clock: new ManualClock(),
+    });
+    for (const injection of options.injections ?? []) {
+      expect(run.inject(injection).ok).toBe(true);
+    }
+    // PO-2610-001's `completed` fact and its 12th OP10 cycle (04:13:44.974Z), and its last pack
+    // (04:32:11.237Z): the live run has processed the events at that instant when it is read.
+    for (const at of [
+      '2026-10-12T04:13:44.974Z',
+      '2026-10-12T04:20:00.000Z',
+      '2026-10-12T04:32:11.237Z',
+    ]) {
+      const now = Date.parse(at);
+      run.simulation.runUntil(now, (event, sim) => {
+        run.line.handle(event, sim);
+      });
+      expect(run.simulation.now).toBe(now);
+      const ended = runHeadless(
+        {
+          ...options,
+          end: now,
+          injections: (options.injections ?? []).filter((injection) => injection.at < now),
+        },
+        () => undefined,
+      );
+      const read = run.groundTruth().lineOee;
+      expect(read, at).toEqual(run.groundTruth(now).lineOee);
+      expect(read, at).toEqual(ended.lineOee);
+      const order = read.orders['PO-2610-001'];
+      if (at === '2026-10-12T04:13:44.974Z') {
+        // Its completion isn't seen yet: the window is open, and every cycle so far is planned.
+        expect(order?.jobOee['PO-2610-001~OP10~1']?.window?.open).toBe(true);
+        expect(order?.oee.unplanned.produced).toBe(0);
+        expect(order?.oee.totals.produced).toBe(11);
+      } else if (at === '2026-10-12T04:20:00.000Z') {
+        // Every job completed, but units are still on the line: the order is open (ADR-0031
+        // completion needs every unit terminal).
+        expect(order?.jobOee['PO-2610-001~OP10~1']?.window?.open).toBe(false);
+        expect(order?.completedAt).toBeNull();
+        expect(read.inProgress.find((r) => r.orderId === 'PO-2610-001')?.open).toBe(true);
+      } else {
+        // The last pack at the cut-off is the next read's: still open, and every pack counted is
+        // in an hour.
+        expect(order?.completedAt).toBeNull();
+        const inHours = Object.values(read.line.hours).reduce(
+          (sum, hour) => sum + Object.values(hour.good).reduce((a, n) => a + n, 0),
+          0,
+        );
+        const inOrders = Object.values(read.orders).reduce(
+          (sum, o) => sum + Object.values(o.line?.good ?? {}).reduce((a, n) => a + n, 0),
+          0,
+        );
+        expect(inOrders).toBe(inHours);
+      }
+    }
+    // One step on, the completion and the last pack are seen.
+    run.simulation.runUntil(Date.parse('2026-10-12T04:32:11.238Z'), (event, sim) => {
+      run.line.handle(event, sim);
+    });
+    const later = run.groundTruth().lineOee;
+    expect(later.orders['PO-2610-001']?.completedAt).toBe('2026-10-12T04:32:11.237Z');
+  });
 });

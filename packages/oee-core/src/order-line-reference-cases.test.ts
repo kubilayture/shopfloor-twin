@@ -179,12 +179,12 @@ const headText = (head: HeadTime): string =>
       ? 'waiting'
       : `unknown ${head.reason}`;
 
-describe('head-time reference cases (H1–H17)', () => {
+describe('head-time reference cases (H1–H21)', () => {
   const rows = table('Head times, Phase 9');
   const cases = [...new Set(rows.map((row) => cell(row, 'Case')))];
 
-  it('has the seventeen cases', () => {
-    expect(cases).toEqual(Array.from({ length: 17 }, (_, i) => `H${String(i + 1)}`));
+  it('has the twenty-one cases', () => {
+    expect(cases).toEqual(Array.from({ length: 21 }, (_, i) => `H${String(i + 1)}`));
   });
 
   describe.each(cases)('case %s', (id) => {

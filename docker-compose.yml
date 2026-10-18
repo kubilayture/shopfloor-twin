@@ -150,6 +150,12 @@ services:
     # A one-shot job: no health check of the image's own (that is the MES's), no restart.
     healthcheck:
       disable: true
+    # Limits like every other service (#228, S8): Node and the migration runner, short-lived.
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     restart: 'no'
 
   # Start order: the MES needs the migrated database and the broker; the gateway does not wait for

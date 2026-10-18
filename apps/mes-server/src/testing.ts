@@ -57,8 +57,8 @@ export function appUrl(serverUrl: string, database: string): string {
  * test of a lock race knows the waiting write got that far, however long a loaded machine took
  * (#212), instead of sleeping a fixed time.
  *
- * With `holding` (a table), it waits instead for a session that already holds a lock on that
- * table and waits behind `holder`, directly or through other waiters (#228): a background round
+ * With `holding` (a table), it waits instead for a session that already holds a row-share lock
+ * on that table (a `SELECT … FOR SHARE` / `FOR UPDATE` read of it) and waits behind `holder`, directly or through other waiters (#228): a background round
  * that queues for the same lock (the downtime coding's clip, say) must not pass for the write the
  * test waits for, and the write queued behind that round is blocked by the round, not by `holder`.
  */
@@ -83,9 +83,8 @@ export async function blockedBy(
                 ON pg_blocking_pids(a.pid) @> ARRAY[w.pid])
             SELECT count(*)::int AS n FROM waiting w
             WHERE w.pid <> pg_backend_pid() AND EXISTS (SELECT 1 FROM pg_locks l
-              WHERE l.pid = w.pid AND l.granted AND l.relation = to_regclass(${holding}))`.execute(
-            db,
-          );
+              WHERE l.pid = w.pid AND l.granted AND l.mode = 'RowShareLock'
+                AND l.relation = to_regclass(${holding}))`.execute(db);
     if ((rows[0]?.n ?? 0) > 0) return;
     if (Date.now() > deadline) throw new Error(`timed out after ${String(timeoutMs)} ms: ${what}`);
     await new Promise((resolve) => setTimeout(resolve, 20));

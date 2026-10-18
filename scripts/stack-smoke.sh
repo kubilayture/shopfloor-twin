@@ -31,11 +31,20 @@ fail() {
   exit 1
 }
 
+# published <service> <container port>: the host address the port is published on, or nothing.
+# (`docker compose port` prints ":0" and exits 0 for a port that isn't published.)
+published() {
+  address=$(docker compose port "$1" "$2" 2>/dev/null) || address=
+  case "$address" in
+    *:0 | '') ;;
+    *) echo "$address" ;;
+  esac
+}
 # url <service> <container port>: http://<host address> the port is published on.
 url() {
-  published=$(docker compose port "$1" "$2" 2>/dev/null) || fail "$1:$2 is not published"
-  [ -n "$published" ] || fail "$1:$2 is not published"
-  echo "http://$published"
+  address=$(published "$1" "$2")
+  [ -n "$address" ] || fail "$1:$2 is not published"
+  echo "http://$address"
 }
 
 # Compose refuses to start without a required secret, but not without the optional bootstrap
@@ -73,9 +82,9 @@ if [ "${SMOKE_EPHEMERAL_PORTS:-}" = 1 ]; then
       *:4800 | *:4900 | *:4600 | *:4700 | *:8080) fail "a default host port is published: $address" ;;
     esac
   done
-  for published in "db 5432" "broker 1883" "simulator 4841" "simulator 4845" "simulator 5020"; do
+  for pair in "db 5432" "broker 1883" "simulator 4841" "simulator 4845" "simulator 5020"; do
     # shellcheck disable=SC2086 # two words: service and port
-    if docker compose port $published >/dev/null 2>&1; then fail "published on the host: $published"; fi
+    [ -z "$(published $pair)" ] || fail "published on the host: $pair"
   done
   echo "ok: ephemeral host ports (web $web, MES $mes_url); database, broker, OPC UA and Modbus unpublished"
 fi

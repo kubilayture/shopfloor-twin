@@ -148,10 +148,27 @@ test('a serial traces back with its crew; holds from an SPC episode and a lot; t
     'data-subject',
     `serial:${signalSerial}`,
   );
-  await expect(tablet.getByTestId(`terminal-signal-${signalId}`)).toBeVisible();
+  // The episodes: the terminal's ten newest after the baseline that are open or not acknowledged
+  // (TERMINAL_LIMITS.signals). The drift's first one is older than the shift's last ten, so the
+  // live check judged it on the terminal while it was among them; here the list must be the ten.
+  const shownSignals = (await mesQ.spcChart('leak-rate')).signals
+    .filter(
+      (s) =>
+        s.status !== 'withdrawn' && !s.baseline && (s.closedBy === null || s.acknowledged === null),
+    )
+    .sort((a, b) => Date.parse(b.first.at) - Date.parse(a.first.at) || b.id - a.id)
+    .slice(0, 10)
+    .map((s) => String(s.id));
+  expect(shownSignals.length).toBeGreaterThan(0);
+  const signalRows = tablet.locator('[data-testid^="terminal-signal-"]');
+  await expect(signalRows).toHaveCount(shownSignals.length);
+  const terminalSignals = await signalRows.evaluateAll((rows) =>
+    rows.map((r) => r.getAttribute('data-testid')?.slice('terminal-signal-'.length) ?? ''),
+  );
+  expect([...terminalSignals].sort()).toEqual([...shownSignals].sort());
   const terminal = {
     holds: await tablet.locator('[data-testid^="terminal-hold-"]').count(),
-    signal: signalId,
+    signals: terminalSignals,
   };
 
   // 4. Sign-offs at both terminals, then the close: refused while held, allowed after release.

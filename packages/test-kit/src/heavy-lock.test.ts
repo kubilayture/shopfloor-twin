@@ -7,6 +7,7 @@ import {
   readdirSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
@@ -23,6 +24,8 @@ import {
   acquireHeavyLock,
   bootTime,
   breakStaleLock,
+  compareStarts,
+  differentBoot,
   diskProbeImage,
   dockerProbeProblem,
   fakeProbe,
@@ -30,6 +33,7 @@ import {
   diskProblems,
   lockTimeoutMs,
   parseDfAvailableBytes,
+  parseProcessStart,
   processLiveness,
   processStartTime,
   readGroups,
@@ -494,7 +498,7 @@ describe('review of PR #248 (#228)', () => {
     expect(recordGroup(lockPath, 't-other', 4242)).toBe(false);
     expect(recordGroup(lockPath, 't-66', 4242)).toBe(true);
     expect(recordGroup(lockPath, 't-66', 1)).toBe(false);
-    expect(readGroups(lockPath)).toEqual([4242]);
+    expect(readGroups(lockPath)).toEqual([{ pgid: 4242, leaderStart: undefined }]);
   });
 
   it('keeps a lock alive while a recorded group runs after its holder died', async () => {
@@ -550,14 +554,22 @@ describe('review of PR #248 (#228)', () => {
     }
   });
 
-  it('counts a lock from an earlier boot as stale, even if its PID now exists', () => {
-    const old = { ...holder(66), boot: '100' };
+  it('counts an earlier boot only when start times are unknown and it is over 5 minutes off', () => {
+    const old = { ...holder(66), boot: '1000' };
     tryTakeLock(lockPath, old);
-    const probe = fakeProbe({ pids: [66] }, { boot: () => '200' });
-    expect(holderLiveness(lockPath, old, probe)).toBe('dead');
-    expect(holderLiveness(lockPath, old, fakeProbe({ pids: [66] }, { boot: () => '100' }))).toBe(
-      'alive',
+    const at = (boot: string) => fakeProbe({ pids: [66] }, { boot: () => boot });
+    expect(holderLiveness(lockPath, old, at('1301'))).toBe('dead');
+    expect(holderLiveness(lockPath, old, at('1300'))).toBe('alive'); // a clock step, a jitter
+    expect(holderLiveness(lockPath, old, at('999'))).toBe('alive');
+    // A matching start time is conclusive, whatever the boot time says.
+    const started = { ...old, processStart: 'Sun Oct 18 10:00:00 2026' };
+    const same = fakeProbe(
+      { pids: [66] },
+      { boot: () => '99999', processStart: () => 'Sun Oct 18 10:00:00 2026' },
     );
+    expect(holderLiveness(lockPath, started, same)).toBe('alive');
+    expect(differentBoot('1000', undefined)).toBe(false);
+    expect(differentBoot('x', '5000')).toBe(false);
   });
 
   it('counts a reused PID (another process start time) as dead', () => {
@@ -599,9 +611,100 @@ describe('review of PR #248 (#228)', () => {
     lock.release();
   });
 
+  it('reads one start time whatever the locale and time zone of holder and waiter', async () => {
+    const module = resolve(import.meta.dirname, 'heavy-lock.ts');
+    // The holder: a Turkish-locale, Istanbul-time process that takes the lock and stays alive.
+    const holderScript = `
+      import { acquireHeavyLock } from ${JSON.stringify(module)};
+      await acquireHeavyLock({ lockPath: process.argv[1], command: 'tr', env: {}, log: () => {} });
+      process.stdout.write('held\\n');
+      setTimeout(() => {}, 60000);
+    `;
+    const held = spawn(process.execPath, ['--input-type=module', '-e', holderScript, lockPath], {
+      env: { ...process.env, LC_ALL: 'tr_TR.UTF-8', LANG: 'tr_TR.UTF-8', TZ: 'Europe/Istanbul' },
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    try {
+      await new Promise<void>((done) =>
+        held.stdout.once('data', () => {
+          done();
+        }),
+      );
+      expect(readHolder(lockPath)?.processStart).toMatch(/^[A-Z][a-z]{2} [A-Z][a-z]{2} /);
+      // Waiters in other locales and zones see it alive.
+      const checkScript = `
+        import { holderLiveness, readHolder } from ${JSON.stringify(module)};
+        process.stdout.write(holderLiveness(process.argv[1], readHolder(process.argv[1])));
+      `;
+      for (const env of [
+        { LC_ALL: 'C', LANG: 'C', TZ: 'UTC' },
+        { LC_ALL: 'en_US.UTF-8', LANG: 'en_US.UTF-8', TZ: 'America/New_York' },
+        { LC_ALL: 'tr_TR.UTF-8', LANG: 'tr_TR.UTF-8', TZ: 'Asia/Tokyo' },
+      ]) {
+        const answer = await new Promise<string>((done) => {
+          const check = spawn(
+            process.execPath,
+            ['--input-type=module', '-e', checkScript, lockPath],
+            {
+              env: { ...process.env, ...env },
+              stdio: ['ignore', 'pipe', 'inherit'],
+            },
+          );
+          let out = '';
+          check.stdout.on('data', (chunk: Buffer) => (out += chunk.toString()));
+          check.on('exit', () => {
+            done(out);
+          });
+        });
+        expect(answer, JSON.stringify(env)).toBe('alive');
+      }
+    } finally {
+      held.kill('SIGKILL');
+    }
+  }, 30_000);
+
+  it('treats start times it cannot compare as alive, never as a reused PID', () => {
+    const turkish = { ...holder(66), processStart: 'Paz 18 Eki 20:28:25 2026' };
+    tryTakeLock(lockPath, turkish);
+    const probe = fakeProbe({ pids: [66] }, { processStart: () => 'Sun Oct 18 17:28:25 2026' });
+    expect(compareStarts(turkish.processStart, 'Sun Oct 18 17:28:25 2026')).toBe('unknown');
+    expect(holderLiveness(lockPath, turkish, probe)).toBe('alive');
+  });
+
+  it('parses C-locale UTC start times as instants, single-digit days included', () => {
+    expect(parseProcessStart('Sun Oct 18 17:28:25 2026')).toBe(Date.UTC(2026, 9, 18, 17, 28, 25));
+    expect(parseProcessStart('Thu Oct  8 09:05:01 2026')).toBe(Date.UTC(2026, 9, 8, 9, 5, 1));
+    expect(parseProcessStart('Paz 18 Eki 20:28:25 2026')).toBeUndefined();
+    expect(compareStarts('Thu Oct  8 09:05:01 2026', 'Thu Oct 8 09:05:01 2026')).toBe('same');
+    expect(compareStarts('Thu Oct 8 09:05:01 2026', 'Thu Oct 8 09:05:02 2026')).toBe('different');
+  });
+
+  it('counts a recorded group as gone when its PGID now belongs to another process', () => {
+    tryTakeLock(lockPath, holder(66));
+    recordGroup(lockPath, 't-66', 4242, 'Sun Oct 18 10:00:00 2026');
+    expect(readGroups(lockPath)).toEqual([{ pgid: 4242, leaderStart: 'Sun Oct 18 10:00:00 2026' }]);
+    const leader = (start: string | undefined) =>
+      fakeProbe({ pids: [4242], groups: [4242] }, { processStart: () => start });
+    expect(holderLiveness(lockPath, holder(66), leader('Sun Oct 18 10:00:00 2026'))).toBe('alive');
+    expect(holderLiveness(lockPath, holder(66), leader('Sun Oct 18 12:00:00 2026'))).toBe('dead');
+    expect(holderLiveness(lockPath, holder(66), leader(undefined))).toBe('alive');
+    // The leader exited but its group still runs: alive.
+    expect(holderLiveness(lockPath, holder(66), fakeProbe({ groups: [4242] }))).toBe('alive');
+  });
+
+  it('removes a break guard older than a minute even when its writer PID is alive (reused)', () => {
+    tryTakeLock(lockPath, holder(66));
+    writeFileSync(`${lockPath}.break`, String(process.pid));
+    const old = new Date(Date.now() - 2 * 60_000);
+    utimesSync(`${lockPath}.break`, old, old);
+    expect(breakStaleLock(lockPath, holder(66), () => true, allAlive.pid)).toBe(false);
+    expect(existsSync(`${lockPath}.break`)).toBe(false);
+    expect(breakStaleLock(lockPath, holder(66), () => true, allAlive.pid)).toBe(true);
+  });
+
   it('reads the boot time and process start times of this machine', async () => {
     expect(bootTime()).toMatch(/^\d+$/);
-    expect(processStartTime(process.pid)).toBeTruthy();
+    expect(parseProcessStart(processStartTime(process.pid))).toBeGreaterThan(0);
     const exited = spawn(process.execPath, ['-e', '']);
     const pid = exited.pid ?? 0;
     await new Promise((done) => exited.on('exit', done));

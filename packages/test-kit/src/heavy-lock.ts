@@ -11,18 +11,22 @@
  *   machine's boot time and the holder process's own start time. The directory is made complete in
  *   a private temporary directory and renamed into place: rename onto an existing, non-empty
  *   directory fails, so taking the lock is atomic and a lock never exists without its holder. The
- *   holder (and any child that inherits it) adds an empty `group-<pgid>` file for each process
- *   group it starts detached, so the suite it runs keeps the lock alive after its own death.
+ *   holder (and any child that inherits it) adds a `group-<pgid>` file, holding the group
+ *   leader's start time, for each process group it starts detached, so the suite it runs keeps
+ *   the lock alive after its own death.
  * - **Waiting:** a command that finds the lock taken prints the holder and polls until it is free,
  *   up to `HEAVY_LOCK_TIMEOUT_MS` (default 3 hours), then fails.
  * - **Stale:** the lock is alive while its holder's PID answers `kill(pid, 0)` (or `EPERM`: another
- *   user's process) **or** any recorded process group answers `kill(-pgid, 0)`. It is stale when
- *   it was taken in an earlier boot, when the holder PID's process start time differs from the one
- *   recorded (the PID was reused), or when neither the PID nor any group exists (`ESRCH`). A lock
- *   directory without a valid `holder.json` (made by hand, or truncated) is waited for and counted
- *   stale only after a grace period. Breaking a stale lock happens under a short guard file
- *   (`heavy.lock.break`), so two waiters that see the same dead holder can't remove a lock the
- *   other has just taken.
+ *   user's process) **or** any recorded process group answers `kill(-pgid, 0)`. Start times are
+ *   read with `ps` in a fixed locale and time zone and compared as instants: a live PID with the
+ *   recorded start time is conclusive, one with another start time was reused (dead), and when
+ *   they can't be compared the PID counts as alive unless the boot time differs by more than
+ *   5 minutes (an earlier boot). A recorded group is dead when its leader's PID now belongs to a
+ *   process started at another time (a reused PGID). A lock directory without a valid
+ *   `holder.json` (made by hand, or truncated) is waited for and counted stale only after a grace
+ *   period. Breaking a stale lock happens under a short guard file (`heavy.lock.break`), so two
+ *   waiters that see the same dead holder can't remove a lock the other has just taken; a guard
+ *   whose writer is gone, or older than a minute, is removed.
  * - **Children:** the holder passes its token in `SHOPFLOOR_HEAVY_LOCK`; a command started under
  *   it (the gate's `verify`, the reconciliation's Playwright) finds its own token in the lock and
  *   runs without waiting on its parent.
@@ -58,6 +62,8 @@ export const HEAVY_LOCK_ENV = 'SHOPFLOOR_HEAVY_LOCK';
 export const HEAVY_LOCK_PATH = join(userInfo().homedir, '.cache', 'shopfloor-twin', 'heavy.lock');
 /** How long a command waits for the lock unless `HEAVY_LOCK_TIMEOUT_MS` says otherwise. */
 export const DEFAULT_HEAVY_LOCK_TIMEOUT_MS = 3 * 3_600_000;
+/** A break guard older than this is left over (its writer died, its PID maybe reused). */
+export const GUARD_MAX_AGE_MS = 60_000;
 /** How long a lock directory without a valid holder is waited for before it counts as stale. */
 export const NO_HOLDER_GRACE_MS = 60_000;
 
@@ -76,7 +82,7 @@ export interface HeavyLockHolder {
   readonly startedAt: string;
   /** Unique per acquisition: what `SHOPFLOOR_HEAVY_LOCK` carries to the holder's children. */
   readonly token: string;
-  /** The machine's boot time when the lock was taken (a lock from an earlier boot is stale). */
+  /** The machine's boot time when the lock was taken (consulted when start times can't be). */
   readonly boot?: string;
   /** The holder process's start time (`ps -o lstart=`): a different one means the PID was reused. */
   readonly processStart?: string;
@@ -108,17 +114,67 @@ export function bootTime(): string | undefined {
   }
 }
 
-/** A process's start time as `ps` prints it; undefined when there is no such process. */
+/**
+ * Boot times further apart than this mean another boot: `kern.boottime` moves when the clock is
+ * stepped, and Linux's `btime` jitters by a second, so exact equality would break live locks.
+ */
+export const BOOT_TOLERANCE_S = 300;
+
+/** Whether two recorded boot times are surely different boots; false when either is unknown. */
+export function differentBoot(a: string | undefined, b: string | undefined): boolean {
+  if (a === undefined || b === undefined) return false;
+  const x = Number(a);
+  const y = Number(b);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return Math.abs(x - y) > BOOT_TOLERANCE_S;
+}
+
+/**
+ * A process's start time as `ps -o lstart=` prints it, in a fixed environment (`LC_ALL=C`,
+ * `TZ=UTC`): the text depends on the caller's locale and time zone, and a holder and a waiter in
+ * different terminals (a Turkish-locale shell and an agent's, say) must read the same text.
+ * Undefined when there is no such process.
+ */
 export function processStartTime(pid: number): string | undefined {
   try {
     const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C', TZ: 'UTC' },
+    })
+      .trim()
+      .replace(/\s+/g, ' ');
     return out === '' ? undefined : out;
   } catch {
     return undefined;
   }
+}
+
+/** A `ps -o lstart=` text from `processStartTime` (C locale, UTC) as an instant, or undefined. */
+export function parseProcessStart(text: string | undefined): number | undefined {
+  if (text === undefined) return undefined;
+  const match = /^[A-Z][a-z]{2} ([A-Z][a-z]{2}) (\d{1,2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/.exec(
+    text.trim().replace(/\s+/g, ' '),
+  );
+  if (match === null) return undefined;
+  const [, month, day, time, year] = match;
+  const instant = Date.parse(`${month ?? ''} ${day ?? ''} ${year ?? ''} ${time ?? ''} UTC`);
+  return Number.isFinite(instant) ? instant : undefined;
+}
+
+/**
+ * Whether two start times name the same process start: `same` or `different` only when both
+ * parse as instants; `unknown` otherwise (an older record, another format), which never counts
+ * as a reused PID.
+ */
+export function compareStarts(
+  recorded: string | undefined,
+  current: string | undefined,
+): 'same' | 'different' | 'unknown' {
+  const a = parseProcessStart(recorded);
+  const b = parseProcessStart(current);
+  if (a === undefined || b === undefined) return 'unknown';
+  return a === b ? 'same' : 'different';
 }
 
 /** What the liveness rules ask of the machine; injectable for tests. */
@@ -180,28 +236,48 @@ export function readHolder(lockPath: string): HeavyLockHolder | undefined {
   return undefined;
 }
 
-/** The process groups recorded in the lock (`group-<pgid>` files). */
-export function readGroups(lockPath: string): number[] {
+export interface RecordedGroup {
+  readonly pgid: number;
+  /** The group leader's start time when it was recorded (`processStartTime`), if known. */
+  readonly leaderStart: string | undefined;
+}
+
+/** The process groups recorded in the lock (`group-<pgid>` files holding the leader's start). */
+export function readGroups(lockPath: string): RecordedGroup[] {
+  let names: string[];
   try {
-    return readdirSync(lockPath)
-      .map((name) => /^group-(\d+)$/.exec(name)?.[1])
-      .filter((pgid): pgid is string => pgid !== undefined)
-      .map(Number)
-      .filter((pgid) => pgid > 1);
+    names = readdirSync(lockPath);
   } catch {
     return [];
   }
+  return names.flatMap((name) => {
+    const pgid = Number(/^group-(\d+)$/.exec(name)?.[1]);
+    if (!Number.isInteger(pgid) || pgid <= 1) return [];
+    let text = '';
+    try {
+      text = readFileSync(join(lockPath, name), 'utf8').trim();
+    } catch {
+      // removed meanwhile, or unreadable: no start recorded
+    }
+    return [{ pgid, leaderStart: text === '' ? undefined : text }];
+  });
 }
 
 /**
- * Records a process group the lock's holder (or a child that inherited it) started, so the lock
- * stays alive while that group runs. Only while `token` still holds the lock; false otherwise.
+ * Records a process group the lock's holder (or a child that inherited it) started, with its
+ * leader's start time, so the lock stays alive while that group runs. Only while `token` still
+ * holds the lock; false otherwise.
  */
-export function recordGroup(lockPath: string, token: string, pgid: number): boolean {
+export function recordGroup(
+  lockPath: string,
+  token: string,
+  pgid: number,
+  leaderStart?: string,
+): boolean {
   if (!Number.isInteger(pgid) || pgid <= 1) return false;
   if (readHolder(lockPath)?.token !== token) return false;
   try {
-    writeFileSync(join(lockPath, `group-${String(pgid)}`), '');
+    writeFileSync(join(lockPath, `group-${String(pgid)}`), leaderStart ?? '');
     return true;
   } catch {
     return false;
@@ -209,23 +285,39 @@ export function recordGroup(lockPath: string, token: string, pgid: number): bool
 }
 
 /**
- * Whether a holder still holds its lock: dead for a lock taken in another boot, or whose PID now
- * belongs to a process started at another time; else alive while its PID or any recorded group
- * exists.
+ * Whether a recorded group still runs: its group answers `kill(-pgid, 0)`, unless a process with
+ * PID `pgid` exists with another start time than its recorded leader's (the PGID was reused).
+ */
+function groupLiveness(group: RecordedGroup, probe: LockProbe): Liveness {
+  if (probe.group(group.pgid) !== 'alive') return 'dead';
+  if (probe.pid(group.pgid) === 'alive') {
+    const current = probe.processStart(group.pgid);
+    if (compareStarts(group.leaderStart, current) === 'different') return 'dead';
+  }
+  return 'alive';
+}
+
+/**
+ * Whether a holder still holds its lock. A live PID with the recorded start time is conclusive;
+ * one with another start time was reused. When the start times can't be compared (unknown either
+ * side), a boot more than `BOOT_TOLERANCE_S` away from the recorded one means the PID is from an
+ * earlier boot; otherwise the live PID counts. Failing the PID, the lock is alive while any
+ * recorded group runs (`groupLiveness`).
  */
 export function holderLiveness(
   lockPath: string,
   holder: HeavyLockHolder,
   probe: LockProbe = systemProbe,
 ): Liveness {
-  const boot = probe.boot();
-  if (holder.boot !== undefined && boot !== undefined && holder.boot !== boot) return 'dead';
   if (probe.pid(holder.pid) === 'alive') {
-    const started = holder.processStart === undefined ? undefined : probe.processStart(holder.pid);
-    if (started === undefined || started === holder.processStart) return 'alive';
-    // the PID was reused: only a recorded group can keep the lock alive now
+    const starts = compareStarts(holder.processStart, probe.processStart(holder.pid));
+    if (starts === 'same') return 'alive';
+    if (starts === 'unknown' && !differentBoot(holder.boot, probe.boot())) return 'alive';
+    // a reused PID, or one from an earlier boot: only a recorded group can keep the lock alive
   }
-  return readGroups(lockPath).some((pgid) => probe.group(pgid) === 'alive') ? 'alive' : 'dead';
+  return readGroups(lockPath).some((group) => groupLiveness(group, probe) === 'alive')
+    ? 'alive'
+    : 'dead';
 }
 
 /** Age of the lock directory (from its modification time); undefined when it doesn't exist. */
@@ -315,13 +407,20 @@ export function breakStaleLock(
     } catch (error) {
       if (!isCode(error, 'EEXIST')) throw error;
       let owner: number;
+      let ageMs: number;
       try {
         owner = Number(readFileSync(guard, 'utf8'));
+        ageMs = Date.now() - statSync(guard).mtimeMs;
       } catch (readError) {
         if (isCode(readError, 'ENOENT')) return false; // the other breaker just finished
         throw readError;
       }
-      if (Number.isInteger(owner) && owner > 0 && pidLiveness(owner) === 'dead') {
+      // A guard is held for microseconds: one whose writer is gone, or that is older than
+      // `GUARD_MAX_AGE_MS` (its writer's PID reused meanwhile), is left over and removed.
+      if (
+        ageMs > GUARD_MAX_AGE_MS ||
+        (Number.isInteger(owner) && owner > 0 && pidLiveness(owner) === 'dead')
+      ) {
         unlinkQuietly(guard);
       }
       return false; // someone else is breaking it; try again on the next poll
@@ -428,7 +527,7 @@ export async function acquireHeavyLock(options: AcquireOptions): Promise<HeavyLo
   const groupRecorder =
     (token: string) =>
     (pgid: number): void => {
-      recordGroup(lockPath, token, pgid);
+      recordGroup(lockPath, token, pgid, probe.processStart(pgid));
     };
 
   const inheritedToken = env[HEAVY_LOCK_ENV];

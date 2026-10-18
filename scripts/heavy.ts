@@ -12,8 +12,8 @@
  *   15 GiB in Docker's data root, saying which (exit 2).
  * - Runs the command in its own process group with `SHOPFLOOR_HEAVY_LOCK` set, so its children
  *   inherit the lock, and records that group in the lock (alive while the group runs, also after
- *   this wrapper is killed); passes SIGINT, SIGTERM and SIGHUP on to that group (a second signal kills
- *   it); releases the lock when the command ends and exits with its code.
+ *   this wrapper is killed); passes SIGINT, SIGTERM and SIGHUP on to that group (a second signal
+ *   kills it); releases the lock when the command ends and exits with its code.
  *
  * Usage: node scripts/heavy.ts <command> [arguments…]
  */

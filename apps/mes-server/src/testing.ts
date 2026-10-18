@@ -58,9 +58,10 @@ export function appUrl(serverUrl: string, database: string): string {
  * (#212), instead of sleeping a fixed time.
  *
  * With `holding` (a table), it waits instead for a session that already holds a row-share lock
- * on that table (a `SELECT … FOR SHARE` / `FOR UPDATE` read of it) and waits behind `holder`, directly or through other waiters (#228): a background round
- * that queues for the same lock (the downtime coding's clip, say) must not pass for the write the
- * test waits for, and the write queued behind that round is blocked by the round, not by `holder`.
+ * on that table (a `SELECT … FOR SHARE` / `FOR UPDATE` read of it) and waits behind `holder`,
+ * directly or through other waiters (#228): a background round that queues for the same lock (the
+ * downtime coding's clip, say) must not pass for the write the test waits for, and the write
+ * queued behind that round is blocked by the round, not by `holder`.
  */
 export async function blockedBy(
   db: QueryExecutorProvider,

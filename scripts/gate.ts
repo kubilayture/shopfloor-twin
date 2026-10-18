@@ -167,7 +167,8 @@ const digests = (): Record<string, string> =>
   );
 
 // One heavy suite at a time on the machine (#228): the gate holds the lock for all its jobs, which
-// inherit it through SHOPFLOOR_HEAVY_LOCK (set in this process's environment, which `run` passes on).
+// inherit it through SHOPFLOOR_HEAVY_LOCK (set in this process's environment, which `run` passes
+// on).
 const lock = await acquireHeavyLock({ command: `pnpm gate in ${REPO}` }).catch((error: unknown) => {
   console.error(error instanceof HeavyLockTimeoutError ? `gate: ${error.message}` : error);
   process.exit(1);

@@ -157,15 +157,24 @@ export function useOrdersTopic(): void {
  * reads the trace answers again (`connectLiveToCache`), and so does the confirmed subscription,
  * as neither topic has a snapshot. Everything else a trace shows grows with facts and is polled
  * (`tracePollMs`). The orders topic is held as the orders screens hold it (`useOrdersTopic`), so
- * its pushed set starts empty and is emptied again when the page lets go.
+ * its pushed set starts empty and is emptied again when the page lets go; the quality topic's
+ * pushed set likewise.
  */
 export function useTraceTopics(): void {
   const client = useLiveClient();
   const queryClient = useQueryClient();
   useOrdersTopic();
   useEffect(() => {
+    // The quality topic has no snapshot either (#203 final review): its pushed set is emptied
+    // before subscribing and again when the page lets go, as `useQualityTopic` does, so a screen
+    // visited later never shows episodes or holds pushed while nobody held the topic for it.
+    resetLiveQuality(queryClient);
     void queryClient.invalidateQueries({ queryKey: TRACE_READS });
-    return client.subscribe(QUALITY_TOPIC);
+    const release = client.subscribe(QUALITY_TOPIC);
+    return () => {
+      release();
+      resetLiveQuality(queryClient);
+    };
   }, [client, queryClient]);
 }
 

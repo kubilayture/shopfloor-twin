@@ -532,6 +532,9 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
     case 'oee':
       applyOee(queryClient, message.topic, message.hour, message.shift);
       return;
+    // Order OEE (#231): the web subscribes to `oee:order:<id>` from #233 (P9-06) on.
+    case 'oee-order':
+      return;
     case 'downtime':
       queryClient.setQueryData<LiveDowntime>(liveKeys.downtime, (live) =>
         mergeDowntime(live, message.record, message.event === 'removed'),

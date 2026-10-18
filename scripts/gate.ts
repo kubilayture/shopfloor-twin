@@ -8,14 +8,24 @@
  * 4. `smoke`: the stack smoke (`scripts/stack-smoke.sh`, `SMOKE_WRITES=1`) on a disposable Compose
  *    project with a throw-away env file made from `.env.example`, every `*_PASSWORD` and `*_TOKEN`
  *    a random value generated here (the required secrets appended when missing); the repository's
- *    own `.env` is neither read nor touched;
+ *    own `.env` is neither read nor touched. Its host ports are ephemeral
+ *    (`SMOKE_EPHEMERAL_PORTS=1`, `e2e/compose.ephemeral-ports.yml`, #228), so a dev stack on the
+ *    default ports can stay up;
  * 5. `reconcile`: `pnpm test:reconcile` (all three passes, #204) with the smoke's images
  *    (`RECONCILE_SKIP_BUILD=1`, the same tag).
  *
+ * Before the first job it takes the host-wide heavy-suite lock (#228,
+ * `~/.cache/shopfloor-twin/heavy.lock`, `@shopfloor/test-kit/heavy-lock`), waiting up to
+ * `HEAVY_LOCK_TIMEOUT_MS` (default 3 hours) for another heavy run to end; its jobs inherit the
+ * lock through `SHOPFLOOR_HEAVY_LOCK`. Holding it, it refuses to start below 25 GiB free on the
+ * host or 15 GiB in Docker's data root (exit 2, saying which). The BuildKit cache is pruned to
+ * 10 GiB after the smoke's build and at the end.
+ *
  * Then it removes the project's volumes, the images it built and the env file, and prints one
  * record for the pull request's "Gate" section: the commit (and whether the tree was clean), each
- * job with its duration and result, Node and Docker versions, and the image digests the smoke and
- * the reconciliation ran. The record also goes to e2e/results/gate.json.
+ * job with its duration and result, Node and Docker versions, the free disk space at the start and
+ * the image digests the smoke and the reconciliation ran. The record also goes to
+ * e2e/results/gate.json.
  *
  * Usage: pnpm gate. Environment: GATE_STEPS (comma list of the jobs above, default all, for a rerun
  * after a later commit: runbook "Merge gate"), GATE_PROJECT (Compose project of the smoke, default
@@ -32,6 +42,13 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import {
+  HeavyLockTimeoutError,
+  acquireHeavyLock,
+  checkDisks,
+  formatGib,
+  pruneBuildCache,
+} from '@shopfloor/test-kit/heavy-lock';
 
 const REPO = resolve(import.meta.dirname, '..');
 const STEPS = ['verify', 'golden', 'e2e', 'smoke', 'reconcile'] as const;
@@ -108,6 +125,9 @@ function run(
   });
   const running = { child, exited };
   current = running;
+  // Each job's process group keeps the heavy-suite lock alive (#228), also if the gate itself is
+  // killed while the job runs.
+  if (child.pid !== undefined) lock.recordGroup(child.pid);
   return exited.finally(() => {
     if (current === running) current = undefined;
   });
@@ -146,6 +166,24 @@ const digests = (): Record<string, string> =>
     ]),
   );
 
+// One heavy suite at a time on the machine (#228): the gate holds the lock for all its jobs, which
+// inherit it through SHOPFLOOR_HEAVY_LOCK (set in this process's environment, which `run` passes
+// on).
+const lock = await acquireHeavyLock({ command: `pnpm gate in ${REPO}` }).catch((error: unknown) => {
+  console.error(error instanceof HeavyLockTimeoutError ? `gate: ${error.message}` : error);
+  process.exit(1);
+});
+process.on('exit', () => {
+  lock.release();
+});
+Object.assign(process.env, lock.env);
+const disks = await checkDisks(REPO);
+if (disks.problems.length > 0) {
+  for (const problem of disks.problems) console.error(`gate: refusing to start: ${problem}`);
+  process.exit(2);
+}
+console.log(`gate: free disk: host ${formatGib(disks.host)}, Docker ${formatGib(disks.docker)}`);
+
 const dir = mkdtempSync(join(tmpdir(), 'shopfloor-gate-'));
 const env = envFile(dir);
 const commit = output('git', ['rev-parse', 'HEAD']);
@@ -158,13 +196,19 @@ const commands: Readonly<Record<Step, [string, string[], NodeJS.ProcessEnv]>> = 
   verify: ['pnpm', ['verify', '--concurrency=1'], {}],
   golden: ['pnpm', ['test:golden'], {}],
   e2e: ['pnpm', ['test:e2e'], {}],
-  smoke: ['sh', ['scripts/stack-smoke.sh'], { SMOKE_ENV_FILE: env, SMOKE_WRITES: '1' }],
+  smoke: [
+    'sh',
+    ['scripts/stack-smoke.sh'],
+    { SMOKE_ENV_FILE: env, SMOKE_WRITES: '1', SMOKE_EPHEMERAL_PORTS: '1' },
+  ],
   reconcile: [
     'pnpm',
     ['test:reconcile'],
     {
       RECONCILE_TAG: tag,
       RECONCILE_PROJECT: process.env.RECONCILE_PROJECT ?? `${project}-reconcile`,
+      // The gate records the images' digests after the run and removes them itself (cleanup).
+      RECONCILE_KEEP_IMAGES: '1',
       // The smoke built the images under the same tag; without the smoke the run builds them.
       ...(selected.includes('smoke') ? { RECONCILE_SKIP_BUILD: '1' } : {}),
     },
@@ -190,6 +234,9 @@ function cleanup(): Promise<void> {
           await run('docker', ['image', 'rm', '--force', `shopfloor-twin/${service}:${tag}`]);
         }
       }
+      await pruneBuildCache((message) => {
+        console.log(`gate: ${message}`);
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -258,6 +305,9 @@ try {
     if (job === 'smoke') {
       images = digests();
       await compose('down', '--volumes', '--remove-orphans', '--timeout', '15');
+      await pruneBuildCache((message) => {
+        console.log(`gate: ${message}`);
+      });
     }
     if (job === 'reconcile' && Object.keys(images).length === 0) images = digests();
     const seconds = Math.round((Date.now() - started) / 100) / 10;
@@ -269,6 +319,7 @@ try {
   await cleanup();
 }
 
+const gibValue = (bytes: number) => Math.round((bytes / 1024 ** 3) * 10) / 10;
 const record = {
   commit,
   clean,
@@ -277,6 +328,7 @@ const record = {
   compose: output('docker', ['compose', 'version', '--short']),
   project,
   tag,
+  freeDisk: { hostGiB: gibValue(disks.host), dockerGiB: gibValue(disks.docker) },
   jobs,
   images,
   result: failed ? 'failed' : 'passed',
@@ -286,6 +338,9 @@ writeFileSync(join(REPO, 'e2e/results/gate.json'), `${JSON.stringify(record, nul
 console.log('\n=== gate record ===');
 console.log(`commit ${commit}${clean ? '' : ' (uncommitted changes)'}`);
 console.log(`node ${record.node}, docker ${record.docker}, compose ${record.compose}`);
+console.log(
+  `free disk at the start: host ${formatGib(disks.host)}, Docker ${formatGib(disks.docker)}`,
+);
 for (const job of jobs) {
   console.log(
     `${job.job.padEnd(10)} ${job.result.padEnd(8)} ${String(job.seconds).padStart(7)} s  ${job.command}`,

@@ -81,7 +81,8 @@
  * `alarms,orders,quality`), RECONCILE_PROJECT (Compose project prefix, default
  * shopfloor-reconcile; each pass adds `-alarms`, `-orders` or `-quality`),
  * RECONCILE_TAG (image tag, default reconcile; give parallel runs their own),
- * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_BROWSER=0 (no Playwright),
+ * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_KEEP_IMAGES=1 (keep the images
+ * it built; by default they are removed at the end, #228), RECONCILE_BROWSER=0 (no Playwright),
  * OVERVIEW_SAMPLE_MS and OEE_SAMPLE_MS (how long each live check samples, default 90000 each; the
  * `live` files run in name order: the OEE dashboard first, from the shift's start as in Phase 5,
  * ending 15 simulated minutes before the first injection at the latest; then the alarm check,
@@ -147,7 +148,8 @@ import {
   checkCrew,
   type CrewWindow,
 } from './quality-pass.ts';
-import { REPO, Stack } from './stack.ts';
+import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
+import { REPO, Stack, removeImages } from './stack.ts';
 import { episodeIdentity, traceConfigOf, type TraceSectionJson } from './trace-shapes.ts';
 
 const SPEED = 60;
@@ -255,6 +257,7 @@ const ORDER_USERS = {
   maintenance: { username: 'reconcile-maintenance', roles: ['maintenance'] },
 } as const;
 const skipBuild = process.env.RECONCILE_SKIP_BUILD === '1';
+const imageTag = process.env.RECONCILE_TAG ?? 'reconcile';
 const withBrowser = process.env.RECONCILE_BROWSER !== '0';
 
 const started = Date.now();
@@ -458,9 +461,18 @@ async function main(): Promise<boolean> {
     throw new Error(`RECONCILE_PASSES names no pass (${PASS_NAMES.join(', ')})`);
   }
   const outcomes: [PassName, boolean][] = [];
-  for (const [n, name] of passNames.entries()) {
-    // The images are built once, by the first pass.
-    outcomes.push([name, await runPass(name, n === 0 && !skipBuild)]);
+  try {
+    for (const [n, name] of passNames.entries()) {
+      // The images are built once, by the first pass.
+      outcomes.push([name, await runPass(name, n === 0 && !skipBuild)]);
+    }
+  } finally {
+    // The images it built go too, pass or fail (#228), unless the caller keeps them (the gate
+    // records their digests and removes them itself); images it didn't build are the caller's.
+    if (!skipBuild && process.env.RECONCILE_KEEP_IMAGES !== '1') {
+      log(`removing the images it built (${imageTag})`);
+      await removeImages(imageTag);
+    }
   }
   log(`passes: ${outcomes.map(([name, ok]) => `${name} ${ok ? 'OK' : 'FAILED'}`).join(', ')}`);
   return outcomes.every(([, ok]) => ok);
@@ -568,7 +580,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
       SIM_AUTOSTART: 'false',
       // Its own image tags: the run never replaces the dev stack's images, and RECONCILE_TAG
       // keeps parallel runs (other worktrees) from building over each other's.
-      IMAGE_TAG: process.env.RECONCILE_TAG ?? 'reconcile',
+      IMAGE_TAG: imageTag,
       // Orders mode (#178): the CNCs run only LoadOrder jobs; the MES pulls the ERP every second.
       ...(orders ? { SIM_PRODUCTION: 'orders', ERP_POLL_MS: '1000' } : {}),
     },
@@ -608,6 +620,8 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
         if (build) {
           log('building the images');
           await stack.compose(['build'], 1_200_000);
+          // The BuildKit cache kept to 10 GiB after each build (#228).
+          await pruneBuildCache(log);
         }
         phase('build');
 

@@ -8,10 +8,19 @@ env_file=${SMOKE_ENV_FILE:-./.env}
 set -a
 . "$env_file"
 set +a
+# SMOKE_EPHEMERAL_PORTS=1 (the gate, #228): every published port on an ephemeral host port chosen
+# by Docker (e2e/compose.ephemeral-ports.yml; the database and the broker unpublished), so a dev
+# stack on the default ports can stay up. The smoke reads each address back with `docker compose
+# port` either way, so it never assumes a fixed host port.
+compose_files=
+if [ "${SMOKE_EPHEMERAL_PORTS:-}" = 1 ]; then
+  compose_files="--file docker-compose.yml --file e2e/compose.ephemeral-ports.yml"
+fi
 docker() {
   if [ "$1" = compose ]; then
     shift
-    command docker compose --env-file "$env_file" "$@"
+    # shellcheck disable=SC2086 # compose_files is a list of words or empty
+    command docker compose --env-file "$env_file" $compose_files "$@"
   else
     command docker "$@"
   fi
@@ -20,6 +29,22 @@ docker() {
 fail() {
   echo "FAIL: $1" >&2
   exit 1
+}
+
+# published <service> <container port>: the host address the port is published on, or nothing.
+# (`docker compose port` prints ":0" and exits 0 for a port that isn't published.)
+published() {
+  address=$(docker compose port "$1" "$2" 2>/dev/null) || address=
+  case "$address" in
+    *:0 | '') ;;
+    *) echo "$address" ;;
+  esac
+}
+# url <service> <container port>: http://<host address> the port is published on.
+url() {
+  address=$(published "$1" "$2")
+  [ -n "$address" ] || fail "$1:$2 is not published"
+  echo "http://$address"
 }
 
 # Compose refuses to start without a required secret, but not without the optional bootstrap
@@ -44,6 +69,25 @@ echo "ok: Compose refuses to start without a required secret, not without the bo
 # Rows the MES records from here on belong to this run (rejected cycles below).
 smoke_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 docker compose up -d --wait
+
+# Where the stack listens on the host (#228): read back, never assumed.
+sim_url=$(url simulator 4800)
+gateway_url=$(url gateway 4900)
+erp=$(url erp 4600)
+mes_url=$(url mes 4700)
+web=$(url web 8080)
+if [ "${SMOKE_EPHEMERAL_PORTS:-}" = 1 ]; then
+  for address in "$sim_url" "$gateway_url" "$erp" "$mes_url" "$web"; do
+    case "$address" in
+      *:4800 | *:4900 | *:4600 | *:4700 | *:8080) fail "a default host port is published: $address" ;;
+    esac
+  done
+  for pair in "db 5432" "broker 1883" "simulator 4841" "simulator 4845" "simulator 5020"; do
+    # shellcheck disable=SC2086 # two words: service and port
+    [ -z "$(published $pair)" ] || fail "published on the host: $pair"
+  done
+  echo "ok: ephemeral host ports (web $web, MES $mes_url); database, broker, OPC UA and Modbus unpublished"
+fi
 
 timescale=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -Atc \
   "select extversion from pg_extension where extname = 'timescaledb'")
@@ -152,7 +196,7 @@ if delivered gw-01 "$MQTT_GATEWAY_PASSWORD" "orbis/gebze/_sys/mes-server/main/st
 fi
 echo "ok: broker ACLs (gateway may publish machine data only; dev is read-only)"
 
-status=$(curl -sf "http://127.0.0.1:${SIM_CONTROL_PORT:-4800}/api/v1/status") || fail "simulator control API not reachable"
+status=$(curl -sf "$sim_url/api/v1/status") || fail "simulator control API not reachable"
 case "$status" in
   *'"state":"running"'*) echo "ok: simulator running ($status)" ;;
   *) fail "simulator not running: $status" ;;
@@ -165,7 +209,7 @@ for port in 4841 4842 4843 4844 4845 5020; do
 done
 echo "ok: OPC UA servers listening on 4841-4845, Modbus on 5020"
 
-ready=$(curl -sf "http://127.0.0.1:${GATEWAY_HTTP_PORT:-4900}/health/ready") || fail "gateway not ready"
+ready=$(curl -sf "$gateway_url/health/ready") || fail "gateway not ready"
 echo "ok: gateway ready ($ready)"
 # Every machine's retained state reaches the UNS through the gateway (snapshot on connect).
 states=$(as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t 'orbis/gebze/+/+/+/state/current' -v -C 6 -W 30 | cut -d/ -f5 | sort -u | tr '\n' ' ')
@@ -210,7 +254,6 @@ echo "ok: stored cycle facts carry lots and operator (contract 1.4; lot $asm_lot
 
 # ERP mock (#171): ready, refuses the API without the bearer token, serves the order feed with it.
 # The token goes to curl on stdin, not on its command line.
-erp="http://127.0.0.1:${ERP_HTTP_PORT:-4600}"
 curl -sf "$erp/health/ready" >/dev/null || fail "ERP mock not ready"
 code=$(curl -s -o /dev/null -w '%{http_code}' "$erp/api/v1/orders")
 [ "$code" = 401 ] || fail "ERP mock answered without a token ($code)"
@@ -224,10 +267,9 @@ esac
 
 # MES and web (#99). `up --wait` above already waited for the MES to be ready (migrated, database
 # answering, subscribed to the UNS) and for nginx.
-ready=$(curl -sf "http://127.0.0.1:${MES_HTTP_PORT:-4700}/health/ready") || fail "MES not ready"
+ready=$(curl -sf "$mes_url/health/ready") || fail "MES not ready"
 echo "ok: MES ready ($ready)"
-web="http://127.0.0.1:${WEB_PORT:-8080}"
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.test:${WEB_PORT:-8080}" "$web/api/v1/equipment")
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.test:${web##*:}" "$web/api/v1/equipment")
 [ "$code" = 403 ] || fail "MES answered a foreign Host through the web ($code)"
 echo "ok: foreign Host refused through the web (DNS rebinding)"
 

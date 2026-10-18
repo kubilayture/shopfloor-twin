@@ -1,10 +1,13 @@
 # Status — updated 2026-10-18
 
-## Current phase: 09 – Simulation console, scenarios and hardening (plan pending; Phase 8 closed 2026-10-18)
+## Current phase: 09 – Simulation console, scenarios and hardening (in progress; plan accepted in #226; Phase 8 closed 2026-10-18)
 
-## Exit criteria progress: Phase 8 closed with 7 / 7 met by local runs (GitHub Actions could not run; deviations and gate exceptions in `docs/phases/phase-08-report.md`); Phase 9: plan pending
+## Exit criteria progress: Phase 8 closed with 7 / 7 met by local runs (GitHub Actions could not run; deviations and gate exceptions in `docs/phases/phase-08-report.md`); Phase 9: 0 / 9 (wave A started)
 
 ## Done since last update
+
+- #229 merged (PR #247, `02378b1`): `oee-core` order OEE over head-time windows, line throughput OEE (`aboveOne`), the bottleneck derived per product (ASM-01), first-pass yield; ADR-0036; reference cases in `docs/oee-reference-cases.md`; both configuration hashes and the goldens unchanged.
+- Phase 9 plan accepted (PR #226, `3e3ef33`): `docs/phases/phase-09-plan.md` and master plan rev. 9, after review rounds 1 to 3. Issues #228–#246 (P9-01 to P9-19) under milestone "Phase 09 – Simulation console, scenarios and hardening" (milestone 10); size XL in four waves with a checkpoint after wave A; phase log `docs/phases/phase-09-log.md` started.
 
 - **Phase 8 closed**: all 7 exit criteria met by local runs; tag `phase-08` after #205 merges (report: `docs/phases/phase-08-report.md`; learning notes: `docs/learning/phase-08.md`; data model: `docs/data-model.md`, confirmed current through migration `0032`, regenerated without a change, 14 new tables, 73 in ten module schemas). Exit criterion 7's last clause is recorded at the close: `pnpm verify --concurrency=1` passed uncached (`TURBO_FORCE=1`) three times in a row on `2afc764` with random property seeds (470 s, 462 s, 457 s; 2,102 tests each). The closing `pnpm gate` passed on the #205 branch at `27395dd` (`GATE-OK`, with `TURBO_FORCE=1`: verify 460.5 s, golden 1.5 s, e2e 716.5 s, smoke 85.4 s, reconcile 1,647.9 s with all three passes OK), and `pnpm test:trace-perf` passed there (backward p95 2.91 ms, forward p95 32.04 ms over 1,493 units); records in the report. No golden snapshot was regenerated in Phase 8 (the `trace.json` files are new). Every gate exception of the phase's PRs is listed in the report.
 - Phase 8 pull requests merged: #206 (#192), #207 (#194), #209 (#198), #210 (#195), #211 (#196), #213 (#208), #214 (#197), #215 (#212), #217 (#216), #219 (#199), #220 (#200), #221 (#218), #222 (#201), #223 (#202), #224 (#203), #225 (#204). None ran in GitHub Actions (spending limit); each was gated locally, most with `pnpm gate` or `GATE_STEPS`.
@@ -126,11 +129,11 @@
 
 ## In progress
 
-- #205 Phase 8 close (branch `docs/205-phase-08-close`; review and merge, then tag `phase-08`)
+- #228 (P9-01) gate and test hygiene (branch `chore/228-gate-hygiene`, wave A): the heavy-suite lock at `~/.cache/shopfloor-twin/heavy.lock`, the smoke on ephemeral host ports, host and VM disk checks, images and build cache cleaned per run, database and broker limits, the Phase 9 rerun rows (log entry in `docs/phases/phase-09-log.md`).
 
 ## Next up
 
-- Phase 9 plan (simulation console, scenarios and hardening; master plan section 11 row 9). Inherits from Phase 8: per-order and line OEE, incremental SPC derivation for a month of readings, holds derived every second, the console's `blockLot` (Phase 8 report, "Known issues and carry-overs").
+- Wave A beside #228: #234 (P9-07, simulator console actions); then #230 (P9-03, on #229's `oee-core`), #235 (P9-08) and #236 (P9-09), and the wave A checkpoint in the phase log.
 
 ## Blockers and open questions for the owner
 

@@ -21,6 +21,7 @@ import { defineConfig, devices } from '@playwright/test';
  *   A1 terminal within 2 s, an operator signed on to Line A1 throughout;
  * - `quality-final`, after the drain: a serial's trace page with its crew, holds from the drift's
  *   episode and a lot, the terminal's banners, the close refused while held and allowed after.
+ * Every run holds the host-wide heavy-suite lock (#228, src/playwright-lock.ts).
  * Chromium only. On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
  */
 const results = process.env.RECONCILE_RESULTS ?? join(import.meta.dirname, 'results');
@@ -28,6 +29,8 @@ const chromium = devices['Desktop Chrome'];
 
 export default defineConfig({
   testDir: './browser',
+  // The heavy-suite lock (#228): inherited from the reconciliation, else taken for this run.
+  globalSetup: './src/playwright-lock.ts',
   forbidOnly: true,
   retries: 0,
   workers: 1,

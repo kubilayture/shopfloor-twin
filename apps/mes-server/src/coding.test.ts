@@ -880,9 +880,19 @@ describe('codings after a re-cut (#121)', () => {
       version: first.version,
     });
     try {
-      // Until the write waits for the holder's lock (it read its record by then), however long a
-      // loaded machine takes to get it there, not a fixed 300 ms (#212).
-      await blockedBy(db, holderPid, 'the write waiting for the coding set');
+      // Until the write waits for the holder's lock, having read its record FOR SHARE, however
+      // long a loaded machine takes to get it there, not a fixed 300 ms (#212). The coding
+      // module's own clip, debounced after the states above, may queue for the same lock first
+      // (#228's gate beside a dev stack, three times): it must not pass for the write, and the
+      // write then waits behind the clip. So: a session holding a lock on the record table,
+      // waiting behind the holder directly or through the clip.
+      await blockedBy(
+        db,
+        holderPid,
+        'the write waiting for the coding set',
+        30_000,
+        'equipment.downtime_record',
+      );
       // A rebuild deleting the record must wait for the write (here: give up after 300 ms).
       await expect(
         db.transaction().execute(async (trx) => {

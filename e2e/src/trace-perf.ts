@@ -21,8 +21,9 @@
  * Usage: pnpm test:trace-perf. Environment: TRACE_PERF_PROJECT (Compose project, default
  * shopfloor-trace-perf), TRACE_PERF_TAG (image tag, default RECONCILE_TAG or `reconcile`),
  * TRACE_PERF_SKIP_BUILD=1 (use the images already built under the tag), TRACE_PERF_SEED (the serial
- * draw, default 204). It removes the project, its volumes and the env file at the end; the images
- * stay (the caller's tag).
+ * draw, default 204), TRACE_PERF_KEEP_IMAGES=1 (keep the images it built). It removes the project,
+ * its volumes and the env file at the end, and the images it built (#228); images it didn't build
+ * (TRACE_PERF_SKIP_BUILD=1) stay, the caller's.
  */
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -31,7 +32,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { lotTraceSchema, serialTraceSchema } from '@shopfloor/contracts/mes-api';
 import { ErpClient, MesClient, provisionUsers } from './clients.ts';
 import { percentile } from './compare.ts';
-import { REPO, Stack } from './stack.ts';
+import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
+import { REPO, Stack, removeImages } from './stack.ts';
 
 const REQUESTS = 200;
 const WARM_UP = 5;
@@ -163,6 +165,7 @@ async function main(): Promise<boolean> {
     if (!skipBuild) {
       log(`building mes-server, erp-mock and web (${tag})`);
       await stack.compose(['build', 'mes', 'erp', 'web'], 1_200_000);
+      await pruneBuildCache(log);
     }
     log('starting db and the migrate step');
     await stack.compose(['up', '--detach', '--no-build', 'migrate']);
@@ -322,6 +325,10 @@ async function main(): Promise<boolean> {
     await stack.destroy().catch((error: unknown) => {
       console.error('could not remove the stack', error);
     });
+    // The images it built go too (#228), unless kept; images it didn't build are the caller's.
+    if (!skipBuild && process.env.TRACE_PERF_KEEP_IMAGES !== '1') {
+      await removeImages(tag, ['mes-server', 'erp-mock', 'web']);
+    }
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
   }

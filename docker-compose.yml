@@ -14,6 +14,14 @@ services:
       - '127.0.0.1:${DB_PORT:-5442}:5432'
     volumes:
       - db-data:/var/lib/postgresql
+    # Limits on every service (#228, security review S8): TimescaleDB tunes itself to
+    # DB_TUNE_MEMORY (512 MB) and DB_TUNE_CPUS (2), so the cap leaves room above that tuning for
+    # connections and maintenance.
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1G
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
       interval: 5s
@@ -37,6 +45,11 @@ services:
     volumes:
       - ./config/mosquitto:/mosquitto/config:ro
       - broker-data:/mosquitto/data
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
     healthcheck:
       test:
         [
@@ -137,6 +150,12 @@ services:
     # A one-shot job: no health check of the image's own (that is the MES's), no restart.
     healthcheck:
       disable: true
+    # Limits like every other service (#228, S8): Node and the migration runner, short-lived.
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     restart: 'no'
 
   # Start order: the MES needs the migrated database and the broker; the gateway does not wait for

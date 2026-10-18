@@ -56,16 +56,36 @@ export function appUrl(serverUrl: string, database: string): string {
  * Waits until some other session is blocked by the backend `holder` (`pg_blocking_pids`), so a
  * test of a lock race knows the waiting write got that far, however long a loaded machine took
  * (#212), instead of sleeping a fixed time.
+ *
+ * With `holding` (a table), it waits instead for a session that already holds a row-share lock
+ * on that table (a `SELECT … FOR SHARE` / `FOR UPDATE` read of it) and waits behind `holder`,
+ * directly or through other waiters (#228): a background round that queues for the same lock (the
+ * downtime coding's clip, say) must not pass for the write the test waits for, and the write
+ * queued behind that round is blocked by the round, not by `holder`.
  */
 export async function blockedBy(
   db: QueryExecutorProvider,
   holder: number,
   what: string,
   timeoutMs = 30_000,
+  holding?: string,
 ): Promise<void> {
   for (const deadline = Date.now() + timeoutMs; ;) {
-    const { rows } = await sql<{ n: number }>`SELECT count(*)::int AS n FROM pg_stat_activity
-      WHERE pid <> pg_backend_pid() AND pg_blocking_pids(pid) @> ARRAY[${holder}::int]`.execute(db);
+    const { rows } =
+      holding === undefined
+        ? await sql<{ n: number }>`SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE pid <> pg_backend_pid() AND pg_blocking_pids(pid) @> ARRAY[${holder}::int]`.execute(
+            db,
+          )
+        : await sql<{ n: number }>`WITH RECURSIVE waiting(pid) AS (
+              SELECT pid FROM pg_stat_activity WHERE pg_blocking_pids(pid) @> ARRAY[${holder}::int]
+              UNION
+              SELECT a.pid FROM pg_stat_activity a JOIN waiting w
+                ON pg_blocking_pids(a.pid) @> ARRAY[w.pid])
+            SELECT count(*)::int AS n FROM waiting w
+            WHERE w.pid <> pg_backend_pid() AND EXISTS (SELECT 1 FROM pg_locks l
+              WHERE l.pid = w.pid AND l.granted AND l.mode = 'RowShareLock'
+                AND l.relation = to_regclass(${holding}))`.execute(db);
     if ((rows[0]?.n ?? 0) > 0) return;
     if (Date.now() > deadline) throw new Error(`timed out after ${String(timeoutMs)} ms: ${what}`);
     await new Promise((resolve) => setTimeout(resolve, 20));

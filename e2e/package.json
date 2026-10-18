@@ -7,8 +7,8 @@
     "typecheck": "tsc",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:reconcile": "node src/reconcile.ts",
-    "test:trace-perf": "node src/trace-perf.ts",
+    "test:reconcile": "node ../scripts/heavy.ts node src/reconcile.ts",
+    "test:trace-perf": "node ../scripts/heavy.ts node src/trace-perf.ts",
     "playwright:install": "playwright install --only-shell chromium"
   },
   "dependencies": {
@@ -22,6 +22,7 @@
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",
+    "@shopfloor/test-kit": "workspace:*",
     "@shopfloor/tsconfig": "workspace:*",
     "@types/node": "catalog:",
     "eslint": "catalog:",

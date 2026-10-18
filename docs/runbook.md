@@ -269,23 +269,54 @@ The jobs run in parallel. A pull request is merged only when every job is green 
 
 ## Merge gate
 
-`pnpm gate` (#178, `scripts/gate.ts`) runs the local equivalent of every CI job on the checked-out commit, in this order and one at a time (each job is heavy): `pnpm verify --concurrency=1`, `pnpm test:golden`, `pnpm test:e2e`, the stack smoke with `SMOKE_WRITES=1` on a disposable Compose project (`GATE_PROJECT`, default `shopfloor-gate`) and `pnpm test:reconcile` (all three passes since #204: `alarms`, `orders`, `quality`) with the smoke's images; `pnpm test:trace-perf` (exit criterion 6, "Trace performance") is run on its own, not by the gate. The smoke's env file is made from `.env.example` in a temporary directory (mode 600) with a random value for every `*_PASSWORD` and `*_TOKEN` key, the required secrets appended if `.env.example` lacks one, `COMPOSE_PROJECT_NAME` and `IMAGE_TAG` (`GATE_TAG`, default `gate`); the repository's `.env` is neither read nor changed (`SMOKE_ENV_FILE` makes `stack-smoke.sh` read that file and pass it to every `docker compose` call). The smoke uses the default host ports, so stop a dev stack first. A failed job stops the gate (the later ones are `skipped`); Ctrl+C, SIGTERM or SIGHUP is passed to the running job's process group (never to the cleanup), the gate waits for the job, cleans up the same way and exits 130, 143 or 129, and a second signal kills the job's group (a killed reconciliation cannot remove its own `reconcile` Compose projects and env files: remove those by hand with `docker compose -p <project> down --volumes`); it refuses `GATE_PROJECT=shopfloor-twin` (the dev stack's) and `GATE_TAG=dev`. In every case the project is removed with its volumes, the images of the tag are removed (`GATE_KEEP_IMAGES=1` keeps them) and the env file is deleted.
+`pnpm gate` (#178, `scripts/gate.ts`) runs the local equivalent of every CI job on the checked-out commit, in this order and one at a time (each job is heavy): `pnpm verify --concurrency=1`, `pnpm test:golden`, `pnpm test:e2e`, the stack smoke with `SMOKE_WRITES=1` on a disposable Compose project (`GATE_PROJECT`, default `shopfloor-gate`) and `pnpm test:reconcile` (all three passes since #204: `alarms`, `orders`, `quality`) with the smoke's images; `pnpm test:trace-perf` (exit criterion 6, "Trace performance") is run on its own, not by the gate. The smoke's env file is made from `.env.example` in a temporary directory (mode 600) with a random value for every `*_PASSWORD` and `*_TOKEN` key, the required secrets appended if `.env.example` lacks one, `COMPOSE_PROJECT_NAME` and `IMAGE_TAG` (`GATE_TAG`, default `gate`); the repository's `.env` is neither read nor changed (`SMOKE_ENV_FILE` makes `stack-smoke.sh` read that file and pass it to every `docker compose` call). The smoke's host ports are ephemeral (`SMOKE_EPHEMERAL_PORTS=1`, #228), as the reconciliation's are, so a dev stack on the default ports can stay up during the gate. A failed job stops the gate (the later ones are `skipped`); Ctrl+C, SIGTERM or SIGHUP is passed to the running job's process group (never to the cleanup), the gate waits for the job, cleans up the same way and exits 130, 143 or 129, and a second signal kills the job's group (a killed reconciliation cannot remove its own `reconcile` Compose projects and env files: remove those by hand with `docker compose -p <project> down --volumes`); it refuses `GATE_PROJECT=shopfloor-twin` (the dev stack's) and `GATE_TAG=dev`. In every case the project is removed with its volumes, the images of the tag are removed (`GATE_KEEP_IMAGES=1` keeps them) and the env file is deleted.
 
-It ends with one record for the pull request's "Gate" section, also written to `e2e/results/gate.json`: the commit (and whether the tree had uncommitted changes), each job with its duration and result, Node, Docker and Compose versions, and the image digests the smoke and the reconciliation ran.
+It ends with one record for the pull request's "Gate" section, also written to `e2e/results/gate.json`: the commit (and whether the tree had uncommitted changes), each job with its duration and result, Node, Docker and Compose versions, the free disk space at the start and the image digests the smoke and the reconciliation ran.
+
+**One heavy suite at a time (#228, Phase 9 plan "Local gate").** Every heavy command takes a host-wide lock first: `pnpm gate`, `pnpm verify` (its Testcontainers suites), `pnpm test`, `pnpm test:e2e`, `pnpm test:reconcile`, `pnpm test:trace-perf` and Playwright (its global setup), and from their issues on `pnpm test:resilience` and `pnpm test:perf`. The commands go through `scripts/heavy.ts` (the gate and Playwright call the same code, `@shopfloor/test-kit/heavy-lock`).
+
+- The lock is the directory `~/.cache/shopfloor-twin/heavy.lock` (a fixed path for every worktree, agent and sandbox session: the account's home directory from the user database, not `$HOME`; never the temporary directory) with `holder.json`: the holder's PID, command and checkout, start time, a token, the machine's boot time and the holder process's start time; and a `group-<pgid>` file (holding the group leader's start time) for each process group the holder started (`scripts/heavy.ts`'s command, each gate job). `cat ~/.cache/shopfloor-twin/heavy.lock/holder.json` shows who holds it.
+- A command that finds it taken prints the holder (`heavy lock: waiting for …`) and waits up to `HEAVY_LOCK_TIMEOUT_MS` (default 3 hours, `10800000`), then fails with exit 1 naming the holder.
+- The lock is alive while the holder's PID exists (`kill(pid, 0)` succeeds, or fails with `EPERM`: a process of another user) **or** any recorded process group does (`kill(-pgid, 0)`), so killing `scripts/heavy.ts` or the gate with SIGKILL doesn't free the lock while the suite it started still runs. It is stale when neither exists (`ESRCH`), or when the holder's PID now belongs to a process started at another time (a reused PID). Start times are read with `ps -o lstart=` in a fixed locale and time zone (`LC_ALL=C`, `TZ=UTC`, so a Turkish-locale terminal and an agent's shell read the same) and compared as instants; a live PID with the recorded start time is conclusive, and when the times can't be compared the PID counts as alive unless the boot time differs by more than 5 minutes (an earlier boot; a clock step or a second of jitter is not one). A recorded group counts as gone when a process with its PGID's number exists with another start time than the leader recorded (a reused PGID). The next command removes a stale lock and says so, once. A lock directory without a valid `holder.json` is waited for (with a message) and counted stale after 60 s.
+- A holder's children inherit it through `SHOPFLOOR_HEAVY_LOCK` (the gate's `verify`, the reconciliation's Playwright): they run at once instead of waiting on their own parent.
+- Holding the lock (not when inherited), a command refuses to start below **25 GiB free on the host** (the repository's file system) or **15 GiB free in Docker's data root** (inside the VM; measured with `df` in a throw-away container of the broker's image), exit 2, saying which. Free space with `docker system df` and `df -h /`; reclaim with `docker image prune`, `docker volume ls` (remove only volumes you know) and `docker builder prune`.
+- **A wedged lock** (a waiter keeps printing a holder you know is gone, say after a crash the rules above can't see): check first, then remove it by hand.
+
+  ```bash
+  cat ~/.cache/shopfloor-twin/heavy.lock/holder.json   # pid, command, checkout, start
+  ls ~/.cache/shopfloor-twin/heavy.lock                 # group-<pgid> files
+  ps -p <pid> -o pid,lstart,command                     # is the holder still running?
+  ps -g <pgid> -o pid,command                           # is any of its groups? (per group)
+  rm -r ~/.cache/shopfloor-twin/heavy.lock              # only when nothing above runs
+  ```
+
+  Never remove it while its holder or one of its groups runs: two heavy suites would then share the machine. A leftover `heavy.lock.break` (a breaker killed in the middle) is removed by the next waiter when its writer is gone or the guard is older than a minute (its writer's PID may have been reused).
+
+- **Docker must run:** `pnpm verify`, `pnpm test` and every other heavy command measure Docker's free space before they start (the disk check above), so they now refuse to start, saying "Docker is not running", while Docker is down; start it (`colima start`) first. The probe never pulls its image (`docker run --pull never`): if the broker's image isn't on the machine, the message says to `docker pull` it once.
+- Signals: `scripts/heavy.ts` runs the command in its own process group and passes SIGINT, SIGTERM and SIGHUP on (a second signal kills the group); the lock is released when the command ends. Harnesses stop what they started by PID or process group, never by name (no unscoped `pkill`).
+
+**Cleanup per run (#228).** The gate removes its smoke project with its volumes and the images of its `GATE_TAG` (also on failure); `pnpm test:reconcile` and `pnpm test:trace-perf` remove their projects with their volumes and, when they built them, their images (`RECONCILE_KEEP_IMAGES=1`, `TRACE_PERF_KEEP_IMAGES=1` keep them; the gate passes `RECONCILE_KEEP_IMAGES=1` and removes them itself after recording the digests). After each build the BuildKit cache is pruned to 10 GiB (`docker builder prune --force --all --keep-storage 10GB`; the gate also at its end). The prune is **machine-wide**: it trims every project's build cache on the Docker host (other worktrees' and other repositories' too), keeping the most recently used 10 GiB. `--all` is what makes the cap hold: without it only dangling records may go, so the cache could stay above 10 GiB.
+
+**The manual smoke takes no lock.** `pnpm stack:smoke` (and `sh scripts/stack-smoke.sh`) is not a heavy command on its own: it checks a stack you already run. Run it beside a heavy suite only on a stack of your own; the gate's smoke runs under the gate's lock.
 
 A commit after the gate reruns the jobs its files touch, with `GATE_STEPS` (a comma list of `verify`, `golden`, `e2e`, `smoke`, `reconcile`), and the pull request names them:
 
-| Files changed                                                   | Rerun                                              |
-| --------------------------------------------------------------- | -------------------------------------------------- |
-| Documentation only (`docs/`, `*.md`)                            | `verify` (formatting)                              |
-| `apps/simulator`, `packages/sim-core`, `config/plant`           | `verify,golden,e2e,smoke,reconcile`                |
-| `packages/spc-core`, `packages/trace-core` (shape `trace.json`) | `verify,golden,e2e,smoke,reconcile`                |
-| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`     | `verify,e2e,smoke,reconcile`                       |
-| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*`   | `verify,smoke,reconcile`                           |
-| `e2e/` (reconciliation, Playwright)                             | `verify,reconcile`                                 |
-| `scripts/stack-smoke*`                                          | `verify,smoke`                                     |
-| `e2e/src/quality-pass.ts`, `e2e/browser/quality/` only          | `verify,reconcile` with `RECONCILE_PASSES=quality` |
-| `e2e/src/trace-perf.ts`, `apps/mes-server/src/trace-perf-load*` | `verify,e2e` and `pnpm test:trace-perf`            |
+| Files changed                                                                           | Rerun                                                   |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Documentation only (`docs/`, `*.md`)                                                    | `verify` (formatting)                                   |
+| `apps/simulator`, `packages/sim-core`, `config/plant`                                   | `verify,golden,e2e,smoke,reconcile`                     |
+| `packages/spc-core`, `packages/trace-core` (shape `trace.json`)                         | `verify,golden,e2e,smoke,reconcile`                     |
+| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`                             | `verify,e2e,smoke,reconcile`                            |
+| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*`                           | `verify,smoke,reconcile`                                |
+| `e2e/` (reconciliation, Playwright)                                                     | `verify,reconcile`                                      |
+| `scripts/stack-smoke*`                                                                  | `verify,smoke`                                          |
+| `e2e/src/quality-pass.ts`, `e2e/browser/quality/` only                                  | `verify,reconcile` with `RECONCILE_PASSES=quality`      |
+| `e2e/src/trace-perf.ts`, `apps/mes-server/src/trace-perf-load*`                         | `verify,e2e` and `pnpm test:trace-perf`                 |
+| `packages/oee-core` (shapes `line-oee.json`, Phase 9)                                   | `verify,golden,e2e,smoke,reconcile`                     |
+| `config/scenarios/`                                                                     | `verify,golden,e2e`                                     |
+| `config/mosquitto/`, nginx (`apps/web/nginx/`), the `pki` step, `compose.dev-ports.yml` | `verify,e2e,smoke,reconcile` and `pnpm test:resilience` |
+| `e2e/src/resilience*`                                                                   | `verify` and `pnpm test:resilience`                     |
+| `e2e/src/perf*`, `apps/mes-server/src/perf-replay*`, `compose.observability.yml`        | `verify` and `pnpm test:perf`                           |
 
 ## Full stack (Compose)
 
@@ -323,15 +354,15 @@ Then replace every `change-me` with a random value of your own, for example from
 
 All services listen on `127.0.0.1` only, so nothing is reachable from the network. Inside the Compose network the MES and nginx listen on all interfaces (`0.0.0.0`), which only the other containers reach.
 
-**Smoke writes and a disposable project.** `pnpm stack:smoke` always checks the write refusals (403, 415, nginx's method allowlist, 401 without a session, 403 for a permission the role lacks), also for the alarm writes, which change nothing. Since #170 it logs in as an operator `smoke-<hex>` it creates for the run with `user:create` in the `mes` container (password generated with `openssl`, passed on stdin, never written to a file); on every exit (pass, fail, a `set -e` stop or Ctrl-C, through an `EXIT` trap) it disables that user again (`node apps/mes-server/src/user-cli.ts --disable --username …`, also `pnpm --filter @shopfloor/mes-server user:disable`); the user row and its audit entries stay in the database (users are never deleted). With `SMOKE_WRITES=1` it also codes one closed, final, uncoded downtime record through the web and clears it again, and acknowledges the newest unacknowledged alarm occurrence of the last 7 days of plant time (twice: the second answer must be `changed: false`; skipped when the plant has raised none yet), both audited as the smoke user; with `MES_BOOTSTRAP_ADMIN_PASSWORD` set it also checks that the bootstrap admin must change its password first (403 `password-change-required`, WebSocket 4403; the smoke never changes it). CI sets it on a throw-away stack. Those audit rows and the acknowledgement are **permanent** (append-only and insert-only), so never set it against a database you keep. To run it locally on a disposable stack of its own (stop your stack first: the ports are the same):
+**Smoke writes and a disposable project.** `pnpm stack:smoke` always checks the write refusals (403, 415, nginx's method allowlist, 401 without a session, 403 for a permission the role lacks), also for the alarm writes, which change nothing. Since #170 it logs in as an operator `smoke-<hex>` it creates for the run with `user:create` in the `mes` container (password generated with `openssl`, passed on stdin, never written to a file); on every exit (pass, fail, a `set -e` stop or Ctrl-C, through an `EXIT` trap) it disables that user again (`node apps/mes-server/src/user-cli.ts --disable --username …`, also `pnpm --filter @shopfloor/mes-server user:disable`); the user row and its audit entries stay in the database (users are never deleted). With `SMOKE_WRITES=1` it also codes one closed, final, uncoded downtime record through the web and clears it again, and acknowledges the newest unacknowledged alarm occurrence of the last 7 days of plant time (twice: the second answer must be `changed: false`; skipped when the plant has raised none yet), both audited as the smoke user; with `MES_BOOTSTRAP_ADMIN_PASSWORD` set it also checks that the bootstrap admin must change its password first (403 `password-change-required`, WebSocket 4403; the smoke never changes it). CI sets it on a throw-away stack. Those audit rows and the acknowledgement are **permanent** (append-only and insert-only), so never set it against a database you keep. To run it locally on a disposable stack of its own, beside your dev stack (#228: `SMOKE_EPHEMERAL_PORTS=1` publishes every port on an ephemeral host port, `e2e/compose.ephemeral-ports.yml`):
 
 ```bash
-pnpm stack:down
-COMPOSE_PROJECT_NAME=shopfloor-smoke SMOKE_WRITES=1 pnpm stack:smoke
+COMPOSE_PROJECT_NAME=shopfloor-smoke IMAGE_TAG=smoke SMOKE_EPHEMERAL_PORTS=1 SMOKE_WRITES=1 pnpm stack:smoke
 docker compose -p shopfloor-smoke down --volumes
+docker image rm shopfloor-twin/simulator:smoke shopfloor-twin/edge-gateway:smoke shopfloor-twin/mes-server:smoke shopfloor-twin/erp-mock:smoke shopfloor-twin/web:smoke
 ```
 
-`COMPOSE_PROJECT_NAME` overrides the file's `name:`, so the smoke gets its own containers and volumes and your `shopfloor-twin` data is untouched.
+`COMPOSE_PROJECT_NAME` overrides the file's `name:`, so the smoke gets its own containers and volumes and your `shopfloor-twin` data is untouched; `IMAGE_TAG` keeps its images apart from your `dev` ones. The smoke reads every host address back with `docker compose port` (also on the default ports), so it never assumes a fixed port; with `SMOKE_EPHEMERAL_PORTS=1` it also asserts that no default port is published and that the database, broker, OPC UA and Modbus ports are not published at all.
 
 Since #178 the smoke also checks, before `up`, that Compose refuses a configuration without each required secret (`DB_PASSWORD`, `DB_APP_PASSWORD`, `ERP_API_TOKEN`, the four MQTT passwords) and accepts one without `MES_BOOTSTRAP_ADMIN_PASSWORD` (`docker compose config` in a clean environment); and through the web, as the operator, the order-path refusals that change nothing: release, dispatch and close of an imported order are 403 `forbidden`, a terminal write without a crew row is 409 `not-signed-on`, a sign-on with a desk session is 409 `terminal-session-required`. With `SMOKE_WRITES=1` it creates a second user, a supervisor `smoke-sup-<hex>` (disabled again by the exit trap), which releases and dispatches that order (the schedule-mode simulator refuses the job, so no job is made) and is refused an abandon of the command while its run goes on (409 `order-state`). Without an order still `imported` the order checks are skipped, except with `SMOKE_WRITES=1` (a disposable stack must have one), where that fails. `SMOKE_ENV_FILE` names another env file than `./.env` (the merge gate's throw-away one).
 
@@ -371,17 +402,17 @@ Simulator notes:
 - **Debugging MQTT connections:** set `connection_messages true` in `config/mosquitto/mosquitto.conf` (off by default because the healthcheck connects every 5 seconds) and restart the broker.
 - **Memory:** measured with the full stack at 60× (#99, Colima VM with 2 GiB and 2 CPUs, the web app's detail screen open, `docker stats` every 12 s for 4 minutes, maximum):
 
-  | Service   | Memory  | Limit                         | Image   |
-  | --------- | ------- | ----------------------------- | ------- |
-  | db        | 61 MiB  | none (tuned for 512 MB)       | 1.45 GB |
-  | broker    | 4 MiB   | none                          | 43 MB   |
-  | simulator | 190 MiB | 512 MiB                       | 389 MB  |
-  | gateway   | 94 MiB  | 384 MiB                       | 398 MB  |
-  | mes       | 79 MiB  | 512 MiB                       | 314 MB  |
-  | web       | 9 MiB   | 64 MiB                        | 94 MB   |
-  | **Total** | 437 MiB | 1.5 GiB + db's tuning (2 GiB) |         |
+  | Service   | Memory  | Limit                   | Image   |
+  | --------- | ------- | ----------------------- | ------- |
+  | db        | 61 MiB  | 1 GiB, 1.5 CPUs (#228)  | 1.45 GB |
+  | broker    | 4 MiB   | 128 MiB, 0.5 CPU (#228) | 43 MB   |
+  | simulator | 190 MiB | 512 MiB                 | 389 MB  |
+  | gateway   | 94 MiB  | 384 MiB                 | 398 MB  |
+  | mes       | 79 MiB  | 512 MiB                 | 314 MB  |
+  | web       | 9 MiB   | 64 MiB                  | 94 MB   |
+  | **Total** | 437 MiB | 2.6 GiB                 |         |
 
-  The database grows towards its 512 MB tuning as data and queries grow, and `pnpm test` and `pnpm test:e2e` start their own TimescaleDB and Mosquitto containers through Testcontainers beside the stack. The stack fits a 2 GiB VM today, but with little room: give the Docker VM **4 GiB** (Colima: `colima stop && colima start --memory 4 --cpu 2`; Docker Desktop: Settings → Resources). Containers that hit their limit are killed (`docker compose ps` shows the restart, `docker inspect <container> --format '{{.State.OOMKilled}}'`).
+  Every service has a limit since #228 (security review S8): the database's 1 GiB leaves room above its 512 MB tuning (`DB_TUNE_MEMORY`) for connections and maintenance, and the broker's 128 MiB is about 30 times its use; the ERP mock (128 MiB, 0.5 CPU) and the one-shot `migrate` step (256 MiB, 0.5 CPU) are not in the table above. The database grows towards its 512 MB tuning as data and queries grow, and `pnpm test` and `pnpm test:e2e` start their own TimescaleDB and Mosquitto containers through Testcontainers beside the stack. The stack fits a 2 GiB VM today, but with little room: give the Docker VM **4 GiB** (Colima: `colima stop && colima start --memory 4 --cpu 2`; Docker Desktop: Settings → Resources). Containers that hit their limit are killed (`docker compose ps` shows the restart, `docker inspect <container> --format '{{.State.OOMKilled}}'`).
 
 ## Reconciliation run
 
@@ -452,7 +483,7 @@ If the time cut fails, `quality.traceAsOf.differences` names the side (`live tru
 
 ### Trace performance (#204)
 
-`pnpm test:trace-perf` (`e2e/src/trace-perf.ts`, exit criterion 6) measures the trace queries through the stack on a week of data, on its own disposable Compose project (`TRACE_PERF_PROJECT`, default `shopfloor-trace-perf`; images `TRACE_PERF_TAG`, default `RECONCILE_TAG` or `reconcile`, built unless `TRACE_PERF_SKIP_BUILD=1`; a generated env file):
+`pnpm test:trace-perf` (`e2e/src/trace-perf.ts`, exit criterion 6) measures the trace queries through the stack on a week of data, on its own disposable Compose project (`TRACE_PERF_PROJECT`, default `shopfloor-trace-perf`; images `TRACE_PERF_TAG`, default `RECONCILE_TAG` or `reconcile`, built unless `TRACE_PERF_SKIP_BUILD=1`, and removed at the end when it built them unless `TRACE_PERF_KEEP_IMAGES=1`, #228; a generated env file):
 
 1. `db` and the `migrate` step start; `e2e/compose.trace-perf.yml` publishes the database on an ephemeral `127.0.0.1` port for this run only.
 2. The loader, a `mes-server` Vitest entry skipped unless `TRACE_PERF_DATABASE_URL` is set (`apps/mes-server/src/trace-perf-load.e2e.test.ts`, run with `pnpm --filter @shopfloor/mes-server exec vitest run --config vitest.e2e.config.ts src/trace-perf-load.e2e.test.ts`), replays `week-01` in order through the MES's modules (ingest, equipment, orders, execution, genealogy) into that database as `mes_app`, as the golden reconciliation does, and checks the counts against `trace.json` (2,200 units, the largest lot's units, no genealogy incident).
@@ -461,7 +492,7 @@ If the time cut fails, `quality.traceAsOf.differences` names the side (`live tru
 
 The project, its volumes and the env file are removed at the end; the images stay under the tag.
 
-Options: `RECONCILE_PASSES` (default `alarms,orders,quality`; one name runs one pass), `RECONCILE_SKIP_BUILD=1` uses the images already built, `RECONCILE_BROWSER=0` skips Playwright (the `alarms` pass only: the orders pass dispatches through the UI and refuses it), `RECONCILE_PROJECT` names the Compose project prefix and `RECONCILE_TAG` the image tag (default `reconcile`; give runs from two worktrees at once their own project and tag, or their builds replace each other's images), `OVERVIEW_SAMPLE_MS` and `OEE_SAMPLE_MS` set how long each live check samples (the OEE check runs first and stops at `OEE_SAMPLE_MS` or 15 simulated minutes before the first injection, whichever comes first; the overview runs after the alarm check, which ends about 205 s after the resume, and must end before the shift does, about 480 s), `RECONCILE_SILENT_WAIT_MS` how long (simulated) the run may go on for a silent machine's next fact, `RECONCILE_DEADLINE_MS` the limit of each pass, `TERMINAL_SAMPLE_MS` how long the terminal check samples.
+Options: `RECONCILE_PASSES` (default `alarms,orders,quality`; one name runs one pass), `RECONCILE_SKIP_BUILD=1` uses the images already built (and leaves them), `RECONCILE_KEEP_IMAGES=1` keeps the images a run built (by default it removes them at the end, #228), `RECONCILE_BROWSER=0` skips Playwright (the `alarms` pass only: the orders pass dispatches through the UI and refuses it), `RECONCILE_PROJECT` names the Compose project prefix and `RECONCILE_TAG` the image tag (default `reconcile`; give runs from two worktrees at once their own project and tag, or their builds replace each other's images), `OVERVIEW_SAMPLE_MS` and `OEE_SAMPLE_MS` set how long each live check samples (the OEE check runs first and stops at `OEE_SAMPLE_MS` or 15 simulated minutes before the first injection, whichever comes first; the overview runs after the alarm check, which ends about 205 s after the resume, and must end before the shift does, about 480 s), `RECONCILE_SILENT_WAIT_MS` how long (simulated) the run may go on for a silent machine's next fact, `RECONCILE_DEADLINE_MS` the limit of each pass, `TERMINAL_SAMPLE_MS` how long the terminal check samples.
 
 Notes:
 

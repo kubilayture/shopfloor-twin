@@ -7,11 +7,12 @@
     "node": ">=26.11.1 <27"
   },
   "scripts": {
-    "verify": "pnpm format:check && pnpm check:dockerfiles && turbo run lint typecheck test build",
+    "verify": "node scripts/heavy.ts pnpm run verify:steps",
+    "verify:steps": "pnpm format:check && pnpm check:dockerfiles && turbo run lint typecheck test build",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
+    "test": "node scripts/heavy.ts turbo run test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:dockerfiles": "tsc -p . && node scripts/check-dockerfiles.ts",
@@ -24,7 +25,7 @@
     "test:golden": "pnpm --filter @shopfloor/simulator test:golden",
     "sim:live": "pnpm --filter @shopfloor/simulator live",
     "sim:serve": "pnpm --filter @shopfloor/simulator serve",
-    "test:e2e": "turbo run test:e2e --concurrency=1",
+    "test:e2e": "node scripts/heavy.ts turbo run test:e2e --concurrency=1",
     "test:reconcile": "pnpm --filter @shopfloor/e2e test:reconcile",
     "test:trace-perf": "pnpm --filter @shopfloor/e2e test:trace-perf",
     "gate": "node scripts/gate.ts",
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",
+    "@shopfloor/test-kit": "workspace:*",
     "@shopfloor/tsconfig": "workspace:*",
     "@types/node": "catalog:",
     "eslint": "catalog:",

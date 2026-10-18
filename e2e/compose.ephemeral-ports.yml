@@ -1,0 +1,29 @@
+# Override for the gate's stack smoke (#228, Phase 9 plan "Local gate"), after docker-compose.yml,
+# used by scripts/stack-smoke.sh with SMOKE_EPHEMERAL_PORTS=1 on the gate's own disposable project.
+#
+# Every published port is ephemeral (127.0.0.1, chosen by Docker; the smoke reads each back with
+# `docker compose port`), so the gate never collides with a dev stack on the default ports. The
+# database, the broker, the OPC UA servers and the Modbus device are not published at all: the
+# smoke reaches them with `docker compose exec`. Unlike e2e/compose.reconcile.yml the restart
+# policies stay as they are.
+
+services:
+  db:
+    ports: !reset []
+  broker:
+    ports: !reset []
+  simulator:
+    ports: !override
+      - '127.0.0.1::4800'
+  gateway:
+    ports: !override
+      - '127.0.0.1::4900'
+  mes:
+    ports: !override
+      - '127.0.0.1::4700'
+  erp:
+    ports: !override
+      - '127.0.0.1::4600'
+  web:
+    ports: !override
+      - '127.0.0.1::8080'

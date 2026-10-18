@@ -1,4 +1,7 @@
+export { deriveBottlenecks } from './bottleneck.ts';
+export type { Bottleneck, RoutingInput } from './bottleneck.ts';
 export {
+  add,
   compare,
   equals,
   formatFraction,
@@ -37,3 +40,32 @@ export type {
   ScheduledTimeRule,
   StopPiece,
 } from './oee.ts';
+export { lineOee, linePlannedBusyMs } from './line-oee.ts';
+export type { LineOeeInput, LineOeeResult, LinePlannedBusyInput, PackedCount } from './line-oee.ts';
+export {
+  NO_ORDER_CAUSE,
+  completionOf,
+  firstPassYield,
+  headTimes,
+  jobWindow,
+  jobWindows,
+  orderOee,
+  windowInputs,
+} from './order-oee.ts';
+export type {
+  FirstPassYield,
+  HeadTime,
+  HeadUnknownReason,
+  JobWindow,
+  OrderJobInput,
+  OrderOeeInput,
+  OrderOeeResult,
+  QueuedJob,
+  QueuedJobWindow,
+  TimedCycleCount,
+  TimelineInterval,
+  UnitRoute,
+  WindowInput,
+} from './order-oee.ts';
+export { intersect, measure, normalize, subtract } from './ranges.ts';
+export type { Range } from './ranges.ts';

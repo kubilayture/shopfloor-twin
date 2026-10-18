@@ -881,10 +881,11 @@ describe('codings after a re-cut (#121)', () => {
     });
     try {
       // Until the write waits for the holder's lock, having read its record FOR SHARE, however
-      // long a loaded machine takes to get it there, not a fixed 300 ms (#212). Only a session
-      // holding a lock on the record table counts: the coding module's own clip, debounced after
-      // the states above, also waits for the holder's lock and passed for the write under load
-      // (#228's gate with a dev stack up, twice).
+      // long a loaded machine takes to get it there, not a fixed 300 ms (#212). The coding
+      // module's own clip, debounced after the states above, may queue for the same lock first
+      // (#228's gate beside a dev stack, three times): it must not pass for the write, and the
+      // write then waits behind the clip. So: a session holding a lock on the record table,
+      // waiting behind the holder directly or through the clip.
       await blockedBy(
         db,
         holderPid,

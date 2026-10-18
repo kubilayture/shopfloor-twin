@@ -1,7 +1,8 @@
 import type { InjectionSpec, PlantConfig } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { isoTime } from '../headless/serialize.ts';
-import { applyDispatches, type DispatchSpec } from '../headless/run.ts';
+import { analysisConfigHash, applyDispatches, type DispatchSpec } from '../headless/run.ts';
+import { LineOeeTruth, type LineOeeSection } from '../headless/line-oee-truth.ts';
 import { GroundTruth, type GroundTruthSummary } from '../headless/summary.ts';
 import {
   AsOfAfterSimTimeError,
@@ -83,6 +84,14 @@ export interface LiveGroundTruth extends GroundTruthSummary {
   readonly trace: TraceSection;
   /** Present when `trace` was cut at an earlier plant time (`?asOf`, control API 1.6). */
   readonly traceAsOf?: string;
+  /**
+   * The order and line OEE truth so far (#230, control API 1.8): `line-oee.json`'s content without
+   * its schema and run header, as a headless run ending at `simTime` would write it. Buckets and
+   * orders reaching past `simTime` are provisional.
+   */
+  readonly lineOee: LineOeeSection;
+  /** Present when `lineOee` was cut at an earlier plant time (`?asOf`, control API 1.8). */
+  readonly lineOeeAsOf?: string;
 }
 
 export interface LiveRun {
@@ -92,11 +101,12 @@ export interface LiveRun {
   readonly processValues: ProcessValues;
   /** The ground truth up to the simulation's current time; read-only, never moves the run. */
   /**
-   * With `traceAsOf` (#208 review, control API 1.6), `trace` is the trace as it stood at that plant
+   * With `asOf` (#208 review, control API 1.6), `trace` is the trace as it stood at that plant
    * time (`trace-core`'s `traceAsOf`, counterfactual included), which must not be after `simTime`;
-   * every other section stays as of `simTime`.
+   * from 1.8 (#230) `lineOee` is cut there too, as a run that ended at `asOf` gives it. Every other
+   * section stays as of `simTime`.
    */
-  groundTruth(traceAsOf?: SimTime): LiveGroundTruth;
+  groundTruth(asOf?: SimTime): LiveGroundTruth;
   /**
    * Schedules a failure injection (#140) at `at`, or at the simulation's current time (the next
    * step) when left out, exactly as a headless run schedules a scenario's injections.
@@ -135,6 +145,12 @@ export function createLiveRun(options: LiveOptions): LiveRun {
   const lotIds = options.config.stock.lots.map((lot) => lot.id);
   const truth = new GroundTruth(options.config, options.start);
   const traceTruth = new TraceTruth(options.config);
+  const lineOeeTruth = new LineOeeTruth(
+    options.config,
+    options.start,
+    options.production ?? 'schedule',
+    analysisConfigHash(options.config),
+  );
   const line = new ProductionLine({
     config: options.config,
     random: new RandomSource(options.seed),
@@ -143,6 +159,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     onEvent: (event) => {
       truth.record(event);
       traceTruth.record(event);
+      lineOeeTruth.record(event);
       processValues.record(event);
       options.onEvent?.(event);
     },
@@ -160,10 +177,10 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     ...(options.clock ? { clock: options.clock } : {}),
     ...(options.onAdvance ? { onAdvance: options.onAdvance } : {}),
   });
-  const groundTruth = (traceAsOf?: SimTime): LiveGroundTruth => {
+  const groundTruth = (asOf?: SimTime): LiveGroundTruth => {
     const now = simulation.now;
-    if (traceAsOf !== undefined && traceAsOf > now) {
-      throw new AsOfAfterSimTimeError(traceAsOf, now);
+    if (asOf !== undefined && asOf > now) {
+      throw new AsOfAfterSimTimeError(asOf, now);
     }
     const summary = truth.snapshot(now, line, lotIds);
     const currentBucket = truth.currentBucket;
@@ -188,11 +205,12 @@ export function createLiveRun(options: LiveOptions): LiveRun {
       ),
       ...summary,
       trace: traceSection(
-        traceAsOf === undefined
+        asOf === undefined
           ? traceTruth.build(summary.orders)
-          : traceResultAsOf(traceTruth.build(summary.orders), traceAsOf),
+          : traceResultAsOf(traceTruth.build(summary.orders), asOf),
       ),
-      ...(traceAsOf === undefined ? {} : { traceAsOf: isoTime(traceAsOf) }),
+      lineOee: lineOeeTruth.build(now, asOf),
+      ...(asOf === undefined ? {} : { traceAsOf: isoTime(asOf), lineOeeAsOf: isoTime(asOf) }),
     };
   };
   return {

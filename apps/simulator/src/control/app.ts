@@ -30,9 +30,10 @@ import type { EventHub } from './event-hub.ts';
  * The contract version (docs/contracts/simulator-control-api.md); 1.2 adds the OEE ground truth,
  * 1.3 failure injection and the alarm ground truth (#140), 1.4 the production mode and the order
  * ground truth (#172), 1.5 the leak-test drift injection (#196), 1.6 the trace ground truth with
- * `?asOf` (#208), 1.7 the console actions and the lot and operator reads (#234).
+ * `?asOf` (#208), 1.7 the console actions and the lot and operator reads (#234), 1.8 the order
+ * and line OEE ground truth `lineOee`, cut by `?asOf` too (#230).
  */
-export const CONTROL_API_VERSION = '1.7.0';
+export const CONTROL_API_VERSION = '1.8.0';
 export const API_PREFIX = '/api/v1';
 export const EVENTS_PATH = `${API_PREFIX}/events`;
 /** A WebSocket client that falls this far behind is disconnected rather than buffered without bound. */
@@ -451,6 +452,90 @@ export const traceSchema = z
       'and run header; provisional while cartons are open, orders incomplete or episodes open',
   );
 
+const lineValueSchema = z
+  .object({
+    from: isoSchema,
+    to: isoSchema,
+    plannedBusyMs: count.describe(
+      'Scheduled time minus breaks and bottleneck maintenance; in orders mode only while an order is in progress',
+    ),
+    good: z.record(z.string(), count).describe('Units packed good per product'),
+    idealMs: z.string().describe("Σ good × the bottleneck's effective cycle, ms, exact `num/den`"),
+    oee: ratioSchema.describe('idealMs / plannedBusyMs, not capped; null when PBT = 0'),
+    aboveOne: z.boolean(),
+    provisional: z.boolean().describe('Reaches past the cut-off'),
+  })
+  .describe("`lineOee` of `oee-core` (ADR-0036) over a bucket or an order's in-progress time");
+
+export const lineOeeSchema = z
+  .object({
+    analysisConfigSha256: z.string(),
+    config: z.object({
+      productionMode: z.enum(PRODUCTION_MODES),
+      microStopThresholdMs: count,
+      scheduledTime: z.enum(['shift-calendar', 'orders']),
+    }),
+    bottlenecks: z.record(
+      z.string(),
+      z.object({
+        operation: z.string(),
+        equipment: z.array(z.string()),
+        idealCycleMs: count,
+        effectiveCycleMs: z.string().describe('Ideal cycle ÷ machines, `num/den`'),
+      }),
+    ),
+    plannedStops: z.array(
+      z.object({
+        from: isoSchema,
+        to: isoSchema,
+        kind: z.enum(['break', 'maintenance']),
+        equipment: z.string().optional(),
+      }),
+    ),
+    inProgress: z.array(
+      z.object({ orderId: z.string(), from: isoSchema, to: isoSchema, open: z.boolean() }),
+    ),
+    line: z.object({
+      hours: z.record(z.string(), lineValueSchema).describe('Keyed by the UTC hour start'),
+      shifts: z.record(z.string(), lineValueSchema).describe('Keyed by shift bucket'),
+    }),
+    orders: z.record(
+      z.string(),
+      z.object({
+        product: z.string(),
+        jobs: z.array(z.string()),
+        jobOee: z.record(
+          z.string(),
+          z.object({
+            machine: z.string(),
+            headTime: isoSchema.nullable(),
+            headSource: z.enum(['accepted', 'previous-completed']).nullable(),
+            window: z.object({ from: isoSchema, to: isoSchema, open: z.boolean() }).nullable(),
+            cycles: count,
+            oee: oeeResultSchema.nullable(),
+          }),
+        ),
+        oee: oeeResultSchema,
+        open: z.boolean(),
+        pending: z.boolean(),
+        headTimeUnknown: z.boolean(),
+        endLost: z.boolean(),
+        lost: z.boolean(),
+        firstPassYield: z.object({
+          firstPassGood: count,
+          started: count,
+          yield: ratioSchema,
+        }),
+        completedAt: isoSchema.nullable(),
+        line: lineValueSchema.nullable().describe('Per order: not additive across orders'),
+      }),
+    ),
+  })
+  .describe(
+    'The order and line OEE truth so far (#230): line-oee.json (sim-line-oee/1) without its ' +
+      'schema and run header',
+  );
+
 export const injectionSchema = z.object({
   id: count,
   machine: z.string(),
@@ -652,6 +737,10 @@ export const groundTruthSchema = z.object({
   traceAsOf: isoSchema
     .optional()
     .describe('1.6: present when `trace` was cut at an earlier plant time (`?asOf`)'),
+  lineOee: lineOeeSchema,
+  lineOeeAsOf: isoSchema
+    .optional()
+    .describe('1.8: present when `lineOee` was cut at an earlier plant time (`?asOf`)'),
 });
 
 /** The live ground truth with the run's epoch: what `GET /api/v1/ground-truth` returns. */
@@ -699,10 +788,11 @@ export interface ControlAppOptions {
   };
   /** The live run's ground truth (#100); the route exists only when given. */
   /**
-   * `traceAsOf` (1.6): cut the `trace` section at that plant time; throws an
-   * `AsOfAfterSimTimeError` when it is after the simulation time (400; any other error is a 500).
+   * `asOf` (1.6, `lineOee` from 1.8): cut the `trace` and `lineOee` sections at that plant time;
+   * throws an `AsOfAfterSimTimeError` when it is after the simulation time (400; any other error is
+   * a 500).
    */
-  readonly groundTruth?: (traceAsOf?: number) => GroundTruthReport;
+  readonly groundTruth?: (asOf?: number) => GroundTruthReport;
   /**
    * Console actions and their read routes (#234, 1.7): lots, operators, lot block and release,
    * forced absences, tool breakage. The routes exist only when given.
@@ -919,7 +1009,8 @@ export async function buildControlApp({
                 .describe(
                   '1.6 (#208): cut `trace` at this plant time (ISO 8601 with an offset or Z, not ' +
                     "after `simTime`) with trace-core's `traceAsOf`, counterfactual readings " +
-                    'included; every other section stays as of `simTime`',
+                    'included; 1.8 (#230): `lineOee` too, as a run that ended then; every other ' +
+                    'section stays as of `simTime`',
                 ),
             }),
           ),

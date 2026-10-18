@@ -62,9 +62,9 @@ async function setup(ready = true, withGroundTruth = false, withFailure = false,
       : {}),
     ...(withGroundTruth
       ? {
-          groundTruth: (traceAsOf?: number) => ({
+          groundTruth: (asOf?: number) => ({
             epoch: 1_760_000_000,
-            ...run.groundTruth(traceAsOf),
+            ...run.groundTruth(asOf),
           }),
         }
       : {}),
@@ -225,6 +225,16 @@ describe('control API (#54)', () => {
     expect(cutBody.trace.units.count).toBeLessThan(paused.trace.units.count);
     expect(cutBody.trace.drifts[0]).toMatchObject({ endedAt: null, endedBy: null });
     expect(cutBody.machines).toEqual(paused.machines);
+    // lineOee (1.8, #230): served whole, and cut at asOf with the trace.
+    expect(paused.lineOee).toEqual(JSON.parse(JSON.stringify(run.groundTruth().lineOee)));
+    expect(Object.keys(paused.lineOee.line.hours)).toHaveLength(9);
+    expect(paused.lineOee.line.shifts['2026-10-12/B']?.provisional).toBe(true);
+    expect(paused.lineOeeAsOf).toBeUndefined();
+    expect(cutBody.lineOeeAsOf).toBe(asOf);
+    expect(cutBody.lineOee).toEqual(
+      JSON.parse(JSON.stringify(run.groundTruth(Date.parse(asOf)).lineOee)),
+    );
+    expect(Object.keys(cutBody.lineOee.line.hours)).toHaveLength(6);
     for (const bad of ['2026-10-12T09:00:00', 'yesterday', '2026-10-12T11:10:00.001Z']) {
       const refused = await served.inject({
         method: 'GET',

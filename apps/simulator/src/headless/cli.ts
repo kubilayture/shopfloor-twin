@@ -11,7 +11,13 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { scenarioNames, scenarioOptions } from './golden.ts';
-import { runHeadless, summaryDocument, traceDocument, type HeadlessOptions } from './run.ts';
+import {
+  lineOeeDocument,
+  runHeadless,
+  summaryDocument,
+  traceDocument,
+  type HeadlessOptions,
+} from './run.ts';
 
 const DEFAULT_CONFIG = resolve(import.meta.dirname, '../../../../config/plant');
 const USAGE =
@@ -129,9 +135,11 @@ mkdirSync(out, { recursive: true });
 const eventsPath = join(out, 'events.jsonl');
 const summaryPath = join(out, 'summary.json');
 const tracePath = join(out, 'trace.json');
+const lineOeePath = join(out, 'line-oee.json');
 rmSync(eventsPath, { force: true });
 rmSync(summaryPath, { force: true });
 rmSync(tracePath, { force: true });
+rmSync(lineOeePath, { force: true });
 
 const started = performance.now();
 const fd = openSync(`${eventsPath}.partial`, 'w');
@@ -153,6 +161,8 @@ writeFileSync(`${summaryPath}.partial`, summaryDocument(result));
 renameSync(`${summaryPath}.partial`, summaryPath);
 writeFileSync(`${tracePath}.partial`, traceDocument(result));
 renameSync(`${tracePath}.partial`, tracePath);
+writeFileSync(`${lineOeePath}.partial`, lineOeeDocument(result));
+renameSync(`${lineOeePath}.partial`, lineOeePath);
 
 const finished = Object.values(result.summary.production.finished).reduce((s, n) => s + n, 0);
 const days = (run.end - run.start) / 86_400_000;
@@ -160,5 +170,5 @@ console.log(
   `seed ${String(run.seed)}, ${String(days)} days: ${String(result.eventCount)} events, ${String(finished)} parts finished`,
 );
 console.log(
-  `wrote ${eventsPath}, ${summaryPath} and ${tracePath} in ${(performance.now() - started).toFixed(0)} ms`,
+  `wrote ${eventsPath}, ${summaryPath}, ${tracePath} and ${lineOeePath} in ${(performance.now() - started).toFixed(0)} ms`,
 );

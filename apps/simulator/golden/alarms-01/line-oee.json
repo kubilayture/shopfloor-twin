@@ -1,0 +1,906 @@
+{
+  "analysisConfigSha256": "5756271448987031c8b24ff5a3e2dc58b79cf4e7408a25bb4cf0e40350b43764",
+  "bottlenecks": {
+    "VB-100": {
+      "effectiveCycleMs": "150000/1",
+      "equipment": [
+        "asm-01"
+      ],
+      "idealCycleMs": 150000,
+      "operation": "OP30"
+    },
+    "VB-200": {
+      "effectiveCycleMs": "210000/1",
+      "equipment": [
+        "asm-01"
+      ],
+      "idealCycleMs": 210000,
+      "operation": "OP30"
+    }
+  },
+  "config": {
+    "microStopThresholdMs": 120000,
+    "productionMode": "schedule",
+    "scheduledTime": "orders"
+  },
+  "inProgress": [],
+  "line": {
+    "hours": {
+      "2026-10-12T03:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T03:00:00.000Z",
+        "good": {
+          "VB-100": 20
+        },
+        "idealMs": "3000000/1",
+        "oee": {
+          "decimal": "0.8333",
+          "fraction": "5/6"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T04:00:00.000Z"
+      },
+      "2026-10-12T04:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T04:00:00.000Z",
+        "good": {
+          "VB-100": 24
+        },
+        "idealMs": "3600000/1",
+        "oee": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T05:00:00.000Z"
+      },
+      "2026-10-12T05:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T05:00:00.000Z",
+        "good": {
+          "VB-100": 24
+        },
+        "idealMs": "3600000/1",
+        "oee": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T06:00:00.000Z"
+      },
+      "2026-10-12T06:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T06:00:00.000Z",
+        "good": {
+          "VB-100": 22
+        },
+        "idealMs": "3300000/1",
+        "oee": {
+          "decimal": "0.9167",
+          "fraction": "11/12"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T07:00:00.000Z"
+      },
+      "2026-10-12T07:00:00.000Z": {
+        "aboveOne": true,
+        "from": "2026-10-12T07:00:00.000Z",
+        "good": {
+          "VB-100": 13
+        },
+        "idealMs": "1950000/1",
+        "oee": {
+          "decimal": "1.0833",
+          "fraction": "13/12"
+        },
+        "plannedBusyMs": 1800000,
+        "provisional": false,
+        "to": "2026-10-12T08:00:00.000Z"
+      },
+      "2026-10-12T08:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T08:00:00.000Z",
+        "good": {
+          "VB-100": 23
+        },
+        "idealMs": "3450000/1",
+        "oee": {
+          "decimal": "0.9583",
+          "fraction": "23/24"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T09:00:00.000Z"
+      },
+      "2026-10-12T09:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T09:00:00.000Z",
+        "good": {
+          "VB-100": 23
+        },
+        "idealMs": "3450000/1",
+        "oee": {
+          "decimal": "0.9583",
+          "fraction": "23/24"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T10:00:00.000Z"
+      },
+      "2026-10-12T10:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T10:00:00.000Z",
+        "good": {
+          "VB-100": 23
+        },
+        "idealMs": "3450000/1",
+        "oee": {
+          "decimal": "0.9583",
+          "fraction": "23/24"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T11:00:00.000Z"
+      },
+      "2026-10-12T11:00:00.000Z": {
+        "aboveOne": true,
+        "from": "2026-10-12T11:00:00.000Z",
+        "good": {
+          "VB-100": 26
+        },
+        "idealMs": "3900000/1",
+        "oee": {
+          "decimal": "1.0833",
+          "fraction": "13/12"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T12:00:00.000Z"
+      },
+      "2026-10-12T12:00:00.000Z": {
+        "aboveOne": true,
+        "from": "2026-10-12T12:00:00.000Z",
+        "good": {
+          "VB-100": 25
+        },
+        "idealMs": "3750000/1",
+        "oee": {
+          "decimal": "1.0417",
+          "fraction": "25/24"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T13:00:00.000Z"
+      },
+      "2026-10-12T13:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T13:00:00.000Z",
+        "good": {
+          "VB-100": 12
+        },
+        "idealMs": "1800000/1",
+        "oee": {
+          "decimal": "0.5000",
+          "fraction": "1/2"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T14:00:00.000Z"
+      },
+      "2026-10-12T14:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T14:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T15:00:00.000Z"
+      },
+      "2026-10-12T15:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T15:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 1800000,
+        "provisional": false,
+        "to": "2026-10-12T16:00:00.000Z"
+      },
+      "2026-10-12T16:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T16:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T17:00:00.000Z"
+      },
+      "2026-10-12T17:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T17:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T18:00:00.000Z"
+      },
+      "2026-10-12T18:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T18:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T19:00:00.000Z"
+      },
+      "2026-10-12T19:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T19:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T20:00:00.000Z"
+      },
+      "2026-10-12T20:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T20:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T21:00:00.000Z"
+      },
+      "2026-10-12T21:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T21:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T22:00:00.000Z"
+      },
+      "2026-10-12T22:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T22:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T23:00:00.000Z"
+      },
+      "2026-10-12T23:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T23:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 1800000,
+        "provisional": false,
+        "to": "2026-10-13T00:00:00.000Z"
+      },
+      "2026-10-13T00:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T00:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T01:00:00.000Z"
+      },
+      "2026-10-13T01:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T01:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T02:00:00.000Z"
+      },
+      "2026-10-13T02:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T02:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T03:00:00.000Z"
+      },
+      "2026-10-13T03:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T03:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T04:00:00.000Z"
+      },
+      "2026-10-13T04:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T04:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T05:00:00.000Z"
+      },
+      "2026-10-13T05:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T05:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T06:00:00.000Z"
+      },
+      "2026-10-13T06:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T06:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T07:00:00.000Z"
+      },
+      "2026-10-13T07:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T07:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 1800000,
+        "provisional": false,
+        "to": "2026-10-13T08:00:00.000Z"
+      },
+      "2026-10-13T08:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T08:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T09:00:00.000Z"
+      },
+      "2026-10-13T09:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T09:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T10:00:00.000Z"
+      },
+      "2026-10-13T10:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T10:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T11:00:00.000Z"
+      },
+      "2026-10-13T11:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T11:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T12:00:00.000Z"
+      },
+      "2026-10-13T12:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T12:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T13:00:00.000Z"
+      },
+      "2026-10-13T13:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T13:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T14:00:00.000Z"
+      },
+      "2026-10-13T14:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T14:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T15:00:00.000Z"
+      },
+      "2026-10-13T15:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T15:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 1800000,
+        "provisional": false,
+        "to": "2026-10-13T16:00:00.000Z"
+      },
+      "2026-10-13T16:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T16:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T17:00:00.000Z"
+      },
+      "2026-10-13T17:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T17:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T18:00:00.000Z"
+      },
+      "2026-10-13T18:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T18:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T19:00:00.000Z"
+      },
+      "2026-10-13T19:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T19:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T20:00:00.000Z"
+      },
+      "2026-10-13T20:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T20:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T21:00:00.000Z"
+      },
+      "2026-10-13T21:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T21:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T22:00:00.000Z"
+      },
+      "2026-10-13T22:00:00.000Z": {
+        "aboveOne": true,
+        "from": "2026-10-13T22:00:00.000Z",
+        "good": {
+          "VB-100": 26
+        },
+        "idealMs": "3900000/1",
+        "oee": {
+          "decimal": "1.0833",
+          "fraction": "13/12"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T23:00:00.000Z"
+      },
+      "2026-10-13T23:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T23:00:00.000Z",
+        "good": {
+          "VB-100": 10
+        },
+        "idealMs": "1500000/1",
+        "oee": {
+          "decimal": "0.8333",
+          "fraction": "5/6"
+        },
+        "plannedBusyMs": 1800000,
+        "provisional": false,
+        "to": "2026-10-14T00:00:00.000Z"
+      },
+      "2026-10-14T00:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-14T00:00:00.000Z",
+        "good": {
+          "VB-100": 18
+        },
+        "idealMs": "2700000/1",
+        "oee": {
+          "decimal": "0.7500",
+          "fraction": "3/4"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-14T01:00:00.000Z"
+      },
+      "2026-10-14T01:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-14T01:00:00.000Z",
+        "good": {
+          "VB-100": 20
+        },
+        "idealMs": "3000000/1",
+        "oee": {
+          "decimal": "0.8333",
+          "fraction": "5/6"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-14T02:00:00.000Z"
+      },
+      "2026-10-14T02:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-14T02:00:00.000Z",
+        "good": {
+          "VB-100": 19
+        },
+        "idealMs": "2850000/1",
+        "oee": {
+          "decimal": "0.7917",
+          "fraction": "19/24"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-14T03:00:00.000Z"
+      }
+    },
+    "shifts": {
+      "2026-10-12/A": {
+        "aboveOne": false,
+        "from": "2026-10-12T03:00:00.000Z",
+        "good": {
+          "VB-100": 172
+        },
+        "idealMs": "25800000/1",
+        "oee": {
+          "decimal": "0.9556",
+          "fraction": "43/45"
+        },
+        "plannedBusyMs": 27000000,
+        "provisional": false,
+        "to": "2026-10-12T11:00:00.000Z"
+      },
+      "2026-10-12/B": {
+        "aboveOne": false,
+        "from": "2026-10-12T11:00:00.000Z",
+        "good": {
+          "VB-100": 63
+        },
+        "idealMs": "9450000/1",
+        "oee": {
+          "decimal": "0.3500",
+          "fraction": "7/20"
+        },
+        "plannedBusyMs": 27000000,
+        "provisional": false,
+        "to": "2026-10-12T19:00:00.000Z"
+      },
+      "2026-10-12/C": {
+        "aboveOne": false,
+        "from": "2026-10-12T19:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 27000000,
+        "provisional": false,
+        "to": "2026-10-13T03:00:00.000Z"
+      },
+      "2026-10-13/A": {
+        "aboveOne": false,
+        "from": "2026-10-13T03:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 27000000,
+        "provisional": false,
+        "to": "2026-10-13T11:00:00.000Z"
+      },
+      "2026-10-13/B": {
+        "aboveOne": false,
+        "from": "2026-10-13T11:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": {
+          "decimal": "0.0000",
+          "fraction": "0/1"
+        },
+        "plannedBusyMs": 27000000,
+        "provisional": false,
+        "to": "2026-10-13T19:00:00.000Z"
+      },
+      "2026-10-13/C": {
+        "aboveOne": false,
+        "from": "2026-10-13T19:00:00.000Z",
+        "good": {
+          "VB-100": 93
+        },
+        "idealMs": "13950000/1",
+        "oee": {
+          "decimal": "0.5167",
+          "fraction": "31/60"
+        },
+        "plannedBusyMs": 27000000,
+        "provisional": false,
+        "to": "2026-10-14T03:00:00.000Z"
+      }
+    }
+  },
+  "orders": {},
+  "plannedStops": [
+    {
+      "from": "2026-10-12T07:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-12T07:30:00.000Z"
+    },
+    {
+      "from": "2026-10-12T15:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-12T15:30:00.000Z"
+    },
+    {
+      "from": "2026-10-12T23:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-12T23:30:00.000Z"
+    },
+    {
+      "from": "2026-10-13T07:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-13T07:30:00.000Z"
+    },
+    {
+      "from": "2026-10-13T15:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-13T15:30:00.000Z"
+    },
+    {
+      "from": "2026-10-13T23:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-13T23:30:00.000Z"
+    }
+  ],
+  "run": {
+    "configSha256": "35123ec56e3be6b7bc7b2362aca7c86f9d3bc31052a5ee673d1ed41a570b1221",
+    "end": "2026-10-14T03:00:00.000Z",
+    "injections": [
+      {
+        "at": "2026-10-12T05:00:05.000Z",
+        "code": "COOLANT-PRESSURE",
+        "machine": "cnc-01",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:00:15.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-02",
+        "repairMs": 4000
+      },
+      {
+        "at": "2026-10-12T05:00:25.000Z",
+        "code": "COOLANT-PRESSURE",
+        "machine": "cnc-01",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:00:40.000Z",
+        "code": "HEATER-FAULT",
+        "machine": "wsh-01",
+        "repairMs": 5000
+      },
+      {
+        "at": "2026-10-12T05:00:45.000Z",
+        "code": "COOLANT-PRESSURE",
+        "machine": "cnc-01",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:01:15.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-02",
+        "repairMs": 4000
+      },
+      {
+        "at": "2026-10-12T05:02:05.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-01",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:02:15.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-02",
+        "repairMs": 4000
+      },
+      {
+        "at": "2026-10-12T05:02:40.000Z",
+        "code": "HEATER-FAULT",
+        "machine": "wsh-01",
+        "repairMs": 5000
+      },
+      {
+        "at": "2026-10-12T05:03:05.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-01",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:03:15.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-02",
+        "repairMs": 4000
+      },
+      {
+        "at": "2026-10-12T05:04:15.000Z",
+        "code": "COOLANT-PRESSURE",
+        "machine": "cnc-02",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:04:40.000Z",
+        "code": "HEATER-FAULT",
+        "machine": "wsh-01",
+        "repairMs": 5000
+      },
+      {
+        "at": "2026-10-12T06:20:00.000Z",
+        "code": "FIXTURE-SEAL",
+        "machine": "lkt-01",
+        "repairMs": 500
+      },
+      {
+        "at": "2026-10-12T13:30:00.000Z",
+        "code": "PRINTER-FAULT",
+        "machine": "pck-01",
+        "repairMs": 118800000
+      }
+    ],
+    "schema": "sim-run/1",
+    "seed": 20261012,
+    "start": "2026-10-12T03:00:00.000Z"
+  },
+  "schema": "sim-line-oee/1"
+}

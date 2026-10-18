@@ -1,6 +1,7 @@
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { HOUR, RandomSource, Simulation } from '@shopfloor/sim-core';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { scenarioOptions } from '../headless/golden.ts';
 import { runHeadless } from '../headless/run.ts';
 import { traceResultAsOf, traceSection } from '../headless/trace-truth.ts';
 import { GroundTruth } from '../headless/summary.ts';
@@ -106,6 +107,14 @@ describe('live ground truth (#100)', () => {
     expect(asOf.traceAsOf).toBe(new Date(cut).toISOString());
     expect(asOf.machines).toEqual(live.machines);
     expect(live.traceAsOf).toBeUndefined();
+    // The order and line OEE truth (#230, 1.8): now as a headless run ending now writes it, and at
+    // the cut as a run that ended then; the hour and shift in progress are provisional.
+    expect(live.lineOee).toEqual(headlessRun.lineOee);
+    expect(asOf.lineOee).toEqual(atCut.lineOee);
+    expect(asOf.lineOeeAsOf).toBe(new Date(cut).toISOString());
+    expect(live.lineOeeAsOf).toBeUndefined();
+    expect(live.lineOee.line.shifts['2026-10-13/A']?.provisional).toBe(true);
+    expect(live.lineOee.line.shifts['2026-10-12/C']?.provisional).toBe(false);
     expect(() => run.groundTruth(until + 1)).toThrow(/must not be after the simulation time/);
     expect(live.currentBucket).toBe('2026-10-13/A');
     const complete = Object.entries(live.buckets)
@@ -134,5 +143,45 @@ describe('live ground truth (#100)', () => {
     }
     expect(live.simTime).toBe(new Date(until).toISOString());
     expect(Object.keys(live.current).sort()).toEqual(Object.keys(live.machines).sort());
+  });
+
+  it('cuts lineOee at asOf in orders mode as a run that ended then (#230, orders-01)', async () => {
+    const options = await scenarioOptions('orders-01');
+    const run = createLiveRun({
+      config: options.config,
+      seed: options.seed,
+      start: options.start,
+      end: options.end,
+      production: 'orders',
+      dispatches: options.dispatches ?? [],
+      clock: new ManualClock(),
+    });
+    for (const injection of options.injections ?? []) {
+      expect(run.inject(injection).ok).toBe(true);
+    }
+    run.simulation.runUntil(options.end - 1, (event, sim) => {
+      run.line.handle(event, sim);
+    });
+    // Monday 14:00 Istanbul (the end of shift A) and a moment inside Tuesday's shift A.
+    for (const cut of [Date.UTC(2026, 9, 12, 11), Date.UTC(2026, 9, 13, 8, 30, 12, 345)]) {
+      const ended = runHeadless(
+        {
+          ...options,
+          end: cut,
+          injections: (options.injections ?? []).filter((injection) => injection.at < cut),
+        },
+        () => undefined,
+      );
+      const asOf = run.groundTruth(cut);
+      expect(asOf.lineOee).toEqual(ended.lineOee);
+      expect(asOf.lineOeeAsOf).toBe(new Date(cut).toISOString());
+    }
+    const shiftA = run.groundTruth(Date.UTC(2026, 9, 12, 11)).lineOee;
+    expect(shiftA.line.shifts['2026-10-12/A']?.provisional).toBe(false);
+    expect(Object.values(shiftA.orders).filter((o) => o.completedAt !== null)).toHaveLength(5);
+    const inside = run.groundTruth(Date.UTC(2026, 9, 13, 8, 30, 12, 345)).lineOee;
+    expect(inside.line.hours['2026-10-13T08:00:00.000Z']?.provisional).toBe(true);
+    expect(inside.orders['PO-2610-007']?.open).toBe(true);
+    expect(inside.orders['PO-2610-007']?.line?.provisional).toBe(true);
   });
 });

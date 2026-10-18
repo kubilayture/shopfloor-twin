@@ -578,6 +578,47 @@ describe('tool breakage (#234)', () => {
     expect(late.line.actions()).toMatchObject([{ status: 'applied' }]);
   });
 
+  it('applies a breakage during a product changeover: the tool change follows it', () => {
+    const config = structuredClone(defaults);
+    const dispatchAt = START + 1 * HOUR;
+    const at = dispatchAt + 1 * MINUTE;
+    const end = START + 3 * HOUR;
+    const changeover = config.products.changeoverMinutes * MINUTE;
+    const toolChange = config.process.tool.changeMinutes * MINUTE;
+    // Orders mode: the job's first blank needs a changeover from nothing loaded.
+    const dispatch = (line: ProductionLine, simulation: Simulation<LineEvent>) => {
+      line.loadOrder(
+        'cnc-01',
+        {
+          commandId: 'cmd-1',
+          orderId: 'ord-1',
+          product: 'VB-100',
+          quantity: 3,
+          notBefore: dispatchAt,
+        },
+        simulation,
+      );
+    };
+    const plain = simulate(config, [], end, { production: 'orders', before: dispatch });
+    const run = simulate(config, [{ kind: 'tool-breakage', machine: 'cnc-01', at }], end, {
+      production: 'orders',
+      before: dispatch,
+    });
+    const setup = states(run.events, 'cnc-01').find((e) => e.at === dispatchAt);
+    expect(setup).toMatchObject({ to: 'Setup' });
+    expect(setup?.cause).not.toBe('TOOL-CHANGE');
+    expect(run.line.actions()).toMatchObject([{ status: 'applied', appliedAt: at }]);
+    expect(run.events.filter((e) => e.type === 'tool-breakage')).toEqual([
+      { type: 'tool-breakage', at, machineId: 'cnc-01', action: 1, cycles: 0 },
+    ]);
+    // The tool change runs right after the changeover, inside the same Setup interval (no state
+    // event of its own: Setup → Setup), so the machine first runs `changeMinutes` later.
+    const firstRun = (events: readonly PlantEvent[]) =>
+      states(events, 'cnc-01').find((e) => e.at > dispatchAt && e.to === 'Running')?.at;
+    expect(firstRun(plain.events)).toBe(dispatchAt + changeover);
+    expect(firstRun(run.events)).toBe(dispatchAt + changeover + toolChange);
+  });
+
   it('refuses a first-operation machine without a tool instead of failing at the event', () => {
     const config = structuredClone(defaults);
     // A CNC the schedule doesn't list gets no tool in schedule mode.

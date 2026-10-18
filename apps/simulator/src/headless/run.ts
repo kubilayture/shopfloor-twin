@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import {
+  checkActions,
   checkInjections,
+  shiftStart,
   simulationSections,
+  type ActionSpec,
   type InjectionSpec,
   type PlantConfig,
 } from '@shopfloor/plant-config';
@@ -30,6 +33,12 @@ export interface HeadlessOptions {
    * in list order, at the start time, as a live run's dispatch through `LoadOrder` does.
    */
   readonly dispatches?: readonly DispatchSpec[];
+  /**
+   * Console actions (#234, ADR-0037): lot blocks and releases, forced absences and tool
+   * breakages, given after `line.start`, the dispatches and the injections, in list order, as the
+   * control API accepts them. Their own numbering, from 1.
+   */
+  readonly actions?: readonly ActionSpec[];
 }
 
 /** A scenario dispatch (#172): one `LoadOrder` at the start time, without epoch or expiry. */
@@ -71,6 +80,16 @@ export type HeaderInjection =
       readonly shift: number;
     };
 
+/** A console action as the run header records it (#234): times ISO 8601 UTC. */
+export type HeaderAction =
+  | { readonly kind: 'lot-block' | 'lot-release'; readonly at: string; readonly lot: string }
+  | { readonly kind: 'tool-breakage'; readonly at: string; readonly machine: string }
+  | {
+      readonly kind: 'operators-absent';
+      readonly shift: string;
+      readonly operators: readonly string[];
+    };
+
 export interface RunHeader {
   readonly schema: string;
   readonly seed: number;
@@ -83,6 +102,8 @@ export interface RunHeader {
   readonly production?: 'orders';
   /** Orders mode only (#172): the dispatches, in the order they were applied. */
   readonly dispatches?: readonly HeaderDispatch[];
+  /** Only when the run has any (#234), so every existing header and `events.sha256` stay. */
+  readonly actions?: readonly HeaderAction[];
 }
 
 export interface HeadlessResult {
@@ -124,6 +145,7 @@ export function runHeadless(
     injections = [],
     production = 'schedule',
     dispatches = [],
+    actions = [],
   }: HeadlessOptions,
   writeLine: (line: string) => void,
 ): HeadlessResult {
@@ -143,6 +165,25 @@ export function runHeadless(
         : [],
     ),
   ];
+  issues.push(...checkActions(config, actions));
+  actions.forEach((action, index) => {
+    // An unknown shift is already an issue of `checkActions`.
+    const shiftAt =
+      action.kind === 'operators-absent' ? shiftStart(config, action.shift) : undefined;
+    const inside =
+      action.kind === 'operators-absent'
+        ? shiftAt === undefined || (shiftAt > start && shiftAt < end)
+        : action.at >= start && action.at < end;
+    if (!inside) {
+      issues.push({
+        path: `actions[${String(index)}]`,
+        message:
+          action.kind === 'operators-absent'
+            ? `shift ${action.shift} does not start inside the run (start, end)`
+            : `${isoTime(action.at)} is outside the run [start, end)`,
+      });
+    }
+  });
   if (production === 'schedule' && dispatches.length > 0) {
     issues.push({ path: 'dispatches', message: 'dispatches need production mode "orders"' });
   }
@@ -188,6 +229,7 @@ export function runHeadless(
             notBefore: isoTime(dispatch.notBefore),
           })),
         }),
+    ...(actions.length === 0 ? {} : { actions: actions.map(headerAction) }),
   };
   writeLine(stableStringify(header));
 
@@ -229,6 +271,8 @@ export function runHeadless(
       throw new RangeError(`injection at ${isoTime(injection.at)}: ${accepted.reason}`);
     }
   }
+  // Console actions last (#234), in list order, as a live run's control API accepts them.
+  applyActions(line, simulation, actions);
   checker?.check(start);
   simulation.runUntil(end - 1, (event, sim) => {
     line.handle(event, sim);
@@ -248,6 +292,32 @@ export function runHeadless(
     summary,
     trace: traceTruth.build(summary.orders),
   };
+}
+
+const headerAction = (action: ActionSpec): HeaderAction => {
+  switch (action.kind) {
+    case 'lot-block':
+    case 'lot-release':
+      return { kind: action.kind, at: isoTime(action.at), lot: action.lot };
+    case 'tool-breakage':
+      return { kind: action.kind, at: isoTime(action.at), machine: action.machine };
+    case 'operators-absent':
+      return { kind: action.kind, shift: action.shift, operators: [...action.operators] };
+  }
+};
+
+/** Gives each console action to the line through `act`, in order; throws on any refusal. */
+export function applyActions(
+  line: ProductionLine,
+  simulation: Simulation<LineEvent>,
+  actions: readonly ActionSpec[],
+): void {
+  actions.forEach((action, index) => {
+    const result = line.act(action, simulation);
+    if (!result.ok) {
+      throw new RangeError(`actions[${String(index)}] (${action.kind}): ${result.reason}`);
+    }
+  });
 }
 
 /** Gives each dispatch to its CNC through `loadOrder`, in order; throws on any refusal. */

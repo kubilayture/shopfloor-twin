@@ -36,6 +36,14 @@ export async function generateOpenApi(): Promise<string> {
     groundTruth: () => {
       throw new Error('not served');
     },
+    console: {
+      act: () => {
+        throw new Error('not served');
+      },
+      actions: () => [],
+      lots: () => [],
+      operators: () => ({ currentShift: null, operators: [], absences: [] }),
+    },
   });
   await app.ready();
   const document = app.swagger();

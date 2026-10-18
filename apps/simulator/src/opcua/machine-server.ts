@@ -254,6 +254,7 @@ export class MachineServer {
       case 'injection-held':
       case 'injection-applied':
       case 'leak-drift':
+      case 'tool-breakage':
         break;
     }
   }

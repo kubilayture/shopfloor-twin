@@ -45,6 +45,17 @@ export class ToolWear {
   change(): void {
     this.#cycles = 0;
   }
+
+  /**
+   * A tool breakage (#234, ADR-0037): the wear goes to end of life (1.0). A cycle in progress draws
+   * its defect at that wear, and `needsChange` makes the next start change the tool. Returns the
+   * cycle count before the breakage.
+   */
+  break(): number {
+    const before = this.#cycles;
+    this.#cycles = this.#config.lifeCycles;
+    return before;
+  }
 }
 
 export interface LeakReading {

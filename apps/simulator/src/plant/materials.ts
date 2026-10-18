@@ -41,6 +41,16 @@ export class Inventory {
     return lot.material;
   }
 
+  /** Every lot in file order, with what is left and whether it is blocked (#234). */
+  lots(): { id: string; material: string; remaining: number; blocked: boolean }[] {
+    return this.#lots.map((lot) => ({
+      id: lot.id,
+      material: lot.material,
+      remaining: lot.remaining,
+      blocked: lot.blocked,
+    }));
+  }
+
   remaining(lotId: string): number | undefined {
     return this.#lots.find((l) => l.id === lotId)?.remaining;
   }

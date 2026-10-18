@@ -638,13 +638,20 @@ describe('control API (#54)', () => {
     expect(await readFile(OPENAPI_FILE, 'utf8')).toBe(generated);
     const document = JSON.parse(generated) as { paths: Record<string, unknown> };
     expect(Object.keys(document.paths).sort()).toEqual([
+      '/api/v1/actions',
       '/api/v1/faults/drift/{machine}',
       '/api/v1/faults/drifts',
       '/api/v1/faults/failure/{machine}',
       '/api/v1/faults/injections',
       '/api/v1/faults/modbus',
       '/api/v1/faults/opcua/{machine}',
+      '/api/v1/faults/tool/{machine}',
       '/api/v1/ground-truth',
+      '/api/v1/lots',
+      '/api/v1/lots/{lot}/block',
+      '/api/v1/lots/{lot}/release',
+      '/api/v1/operators',
+      '/api/v1/operators/absent',
       '/api/v1/pause',
       '/api/v1/resume',
       '/api/v1/speed',

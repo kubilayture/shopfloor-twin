@@ -40,3 +40,4 @@ Format and rules: [ADR-0001](0001-record-architecture-decisions.md). New records
 | [0034](0034-genealogy-serial-identity-cartons-by-rule-and-trace-finality.md)      | Genealogy: units keyed by run, cartons by a shared packing rule, links rebuilt, final answers        | accepted           |
 | [0035](0035-quality-holds-derived-scope-and-close-guard.md)                       | Quality holds: scope derived from the genealogy, append-only transitions, a close guard on one lock  | accepted           |
 | [0036](0036-order-oee-line-throughput-oee-and-derived-bottleneck.md)              | Order OEE over job windows, line throughput OEE and a derived bottleneck                             | accepted           |
+| [0037](0037-console-actions-as-new-event-variants.md)                             | Console actions as new event variants that keep every draw                                           | accepted           |

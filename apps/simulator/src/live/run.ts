@@ -12,7 +12,12 @@ import {
 } from '../headless/trace-truth.ts';
 import {
   ProductionLine,
+  type ActionRequest,
+  type ActionResult,
+  type ConsoleAction,
   type FailureInjection,
+  type LotView,
+  type OperatorsView,
   type InjectDriftRequest,
   type InjectDriftResult,
   type InjectFailureRequest,
@@ -108,6 +113,17 @@ export interface LiveRun {
   drifts(): LeakDrift[];
   /** A scenario's injection of either kind (failure or `leak-drift`), as a headless run applies it. */
   inject(spec: InjectionSpec): InjectFailureResult | InjectDriftResult;
+  /**
+   * A console action (#234, ADR-0037): a lot block or release or a tool breakage at `at` (now when
+   * left out), or a forced absence for a later shift, exactly as a headless run's `actions`.
+   */
+  act(request: ActionRequest): ActionResult;
+  /** Every console action so far, with its outcome. */
+  actions(): ConsoleAction[];
+  /** Every material lot with what is left and whether it is blocked. */
+  lots(): LotView[];
+  /** The roster, each operator's place in the current shift, and the forced absences. */
+  operators(): OperatorsView;
 }
 
 export function createLiveRun(options: LiveOptions): LiveRun {
@@ -193,5 +209,9 @@ export function createLiveRun(options: LiveOptions): LiveRun {
       spec.kind === 'leak-drift'
         ? line.injectLeakDrift(spec, simulation, options.end)
         : line.injectFailure(spec, simulation),
+    act: (request) => line.act(request, simulation),
+    actions: () => line.actions(),
+    lots: () => line.lots(),
+    operators: () => line.operators(),
   };
 }

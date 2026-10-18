@@ -31,11 +31,20 @@ import {
   orderListSchema,
   scrapRecordListSchema,
   terminalViewSchema,
+  cartonTraceSchema,
+  holdDetailSchema,
+  holdListSchema,
+  lotTraceSchema,
+  serialTraceSchema,
+  spcChartSchema,
 } from '@shopfloor/contracts/mes-api';
 import {
   confirmationListSchema,
+  erpLotViewSchema,
   erpOrderViewSchema,
+  lotListSchema,
   orderFeedSchema,
+  qualityNotificationListSchema,
   statusMessageListSchema,
 } from '@shopfloor/contracts/erp-api';
 import { z } from 'zod';
@@ -168,6 +177,29 @@ export interface ScenarioInjection {
   readonly repairMs?: number;
 }
 
+/** A leak-test drift (control API 1.5, #196): `POST /faults/drift/{machine}`. */
+export const driftSchema = z.object({
+  id: z.number().int(),
+  machine: z.string(),
+  shift: z.number(),
+  at: z.string(),
+  until: z.string(),
+  status: z.enum(['scheduled', 'active', 'ended']),
+  appliedAt: z.string().optional(),
+  endedAt: z.string().optional(),
+  endedBy: z.enum(['until', 'calibration']).optional(),
+});
+export type Drift = z.infer<typeof driftSchema>;
+
+/** A `leak-drift` entry of a golden scenario's `injections` (#196, quality-01). */
+export interface ScenarioDrift {
+  readonly kind: 'leak-drift';
+  readonly at: string;
+  readonly until: string;
+  readonly machine: string;
+  readonly shift: number;
+}
+
 export const statusSchema = z.object({
   state: z.enum(['idle', 'running', 'paused', 'finished']),
   speed: z.number(),
@@ -225,6 +257,41 @@ export class SimulatorClient {
         body: JSON.stringify({ code, at, ...(repairMs === undefined ? {} : { repairMs }) }),
       },
     ).then(({ injection }) => injection);
+  }
+
+  /**
+   * The ground truth as JSON, its `trace` section included (control API 1.6, #208); with `asOf`
+   * the trace cut at that plant time on the server (`traceAsOf`), every other section as of now.
+   */
+  groundTruthJson(asOf?: string): Promise<Record<string, unknown>> {
+    const query = asOf === undefined ? '' : `?asOf=${encodeURIComponent(asOf)}`;
+    return request(
+      `${this.base}/api/v1/ground-truth${query}`,
+      z.record(z.string(), z.unknown()),
+      {},
+      30_000,
+    );
+  }
+
+  /** Schedules a leak-test drift (control API 1.5, #196): `shift` Pa/min from `at` until `until`. */
+  drift({ machine, shift, at, until }: ScenarioDrift): Promise<Drift> {
+    return request(
+      `${this.base}/api/v1/faults/drift/${encodeURIComponent(machine)}`,
+      z.object({ drift: driftSchema }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ shift, at, until }),
+      },
+    ).then(({ drift }) => drift);
+  }
+
+  async drifts(): Promise<Drift[]> {
+    const { drifts } = await request(
+      `${this.base}/api/v1/faults/drifts`,
+      z.object({ drifts: z.array(driftSchema) }),
+    );
+    return drifts;
   }
 
   /** Processes exactly one simulation event while paused (control API 1.1); false at the end. */
@@ -461,6 +528,44 @@ export class MesClient {
   terminal(workCenter: string) {
     return this.#get(`/api/v1/terminal/${encodeURIComponent(workCenter)}`, terminalViewSchema);
   }
+
+  /** Backward trace of a serial (#199): every unit with it, `final`. */
+  traceSerial(serial: string) {
+    return this.#get(`/api/v1/trace/serials/${encodeURIComponent(serial)}`, serialTraceSchema);
+  }
+
+  /** Forward trace of a lot (#199), or undefined when the MES knows no such lot (404). */
+  async traceLot(lot: string) {
+    try {
+      return await this.#get(`/api/v1/trace/lots/${encodeURIComponent(lot)}`, lotTraceSchema);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes(' 404 ')) return undefined;
+      throw error;
+    }
+  }
+
+  /** A carton and its members in placement order (#199). */
+  traceCarton(id: string) {
+    return this.#get(`/api/v1/trace/cartons/${encodeURIComponent(id)}`, cartonTraceSchema);
+  }
+
+  /** A characteristic's charts (#200), every point (`all=true`), limits and episodes. */
+  spcChart(characteristic: string) {
+    return this.#get(
+      `/api/v1/quality/characteristics/${encodeURIComponent(characteristic)}/chart?all=true`,
+      spcChartSchema,
+    );
+  }
+
+  /** Quality holds (#201), newest first. */
+  holds() {
+    return this.#get(`/api/v1/quality/holds`, holdListSchema);
+  }
+
+  /** A hold with its transitions, scope and incidents (#201). */
+  hold(id: string) {
+    return this.#get(`/api/v1/quality/holds/${encodeURIComponent(id)}`, holdDetailSchema);
+  }
 }
 
 /** The ERP mock's REST API (ADR-0028) with the run's bearer token (never logged). */
@@ -510,6 +615,22 @@ export class ErpClient {
       counts[outcome] += Number(match[2]);
     }
     return counts;
+  }
+
+  /** The lot list (`GET /api/v1/lots`, #198): the dataset's lots. */
+  lots() {
+    return this.#get('/api/v1/lots', lotListSchema);
+  }
+
+  /** The ERP's view of a lot (#198): its holds from the quality notifications, `blocked`. */
+  lot(id: string) {
+    return this.#get(`/api/v1/lots/${encodeURIComponent(id)}`, erpLotViewSchema);
+  }
+
+  /** The quality notifications received (#198), of one hold or of all, in the order received. */
+  qualityNotifications(holdId?: string) {
+    const query = holdId === undefined ? '' : `?holdId=${encodeURIComponent(holdId)}`;
+    return this.#get(`/api/v1/quality-notifications${query}`, qualityNotificationListSchema);
   }
 
   /** The status messages received, of one order or of all. */

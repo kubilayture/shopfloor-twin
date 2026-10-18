@@ -675,6 +675,12 @@ importers:
       '@shopfloor/shift-calendar':
         specifier: workspace:*
         version: link:../packages/shift-calendar
+      '@shopfloor/spc-core':
+        specifier: workspace:*
+        version: link:../packages/spc-core
+      '@shopfloor/trace-core':
+        specifier: workspace:*
+        version: link:../packages/trace-core
       zod:
         specifier: 'catalog:'
         version: 4.6.5

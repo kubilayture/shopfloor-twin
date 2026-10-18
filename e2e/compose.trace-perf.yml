@@ -1,0 +1,10 @@
+# Override for the trace-performance run (#204, Phase 8 exit criterion 6), after docker-compose.yml
+# and e2e/compose.reconcile.yml, used only by e2e/src/trace-perf.ts on its own disposable project:
+# the database's port is published on 127.0.0.1 (ephemeral, chosen by Docker) for this run only, so
+# the golden harness's loader (apps/mes-server/src/trace-perf-load.e2e.test.ts) can fill it as
+# mes_app from the host. Every other run keeps the database unpublished.
+
+services:
+  db:
+    ports: !override
+      - '127.0.0.1::5432'

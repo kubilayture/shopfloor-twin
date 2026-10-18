@@ -823,14 +823,21 @@ export async function checkAuditAndClose(
   return { erpStatus, audit: found, auditRows: rows.length, crew };
 }
 
-/** The ERP's state as the MES's messages made it: every order's view and every message. */
-async function erpState(erp: ErpClient, ids: readonly string[]) {
+/**
+ * The ERP's state as the MES's messages made it: every order's view and every message; with
+ * `lots` (the quality pass, #204), the quality notifications and those lots' views too.
+ */
+async function erpState(erp: ErpClient, ids: readonly string[], lots: readonly string[] = []) {
   const views: Record<string, unknown> = {};
   for (const id of ids) views[id] = await erp.order(id);
+  const lotViews: Record<string, unknown> = {};
+  for (const id of lots) lotViews[id] = await erp.lot(id);
   return {
     views,
     confirmations: (await erp.confirmations()).confirmations,
     statusMessages: (await erp.statusMessages()).messages,
+    qualityNotifications: (await erp.qualityNotifications()).notifications,
+    lotViews,
   };
 }
 
@@ -841,7 +848,11 @@ async function erpState(erp: ErpClient, ids: readonly string[]) {
  * each replay 200 with its stored receipt) the ERP's views, confirmations and status messages are
  * byte-identical to before.
  */
-export async function repostOutbox(ctx: PassContext, ids: readonly string[]) {
+export async function repostOutbox(
+  ctx: PassContext,
+  ids: readonly string[],
+  lots: readonly string[] = [],
+) {
   const unsent = () =>
     ctx.stack.sqlJson<number>(
       `SELECT count(*) FROM orders.erp_message_log WHERE direction = 'out' AND status <> 'sent'`,
@@ -852,7 +863,7 @@ export async function repostOutbox(ctx: PassContext, ids: readonly string[]) {
     async () => (await unsent()) === 0,
     120_000,
   );
-  const before = await erpState(ctx.erp, ids);
+  const before = await erpState(ctx.erp, ids, lots);
   const postsBefore = await ctx.erp.postCounts();
   // As after a crash between the ERP's answer and the MES's commit: the MES stopped, every sent
   // message pending again, the MES started.
@@ -883,7 +894,7 @@ export async function repostOutbox(ctx: PassContext, ids: readonly string[]) {
   const reposted = await ctx.stack.sqlJson<number>(
     `SELECT count(*) FROM orders.erp_message_log WHERE direction = 'out' AND attempts >= 2`,
   );
-  const after = await erpState(ctx.erp, ids);
+  const after = await erpState(ctx.erp, ids, lots);
   const postsAfter = await ctx.erp.postCounts();
   // The ERP's own count of what the posts did: every message posted again was a replay, none new.
   const posts = {
@@ -907,6 +918,7 @@ export async function repostOutbox(ctx: PassContext, ids: readonly string[]) {
     pending,
     confirmations: after.confirmations.length,
     statusMessages: after.statusMessages.length,
+    qualityNotifications: after.qualityNotifications.length,
     erpUnchanged: diffs.length === 0,
     erpPosts: posts,
   };

@@ -16,6 +16,11 @@ import { defineConfig, devices } from '@playwright/test';
  * - `orders-live`, during shift A: the OEE dashboard and the alarm checks as above, then the Line
  *   A1 terminal (counts within 2 s, start, pause, resume);
  * - `orders-final`, after the drain: sign-off at both terminals, drafts, scrap coding, close.
+ * The quality-01 pass (#204, browser/quality; its dispatch is `orders-dispatch`):
+ * - `quality-live`, during shift A with the drift: every SPC episode on the SPC page and the Line
+ *   A1 terminal within 2 s, an operator signed on to Line A1 throughout;
+ * - `quality-final`, after the drain: a serial's trace page with its crew, holds from the drift's
+ *   episode and a lot, the terminal's banners, the close refused while held and allowed after.
  * Chromium only. On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
  */
 const results = process.env.RECONCILE_RESULTS ?? join(import.meta.dirname, 'results');
@@ -35,7 +40,7 @@ export default defineConfig({
   projects: [
     {
       name: 'live',
-      testIgnore: ['final/**', 'orders/**'],
+      testIgnore: ['final/**', 'orders/**', 'quality/**'],
       outputDir: join(results, 'playwright', 'live'),
       use: { ...chromium },
     },
@@ -61,6 +66,18 @@ export default defineConfig({
       name: 'orders-final',
       testDir: './browser/orders/final',
       outputDir: join(results, 'playwright', 'orders-final'),
+      use: { ...chromium },
+    },
+    {
+      name: 'quality-live',
+      testDir: './browser/quality/live',
+      outputDir: join(results, 'playwright', 'quality-live'),
+      use: { ...chromium },
+    },
+    {
+      name: 'quality-final',
+      testDir: './browser/quality/final',
+      outputDir: join(results, 'playwright', 'quality-final'),
       use: { ...chromium },
     },
   ],

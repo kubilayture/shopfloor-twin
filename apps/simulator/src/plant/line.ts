@@ -1130,11 +1130,12 @@ export class ProductionLine {
       appliedAt: undefined,
     };
     this.#injections.push(injection);
-    simulation.schedule(at, {
-      type: 'inject-failure',
-      station: request.machine,
-      injection: injection.id,
-    });
+    // External (#235): at `at`, before the model's own events, wherever in the run it is accepted.
+    simulation.schedule(
+      at,
+      { type: 'inject-failure', station: request.machine, injection: injection.id },
+      'external',
+    );
     return { ok: true, injection: this.#view(injection) };
   }
 
@@ -1210,12 +1211,16 @@ export class ProductionLine {
       endedBy: undefined,
     };
     this.#drifts.push(drift);
-    simulation.schedule(at, { type: 'drift-start', station: request.machine, injection: drift.id });
-    simulation.schedule(drift.until, {
-      type: 'drift-end',
-      station: request.machine,
-      injection: drift.id,
-    });
+    simulation.schedule(
+      at,
+      { type: 'drift-start', station: request.machine, injection: drift.id },
+      'external',
+    );
+    simulation.schedule(
+      drift.until,
+      { type: 'drift-end', station: request.machine, injection: drift.id },
+      'external',
+    );
     return { ok: true, drift: this.#driftView(drift) };
   }
 
@@ -1879,7 +1884,11 @@ export class ProductionLine {
         appliedAt: undefined,
         cycles: undefined,
       };
-      simulation.schedule(at, { type: 'tool-break', station: request.machine, action: id });
+      simulation.schedule(
+        at,
+        { type: 'tool-break', station: request.machine, action: id },
+        'external',
+      );
     } else {
       action = {
         id,
@@ -1890,7 +1899,7 @@ export class ProductionLine {
         status: 'scheduled',
         appliedAt: undefined,
       };
-      simulation.schedule(at, { type: 'lot-action', action: id });
+      simulation.schedule(at, { type: 'lot-action', action: id }, 'external');
     }
     this.#actions.push(action);
     return { ok: true, action: this.#actionView(action) };

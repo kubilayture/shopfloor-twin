@@ -51,3 +51,26 @@ export type {
   OperatorsAbsentSpec,
   ToolBreakageSpec,
 } from './actions.ts';
+export {
+  SCENARIO_PRODUCTION_MODES,
+  TIMELINE_ACTIONS,
+  TIMELINE_SPEED,
+  checkScenarioPlan,
+  instantMs,
+  parseScenario,
+  readScenarioFile,
+  scenarioPlan,
+  scenarioSchema,
+  timelineEntrySchema,
+} from './scenario.ts';
+export type {
+  DispatchEntrySpec,
+  InfrastructureSpec,
+  Scenario,
+  ScenarioFileResult,
+  ScenarioOrigins,
+  ScenarioParseResult,
+  ScenarioPlan,
+  TimelineAction,
+  TimelineEntry,
+} from './scenario.ts';

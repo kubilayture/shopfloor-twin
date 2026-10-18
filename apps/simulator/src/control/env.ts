@@ -4,6 +4,7 @@ import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { PRODUCTION_MODES } from '../plant/line.ts';
 
 const DEFAULT_CONFIG = resolve(import.meta.dirname, '../../../../config/plant');
+const DEFAULT_SCENARIOS = resolve(import.meta.dirname, '../../../../config/scenarios');
 
 const integer = z
   .string()
@@ -40,6 +41,15 @@ export const envSchema = z.object({
   SIM_AUTOSTART: z.enum(['true', 'false']).default('true'),
   /** `schedule` (default, Phases 1–6) or `orders` (#172): CNCs run only `LoadOrder` jobs. */
   SIM_PRODUCTION: z.enum(PRODUCTION_MODES).default('schedule'),
+  /**
+   * A timeline loaded before the run starts (#235): a name of `SIM_SCENARIOS_DIR` or a file path.
+   * Its seed, start and production mode must be the run's; a `dispatch` entry is refused.
+   */
+  SIM_TIMELINE: text.optional(),
+  /** The committed timelines (`POST /scenario` by name, `GET /scenarios`). */
+  SIM_SCENARIOS_DIR: text.default(DEFAULT_SCENARIOS),
+  /** A file the live event log is written to (#235): the headless `events.jsonl` without header. */
+  SIM_EVENT_LOG: text.optional(),
   OPCUA_HOST: text.default('localhost'),
   OPCUA_PORT_OFFSET: integer.pipe(z.number().max(9_999)).default(0),
   OPCUA_PKI_DIR: text.optional(),

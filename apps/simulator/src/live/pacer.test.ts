@@ -342,3 +342,94 @@ describe('LivePacer (plan section 4, live mode)', () => {
     pacer.stop();
   });
 });
+
+describe('pacer cues (#235, the infrastructure entries of a live timeline)', () => {
+  /** One event a second for an hour, so a cue between two events shows the boundary. */
+  function ticking(speed = 10) {
+    const clock = new ManualClock();
+    const simulation = new Simulation<number>(T0);
+    for (let i = 0; i <= 3600; i++) simulation.schedule(T0 + i * SECOND, i);
+    const handled: number[] = [];
+    const pacer = new LivePacer<number>({
+      simulation,
+      handle: (event) => handled.push(event),
+      speed,
+      end: T0 + HOUR,
+      clock,
+    });
+    return { clock, simulation, pacer, handled };
+  }
+
+  it('pauses exactly at a pause cue, with every event of that millisecond processed', () => {
+    const { clock, simulation, pacer, handled } = ticking();
+    pacer.cue({ at: T0 + 90 * SECOND, kind: 'pause' });
+    pacer.start();
+    clock.advance(60_000);
+    expect(pacer.state).toBe('paused');
+    expect(simulation.now).toBe(T0 + 90 * SECOND);
+    expect(pacer.simNow()).toBe(T0 + 90 * SECOND);
+    expect(handled.at(-1)).toBe(90);
+    expect(clock.pendingTimers).toBe(0);
+    pacer.resume();
+    while (pacer.state === 'running') clock.advance(1_000);
+    expect(handled).toHaveLength(3600);
+  });
+
+  it('changes the speed at a speed cue, keeping the paced clock continuous', () => {
+    const { clock, simulation, pacer } = ticking(10);
+    pacer.cue({ at: T0 + 100 * SECOND, kind: 'speed', speed: 60 });
+    pacer.start();
+    // 10 wall seconds at 10× reach the cue; 1 more at 60× is 60 simulated seconds.
+    clock.advance(11_000);
+    expect(pacer.speed).toBe(60);
+    expect(pacer.simNow()).toBe(T0 + 160 * SECOND);
+    expect(simulation.now).toBeLessThanOrEqual(T0 + 160 * SECOND);
+    expect(pacer.pendingCues).toBe(0);
+  });
+
+  it('runs call cues in time order, stepping included, and never one at or after the end', () => {
+    const { clock, pacer } = ticking();
+    const calls: string[] = [];
+    const seen: string[] = [];
+    pacer.onCue = (cue) => seen.push(`${cue.kind}@${String((cue.at - T0) / SECOND)}`);
+    pacer.cue({ at: T0 + 2 * SECOND, kind: 'call', run: () => calls.push('b') });
+    pacer.cue({ at: T0 + SECOND, kind: 'call', run: () => calls.push('a') });
+    pacer.cue({ at: T0 + 2 * SECOND, kind: 'call', run: () => calls.push('c') });
+    pacer.cue({ at: T0 + HOUR, kind: 'call', run: () => calls.push('never') });
+    pacer.step();
+    pacer.step();
+    expect(calls).toEqual(['a']);
+    pacer.step();
+    expect(calls).toEqual(['a', 'b', 'c']);
+    pacer.resume();
+    while (pacer.state === 'running') clock.advance(1_000);
+    expect(calls).toEqual(['a', 'b', 'c']);
+    expect(seen).toEqual(['call@1', 'call@2', 'call@2']);
+  });
+
+  it('refuses a cue in the past or with a speed out of range', () => {
+    const { clock, pacer } = ticking();
+    pacer.start();
+    clock.advance(5_000);
+    expect(() => {
+      pacer.cue({ at: T0, kind: 'pause' });
+    }).toThrow(/at or after the simulation time/);
+    expect(() => {
+      pacer.cue({ at: T0 + HOUR, kind: 'speed', speed: 61 });
+    }).toThrow(/speed must be between/);
+  });
+
+  it('leaves no stray timer when a pause cue is reached inside setSpeed', () => {
+    const { clock, pacer } = ticking(10);
+    // Between two events: no timer falls due at the cue's time (505 ms of wall time at 10×).
+    pacer.cue({ at: T0 + 5_050, kind: 'pause' });
+    pacer.start();
+    clock.advance(507);
+    expect(pacer.state).toBe('running');
+    // setSpeed first advances to the paced time, past the cue, which pauses the run.
+    pacer.setSpeed(20);
+    expect(pacer.state).toBe('paused');
+    expect(pacer.simNow()).toBe(T0 + 5_050);
+    expect(clock.pendingTimers).toBe(0);
+  });
+});

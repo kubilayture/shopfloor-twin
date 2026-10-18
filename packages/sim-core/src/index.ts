@@ -12,7 +12,7 @@ export {
   weibull,
 } from './distributions.ts';
 export { EventQueue } from './event-queue.ts';
-export type { EventHandle, QueuedEvent } from './event-queue.ts';
+export type { EventHandle, EventLane, QueuedEvent } from './event-queue.ts';
 export {
   RandomSource,
   Xoshiro128StarStar,

@@ -78,6 +78,8 @@ services:
       SIM_AUTOSTART: ${SIM_AUTOSTART:-true}
       # schedule (default) or orders (#172): the CNCs then run only LoadOrder jobs.
       SIM_PRODUCTION: ${SIM_PRODUCTION:-schedule}
+      # A timeline of config/scenarios loaded before the run starts (#235); empty for none.
+      SIM_TIMELINE: ${SIM_TIMELINE:-}
       OPCUA_HOST: ${SIM_OPCUA_HOST:-localhost}
       LOG_LEVEL: ${SIM_LOG_LEVEL:-info}
     ports:

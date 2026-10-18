@@ -1,4 +1,4 @@
-import { EventQueue, type EventHandle } from './event-queue.ts';
+import { EventQueue, type EventHandle, type EventLane } from './event-queue.ts';
 import { assertSimTime, type Duration, type SimTime } from './sim-time.ts';
 
 export type EventHandler<E> = (event: E, simulation: Simulation<E>) => void;
@@ -24,14 +24,21 @@ export class Simulation<E> {
     return this.#queue.peek()?.time;
   }
 
-  schedule(time: SimTime, event: E): EventHandle {
+  /**
+   * Schedules a model event (`lane` left out), or an `external` one: an event given from outside
+   * the model when it is accepted (an injection, a console action), which at its time runs before
+   * every model event of that time, after the external events accepted before it (#235). So an
+   * external event accepted for a later time lands where it would have had it been accepted
+   * before the run started.
+   */
+  schedule(time: SimTime, event: E, lane: EventLane = 'model'): EventHandle {
     assertSimTime(time);
     if (time < this.#now) {
       throw new RangeError(
         `Cannot schedule at ${String(time)}, before the current time ${String(this.#now)}`,
       );
     }
-    return this.#queue.push(time, event);
+    return this.#queue.push(time, event, lane);
   }
 
   scheduleIn(delay: Duration, event: E): EventHandle {

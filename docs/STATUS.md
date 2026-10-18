@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #234 merged (PR #249, `86592fb`): simulator console actions (`GET /lots`, `/operators`, `/actions`, lot block and release, forced absence, tool breakage), control API 1.7, ADR-0037; goldens byte-identical.
 - #228 merged (PR #248, `9a072cd`): the heavy-suite lock at `~/.cache/shopfloor-twin/heavy.lock` for every heavy command, the smoke on ephemeral host ports, host and Docker disk checks, images and build cache cleaned per run, limits on the database, the broker and `migrate`, the Phase 9 rerun rows.
 - #229 merged (PR #247, `02378b1`): `oee-core` order OEE over head-time windows, line throughput OEE (`aboveOne`), the bottleneck derived per product (ASM-01), first-pass yield; ADR-0036; reference cases in `docs/oee-reference-cases.md`; both configuration hashes and the goldens unchanged.
 - Phase 9 plan accepted (PR #226, `3e3ef33`): `docs/phases/phase-09-plan.md` and master plan rev. 9, after review rounds 1 to 3. Issues #228–#246 (P9-01 to P9-19) under milestone "Phase 09 – Simulation console, scenarios and hardening" (milestone 10); size XL in four waves with a checkpoint after wave A; phase log `docs/phases/phase-09-log.md` started.
@@ -130,11 +131,11 @@
 
 ## In progress
 
-- #234 (P9-07) simulator console actions (branch `feat/234-sim-console-actions`, PR #249, wave A; approved after review, full gate before merge): `GET /lots`, `GET /operators`, `GET /actions`, lot block and release, forced absence for a later shift, tool breakage as wear to end of life; new event variants `lot`, `absence`, `tool-breakage` and the header key `actions`, written only when used; control API 1.7; ADR-0037; goldens byte-identical (log entry in `docs/phases/phase-09-log.md`).
+- #230 (P9-03) order and line OEE truth (branch `feat/230-line-oee-truth`, wave A; on #234's control API 1.7): `line-oee.json` (`sim-line-oee/1`) beside the four goldens and `lineOee` in the live ground truth, cut by `?asOf` (`lineOeeAsOf`); control API 1.8; ADR-0036 amended (`notBefore` is part of the head time; reference cases H17 and O11); every `summary.json`, `trace.json` and `events.sha256` byte-identical (log entry in `docs/phases/phase-09-log.md`).
 
 ## Next up
 
-- Wave A: #230 (P9-03, on #229's `oee-core`; control API 1.8 after #234's 1.7), #235 (P9-08, timelines on #234's `ActionSpec`; its live test covers actions posted mid-run) and #236 (P9-09), and the wave A checkpoint in the phase log. P9-10 (#237) adds `GET /api/v1/actions` to the `/sim/` allowlist.
+- Wave A: #235 (P9-08, timelines on #234's `ActionSpec`; its live test covers actions posted mid-run) and #236 (P9-09), and the wave A checkpoint in the phase log. P9-10 (#237) adds `GET /api/v1/actions` to the `/sim/` allowlist.
 
 ## Blockers and open questions for the owner
 

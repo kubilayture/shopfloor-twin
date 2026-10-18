@@ -1,0 +1,2387 @@
+{
+  "analysisConfigSha256": "5756271448987031c8b24ff5a3e2dc58b79cf4e7408a25bb4cf0e40350b43764",
+  "bottlenecks": {
+    "VB-100": {
+      "effectiveCycleMs": "150000/1",
+      "equipment": [
+        "asm-01"
+      ],
+      "idealCycleMs": 150000,
+      "operation": "OP30"
+    },
+    "VB-200": {
+      "effectiveCycleMs": "210000/1",
+      "equipment": [
+        "asm-01"
+      ],
+      "idealCycleMs": 210000,
+      "operation": "OP30"
+    }
+  },
+  "config": {
+    "microStopThresholdMs": 120000,
+    "productionMode": "orders",
+    "scheduledTime": "orders"
+  },
+  "inProgress": [
+    {
+      "from": "2026-10-12T03:00:00.000Z",
+      "open": false,
+      "orderId": "PO-2610-001",
+      "to": "2026-10-12T04:32:11.237Z"
+    },
+    {
+      "from": "2026-10-12T03:00:00.000Z",
+      "open": false,
+      "orderId": "PO-2610-002",
+      "to": "2026-10-12T04:40:14.941Z"
+    },
+    {
+      "from": "2026-10-12T04:13:44.974Z",
+      "open": false,
+      "orderId": "PO-2610-004",
+      "to": "2026-10-12T05:32:19.089Z"
+    },
+    {
+      "from": "2026-10-12T04:21:16.435Z",
+      "open": false,
+      "orderId": "PO-2610-003",
+      "to": "2026-10-12T05:38:11.365Z"
+    },
+    {
+      "from": "2026-10-12T05:01:59.242Z",
+      "open": false,
+      "orderId": "PO-2610-005",
+      "to": "2026-10-12T16:25:23.014Z"
+    },
+    {
+      "from": "2026-10-12T05:06:22.426Z",
+      "open": false,
+      "orderId": "PO-2610-006",
+      "to": "2026-10-12T06:24:07.054Z"
+    },
+    {
+      "from": "2026-10-13T08:17:00.000Z",
+      "open": false,
+      "orderId": "PO-2610-007",
+      "to": "2026-10-13T11:05:58.664Z"
+    },
+    {
+      "from": "2026-10-13T08:17:00.000Z",
+      "open": true,
+      "orderId": "PO-2610-009",
+      "to": "2026-10-14T03:00:00.000Z"
+    }
+  ],
+  "line": {
+    "hours": {
+      "2026-10-12T03:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T03:00:00.000Z",
+        "good": {
+          "VB-100": 5,
+          "VB-200": 4
+        },
+        "idealMs": "1590000/1",
+        "oee": {
+          "decimal": "0.4417",
+          "fraction": "53/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T04:00:00.000Z"
+      },
+      "2026-10-12T04:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T04:00:00.000Z",
+        "good": {
+          "VB-100": 12,
+          "VB-200": 8
+        },
+        "idealMs": "3480000/1",
+        "oee": {
+          "decimal": "0.9667",
+          "fraction": "29/30"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T05:00:00.000Z"
+      },
+      "2026-10-12T05:00:00.000Z": {
+        "aboveOne": true,
+        "from": "2026-10-12T05:00:00.000Z",
+        "good": {
+          "VB-100": 16,
+          "VB-200": 6
+        },
+        "idealMs": "3660000/1",
+        "oee": {
+          "decimal": "1.0167",
+          "fraction": "61/60"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T06:00:00.000Z"
+      },
+      "2026-10-12T06:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T06:00:00.000Z",
+        "good": {
+          "VB-100": 23
+        },
+        "idealMs": "3450000/1",
+        "oee": {
+          "decimal": "0.9583",
+          "fraction": "23/24"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T07:00:00.000Z"
+      },
+      "2026-10-12T07:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T07:00:00.000Z",
+        "good": {
+          "VB-100": 8
+        },
+        "idealMs": "1200000/1",
+        "oee": {
+          "decimal": "0.6667",
+          "fraction": "2/3"
+        },
+        "plannedBusyMs": 1800000,
+        "provisional": false,
+        "to": "2026-10-12T08:00:00.000Z"
+      },
+      "2026-10-12T08:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T08:00:00.000Z",
+        "good": {
+          "VB-100": 15
+        },
+        "idealMs": "2250000/1",
+        "oee": {
+          "decimal": "0.6250",
+          "fraction": "5/8"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T09:00:00.000Z"
+      },
+      "2026-10-12T09:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T09:00:00.000Z",
+        "good": {
+          "VB-100": 15
+        },
+        "idealMs": "2250000/1",
+        "oee": {
+          "decimal": "0.6250",
+          "fraction": "5/8"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T10:00:00.000Z"
+      },
+      "2026-10-12T10:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T10:00:00.000Z",
+        "good": {
+          "VB-100": 15
+        },
+        "idealMs": "2250000/1",
+        "oee": {
+          "decimal": "0.6250",
+          "fraction": "5/8"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T11:00:00.000Z"
+      },
+      "2026-10-12T11:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T11:00:00.000Z",
+        "good": {
+          "VB-100": 14
+        },
+        "idealMs": "2100000/1",
+        "oee": {
+          "decimal": "0.5833",
+          "fraction": "7/12"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T12:00:00.000Z"
+      },
+      "2026-10-12T12:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T12:00:00.000Z",
+        "good": {
+          "VB-100": 15
+        },
+        "idealMs": "2250000/1",
+        "oee": {
+          "decimal": "0.6250",
+          "fraction": "5/8"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T13:00:00.000Z"
+      },
+      "2026-10-12T13:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T13:00:00.000Z",
+        "good": {
+          "VB-100": 13
+        },
+        "idealMs": "1950000/1",
+        "oee": {
+          "decimal": "0.5417",
+          "fraction": "13/24"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T14:00:00.000Z"
+      },
+      "2026-10-12T14:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T14:00:00.000Z",
+        "good": {
+          "VB-100": 15
+        },
+        "idealMs": "2250000/1",
+        "oee": {
+          "decimal": "0.6250",
+          "fraction": "5/8"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-12T15:00:00.000Z"
+      },
+      "2026-10-12T15:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T15:00:00.000Z",
+        "good": {
+          "VB-100": 7
+        },
+        "idealMs": "1050000/1",
+        "oee": {
+          "decimal": "0.5833",
+          "fraction": "7/12"
+        },
+        "plannedBusyMs": 1800000,
+        "provisional": false,
+        "to": "2026-10-12T16:00:00.000Z"
+      },
+      "2026-10-12T16:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T16:00:00.000Z",
+        "good": {
+          "VB-100": 7
+        },
+        "idealMs": "1050000/1",
+        "oee": {
+          "decimal": "0.6894",
+          "fraction": "525000/761507"
+        },
+        "plannedBusyMs": 1523014,
+        "provisional": false,
+        "to": "2026-10-12T17:00:00.000Z"
+      },
+      "2026-10-12T17:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T17:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-12T18:00:00.000Z"
+      },
+      "2026-10-12T18:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T18:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-12T19:00:00.000Z"
+      },
+      "2026-10-12T19:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T19:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-12T20:00:00.000Z"
+      },
+      "2026-10-12T20:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T20:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-12T21:00:00.000Z"
+      },
+      "2026-10-12T21:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T21:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-12T22:00:00.000Z"
+      },
+      "2026-10-12T22:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T22:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-12T23:00:00.000Z"
+      },
+      "2026-10-12T23:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-12T23:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-13T00:00:00.000Z"
+      },
+      "2026-10-13T00:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T00:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-13T01:00:00.000Z"
+      },
+      "2026-10-13T01:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T01:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-13T02:00:00.000Z"
+      },
+      "2026-10-13T02:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T02:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-13T03:00:00.000Z"
+      },
+      "2026-10-13T03:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T03:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-13T04:00:00.000Z"
+      },
+      "2026-10-13T04:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T04:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-13T05:00:00.000Z"
+      },
+      "2026-10-13T05:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T05:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-13T06:00:00.000Z"
+      },
+      "2026-10-13T06:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T06:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-13T07:00:00.000Z"
+      },
+      "2026-10-13T07:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T07:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-13T08:00:00.000Z"
+      },
+      "2026-10-13T08:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T08:00:00.000Z",
+        "good": {
+          "VB-200": 2
+        },
+        "idealMs": "420000/1",
+        "oee": {
+          "decimal": "0.1628",
+          "fraction": "7/43"
+        },
+        "plannedBusyMs": 2580000,
+        "provisional": false,
+        "to": "2026-10-13T09:00:00.000Z"
+      },
+      "2026-10-13T09:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T09:00:00.000Z",
+        "good": {
+          "VB-200": 17
+        },
+        "idealMs": "3570000/1",
+        "oee": {
+          "decimal": "0.9917",
+          "fraction": "119/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T10:00:00.000Z"
+      },
+      "2026-10-13T10:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T10:00:00.000Z",
+        "good": {
+          "VB-200": 17
+        },
+        "idealMs": "3570000/1",
+        "oee": {
+          "decimal": "0.9917",
+          "fraction": "119/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T11:00:00.000Z"
+      },
+      "2026-10-13T11:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T11:00:00.000Z",
+        "good": {
+          "VB-200": 16
+        },
+        "idealMs": "3360000/1",
+        "oee": {
+          "decimal": "0.9333",
+          "fraction": "14/15"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T12:00:00.000Z"
+      },
+      "2026-10-13T12:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T12:00:00.000Z",
+        "good": {
+          "VB-200": 11
+        },
+        "idealMs": "2310000/1",
+        "oee": {
+          "decimal": "0.6417",
+          "fraction": "77/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T13:00:00.000Z"
+      },
+      "2026-10-13T13:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T13:00:00.000Z",
+        "good": {
+          "VB-200": 11
+        },
+        "idealMs": "2310000/1",
+        "oee": {
+          "decimal": "0.6417",
+          "fraction": "77/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T14:00:00.000Z"
+      },
+      "2026-10-13T14:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T14:00:00.000Z",
+        "good": {
+          "VB-200": 11
+        },
+        "idealMs": "2310000/1",
+        "oee": {
+          "decimal": "0.6417",
+          "fraction": "77/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T15:00:00.000Z"
+      },
+      "2026-10-13T15:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T15:00:00.000Z",
+        "good": {
+          "VB-200": 5
+        },
+        "idealMs": "1050000/1",
+        "oee": {
+          "decimal": "0.5833",
+          "fraction": "7/12"
+        },
+        "plannedBusyMs": 1800000,
+        "provisional": false,
+        "to": "2026-10-13T16:00:00.000Z"
+      },
+      "2026-10-13T16:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T16:00:00.000Z",
+        "good": {
+          "VB-200": 11
+        },
+        "idealMs": "2310000/1",
+        "oee": {
+          "decimal": "0.6417",
+          "fraction": "77/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T17:00:00.000Z"
+      },
+      "2026-10-13T17:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T17:00:00.000Z",
+        "good": {
+          "VB-200": 11
+        },
+        "idealMs": "2310000/1",
+        "oee": {
+          "decimal": "0.6417",
+          "fraction": "77/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T18:00:00.000Z"
+      },
+      "2026-10-13T18:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T18:00:00.000Z",
+        "good": {
+          "VB-200": 11
+        },
+        "idealMs": "2310000/1",
+        "oee": {
+          "decimal": "0.6417",
+          "fraction": "77/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T19:00:00.000Z"
+      },
+      "2026-10-13T19:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T19:00:00.000Z",
+        "good": {
+          "VB-200": 10
+        },
+        "idealMs": "2100000/1",
+        "oee": {
+          "decimal": "0.5833",
+          "fraction": "7/12"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T20:00:00.000Z"
+      },
+      "2026-10-13T20:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T20:00:00.000Z",
+        "good": {
+          "VB-200": 11
+        },
+        "idealMs": "2310000/1",
+        "oee": {
+          "decimal": "0.6417",
+          "fraction": "77/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T21:00:00.000Z"
+      },
+      "2026-10-13T21:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T21:00:00.000Z",
+        "good": {
+          "VB-200": 11
+        },
+        "idealMs": "2310000/1",
+        "oee": {
+          "decimal": "0.6417",
+          "fraction": "77/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T22:00:00.000Z"
+      },
+      "2026-10-13T22:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T22:00:00.000Z",
+        "good": {
+          "VB-200": 10
+        },
+        "idealMs": "2100000/1",
+        "oee": {
+          "decimal": "0.5833",
+          "fraction": "7/12"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-13T23:00:00.000Z"
+      },
+      "2026-10-13T23:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-13T23:00:00.000Z",
+        "good": {
+          "VB-200": 6
+        },
+        "idealMs": "1260000/1",
+        "oee": {
+          "decimal": "0.7000",
+          "fraction": "7/10"
+        },
+        "plannedBusyMs": 1800000,
+        "provisional": false,
+        "to": "2026-10-14T00:00:00.000Z"
+      },
+      "2026-10-14T00:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-14T00:00:00.000Z",
+        "good": {
+          "VB-200": 10
+        },
+        "idealMs": "2100000/1",
+        "oee": {
+          "decimal": "0.5833",
+          "fraction": "7/12"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-14T01:00:00.000Z"
+      },
+      "2026-10-14T01:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-14T01:00:00.000Z",
+        "good": {
+          "VB-200": 10
+        },
+        "idealMs": "2100000/1",
+        "oee": {
+          "decimal": "0.5833",
+          "fraction": "7/12"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-14T02:00:00.000Z"
+      },
+      "2026-10-14T02:00:00.000Z": {
+        "aboveOne": false,
+        "from": "2026-10-14T02:00:00.000Z",
+        "good": {
+          "VB-200": 11
+        },
+        "idealMs": "2310000/1",
+        "oee": {
+          "decimal": "0.6417",
+          "fraction": "77/120"
+        },
+        "plannedBusyMs": 3600000,
+        "provisional": false,
+        "to": "2026-10-14T03:00:00.000Z"
+      }
+    },
+    "shifts": {
+      "2026-10-12/A": {
+        "aboveOne": false,
+        "from": "2026-10-12T03:00:00.000Z",
+        "good": {
+          "VB-100": 109,
+          "VB-200": 18
+        },
+        "idealMs": "20130000/1",
+        "oee": {
+          "decimal": "0.7456",
+          "fraction": "671/900"
+        },
+        "plannedBusyMs": 27000000,
+        "provisional": false,
+        "to": "2026-10-12T11:00:00.000Z"
+      },
+      "2026-10-12/B": {
+        "aboveOne": false,
+        "from": "2026-10-12T11:00:00.000Z",
+        "good": {
+          "VB-100": 71
+        },
+        "idealMs": "10650000/1",
+        "oee": {
+          "decimal": "0.6009",
+          "fraction": "5325000/8861507"
+        },
+        "plannedBusyMs": 17723014,
+        "provisional": false,
+        "to": "2026-10-12T19:00:00.000Z"
+      },
+      "2026-10-12/C": {
+        "aboveOne": false,
+        "from": "2026-10-12T19:00:00.000Z",
+        "good": {},
+        "idealMs": "0/1",
+        "oee": null,
+        "plannedBusyMs": 0,
+        "provisional": false,
+        "to": "2026-10-13T03:00:00.000Z"
+      },
+      "2026-10-13/A": {
+        "aboveOne": false,
+        "from": "2026-10-13T03:00:00.000Z",
+        "good": {
+          "VB-200": 36
+        },
+        "idealMs": "7560000/1",
+        "oee": {
+          "decimal": "0.7730",
+          "fraction": "126/163"
+        },
+        "plannedBusyMs": 9780000,
+        "provisional": false,
+        "to": "2026-10-13T11:00:00.000Z"
+      },
+      "2026-10-13/B": {
+        "aboveOne": false,
+        "from": "2026-10-13T11:00:00.000Z",
+        "good": {
+          "VB-200": 87
+        },
+        "idealMs": "18270000/1",
+        "oee": {
+          "decimal": "0.6767",
+          "fraction": "203/300"
+        },
+        "plannedBusyMs": 27000000,
+        "provisional": false,
+        "to": "2026-10-13T19:00:00.000Z"
+      },
+      "2026-10-13/C": {
+        "aboveOne": false,
+        "from": "2026-10-13T19:00:00.000Z",
+        "good": {
+          "VB-200": 79
+        },
+        "idealMs": "16590000/1",
+        "oee": {
+          "decimal": "0.6144",
+          "fraction": "553/900"
+        },
+        "plannedBusyMs": 27000000,
+        "provisional": false,
+        "to": "2026-10-14T03:00:00.000Z"
+      }
+    }
+  },
+  "orders": {
+    "PO-2610-001": {
+      "completedAt": "2026-10-12T04:32:11.237Z",
+      "endLost": false,
+      "firstPassYield": {
+        "firstPassGood": 12,
+        "started": 12,
+        "yield": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        }
+      },
+      "headTimeUnknown": false,
+      "jobOee": {
+        "PO-2610-001~OP10~1": {
+          "cycles": 12,
+          "headSource": "accepted",
+          "headTime": "2026-10-12T03:00:00.000Z",
+          "machine": "cnc-01",
+          "oee": {
+            "anomaly": false,
+            "availability": {
+              "decimal": "0.6610",
+              "fraction": "1462487/2212487"
+            },
+            "losses": {
+              "availability": {
+                "external": {
+                  "blocked": 0,
+                  "starved": 0,
+                  "total": 0
+                },
+                "own": {
+                  "down": 0,
+                  "idle": 0,
+                  "setup": 1500000,
+                  "stopped": 0,
+                  "total": 1500000
+                }
+              },
+              "performance": {
+                "microStops": 26605,
+                "speed": 18369,
+                "total": 44974
+              },
+              "quality": {
+                "decimal": "0.0000",
+                "fraction": "0/1"
+              }
+            },
+            "oee": {
+              "decimal": "0.6509",
+              "fraction": "1440000/2212487"
+            },
+            "performance": {
+              "decimal": "0.9846",
+              "fraction": "1440000/1462487"
+            },
+            "provisional": false,
+            "quality": {
+              "decimal": "1.0000",
+              "fraction": "1/1"
+            },
+            "totals": {
+              "actualProductionMs": 2924974,
+              "excludedMs": 0,
+              "good": 12,
+              "idealMs": 2880000,
+              "longStopMs": 0,
+              "microStopMs": 26605,
+              "plannedBusyMs": 4424974,
+              "produced": 12,
+              "rework": 0,
+              "scrap": 0
+            },
+            "unplanned": {
+              "good": 0,
+              "idealMs": 0,
+              "produced": 0
+            }
+          },
+          "window": {
+            "from": "2026-10-12T03:00:00.000Z",
+            "open": false,
+            "to": "2026-10-12T04:13:44.974Z"
+          }
+        }
+      },
+      "jobs": [
+        "PO-2610-001~OP10~1"
+      ],
+      "line": {
+        "aboveOne": false,
+        "from": "2026-10-12T03:00:00.000Z",
+        "good": {
+          "VB-100": 12
+        },
+        "idealMs": "1800000/1",
+        "oee": {
+          "decimal": "0.3254",
+          "fraction": "1800000/5531237"
+        },
+        "plannedBusyMs": 5531237,
+        "provisional": false,
+        "to": "2026-10-12T04:32:11.237Z"
+      },
+      "lost": false,
+      "oee": {
+        "anomaly": false,
+        "availability": {
+          "decimal": "0.6610",
+          "fraction": "1462487/2212487"
+        },
+        "losses": {
+          "availability": {
+            "external": {
+              "blocked": 0,
+              "starved": 0,
+              "total": 0
+            },
+            "own": {
+              "down": 0,
+              "idle": 0,
+              "setup": 1500000,
+              "stopped": 0,
+              "total": 1500000
+            }
+          },
+          "performance": {
+            "microStops": 26605,
+            "speed": 18369,
+            "total": 44974
+          },
+          "quality": {
+            "decimal": "0.0000",
+            "fraction": "0/1"
+          }
+        },
+        "oee": {
+          "decimal": "0.6509",
+          "fraction": "1440000/2212487"
+        },
+        "performance": {
+          "decimal": "0.9846",
+          "fraction": "1440000/1462487"
+        },
+        "provisional": false,
+        "quality": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        },
+        "totals": {
+          "actualProductionMs": 2924974,
+          "excludedMs": 0,
+          "good": 12,
+          "idealMs": 2880000,
+          "longStopMs": 0,
+          "microStopMs": 26605,
+          "plannedBusyMs": 4424974,
+          "produced": 12,
+          "rework": 0,
+          "scrap": 0
+        },
+        "unplanned": {
+          "good": 0,
+          "idealMs": 0,
+          "produced": 0
+        }
+      },
+      "open": false,
+      "pending": false,
+      "product": "VB-100"
+    },
+    "PO-2610-002": {
+      "completedAt": "2026-10-12T04:40:14.941Z",
+      "endLost": false,
+      "firstPassYield": {
+        "firstPassGood": 10,
+        "started": 10,
+        "yield": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        }
+      },
+      "headTimeUnknown": false,
+      "jobOee": {
+        "PO-2610-002~OP10~1": {
+          "cycles": 10,
+          "headSource": "accepted",
+          "headTime": "2026-10-12T03:00:00.000Z",
+          "machine": "cnc-02",
+          "oee": {
+            "anomaly": false,
+            "availability": {
+              "decimal": "0.6924",
+              "fraction": "675287/975287"
+            },
+            "losses": {
+              "availability": {
+                "external": {
+                  "blocked": 0,
+                  "starved": 0,
+                  "total": 0
+                },
+                "own": {
+                  "down": 0,
+                  "idle": 0,
+                  "setup": 1500000,
+                  "stopped": 0,
+                  "total": 1500000
+                }
+              },
+              "performance": {
+                "microStops": 131399,
+                "speed": -54964,
+                "total": 76435
+              },
+              "quality": {
+                "decimal": "0.0000",
+                "fraction": "0/1"
+              }
+            },
+            "oee": {
+              "decimal": "0.6767",
+              "fraction": "660000/975287"
+            },
+            "performance": {
+              "decimal": "0.9774",
+              "fraction": "660000/675287"
+            },
+            "provisional": false,
+            "quality": {
+              "decimal": "1.0000",
+              "fraction": "1/1"
+            },
+            "totals": {
+              "actualProductionMs": 3376435,
+              "excludedMs": 0,
+              "good": 10,
+              "idealMs": 3300000,
+              "longStopMs": 0,
+              "microStopMs": 131399,
+              "plannedBusyMs": 4876435,
+              "produced": 10,
+              "rework": 0,
+              "scrap": 0
+            },
+            "unplanned": {
+              "good": 0,
+              "idealMs": 0,
+              "produced": 0
+            }
+          },
+          "window": {
+            "from": "2026-10-12T03:00:00.000Z",
+            "open": false,
+            "to": "2026-10-12T04:21:16.435Z"
+          }
+        }
+      },
+      "jobs": [
+        "PO-2610-002~OP10~1"
+      ],
+      "line": {
+        "aboveOne": false,
+        "from": "2026-10-12T03:00:00.000Z",
+        "good": {
+          "VB-200": 10
+        },
+        "idealMs": "2100000/1",
+        "oee": {
+          "decimal": "0.3491",
+          "fraction": "2100000/6014941"
+        },
+        "plannedBusyMs": 6014941,
+        "provisional": false,
+        "to": "2026-10-12T04:40:14.941Z"
+      },
+      "lost": false,
+      "oee": {
+        "anomaly": false,
+        "availability": {
+          "decimal": "0.6924",
+          "fraction": "675287/975287"
+        },
+        "losses": {
+          "availability": {
+            "external": {
+              "blocked": 0,
+              "starved": 0,
+              "total": 0
+            },
+            "own": {
+              "down": 0,
+              "idle": 0,
+              "setup": 1500000,
+              "stopped": 0,
+              "total": 1500000
+            }
+          },
+          "performance": {
+            "microStops": 131399,
+            "speed": -54964,
+            "total": 76435
+          },
+          "quality": {
+            "decimal": "0.0000",
+            "fraction": "0/1"
+          }
+        },
+        "oee": {
+          "decimal": "0.6767",
+          "fraction": "660000/975287"
+        },
+        "performance": {
+          "decimal": "0.9774",
+          "fraction": "660000/675287"
+        },
+        "provisional": false,
+        "quality": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        },
+        "totals": {
+          "actualProductionMs": 3376435,
+          "excludedMs": 0,
+          "good": 10,
+          "idealMs": 3300000,
+          "longStopMs": 0,
+          "microStopMs": 131399,
+          "plannedBusyMs": 4876435,
+          "produced": 10,
+          "rework": 0,
+          "scrap": 0
+        },
+        "unplanned": {
+          "good": 0,
+          "idealMs": 0,
+          "produced": 0
+        }
+      },
+      "open": false,
+      "pending": false,
+      "product": "VB-200"
+    },
+    "PO-2610-003": {
+      "completedAt": "2026-10-12T05:38:11.365Z",
+      "endLost": false,
+      "firstPassYield": {
+        "firstPassGood": 8,
+        "started": 8,
+        "yield": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        }
+      },
+      "headTimeUnknown": false,
+      "jobOee": {
+        "PO-2610-003~OP10~1": {
+          "cycles": 8,
+          "headSource": "previous-completed",
+          "headTime": "2026-10-12T04:21:16.435Z",
+          "machine": "cnc-02",
+          "oee": {
+            "anomaly": false,
+            "availability": {
+              "decimal": "0.9930",
+              "fraction": "2686991/2705991"
+            },
+            "losses": {
+              "availability": {
+                "external": {
+                  "blocked": 0,
+                  "starved": 0,
+                  "total": 0
+                },
+                "own": {
+                  "down": 19000,
+                  "idle": 0,
+                  "setup": 0,
+                  "stopped": 0,
+                  "total": 19000
+                }
+              },
+              "performance": {
+                "microStops": 36296,
+                "speed": 10695,
+                "total": 46991
+              },
+              "quality": {
+                "decimal": "0.0000",
+                "fraction": "0/1"
+              }
+            },
+            "oee": {
+              "decimal": "0.9756",
+              "fraction": "880000/901997"
+            },
+            "performance": {
+              "decimal": "0.9825",
+              "fraction": "2640000/2686991"
+            },
+            "provisional": false,
+            "quality": {
+              "decimal": "1.0000",
+              "fraction": "1/1"
+            },
+            "totals": {
+              "actualProductionMs": 2686991,
+              "excludedMs": 0,
+              "good": 8,
+              "idealMs": 2640000,
+              "longStopMs": 0,
+              "microStopMs": 36296,
+              "plannedBusyMs": 2705991,
+              "produced": 8,
+              "rework": 0,
+              "scrap": 0
+            },
+            "unplanned": {
+              "good": 0,
+              "idealMs": 0,
+              "produced": 0
+            }
+          },
+          "window": {
+            "from": "2026-10-12T04:21:16.435Z",
+            "open": false,
+            "to": "2026-10-12T05:06:22.426Z"
+          }
+        }
+      },
+      "jobs": [
+        "PO-2610-003~OP10~1"
+      ],
+      "line": {
+        "aboveOne": false,
+        "from": "2026-10-12T04:21:16.435Z",
+        "good": {
+          "VB-200": 8
+        },
+        "idealMs": "1680000/1",
+        "oee": {
+          "decimal": "0.3640",
+          "fraction": "56000/153831"
+        },
+        "plannedBusyMs": 4614930,
+        "provisional": false,
+        "to": "2026-10-12T05:38:11.365Z"
+      },
+      "lost": false,
+      "oee": {
+        "anomaly": false,
+        "availability": {
+          "decimal": "0.9930",
+          "fraction": "2686991/2705991"
+        },
+        "losses": {
+          "availability": {
+            "external": {
+              "blocked": 0,
+              "starved": 0,
+              "total": 0
+            },
+            "own": {
+              "down": 19000,
+              "idle": 0,
+              "setup": 0,
+              "stopped": 0,
+              "total": 19000
+            }
+          },
+          "performance": {
+            "microStops": 36296,
+            "speed": 10695,
+            "total": 46991
+          },
+          "quality": {
+            "decimal": "0.0000",
+            "fraction": "0/1"
+          }
+        },
+        "oee": {
+          "decimal": "0.9756",
+          "fraction": "880000/901997"
+        },
+        "performance": {
+          "decimal": "0.9825",
+          "fraction": "2640000/2686991"
+        },
+        "provisional": false,
+        "quality": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        },
+        "totals": {
+          "actualProductionMs": 2686991,
+          "excludedMs": 0,
+          "good": 8,
+          "idealMs": 2640000,
+          "longStopMs": 0,
+          "microStopMs": 36296,
+          "plannedBusyMs": 2705991,
+          "produced": 8,
+          "rework": 0,
+          "scrap": 0
+        },
+        "unplanned": {
+          "good": 0,
+          "idealMs": 0,
+          "produced": 0
+        }
+      },
+      "open": false,
+      "pending": false,
+      "product": "VB-200"
+    },
+    "PO-2610-004": {
+      "completedAt": "2026-10-12T05:32:19.089Z",
+      "endLost": false,
+      "firstPassYield": {
+        "firstPassGood": 12,
+        "started": 12,
+        "yield": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        }
+      },
+      "headTimeUnknown": false,
+      "jobOee": {
+        "PO-2610-004~OP10~1": {
+          "cycles": 12,
+          "headSource": "previous-completed",
+          "headTime": "2026-10-12T04:13:44.974Z",
+          "machine": "cnc-01",
+          "oee": {
+            "anomaly": false,
+            "availability": {
+              "decimal": "0.9969",
+              "fraction": "240439/241189"
+            },
+            "losses": {
+              "availability": {
+                "external": {
+                  "blocked": 0,
+                  "starved": 0,
+                  "total": 0
+                },
+                "own": {
+                  "down": 9000,
+                  "idle": 0,
+                  "setup": 0,
+                  "stopped": 0,
+                  "total": 9000
+                }
+              },
+              "performance": {
+                "microStops": 0,
+                "speed": 5268,
+                "total": 5268
+              },
+              "quality": {
+                "decimal": "0.0000",
+                "fraction": "0/1"
+              }
+            },
+            "oee": {
+              "decimal": "0.9951",
+              "fraction": "240000/241189"
+            },
+            "performance": {
+              "decimal": "0.9982",
+              "fraction": "240000/240439"
+            },
+            "provisional": false,
+            "quality": {
+              "decimal": "1.0000",
+              "fraction": "1/1"
+            },
+            "totals": {
+              "actualProductionMs": 2885268,
+              "excludedMs": 0,
+              "good": 12,
+              "idealMs": 2880000,
+              "longStopMs": 0,
+              "microStopMs": 0,
+              "plannedBusyMs": 2894268,
+              "produced": 12,
+              "rework": 0,
+              "scrap": 0
+            },
+            "unplanned": {
+              "good": 0,
+              "idealMs": 0,
+              "produced": 0
+            }
+          },
+          "window": {
+            "from": "2026-10-12T04:13:44.974Z",
+            "open": false,
+            "to": "2026-10-12T05:01:59.242Z"
+          }
+        }
+      },
+      "jobs": [
+        "PO-2610-004~OP10~1"
+      ],
+      "line": {
+        "aboveOne": false,
+        "from": "2026-10-12T04:13:44.974Z",
+        "good": {
+          "VB-100": 12
+        },
+        "idealMs": "1800000/1",
+        "oee": {
+          "decimal": "0.3818",
+          "fraction": "360000/942823"
+        },
+        "plannedBusyMs": 4714115,
+        "provisional": false,
+        "to": "2026-10-12T05:32:19.089Z"
+      },
+      "lost": false,
+      "oee": {
+        "anomaly": false,
+        "availability": {
+          "decimal": "0.9969",
+          "fraction": "240439/241189"
+        },
+        "losses": {
+          "availability": {
+            "external": {
+              "blocked": 0,
+              "starved": 0,
+              "total": 0
+            },
+            "own": {
+              "down": 9000,
+              "idle": 0,
+              "setup": 0,
+              "stopped": 0,
+              "total": 9000
+            }
+          },
+          "performance": {
+            "microStops": 0,
+            "speed": 5268,
+            "total": 5268
+          },
+          "quality": {
+            "decimal": "0.0000",
+            "fraction": "0/1"
+          }
+        },
+        "oee": {
+          "decimal": "0.9951",
+          "fraction": "240000/241189"
+        },
+        "performance": {
+          "decimal": "0.9982",
+          "fraction": "240000/240439"
+        },
+        "provisional": false,
+        "quality": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        },
+        "totals": {
+          "actualProductionMs": 2885268,
+          "excludedMs": 0,
+          "good": 12,
+          "idealMs": 2880000,
+          "longStopMs": 0,
+          "microStopMs": 0,
+          "plannedBusyMs": 2894268,
+          "produced": 12,
+          "rework": 0,
+          "scrap": 0
+        },
+        "unplanned": {
+          "good": 0,
+          "idealMs": 0,
+          "produced": 0
+        }
+      },
+      "open": false,
+      "pending": false,
+      "product": "VB-100"
+    },
+    "PO-2610-005": {
+      "completedAt": "2026-10-12T16:25:23.014Z",
+      "endLost": false,
+      "firstPassYield": {
+        "firstPassGood": 150,
+        "started": 150,
+        "yield": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        }
+      },
+      "headTimeUnknown": false,
+      "jobOee": {
+        "PO-2610-005~OP10~1": {
+          "cycles": 150,
+          "headSource": "previous-completed",
+          "headTime": "2026-10-12T05:01:59.242Z",
+          "machine": "cnc-01",
+          "oee": {
+            "anomaly": false,
+            "availability": {
+              "decimal": "0.9904",
+              "fraction": "36723787/37080495"
+            },
+            "losses": {
+              "availability": {
+                "external": {
+                  "blocked": 0,
+                  "starved": 0,
+                  "total": 0
+                },
+                "own": {
+                  "down": 6000,
+                  "idle": 0,
+                  "setup": 0,
+                  "stopped": 350708,
+                  "total": 356708
+                }
+              },
+              "performance": {
+                "microStops": 775277,
+                "speed": -51490,
+                "total": 723787
+              },
+              "quality": {
+                "decimal": "0.0000",
+                "fraction": "0/1"
+              }
+            },
+            "oee": {
+              "decimal": "0.9709",
+              "fraction": "800000/824011"
+            },
+            "performance": {
+              "decimal": "0.9803",
+              "fraction": "36000000/36723787"
+            },
+            "provisional": false,
+            "quality": {
+              "decimal": "1.0000",
+              "fraction": "1/1"
+            },
+            "totals": {
+              "actualProductionMs": 36723787,
+              "excludedMs": 3600000,
+              "good": 150,
+              "idealMs": 36000000,
+              "longStopMs": 350708,
+              "microStopMs": 775277,
+              "plannedBusyMs": 37080495,
+              "produced": 150,
+              "rework": 0,
+              "scrap": 0
+            },
+            "unplanned": {
+              "good": 0,
+              "idealMs": 0,
+              "produced": 0
+            }
+          },
+          "window": {
+            "from": "2026-10-12T05:01:59.242Z",
+            "open": false,
+            "to": "2026-10-12T16:19:59.737Z"
+          }
+        }
+      },
+      "jobs": [
+        "PO-2610-005~OP10~1"
+      ],
+      "line": {
+        "aboveOne": false,
+        "from": "2026-10-12T05:01:59.242Z",
+        "good": {
+          "VB-100": 150
+        },
+        "idealMs": "22500000/1",
+        "oee": {
+          "decimal": "0.6015",
+          "fraction": "1875000/3116981"
+        },
+        "plannedBusyMs": 37403772,
+        "provisional": false,
+        "to": "2026-10-12T16:25:23.014Z"
+      },
+      "lost": false,
+      "oee": {
+        "anomaly": false,
+        "availability": {
+          "decimal": "0.9904",
+          "fraction": "36723787/37080495"
+        },
+        "losses": {
+          "availability": {
+            "external": {
+              "blocked": 0,
+              "starved": 0,
+              "total": 0
+            },
+            "own": {
+              "down": 6000,
+              "idle": 0,
+              "setup": 0,
+              "stopped": 350708,
+              "total": 356708
+            }
+          },
+          "performance": {
+            "microStops": 775277,
+            "speed": -51490,
+            "total": 723787
+          },
+          "quality": {
+            "decimal": "0.0000",
+            "fraction": "0/1"
+          }
+        },
+        "oee": {
+          "decimal": "0.9709",
+          "fraction": "800000/824011"
+        },
+        "performance": {
+          "decimal": "0.9803",
+          "fraction": "36000000/36723787"
+        },
+        "provisional": false,
+        "quality": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        },
+        "totals": {
+          "actualProductionMs": 36723787,
+          "excludedMs": 3600000,
+          "good": 150,
+          "idealMs": 36000000,
+          "longStopMs": 350708,
+          "microStopMs": 775277,
+          "plannedBusyMs": 37080495,
+          "produced": 150,
+          "rework": 0,
+          "scrap": 0
+        },
+        "unplanned": {
+          "good": 0,
+          "idealMs": 0,
+          "produced": 0
+        }
+      },
+      "open": false,
+      "pending": false,
+      "product": "VB-100"
+    },
+    "PO-2610-006": {
+      "completedAt": "2026-10-12T06:24:07.054Z",
+      "endLost": false,
+      "firstPassYield": {
+        "firstPassGood": 6,
+        "started": 6,
+        "yield": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        }
+      },
+      "headTimeUnknown": false,
+      "jobOee": {
+        "PO-2610-006~OP10~1": {
+          "cycles": 6,
+          "headSource": "previous-completed",
+          "headTime": "2026-10-12T05:06:22.426Z",
+          "machine": "cnc-02",
+          "oee": {
+            "anomaly": false,
+            "availability": {
+              "decimal": "0.4906",
+              "fraction": "24079/49079"
+            },
+            "losses": {
+              "availability": {
+                "external": {
+                  "blocked": 0,
+                  "starved": 0,
+                  "total": 0
+                },
+                "own": {
+                  "down": 0,
+                  "idle": 0,
+                  "setup": 1500000,
+                  "stopped": 0,
+                  "total": 1500000
+                }
+              },
+              "performance": {
+                "microStops": 0,
+                "speed": 4740,
+                "total": 4740
+              },
+              "quality": {
+                "decimal": "0.0000",
+                "fraction": "0/1"
+              }
+            },
+            "oee": {
+              "decimal": "0.4890",
+              "fraction": "24000/49079"
+            },
+            "performance": {
+              "decimal": "0.9967",
+              "fraction": "24000/24079"
+            },
+            "provisional": false,
+            "quality": {
+              "decimal": "1.0000",
+              "fraction": "1/1"
+            },
+            "totals": {
+              "actualProductionMs": 1444740,
+              "excludedMs": 0,
+              "good": 6,
+              "idealMs": 1440000,
+              "longStopMs": 0,
+              "microStopMs": 0,
+              "plannedBusyMs": 2944740,
+              "produced": 6,
+              "rework": 0,
+              "scrap": 0
+            },
+            "unplanned": {
+              "good": 0,
+              "idealMs": 0,
+              "produced": 0
+            }
+          },
+          "window": {
+            "from": "2026-10-12T05:06:22.426Z",
+            "open": false,
+            "to": "2026-10-12T05:55:27.166Z"
+          }
+        }
+      },
+      "jobs": [
+        "PO-2610-006~OP10~1"
+      ],
+      "line": {
+        "aboveOne": false,
+        "from": "2026-10-12T05:06:22.426Z",
+        "good": {
+          "VB-100": 6
+        },
+        "idealMs": "900000/1",
+        "oee": {
+          "decimal": "0.1929",
+          "fraction": "25000/129573"
+        },
+        "plannedBusyMs": 4664628,
+        "provisional": false,
+        "to": "2026-10-12T06:24:07.054Z"
+      },
+      "lost": false,
+      "oee": {
+        "anomaly": false,
+        "availability": {
+          "decimal": "0.4906",
+          "fraction": "24079/49079"
+        },
+        "losses": {
+          "availability": {
+            "external": {
+              "blocked": 0,
+              "starved": 0,
+              "total": 0
+            },
+            "own": {
+              "down": 0,
+              "idle": 0,
+              "setup": 1500000,
+              "stopped": 0,
+              "total": 1500000
+            }
+          },
+          "performance": {
+            "microStops": 0,
+            "speed": 4740,
+            "total": 4740
+          },
+          "quality": {
+            "decimal": "0.0000",
+            "fraction": "0/1"
+          }
+        },
+        "oee": {
+          "decimal": "0.4890",
+          "fraction": "24000/49079"
+        },
+        "performance": {
+          "decimal": "0.9967",
+          "fraction": "24000/24079"
+        },
+        "provisional": false,
+        "quality": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        },
+        "totals": {
+          "actualProductionMs": 1444740,
+          "excludedMs": 0,
+          "good": 6,
+          "idealMs": 1440000,
+          "longStopMs": 0,
+          "microStopMs": 0,
+          "plannedBusyMs": 2944740,
+          "produced": 6,
+          "rework": 0,
+          "scrap": 0
+        },
+        "unplanned": {
+          "good": 0,
+          "idealMs": 0,
+          "produced": 0
+        }
+      },
+      "open": false,
+      "pending": false,
+      "product": "VB-100"
+    },
+    "PO-2610-007": {
+      "completedAt": "2026-10-13T11:05:58.664Z",
+      "endLost": false,
+      "firstPassYield": {
+        "firstPassGood": 19,
+        "started": 20,
+        "yield": {
+          "decimal": "0.9500",
+          "fraction": "19/20"
+        }
+      },
+      "headTimeUnknown": false,
+      "jobOee": {
+        "PO-2610-007~OP10~1": {
+          "cycles": 20,
+          "headSource": "notBefore",
+          "headTime": "2026-10-13T08:17:00.000Z",
+          "machine": "cnc-01",
+          "oee": {
+            "anomaly": false,
+            "availability": {
+              "decimal": "0.8166",
+              "fraction": "6679033/8179033"
+            },
+            "losses": {
+              "availability": {
+                "external": {
+                  "blocked": 0,
+                  "starved": 0,
+                  "total": 0
+                },
+                "own": {
+                  "down": 0,
+                  "idle": 0,
+                  "setup": 1500000,
+                  "stopped": 0,
+                  "total": 1500000
+                }
+              },
+              "performance": {
+                "microStops": 61064,
+                "speed": 17969,
+                "total": 79033
+              },
+              "quality": {
+                "decimal": "330000.0000",
+                "fraction": "330000/1"
+              }
+            },
+            "oee": {
+              "decimal": "0.7666",
+              "fraction": "6270000/8179033"
+            },
+            "performance": {
+              "decimal": "0.9882",
+              "fraction": "6600000/6679033"
+            },
+            "provisional": false,
+            "quality": {
+              "decimal": "0.9500",
+              "fraction": "19/20"
+            },
+            "totals": {
+              "actualProductionMs": 6679033,
+              "excludedMs": 0,
+              "good": 19,
+              "idealMs": 6600000,
+              "longStopMs": 0,
+              "microStopMs": 61064,
+              "plannedBusyMs": 8179033,
+              "produced": 20,
+              "rework": 0,
+              "scrap": 1
+            },
+            "unplanned": {
+              "good": 0,
+              "idealMs": 0,
+              "produced": 0
+            }
+          },
+          "window": {
+            "from": "2026-10-13T08:17:00.000Z",
+            "open": false,
+            "to": "2026-10-13T10:33:19.033Z"
+          }
+        }
+      },
+      "jobs": [
+        "PO-2610-007~OP10~1"
+      ],
+      "line": {
+        "aboveOne": false,
+        "from": "2026-10-13T08:17:00.000Z",
+        "good": {
+          "VB-200": 19
+        },
+        "idealMs": "3990000/1",
+        "oee": {
+          "decimal": "0.3935",
+          "fraction": "498750/1267333"
+        },
+        "plannedBusyMs": 10138664,
+        "provisional": false,
+        "to": "2026-10-13T11:05:58.664Z"
+      },
+      "lost": false,
+      "oee": {
+        "anomaly": false,
+        "availability": {
+          "decimal": "0.8166",
+          "fraction": "6679033/8179033"
+        },
+        "losses": {
+          "availability": {
+            "external": {
+              "blocked": 0,
+              "starved": 0,
+              "total": 0
+            },
+            "own": {
+              "down": 0,
+              "idle": 0,
+              "setup": 1500000,
+              "stopped": 0,
+              "total": 1500000
+            }
+          },
+          "performance": {
+            "microStops": 61064,
+            "speed": 17969,
+            "total": 79033
+          },
+          "quality": {
+            "decimal": "330000.0000",
+            "fraction": "330000/1"
+          }
+        },
+        "oee": {
+          "decimal": "0.7666",
+          "fraction": "6270000/8179033"
+        },
+        "performance": {
+          "decimal": "0.9882",
+          "fraction": "6600000/6679033"
+        },
+        "provisional": false,
+        "quality": {
+          "decimal": "0.9500",
+          "fraction": "19/20"
+        },
+        "totals": {
+          "actualProductionMs": 6679033,
+          "excludedMs": 0,
+          "good": 19,
+          "idealMs": 6600000,
+          "longStopMs": 0,
+          "microStopMs": 61064,
+          "plannedBusyMs": 8179033,
+          "produced": 20,
+          "rework": 0,
+          "scrap": 1
+        },
+        "unplanned": {
+          "good": 0,
+          "idealMs": 0,
+          "produced": 0
+        }
+      },
+      "open": false,
+      "pending": false,
+      "product": "VB-200"
+    },
+    "PO-2610-009": {
+      "completedAt": null,
+      "endLost": false,
+      "firstPassYield": {
+        "firstPassGood": 181,
+        "started": 185,
+        "yield": {
+          "decimal": "0.9784",
+          "fraction": "181/185"
+        }
+      },
+      "headTimeUnknown": false,
+      "jobOee": {
+        "PO-2610-009~OP10~1": {
+          "cycles": 184,
+          "headSource": "notBefore",
+          "headTime": "2026-10-13T08:17:00.000Z",
+          "machine": "cnc-02",
+          "oee": {
+            "anomaly": false,
+            "availability": {
+              "decimal": "0.9719",
+              "fraction": "30993733/31890000"
+            },
+            "losses": {
+              "availability": {
+                "external": {
+                  "blocked": 0,
+                  "starved": 0,
+                  "total": 0
+                },
+                "own": {
+                  "down": 0,
+                  "idle": 0,
+                  "setup": 1500000,
+                  "stopped": 292534,
+                  "total": 1792534
+                }
+              },
+              "performance": {
+                "microStops": 1047382,
+                "speed": 220084,
+                "total": 1267466
+              },
+              "quality": {
+                "decimal": "0.0000",
+                "fraction": "0/1"
+              }
+            },
+            "oee": {
+              "decimal": "0.9520",
+              "fraction": "1012/1063"
+            },
+            "performance": {
+              "decimal": "0.9796",
+              "fraction": "30360000/30993733"
+            },
+            "provisional": true,
+            "quality": {
+              "decimal": "1.0000",
+              "fraction": "1/1"
+            },
+            "totals": {
+              "actualProductionMs": 61987466,
+              "excludedMs": 3600000,
+              "good": 184,
+              "idealMs": 60720000,
+              "longStopMs": 292534,
+              "microStopMs": 1047382,
+              "plannedBusyMs": 63780000,
+              "produced": 184,
+              "rework": 0,
+              "scrap": 0
+            },
+            "unplanned": {
+              "good": 0,
+              "idealMs": 0,
+              "produced": 0
+            }
+          },
+          "window": {
+            "from": "2026-10-13T08:17:00.000Z",
+            "open": true,
+            "to": "2026-10-14T03:00:00.000Z"
+          }
+        }
+      },
+      "jobs": [
+        "PO-2610-009~OP10~1"
+      ],
+      "line": {
+        "aboveOne": false,
+        "from": "2026-10-13T08:17:00.000Z",
+        "good": {
+          "VB-200": 183
+        },
+        "idealMs": "38430000/1",
+        "oee": {
+          "decimal": "0.6025",
+          "fraction": "1281/2126"
+        },
+        "plannedBusyMs": 63780000,
+        "provisional": true,
+        "to": "2026-10-14T03:00:00.000Z"
+      },
+      "lost": false,
+      "oee": {
+        "anomaly": false,
+        "availability": {
+          "decimal": "0.9719",
+          "fraction": "30993733/31890000"
+        },
+        "losses": {
+          "availability": {
+            "external": {
+              "blocked": 0,
+              "starved": 0,
+              "total": 0
+            },
+            "own": {
+              "down": 0,
+              "idle": 0,
+              "setup": 1500000,
+              "stopped": 292534,
+              "total": 1792534
+            }
+          },
+          "performance": {
+            "microStops": 1047382,
+            "speed": 220084,
+            "total": 1267466
+          },
+          "quality": {
+            "decimal": "0.0000",
+            "fraction": "0/1"
+          }
+        },
+        "oee": {
+          "decimal": "0.9520",
+          "fraction": "1012/1063"
+        },
+        "performance": {
+          "decimal": "0.9796",
+          "fraction": "30360000/30993733"
+        },
+        "provisional": true,
+        "quality": {
+          "decimal": "1.0000",
+          "fraction": "1/1"
+        },
+        "totals": {
+          "actualProductionMs": 61987466,
+          "excludedMs": 3600000,
+          "good": 184,
+          "idealMs": 60720000,
+          "longStopMs": 292534,
+          "microStopMs": 1047382,
+          "plannedBusyMs": 63780000,
+          "produced": 184,
+          "rework": 0,
+          "scrap": 0
+        },
+        "unplanned": {
+          "good": 0,
+          "idealMs": 0,
+          "produced": 0
+        }
+      },
+      "open": true,
+      "pending": false,
+      "product": "VB-200"
+    }
+  },
+  "plannedStops": [
+    {
+      "from": "2026-10-12T07:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-12T07:30:00.000Z"
+    },
+    {
+      "from": "2026-10-12T15:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-12T15:30:00.000Z"
+    },
+    {
+      "from": "2026-10-12T23:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-12T23:30:00.000Z"
+    },
+    {
+      "from": "2026-10-13T07:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-13T07:30:00.000Z"
+    },
+    {
+      "from": "2026-10-13T15:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-13T15:30:00.000Z"
+    },
+    {
+      "from": "2026-10-13T23:00:00.000Z",
+      "kind": "break",
+      "to": "2026-10-13T23:30:00.000Z"
+    }
+  ],
+  "run": {
+    "configSha256": "35123ec56e3be6b7bc7b2362aca7c86f9d3bc31052a5ee673d1ed41a570b1221",
+    "dispatches": [
+      {
+        "commandId": "PO-2610-001~OP10~1",
+        "machine": "cnc-01",
+        "notBefore": "2026-10-12T03:00:00.000Z",
+        "orderId": "PO-2610-001",
+        "product": "VB-100",
+        "quantity": 12
+      },
+      {
+        "commandId": "PO-2610-002~OP10~1",
+        "machine": "cnc-02",
+        "notBefore": "2026-10-12T03:00:00.000Z",
+        "orderId": "PO-2610-002",
+        "product": "VB-200",
+        "quantity": 10
+      },
+      {
+        "commandId": "PO-2610-003~OP10~1",
+        "machine": "cnc-02",
+        "notBefore": "2026-10-12T03:00:00.000Z",
+        "orderId": "PO-2610-003",
+        "product": "VB-200",
+        "quantity": 8
+      },
+      {
+        "commandId": "PO-2610-004~OP10~1",
+        "machine": "cnc-01",
+        "notBefore": "2026-10-12T03:00:00.000Z",
+        "orderId": "PO-2610-004",
+        "product": "VB-100",
+        "quantity": 12
+      },
+      {
+        "commandId": "PO-2610-005~OP10~1",
+        "machine": "cnc-01",
+        "notBefore": "2026-10-12T03:00:00.000Z",
+        "orderId": "PO-2610-005",
+        "product": "VB-100",
+        "quantity": 150
+      },
+      {
+        "commandId": "PO-2610-006~OP10~1",
+        "machine": "cnc-02",
+        "notBefore": "2026-10-12T03:00:00.000Z",
+        "orderId": "PO-2610-006",
+        "product": "VB-100",
+        "quantity": 6
+      },
+      {
+        "commandId": "PO-2610-007~OP10~1",
+        "machine": "cnc-01",
+        "notBefore": "2026-10-13T08:17:00.000Z",
+        "orderId": "PO-2610-007",
+        "product": "VB-200",
+        "quantity": 20
+      },
+      {
+        "commandId": "PO-2610-009~OP10~1",
+        "machine": "cnc-02",
+        "notBefore": "2026-10-13T08:17:00.000Z",
+        "orderId": "PO-2610-009",
+        "product": "VB-200",
+        "quantity": 200
+      }
+    ],
+    "end": "2026-10-14T03:00:00.000Z",
+    "injections": [
+      {
+        "at": "2026-10-12T05:00:05.000Z",
+        "code": "COOLANT-PRESSURE",
+        "machine": "cnc-01",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:00:15.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-02",
+        "repairMs": 4000
+      },
+      {
+        "at": "2026-10-12T05:00:25.000Z",
+        "code": "COOLANT-PRESSURE",
+        "machine": "cnc-01",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:00:40.000Z",
+        "code": "HEATER-FAULT",
+        "machine": "wsh-01",
+        "repairMs": 5000
+      },
+      {
+        "at": "2026-10-12T05:00:45.000Z",
+        "code": "COOLANT-PRESSURE",
+        "machine": "cnc-01",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:01:15.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-02",
+        "repairMs": 4000
+      },
+      {
+        "at": "2026-10-12T05:02:05.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-01",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:02:15.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-02",
+        "repairMs": 4000
+      },
+      {
+        "at": "2026-10-12T05:02:40.000Z",
+        "code": "HEATER-FAULT",
+        "machine": "wsh-01",
+        "repairMs": 5000
+      },
+      {
+        "at": "2026-10-12T05:03:05.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-01",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:03:15.000Z",
+        "code": "SPINDLE-OVERLOAD",
+        "machine": "cnc-02",
+        "repairMs": 4000
+      },
+      {
+        "at": "2026-10-12T05:04:15.000Z",
+        "code": "COOLANT-PRESSURE",
+        "machine": "cnc-02",
+        "repairMs": 3000
+      },
+      {
+        "at": "2026-10-12T05:04:40.000Z",
+        "code": "HEATER-FAULT",
+        "machine": "wsh-01",
+        "repairMs": 5000
+      },
+      {
+        "at": "2026-10-12T06:20:00.000Z",
+        "code": "FIXTURE-SEAL",
+        "machine": "lkt-01",
+        "repairMs": 500
+      }
+    ],
+    "production": "orders",
+    "schema": "sim-run/1",
+    "seed": 20261012,
+    "start": "2026-10-12T03:00:00.000Z"
+  },
+  "schema": "sim-line-oee/1"
+}

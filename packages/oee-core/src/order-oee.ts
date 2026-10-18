@@ -1,8 +1,8 @@
 /**
  * Order OEE over job windows (ADR-0036, Phase 9 plan): a job is the head of its CNC's queue from
- * `max(its accepted fact, the previous job's completed fact)`; its window runs from there to its
- * `completed` fact, so the changeover before its `started` fact counts against the order that caused
- * it. Inside the windows the CNC's states give planned busy time and actual production time by the
+ * `max(its accepted fact, the previous job's completed fact, its dispatch's notBefore)`; its window
+ * runs from there to its `completed` fact, so the changeover before its `started` fact counts
+ * against the order that caused it. Inside the windows the CNC's states give planned busy time and actual production time by the
  * equipment rules (ADR-0021); produced and good are the job's OP10 cycles, attributed by unit
  * (ADR-0031) by the caller. Beside it, the order's first-pass yield across the routing.
  */
@@ -39,6 +39,12 @@ export interface QueuedJob {
    * learnt on the command path. Used only when `accepted` is unknown.
    */
   readonly acceptedAt?: Millis;
+  /**
+   * The dispatch's `notBefore` (ADR-0036 amendment, P9-03): the job may not start before it, so it
+   * is waiting for demand, not losing machine time, until then. Both sides know it: the MES sets it
+   * in the dispatch command, the simulator records it with the job.
+   */
+  readonly notBefore?: Millis;
   /** Plant time of the job's `started` fact (its first blank, after any changeover). */
   readonly started?: Millis;
   /** Plant time of the job's `completed` fact (the end of its last OP10 cycle). */
@@ -86,7 +92,9 @@ export type HeadTime =
       readonly kind: 'head';
       readonly at: Millis;
       /** `previous-last-cycle`: the previous job's `completed` fact is lost, its last cycle known. */
-      readonly source: 'accepted' | 'acceptedAt' | 'previous-completed' | 'previous-last-cycle';
+      /** `notBefore`: the dispatch's `notBefore` is later than the acceptance and the previous end. */
+      readonly source:
+        'accepted' | 'acceptedAt' | 'previous-completed' | 'previous-last-cycle' | 'notBefore';
     }
   /** The previous job on the CNC has not completed, and this one has not started: not head yet. */
   | { readonly kind: 'waiting' }
@@ -100,7 +108,10 @@ export type HeadTime =
 /** Unknown head times that no later fact can resolve: the order is never final. */
 const LOST_REASONS: readonly HeadUnknownReason[] = ['accepted-lost', 'previous-completed-lost'];
 
-/** The head time of every job of one CNC's queue, given in queue (acceptance) order. */
+/**
+ * The head time of every job of one CNC's queue, given in queue (acceptance) order:
+ * `max(accepted, previous job's completion, notBefore)` (ADR-0036 and its P9-03 amendment).
+ */
 export function headTimes(queue: readonly QueuedJob[]): HeadTime[] {
   return queue.map((job, i): HeadTime => {
     const previous = i > 0 ? queue[i - 1] : undefined;
@@ -123,6 +134,10 @@ export function headTimes(queue: readonly QueuedJob[]): HeadTime[] {
         kind: 'unknown',
         reason: job.acceptedLost === true ? 'accepted-lost' : 'accepted-unknown',
       };
+    }
+    const bound = previousEnd !== undefined && previousEnd > accepted ? previousEnd : accepted;
+    if (job.notBefore !== undefined && job.notBefore > bound) {
+      return { kind: 'head', at: job.notBefore, source: 'notBefore' };
     }
     if (previous !== undefined && previousEnd !== undefined && previousEnd > accepted) {
       return {

@@ -14,6 +14,7 @@ import { RUN_SCHEMA, EVENT_SCHEMA, SUMMARY_SCHEMA, isoTime, stableStringify } fr
 import { InvariantChecker } from './invariants.ts';
 import { GroundTruth, type GroundTruthSummary } from './summary.ts';
 import { TRACE_SCHEMA, TraceTruth, traceSection, type TraceResult } from './trace-truth.ts';
+import { LINE_OEE_SCHEMA, LineOeeTruth, type LineOeeSection } from './line-oee-truth.ts';
 
 export interface HeadlessOptions {
   readonly config: PlantConfig;
@@ -114,6 +115,8 @@ export interface HeadlessResult {
   readonly summary: GroundTruthSummary;
   /** The traceability and SPC truth (#208): `trace.json` beside the summary. */
   readonly trace: TraceResult;
+  /** The order and line OEE truth (#230): `line-oee.json` beside the summary. */
+  readonly lineOee: LineOeeSection;
 }
 
 /**
@@ -235,6 +238,15 @@ export function runHeadless(
 
   const truth = new GroundTruth(config, start);
   const traceTruth = new TraceTruth(config);
+  // The dispatch's notBefore of each accepted job, read from the line when its `accepted` event is
+  // recorded (the event itself doesn't carry it, so the event log stays as it is).
+  const lineOeeTruth = new LineOeeTruth(
+    config,
+    start,
+    production,
+    analysisConfigHash(config),
+    (id) => line.jobNotBefore(id),
+  );
 
   let sequence = 0;
   let checker: InvariantChecker | undefined;
@@ -246,6 +258,7 @@ export function runHeadless(
     onEvent: (event) => {
       truth.record(event);
       traceTruth.record(event);
+      lineOeeTruth.record(event);
       checker?.record(event);
       sequence++;
       writeLine(
@@ -291,6 +304,7 @@ export function runHeadless(
     invariantChecks: checker?.checks ?? 0,
     summary,
     trace: traceTruth.build(summary.orders),
+    lineOee: lineOeeTruth.build(end),
   };
 }
 
@@ -357,3 +371,10 @@ export const summaryDocument = (result: HeadlessResult): string =>
  */
 export const traceDocument = (result: HeadlessResult): string =>
   `${stableStringify({ schema: TRACE_SCHEMA, run: result.header, ...traceSection(result.trace) }, 2)}\n`;
+
+/**
+ * `line-oee.json` (#230, `sim-line-oee/1`): the run header (as in the summary) and the order and
+ * line OEE section. A new file beside the summary and the trace, which stay as they are.
+ */
+export const lineOeeDocument = (result: HeadlessResult): string =>
+  `${stableStringify({ schema: LINE_OEE_SCHEMA, run: result.header, ...result.lineOee }, 2)}\n`;

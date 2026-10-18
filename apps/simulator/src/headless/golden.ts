@@ -9,6 +9,7 @@ import {
 } from '@shopfloor/plant-config';
 import { PRODUCTION_MODES, type ProductionMode } from '../plant/line.ts';
 import {
+  lineOeeDocument,
   runHeadless,
   summaryDocument,
   traceDocument,
@@ -156,6 +157,8 @@ export interface GoldenOutcome {
   readonly summary: string;
   /** `trace.json` (#208): the traceability and SPC truth beside the summary. */
   readonly trace: string;
+  /** `line-oee.json` (#230): the order and line OEE truth beside the summary. */
+  readonly lineOee: string;
   readonly events: string;
   readonly invariantChecks: number;
 }
@@ -172,6 +175,7 @@ export async function runScenario(name: string): Promise<GoldenOutcome> {
     name,
     summary: summaryDocument(result),
     trace: traceDocument(result),
+    lineOee: lineOeeDocument(result),
     events: `${hash.digest('hex')}  ${String(lines)} lines\n`,
     invariantChecks: result.invariantChecks,
   };
@@ -198,6 +202,7 @@ async function main(update: boolean): Promise<number> {
     const files = {
       'summary.json': outcome.summary,
       'trace.json': outcome.trace,
+      'line-oee.json': outcome.lineOee,
       'events.sha256': outcome.events,
     };
     for (const [file, actual] of Object.entries(files)) {

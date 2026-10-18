@@ -8,6 +8,7 @@ import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import type { InjectDriftRequest, InjectFailureRequest, PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
+import { scenarioOptions } from '../headless/golden.ts';
 import { EVENT_SCHEMA, isoTime, stableStringify } from '../headless/serialize.ts';
 import { EVENTS_PATH, buildControlApp, type GroundTruthReport } from './app.ts';
 import { parseEnv } from './env.ts';
@@ -62,9 +63,9 @@ async function setup(ready = true, withGroundTruth = false, withFailure = false,
       : {}),
     ...(withGroundTruth
       ? {
-          groundTruth: (traceAsOf?: number) => ({
+          groundTruth: (asOf?: number) => ({
             epoch: 1_760_000_000,
-            ...run.groundTruth(traceAsOf),
+            ...run.groundTruth(asOf),
           }),
         }
       : {}),
@@ -225,6 +226,16 @@ describe('control API (#54)', () => {
     expect(cutBody.trace.units.count).toBeLessThan(paused.trace.units.count);
     expect(cutBody.trace.drifts[0]).toMatchObject({ endedAt: null, endedBy: null });
     expect(cutBody.machines).toEqual(paused.machines);
+    // lineOee (1.8, #230): served whole, and cut at asOf with the trace.
+    expect(paused.lineOee).toEqual(JSON.parse(JSON.stringify(run.groundTruth().lineOee)));
+    expect(Object.keys(paused.lineOee.line.hours)).toHaveLength(9);
+    expect(paused.lineOee.line.shifts['2026-10-12/B']?.provisional).toBe(true);
+    expect(paused.lineOeeAsOf).toBeUndefined();
+    expect(cutBody.lineOeeAsOf).toBe(asOf);
+    expect(cutBody.lineOee).toEqual(
+      JSON.parse(JSON.stringify(run.groundTruth(Date.parse(asOf)).lineOee)),
+    );
+    expect(Object.keys(cutBody.lineOee.line.hours)).toHaveLength(6);
     for (const bad of ['2026-10-12T09:00:00', 'yesterday', '2026-10-12T11:10:00.001Z']) {
       const refused = await served.inject({
         method: 'GET',
@@ -729,5 +740,49 @@ describe('environment configuration (#54)', () => {
       ]);
       expect(result.issues.join('\n')).toMatch(/SIM_START: expected ISO 8601 with an offset/);
     }
+  });
+});
+
+describe('ground truth lineOee in orders mode through the HTTP schema (#251 review)', () => {
+  it('serves orders-01 order and line OEE whole, now and cut at asOf', async () => {
+    const options = await scenarioOptions('orders-01');
+    const run = createLiveRun({
+      config: options.config,
+      seed: options.seed,
+      start: options.start,
+      end: options.end,
+      production: 'orders',
+      dispatches: options.dispatches ?? [],
+      clock: new ManualClock(),
+    });
+    for (const injection of options.injections ?? []) {
+      expect(run.inject(injection).ok).toBe(true);
+    }
+    run.simulation.runUntil(Date.UTC(2026, 9, 12, 8), (event, sim) => {
+      run.line.handle(event, sim);
+    });
+    app = await buildControlApp({
+      pacer: run.pacer,
+      hub: new EventHub(),
+      ready: () => true,
+      groundTruth: (asOf?: number) => ({ epoch: 1_760_000_000, ...run.groundTruth(asOf) }),
+    });
+    const body = (
+      await app.inject({ method: 'GET', url: '/api/v1/ground-truth' })
+    ).json<GroundTruthReport>();
+    expect(body.lineOee).toEqual(JSON.parse(JSON.stringify(run.groundTruth().lineOee)));
+    expect(body.lineOee.config.productionMode).toBe('orders');
+    expect(Object.keys(body.lineOee.orders)).toHaveLength(8);
+    expect(body.lineOee.orders['PO-2610-001']?.completedAt).toBe('2026-10-12T04:32:11.237Z');
+    expect(body.lineOee.orders['PO-2610-007']?.jobOee['PO-2610-007~OP10~1']?.headTime).toBeNull();
+    const asOf = '2026-10-12T06:00:00.000Z';
+    const cut = (
+      await app.inject({ method: 'GET', url: `/api/v1/ground-truth?asOf=${asOf}` })
+    ).json<GroundTruthReport>();
+    expect(cut.lineOeeAsOf).toBe(asOf);
+    expect(cut.lineOee).toEqual(
+      JSON.parse(JSON.stringify(run.groundTruth(Date.parse(asOf)).lineOee)),
+    );
+    expect(cut.lineOee.orders['PO-2610-005']?.completedAt).toBeNull();
   });
 });

@@ -154,6 +154,7 @@ function queuedJob(row: Record<string, string>): QueuedJob {
   const ends = row['OP10 cycle ends'] ?? NULL;
   const acceptedAt = optionalTime(cell(row, 'Accepted at'));
   const started = optionalTime(cell(row, 'Started'));
+  const notBefore = optionalTime(cell(row, 'Not before'));
   return {
     id: cell(row, 'Job'),
     ...(accepted === undefined ? {} : { accepted }),
@@ -161,6 +162,7 @@ function queuedJob(row: Record<string, string>): QueuedJob {
     ...(quantity === NULL ? {} : { quantity: int(quantity) }),
     ...(ends === NULL ? {} : { cycleEnds: list(ends, ',').map(time) }),
     ...(acceptedAt === undefined ? {} : { acceptedAt }),
+    ...(notBefore === undefined ? {} : { notBefore }),
     ...(started === undefined ? {} : { started }),
     ...(completed === 'lost'
       ? { completedLost: true }
@@ -177,12 +179,12 @@ const headText = (head: HeadTime): string =>
       ? 'waiting'
       : `unknown ${head.reason}`;
 
-describe('head-time reference cases (H1–H16)', () => {
+describe('head-time reference cases (H1–H21)', () => {
   const rows = table('Head times, Phase 9');
   const cases = [...new Set(rows.map((row) => cell(row, 'Case')))];
 
-  it('has the sixteen cases', () => {
-    expect(cases).toEqual(Array.from({ length: 16 }, (_, i) => `H${String(i + 1)}`));
+  it('has the twenty-one cases', () => {
+    expect(cases).toEqual(Array.from({ length: 21 }, (_, i) => `H${String(i + 1)}`));
   });
 
   describe.each(cases)('case %s', (id) => {
@@ -235,7 +237,7 @@ function cycles(text: string): TimedCycleCount[] {
   });
 }
 
-describe('order OEE reference cases (O1–O10)', () => {
+describe('order OEE reference cases (O1–O11)', () => {
   const rows = table('Inputs, Phase 9 order OEE');
   const totalsRows = new Map(
     table('Expected totals, Phase 9 order OEE').map((row) => [cell(row, 'Case'), row]),
@@ -245,8 +247,8 @@ describe('order OEE reference cases (O1–O10)', () => {
   );
   const cases = [...new Set(rows.map((row) => cell(row, 'Case')))];
 
-  it('has ten cases, each with totals and results', () => {
-    expect(cases).toEqual(['O1', 'O2', 'O3', 'O4', 'O5', 'O6', 'O7', 'O8', 'O9', 'O10']);
+  it('has eleven cases, each with totals and results', () => {
+    expect(cases).toEqual(['O1', 'O2', 'O3', 'O4', 'O5', 'O6', 'O7', 'O8', 'O9', 'O10', 'O11']);
     expect([...totalsRows.keys()]).toEqual(cases);
     expect([...resultRows.keys()]).toEqual(cases);
   });

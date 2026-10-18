@@ -59,19 +59,29 @@ export interface TimelineView {
 }
 
 export type TimelineLoadCode =
-  'not-idle' | 'already-loaded' | 'dispatch' | 'mismatch' | 'invalid' | 'unsupported';
+  | 'not-idle'
+  | 'already-loaded'
+  | 'has-inputs'
+  | 'failed'
+  | 'dispatch'
+  | 'mismatch'
+  | 'invalid'
+  | 'unsupported';
 
 export type TimelineLoadResult =
   | { readonly ok: true; readonly timeline: TimelineView }
   | { readonly ok: false; readonly code: TimelineLoadCode; readonly reason: string };
 
-interface Tracked {
+/** Where an entry's status comes from: its injection, drift or action record, or its cues. */
+type Tracked = {
   readonly entry: string;
+  readonly order: number;
   readonly action: TimelineAction;
   readonly at: SimTime | undefined;
-  readonly status: () => TimelineEntryStatus;
-  readonly id?: number;
-}
+} & (
+  | { readonly source: 'injection' | 'drift' | 'action'; readonly id: number }
+  | { readonly source: 'cues'; readonly status: () => TimelineEntryStatus }
+);
 
 export interface LiveTimelineContext {
   readonly config: PlantConfig;
@@ -87,6 +97,8 @@ export interface LiveTimelineContext {
 export class LiveTimeline {
   readonly #context: LiveTimelineContext;
   #view: { name: string | null; description: string | null; entries: Tracked[] } | undefined;
+  /** Set when a load failed after accepting part of its entries: no later load is taken. */
+  #failed: string | undefined;
 
   constructor(context: LiveTimelineContext) {
     this.#context = context;
@@ -96,6 +108,23 @@ export class LiveTimeline {
   view(): TimelineView | undefined {
     const view = this.#view;
     if (!view) return undefined;
+    const { line } = this.#context;
+    // One map per record kind and read, so a view is linear in the timeline's length.
+    const injections = new Map(line.injections().map((i) => [i.id, i.status]));
+    const drifts = new Map(line.drifts().map((d) => [d.id, d.status]));
+    const actions = new Map(line.actions().map((a) => [a.id, a.status]));
+    const status = (tracked: Tracked): TimelineEntryStatus => {
+      switch (tracked.source) {
+        case 'injection':
+          return injections.get(tracked.id) ?? 'scheduled';
+        case 'drift':
+          return drifts.get(tracked.id) ?? 'scheduled';
+        case 'action':
+          return actions.get(tracked.id) ?? 'scheduled';
+        case 'cues':
+          return tracked.status();
+      }
+    };
     return {
       name: view.name,
       description: view.description,
@@ -103,28 +132,45 @@ export class LiveTimeline {
         entry: tracked.entry,
         action: tracked.action,
         ...(tracked.at === undefined ? {} : { at: isoTime(tracked.at) }),
-        status: tracked.status(),
-        ...(tracked.id === undefined ? {} : { id: tracked.id }),
+        status: status(tracked),
+        ...(tracked.source === 'cues' ? {} : { id: tracked.id }),
       })),
     };
   }
 
   /**
-   * Loads a timeline: refused unless the run is idle and has no timeline yet, when it has a
-   * `dispatch` entry, when its seed, start or production mode is not the run's, when an entry
-   * does not fit the configuration, or when an infrastructure entry has no hook. Nothing is
-   * accepted unless everything is.
+   * Loads a timeline: refused unless the run is idle and has no timeline yet, nor any injection,
+   * drift or console action accepted before it (the headless run would order those after the
+   * timeline's), when it has a `dispatch` entry, when its seed, start or production mode is not
+   * the run's, when an entry does not fit the configuration, or when an infrastructure entry has
+   * no hook. Nothing is accepted unless everything is checked; should the line still refuse an
+   * entry part way (a check missing here), the load fails and every later load is refused.
    */
   load(scenario: Scenario, name: string | null = null): TimelineLoadResult {
     const { config, seed, start, line, simulation, pacer, infrastructure } = this.#context;
+    if (this.#failed !== undefined) {
+      return {
+        ok: false,
+        code: 'failed',
+        reason: `an earlier load failed part way (${this.#failed}); restart the run`,
+      };
+    }
     if (this.#view) {
       return { ok: false, code: 'already-loaded', reason: 'the run has a timeline already' };
     }
-    if (pacer.state !== 'idle' || simulation.now !== start) {
+    if (pacer.state !== 'idle') {
       return {
         ok: false,
         code: 'not-idle',
         reason: `a timeline is loaded before the run starts; the run is ${pacer.state}`,
+      };
+    }
+    const accepted = line.injections().length + line.drifts().length + line.actions().length;
+    if (accepted > 0) {
+      return {
+        ok: false,
+        code: 'has-inputs',
+        reason: `the run has ${String(accepted)} injections, drifts or console actions already; a timeline is loaded first`,
       };
     }
     const plan = scenarioPlan(scenario);
@@ -181,51 +227,39 @@ export class LiveTimeline {
       return { ok: false, code: 'unsupported', reason: missing.join('; ') };
     }
 
-    const tracked: (Tracked & { order: number })[] = [];
+    const tracked: Tracked[] = [];
     const order = (origin: string): number => Number(/\[(\d+)\]$/.exec(origin)?.[1] ?? 0);
+    const refused = (origin: string, reason: string): TimelineLoadResult => {
+      this.#failed = `${origin}: ${reason}`;
+      return { ok: false, code: 'failed', reason: `${origin}: ${reason}` };
+    };
     // Injections, then actions, each in list order: exactly the headless run's acceptance order.
-    plan.injections.forEach((injection, index) => {
+    for (const [index, injection] of plan.injections.entries()) {
       const origin = plan.origins.injections[index] ?? '';
+      const base = { entry: origin, order: order(origin), at: injection.at };
       if (injection.kind === 'leak-drift') {
         const result = line.injectLeakDrift(injection, simulation, plan.end);
-        if (!result.ok) throw new Error(`${origin}: ${result.reason}`);
-        const id = result.drift.id;
-        tracked.push({
-          entry: origin,
-          order: order(origin),
-          action: 'leak-drift',
-          at: injection.at,
-          id,
-          status: () => line.drifts().find((d) => d.id === id)?.status ?? 'scheduled',
-        });
+        if (!result.ok) return refused(origin, result.reason);
+        tracked.push({ ...base, action: 'leak-drift', source: 'drift', id: result.drift.id });
       } else {
         const result = line.injectFailure(injection, simulation);
-        if (!result.ok) throw new Error(`${origin}: ${result.reason}`);
-        const id = result.injection.id;
-        tracked.push({
-          entry: origin,
-          order: order(origin),
-          action: 'failure',
-          at: injection.at,
-          id,
-          status: () => line.injections().find((i) => i.id === id)?.status ?? 'scheduled',
-        });
+        if (!result.ok) return refused(origin, result.reason);
+        tracked.push({ ...base, action: 'failure', source: 'injection', id: result.injection.id });
       }
-    });
-    plan.actions.forEach((action, index) => {
+    }
+    for (const [index, action] of plan.actions.entries()) {
       const origin = plan.origins.actions[index] ?? '';
       const result = line.act(action, simulation);
-      if (!result.ok) throw new Error(`${origin}: ${result.reason}`);
-      const id = result.action.id;
+      if (!result.ok) return refused(origin, result.reason);
       tracked.push({
         entry: origin,
         order: order(origin),
         action: action.kind,
         at: action.kind === 'operators-absent' ? undefined : action.at,
-        id,
-        status: () => line.actions().find((a) => a.id === id)?.status ?? 'scheduled',
+        source: 'action',
+        id: result.action.id,
       });
-    });
+    }
     const applied = new Set<PacerCue>();
     pacer.onCue = (cue) => {
       applied.add(cue);
@@ -239,6 +273,7 @@ export class LiveTimeline {
         order: order(origin),
         action: entry.kind,
         at: entry.at,
+        source: 'cues',
         status: () => {
           const done = cues.filter((cue) => applied.has(cue)).length;
           if (done === 0) return 'scheduled';

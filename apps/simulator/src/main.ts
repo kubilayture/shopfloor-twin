@@ -32,11 +32,30 @@ if (!loaded.ok) {
 
 const hub = new EventHub();
 // Subscribed before the run exists: line.start already emits events.
-const eventLog =
-  env.SIM_EVENT_LOG === undefined ? undefined : new EventLogWriter(resolve(env.SIM_EVENT_LOG));
-if (eventLog) {
+// A failed write stops the log, never the run (#235 review): reported once, `sim_event_log_failed`.
+const reportEventLogError = (error: unknown): void => {
+  try {
+    log.error(error, 'live event log failed; SIM_EVENT_LOG is no longer written');
+  } catch {
+    // Before the logger exists.
+    console.error('live event log failed; SIM_EVENT_LOG is no longer written:', error);
+  }
+};
+let eventLog: EventLogWriter | undefined;
+if (env.SIM_EVENT_LOG !== undefined) {
+  try {
+    eventLog = new EventLogWriter(resolve(env.SIM_EVENT_LOG), { onError: reportEventLogError });
+  } catch (error) {
+    console.error(`SIM_EVENT_LOG ${env.SIM_EVENT_LOG}: ${String(error)}`);
+    process.exit(2);
+  }
+  const writer = eventLog;
   hub.subscribe((line) => {
-    eventLog.append(line);
+    writer.append(line);
+  });
+  // Best effort on any exit; close() never throws and does nothing the second time.
+  process.on('exit', () => {
+    writer.close();
   });
 }
 const servers = new PlantServers({
@@ -113,6 +132,7 @@ const app = await buildControlApp({
     operators: () => run.operators(),
   },
   scenario: scenarioControl(run, resolve(env.SIM_SCENARIOS_DIR)),
+  ...(eventLog === undefined ? {} : { eventLogFailed: () => eventLog.failed }),
   logger: { level: env.LOG_LEVEL },
 });
 const log = app.log;
@@ -127,11 +147,12 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
   run.pacer.stop();
-  eventLog?.close();
   const results = await Promise.allSettled([app.close(), servers.stop(), washer.stop()]);
   for (const result of results) {
     if (result.status === 'rejected') log.error(result.reason);
   }
+  // After the servers, so a close that fails can't keep them up; close() never throws.
+  eventLog?.close();
   log.info('stopped');
   process.exit(signal === 'SIGINT' ? 130 : 0);
 }

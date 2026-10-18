@@ -266,10 +266,9 @@ export class LivePacer<E> {
           this.#simulation.runUntil(cue.at, this.#handle);
         });
         this.#cues.shift();
-        const wasRunning = this.#isRunning();
         this.#apply(cue);
         if (!this.#isRunning()) {
-          return wasRunning ? cue.at : reached;
+          return cue.at;
         }
         if (cue.kind === 'speed') {
           reached = Math.max(cue.at, this.simNow());
@@ -297,9 +296,10 @@ export class LivePacer<E> {
         break;
       case 'speed':
         if (this.#state === 'running') {
-          // Continuous: the paced clock passed `at` at this wall time with the old speed.
-          this.#wallAnchor += (cue.at - this.#simAnchor) / this.#speed;
-          this.#simAnchor = cue.at;
+          // Re-anchored where the paced clock is now (at `at` when the cue is on time, a little
+          // past it after timer lateness), so the paced clock never jumps or goes back.
+          this.#simAnchor = Math.max(cue.at, this.simNow());
+          this.#wallAnchor = this.#clock.now();
         }
         this.#speed = cue.speed;
         break;
@@ -356,10 +356,13 @@ export class LivePacer<E> {
 
   #scheduleNext(): void {
     this.#cancelTimer();
-    const next = this.#simulation.nextEventTime;
     const now = this.simNow();
-    const horizon =
-      next === undefined ? this.#end : this.#end === undefined ? next : Math.min(next, this.#end);
+    // The next event, the next cue (#235 review: a cue between sparse events is due on time) or
+    // the end, whichever comes first.
+    const candidates = [this.#simulation.nextEventTime, this.#cues[0]?.at, this.#end].filter(
+      (time): time is SimTime => time !== undefined,
+    );
+    const horizon = candidates.length === 0 ? undefined : Math.min(...candidates);
     const wait =
       horizon === undefined ? MAX_TIMER_MS : Math.ceil(Math.max(0, horizon - now) / this.#speed);
     this.#timer = this.#clock.setTimeout(

@@ -72,3 +72,11 @@ P9-08 plays timelines of these actions headless and live (Phase 9 plan, "Scenari
 - Bad: the headless run gives every injection before every action, so an injection and an action of the same millisecond posted action first differ from it; posting in group order, or a timeline, avoids it.
 - Bad: a live run plays a timeline against its own configuration; the timeline's `config` and `stock` describe the headless run, and a stock of the timeline's own needs `SIM_STOCK` set to it.
 - Bad: control API 1.9, not 1.8: 1.8 is left to P9-03 (#230), still open when this was numbered.
+
+### Remaining differences from headless (review of #235)
+
+- **Posts before a load are refused, not reordered:** a live load is refused (409) once any injection, drift or console action was posted, even while idle, since the headless run would give those after the timeline's entries. A load the line refuses part way latches: no later load is taken.
+- **A live `main.ts` run has no end:** its event log is compared with the headless log up to the headless end, as a prefix; a drift's `until` boundary check uses the timeline's end.
+- **Cues and wall time:** a cue fires when its timer does (set for it as for the next event), so up to the timer's lateness late in wall time, never in simulation time; a speed cue re-anchors where the paced clock is, a pause cue leaves the simulation time at its time. A step applies the cues its event reaches after the event.
+- **Not every `scenario.json` is a timeline:** a timeline is in time order, and the headless run gives every injection before every action; a golden whose injections are not in time order, or whose same-millisecond injection and action must keep that cross-group order, can't be rewritten as a timeline entry for entry (the four goldens can, tested).
+- **Dispatches stay in the model lane:** a `LoadOrder` job's wake-up is a model event, accepted while idle in the headless order; mid-run dispatches and their replay are P9-09's (its probe Q2 decides whether they need the external lane).

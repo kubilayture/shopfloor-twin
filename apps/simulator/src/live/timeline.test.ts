@@ -13,6 +13,9 @@ import {
   readScenarioFile,
   scenarioPlan,
   type ActionSpec,
+  type FailureInjectionSpec,
+  type InjectionSpec,
+  type LeakDriftSpec,
   type PlantConfig,
   type Scenario,
 } from '@shopfloor/plant-config';
@@ -287,6 +290,82 @@ describe('loading a live timeline (#235)', () => {
         'timeline[1]: this run has no opcua-offline fault; timeline[8]: this run has no modbus-silent fault',
     });
   });
+
+  const withHooks = (runConfig = config) =>
+    createLiveRun({
+      config: runConfig,
+      seed: example.seed,
+      start: headlessOptions.start,
+      clock: new ManualClock(),
+      infrastructure: { opcuaOffline: () => true, modbusSilent: () => undefined },
+    });
+
+  it('refuses a load after an injection, drift or action posted while idle (409)', () => {
+    const posts = [
+      (run: LiveRun) =>
+        run.act({ kind: 'lot-block', lot: 'SK1-2610-01', at: headlessOptions.start + HOUR }),
+      (run: LiveRun) =>
+        run.injectFailure({
+          machine: 'cnc-01',
+          code: 'SPINDLE-OVERLOAD',
+          at: headlessOptions.start + HOUR,
+        }),
+      (run: LiveRun) =>
+        run.injectLeakDrift({
+          machine: 'lkt-01',
+          shift: 0.6,
+          at: headlessOptions.start + HOUR,
+          until: headlessOptions.start + 2 * HOUR,
+        }),
+    ];
+    for (const post of posts) {
+      const run = withHooks();
+      expect(post(run).ok).toBe(true);
+      expect(run.loadTimeline(example)).toEqual({
+        ok: false,
+        code: 'has-inputs',
+        reason:
+          'the run has 1 injections, drifts or console actions already; a timeline is loaded first',
+      });
+    }
+  });
+
+  it('refuses a tool breakage on a CNC without a tool before accepting anything', () => {
+    const noTool = structuredClone(config);
+    // A CNC the schedule doesn't list gets no tool in schedule mode.
+    noTool.schedule.machines = Object.fromEntries(
+      Object.entries(noTool.schedule.machines).filter(([id]) => id !== 'cnc-02'),
+    );
+    const run = withHooks(noTool);
+    expect(run.loadTimeline(example)).toEqual({
+      ok: false,
+      code: 'invalid',
+      reason: 'timeline[7]: cnc-02 has no tool',
+    });
+    expect(run.injections()).toEqual([]);
+    expect(run.actions()).toEqual([]);
+    expect(run.loadTimeline(example)).toMatchObject({ ok: false, code: 'invalid' });
+  });
+
+  it('latches a load the line refused part way: no later load is taken', () => {
+    const run = withHooks();
+    // A refusal no pre-check foresaw (as if one were missing): the first action is refused.
+    run.line.act = () => ({ ok: false, code: 'not-a-cnc', reason: 'refused by the line' });
+    expect(run.loadTimeline(example)).toEqual({
+      ok: false,
+      code: 'failed',
+      reason: 'timeline[2]: refused by the line',
+    });
+    // The injections before it stay accepted; a retry would duplicate them, so it is refused.
+    expect(run.injections()).toHaveLength(2);
+    expect(run.loadTimeline(example)).toEqual({
+      ok: false,
+      code: 'failed',
+      reason: 'an earlier load failed part way (timeline[2]: refused by the line); restart the run',
+    });
+    expect(run.injections()).toHaveLength(2);
+    expect(run.timeline()).toBeUndefined();
+  });
 });
 
 /**
@@ -318,6 +397,27 @@ describe('an action posted mid-run (#235)', () => {
         lines.push(stableStringify({ ...event, schema: EVENT_SCHEMA, seq, at: isoTime(event.at) }));
       },
     });
+    // Every scheduling, with when it happened: what is queued at a pause.
+    const scheduled: { time: SimTime; station: string | undefined }[] = [];
+    const schedule = run.simulation.schedule.bind(run.simulation);
+    run.simulation.schedule = (time, event, lane) => {
+      scheduled.push({ time, station: 'station' in event ? event.station : undefined });
+      return schedule(time, event, lane);
+    };
+    /** Distinct times of model events queued now, later than now and off every boundary. */
+    const queuedTimes = (station?: string) =>
+      [
+        ...new Set(
+          scheduled
+            .filter(
+              (s) =>
+                s.time > run.simulation.now &&
+                !isCalendarBoundary(config, s.time) &&
+                (station === undefined || s.station === station),
+            )
+            .map((s) => s.time),
+        ),
+      ].sort((a, b) => a - b);
     const finish = () => {
       if (run.pacer.state === 'paused') run.pacer.resume();
       while (run.pacer.state === 'running') clock.advance(997);
@@ -328,16 +428,46 @@ describe('an action posted mid-run (#235)', () => {
       while (run.pacer.simNow() < until) clock.advance(250);
       run.pacer.pause();
     };
-    return { run, lines, finish, runTo };
+    return { run, lines, finish, runTo, queuedTimes };
   }
 
-  const headlessLines = (actions: readonly ActionSpec[]) => {
+  const headlessLines = (
+    actions: readonly ActionSpec[],
+    injections: readonly InjectionSpec[] = [],
+  ) => {
     const lines: string[] = [];
-    runHeadless({ config, seed: SEED, start: START, end: END, actions }, (line) =>
+    runHeadless({ config, seed: SEED, start: START, end: END, actions, injections }, (line) =>
       lines.push(line),
     );
     return lines.slice(1);
   };
+
+  it('lands a failure and a drift (start and end) posted mid-run on queued model events', () => {
+    // A pause at which the leak tester has an event queued: the drift ends exactly on it.
+    let live = liveRun();
+    let lkt: SimTime | undefined;
+    for (let minute = 77; lkt === undefined && minute < 240; minute += 7) {
+      live = liveRun();
+      live.runTo(START + minute * MINUTE);
+      lkt = live.queuedTimes('lkt-01')[0];
+    }
+    const { run, finish, queuedTimes } = live;
+    if (lkt === undefined) throw new Error('no queued leak-tester event found');
+    const before = queuedTimes().filter((time) => time < lkt);
+    const a = before[0] ?? lkt;
+    // At the tester's queued event one drift ends and the next starts, both before it (external
+    // lane), so its reading carries the second drift's shift; in model order it would carry the
+    // first one's, or none.
+    const injections: InjectionSpec[] = [
+      { machine: 'cnc-01', code: 'SPINDLE-OVERLOAD', at: a, repairMs: 60_000 },
+      { kind: 'leak-drift', machine: 'lkt-01', shift: 0.6, at: run.simulation.now + 1, until: lkt },
+      { kind: 'leak-drift', machine: 'lkt-01', shift: -0.4, at: lkt, until: lkt + 10 * MINUTE + 1 },
+    ];
+    expect(run.injectFailure(injections[0] as FailureInjectionSpec).ok).toBe(true);
+    expect(run.injectLeakDrift(injections[1] as LeakDriftSpec).ok).toBe(true);
+    expect(run.injectLeakDrift(injections[2] as LeakDriftSpec).ok).toBe(true);
+    expect(finish()).toEqual(headlessLines([], injections));
+  });
 
   it('for a later time, lands where the headless run puts it, even on a queued model event', () => {
     const { run, finish, runTo } = liveRun();

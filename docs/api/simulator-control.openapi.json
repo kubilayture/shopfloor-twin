@@ -7509,7 +7509,7 @@
         "tags": [
           "scenario"
         ],
-        "description": "Loads a committed timeline (`name`) or one given inline (`timeline`), only while the run is idle and has no timeline. Every plant entry is accepted at the start time, injections then console actions, in timeline order, as a headless run of the same timeline gives them, so the event log is the headless one at any speed. `opcua-offline`, `modbus-silent`, `speed` and `pause` are applied by the pacer at their time and never touch the plant model. 404: no committed timeline of that name; 400: a document the schema refuses, a `dispatch` entry (headless only), an entry that does not fit the configuration or the run; 409: the run is not idle or has a timeline already, or the timeline names another seed, start or production mode.",
+        "description": "Loads a committed timeline (`name`) or one given inline (`timeline`), only while the run is idle and has no timeline, injection, drift or console action yet (body at most 512 KiB; at most 1000 entries). Every plant entry is accepted at the start time, injections then console actions, in timeline order, as a headless run of the same timeline gives them, so the event log is the headless one at any speed. `opcua-offline`, `modbus-silent`, `speed` and `pause` are applied by the pacer at their time and never touch the plant model. 404: no committed timeline of that name; 400: a document the schema refuses, a `dispatch` entry (headless only), an entry that does not fit the configuration or the run; 409: the run is not idle, has a timeline, an injection, drift or console action already, an earlier load failed part way, or the timeline names another seed, start or production mode. 413: a body over the limit.",
         "requestBody": {
           "required": true,
           "content": {
@@ -7689,6 +7689,29 @@
             }
           },
           "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
             "description": "Default Response",
             "content": {
               "application/json": {

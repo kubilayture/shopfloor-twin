@@ -22,6 +22,12 @@ import type { PlantConfig } from './schema.ts';
 /** The live pacer's speed range (`apps/simulator` `MIN_SPEED`/`MAX_SPEED`, asserted equal). */
 export const TIMELINE_SPEED = { min: 0.5, max: 60 } as const;
 
+/**
+ * The most entries a timeline (or each golden list) may have (#235 review): loading and the
+ * progress view stay well under a millisecond per entry.
+ */
+export const MAX_TIMELINE_ENTRIES = 1_000;
+
 export const SCENARIO_PRODUCTION_MODES = ['schedule', 'orders'] as const;
 
 /** ISO 8601 with an offset or Z, as integer ms; undefined when it is not one. */
@@ -33,9 +39,22 @@ export function instantMs(value: string): number | undefined {
   }
 }
 
+/** Whether an ISO 8601 instant has a fraction finer than a millisecond (the simulation's unit). */
+const subMillisecond = (value: string): boolean => {
+  try {
+    return Temporal.Instant.from(value).epochNanoseconds % 1_000_000n !== 0n;
+  } catch {
+    return false;
+  }
+};
+
 const instant = z
   .string()
-  .refine((value) => instantMs(value) !== undefined, 'expected ISO 8601 with an offset or Z');
+  .refine((value) => instantMs(value) !== undefined, 'expected ISO 8601 with an offset or Z')
+  .refine(
+    (value) => !subMillisecond(value),
+    'expected whole milliseconds (the simulation has no finer time)',
+  );
 const text = z.string().min(1);
 const quantity = z.number().int().positive();
 
@@ -144,7 +163,13 @@ export const scenarioSchema = z
       .min(0)
       .max(2 ** 32 - 1),
     start: instant,
-    days: z.number().positive(),
+    days: z
+      .number()
+      .positive()
+      .refine(
+        (days) => Number.isSafeInteger(days * 86_400_000),
+        'days must be a whole number of milliseconds (days × 86,400,000 an integer)',
+      ),
     /** The configuration folder, relative to the repository root. */
     config: text,
     /** A stock file in the scenario's folder, in place of the configuration's `stock.yaml`. */
@@ -152,10 +177,13 @@ export const scenarioSchema = z
     production: z.enum(SCENARIO_PRODUCTION_MODES).optional(),
     /** Not a simulation input: the ERP dataset and the orders a golden MES run releases. */
     erp: z.strictObject({ dataset: text, release: z.array(text) }).optional(),
-    injections: z.array(z.union([failureInjection, driftInjection])).optional(),
-    dispatches: z.array(z.strictObject(dispatchFields)).optional(),
-    actions: z.array(actionItem).optional(),
-    timeline: z.array(timelineEntrySchema).optional(),
+    injections: z
+      .array(z.union([failureInjection, driftInjection]))
+      .max(MAX_TIMELINE_ENTRIES)
+      .optional(),
+    dispatches: z.array(z.strictObject(dispatchFields)).max(MAX_TIMELINE_ENTRIES).optional(),
+    actions: z.array(actionItem).max(MAX_TIMELINE_ENTRIES).optional(),
+    timeline: z.array(timelineEntrySchema).max(MAX_TIMELINE_ENTRIES).optional(),
   })
   .superRefine((scenario, context) => {
     if (scenario.timeline !== undefined) {
@@ -475,6 +503,22 @@ export function checkScenarioPlan(
     if (entry.kind === 'modbus-silent' && !equipment.some((e) => e.interface === 'modbus')) {
       issues.push({ path, message: 'the plant has no Modbus device' });
     }
+  });
+  // Fault windows of one device must not overlap: the later window's start would do nothing and
+  // the earlier one's end would undo it (#235 review). A window without `until` lasts to the end.
+  const windows = new Map<string, { until: number; path: string }>();
+  plan.infrastructure.forEach((entry, index) => {
+    if (entry.kind !== 'opcua-offline' && entry.kind !== 'modbus-silent') return;
+    const device = entry.kind === 'opcua-offline' ? `opcua:${entry.machine}` : 'modbus';
+    const path = origins.infrastructure[index] ?? '';
+    const previous = windows.get(device);
+    if (previous && entry.at < previous.until) {
+      issues.push({
+        path,
+        message: `overlaps the ${entry.kind} window of ${previous.path} (until ${previous.until === Infinity ? 'the end' : iso(previous.until)})`,
+      });
+    }
+    windows.set(device, { until: entry.until ?? Infinity, path });
   });
   return issues;
 }

@@ -1,5 +1,5 @@
 /** The live event log (#235, `SIM_EVENT_LOG`): buffered lines, flushed by size, time and close. */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -36,5 +36,47 @@ describe('EventLogWriter (#235)', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(readFileSync(path, 'utf8')).toBe('{"a":1}\n');
     log.close();
+  });
+});
+
+describe('EventLogWriter when a write fails (#235 review)', () => {
+  it('reports once, keeps what was written, and stops writing without throwing', () => {
+    const path = join(folder, 'full.jsonl');
+    const errors: unknown[] = [];
+    let calls = 0;
+    const log = new EventLogWriter(path, {
+      flushBytes: 8,
+      flushMs: 60_000,
+      onError: (error) => errors.push(error),
+      write: (fd, bytes, offset) => {
+        calls++;
+        if (calls >= 2) throw Object.assign(new Error('no space left'), { code: 'ENOSPC' });
+        return writeSync(fd, bytes, offset);
+      },
+    });
+    log.append('{"a":1}');
+    expect(readFileSync(path, 'utf8')).toBe('{"a":1}\n');
+    expect(() => {
+      log.append('{"b":2}');
+      log.append('{"c":3}');
+      log.flush();
+      log.close();
+    }).not.toThrow();
+    expect(log.failed).toBe(true);
+    expect(errors).toHaveLength(1);
+    expect(calls).toBe(2);
+    expect(readFileSync(path, 'utf8')).toBe('{"a":1}\n');
+  });
+
+  it('writes the rest of a chunk a partial write left', () => {
+    const path = join(folder, 'partial.jsonl');
+    const log = new EventLogWriter(path, {
+      flushMs: 60_000,
+      write: (fd, bytes, offset) =>
+        writeSync(fd, bytes, offset, Math.min(3, bytes.length - offset)),
+    });
+    log.append('{"long":"line"}');
+    log.close();
+    expect(readFileSync(path, 'utf8')).toBe('{"long":"line"}\n');
   });
 });

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { formatIssues, loadPlantConfig } from './load.ts';
 import {
+  MAX_TIMELINE_ENTRIES,
   TIMELINE_ACTIONS,
   checkScenarioPlan,
   parseScenario,
@@ -147,7 +148,11 @@ describe('scenario schema (#235)', () => {
             shift: -0.2,
           },
         ],
-        actions: [{ kind: 'lot-release', at: '2026-10-12T05:00:00Z', lot: 'L' }],
+        actions: [
+          { kind: 'lot-release', at: '2026-10-12T05:00:00Z', lot: 'L' },
+          { kind: 'tool-breakage', at: '2026-10-12T05:10:00Z', machine: 'cnc-02' },
+          { kind: 'operators-absent', shift: '2026-10-12/B', operators: ['op-b1'] },
+        ],
       }),
     );
     expect(plan.injections.map((i) => i.kind)).toEqual([undefined, 'leak-drift']);
@@ -158,7 +163,12 @@ describe('scenario schema (#235)', () => {
       repairMs: 3000,
     });
     expect(plan.origins.injections).toEqual(['injections[0]', 'injections[1]']);
-    expect(plan.origins.actions).toEqual(['actions[0]']);
+    expect(plan.actions).toEqual([
+      { kind: 'lot-release', at: Date.parse('2026-10-12T05:00:00Z'), lot: 'L' },
+      { kind: 'tool-breakage', at: Date.parse('2026-10-12T05:10:00Z'), machine: 'cnc-02' },
+      { kind: 'operators-absent', shift: '2026-10-12/B', operators: ['op-b1'] },
+    ]);
+    expect(plan.origins.actions).toEqual(['actions[0]', 'actions[1]', 'actions[2]']);
     expect(plan.production).toBe('schedule');
     expect(plan.infrastructure).toEqual([]);
   });
@@ -276,6 +286,153 @@ describe('checkScenarioPlan (#235)', () => {
       {
         path: 'timeline[6]',
         message: '2026-10-12T09:00:00.000Z is outside the run [start, end)',
+      },
+    ]);
+  });
+});
+
+describe('scenario schema bounds (#235 review)', () => {
+  const one = (extra: object) => issuesOf({ ...HEAD, timeline: [], ...extra });
+  const entry = (e: object) => issuesOf({ ...HEAD, timeline: [e] });
+
+  it('takes the edges of the speed, seed and days ranges and refuses past them', () => {
+    expect(entry({ at: '2026-10-12T04:00:00Z', action: 'speed', speed: 0.5 })).toEqual([]);
+    expect(entry({ at: '2026-10-12T04:00:00Z', action: 'speed', speed: 60 })).toEqual([]);
+    expect(entry({ at: '2026-10-12T04:00:00Z', action: 'speed', speed: 0.49 })).toHaveLength(1);
+    expect(one({ seed: 2 ** 32 - 1 })).toEqual([]);
+    expect(one({ seed: 2 ** 32 }).map((i) => i.path)).toEqual(['seed']);
+    expect(one({ seed: -1 }).map((i) => i.path)).toEqual(['seed']);
+    expect(one({ days: 0 }).map((i) => i.path)).toEqual(['days']);
+    expect(one({ days: 0.25 })).toEqual([]);
+    expect(one({ days: 1e-9 })).toEqual([
+      {
+        path: 'days',
+        message: 'days must be a whole number of milliseconds (days × 86,400,000 an integer)',
+      },
+    ]);
+  });
+
+  it('refuses a time finer than a millisecond rather than truncating it', () => {
+    expect(entry({ at: '2026-10-12T04:00:00.001Z', action: 'pause' })).toEqual([]);
+    expect(entry({ at: '2026-10-12T04:00:00.0015Z', action: 'pause' })).toEqual([
+      {
+        path: 'timeline[0].at',
+        message: 'expected whole milliseconds (the simulation has no finer time)',
+      },
+    ]);
+  });
+
+  it(`takes at most ${String(MAX_TIMELINE_ENTRIES)} entries in a timeline or a golden list`, () => {
+    const pauses = (n: number) =>
+      Array.from({ length: n }, () => ({ at: '2026-10-12T04:00:00Z', action: 'pause' }));
+    expect(one({ timeline: pauses(MAX_TIMELINE_ENTRIES) })).toEqual([]);
+    expect(one({ timeline: pauses(MAX_TIMELINE_ENTRIES + 1) }).map((i) => i.path)).toEqual([
+      'timeline',
+    ]);
+    const lots = Array.from({ length: MAX_TIMELINE_ENTRIES + 1 }, () => ({
+      kind: 'lot-block',
+      at: '2026-10-12T04:00:00Z',
+      lot: 'L',
+    }));
+    expect(issuesOf({ ...HEAD, actions: lots }).map((i) => i.path)).toEqual(['actions']);
+  });
+});
+
+describe('checkScenarioPlan edges (#235 review)', () => {
+  // Run [03:00Z, 09:00Z): 06:00 to 12:00 Istanbul, shift A only.
+  const check = (timeline: object[], testConfig = config) =>
+    checkScenarioPlan(testConfig, scenarioPlan(parsed({ ...HEAD, days: 0.25, timeline })));
+  const START = '2026-10-12T03:00:00Z';
+  const END = '2026-10-12T09:00:00Z';
+
+  it('takes an action and an injection at the start and refuses them at the end', () => {
+    // 03:00Z is a shift start, a calendar boundary: only the span is checked here.
+    const span = (issues: { path: string; message: string }[]) =>
+      issues.filter((i) => i.message.includes('outside the run'));
+    expect(span(check([{ at: START, action: 'lot-block', lot: 'SK1-2610-01' }]))).toEqual([]);
+    expect(
+      span(check([{ at: START, action: 'failure', machine: 'cnc-01', code: 'SPINDLE-OVERLOAD' }])),
+    ).toEqual([]);
+    expect(check([{ at: END, action: 'lot-block', lot: 'SK1-2610-01' }])).toEqual([
+      { path: 'timeline[0]', message: '2026-10-12T09:00:00.000Z is outside the run [start, end)' },
+    ]);
+    expect(
+      check([{ at: END, action: 'failure', machine: 'cnc-01', code: 'SPINDLE-OVERLOAD' }]),
+    ).toEqual([
+      { path: 'timeline[0]', message: '2026-10-12T09:00:00.000Z is outside the run [start, end)' },
+    ]);
+    expect(
+      check([{ at: '2026-10-12T08:59:59.999Z', action: 'lot-block', lot: 'SK1-2610-01' }]),
+    ).toEqual([]);
+  });
+
+  it("refuses a forced absence whose shift starts at the run's start or end", () => {
+    const absent = (shift: string) => [{ action: 'operators-absent', shift, operators: ['op-a1'] }];
+    // Shift A starts at the run's start.
+    expect(check(absent('2026-10-12/A'))).toEqual([
+      {
+        path: 'timeline[0]',
+        message: 'shift 2026-10-12/A does not start inside the run (start, end)',
+      },
+    ]);
+    // A run ending at 11:00Z, the start of shift B.
+    const plan = scenarioPlan(
+      parsed({
+        ...HEAD,
+        days: 8 / 24,
+        timeline: [{ action: 'operators-absent', shift: '2026-10-12/B', operators: ['op-b1'] }],
+      }),
+    );
+    expect(checkScenarioPlan(config, plan)).toEqual([
+      {
+        path: 'timeline[0]',
+        message: 'shift 2026-10-12/B does not start inside the run (start, end)',
+      },
+    ]);
+  });
+
+  it('refuses an infrastructure entry before the start, an unknown machine, no Modbus device', () => {
+    expect(check([{ at: '2026-10-12T02:59:59.999Z', action: 'pause' }])).toEqual([
+      { path: 'timeline[0]', message: '2026-10-12T02:59:59.999Z is outside the run [start, end)' },
+    ]);
+    expect(check([{ at: START, action: 'pause' }])).toEqual([]);
+    expect(
+      check([{ at: '2026-10-12T04:00:00Z', action: 'opcua-offline', machine: 'nope' }]),
+    ).toEqual([{ path: 'timeline[0]', message: 'unknown machine "nope"' }]);
+    const noModbus = structuredClone(config);
+    for (const area of noModbus.plant.areas) {
+      for (const workCenter of area.workCenters) {
+        workCenter.equipment = workCenter.equipment.filter((e) => e.interface !== 'modbus');
+      }
+    }
+    expect(check([{ at: '2026-10-12T04:00:00Z', action: 'modbus-silent' }], noModbus)).toEqual([
+      { path: 'timeline[0]', message: 'the plant has no Modbus device' },
+    ]);
+  });
+
+  it('refuses overlapping fault windows of one device, and takes back-to-back ones', () => {
+    expect(
+      check([
+        {
+          at: '2026-10-12T04:00:00Z',
+          action: 'opcua-offline',
+          machine: 'cnc-01',
+          until: '2026-10-12T04:10:00Z',
+        },
+        { at: '2026-10-12T04:05:00Z', action: 'opcua-offline', machine: 'cnc-02' },
+        { at: '2026-10-12T04:10:00Z', action: 'opcua-offline', machine: 'cnc-01' },
+        { at: '2026-10-12T05:00:00Z', action: 'opcua-offline', machine: 'cnc-01' },
+        { at: '2026-10-12T05:10:00Z', action: 'modbus-silent' },
+        { at: '2026-10-12T05:20:00Z', action: 'modbus-silent', until: '2026-10-12T05:30:00Z' },
+      ]),
+    ).toEqual([
+      {
+        path: 'timeline[3]',
+        message: 'overlaps the opcua-offline window of timeline[2] (until the end)',
+      },
+      {
+        path: 'timeline[5]',
+        message: 'overlaps the modbus-silent window of timeline[4] (until the end)',
       },
     ]);
   });

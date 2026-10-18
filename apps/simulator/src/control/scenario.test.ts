@@ -5,7 +5,7 @@
 import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { PlantConfig } from '@shopfloor/plant-config';
+import { MAX_TIMELINE_ENTRIES, type PlantConfig } from '@shopfloor/plant-config';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { SCENARIOS } from '../headless/timeline.ts';
@@ -13,7 +13,7 @@ import { createLiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import { scenarioControl } from '../live/timeline.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
-import { CONTROL_API_VERSION, buildControlApp } from './app.ts';
+import { CONTROL_API_VERSION, SCENARIO_BODY_LIMIT, buildControlApp } from './app.ts';
 import { EventHub } from './event-hub.ts';
 
 /** Monday 2026-10-12 06:00 Istanbul, the example timeline's start. */
@@ -177,6 +177,49 @@ describe('scenario routes (1.9, #235)', () => {
     ]);
     expect((await post(app, { name: 'example' })).statusCode).toBe(200);
     expect(await refusal({ name: 'example' })).toEqual([409, 'the run has a timeline already']);
+  });
+
+  it('takes a timeline of the largest size quickly, and refuses a longer one or a large body', async () => {
+    const { app } = await setup();
+    // Lot blocks 37 s apart from 06:00:01 Istanbul, off every boundary of the first day.
+    const entries = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        at: new Date(T0 + 1_000 + i * 37_000).toISOString(),
+        action: 'lot-block',
+        lot: 'SK1-2610-01',
+      }));
+    const doc = (n: number) => ({
+      timeline: {
+        seed: SEED,
+        start: '2026-10-12T06:00:00+03:00',
+        days: 1,
+        config: 'config/plant',
+        timeline: entries(n),
+      },
+    });
+    const tooMany = await post(app, doc(MAX_TIMELINE_ENTRIES + 1));
+    expect(tooMany.statusCode).toBe(400);
+    const big = await app.inject({
+      method: 'POST',
+      url: '/api/v1/scenario',
+      payload: { name: 'x'.repeat(SCENARIO_BODY_LIMIT) },
+    });
+    expect(big.statusCode).toBe(413);
+    const started = performance.now();
+    expect((await post(app, doc(MAX_TIMELINE_ENTRIES))).statusCode).toBe(200);
+    const read = await app.inject({ method: 'GET', url: '/api/v1/scenario' });
+    expect(read.json<{ scenario: { entries: unknown[] } }>().scenario.entries).toHaveLength(
+      MAX_TIMELINE_ENTRIES,
+    );
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it('refuses a load after a console action posted while idle', async () => {
+    const { app, run } = await setup();
+    expect(run.act({ kind: 'lot-block', lot: 'SK1-2610-01', at: T0 + 3_600_000 }).ok).toBe(true);
+    const res = await post(app, { name: 'example' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json<{ message: string }>().message).toMatch(/a timeline is loaded first/);
   });
 
   it('refuses once the run has finished', async () => {

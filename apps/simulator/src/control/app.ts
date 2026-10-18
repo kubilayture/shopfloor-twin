@@ -4,7 +4,7 @@ import { STATUS_CODES } from 'node:http';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyReply } from 'fastify';
 import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
 import { z } from 'zod';
-import { TIMELINE_ACTIONS } from '@shopfloor/plant-config';
+import { MAX_TIMELINE_ENTRIES, TIMELINE_ACTIONS } from '@shopfloor/plant-config';
 import type { PacerState, PacerStatus } from '../live/pacer.ts';
 import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { isoTime } from '../headless/serialize.ts';
@@ -38,6 +38,8 @@ import type { EventHub } from './event-hub.ts';
  */
 export const CONTROL_API_VERSION = '1.9.0';
 export const API_PREFIX = '/api/v1';
+/** The largest `POST /scenario` body (#235 review): far above MAX_TIMELINE_ENTRIES entries. */
+export const SCENARIO_BODY_LIMIT = 512 * 1024;
 export const EVENTS_PATH = `${API_PREFIX}/events`;
 /** A WebSocket client that falls this far behind is disconnected rather than buffered without bound. */
 export const MAX_CLIENT_BUFFER_BYTES = 4 * 1024 * 1024;
@@ -839,6 +841,8 @@ export interface ControlAppOptions {
   };
   /** Scenario timelines (#235, 1.9): load one while idle, its progress, the committed ones. */
   readonly scenario?: ScenarioControl;
+  /** True once the live event log (`SIM_EVENT_LOG`) failed to write (#235 review); a gauge. */
+  readonly eventLogFailed?: () => boolean;
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
   readonly version?: string;
 }
@@ -851,6 +855,7 @@ export async function buildControlApp({
   groundTruth,
   console: consoleActions,
   scenario,
+  eventLogFailed,
   logger = false,
   version = CONTROL_API_VERSION,
 }: ControlAppOptions): Promise<FastifyInstance> {
@@ -913,7 +918,7 @@ export async function buildControlApp({
     },
   });
 
-  const metrics = createMetrics(pacer, hub);
+  const metrics = createMetrics(pacer, hub, eventLogFailed);
 
   const status = () => {
     const current = pacer.status();
@@ -1638,25 +1643,31 @@ function registerScenarioRoutes(
   app.post(
     `${API_PREFIX}/scenario`,
     {
+      // A timeline of at most MAX_TIMELINE_ENTRIES entries fits easily (#235 review).
+      bodyLimit: SCENARIO_BODY_LIMIT,
       schema: {
         tags: ['scenario'],
         summary: 'Load a scenario timeline before the run starts',
         description:
           'Loads a committed timeline (`name`) or one given inline (`timeline`), only while the ' +
-          'run is idle and has no timeline. Every plant entry is accepted at the start time, ' +
+          'run is idle and has no timeline, injection, drift or console action yet (body at most ' +
+          `${String(SCENARIO_BODY_LIMIT / 1024)} KiB; at most ${String(MAX_TIMELINE_ENTRIES)} entries). ` +
+          'Every plant entry is accepted at the start time, ' +
           'injections then console actions, in timeline order, as a headless run of the same ' +
           'timeline gives them, so the event log is the headless one at any speed. ' +
           '`opcua-offline`, `modbus-silent`, `speed` and `pause` are applied by the pacer at their ' +
           'time and never touch the plant model. 404: no committed timeline of that name; 400: ' +
           'a document the schema refuses, a `dispatch` entry (headless only), an entry that does ' +
-          'not fit the configuration or the run; 409: the run is not idle or has a timeline ' +
-          'already, or the timeline names another seed, start or production mode.',
+          'not fit the configuration or the run; 409: the run is not idle, has a timeline, an ' +
+          'injection, drift or console action already, an earlier load failed part way, or the ' +
+          'timeline names another seed, start or production mode. 413: a body over the limit.',
         body: json(scenarioBodySchema),
         response: {
           200: json(z.object({ scenario: timelineSchema })),
           400: json(errorSchema),
           404: json(errorSchema),
           409: json(errorSchema),
+          413: json(errorSchema),
         },
       },
     },
@@ -1673,6 +1684,8 @@ function registerScenarioRoutes(
           return reply.code(404).send({ error: 'Not Found', message: result.reason });
         case 'not-idle':
         case 'already-loaded':
+        case 'has-inputs':
+        case 'failed':
         case 'mismatch':
           return reply.code(409).send({ error: 'Conflict', message: result.reason });
         case 'parse':
@@ -1717,7 +1730,7 @@ function registerScenarioRoutes(
   );
 }
 
-function createMetrics(pacer: PacerControl, hub: EventHub) {
+function createMetrics(pacer: PacerControl, hub: EventHub, eventLogFailed?: () => boolean) {
   const registry = new Registry();
   collectDefaultMetrics({ register: registry });
   new Counter({
@@ -1780,5 +1793,15 @@ function createMetrics(pacer: PacerControl, hub: EventHub) {
       this.set(hub.seq);
     },
   });
+  if (eventLogFailed) {
+    new Gauge({
+      name: 'sim_event_log_failed',
+      help: '1 once the live event log (SIM_EVENT_LOG) failed to write and stopped',
+      registers: [registry],
+      collect() {
+        this.set(eventLogFailed() ? 1 : 0);
+      },
+    });
+  }
   return { registry, clients };
 }

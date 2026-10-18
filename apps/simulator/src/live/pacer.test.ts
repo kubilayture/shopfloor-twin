@@ -407,6 +407,41 @@ describe('pacer cues (#235, the infrastructure entries of a live timeline)', () 
     expect(seen).toEqual(['call@1', 'call@2', 'call@2']);
   });
 
+  it('applies cues between sparse events on time, the paced clock never jumping or going back', () => {
+    const clock = new ManualClock();
+    const simulation = new Simulation<number>(T0);
+    simulation.schedule(T0, 0);
+    simulation.schedule(T0 + HOUR, 1);
+    const calls: number[] = [];
+    const pacer = new LivePacer<number>({
+      simulation,
+      handle: () => undefined,
+      speed: 10,
+      end: T0 + 2 * HOUR,
+      clock,
+    });
+    pacer.cue({ at: T0 + 30 * SECOND, kind: 'speed', speed: 60 });
+    pacer.cue({ at: T0 + 90 * SECOND, kind: 'call', run: () => calls.push(clock.now()) });
+    pacer.cue({ at: T0 + 150 * SECOND, kind: 'pause' });
+    pacer.start();
+    let last = pacer.simNow();
+    while (pacer.state === 'running' && clock.now() < 60_000) {
+      clock.advance(7);
+      const now = pacer.simNow();
+      expect(now).toBeGreaterThanOrEqual(last);
+      // At 10× until 30 s (3 s of wall time), then 60×: never ahead of that schedule.
+      const wall = clock.now();
+      const expected = wall <= 3_000 ? wall * 10 : 30_000 + (wall - 3_000) * 60;
+      expect(now - T0).toBeLessThanOrEqual(Math.min(expected, 150_000));
+      last = now;
+    }
+    // 3 s at 10× to 30 s, then 1 s at 60× to 90 s and 2 s more to 150 s: due at 4 s and 5 s.
+    expect(calls).toEqual([4_000]);
+    expect(pacer.state).toBe('paused');
+    expect(pacer.simNow()).toBe(T0 + 150 * SECOND);
+    expect(clock.now()).toBeLessThanOrEqual(5_007);
+  });
+
   it('refuses a cue in the past or with a speed out of range', () => {
     const { clock, pacer } = ticking();
     pacer.start();
@@ -420,16 +455,27 @@ describe('pacer cues (#235, the infrastructure entries of a live timeline)', () 
   });
 
   it('leaves no stray timer when a pause cue is reached inside setSpeed', () => {
-    const { clock, pacer } = ticking(10);
-    // Between two events: no timer falls due at the cue's time (505 ms of wall time at 10×).
+    // A clock whose timers fire 50 ms late, so the paced time can pass a cue before its timer.
+    const manual = new ManualClock();
+    const clock = {
+      now: () => manual.now(),
+      setTimeout: (callback: () => void, ms: number) => manual.setTimeout(callback, ms + 50),
+      clearTimeout: (handle: unknown) => {
+        manual.clearTimeout(handle);
+      },
+    };
+    const simulation = new Simulation<number>(T0);
+    simulation.schedule(T0 + HOUR, 0);
+    const pacer = new LivePacer<number>({ simulation, handle: () => undefined, speed: 10, clock });
     pacer.cue({ at: T0 + 5_050, kind: 'pause' });
     pacer.start();
-    clock.advance(507);
+    // Due at 505 ms of wall time; its timer fires at 555 ms.
+    manual.advance(520);
     expect(pacer.state).toBe('running');
-    // setSpeed first advances to the paced time, past the cue, which pauses the run.
+    // setSpeed first advances to the paced time, past the cue, which pauses the run there.
     pacer.setSpeed(20);
     expect(pacer.state).toBe('paused');
     expect(pacer.simNow()).toBe(T0 + 5_050);
-    expect(clock.pendingTimers).toBe(0);
+    expect(manual.pendingTimers).toBe(0);
   });
 });

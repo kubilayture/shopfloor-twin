@@ -69,24 +69,6 @@ export const SUBJECT_TEXT: Readonly<Record<HoldSubjectKind, string>> = {
 export const subjectText = (subject: HoldSubjectDto): string =>
   `${SUBJECT_TEXT[subject.kind]} ${subject.id}`;
 
-/**
- * Where a subject's own page is: an order's detail, or its trace page (#202's routes
- * `/trace/lots/$lot`, `/trace/serials/$serial`, `/trace/cartons/$carton`).
- */
-export function subjectHref(subject: HoldSubjectDto): string {
-  const id = encodeURIComponent(subject.id);
-  switch (subject.kind) {
-    case 'order':
-      return `/orders/${id}`;
-    case 'lot':
-      return `/trace/lots/${id}`;
-    case 'serial':
-      return `/trace/serials/${id}`;
-    case 'carton':
-      return `/trace/cartons/${id}`;
-  }
-}
-
 /** Whether an episode is still open (no point has closed it yet). */
 export const isOpenEpisode = (signal: SpcSignalDto): boolean =>
   signal.status !== 'withdrawn' && signal.closedBy === null;

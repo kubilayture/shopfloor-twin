@@ -244,7 +244,11 @@ function Unit({ unit }: { readonly unit: TraceUnitDto }) {
       />
       <Materials unit={unit} />
       <Records unit={unit} />
-      <Holds holds={unit.holds} what="this unit, its lots, carton and order" />
+      <Holds
+        holds={unit.holds}
+        what="this unit, its lots, carton and order"
+        {...(unit.serial === null ? {} : { subject: { kind: 'serial' as const, id: unit.serial } })}
+      />
     </div>
   );
 }

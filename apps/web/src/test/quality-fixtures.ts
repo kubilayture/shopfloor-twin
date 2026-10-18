@@ -259,6 +259,7 @@ export function suggestion(overrides: Partial<HoldSuggestionDto> = {}): HoldSugg
     chart: 'I',
     rule: 1,
     after: { epoch: 1, at: at(101), seq: 101 },
+    from: { epoch: 1, at: at(102), seq: 102 },
     through: { epoch: 1, at: at(102), seq: 102 },
     readings: 2,
     units: [

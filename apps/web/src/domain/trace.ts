@@ -147,10 +147,3 @@ export const blocking = (holds: readonly HoldRefDto[]): boolean =>
 /** A reading over its specification limit (the leak test fails it). */
 export const overLimit = (reading: NonNullable<TraceRecordDto['reading']>): boolean =>
   reading.value > reading.upperLimit;
-
-/**
- * The holds screen of #203. Plain `<a href>` links until that route exists in this app (a typed
- * `Link` can't name an unregistered route); #203 converts them to `Link`s.
- */
-export const holdHref = (id: string): string => `/quality/holds/${encodeURIComponent(id)}`;
-export const HOLDS_HREF = '/quality/holds';

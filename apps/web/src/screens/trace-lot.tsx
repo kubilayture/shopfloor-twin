@@ -212,7 +212,11 @@ function LotTrace({ lot }: { readonly lot: string }) {
           <Master trace={trace} />
           <Units trace={trace} />
           <Where trace={trace} />
-          <Holds holds={trace.holds} what="this lot and its units" />
+          <Holds
+            holds={trace.holds}
+            what="this lot and its units"
+            subject={{ kind: 'lot', id: lot }}
+          />
           <p className="mt-6 text-sm text-slate-700">
             The MES crew of each cycle is on the serial pages (follow a serial).
           </p>

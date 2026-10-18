@@ -167,6 +167,7 @@ describe('opening a hold', () => {
     const panel = await screen.findByTestId('hold-suggestion');
     expect(panel.dataset.final).toBe('false');
     expect(screen.getByTestId('hold-suggestion-provisional')).toBeTruthy();
+    expect(screen.getByTestId('hold-suggestion-from').textContent).not.toBe('');
     // No subject chosen: nothing is sent.
     fireEvent.click(screen.getByTestId('open-submit'));
     expect(screen.getByTestId('open-invalid').textContent).toContain('at least one');

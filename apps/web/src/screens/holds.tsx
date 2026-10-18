@@ -50,12 +50,12 @@ import {
   qualityFailure,
   reasonsFor,
   subjectFromSearch,
-  subjectHref,
   subjectText,
   type QualityFailure,
 } from '../domain/quality.ts';
 import { useLiveQuality, useQualityTopic } from '../live/live-context.tsx';
 import { upsertHold } from '../live/live-quality.ts';
+import { SubjectLink as TraceSubjectLink } from './trace-common.tsx';
 
 // `/quality/holds`, `/quality/holds/new` and `/quality/holds/$id` (#203, plan "Web", ADR-0035):
 // the holds with filters, opening a hold on a lot, serial, carton or order (from a trace page, an
@@ -77,32 +77,9 @@ function HoldEffect() {
   );
 }
 
-/** A link to the subject's own page (an order's detail, or its trace page). */
+/** A link to the subject's own page: its trace page (#202) or an order's detail. */
 export function SubjectLink({ subject }: { readonly subject: HoldSubjectDto }) {
-  if (subject.kind === 'order') {
-    return (
-      <Link
-        to="/orders/$id"
-        params={{ id: subject.id }}
-        className="text-sky-800 underline"
-        data-testid="hold-subject"
-        data-kind={subject.kind}
-      >
-        {subjectText(subject)}
-      </Link>
-    );
-  }
-  // The trace pages (#202) are linked by URL: their routes live in another screen area.
-  return (
-    <a
-      href={subjectHref(subject)}
-      className="text-sky-800 underline"
-      data-testid="hold-subject"
-      data-kind={subject.kind}
-    >
-      {subjectText(subject)}
-    </a>
-  );
+  return <TraceSubjectLink subject={subject} testId="hold-subject" />;
 }
 
 const scopeText = (scope: HoldDto['scope']): string =>
@@ -382,9 +359,14 @@ function Suggestion({
     >
       <p>
         Episode {suggestion.signal} ({suggestion.chart}, rule {suggestion.rule}) on{' '}
-        {suggestion.characteristic}: the {suggestion.readings} readings (every pass) after{' '}
-        {suggestion.after ? timeOf(suggestion.after.at) : 'the start of its segment'} through{' '}
-        {timeOf(suggestion.through.at)}, {suggestion.units.length} units in{' '}
+        {suggestion.characteristic}: the {suggestion.readings} readings (every pass) from{' '}
+        <span data-testid="hold-suggestion-from">{timeOf(suggestion.from.at)}</span> (
+        {suggestion.after ? (
+          <>after the last in-control point at {timeOf(suggestion.after.at)}</>
+        ) : (
+          'the start of its segment'
+        )}
+        ) through {timeOf(suggestion.through.at)}, {suggestion.units.length} units in{' '}
         {suggestion.orders.length} orders and {suggestion.cartons.length} cartons.
       </p>
       {suggestion.final ? null : (
@@ -1108,9 +1090,13 @@ function Scope({ detail }: { readonly detail: HoldDetailDto }) {
             : detail.cartons.map((id, i) => (
                 <span key={id}>
                   {i > 0 ? ', ' : ''}
-                  <a href={subjectHref({ kind: 'carton', id })} className="text-sky-800 underline">
+                  <Link
+                    to="/trace/cartons/$carton"
+                    params={{ carton: id }}
+                    className="text-sky-800 underline"
+                  >
                     {id}
-                  </a>
+                  </Link>
                 </span>
               ))}
         </span>
@@ -1134,12 +1120,14 @@ function Scope({ detail }: { readonly detail: HoldDetailDto }) {
               >
                 <td className={cell}>
                   {u.serial ? (
-                    <a
-                      href={subjectHref({ kind: 'serial', id: u.serial })}
+                    <Link
+                      to="/trace/serials/$serial"
+                      params={{ serial: u.serial }}
+                      search={{ unit: `${String(u.epoch)}-${String(u.partId)}` }}
                       className="text-sky-800 underline"
                     >
                       {u.serial}
-                    </a>
+                    </Link>
                   ) : (
                     '–'
                   )}

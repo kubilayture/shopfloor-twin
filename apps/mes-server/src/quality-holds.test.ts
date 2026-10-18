@@ -344,7 +344,7 @@ async function harness(
     new Genealogy({
       db,
       ingest,
-      execution,
+      execution: options.wrapExecution ? options.wrapExecution(execution) : execution,
       orders,
       masterData,
       erp,

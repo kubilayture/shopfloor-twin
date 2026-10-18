@@ -34,7 +34,6 @@ import {
   reasonsFor,
   rulesText,
   subjectFromSearch,
-  subjectHref,
   subjectText,
   suggestedWindow,
   toPlantInput,
@@ -54,10 +53,6 @@ const problemError = (type: string, detail = 'detail') =>
 describe('quality rules (#203)', () => {
   it('names and links subjects', () => {
     expect(subjectText({ kind: 'lot', id: 'K1' })).toBe('Lot K1');
-    expect(subjectHref({ kind: 'order', id: 'PO 1' })).toBe('/orders/PO%201');
-    expect(subjectHref({ kind: 'lot', id: 'K1' })).toBe('/trace/lots/K1');
-    expect(subjectHref({ kind: 'serial', id: 'S1' })).toBe('/trace/serials/S1');
-    expect(subjectHref({ kind: 'carton', id: 'C1' })).toBe('/trace/cartons/C1');
     expect(subjectFromSearch('lot', 'K1')).toEqual({ kind: 'lot', id: 'K1' });
     expect(subjectFromSearch('lot', 'K 1')).toBeUndefined();
     expect(subjectFromSearch('pallet', 'K1')).toBeUndefined();

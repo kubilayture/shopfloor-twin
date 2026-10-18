@@ -2,12 +2,11 @@ import type { HoldRefDto, LotRefDto } from '@shopfloor/contracts/mes-api';
 import { Link } from '@tanstack/react-router';
 import { ApiError } from '../api/client.ts';
 import type { ReactNode } from 'react';
+import { useCan } from '../auth/auth.tsx';
 import {
-  HOLDS_HREF,
   HOLD_STATE_TEXT,
   SUBJECT_TEXT,
   UNIT_STATUS_TEXT,
-  holdHref,
   tracePoll,
   unitKey,
 } from '../domain/trace.ts';
@@ -256,12 +255,21 @@ export function OrderLink({ order }: { readonly order: string | null }) {
 export const unitStatus = (status: keyof typeof UNIT_STATUS_TEXT): string =>
   UNIT_STATUS_TEXT[status];
 
-function SubjectLink({ subject }: { readonly subject: HoldRefDto['subject'] }) {
+/** A hold subject's page: its trace page, or an order's detail (also the holds screens', #203). */
+export function SubjectLink({
+  subject,
+  testId,
+}: {
+  readonly subject: HoldRefDto['subject'];
+  /** A `data-testid` for the link (with the subject's kind in `data-kind`). */
+  readonly testId?: string;
+}) {
   const text = `${SUBJECT_TEXT[subject.kind]} ${subject.id}`;
+  const hooks = testId === undefined ? {} : { 'data-testid': testId, 'data-kind': subject.kind };
   switch (subject.kind) {
     case 'lot':
       return (
-        <Link to="/trace/lots/$lot" params={{ lot: subject.id }} className={linkClass}>
+        <Link to="/trace/lots/$lot" params={{ lot: subject.id }} className={linkClass} {...hooks}>
           {text}
         </Link>
       );
@@ -272,19 +280,25 @@ function SubjectLink({ subject }: { readonly subject: HoldRefDto['subject'] }) {
           params={{ serial: subject.id }}
           search={{}}
           className={linkClass}
+          {...hooks}
         >
           {text}
         </Link>
       );
     case 'carton':
       return (
-        <Link to="/trace/cartons/$carton" params={{ carton: subject.id }} className={linkClass}>
+        <Link
+          to="/trace/cartons/$carton"
+          params={{ carton: subject.id }}
+          className={linkClass}
+          {...hooks}
+        >
           {text}
         </Link>
       );
     case 'order':
       return (
-        <Link to="/orders/$id" params={{ id: subject.id }} className={linkClass}>
+        <Link to="/orders/$id" params={{ id: subject.id }} className={linkClass} {...hooks}>
           {text}
         </Link>
       );
@@ -298,21 +312,36 @@ function SubjectLink({ subject }: { readonly subject: HoldRefDto['subject'] }) {
 export function Holds({
   holds,
   what,
+  subject,
 }: {
   readonly holds: readonly HoldRefDto[];
   readonly what: string;
+  /** The page's own subject, which a `quality:hold` user may hold from here (#203). */
+  readonly subject?: { readonly kind: 'lot' | 'serial' | 'carton'; readonly id: string };
 }) {
+  const canHold = useCan('quality:hold');
   return (
     <Section id="trace-holds" title="Quality holds">
       <p className="text-sm text-slate-700">
         Holds on {what}, by the scope the MES last derived; the scope grows as facts arrive. Holds
         are opened, released and rejected on the{' '}
-        {/* Plain links until #203 adds `/quality/holds`; #203 converts them to `Link`s. */}
-        <a href={HOLDS_HREF} className={linkClass} data-testid="holds-screen-link">
+        <Link to="/quality/holds" search={{}} className={linkClass} data-testid="holds-screen-link">
           holds screen
-        </a>
+        </Link>
         .
       </p>
+      {canHold && subject ? (
+        <p className="mt-2">
+          <Link
+            to="/quality/holds/new"
+            search={{ kind: subject.kind, id: subject.id }}
+            className="inline-block rounded border border-slate-500 bg-white px-3 py-1 text-sm font-medium hover:bg-slate-100"
+            data-testid="trace-hold-open"
+          >
+            Hold this {SUBJECT_TEXT[subject.kind].toLowerCase()}
+          </Link>
+        </p>
+      ) : null}
       {holds.length === 0 ? (
         <p className="mt-1 text-sm" data-testid="trace-holds-empty">
           No open or rejected hold.
@@ -338,13 +367,14 @@ export function Holds({
             >
               <span className="font-semibold">{HOLD_STATE_TEXT[hold.state]}</span> hold on{' '}
               <SubjectLink subject={hold.subject} />{' '}
-              <a
-                href={holdHref(hold.id)}
+              <Link
+                to="/quality/holds/$id"
+                params={{ id: hold.id }}
                 className={linkClass}
                 data-testid={`hold-link-${hold.id}`}
               >
                 (details)
-              </a>
+              </Link>
             </li>
           ))}
         </ul>

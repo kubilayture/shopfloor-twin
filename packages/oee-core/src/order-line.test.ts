@@ -6,6 +6,7 @@ import { HOUR } from './intervals.ts';
 import { lineOee, linePlannedBusyMs } from './line-oee.ts';
 import type { OeeConfig } from './oee.ts';
 import {
+  completionOf,
   firstPassYield,
   headTimes,
   jobWindow,
@@ -145,7 +146,67 @@ describe('headTimes and jobWindow', () => {
   it('cuts a window at the cut-off when the job completes after it', () => {
     expect(
       jobWindow({ id: 'a', completed: 500 }, { kind: 'head', at: 100, source: 'accepted' }, 300),
-    ).toEqual({ from: 100, to: 300, open: true, headTimeUnknown: false });
+    ).toEqual({
+      from: 100,
+      to: 300,
+      open: true,
+      headTimeUnknown: false,
+      endLost: false,
+      lost: false,
+    });
+  });
+
+  it('closes a window whose completion is exactly the cut-off, and opens an empty one at it', () => {
+    const head = { kind: 'head', at: 100, source: 'accepted' } as const;
+    expect(jobWindow({ id: 'a', completed: 300 }, head, 300)).toMatchObject({
+      to: 300,
+      open: false,
+    });
+    expect(jobWindow({ id: 'a' }, head, 100)).toMatchObject({ from: 100, to: 100, open: true });
+  });
+
+  it('refuses a completion before the window starts, with the job named', () => {
+    expect(() =>
+      jobWindow({ id: 'J7', completed: 50 }, { kind: 'head', at: 100, source: 'accepted' }, 300),
+    ).toThrow(/job J7: its completion \(50\) is before its window starts \(100\)/);
+  });
+
+  it('refuses more cycles than the quantity, and takes no completion from a lost one of quantity 0', () => {
+    expect(() =>
+      completionOf({ id: 'a', completedLost: true, quantity: 1, cycleEnds: [1, 2] }),
+    ).toThrow(/2 OP10 cycles but a quantity of 1/);
+    expect(completionOf({ id: 'a', completedLost: true, quantity: 0 })).toBeUndefined();
+    expect(completionOf({ id: 'a', quantity: 2, cycleEnds: [1, 2] })).toBeUndefined();
+  });
+
+  it('caps a lost end at the next start only when it lies in the window and the cut-off', () => {
+    const head = { kind: 'head', at: 100, source: 'accepted' } as const;
+    const job = { id: 'a', completedLost: true };
+    expect(jobWindow(job, head, 300, { id: 'b', started: 400 })).toMatchObject({
+      to: 300,
+      open: true,
+      endLost: true,
+      lost: true,
+    });
+    expect(jobWindow(job, head, 300, { id: 'b', started: 200 })).toMatchObject({
+      to: 200,
+      open: false,
+      lost: true,
+    });
+  });
+
+  it('keeps a transient unknown head time apart from a lost one', () => {
+    const job = { id: 'a', started: 10, completed: 20 };
+    expect(
+      jobWindow(job, { kind: 'unknown', reason: 'previous-completed-missing' }, 30),
+    ).toMatchObject({
+      headTimeUnknown: true,
+      headUnknownReason: 'previous-completed-missing',
+      lost: false,
+    });
+    expect(jobWindow(job, { kind: 'unknown', reason: 'accepted-lost' }, 30)).toMatchObject({
+      lost: true,
+    });
   });
 });
 
@@ -189,6 +250,67 @@ describe('windowInputs', () => {
     ]);
   });
 
+  it('keeps an open Stopped interval open inside a window, a provisional micro-stop', () => {
+    const parts = windowInputs({
+      window: { from: 0, to: HOUR },
+      intervals: [
+        { from: 0, to: HOUR - MIN, state: 'Running', cause: null },
+        { from: HOUR - MIN, to: HOUR, state: 'Stopped', cause: 'JAM', open: true },
+      ],
+      scheduled: [{ from: 0, to: HOUR }],
+      cycles: [],
+      operation: 'OP10',
+      idealCycleMs: {},
+    });
+    expect(parts[0]?.stops).toEqual([{ ms: MIN, wholeMs: MIN, open: true }]);
+    const totals = orderOee(
+      {
+        jobs: [
+          {
+            id: 'a',
+            window: {
+              from: 0,
+              to: HOUR,
+              open: false,
+              headTimeUnknown: false,
+              endLost: false,
+              lost: false,
+            },
+            intervals: [
+              { from: 0, to: HOUR - MIN, state: 'Running', cause: null },
+              { from: HOUR - MIN, to: HOUR, state: 'Stopped', cause: 'JAM', open: true },
+            ],
+            cycles: [],
+            operation: 'OP10',
+          },
+        ],
+        scheduled: [{ from: 0, to: HOUR }],
+        idealCycleMs: {},
+      },
+      CONFIG,
+    );
+    expect(totals.order.provisional).toBe(true);
+    expect(totals.order.totals.microStopMs).toBe(BigInt(MIN));
+  });
+
+  it('puts a cycle exactly at the shift end in the unscheduled part', () => {
+    const parts = windowInputs({
+      window: { from: 0, to: 2 * HOUR },
+      intervals: [{ from: 0, to: 2 * HOUR, state: 'Running', cause: null }],
+      scheduled: [{ from: 0, to: HOUR }],
+      cycles: [
+        { product: 'P', result: 'good', count: 1, at: HOUR - 1 },
+        { product: 'P', result: 'good', count: 2, at: HOUR },
+      ],
+      operation: 'OP10',
+      idealCycleMs: { P: { OP10: MIN } },
+    });
+    expect(parts.map((part) => [part.scheduled, part.cycles[0]?.count])).toEqual([
+      [true, 1],
+      [false, 2],
+    ]);
+  });
+
   it('counts Idle NO-ORDER inside a window and leaves out an empty part', () => {
     const parts = windowInputs({
       window: { from: 2 * HOUR + 3 * MIN, to: 3 * HOUR },
@@ -215,7 +337,9 @@ describe('orderOee', () => {
     );
     expect(result.jobs).toEqual({ a: null });
     expect(result.order.oee).toBeNull();
-    expect(result.order.provisional).toBe(false);
+    // A job without a window leaves the order pending, so it is provisional, not complete.
+    expect(result.pending).toBe(true);
+    expect(result.order.provisional).toBe(true);
   });
 
   it('marks a job provisional with its own open window or unknown head time', () => {
@@ -224,14 +348,28 @@ describe('orderOee', () => {
         jobs: [
           {
             id: 'a',
-            window: { from: 0, to: HOUR, open: false, headTimeUnknown: true },
+            window: {
+              from: 0,
+              to: HOUR,
+              open: false,
+              headTimeUnknown: true,
+              endLost: false,
+              lost: false,
+            },
             intervals: [{ from: 0, to: HOUR, state: 'Running', cause: null }],
             cycles: [{ product: 'P', result: 'good', count: 10, at: HOUR - 1 }],
             operation: 'OP10',
           },
           {
             id: 'b',
-            window: { from: 0, to: HOUR, open: false, headTimeUnknown: false },
+            window: {
+              from: 0,
+              to: HOUR,
+              open: false,
+              headTimeUnknown: false,
+              endLost: false,
+              lost: false,
+            },
             intervals: [{ from: 0, to: HOUR, state: 'Running', cause: null }],
             cycles: [],
             operation: 'OP10',
@@ -245,6 +383,7 @@ describe('orderOee', () => {
     expect(result.jobs.a?.provisional).toBe(true);
     expect(result.jobs.b?.provisional).toBe(false);
     expect(result.order.provisional).toBe(true);
+    expect(result.lost).toBe(false);
     expect(formatFraction(result.order.oee ?? fraction(9n))).toBe('1/2');
   });
 });
@@ -286,6 +425,24 @@ describe('lineOee', () => {
     expect(() => lineOee({ plannedBusyMs: -1, good: [], effectiveCycleMs: cycles })).toThrow(
       /non-negative/,
     );
+  });
+
+  it('adds fractions with non-unit denominators exactly', () => {
+    expect(formatFraction(add(fraction(1n, 2n), fraction(1n, 3n)))).toBe('5/6');
+  });
+
+  it('sums two products whose effective cycles are both fractional', () => {
+    const result = lineOee({
+      plannedBusyMs: 1_000_000,
+      good: [
+        { product: 'B', count: 1 },
+        { product: 'C', count: 1 },
+      ],
+      effectiveCycleMs: { B: fraction(500_000n, 3n), C: fraction(250_000n, 2n * 3n + 1n) },
+    });
+    // 500000/3 + 250000/7 = (3 500 000 + 750 000) / 21 = 4250000/21
+    expect(formatFraction(result.idealMs)).toBe('4250000/21');
+    expect(formatFraction(result.oee ?? fraction(0n))).toBe('17/84');
   });
 
   it('keeps a fractional effective cycle exact', () => {

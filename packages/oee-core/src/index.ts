@@ -44,6 +44,7 @@ export { lineOee, linePlannedBusyMs } from './line-oee.ts';
 export type { LineOeeInput, LineOeeResult, LinePlannedBusyInput, PackedCount } from './line-oee.ts';
 export {
   NO_ORDER_CAUSE,
+  completionOf,
   firstPassYield,
   headTimes,
   jobWindow,
@@ -53,6 +54,7 @@ export {
 export type {
   FirstPassYield,
   HeadTime,
+  HeadUnknownReason,
   JobWindow,
   OrderJobInput,
   OrderOeeInput,

@@ -30,6 +30,8 @@ export interface QueuedJob {
   readonly id: string;
   /** Plant time of the device's `accepted` fact; undefined while it is unknown (lost or not received). */
   readonly accepted?: Millis;
+  /** The `accepted` fact is lost (a written-off gap), not merely not received yet. */
+  readonly acceptedLost?: boolean;
   /**
    * The command result's `acceptedAt` (`uns.cmd-res/1`): the plant time of the same `accepted` fact,
    * learnt on the command path. Used only when `accepted` is unknown.
@@ -41,26 +43,58 @@ export interface QueuedJob {
   readonly completed?: Millis;
   /** The `completed` fact is lost (a written-off gap): the job ended, but when is unknown. */
   readonly completedLost?: boolean;
+  /** Blanks to machine: the job's number of OP10 cycles (ADR-0030). */
+  readonly quantity?: number;
+  /**
+   * The end times of the job's OP10 cycles known so far, attributed by unit (ADR-0031). With all
+   * `quantity` of them known, the last one is the job's completion even when its `completed` fact
+   * is lost (ADR-0030: `completed` is the end of the last OP10 cycle).
+   */
+  readonly cycleEnds?: readonly Millis[];
 }
+
+/**
+ * The job's completion: its `completed` fact, or, when that fact is lost and every one of its
+ * `quantity` OP10 cycles is known, the end of the last of them. Undefined otherwise.
+ */
+export function completionOf(job: QueuedJob): Millis | undefined {
+  if (job.completed !== undefined) return job.completed;
+  const ends = job.cycleEnds ?? [];
+  if (job.quantity !== undefined && ends.length > job.quantity) {
+    throw new RangeError(
+      `job ${job.id} has ${String(ends.length)} OP10 cycles but a quantity of ${String(job.quantity)}`,
+    );
+  }
+  if (job.completedLost !== true || job.quantity === undefined || job.quantity === 0) {
+    return undefined;
+  }
+  if (ends.length < job.quantity) return undefined;
+  return ends.reduce((last, end) => (end > last ? end : last));
+}
+
+/** Why a head time is unknown; `previous-completed-missing` is transient, the lost ones are not. */
+export type HeadUnknownReason =
+  'accepted-unknown' | 'accepted-lost' | 'previous-completed-lost' | 'previous-completed-missing';
 
 export type HeadTime =
   /** The job is head from `at`. */
   | {
       readonly kind: 'head';
       readonly at: Millis;
-      readonly source: 'accepted' | 'acceptedAt' | 'previous-completed';
+      /** `previous-last-cycle`: the previous job's `completed` fact is lost, its last cycle known. */
+      readonly source: 'accepted' | 'acceptedAt' | 'previous-completed' | 'previous-last-cycle';
     }
   /** The previous job on the CNC has not completed, and this one has not started: not head yet. */
   | { readonly kind: 'waiting' }
   /**
-   * The facts can't tell: the job's acceptance is unknown (neither the fact nor `acceptedAt`), or
-   * the previous job's `completed` fact is lost or missing while this job has started.
+   * The facts can't tell: the job's acceptance is unknown (neither the fact nor `acceptedAt`;
+   * `accepted-lost` when the fact is lost), or the previous job's completion is lost or missing
+   * while this job has started.
    */
-  | {
-      readonly kind: 'unknown';
-      readonly reason:
-        'accepted-unknown' | 'previous-completed-lost' | 'previous-completed-missing';
-    };
+  | { readonly kind: 'unknown'; readonly reason: HeadUnknownReason };
+
+/** Unknown head times that no later fact can resolve: the order is never final. */
+const LOST_REASONS: readonly HeadUnknownReason[] = ['accepted-lost', 'previous-completed-lost'];
 
 /** The head time of every job of one CNC's queue, given in queue (acceptance) order. */
 export function headTimes(queue: readonly QueuedJob[]): HeadTime[] {
@@ -68,22 +102,30 @@ export function headTimes(queue: readonly QueuedJob[]): HeadTime[] {
     const previous = i > 0 ? queue[i - 1] : undefined;
     let previousEnd: Millis | undefined;
     if (previous !== undefined) {
-      if (previous.completed !== undefined) {
-        previousEnd = previous.completed;
-      } else if (previous.completedLost === true) {
-        return { kind: 'unknown', reason: 'previous-completed-lost' };
-      } else if (job.started !== undefined || job.completed !== undefined) {
-        return { kind: 'unknown', reason: 'previous-completed-missing' };
-      } else {
+      previousEnd = completionOf(previous);
+      if (previousEnd === undefined) {
+        if (previous.completedLost === true) {
+          return { kind: 'unknown', reason: 'previous-completed-lost' };
+        }
+        if (job.started !== undefined || job.completed !== undefined) {
+          return { kind: 'unknown', reason: 'previous-completed-missing' };
+        }
         return { kind: 'waiting' };
       }
     }
     const accepted = job.accepted ?? job.acceptedAt;
     if (accepted === undefined) {
-      return { kind: 'unknown', reason: 'accepted-unknown' };
+      return {
+        kind: 'unknown',
+        reason: job.acceptedLost === true ? 'accepted-lost' : 'accepted-unknown',
+      };
     }
-    if (previousEnd !== undefined && previousEnd > accepted) {
-      return { kind: 'head', at: previousEnd, source: 'previous-completed' };
+    if (previous !== undefined && previousEnd !== undefined && previousEnd > accepted) {
+      return {
+        kind: 'head',
+        at: previousEnd,
+        source: previous.completed === undefined ? 'previous-last-cycle' : 'previous-completed',
+      };
     }
     return {
       kind: 'head',
@@ -94,34 +136,77 @@ export function headTimes(queue: readonly QueuedJob[]): HeadTime[] {
 }
 
 export interface JobWindow extends Range {
-  /** The job has not completed by the cut-off (or its `completed` fact is lost): provisional. */
+  /** The job has not completed by the cut-off: provisional until it does (transient). */
   readonly open: boolean;
   /**
    * The head time is unknown, so the window starts at the job's `started` fact and leaves out its
-   * changeover: provisional, and never final.
+   * changeover: provisional. Final again once the missing fact arrives, unless `lost`.
    */
   readonly headTimeUnknown: boolean;
+  /** Why, when `headTimeUnknown`. */
+  readonly headUnknownReason?: HeadUnknownReason;
+  /**
+   * The job's `completed` fact is lost and its cycles don't tell its end: the window ends at the
+   * next job's `started` fact (or the cut-off, `open`) and is provisional.
+   */
+  readonly endLost: boolean;
+  /** A fact this window needs is lost for good: provisional and never final. */
+  readonly lost: boolean;
 }
 
 /**
  * The job's window on its CNC up to `until` (the caller's cut-off: final-through on the MES side,
  * the snapshot time in the ground truth), or undefined when it has none yet: a waiting job, a head
- * time after `until`, or an unknown head time and no `started` fact.
+ * time after `until`, or an unknown head time and no `started` fact. `next` is the following job on
+ * the same CNC: its `started` fact caps a window whose end is lost. Throws when the job's completion
+ * lies before the window's start.
  */
-export function jobWindow(job: QueuedJob, head: HeadTime, until: Millis): JobWindow | undefined {
+export function jobWindow(
+  job: QueuedJob,
+  head: HeadTime,
+  until: Millis,
+  next?: QueuedJob,
+): JobWindow | undefined {
   let from: Millis;
-  let headTimeUnknown = false;
+  let headUnknownReason: HeadUnknownReason | undefined;
   if (head.kind === 'head') {
     from = head.at;
   } else if (head.kind === 'unknown' && job.started !== undefined) {
     from = job.started;
-    headTimeUnknown = true;
+    headUnknownReason = head.reason;
   } else {
     return undefined;
   }
+  const completion = completionOf(job);
+  if (completion !== undefined && completion < from) {
+    throw new RangeError(
+      `job ${job.id}: its completion (${String(completion)}) is before its window starts (${String(from)}); the job facts are inconsistent`,
+    );
+  }
   if (from > until) return undefined;
-  const closed = job.completed !== undefined && job.completed <= until;
-  return { from, to: closed ? (job.completed ?? until) : until, open: !closed, headTimeUnknown };
+  let to = until;
+  let open = true;
+  let endLost = false;
+  if (completion !== undefined && completion <= until) {
+    to = completion;
+    open = false;
+  } else if (completion === undefined && job.completedLost === true) {
+    endLost = true;
+    const cap = next?.started;
+    if (cap !== undefined && cap >= from && cap <= until) {
+      to = cap;
+      open = false;
+    }
+  }
+  return {
+    from,
+    to,
+    open,
+    headTimeUnknown: headUnknownReason !== undefined,
+    ...(headUnknownReason === undefined ? {} : { headUnknownReason }),
+    endLost,
+    lost: endLost || (headUnknownReason !== undefined && LOST_REASONS.includes(headUnknownReason)),
+  };
 }
 
 /** One state interval of a machine; `open` while it is still running at its `to` (the cut-off). */
@@ -220,31 +305,47 @@ export interface OrderOeeResult {
   readonly order: OeeResult;
   /** The same per job, by job id; null for a job without a window yet. */
   readonly jobs: Readonly<Record<string, OeeResult | null>>;
-  /** A window is still open: the order's OEE is provisional. */
+  /** A window is still open: provisional until the job completes. */
   readonly open: boolean;
-  /** A job's head time is unknown (a lost fact): provisional, and never final. */
+  /** A job has no window yet (waiting, or its head time unknown and no `started` fact): provisional. */
+  readonly pending: boolean;
+  /** A job's head time is unknown: provisional; final again once the fact arrives, unless `lost`. */
   readonly headTimeUnknown: boolean;
+  /** A job's end is lost (`completed` lost and its cycles don't tell it): provisional. */
+  readonly endLost: boolean;
+  /** A fact a window needs is lost for good: provisional and never final. */
+  readonly lost: boolean;
 }
 
 /**
- * The order's OEE. `order.provisional` is set when a micro-stop is provisional, a window is open or a
- * head time is unknown; finality beyond that (every fact and unit final) is the caller's.
+ * The order's OEE. `order.provisional` is set when a micro-stop is provisional, a job has no window
+ * yet, a window is open, a head time is unknown or an end is lost; finality beyond that (every fact
+ * and unit final) is the caller's, and an order with `lost` is never final.
  */
 export function orderOee(input: OrderOeeInput, config: OeeConfig): OrderOeeResult {
   const jobs: Record<string, OeeResult | null> = {};
   const all = [];
-  let open = false;
-  let headTimeUnknown = false;
+  const flags = {
+    open: false,
+    pending: false,
+    headTimeUnknown: false,
+    endLost: false,
+    lost: false,
+  };
   for (const job of input.jobs) {
-    if (job.window === undefined) {
+    const window = job.window;
+    if (window === undefined) {
       jobs[job.id] = null;
+      flags.pending = true;
       continue;
     }
-    open ||= job.window.open;
-    headTimeUnknown ||= job.window.headTimeUnknown;
+    flags.open ||= window.open;
+    flags.headTimeUnknown ||= window.headTimeUnknown;
+    flags.endLost ||= window.endLost;
+    flags.lost ||= window.lost;
     const totals = sumTotals(
       windowInputs({
-        window: job.window,
+        window,
         intervals: job.intervals,
         scheduled: input.scheduled,
         cycles: job.cycles,
@@ -255,17 +356,14 @@ export function orderOee(input: OrderOeeInput, config: OeeConfig): OrderOeeResul
     const result = oeeFromTotals(totals);
     jobs[job.id] = {
       ...result,
-      provisional: result.provisional || job.window.open || job.window.headTimeUnknown,
+      provisional: result.provisional || window.open || window.headTimeUnknown || window.endLost,
     };
     all.push(totals);
   }
   const order = oeeFromTotals(sumTotals(all));
-  return {
-    order: { ...order, provisional: order.provisional || open || headTimeUnknown },
-    jobs,
-    open,
-    headTimeUnknown,
-  };
+  const provisional =
+    order.provisional || flags.open || flags.pending || flags.headTimeUnknown || flags.endLost;
+  return { order: { ...order, provisional }, jobs, ...flags };
 }
 
 /** One unit's operation records in plant-time order (ADR-0031). */

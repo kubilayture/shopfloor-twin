@@ -149,12 +149,18 @@ describe('bottleneck reference cases (B1–B4)', () => {
 
 function queuedJob(row: Record<string, string>): QueuedJob {
   const completed = cell(row, 'Completed');
-  const accepted = optionalTime(cell(row, 'Accepted'));
+  const acceptedText = cell(row, 'Accepted');
+  const accepted = acceptedText === 'lost' ? undefined : optionalTime(acceptedText);
+  const quantity = row.Quantity ?? NULL;
+  const ends = row['OP10 cycle ends'] ?? NULL;
   const acceptedAt = optionalTime(cell(row, 'Accepted at'));
   const started = optionalTime(cell(row, 'Started'));
   return {
     id: cell(row, 'Job'),
     ...(accepted === undefined ? {} : { accepted }),
+    ...(acceptedText === 'lost' ? { acceptedLost: true } : {}),
+    ...(quantity === NULL ? {} : { quantity: int(quantity) }),
+    ...(ends === NULL ? {} : { cycleEnds: list(ends, ',').map(time) }),
     ...(acceptedAt === undefined ? {} : { acceptedAt }),
     ...(started === undefined ? {} : { started }),
     ...(completed === 'lost'
@@ -172,12 +178,12 @@ const headText = (head: HeadTime): string =>
       ? 'waiting'
       : `unknown ${head.reason}`;
 
-describe('head-time reference cases (H1–H8)', () => {
+describe('head-time reference cases (H1–H13)', () => {
   const rows = table('Head times, Phase 9');
   const cases = [...new Set(rows.map((row) => cell(row, 'Case')))];
 
-  it('has the eight cases', () => {
-    expect(cases).toEqual(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8']);
+  it('has the thirteen cases', () => {
+    expect(cases).toEqual(Array.from({ length: 13 }, (_, i) => `H${String(i + 1)}`));
   });
 
   describe.each(cases)('case %s', (id) => {
@@ -188,7 +194,7 @@ describe('head-time reference cases (H1–H8)', () => {
       const actual = queue.map((row, i) => {
         const job = must(jobs[i]);
         const head = must(heads[i]);
-        const window = jobWindow(job, head, time(cell(row, 'Until')));
+        const window = jobWindow(job, head, time(cell(row, 'Until')), jobs[i + 1]);
         const windowText =
           window === undefined
             ? NULL
@@ -196,6 +202,8 @@ describe('head-time reference cases (H1–H8)', () => {
                 `${clock(window.from)}–${clock(window.to)}`,
                 window.open ? 'open' : '',
                 window.headTimeUnknown ? 'headTimeUnknown' : '',
+                window.endLost ? 'endLost' : '',
+                window.lost ? 'lost' : '',
               ]
                 .filter((part) => part !== '')
                 .join(' ');
@@ -298,6 +306,9 @@ describe('order OEE reference cases (O1–O9)', () => {
         order.provisional && 'provisional',
         result.headTimeUnknown && 'headTimeUnknown',
         result.open && 'open',
+        result.pending && 'pending',
+        result.endLost && 'endLost',
+        result.lost && 'lost',
       ].filter((flag) => flag !== false);
       const expected = resultRows.get(id) ?? {};
       expect({
@@ -347,15 +358,15 @@ describe('first-pass yield reference case (F1)', () => {
   );
 });
 
-describe('line OEE reference cases (L1–L11)', () => {
+describe('line OEE reference cases (L1–L13)', () => {
   const rows = table('Line OEE, Phase 9');
   const expectedRows = new Map(
     table('Expected line OEE, Phase 9').map((row) => [cell(row, 'Case'), row]),
   );
 
-  it('has eleven cases, each with an expected row', () => {
+  it('has thirteen cases, each with an expected row', () => {
     expect(rows.map((row) => cell(row, 'Case'))).toEqual([...expectedRows.keys()]);
-    expect(rows).toHaveLength(11);
+    expect(rows).toHaveLength(13);
   });
 
   describe.each(rows.map((row) => [cell(row, 'Case'), row] as const))('case %s', (id, row) => {

@@ -94,10 +94,10 @@ A drift makes many consecutive points fire the same rule. Alarming on every poin
 The Phase 5–7 defect class applies here too: a point is placed by plant time, and a late reading inserts a point and moves every later moving range, subgroup and run. So points, subgroups and episodes are **derived** from the readings and re-derived when one arrives, never patched. An episode is:
 
 - **provisional** until LKT-01 is final through its triggering point (every reading before it has arrived, or its gap was written off);
-- **final in identity** after that: which chart, rule and first point it is can no longer change;
+- **final in identity** after that, with respect to ordinary late facts: no reading that arrives in the normal way can change which chart, rule and first point it is. There are two exceptions: a late fact from a written-off gap (the reading the gap was assumed never to hold), and a limit version created or ended (the points are judged against other limits). In both cases the episode is **withdrawn** with its reason, never re-keyed, and whatever the re-derivation finds instead is a new episode;
 - **final in extent** only with `extentFinal`: its last point and length still follow the readings until the tester is final through its closing point.
 
-When a re-derivation no longer produces an episode, a provisional, unacknowledged one is removed; a final or acknowledged one is kept as `withdrawn` with the reason (for example a late reading from a written-off gap). An acknowledgement stays on its episode by key and is shown as orphaned if the episode is withdrawn. Nothing that a person has seen or acted on disappears silently.
+When a re-derivation no longer produces an episode, a provisional, unacknowledged one is removed; a final or acknowledged one is kept as `withdrawn` with the reason (in `derive.ts`'s `planSignals`: `WITHDRAWN_FINAL` for a late reading from a written-off gap, `WITHDRAWN_VERSION` for a limit version created or ended). An acknowledgement stays on its episode by key and is shown as orphaned if the episode is withdrawn. Nothing that a person has seen or acted on disappears silently.
 
 The review of PR #220 found that the golden replays never exercised this. In order, nothing is ever missing; fully shuffled, the baseline stays open until the end. Two mutants ("every episode is final" and "final through final-through + 10") passed. A third replay with **bounded disorder** (windows of 30–60 facts shuffled and ticked in chunks, blocks held back) produced provisional episodes on many ticks (`week-01`: 168 of 525), and both mutants failed it.
 
@@ -254,7 +254,7 @@ The late reading becomes a new point in time order. The moving range after it ch
 
 **12. When is an episode final, and why separate "identity final" from "extent final"?**
 
-Its identity (chart, rule, first triggering point) is final once LKT-01 is final through the triggering point: every earlier reading has arrived or been written off, so nothing can insert a point before it. Its extent (last point, length) can still grow while later readings arrive, so it is final only with `extentFinal`, when the tester is final through its closing point. Separating them lets the MES push and acknowledge a final episode while it is still running.
+Its identity (chart, rule, first triggering point) is final once LKT-01 is final through the triggering point: every earlier reading has arrived or been written off, so no ordinary late reading can insert a point before it. Two things can still undo it: a late fact from a written-off gap, and a limit version created or ended. Either one makes the module withdraw the episode with its reason (`WITHDRAWN_FINAL`, `WITHDRAWN_VERSION`); it never re-keys it (question 13). Its extent (last point, length) can still grow while later readings arrive, so it is final only with `extentFinal`, when the tester is final through its closing point. Separating them lets the MES push and acknowledge a final episode while it is still running.
 
 **13. A final episode is re-derived away by a late reading from a written-off gap. What happens to it, and to its acknowledgement?**
 
@@ -282,7 +282,7 @@ The drift is added after the random draw, as a whole number of resolution steps 
 
 **19. Then why does the command path use `receivedThrough` for `seqAfterExpiry`?**
 
-Its question is "is there no acceptance fact up to this number?". A fact lost in a written-off gap might be exactly the acceptance, so counting the gap as settled could conclude "never accepted" while the job exists, and a re-dispatch would make a second job. There, being stuck is the safe failure; for genealogy, never closing is the unsafe one. The choice follows from what a missing fact would mean for the decision.
+Its question is "is there no acceptance fact up to this number?". A fact lost in a written-off gap might be exactly the acceptance, so counting the gap as settled could conclude "never accepted" while the job exists, and a re-dispatch would make a second job. There, being stuck is the safe failure. For genealogy, being stuck would block every later close for good (a liveness failure), while moving on is still safe because `unrecorded` catches a late fact. The choice follows from what a missing fact would mean for the decision.
 
 **20. The guard checked the watermark, yet the reviewer closed an order beside a hold on its lot (probe PD). How?**
 
@@ -324,11 +324,11 @@ The exit criterion is what a user waits for. Probe P2 timed the queries at 0.02 
 
 Look at the drift, its counterfactual and a mutant, without a stack and without touching any database you keep.
 
-1. Run the shift-A reference of `quality-01` into a scratch folder: `pnpm sim:headless --scenario quality-01 --end 2026-10-12T14:00:00+03:00 --out runs/q01-a`. Open `runs/q01-a/trace.json` and find `drifts[0]`: `start` (part 105), `firstEpisode` (chart, rule, latency) and `window.readings`. For parts 105–110, compare `value` with `counterfactual` and with the I chart's upper limit in `spc.limits[0].limits.charts.I.upper` (a fraction in 0.001 steps).
+1. Run the shift-A reference of `quality-01` into a scratch folder: `pnpm sim:headless --scenario quality-01 --end 2026-10-12T14:00:00+03:00 --out runs/q01-a`. The command runs in the simulator's package, so it writes to `apps/simulator/runs/q01-a`. Open `apps/simulator/runs/q01-a/trace.json` and find `drifts[0]`: `start` (part 105), `firstEpisode` (chart, rule, latency) and `window.readings`. For parts 105–110, compare `value` with `counterfactual` and with the I chart's upper limit in `spc.limits[0].limits.charts.I.upper` (a fraction in 0.001 steps).
 2. By hand, from `spc.limits[0].limits.statistics`, compute X̄ ± 2.66 · M̄R and check that it equals the stored I limits. Then compute Cpu = (3,200 − X̄) / (3 · R̄ / 2.326).
 3. Measure the false-alarm run length yourself: `pnpm --filter @shopfloor/spc-core false-alarm` (about 45 s) and compare with the table in ADR-0032.
 4. Mutate and watch a test fail. In `apps/mes-server/src/modules/orders/orders.ts`, in `#evaluate`, move the progress read after the facts read (the order before #218). Run `pnpm --filter @shopfloor/mes-server exec vitest run src/orders.test.ts -t "#218"` (it needs Docker for its database container). It fails. Restore the file (`git checkout -- apps/mes-server/src/modules/orders/orders.ts`) and run it again: it passes.
-5. Remove `runs/q01-a`.
+5. Remove `apps/simulator/runs/q01-a`.
 
 ## 5. Owner's answers and notes
 

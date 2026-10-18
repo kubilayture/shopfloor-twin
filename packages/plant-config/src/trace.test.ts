@@ -50,6 +50,35 @@ describe('packing.yaml and quality.yaml (#208)', () => {
     ]);
   });
 
+  it('lists the hold reasons (#201) and refuses a duplicate, a use without a reason, or a bad code', async () => {
+    const loaded = await loadPlantConfig(DEFAULT_DIR);
+    if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
+    const reasons = loaded.config.quality.holdReasons;
+    expect(reasons.find((r) => r.id === 'SUSPECT-LOT')?.for).toEqual(['open']);
+    expect(reasons.filter((r) => r.for.includes('release')).map((r) => r.id)).toEqual([
+      'OTHER',
+      'CONFORMS',
+      'CONCESSION',
+    ]);
+    expect(
+      messagesFor((c) => {
+        c.quality.holdReasons.push({ id: 'OTHER', name: 'again', for: ['open'] });
+      }),
+    ).toBe(`quality:holdReasons[${String(reasons.length)}]: duplicate reason "OTHER"`);
+    expect(
+      messagesFor((c) => {
+        c.quality.holdReasons = c.quality.holdReasons
+          .map((r) => ({ ...r, for: r.for.filter((use) => use !== 'reject') }))
+          .filter((r) => r.for.length > 0);
+      }),
+    ).toBe('quality:holdReasons: no reason for "reject"');
+    expect(
+      messagesFor((c) => {
+        c.quality.holdReasons.push({ id: 'lower', name: 'x', for: ['open'] });
+      }),
+    ).toContain('quality');
+  });
+
   it('refuses a packing operation other than the last, and missing or unknown products', () => {
     expect(
       messagesFor((c) => {

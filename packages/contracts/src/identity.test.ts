@@ -13,7 +13,8 @@ import { loginRequestSchema, userCreateRequestSchema } from './mes-api.ts';
 
 /**
  * The Phase 7 plan's table ("Identity"), column by column: ✓ marks as written there; the Phase 8
- * plan's rows (#200: `spc:limits` quality, `spc:ack` quality and supervisor).
+ * plan's rows (#200: `spc:limits` quality, `spc:ack` quality and supervisor; #201: `quality:hold`
+ * quality and supervisor, `quality:release` quality).
  */
 const PLAN: Record<Permission, string> = {
   //                  operator maintenance quality supervisor admin
@@ -33,6 +34,8 @@ const PLAN: Record<Permission, string> = {
   'order:abandon': '···✓·',
   'spc:limits': '··✓··',
   'spc:ack': '··✓✓·',
+  'quality:hold': '··✓✓·',
+  'quality:release': '··✓··',
   'user:admin': '····✓',
 };
 

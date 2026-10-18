@@ -173,6 +173,87 @@ export interface SignalRecord {
   readonly rowVersion: number;
 }
 
+/** The readings since the last in-control point before an episode (#201: a suggested hold scope). */
+export interface SignalWindow {
+  readonly signal: SignalRecord;
+  /** The last in-control point before the episode; null: from its segment's start. */
+  readonly after: Position | null;
+  /** The window's first reading: just after `after`, or the segment's first reading. */
+  readonly from: Position;
+  /** The episode's last triggering point. */
+  readonly through: Position;
+  /** Every reading (retests included) after `after` through `through`, in chart order. */
+  readonly readings: readonly {
+    readonly epoch: number;
+    readonly partId: number;
+    readonly pass: number;
+    readonly at: number;
+    readonly seq: number;
+  }[];
+  /** The episode's `extentFinal`. */
+  readonly final: boolean;
+}
+
+/**
+ * The readings of a signal episode's window (pure, #201 review L3): from just after the episode
+ * chart's last point that fired no rule before the episode's first point, in the same segment, or
+ * from the segment's start (its first reading) when there is none, through the episode's last
+ * triggering point; every reading, retests included, in chart order. Undefined when the chart has
+ * no point at `first`.
+ */
+export function windowOf(
+  points: readonly {
+    readonly position: Position;
+    readonly segment: number;
+    readonly rules: readonly number[];
+  }[],
+  readings: readonly (Position & { readonly key: string })[],
+  first: { readonly epoch: number; readonly at: number; readonly seq: number },
+  last: { readonly epoch: number; readonly at: number; readonly seq: number },
+):
+  | {
+      after: Position | null;
+      from: Position;
+      through: Position;
+      readings: { epoch: number; partId: number; pass: number; at: number; seq: number }[];
+    }
+  | undefined {
+  const index = points.findIndex(
+    (p) =>
+      p.position.epoch === first.epoch &&
+      p.position.at === first.at &&
+      p.position.seq === first.seq,
+  );
+  const start = points[index];
+  if (!start) return undefined;
+  let after: Position | null = null;
+  for (let i = index - 1; i >= 0; i--) {
+    const point = points[i];
+    if (point?.segment !== start.segment) break;
+    if (point.rules.length === 0) {
+      after = point.position;
+      break;
+    }
+  }
+  const through: Position = { epoch: last.epoch, at: last.at, seq: last.seq };
+  // The segment is the device epoch of the episode's first point (ADR-0032: a new epoch starts a
+  // new segment): its first reading is where a window without an in-control point starts.
+  const inWindow = [...readings]
+    .filter(
+      (r) =>
+        comparePositions(r, through) <= 0 &&
+        (after === null ? r.epoch === start.position.epoch : comparePositions(r, after) > 0),
+    )
+    .sort(comparePositions);
+  const head = inWindow[0];
+  return {
+    after,
+    from: head ? { epoch: head.epoch, at: head.at, seq: head.seq } : start.position,
+    through,
+    readings: inWindow.map((r) => ({ ...keyParts(r.key), at: r.at, seq: r.seq })),
+  };
+}
+
 /** A measurement as the module reports it. */
 export interface MeasurementRecord {
   readonly epoch: number;
@@ -584,6 +665,37 @@ export class Quality {
       .where('id', '=', id)
       .executeTakeFirst();
     return row && toSignal(row);
+  }
+
+  /**
+   * The readings tested since the last in-control point before a signal episode (#201, plan
+   * "Signals and people": the hold a quality user may open from it): every reading, retests
+   * included, after the episode's chart's last point that fired no rule before the episode's first
+   * point (in its segment; none: from the segment's start) through its last triggering point.
+   * `final` is the episode's `extentFinal` (its last point won't move but for a written-off gap's
+   * fact). Undefined for an unknown or withdrawn signal, or one whose point the chart no longer has.
+   */
+  async signalWindow(id: number): Promise<SignalWindow | undefined> {
+    const signal = await this.signal(id);
+    if (!signal || signal.status === 'withdrawn') return undefined;
+    const view = await this.chart(signal.characteristic);
+    if (!view) return undefined;
+    const window = windowOf(
+      view.chart.points[signal.chart],
+      [...view.chart.firstPass, ...view.chart.retests],
+      signal.first,
+      signal.last,
+    );
+    if (!window) return undefined;
+    const { after, from, through, readings } = window;
+    return {
+      signal,
+      after,
+      from,
+      through,
+      readings,
+      final: signal.extentFinal,
+    };
   }
 
   // ---- writes ----

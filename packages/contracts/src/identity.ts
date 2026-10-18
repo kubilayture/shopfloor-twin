@@ -27,6 +27,9 @@ export const PERMISSIONS = [
   // Phase 8 (#200, plan "Identity and permissions"): SPC limit versions and signal acknowledgement.
   'spc:limits',
   'spc:ack',
+  // Phase 8 (#201, plan "Quality holds"): open a hold and comment on it; release or reject it.
+  'quality:hold',
+  'quality:release',
   'user:admin',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
@@ -61,6 +64,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'scrap:code',
     'spc:limits',
     'spc:ack',
+    'quality:hold',
+    'quality:release',
   ],
   supervisor: [
     'read',
@@ -78,6 +83,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     'order:close',
     'order:abandon',
     'spc:ack',
+    // A supervisor can stop shipment at night; only quality decides that the goods are good.
+    'quality:hold',
   ],
   admin: ['read', 'user:admin'],
 };

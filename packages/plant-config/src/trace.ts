@@ -30,7 +30,25 @@ const RANGE_CHARTS: readonly string[] = ['MR', 'R'];
 
 const rules = z.array(z.number().int().min(1).max(8));
 
+/** The transitions of a quality hold a reason can be given for (#201, plan "Quality holds"). */
+export const HOLD_REASON_USES = ['open', 'release', 'reject'] as const;
+
+export const holdReasonSchema = z.strictObject({
+  /** The code the MES stores and the ERP receives (`reason` of a quality notification). */
+  id: z.string().regex(/^[A-Z0-9][A-Z0-9_-]{0,63}$/, 'upper-case code like SUSPECT-LOT'),
+  name: z.string().min(1),
+  /** The transitions it may be given for. */
+  for: z.array(z.enum(HOLD_REASON_USES)).min(1),
+});
+
+export type HoldReason = z.infer<typeof holdReasonSchema>;
+
 export const qualitySchema = z.strictObject({
+  /**
+   * Reasons of a quality hold's opening, release and rejection (#201): a short list. Not part of
+   * the trace ground truth (`traceConfigSha256` hashes the characteristics only, #208).
+   */
+  holdReasons: z.array(holdReasonSchema).min(1),
   characteristics: z
     .array(
       z.strictObject({
@@ -89,6 +107,21 @@ export function checkQuality(
   equipmentOperation: ReadonlyMap<string, string>,
 ): { path: string; message: string }[] {
   const issues: { path: string; message: string }[] = [];
+  const reasons = new Set<string>();
+  quality.holdReasons.forEach((reason, index) => {
+    if (reasons.has(reason.id)) {
+      issues.push({
+        path: `holdReasons[${String(index)}]`,
+        message: `duplicate reason "${reason.id}"`,
+      });
+    }
+    reasons.add(reason.id);
+  });
+  for (const use of HOLD_REASON_USES) {
+    if (!quality.holdReasons.some((reason) => reason.for.includes(use))) {
+      issues.push({ path: 'holdReasons', message: `no reason for "${use}"` });
+    }
+  }
   const ids = new Set<string>();
   const operations = new Set<string>();
   quality.characteristics.forEach((characteristic, index) => {

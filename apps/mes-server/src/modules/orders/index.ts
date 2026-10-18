@@ -13,6 +13,11 @@
  *   completion, and a final confirmation or a correction with the deltas through the ERP outbox;
  *   `confirmations(id)` reads them back; `useBlankCounter(counter)` counts a lost job's blanks from
  *   the execution module's units.
+ * - Quality holds (#201, ADR-0035): `useCloseGuard(guard)` (the quality module's `CloseGuard`,
+ *   injected at composition so `orders` imports nothing of `quality`): `close` takes the guard's
+ *   advisory lock first in its transaction, before the order row's lock, and asks it; 409
+ *   `quality-hold` or `genealogy-pending`. `enqueueErpMessage(trx, message)`: a quality
+ *   notification into the ERP outbox in the caller's transaction (no `#serial`, no order row).
  * - The operator terminal (#177): `operations(filter)`, `activities(filter)`; `startWork`,
  *   `pauseWork`, `resumeWork`, `signOff` (a version per order operation, 409 `operation-stale`,
  *   audited); `endActivities(who)` and `endOrphanedActivities(signedOn)` when crew rows end.
@@ -27,10 +32,19 @@ export type { CommandInputs, CommandPolicy, CommandReading } from './command-sta
 export { chooseCnc, estimateFinish } from './dispatch-rule.ts';
 export type { CncQueue, ProductTimes, QueuedJob } from './dispatch-rule.ts';
 export { ErpClient } from './erp-client.ts';
-export type { ErpApi, ErpClientOptions, FeedPage, PostOutcome } from './erp-client.ts';
+export type {
+  ErpApi,
+  ErpClientOptions,
+  ErpMessageKind,
+  FeedPage,
+  PostOutcome,
+} from './erp-client.ts';
 export { AUDIT_ENTITY, DEFAULT_TIMINGS, OrderError, Orders } from './orders.ts';
 export type {
   BlankCounter,
+  CloseGuard,
+  CloseRefusal,
+  ErpOutboundMessage,
   CommandRecord,
   ConfirmationRecord,
   CommandTimings,

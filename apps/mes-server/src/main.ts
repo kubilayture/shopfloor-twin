@@ -15,7 +15,7 @@ import { DowntimeFeed, Oee } from './modules/oee/index.ts';
 import { Execution } from './modules/execution/index.ts';
 import { Genealogy } from './modules/genealogy/index.ts';
 import { ErpClient, MqttCommandPublisher, Orders } from './modules/orders/index.ts';
-import { Quality, characteristicsOf } from './modules/quality/index.ts';
+import { Holds, Quality, characteristicsOf } from './modules/quality/index.ts';
 import { Shifts } from './modules/shifts/index.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -78,6 +78,7 @@ let orders: Orders | undefined;
 let execution: Execution | undefined;
 let genealogy: Genealogy | undefined;
 let quality: Quality | undefined;
+let holds: Holds | undefined;
 let publisher: MqttCommandPublisher | undefined;
 
 const { app, registry, realtime } = await buildMesHttp({
@@ -131,6 +132,7 @@ async function shutdown(signal: string): Promise<void> {
     () => app.close(),
     async () => ingest?.stop(),
     async () => genealogy?.stop(),
+    async () => holds?.stop(),
     async () => quality?.stop(),
     async () => execution?.stop(),
     async () => orders?.stop(),
@@ -391,6 +393,27 @@ try {
   });
   quality = qualityModule;
   await qualityModule.start();
+  // Quality holds (#201, ADR-0035): scope through the genealogy, notifications through the orders
+  // outbox, and the close guard injected into orders (so `orders` imports nothing of `quality`).
+  const holdsModule = new Holds({
+    db,
+    readDb,
+    genealogy: genealogyModule,
+    ingest,
+    execution: executionModule,
+    orders: ordersModule,
+    reasons: plant.config.quality.holdReasons,
+    signals: qualityModule,
+    clock: () => equipmentModule.watermarks()[0]?.watermark,
+    epoch: () => equipmentModule.watermarks()[0]?.epoch,
+    registry,
+    log: log.child({ module: 'quality', part: 'holds' }),
+  });
+  holds = holdsModule;
+  ordersModule.useCloseGuard(holdsModule.closeGuard());
+  // Fail closed (#201 review, L2): a close without the guard is refused; say so at start.
+  if (!ordersModule.closeGuarded) throw new Error('orders: no quality close guard wired');
+  await holdsModule.start();
   // The operator terminal (#177): a session that ends (logout, a disabled user, a password
   // change, a new login) ends its crew rows; a crew row that ends closes its operator's activity
   // intervals at that work center; intervals left open while the MES was down are closed now.
@@ -435,6 +458,7 @@ try {
     execution: executionModule,
     genealogy: genealogyModule,
     quality: qualityModule,
+    holds: holdsModule,
   });
   log.info({ writes: env.MES_WRITES }, 'operator writes (downtime coding, alarms, handover notes)');
   await ingest.start();

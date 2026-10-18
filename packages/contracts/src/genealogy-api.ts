@@ -91,6 +91,17 @@ export const traceRecordSchema = z
   })
   .describe('One cycle of a unit with what it consumed and measured');
 
+/** A quality hold (#201) as a trace answer names it: those open or rejected. */
+export const holdRefSchema = z.object({
+  id: z.string(),
+  state: z.enum(['open', 'released', 'rejected']),
+  subject: z.object({ kind: z.enum(['lot', 'serial', 'carton', 'order']), id: z.string() }),
+});
+
+const holds = z
+  .array(holdRefSchema)
+  .describe('Quality holds open or rejected on it (#201), by the scope last derived');
+
 export const traceUnitSchema = z
   .object({
     epoch: int.describe('Units are keyed (device epoch, partId); serials repeat across runs'),
@@ -101,6 +112,7 @@ export const traceUnitSchema = z
     status: z.enum(['wip', 'packed', 'scrapped', 'lost']),
     carton: z.string().nullable(),
     records: z.array(traceRecordSchema),
+    holds,
   })
   .describe('A unit traced back: its records, lots, operators, readings and carton');
 
@@ -146,6 +158,9 @@ export const lotTraceSchema = z
     withLots: z
       .array(lotRefDtoSchema)
       .describe('“Where used with”: every other lot the same units consumed, by lot id'),
+    holds: holds.describe(
+      'Quality holds open or rejected on the lot or on any of its units (#201), by the scope last derived',
+    ),
     ...finality,
   })
   .describe('`GET /trace/lots/{lot}`: forward trace');
@@ -158,6 +173,9 @@ export const cartonSchema = z.object({
   status: z.enum(CARTON_STATUSES),
   closedAt: time.nullable().describe('Plant time: its last member’s, or the order’s completion'),
   members: int,
+  held: z
+    .boolean()
+    .describe('A member is in an open or rejected quality hold (#201): the carton is blocked'),
 });
 
 export const cartonTraceSchema = z
@@ -165,6 +183,9 @@ export const cartonTraceSchema = z
     carton: cartonSchema,
     units: z.array(unitRefSchema).describe('In placement order'),
     lots: z.array(lotRefDtoSchema).describe('Every lot its members consumed, by lot id'),
+    holds: holds.describe(
+      'Quality holds open or rejected on the carton or any of its members (#201), by the scope last derived',
+    ),
     ...finality,
   })
   .describe('`GET /trace/cartons/{id}`: a carton and its members');
@@ -205,6 +226,7 @@ export type TraceUnitDto = z.infer<typeof traceUnitSchema>;
 export type SerialTraceDto = z.infer<typeof serialTraceSchema>;
 export type LotTraceDto = z.infer<typeof lotTraceSchema>;
 export type CartonDto = z.infer<typeof cartonSchema>;
+export type HoldRefDto = z.infer<typeof holdRefSchema>;
 export type CartonTraceDto = z.infer<typeof cartonTraceSchema>;
 export type TraceSearchDto = z.infer<typeof traceSearchSchema>;
 export type GenealogyIncidentDto = z.infer<typeof genealogyIncidentSchema>;

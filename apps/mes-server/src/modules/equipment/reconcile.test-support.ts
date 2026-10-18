@@ -50,9 +50,11 @@ import {
   Orders,
   type CommandPublisher,
   type ErpApi,
+  type ErpMessageKind,
   type FeedPage,
   type PostOutcome,
 } from '../orders/index.ts';
+import { Holds } from '../quality/index.ts';
 import {
   alarmKpiDto,
   badActorDto,
@@ -73,6 +75,14 @@ import {
   type TraceJson,
   type TraceProjection,
 } from './genealogy-reconcile.test-support.ts';
+import {
+  chooseSubjects,
+  expectScriptedHolds,
+  openCartonHold,
+  openScriptedHolds,
+  type HoldPins,
+  type ScriptedHolds,
+} from './holds-reconcile.test-support.ts';
 import { Equipment, downtimeRules } from './index.ts';
 import {
   PLANT_CONFIG,
@@ -1301,7 +1311,7 @@ async function expectRecords(db: Kysely<Database>, run: Run) {
 /** The ERP serving a scenario's dataset (`@shopfloor/contracts/erp-api`), storing every post. */
 class GoldenErp implements ErpApi {
   readonly feedId = 'b'.repeat(32);
-  readonly posts: { kind: 'status' | 'confirmation'; key: string; body: unknown }[] = [];
+  readonly posts: { kind: ErpMessageKind; key: string; body: unknown }[] = [];
   readonly #entries: readonly FeedEntry[];
   readonly #lots: readonly Lot[];
 
@@ -1328,22 +1338,24 @@ class GoldenErp implements ErpApi {
     });
   }
 
-  post(kind: 'status' | 'confirmation', key: string, body: unknown): Promise<PostOutcome> {
+  post(kind: ErpMessageKind, key: string, body: unknown): Promise<PostOutcome> {
     const replay = this.posts.find((p) => p.key === key);
     if (replay && JSON.stringify(replay.body) !== JSON.stringify(body)) {
       return Promise.resolve({ kind: 'conflict', status: 409, detail: `${key}: another body` });
     }
     if (!replay) this.posts.push({ kind, key, body });
+    const common = {
+      idempotencyKey: key,
+      receivedSeq: this.posts.findIndex((p) => p.key === key) + 1,
+      receivedAt: new Date(0).toISOString(),
+    };
     return Promise.resolve({
       kind: 'stored',
       status: replay ? 200 : 201,
-      receipt: {
-        idempotencyKey: key,
-        kind,
-        orderNumber: key.split('~')[0] ?? '',
-        receivedSeq: this.posts.findIndex((p) => p.key === key) + 1,
-        receivedAt: new Date(0).toISOString(),
-      },
+      receipt:
+        kind === 'quality-notification'
+          ? { ...common, kind, holdId: key.split('~')[0] ?? '' }
+          : { ...common, kind, orderNumber: key.split('~')[0] ?? '' },
     });
   }
 }
@@ -1375,9 +1387,13 @@ interface OrdersStack {
   readonly orders: Orders;
   readonly execution: Execution;
   readonly genealogy: Genealogy;
+  /** Quality holds (#201), with the close guard injected into the orders module. */
+  readonly holds: Holds;
   readonly erp: GoldenErp;
   readonly scenario: ScenarioFile;
   readonly by: { readonly by: WriteBy; readonly requestId: string };
+  /** A quality user's write context (the scripted holds). */
+  readonly quality: { readonly by: WriteBy; readonly requestId: string };
 }
 
 /**
@@ -1404,14 +1420,24 @@ async function ordersStack(
     lots = expanded.lots;
   }
   const erp = new GoldenErp(entries, lots);
-  const user = await new Identity({
+  const identity = new Identity({
     db: m.db,
     sweepMs: 0,
     hashParams: { N: 1024, r: 8, p: 1 },
-  }).createUser(
+  });
+  const user = await identity.createUser(
     {
       username: 'supervisor',
       roles: ['supervisor'],
+      password: 'a-long-test-password',
+      mustChangePassword: false,
+    },
+    { system: 'test' },
+  );
+  const inspector = await identity.createUser(
+    {
+      username: 'inspector',
+      roles: ['quality'],
       password: 'a-long-test-password',
       mustChangePassword: false,
     },
@@ -1458,15 +1484,34 @@ async function ordersStack(
     lotPollMs: 0,
   });
   await genealogy.start();
+  // Quality holds (#201): the close guard as the MES composes it.
+  const holds = new Holds({
+    db: m.db,
+    genealogy,
+    ingest: m.ingest,
+    execution,
+    orders,
+    reasons: plant.quality.holdReasons,
+    clock,
+    epoch: () => EPOCH,
+    tickMs: 0,
+  });
+  await holds.start();
+  orders.useCloseGuard(holds.closeGuard());
   return {
     orders,
     execution,
     genealogy,
+    holds,
     erp,
     scenario,
     by: {
       by: { userId: user.id, username: 'supervisor', roles: ['supervisor'] },
       requestId: 'golden',
+    },
+    quality: {
+      by: { userId: inspector.id, username: 'inspector', roles: ['quality'] },
+      requestId: 'golden-holds',
     },
   };
 }
@@ -1515,12 +1560,28 @@ function splitAtFirstJob(facts: readonly Delivery[]): {
  * Brings commands, units, completion and confirmations up to date, then the genealogy (units and
  * cartons, #199), then posts the ERP outbox.
  */
+/** The scripted holds' view of a stack (#201). */
+const holdContext = (stack: OrdersStack) => ({
+  holds: stack.holds,
+  orders: stack.orders,
+  quality: stack.quality,
+  supervisor: stack.by,
+});
+
+/** Posts the stack's ERP outbox until nothing is pending. */
+const postAllOf = (stack: OrdersStack) => async () => {
+  while ((await stack.orders.postNow()) > 0) {
+    // until nothing is pending
+  }
+};
+
 async function settleOrders(stack: OrdersStack): Promise<void> {
   for (let round = 0; round < 2; round++) {
     await stack.orders.tick();
     await stack.execution.tick();
     await stack.genealogy.tick();
   }
+  await stack.holds.tick();
   while ((await stack.orders.postNow()) > 0) {
     // Posts the outbox in batches until nothing is pending.
   }
@@ -2029,6 +2090,11 @@ export interface Scenario {
     readonly atCut?: GenealogyPins;
     /** `quality-01`'s required features, asserted to exist in the MES's genealogy. */
     readonly features?: boolean;
+    /**
+     * The golden hold cases (#201), at the cut: a lot still in use, a closed carton and a
+     * completed order held; the pinned counts.
+     */
+    readonly holds?: HoldPins;
   };
   /**
    * How long each test takes on a quiet machine (ms), measured (#218): a run slower than
@@ -2210,6 +2276,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const { db, equipment, ingest, masterData, alarms, send } = await mes();
         reference = db;
         let stack: OrdersStack | undefined;
+        let scripted: ScriptedHolds | undefined;
         const genealogyTruth =
           span.genealogy !== undefined && span.golden !== undefined
             ? await traceTruth(span.golden, run)
@@ -2244,6 +2311,20 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
             console.log(
               `${title}: in order, at ${cut} (traceAsOf): ${String(counts.units)} units, ${String(counts.lots)} lots and ${String(counts.cartons)} cartons equal the cut truth; ${String(counts.final)} backward traces final`,
             );
+            if (span.genealogy?.holds !== undefined) {
+              // The golden hold cases (#201): scripted holds at the cut's plant time.
+              const atCut = projectionAsOf(genealogyTruth.cutTrace, at);
+              const completed = (await stack.orders.list({ status: ['completed'] })).orders.map(
+                (o) => o.id,
+              );
+              scripted = await openScriptedHolds(
+                holdContext(stack),
+                chooseSubjects(genealogyTruth.expected, atCut, at, completed),
+                at,
+                EPOCH,
+                { atCut },
+              );
+            }
             await send([...rest.filter((d) => deliveryTime(d) >= at), end]);
           } else {
             await send([...rest, end]);
@@ -2321,6 +2402,19 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
             console.log(
               `${title}: in order, ${String(counts.units)} units, ${String(counts.lots)} lots and ${String(counts.cartons)} cartons equal trace.json; ${String(counts.final)} backward traces final`,
             );
+            if (scripted && span.genealogy.holds !== undefined) {
+              const pins = await expectScriptedHolds(
+                holdContext(stack),
+                scripted,
+                genealogyTruth.expected,
+                stack.erp.posts,
+                postAllOf(stack),
+              );
+              console.log(
+                `${title}: in order, holds: lot ${pins.lot} ${String(pins.lotUnitsAtCut)} units at the cut, ${String(pins.lotUnits)} in the end (${String(pins.consumedAfter)} held-material-consumed), rework lot ${pins.reworkLot} ${String(pins.reworkLotUnits)}, carton ${pins.carton} ${String(pins.cartonUnits)}, order ${pins.order} ${String(pins.orderUnits)}; closes refused while held (also ${pins.lotOrder} by the lot hold's scope); 8 notifications once each`,
+              );
+              expect(pins).toEqual(span.genealogy.holds);
+            }
           }
           await stack.genealogy.stop();
           await stack.execution.stop();
@@ -2349,6 +2443,7 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
         const next = random(2026);
         const { db, equipment, ingest, masterData, alarms, send } = await mes();
         let stack: OrdersStack | undefined;
+        let shuffledHolds: ScriptedHolds | undefined;
         if (span.orders === undefined && span.genealogy !== undefined) {
           // Schedule mode with genealogy (#199): shuffled with 10 % duplicates, units and cartons
           // brought up to date every 400 deliveries (judged on partial, reordered data).
@@ -2377,12 +2472,31 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
           const mixed = shuffle([...after, ...copies], next);
           // A closed carton never changes its members, also on partial data (#199 review H2).
           const watch = closedCartonWatch(stack.genealogy);
+          const pinned = span.genealogy?.holds;
+          const cut = span.genealogy?.cut;
           for (let i = 0; i < mixed.length; i += 400) {
             await send(mixed.slice(i, i + 400));
             await stack.orders.tick();
             await stack.execution.tick();
             await stack.genealogy.tick();
             await watch.check();
+            if (
+              pinned !== undefined &&
+              cut !== undefined &&
+              shuffledHolds === undefined &&
+              i >= mixed.length / 2
+            ) {
+              // The golden hold cases on reordered data (#201 review L4): the same subjects at the
+              // same plant time, opened halfway; the carton once it exists.
+              shuffledHolds = await openScriptedHolds(
+                holdContext(stack),
+                pinned,
+                Date.parse(cut),
+                EPOCH,
+                { carton: false },
+              );
+            }
+            await stack.holds.tick();
             await stack.orders.postNow();
           }
           await send([end, ...mixed.slice(0, 500)]);
@@ -2439,6 +2553,24 @@ export function reconciliationSuite(title: string, scenario: () => Promise<Scena
             console.log(
               `${title}: shuffled, ${String(counts.units)} units, ${String(counts.lots)} lots and ${String(counts.cartons)} cartons equal trace.json and the in-order run`,
             );
+            const pinned = span.genealogy.holds;
+            if (pinned !== undefined) {
+              // The golden hold cases on reordered data reach the in-order run's ends (#201 L4);
+              // what the lot covered when it opened differs (opened halfway, not at the cut).
+              if (!shuffledHolds) throw new Error('the shuffled holds were never opened');
+              await openCartonHold(holdContext(stack), shuffledHolds, pinned.carton, EPOCH);
+              const pins = await expectScriptedHolds(
+                holdContext(stack),
+                shuffledHolds,
+                traced.expected,
+                stack.erp.posts,
+                postAllOf(stack),
+              );
+              expect({ ...pins, lotUnitsAtCut: pinned.lotUnitsAtCut }).toEqual(pinned);
+              console.log(
+                `${title}: shuffled, the hold cases equal the in-order run's (lot ${pins.lot} ${String(pins.lotUnits)} units, ${String(pins.consumedAfter)} held-material-consumed)`,
+              );
+            }
           }
           await stack.genealogy.stop();
           await stack.execution.stop();

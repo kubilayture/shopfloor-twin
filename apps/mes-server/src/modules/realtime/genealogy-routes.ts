@@ -7,6 +7,7 @@ import {
   serialTraceSchema,
   traceSearchSchema,
   type CartonTraceDto,
+  type HoldRefDto,
   type LotTraceDto,
   type SerialTraceDto,
   type TraceUnitDto,
@@ -22,10 +23,25 @@ import type {
   TraceUnitRecord,
   UnitRef,
 } from '../genealogy/index.ts';
+import type { Holds } from '../quality/index.ts';
 import { HttpProblem, getRoute } from './routes.ts';
 
 /** What the trace routes use of the genealogy module (#199). */
 export type GenealogyApi = Pick<Genealogy, 'serial' | 'lot' | 'carton' | 'search' | 'incidents'>;
+
+/** What the trace routes use of the quality holds (#201): the holds on an answer's nodes. */
+export type TraceHoldsApi = Pick<Holds, 'holdsOn'>;
+
+/** The holds of a trace answer: per unit (`{epoch}/{partId}`) and all of them. */
+export interface TraceHolds {
+  readonly byUnit: ReadonlyMap<string, readonly HoldRefDto[]>;
+  readonly all: readonly HoldRefDto[];
+}
+
+const NO_HOLDS: TraceHolds = { byUnit: new Map(), all: [] };
+const unitKey = (u: { epoch: number; partId: number }) => `${String(u.epoch)}/${String(u.partId)}`;
+const holdRefs = (refs: readonly HoldRefDto[] | undefined): HoldRefDto[] =>
+  (refs ?? []).map((h) => ({ id: h.id, state: h.state, subject: { ...h.subject } }));
 
 const iso = (date: Date): string => date.toISOString();
 const isoOrNull = (date: Date | null): string | null => (date === null ? null : iso(date));
@@ -37,7 +53,10 @@ const idParam = z
   .max(GENEALOGY_LIMITS.id)
   .regex(/^[^/\s]+$/);
 
-export function traceUnitDto(unit: TraceUnitRecord): TraceUnitDto {
+export function traceUnitDto(
+  unit: TraceUnitRecord,
+  holds: readonly HoldRefDto[] = [],
+): TraceUnitDto {
   return {
     epoch: unit.epoch,
     partId: unit.partId,
@@ -74,6 +93,7 @@ export function traceUnitDto(unit: TraceUnitRecord): TraceUnitDto {
         to: isoOrNull(c.toPlant),
       })),
     })),
+    holds: holdRefs(holds),
   };
 }
 
@@ -86,16 +106,16 @@ const unitRefDto = (unit: UnitRef) => ({
   status: unit.status,
 });
 
-export function serialTraceDto(trace: SerialTrace): SerialTraceDto {
+export function serialTraceDto(trace: SerialTrace, holds: TraceHolds = NO_HOLDS): SerialTraceDto {
   return {
     serial: trace.serial,
-    units: trace.units.map(traceUnitDto),
+    units: trace.units.map((u) => traceUnitDto(u, holds.byUnit.get(unitKey(u)))),
     final: trace.final,
     notFinal: [...trace.notFinal],
   };
 }
 
-export function lotTraceDto(trace: LotTrace): LotTraceDto {
+export function lotTraceDto(trace: LotTrace, holds: TraceHolds = NO_HOLDS): LotTraceDto {
   return {
     lot: trace.lot,
     material: trace.material,
@@ -115,12 +135,13 @@ export function lotTraceDto(trace: LotTrace): LotTraceDto {
     orders: [...trace.orders],
     cartons: [...trace.cartons],
     withLots: trace.withLots.map((l) => ({ material: l.material, lot: l.lot })),
+    holds: holdRefs(holds.all),
     final: trace.final,
     notFinal: [...trace.notFinal],
   };
 }
 
-export function cartonTraceDto(trace: CartonTrace): CartonTraceDto {
+export function cartonTraceDto(trace: CartonTrace, holds: TraceHolds = NO_HOLDS): CartonTraceDto {
   return {
     carton: {
       id: trace.carton.id,
@@ -130,9 +151,14 @@ export function cartonTraceDto(trace: CartonTrace): CartonTraceDto {
       status: trace.carton.status,
       closedAt: isoOrNull(trace.carton.closedAt),
       members: trace.carton.members,
+      // A member in an open or rejected hold blocks the carton (#201).
+      held: trace.units.some((u) =>
+        (holds.byUnit.get(unitKey(u)) ?? []).some((h) => h.state !== 'released'),
+      ),
     },
     units: trace.units.map(unitRefDto),
     lots: trace.lots.map((l) => ({ material: l.material, lot: l.lot })),
+    holds: holdRefs(holds.all),
     final: trace.final,
     notFinal: [...trace.notFinal],
   };
@@ -163,8 +189,17 @@ export function genealogyRoutes(
   deps: {
     /** The genealogy module, or 503 while the MES starts. */
     readonly genealogy: () => GenealogyApi;
+    /** The quality holds (#201); without them, no holds are named. */
+    readonly holds?: () => TraceHoldsApi | undefined;
   },
 ): void {
+  const holdsOf = async (
+    units: readonly { epoch: number; partId: number }[],
+    subjects: readonly { kind: 'lot' | 'serial' | 'carton' | 'order'; id: string }[],
+  ): Promise<TraceHolds> => {
+    const holds = deps.holds?.();
+    return holds ? holds.holdsOn(units, subjects) : NO_HOLDS;
+  };
   getRoute(
     api,
     {
@@ -180,7 +215,7 @@ export function genealogyRoutes(
     async ({ params }) => {
       const found = await deps.genealogy().serial(params.serial);
       if (!found) throw new HttpProblem(404, `no unit with serial ${params.serial}`);
-      return serialTraceDto(found);
+      return serialTraceDto(found, await holdsOf(found.units, []));
     },
   );
 
@@ -199,7 +234,7 @@ export function genealogyRoutes(
     async ({ params }) => {
       const found = await deps.genealogy().lot(params.lot);
       if (!found) throw new HttpProblem(404, `no lot ${params.lot}`);
-      return lotTraceDto(found);
+      return lotTraceDto(found, await holdsOf(found.units, [{ kind: 'lot', id: params.lot }]));
     },
   );
 
@@ -218,7 +253,10 @@ export function genealogyRoutes(
     async ({ params }) => {
       const found = await deps.genealogy().carton(params.carton);
       if (!found) throw new HttpProblem(404, `no carton ${params.carton}`);
-      return cartonTraceDto(found);
+      return cartonTraceDto(
+        found,
+        await holdsOf(found.units, [{ kind: 'carton', id: params.carton }]),
+      );
     },
   );
 

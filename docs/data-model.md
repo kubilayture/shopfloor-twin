@@ -87,6 +87,10 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
 - [`quality`](#schema-quality)
   - `quality.characteristic`
   - `quality.control_limit`
+  - `quality.hold`
+  - `quality.hold_incident`
+  - `quality.hold_transition`
+  - `quality.hold_unit`
   - `quality.measurement`
   - `quality.spc_signal`
 - [`public`](#schema-public)
@@ -192,6 +196,10 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `quality` | `mes_owner` | USAGE |  |
 | `quality.characteristic` | `mes_owner` | INSERT, SELECT, UPDATE |  |
 | `quality.control_limit` | `mes_owner` | INSERT, SELECT |  |
+| `quality.hold` | `mes_owner` | INSERT, SELECT, UPDATE |  |
+| `quality.hold_incident` | `mes_owner` | INSERT, SELECT |  |
+| `quality.hold_transition` | `mes_owner` | INSERT, SELECT |  |
+| `quality.hold_unit` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `quality.measurement` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `quality.spc_signal` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `shifts` | `mes_owner` | USAGE |  |
@@ -424,6 +432,22 @@ erDiagram
     text characteristic FK, PK
     integer n PK
   }
+  hold {
+    uuid id PK
+  }
+  hold_incident {
+    bigint id PK
+    uuid hold_id FK
+  }
+  hold_transition {
+    uuid hold_id FK, PK
+    integer n PK
+  }
+  hold_unit {
+    uuid hold_id FK, PK
+    bigint epoch PK
+    bigint part_id PK
+  }
   measurement {
     text equipment PK
     bigint epoch PK
@@ -435,6 +459,9 @@ erDiagram
     text characteristic FK
   }
   characteristic ||--o{ control_limit : "characteristic"
+  hold ||--o{ hold_incident : "hold_id"
+  hold ||--o{ hold_transition : "hold_id"
+  hold ||--o{ hold_unit : "hold_id"
   characteristic ||--o{ measurement : "characteristic"
   characteristic ||--o{ spc_signal : "characteristic"
 ```
@@ -1715,15 +1742,15 @@ The ERP change feed’s cursor and feed id, committed with the page it imported;
 
 ### orders.erp_message_log
 
-Feed entries imported (in) and messages to the ERP (out, an outbox with its Idempotency-Key, attempts, last error and the ERP’s receipt); a 409 is an incident and never retried (#174, ADR-0028).
+Feed entries imported (in) and messages to the ERP (out, an outbox with its Idempotency-Key, attempts, last error and the ERP’s receipt); a 409 is an incident and never retried (#174, ADR-0028). Quality notifications (#201) are about a hold (`subject_kind` `hold`, `subject_id`), with no order or revision.
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |
 | `id` | `bigint` | not null | `generated always as identity` |
 | `direction` | `text` | not null |  |
 | `kind` | `text` | not null |  |
-| `order_id` | `text` | not null |  |
-| `revision` | `integer` | not null |  |
+| `order_id` | `text` | null |  |
+| `revision` | `integer` | null |  |
 | `idempotency_key` | `text` | null |  |
 | `feed_id` | `text` | null |  |
 | `feed_seq` | `bigint` | null |  |
@@ -1736,6 +1763,8 @@ Feed entries imported (in) and messages to the ERP (out, an outbox with its Idem
 | `receipt` | `jsonb` | null |  |
 | `created_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
 | `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `subject_kind` | `text` | null |  |
+| `subject_id` | `text` | null |  |
 
 | Kind | Name | Definition |
 | --- | --- | --- |
@@ -1745,10 +1774,15 @@ Feed entries imported (in) and messages to the ERP (out, an outbox with its Idem
 | Check | `erp_message_log_check` | `CHECK (((direction = 'out'::text) = (idempotency_key IS NOT NULL)))` |
 | Check | `erp_message_log_check1` | `CHECK (((direction = 'in'::text) = (kind = 'feed-entry'::text)))` |
 | Check | `erp_message_log_direction_check` | `CHECK ((direction = ANY (ARRAY['in'::text, 'out'::text])))` |
-| Check | `erp_message_log_kind_check` | `CHECK ((kind = ANY (ARRAY['feed-entry'::text, 'status'::text, 'confirmation'::text])))` |
+| Check | `erp_message_log_kind_check` | `CHECK ((kind = ANY (ARRAY['feed-entry'::text, 'status'::text, 'confirmation'::text, 'quality-notification'::text])))` |
+| Check | `erp_message_log_order_kinds` | `CHECK (((kind = 'quality-notification'::text) OR ((order_id IS NOT NULL) AND (revision IS NOT NULL) AND (subject_kind IS NULL))))` |
+| Check | `erp_message_log_quality_notification` | `CHECK (((kind <> 'quality-notification'::text) OR ((direction = 'out'::text) AND (order_id IS NULL) AND (revision IS NULL) AND (subject_kind = 'hold'::text) AND (subject_id IS NOT NULL))))` |
 | Check | `erp_message_log_status_check` | `CHECK ((status = ANY (ARRAY['imported'::text, 'rejected'::text, 'unchanged'::text, 'cancelled'::text, 'revision-refused'::text, 'pending'::text, 'sent'::text, 'conflict'::text, 'refused'::text])))` |
+| Check | `erp_message_log_subject` | `CHECK (((subject_kind IS NULL) = (subject_id IS NULL)))` |
+| Check | `erp_message_log_subject_kind_check` | `CHECK ((subject_kind = 'hold'::text))` |
 | Index | `erp_message_log_order` | `orders.erp_message_log USING btree (order_id, id)` |
 | Index | `erp_message_log_pending` | `orders.erp_message_log USING btree (id) WHERE (status = 'pending'::text)` |
+| Index | `erp_message_log_subject` | `orders.erp_message_log USING btree (subject_kind, subject_id, id) WHERE (subject_kind IS NOT NULL)` |
 
 ### orders.operation_activity
 
@@ -2178,7 +2212,7 @@ One row per operation record of a unit with what its cycle fact reported for tra
 
 ## Schema quality
 
-Owner: quality. SPC (#200, ADR-0032): the characteristics of `quality.yaml`, one measurement per cycle fact of the characteristic’s machine with its pass, control limit versions as append-only events (version 1 automatic from the baseline, never re-derived), and the signal episodes derived from the first-pass readings with their finality, withdrawal and acknowledgement. Points and subgroups are derived on read.
+Owner: quality. SPC (#200, ADR-0032): the characteristics of `quality.yaml`, one measurement per cycle fact of the characteristic’s machine with its pass, control limit versions as append-only events (version 1 automatic from the baseline, never re-derived), and the signal episodes derived from the first-pass readings with their finality, withdrawal and acknowledgement. Points and subgroups are derived on read. Quality holds (#201, ADR-0035): a hold on a lot, serial, carton or order with append-only transitions, its scope derived from the genealogy (a copy kept for reads) and `held-material-consumed` incidents.
 
 ### quality.characteristic
 
@@ -2246,6 +2280,121 @@ Control limit versions as append-only events: `created` (frozen limits, window a
 | Check | `control_limit_n_check` | `CHECK ((n >= 1))` |
 | Check | `control_limit_version_check` | `CHECK ((version >= 1))` |
 | Index | `control_limit_version` | `quality.control_limit USING btree (characteristic, version, kind)` |
+
+### quality.hold
+
+Quality holds on a lot, serial, carton or order (#201, ADR-0035): id a UUID (unique forever: the ERP’s store outlives this database), state `open`, `released` or `rejected`, the opening and decision with user, wall and plant time and reason (`quality.yaml`), the number of transitions and the version a write names (409 hold-stale); kept, never deleted.
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `uuid` | not null |  |
+| `subject_kind` | `text` | not null |  |
+| `subject_id` | `text` | not null |  |
+| `state` | `text` | not null |  |
+| `reason` | `text` | not null |  |
+| `opened_by` | `text` | not null |  |
+| `opened_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `opened_plant_at` | `timestamp with time zone` | null |  |
+| `opened_epoch` | `bigint` | null |  |
+| `decided_by` | `text` | null |  |
+| `decided_at` | `timestamp with time zone` | null |  |
+| `decided_plant_at` | `timestamp with time zone` | null |  |
+| `decided_epoch` | `bigint` | null |  |
+| `decision_reason` | `text` | null |  |
+| `transitions` | `integer` | not null | `1` |
+| `version` | `integer` | not null | `1` |
+| `updated_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `hold_pkey` | `PRIMARY KEY (id)` |
+| Check | `hold_check` | `CHECK (((state = 'open'::text) = (decided_by IS NULL)))` |
+| Check | `hold_check1` | `CHECK (((decided_by IS NULL) = (decided_at IS NULL)))` |
+| Check | `hold_check2` | `CHECK (((decided_by IS NULL) = (decision_reason IS NULL)))` |
+| Check | `hold_check3` | `CHECK (((opened_epoch IS NULL) OR (opened_plant_at IS NOT NULL)))` |
+| Check | `hold_check4` | `CHECK (((decided_epoch IS NULL) OR (decided_plant_at IS NOT NULL)))` |
+| Check | `hold_state_check` | `CHECK ((state = ANY (ARRAY['open'::text, 'released'::text, 'rejected'::text])))` |
+| Check | `hold_subject_id_check` | `CHECK (((length(subject_id) >= 1) AND (length(subject_id) <= 128)))` |
+| Check | `hold_subject_kind_check` | `CHECK ((subject_kind = ANY (ARRAY['lot'::text, 'serial'::text, 'carton'::text, 'order'::text])))` |
+| Check | `hold_transitions_check` | `CHECK ((transitions >= 1))` |
+| Check | `hold_version_check` | `CHECK ((version >= 1))` |
+| Index | `hold_state` | `quality.hold USING btree (state, opened_at)` |
+| Index | `hold_subject` | `quality.hold USING btree (subject_kind, subject_id)` |
+
+### quality.hold_incident
+
+`held-material-consumed`: a lot under a hold consumed after the hold opened (and before a release), one per fact, lot and hold; kept, never deleted (#201).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `type` | `text` | not null |  |
+| `hold_id` | `uuid` | not null |  |
+| `lot` | `text` | not null |  |
+| `equipment` | `text` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `seq` | `bigint` | not null |  |
+| `part_id` | `bigint` | not null |  |
+| `operation` | `text` | null |  |
+| `pass` | `integer` | null |  |
+| `consumed_at` | `timestamp with time zone` | not null |  |
+| `message` | `text` | not null |  |
+| `detected_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `hold_incident_pkey` | `PRIMARY KEY (id)` |
+| Unique | `hold_incident_hold_id_equipment_epoch_seq_lot_key` | `UNIQUE (hold_id, equipment, epoch, seq, lot)` |
+| Foreign key | `hold_incident_hold_id_fkey` | `FOREIGN KEY (hold_id) REFERENCES quality.hold(id)` |
+| Check | `hold_incident_type_check` | `CHECK ((type = 'held-material-consumed'::text))` |
+| Index | `hold_incident_hold` | `quality.hold_incident USING btree (hold_id, id)` |
+
+### quality.hold_transition
+
+Every transition (`opened` n = 1, `released`, `rejected`) and comment of a hold, with its user, reason, comment, wall and plant time and the scope counts its ERP notification carried; append-only: a trigger refuses UPDATE, DELETE and TRUNCATE to every role (#201).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `hold_id` | `uuid` | not null |  |
+| `n` | `integer` | not null |  |
+| `kind` | `text` | not null |  |
+| `reason` | `text` | null |  |
+| `comment` | `text` | null |  |
+| `actor` | `text` | not null |  |
+| `at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+| `plant_at` | `timestamp with time zone` | null |  |
+| `scope` | `jsonb` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `hold_transition_pkey` | `PRIMARY KEY (hold_id, n)` |
+| Foreign key | `hold_transition_hold_id_fkey` | `FOREIGN KEY (hold_id) REFERENCES quality.hold(id)` |
+| Check | `hold_transition_check` | `CHECK (((kind = 'opened'::text) = (n = 1)))` |
+| Check | `hold_transition_check1` | `CHECK (((kind = 'commented'::text) = (reason IS NULL)))` |
+| Check | `hold_transition_check2` | `CHECK (((kind = 'commented'::text) = (scope IS NULL)))` |
+| Check | `hold_transition_check3` | `CHECK (((kind <> 'commented'::text) OR (comment IS NOT NULL)))` |
+| Check | `hold_transition_kind_check` | `CHECK ((kind = ANY (ARRAY['opened'::text, 'commented'::text, 'released'::text, 'rejected'::text])))` |
+| Check | `hold_transition_n_check` | `CHECK ((n >= 1))` |
+
+### quality.hold_unit
+
+A hold’s scope as last derived from the genealogy (units with their order and carton, and when each joined), for reads; rebuilt while the hold is open or rejected, kept as it stood once released. The close guard never reads it: it derives the scope at check time (#201).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `hold_id` | `uuid` | not null |  |
+| `epoch` | `bigint` | not null |  |
+| `part_id` | `bigint` | not null |  |
+| `serial` | `text` | null |  |
+| `order_id` | `text` | null |  |
+| `carton_id` | `text` | null |  |
+| `joined_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `hold_unit_pkey` | `PRIMARY KEY (hold_id, epoch, part_id)` |
+| Foreign key | `hold_unit_hold_id_fkey` | `FOREIGN KEY (hold_id) REFERENCES quality.hold(id)` |
+| Index | `hold_unit_unit` | `quality.hold_unit USING btree (epoch, part_id)` |
 
 ### quality.measurement
 

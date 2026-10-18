@@ -462,6 +462,24 @@ export class Execution implements BlankCounter {
     return { units: await this.#withRecords(db, kept), truncated: rows.length > limit };
   }
 
+  /**
+   * The units attributed to an order, by key only (#201: the close guard takes their cycle facts
+   * from ingest to check genealogy's watermark against), in the caller's transaction if given.
+   */
+  async orderUnits(
+    orderId: string,
+    db: Kysely<Database> = this.#db,
+  ): Promise<{ epoch: number; partId: number }[]> {
+    const rows = await db
+      .selectFrom('execution.unit')
+      .select(['epoch', 'part_id'])
+      .where('order_id', '=', orderId)
+      .orderBy('epoch')
+      .orderBy('part_id')
+      .execute();
+    return rows.map((r) => ({ epoch: r.epoch, partId: r.part_id }));
+  }
+
   /** Every unit's order and status, without records (#199: genealogy's catch-up compares them). */
   async unitStates(
     db: Kysely<Database> = this.#db,

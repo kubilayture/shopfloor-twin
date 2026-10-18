@@ -121,6 +121,38 @@ export interface BlankCounter {
   }): Promise<number | undefined>;
 }
 
+/**
+ * Why an order may not close now (#201, ADR-0035): an open hold covers a unit of it (or the order
+ * itself), or genealogy has not processed every fact of its units yet (retryable).
+ */
+export type CloseRefusal =
+  | { readonly kind: 'quality-hold'; readonly holds: readonly string[]; readonly message: string }
+  | { readonly kind: 'genealogy-pending'; readonly message: string };
+
+/**
+ * The quality module's guard on `close` (#201, plan "Quality holds", review rounds 1 and 2),
+ * injected at composition (as `BlankCounter`), so `orders` imports nothing of `quality`. `lock`
+ * takes the advisory lock that opening a hold takes too, first in the close's transaction (before
+ * the order row's lock); `check` runs after it in the same transaction and derives the order's
+ * held units from the open holds' subjects and the genealogy links at that moment. Neither may wait
+ * on the orders module's in-process queue.
+ */
+export interface CloseGuard {
+  lock(trx: Transaction<Database>): Promise<void>;
+  check(trx: Transaction<Database>, orderId: string): Promise<CloseRefusal | undefined>;
+}
+
+/** An outbound ERP message another module writes into the outbox in its own transaction (#201). */
+export interface ErpOutboundMessage {
+  readonly kind: 'quality-notification';
+  /** `qualityNotificationKey`: `{holdId}~{transition}~{n}`. */
+  readonly idempotencyKey: string;
+  /** What the message is about: the hold. */
+  readonly subject: { readonly kind: 'hold'; readonly id: string };
+  /** The body as posted (`QualityNotificationRequest`). */
+  readonly payload: unknown;
+}
+
 export interface OrdersLog {
   info(object: object, message: string): void;
   warn(object: object, message: string): void;
@@ -166,6 +198,11 @@ export interface OrdersOptions {
   readonly mesEpoch?: number;
   readonly registry?: Registry;
   readonly log?: OrdersLog;
+  /**
+   * Closes without a close guard (#201 review, L2): module tests of orders alone. Otherwise a close
+   * with no guard wired is refused (fail closed): the quality holds must be asked.
+   */
+  readonly unguardedClose?: boolean;
   /** Test seam: runs after a delivery's attempt row is committed, before its publish. */
   readonly beforePublish?: (commandId: string) => Promise<void>;
 }
@@ -253,9 +290,11 @@ export interface CommandRecord {
 export interface ErpMessageRecord {
   readonly id: number;
   readonly direction: 'in' | 'out';
-  readonly kind: 'feed-entry' | 'status' | 'confirmation';
-  readonly orderId: string;
-  readonly revision: number;
+  readonly kind: 'feed-entry' | 'status' | 'confirmation' | 'quality-notification';
+  /** Null only for a quality notification (#201), which is about a hold. */
+  readonly orderId: string | null;
+  readonly revision: number | null;
+  readonly subject: { readonly kind: 'hold'; readonly id: string } | null;
   readonly idempotencyKey: string | null;
   readonly status: string;
   readonly detail: string | null;
@@ -398,6 +437,7 @@ export class Orders {
   #kick: NodeJS.Timeout | undefined;
   #unsubscribe: (() => void) | undefined;
   #blanks: BlankCounter | undefined;
+  #guard: CloseGuard | undefined;
 
   constructor(options: OrdersOptions) {
     this.#options = options;
@@ -433,6 +473,62 @@ export class Orders {
   /** Counts a lost job's blanks from the execution module's units from now on (#175). */
   useBlankCounter(counter: BlankCounter): void {
     this.#blanks = counter;
+  }
+
+  /**
+   * Guards `close` with the quality module's holds from now on (#201, ADR-0035): the guard's lock
+   * first in the close's transaction, then its check.
+   */
+  useCloseGuard(guard: CloseGuard): void {
+    this.#guard = guard;
+  }
+
+  /** Whether a close guard is wired (the MES asserts it at start: a close fails closed without). */
+  get closeGuarded(): boolean {
+    return this.#guard !== undefined;
+  }
+
+  /**
+   * Writes an outbound ERP message into the outbox in the caller's transaction (#201: a quality
+   * notification in the transaction of its hold's transition), so one publisher and one backoff
+   * serve every ERP message. Never takes the module's in-process queue and touches no order row:
+   * a hold's transaction holds the advisory lock a close waits for inside that queue (plan review
+   * round 2, MEDIUM D). A key used before is refused by the database (the transaction fails).
+   */
+  async enqueueErpMessage(trx: Transaction<Database>, message: ErpOutboundMessage): Promise<void> {
+    await trx
+      .insertInto('orders.erp_message_log')
+      .values({
+        direction: 'out',
+        kind: message.kind,
+        order_id: null,
+        revision: null,
+        idempotency_key: message.idempotencyKey,
+        feed_id: null,
+        feed_seq: null,
+        payload: JSON.stringify(message.payload),
+        status: 'pending',
+        detail: null,
+        receipt: null,
+        subject_kind: message.subject.kind,
+        subject_id: message.subject.id,
+      })
+      .execute();
+  }
+
+  /** The outbound ERP messages about a subject (#201: a hold's notifications), in order. */
+  async erpMessagesOf(
+    subject: { readonly kind: 'hold'; readonly id: string },
+    db: Kysely<Database> = this.#readDb,
+  ): Promise<ErpMessageRecord[]> {
+    const rows = await db
+      .selectFrom('orders.erp_message_log')
+      .selectAll()
+      .where('subject_kind', '=', subject.kind)
+      .where('subject_id', '=', subject.id)
+      .orderBy('id')
+      .execute();
+    return rows.map(toMessage);
   }
 
   /** Listens for order and command changes (push); returns an unsubscribe. */
@@ -655,17 +751,38 @@ export class Orders {
   }
 
   /**
-   * `completed → closed`; posts `closed`. Every operation of the order must be signed off at its
-   * terminal first (#177: the operators' sign-off, then the supervisor's close); 409
-   * `sign-off-missing` names those that are not.
+   * `completed → closed`; posts `closed`. With a close guard (#201, ADR-0035) the transaction
+   * first takes the advisory lock opening a hold takes too, then the order row's lock, and the
+   * guard refuses while genealogy has not processed every fact of the order's units (409
+   * `genealogy-pending`, retryable) or an open hold covers a unit of it or the order (409
+   * `quality-hold`). Every operation of the order must be signed off at its terminal (#177: the
+   * operators' sign-off, then the supervisor's close); 409 `sign-off-missing` names those that are
+   * not.
    */
   async close(
     id: string,
     request: { readonly version: number },
     context: WriteContext,
   ): Promise<OrderRecord> {
-    return this.#write(id, request.version, context, 'order.close', async (trx, row, plantAt) => {
+    const guard = this.#guard;
+    const write = async (trx: Transaction<Database>, row: OrderRow, plantAt: Date) => {
       expectStatus(row, ['completed'], 'close');
+      if (!guard && this.#options.unguardedClose !== true) {
+        throw new OrderError(
+          'conflict',
+          `order ${id}: no quality close guard is wired; refusing the close (fail closed)`,
+        );
+      }
+      const refusal = guard ? await guard.check(trx, id) : undefined;
+      if (refusal) {
+        throw new OrderError(
+          'conflict',
+          refusal.message,
+          refusal.kind === 'quality-hold'
+            ? PROBLEM_TYPES.qualityHold
+            : PROBLEM_TYPES.genealogyPending,
+        );
+      }
       const missing = await trx
         .selectFrom('orders.order_operation')
         .select(['operation', 'work_center'])
@@ -683,8 +800,16 @@ export class Orders {
         );
       }
       await this.#statusMessage(trx, row, 'closed', plantAt);
-      return { set: { status: 'closed', closed_at: plantAt } };
-    }).then((r) => r.order);
+      return { set: { status: 'closed' as const, closed_at: plantAt } };
+    };
+    return this.#write(
+      id,
+      request.version,
+      context,
+      'order.close',
+      write,
+      guard ? (trx) => guard.lock(trx) : undefined,
+    ).then((r) => r.order);
   }
 
   /**
@@ -1242,7 +1367,7 @@ export class Orders {
         .execute();
       for (const message of pending) {
         if (message.next_attempt_at !== null && message.next_attempt_at > now) break;
-        const kind = message.kind === 'confirmation' ? 'confirmation' : 'status';
+        const kind = message.kind === 'feed-entry' ? 'status' : message.kind;
         const outcome = await erp.post(kind, message.idempotency_key ?? '', message.payload);
         this.#erpPosts?.inc({ outcome: outcome.kind });
         const attempts = message.attempts + 1;
@@ -1997,11 +2122,17 @@ export class Orders {
       touched?: readonly string[];
       audit?: Record<string, unknown>;
     }>,
+    /**
+     * Runs first in the transaction, before the order row's lock (#201: the close guard's advisory
+     * lock, the one lock order holds and closes share; plan review round 2, MEDIUM D).
+     */
+    first?: (trx: Transaction<Database>) => Promise<void>,
   ): Promise<{ order: OrderRecord; command: CommandRecord | undefined }> {
     if (!this.#started) throw new OrderError('conflict', 'the orders module is starting');
     const done = await this.#serial(() =>
       this.#deferringIncidents(() =>
         this.#db.transaction().execute(async (trx) => {
+          if (first) await first(trx);
           const row = await this.#lock(trx, id);
           if (row.version !== version) {
             throw new OrderError(
@@ -2750,6 +2881,10 @@ function toMessage(row: Selectable<ErpMessageLogTable>): ErpMessageRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     payload: row.payload,
+    subject:
+      row.subject_kind === null || row.subject_id === null
+        ? null
+        : { kind: row.subject_kind, id: row.subject_id },
   };
 }
 

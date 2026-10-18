@@ -252,6 +252,14 @@ describe('roles, owners and grants (#169, ADR-0027)', () => {
       'TRUNCATE quality.control_limit',
       'UPDATE quality.control_limit SET comment = comment',
       'DELETE FROM quality.control_limit',
+      // Hold transitions are append-only (#201, plan "Database roles and grants").
+      'ALTER TABLE quality.hold_transition DISABLE TRIGGER hold_transition_no_update_delete',
+      'ALTER TABLE quality.hold_transition DISABLE TRIGGER ALL',
+      'TRUNCATE quality.hold_transition',
+      'UPDATE quality.hold_transition SET comment = comment',
+      'DELETE FROM quality.hold_transition',
+      'DELETE FROM quality.hold',
+      'DELETE FROM quality.hold_incident',
       'TRUNCATE identity.audit_log',
       'TRUNCATE alarms.alarm_transition',
       'UPDATE identity.audit_log SET username = username',
@@ -302,6 +310,22 @@ describe('roles, owners and grants (#169, ADR-0027)', () => {
       sql`UPDATE quality.control_limit SET comment = 'x'`,
       sql`DELETE FROM quality.control_limit`,
       sql`TRUNCATE quality.control_limit`,
+    ]) {
+      expect(await sqlState(() => statement.execute(owner))).toBe('42501');
+    }
+    // A hold transition (#201) likewise: added by mes_app, changed or removed by nobody.
+    await sql`INSERT INTO quality.hold (id, subject_kind, subject_id, state, reason, opened_by)
+      VALUES ('00000000-0000-4000-8000-000000000001', 'lot', 'L1', 'open', 'OTHER', 'q')`.execute(
+      app,
+    );
+    await sql`INSERT INTO quality.hold_transition (hold_id, n, kind, reason, actor, scope)
+      VALUES ('00000000-0000-4000-8000-000000000001', 1, 'opened', 'OTHER', 'q', '{}')`.execute(
+      app,
+    );
+    for (const statement of [
+      sql`UPDATE quality.hold_transition SET comment = 'x'`,
+      sql`DELETE FROM quality.hold_transition`,
+      sql`TRUNCATE quality.hold_transition`,
     ]) {
       expect(await sqlState(() => statement.execute(owner))).toBe('42501');
     }

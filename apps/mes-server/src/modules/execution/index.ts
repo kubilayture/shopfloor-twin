@@ -16,6 +16,7 @@
  * - For genealogy (#199): `onUnits(listener)` (units stored or marked lost, after the commit),
  *   `processedThrough()` (every machine's progress as the last completed round read it before
  *   taking its facts), and `units({ epoch, partIds })`.
+ * - For the quality module's close guard (#201): `orderUnits(orderId, db)`.
  * - Pure (`derive.ts`): `buildUnit`, `holdsBlank`, `orderTotals`, `completion`.
  */
 export { buildUnit, completion, confirmationTotals, holdsBlank, orderTotals } from './derive.ts';

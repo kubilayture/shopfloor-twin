@@ -7,6 +7,21 @@
 # subgroupSize: first-pass readings per X̄-R subgroup, in plant-time order.
 # baselineSubgroups: complete subgroups limit version 1 is estimated from (then frozen).
 # rules: Nelson rules enabled per chart (ADR-0032 defaults); on MR and R only rule 1 applies.
+#
+# holdReasons (#201, ADR-0035): the reasons a quality hold is opened, released or rejected with;
+# the code is stored by the MES and sent to the ERP mock in quality notifications. Not part of
+# the trace ground truth (traceConfigSha256 hashes the characteristics only).
+
+holdReasons:
+  - { id: SUSPECT-LOT, name: 'Suspect material lot (supplier or incoming inspection)', for: [open] }
+  - { id: SPC-SIGNAL, name: 'SPC signal under investigation', for: [open] }
+  - { id: TEST-FAILURES, name: 'Repeated leak-test failures', for: [open] }
+  - { id: CUSTOMER-COMPLAINT, name: 'Customer complaint', for: [open] }
+  - { id: OTHER, name: 'Other (see the comment)', for: [open, release, reject] }
+  - { id: CONFORMS, name: 'Investigated, conforms (use as is)', for: [release] }
+  - { id: CONCESSION, name: 'Use as is under a concession', for: [release] }
+  - { id: NONCONFORMING, name: 'Nonconforming (scrap or rework outside the MES)', for: [reject] }
+  - { id: RETURN-TO-SUPPLIER, name: 'Return the lot to its supplier', for: [reject] }
 
 characteristics:
   - id: leak-rate

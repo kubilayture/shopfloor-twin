@@ -45,7 +45,7 @@ import type { Ingest } from '../ingest/index.ts';
 import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
 import type { Execution } from '../execution/index.ts';
 import type { Orders } from '../orders/index.ts';
-import type { Quality } from '../quality/index.ts';
+import type { Holds, Quality } from '../quality/index.ts';
 import { pareto, type DowntimeFeed, type Oee, type OeeScope } from '../oee/index.ts';
 import { ShiftError, type ShiftRecord, type Shifts } from '../shifts/index.ts';
 import {
@@ -63,6 +63,7 @@ import {
 import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
 import { executionRoutes, type ExecutionApi } from './execution-routes.ts';
 import { genealogyRoutes, type GenealogyApi } from './genealogy-routes.ts';
+import { holdRoutes, type HoldsApi } from './hold-routes.ts';
 import { orderRoutes, type OrdersApi } from './order-routes.ts';
 import { qualityRoutes, type QualityApi } from './quality-routes.ts';
 import { terminalRoutes, workCentersOf, type TerminalApi } from './terminal-routes.ts';
@@ -250,6 +251,8 @@ export interface ApiSources {
   readonly genealogy?: GenealogyApi;
   /** SPC characteristics, charts and signals (#200); the quality routes answer 503 without it. */
   readonly quality?: QualityApi & Partial<Pick<Quality, 'onChange'>>;
+  /** Quality holds (#201); the hold routes answer 503 without them, the traces name no hold. */
+  readonly holds?: HoldsApi & Partial<Pick<Holds, 'onChange'>>;
 }
 
 export interface RealtimeOptions {
@@ -1454,6 +1457,16 @@ export async function registerRealtime(
         writer: (request) => Promise.resolve(writeBy(request)),
       });
 
+      // ---- Quality holds (#201): holds, reasons, a signal's suggested scope, the writes ----
+      holdRoutes(api, {
+        holds: () => {
+          const holds = ready().sources.holds;
+          if (!holds) throw new HttpProblem(503, 'quality holds are not available');
+          return holds;
+        },
+        writer: (request) => Promise.resolve(writeBy(request)),
+      });
+
       // ---- Execution (#175): units, an order's execution, scrap records and coding ----
       executionRoutes(api, {
         execution: () => {
@@ -1471,6 +1484,7 @@ export async function registerRealtime(
           if (!genealogy) throw new HttpProblem(503, 'genealogy is not available');
           return genealogy;
         },
+        holds: () => ready().sources.holds,
       });
 
       // ---- Shifts: instances, report and handover notes (#144, ADR-0025) ----
@@ -2552,6 +2566,9 @@ export async function registerRealtime(
         ...(sources.orders ? { orders: sources.orders } : {}),
         ...(sources.quality?.onChange
           ? { quality: { onChange: sources.quality.onChange.bind(sources.quality) } }
+          : {}),
+        ...(sources.holds?.onChange
+          ? { holds: { onChange: sources.holds.onChange.bind(sources.holds) } }
           : {}),
         ...(sources.execution?.onChange
           ? { execution: { onChange: sources.execution.onChange.bind(sources.execution) } }

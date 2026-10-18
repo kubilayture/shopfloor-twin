@@ -141,6 +141,82 @@ export interface QualityTables {
   'quality.measurement': MeasurementTable;
   'quality.control_limit': ControlLimitTable;
   'quality.spc_signal': SpcSignalTable;
+  'quality.hold': HoldTable;
+  'quality.hold_transition': HoldTransitionTable;
+  'quality.hold_unit': HoldUnitTable;
+  'quality.hold_incident': HoldIncidentTable;
+}
+
+export type HoldSubjectKind = 'lot' | 'serial' | 'carton' | 'order';
+export type HoldState = 'open' | 'released' | 'rejected';
+export type HoldTransitionKind = 'opened' | 'commented' | 'released' | 'rejected';
+
+/** The scope counts a notifying transition carried (#201). */
+export interface StoredScope {
+  readonly units: number;
+  readonly cartons: number;
+  readonly orders: number;
+  /** Plant time the counts stand at (ISO), or null without a plant clock. */
+  readonly asOf: string | null;
+  readonly final: boolean;
+}
+
+export interface HoldTable {
+  id: string;
+  subject_kind: HoldSubjectKind;
+  subject_id: string;
+  state: HoldState;
+  reason: string;
+  opened_by: string;
+  opened_at: DefaultTimestamp;
+  opened_plant_at: NullableTimestamp;
+  opened_epoch: number | null;
+  decided_by: string | null;
+  decided_at: NullableTimestamp;
+  decided_plant_at: NullableTimestamp;
+  decided_epoch: number | null;
+  decision_reason: string | null;
+  transitions: Defaulted<number>;
+  version: Defaulted<number>;
+  updated_at: DefaultTimestamp;
+}
+
+export interface HoldTransitionTable {
+  hold_id: string;
+  n: number;
+  kind: HoldTransitionKind;
+  reason: string | null;
+  comment: string | null;
+  actor: string;
+  at: DefaultTimestamp;
+  plant_at: NullableTimestamp;
+  scope: NullableJson<StoredScope>;
+}
+
+export interface HoldUnitTable {
+  hold_id: string;
+  epoch: number;
+  part_id: number;
+  serial: string | null;
+  order_id: string | null;
+  carton_id: string | null;
+  joined_at: DefaultTimestamp;
+}
+
+export interface HoldIncidentTable {
+  id: Generated<number>;
+  type: 'held-material-consumed';
+  hold_id: string;
+  lot: string;
+  equipment: string;
+  epoch: number;
+  seq: number;
+  part_id: number;
+  operation: string | null;
+  pass: number | null;
+  consumed_at: Timestamp;
+  message: string;
+  detected_at: DefaultTimestamp;
 }
 
 export const QUALITY_COLUMNS = {
@@ -225,5 +301,59 @@ export const QUALITY_COLUMNS = {
     'ack_plant_at',
     'ack_comment',
     'row_version',
+  ],
+  'quality.hold': [
+    'id',
+    'subject_kind',
+    'subject_id',
+    'state',
+    'reason',
+    'opened_by',
+    'opened_at',
+    'opened_plant_at',
+    'opened_epoch',
+    'decided_by',
+    'decided_at',
+    'decided_plant_at',
+    'decided_epoch',
+    'decision_reason',
+    'transitions',
+    'version',
+    'updated_at',
+  ],
+  'quality.hold_transition': [
+    'hold_id',
+    'n',
+    'kind',
+    'reason',
+    'comment',
+    'actor',
+    'at',
+    'plant_at',
+    'scope',
+  ],
+  'quality.hold_unit': [
+    'hold_id',
+    'epoch',
+    'part_id',
+    'serial',
+    'order_id',
+    'carton_id',
+    'joined_at',
+  ],
+  'quality.hold_incident': [
+    'id',
+    'type',
+    'hold_id',
+    'lot',
+    'equipment',
+    'epoch',
+    'seq',
+    'part_id',
+    'operation',
+    'pass',
+    'consumed_at',
+    'message',
+    'detected_at',
   ],
 } as const;

@@ -16,6 +16,8 @@ Oct 10, 2026 · @Kubilay
 
 > **Change note — rev. 8 (17 Oct 2026).** From the Phase 8 plan (#194), updated after its review (PR #207): (1) cartons are formed by the MES with a packing rule shared with the ground truth, and "shipped" means packed in a closed carton (sections 3, 11). (2) Cycle facts carry the lots consumed for the part and the station's operator, as fields, so no device sequence or event log changes (section 5). (3) A leak-test drift can be injected; a golden scenario may bring its own stock file (section 4). (4) `quality` owns characteristics, measurements, control limits, SPC signals and holds; scrap records stay in `execution`; holds notify the ERP mock and block an order's close, not the machines (sections 5, 7). (5) Per-order and line OEE move to Phase 9; Phase 8 is XL, in three waves (sections 7, 11). (6) Two pure packages, `spc-core` and `trace-core` (sections 8, 9).
 
+> **Change note — rev. 9 (18 Oct 2026).** From the Phase 9 plan: (1) Phase 9 is L, delivered in three waves (section 11). (2) The load-testing tool and the performance targets are decided in the Phase 9 plan, recorded in ADR-0040 (section 12).
+
 ShopFloor Twin is a realistic simulation of a discrete-manufacturing plant plus a working MES core built on top of it, developed end to end in TypeScript. The simulator plays the role of the physical shop floor; everything above it (edge gateway, MQTT Unified Namespace, historian, MES, operator and management UIs) is built the way it would be in a real plant, so the same software could in principle be pointed at real machines.
 
 ## 1. Purpose, goals and non-goals
@@ -539,7 +541,7 @@ Eleven phases build the system bottom-up, following the data from the machine to
 | 6 | Alarms and shifts | Alarm lifecycle (active, acknowledged, cleared, shelved), alarm list UI, alarm KPIs and flood detection; shift calendar, handover notes, shift report | Injected faults appear, are acknowledged and clear with a complete audit trail; shift report totals reconcile with OEE data | M |
 | 7 | Orders, ERP and execution | `erp-mock`; `identity` (users, roles, login, audit) and separate database roles; order import, release and dispatch over the command path (`cmd/load-order` → `LoadOrder`); routing execution per part; operator terminal; confirmations to ERP; the ERP mock serves the lots the simulator stocks (same lot file) | An order runs end to end: ERP → MES → machine program → production → confirmation in ERP, quantities reconciled; role permissions tested | XL (two waves) |
 | 8 | Traceability and quality | Lots from the ERP mock, serial units, cartons by the MES's packing rule, genealogy queries; rework genealogy (the rework loop itself in Phase 7); leak-test measurements and an injectable drift; SPC charts (I-MR, X̄-R) with Nelson run rules; quality holds with ERP notifications; traceability, SPC and holds screens (rev. 8) | Any shipped serial traces back to its blank lot, component lots, machines, operators and test values, and a lot traces forward to all affected cartons; SPC detects an injected drift; a shipped serial is one packed in a closed carton (rev. 8) | XL (three waves) |
-| 9 | Simulation console, scenarios and hardening | Interactive console UI; per-order and line OEE (from Phase 8, rev. 8); scenario playback; resilience suite; OPC UA security mode SignAndEncrypt with certificates; optional Prometheus + Grafana profile; load-test tool chosen and performance test run | Resilience suite passes; performance at 60× meets the targets set in the phase plan; security review checklist complete | M |
+| 9 | Simulation console, scenarios and hardening | Interactive console UI; per-order and line OEE (from Phase 8, rev. 8); scenario playback; resilience suite; OPC UA security mode SignAndEncrypt with certificates; optional Prometheus + Grafana profile; load-test tool chosen and performance test run | Resilience suite passes; performance at 60× meets the targets set in the phase plan; security review checklist complete | L (three waves, rev. 9) |
 | 10 | Release 1.0 | Documentation pass, architecture views updated, demo scenario and recording, final report, `v1.0.0` tag | All six success criteria in section 1 verified and recorded in the final report | S |
 
 The golden scenario grows phase by phase: from simulator-only output in Phase 1 to full end-to-end reconciliation (states, OEE, orders, genealogy) by Phase 8.
@@ -583,7 +585,7 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 - [ ] Traceability facts and their ground truth (decided in the Phase 8 plan; ADR-0033; Phase 8)
 - [ ] Genealogy identity and cartons (decided in the Phase 8 plan; ADR-0034; Phase 8)
 - [ ] Quality holds and ERP quality notifications (decided in the Phase 8 plan; ADR-0035; Phase 8)
-- [ ] Load-testing tool and performance targets (Phase 9)
+- [ ] Load-testing tool and performance targets (decided in the Phase 9 plan; ADR-0040; Phase 9, rev. 9)
 - [ ] Whether to add Sparkplug B after v1.0 (Phase 10 report)
 
 ## 13. Glossary and references

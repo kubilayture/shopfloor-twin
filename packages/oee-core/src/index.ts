@@ -48,6 +48,7 @@ export {
   firstPassYield,
   headTimes,
   jobWindow,
+  jobWindows,
   orderOee,
   windowInputs,
 } from './order-oee.ts';
@@ -60,6 +61,7 @@ export type {
   OrderOeeInput,
   OrderOeeResult,
   QueuedJob,
+  QueuedJobWindow,
   TimedCycleCount,
   TimelineInterval,
   UnitRoute,

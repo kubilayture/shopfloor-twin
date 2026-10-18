@@ -19,8 +19,7 @@ import {
 } from './oee.ts';
 import {
   firstPassYield,
-  headTimes,
-  jobWindow,
+  jobWindows,
   orderOee,
   type HeadTime,
   type OrderJobInput,
@@ -178,23 +177,22 @@ const headText = (head: HeadTime): string =>
       ? 'waiting'
       : `unknown ${head.reason}`;
 
-describe('head-time reference cases (H1–H13)', () => {
+describe('head-time reference cases (H1–H15)', () => {
   const rows = table('Head times, Phase 9');
   const cases = [...new Set(rows.map((row) => cell(row, 'Case')))];
 
-  it('has the thirteen cases', () => {
-    expect(cases).toEqual(Array.from({ length: 13 }, (_, i) => `H${String(i + 1)}`));
+  it('has the fifteen cases', () => {
+    expect(cases).toEqual(Array.from({ length: 15 }, (_, i) => `H${String(i + 1)}`));
   });
 
   describe.each(cases)('case %s', (id) => {
     it('gives the expected head times and windows', () => {
       const queue = rows.filter((row) => cell(row, 'Case') === id);
       const jobs = queue.map(queuedJob);
-      const heads = headTimes(jobs);
-      const actual = queue.map((row, i) => {
-        const job = must(jobs[i]);
-        const head = must(heads[i]);
-        const window = jobWindow(job, head, time(cell(row, 'Until')), jobs[i + 1]);
+      const until = time(cell(must(queue[0]), 'Until'));
+      expect(queue.every((row) => time(cell(row, 'Until')) === until)).toBe(true);
+      const paired = jobWindows(jobs, until);
+      const actual = paired.map(({ head, window }) => {
         const windowText =
           window === undefined
             ? NULL
@@ -237,7 +235,7 @@ function cycles(text: string): TimedCycleCount[] {
   });
 }
 
-describe('order OEE reference cases (O1–O9)', () => {
+describe('order OEE reference cases (O1–O10)', () => {
   const rows = table('Inputs, Phase 9 order OEE');
   const totalsRows = new Map(
     table('Expected totals, Phase 9 order OEE').map((row) => [cell(row, 'Case'), row]),
@@ -247,8 +245,8 @@ describe('order OEE reference cases (O1–O9)', () => {
   );
   const cases = [...new Set(rows.map((row) => cell(row, 'Case')))];
 
-  it('has nine cases, each with totals and results', () => {
-    expect(cases).toEqual(['O1', 'O2', 'O3', 'O4', 'O5', 'O6', 'O7', 'O8', 'O9']);
+  it('has ten cases, each with totals and results', () => {
+    expect(cases).toEqual(['O1', 'O2', 'O3', 'O4', 'O5', 'O6', 'O7', 'O8', 'O9', 'O10']);
     expect([...totalsRows.keys()]).toEqual(cases);
     expect([...resultRows.keys()]).toEqual(cases);
   });
@@ -260,20 +258,22 @@ describe('order OEE reference cases (O1–O9)', () => {
       const until = time(cell(row, 'Until'));
       const previous = cell(row, 'Previous completed');
       const job = queuedJob(row);
-      // The CNC's queue: the job before this one (another order's), then this job.
-      const queue: QueuedJob[] =
-        previous === NULL
-          ? [job]
+      const nextStarted = cell(row, 'Next started');
+      // The CNC's queue: the job before this one (another order's), this job, the job after it.
+      const queue: QueuedJob[] = [
+        ...(previous === NULL
+          ? []
           : [
               previous === 'lost'
                 ? { id: 'previous', accepted: 0, completedLost: true }
                 : { id: 'previous', accepted: 0, completed: time(previous) },
-              job,
-            ];
-      const head = must(headTimes(queue).at(-1));
+            ]),
+        job,
+        ...(nextStarted === NULL ? [] : [{ id: 'next', accepted: 0, started: time(nextStarted) }]),
+      ];
       return {
         id: job.id,
-        window: jobWindow(job, head, until),
+        window: must(jobWindows(queue, until).find((paired) => paired.job === job)).window,
         intervals: timeline(cell(row, 'States'), until),
         cycles: cycles(cell(row, 'Cycles')),
         operation: 'OP10',

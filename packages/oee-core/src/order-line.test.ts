@@ -10,6 +10,7 @@ import {
   firstPassYield,
   headTimes,
   jobWindow,
+  jobWindows,
   orderOee,
   windowInputs,
   type TimelineInterval,
@@ -171,12 +172,126 @@ describe('headTimes and jobWindow', () => {
     ).toThrow(/job J7: its completion \(50\) is before its window starts \(100\)/);
   });
 
-  it('refuses more cycles than the quantity, and takes no completion from a lost one of quantity 0', () => {
+  it('takes no completion from cycles unless the end is lost, the boundary closed and the count exact', () => {
+    const closed = { id: 'b', started: 400 };
+    expect(completionOf({ id: 'a', completedLost: true, quantity: 0 }, closed)).toBeUndefined();
+    expect(completionOf({ id: 'a', quantity: 2, cycleEnds: [1, 2] }, closed)).toBeUndefined();
+    expect(
+      completionOf({ id: 'a', completedLost: true, quantity: 2, cycleEnds: [1, 2] }, { id: 'b' }),
+    ).toBeUndefined();
+    expect(completionOf({ id: 'a', completedLost: true, quantity: 2, cycleEnds: [1, 2] })).toBe(2);
+    // More cycles than the quantity: someone else's are among them, so no completion (no throw).
+    expect(
+      completionOf({ id: 'a', completedLost: true, quantity: 2, cycleEnds: [1, 2, 3] }),
+    ).toBeUndefined();
+    // Unsorted cycle ends: the latest is the completion, not the last listed.
+    expect(
+      completionOf(
+        { id: 'a', completedLost: true, quantity: 3, cycleEnds: [300, 100, 200] },
+        closed,
+      ),
+    ).toBe(300);
+  });
+
+  it("(i) does not throw when the next job's cycles sit in this job's ends under reordering", () => {
+    // J1's completed fact not received yet, J2's started not either: J2's cycle lands in J1's ends.
+    const queue = [
+      { id: 'J1', accepted: 0, started: 10, quantity: 2, cycleEnds: [100, 200, 300] },
+      { id: 'J2', accepted: 5 },
+    ];
+    expect(jobWindows(queue, 1000).map(({ head, window }) => [head.kind, window?.open])).toEqual([
+      ['head', true],
+      ['waiting', undefined],
+    ]);
+  });
+
+  it("(ii) does not throw forever when one gap took J1's last cycle, completed and J2's started", () => {
+    const queue = [
+      {
+        id: 'J1',
+        accepted: 0,
+        started: 10,
+        completedLost: true,
+        quantity: 2,
+        cycleEnds: [100, 200, 300],
+      },
+      { id: 'J2', accepted: 5, completed: 500 },
+    ];
+    const [first, second] = jobWindows(queue, 1000);
+    expect(first?.window).toMatchObject({
+      from: 0,
+      to: 1000,
+      open: true,
+      endLost: true,
+      lost: true,
+    });
+    expect(second?.head).toEqual({ kind: 'unknown', reason: 'previous-completed-lost' });
+    expect(second?.window).toBeUndefined();
+  });
+
+  it('(iii) flags a window lost instead of closing it on a cycle of the next job', () => {
+    // J1 quantity 2: one of its cycles (100) and one of J2's (350), J2's started missing.
+    const queue = [
+      {
+        id: 'J1',
+        accepted: 0,
+        started: 10,
+        completedLost: true,
+        quantity: 2,
+        cycleEnds: [100, 350],
+      },
+      { id: 'J2', accepted: 5 },
+    ];
+    expect(jobWindows(queue, 1000)[0]?.window).toMatchObject({
+      to: 1000,
+      endLost: true,
+      lost: true,
+    });
+  });
+
+  it("recovers the end from the cycles once the next job's started fact closes the boundary", () => {
+    const queue = [
+      {
+        id: 'J1',
+        accepted: 0,
+        started: 10,
+        completedLost: true,
+        quantity: 2,
+        cycleEnds: [200, 100],
+      },
+      { id: 'J2', accepted: 5, started: 260, completed: 500 },
+    ];
+    const [first, second] = jobWindows(queue, 1000);
+    expect(first?.window).toMatchObject({
+      from: 0,
+      to: 200,
+      open: false,
+      endLost: false,
+      lost: false,
+    });
+    expect(second?.head).toEqual({ kind: 'head', at: 200, source: 'previous-last-cycle' });
+  });
+
+  it('refuses a next job on another CNC', () => {
     expect(() =>
-      completionOf({ id: 'a', completedLost: true, quantity: 1, cycleEnds: [1, 2] }),
-    ).toThrow(/2 OP10 cycles but a quantity of 1/);
-    expect(completionOf({ id: 'a', completedLost: true, quantity: 0 })).toBeUndefined();
-    expect(completionOf({ id: 'a', quantity: 2, cycleEnds: [1, 2] })).toBeUndefined();
+      jobWindow(
+        { id: 'J1', machine: 'cnc-01', completedLost: true },
+        { kind: 'head', at: 0, source: 'accepted' },
+        100,
+        { id: 'J9', machine: 'cnc-02', started: 50 },
+      ),
+    ).toThrow(/J9 is on cnc-02, not the same CNC/);
+  });
+
+  it('does not cap a lost end at a next start before the window', () => {
+    expect(
+      jobWindow(
+        { id: 'J1', completedLost: true },
+        { kind: 'head', at: 500, source: 'accepted' },
+        1000,
+        { id: 'J2', started: 400 },
+      ),
+    ).toMatchObject({ from: 500, to: 1000, open: true, endLost: true });
   });
 
   it('caps a lost end at the next start only when it lies in the window and the cut-off', () => {
@@ -293,6 +408,20 @@ describe('windowInputs', () => {
     expect(totals.order.totals.microStopMs).toBe(BigInt(MIN));
   });
 
+  it("puts a cycle exactly at a scheduled range's start in the scheduled part", () => {
+    const parts = windowInputs({
+      window: { from: 0, to: 2 * HOUR },
+      intervals: [{ from: 0, to: 2 * HOUR, state: 'Running', cause: null }],
+      scheduled: [{ from: HOUR, to: 2 * HOUR }],
+      cycles: [{ product: 'P', result: 'good', count: 4, at: HOUR }],
+      operation: 'OP10',
+      idealCycleMs: { P: { OP10: MIN } },
+    });
+    expect(parts.find((part) => part.scheduled)?.cycles).toEqual([
+      { product: 'P', result: 'good', count: 4 },
+    ]);
+  });
+
   it('puts a cycle exactly at the shift end in the unscheduled part', () => {
     const parts = windowInputs({
       window: { from: 0, to: 2 * HOUR },
@@ -340,6 +469,35 @@ describe('orderOee', () => {
     // A job without a window leaves the order pending, so it is provisional, not complete.
     expect(result.pending).toBe(true);
     expect(result.order.provisional).toBe(true);
+  });
+
+  it("marks a job and its order provisional when the job's end is lost", () => {
+    const result = orderOee(
+      {
+        jobs: [
+          {
+            id: 'a',
+            window: {
+              from: 0,
+              to: HOUR,
+              open: false,
+              headTimeUnknown: false,
+              endLost: true,
+              lost: true,
+            },
+            intervals: [{ from: 0, to: HOUR, state: 'Running', cause: null }],
+            cycles: [],
+            operation: 'OP10',
+          },
+        ],
+        scheduled: [{ from: 0, to: HOUR }],
+        idealCycleMs: {},
+      },
+      CONFIG,
+    );
+    expect(result.jobs.a?.provisional).toBe(true);
+    expect(result.order.provisional).toBe(true);
+    expect([result.endLost, result.lost]).toEqual([true, true]);
   });
 
   it('marks a job provisional with its own open window or unknown head time', () => {

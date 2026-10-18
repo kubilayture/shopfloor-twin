@@ -364,7 +364,7 @@ ASM-01 has no operator this shift and stays Idle `NO-OPERATOR` for the whole hou
 
 ## Phase 9: bottleneck, order OEE and line OEE
 
-Cases B1–B4, H1–H13, O1–O9, F1 and L1–L13 (#229, ADR-0036) check the derived bottleneck, the head time of a job, the order OEE over job windows, the first-pass yield across the routing and the line throughput OEE. They drive `packages/oee-core/src/order-line-reference-cases.test.ts` as the tables above drive theirs. The micro-stop threshold is the one above; order cases use `scheduledTime: orders`.
+Cases B1–B4, H1–H15, O1–O10, F1 and L1–L13 (#229, ADR-0036) check the derived bottleneck, the head time of a job, the order OEE over job windows, the first-pass yield across the routing and the line throughput OEE. They drive `packages/oee-core/src/order-line-reference-cases.test.ts` as the tables above drive theirs. The micro-stop threshold is the one above; order cases use `scheduledTime: orders`.
 
 Times are plant clock times of one day (`hh:mm` or `hh:mm:ss`), read as ms from its midnight: only differences matter. A range `06:00–14:00` is half-open. Ideal cycle times are those of `config/plant/products.yaml`: OP10 VB-100 240 000 ms and VB-200 330 000 ms; OP30 VB-100 150 000 ms and VB-200 210 000 ms.
 
@@ -413,23 +413,28 @@ Rows of one case and machine are that CNC's queue in acceptance order. `Accepted
 | H11  | cnc-01  | J2  | 06:05    | –           | –       | –         | –        | –                   | 09:00 | unknown previous-completed-lost    | –                                |
 | H12  | cnc-02  | J1  | 07:00    | –           | –       | –         | –        | –                   | 07:00 | 07:00 accepted                     | 07:00–07:00 open                 |
 | H13  | cnc-02  | J1  | 06:00    | –           | 06:25   | 07:40     | –        | –                   | 07:40 | 06:00 accepted                     | 06:00–07:40                      |
+| H14  | cnc-01  | J1  | 06:00    | –           | 06:25   | lost      | 2        | 06:55, 08:30        | 09:00 | 06:00 accepted                     | 06:00–09:00 open endLost lost    |
+| H14  | cnc-01  | J2  | 06:05    | –           | –       | –         | –        | –                   | 09:00 | unknown previous-completed-lost    | –                                |
+| H15  | cnc-02  | J1  | 06:00    | –           | 06:25   | –         | 2        | 06:55, 07:15, 07:40 | 09:00 | 06:00 accepted                     | 06:00–09:00 open                 |
+| H15  | cnc-02  | J2  | 06:05    | –           | –       | –         | –        | –                   | 09:00 | waiting                            | –                                |
 
 ## Inputs, Phase 9 order OEE
 
-`Previous completed` is the `completed` fact of the job before this one on its CNC (`–`: the first job, `lost`: a written-off gap). `States` are the CNC's state facts (`time state [cause]`); the last state lasts until `Until`, open. `Cycles` are the job's OP10 cycles, `product result count @time`, the time deciding whether they are scheduled.
+`Previous completed` is the `completed` fact of the job before this one on its CNC (`–`: the first job, `lost`: a written-off gap); `Next started` is the `started` fact of the job after it (`–`: none). `States` are the CNC's state facts (`time state [cause]`); the last state lasts until `Until`, open. `Cycles` are the job's OP10 cycles, `product result count @time`, the time deciding whether they are scheduled.
 
-| Case | Job | Machine | Accepted | Accepted at | Previous completed | Started | Completed | Until | Scheduled                | States                                                                                                                          | Cycles                                       |
-| ---- | --- | ------- | -------- | ----------- | ------------------ | ------- | --------- | ----- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| O1   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:00   | 07:00     | 12:00 | 06:00–14:00              | 06:00 Running; 07:00 Idle NO-ORDER                                                                                              | VB-100 good 14 @07:00                        |
-| O2   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | 08:05     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 08:05 Idle NO-ORDER                                                                      | VB-100 good 23 @08:05; VB-100 scrap 1 @08:05 |
-| O3   | J1  | cnc-01  | 06:00    | 06:00       | 06:30              | 06:55   | 08:15     | 12:00 | 06:00–14:00              | 06:00 Running; 06:30 Setup CHANGEOVER; 06:55 Running; 08:15 Idle NO-ORDER                                                       | VB-200 good 14 @08:15                        |
-| O3   | J2  | cnc-02  | 06:00    | 06:00       | –                  | 06:25   | 07:45     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 07:45 Idle NO-ORDER                                                                      | VB-200 good 13 @07:45; VB-200 scrap 1 @07:45 |
-| O4   | J1  | cnc-02  | 13:00    | 13:00       | –                  | 13:25   | 19:05     | 20:00 | 06:00–14:00; 14:00–22:00 | 13:00 Setup CHANGEOVER; 13:25 Running; 18:00 PlannedStop BREAK; 18:30 Running; 19:05 Idle NO-ORDER                              | VB-100 good 8 @13:59; VB-100 good 67 @19:05  |
-| O5   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | 09:00     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 07:00 Stopped JAM; 07:01 Running; 07:30 Down SPINDLE; 08:00 Running; 09:00 Idle NO-ORDER | VB-200 good 21 @09:00; VB-200 scrap 1 @09:00 |
-| O6   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | 07:05     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 07:05 Idle NO-ORDER                                                                      | VB-100 good 9 @07:05; VB-100 scrap 1 @07:05  |
-| O7   | J1  | cnc-01  | –        | 06:00       | –                  | 06:25   | 08:05     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 08:05 Idle NO-ORDER                                                                      | VB-100 good 23 @08:05; VB-100 scrap 1 @08:05 |
-| O8   | J1  | cnc-01  | lost     | –           | –                  | 06:25   | 08:05     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 08:05 Idle NO-ORDER                                                                      | VB-100 good 23 @08:05; VB-100 scrap 1 @08:05 |
-| O9   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | –         | 07:25 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running                                                                                           | VB-100 good 14 @07:24                        |
+| Case | Job | Machine | Accepted | Accepted at | Previous completed | Started | Completed | Next started | Until | Scheduled                | States                                                                                                                          | Cycles                                       |
+| ---- | --- | ------- | -------- | ----------- | ------------------ | ------- | --------- | ------------ | ----- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| O1   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:00   | 07:00     | –            | 12:00 | 06:00–14:00              | 06:00 Running; 07:00 Idle NO-ORDER                                                                                              | VB-100 good 14 @07:00                        |
+| O2   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | 08:05     | –            | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 08:05 Idle NO-ORDER                                                                      | VB-100 good 23 @08:05; VB-100 scrap 1 @08:05 |
+| O3   | J1  | cnc-01  | 06:00    | 06:00       | 06:30              | 06:55   | 08:15     | –            | 12:00 | 06:00–14:00              | 06:00 Running; 06:30 Setup CHANGEOVER; 06:55 Running; 08:15 Idle NO-ORDER                                                       | VB-200 good 14 @08:15                        |
+| O3   | J2  | cnc-02  | 06:00    | 06:00       | –                  | 06:25   | 07:45     | –            | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 07:45 Idle NO-ORDER                                                                      | VB-200 good 13 @07:45; VB-200 scrap 1 @07:45 |
+| O4   | J1  | cnc-02  | 13:00    | 13:00       | –                  | 13:25   | 19:05     | –            | 20:00 | 06:00–14:00; 14:00–22:00 | 13:00 Setup CHANGEOVER; 13:25 Running; 18:00 PlannedStop BREAK; 18:30 Running; 19:05 Idle NO-ORDER                              | VB-100 good 8 @13:59; VB-100 good 67 @19:05  |
+| O5   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | 09:00     | –            | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 07:00 Stopped JAM; 07:01 Running; 07:30 Down SPINDLE; 08:00 Running; 09:00 Idle NO-ORDER | VB-200 good 21 @09:00; VB-200 scrap 1 @09:00 |
+| O6   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | 07:05     | –            | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 07:05 Idle NO-ORDER                                                                      | VB-100 good 9 @07:05; VB-100 scrap 1 @07:05  |
+| O7   | J1  | cnc-01  | –        | 06:00       | –                  | 06:25   | 08:05     | –            | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 08:05 Idle NO-ORDER                                                                      | VB-100 good 23 @08:05; VB-100 scrap 1 @08:05 |
+| O8   | J1  | cnc-01  | lost     | –           | –                  | 06:25   | 08:05     | –            | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 08:05 Idle NO-ORDER                                                                      | VB-100 good 23 @08:05; VB-100 scrap 1 @08:05 |
+| O9   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | –         | –            | 07:25 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running                                                                                           | VB-100 good 14 @07:24                        |
+| O10  | J1  | cnc-01  | 06:00    | –           | –                  | 06:25   | lost      | 08:05        | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 07:45 Setup CHANGEOVER; 08:05 Running                                                    | VB-100 good 20 @07:45                        |
 
 ## Expected totals, Phase 9 order OEE
 
@@ -444,6 +449,7 @@ Rows of one case and machine are that CNC's queue in acceptance order. `Accepted
 | O7   | 7 500 000  | 6 000 000  | 1 500 000             | 0                          | 0           | 240 000    | 5 760 000  | 23   | 24       |
 | O8   | 6 000 000  | 6 000 000  | 0                     | 0                          | 0           | 240 000    | 5 760 000  | 23   | 24       |
 | O9   | 5 100 000  | 3 600 000  | 1 500 000             | 0                          | 0           | 240 000    | 3 360 000  | 14   | 14       |
+| O10  | 7 500 000  | 4 800 000  | 2 700 000             | 0                          | 0           | 0          | 4 800 000  | 20   | 20       |
 
 ## Expected results, Phase 9 order OEE
 
@@ -458,6 +464,7 @@ Rows of one case and machine are that CNC's queue in acceptance order. `Accepted
 | O7   | 4/5   | 24/25   | 23/24 | 92/125 | 0.8000   | 0.9600   | 0.9583   | 0.7360     | –                                  |
 | O8   | 1/1   | 24/25   | 23/24 | 23/25  | 1.0000   | 0.9600   | 0.9583   | 0.9200     | provisional, headTimeUnknown, lost |
 | O9   | 12/17 | 14/15   | 1/1   | 56/85  | 0.7059   | 0.9333   | 1.0000   | 0.6588     | provisional, open                  |
+| O10  | 16/25 | 1/1     | 1/1   | 16/25  | 0.6400   | 1.0000   | 1.0000   | 0.6400     | provisional, endLost, lost         |
 
 ## First-pass yield, Phase 9
 
@@ -534,6 +541,9 @@ Three CNCs on OP10 at 500 000 ms: 500 000 ÷ 3 = 166 666.67 ms, kept exact as 50
 - **H11:** J1's `completed` fact is lost and only 2 of its 3 cycles are known; J2 has not started: J1's window runs to the cut-off (`open`, `endLost`, `lost`), and J2 has no window.
 - **H12:** a head time exactly at the cut-off: an empty, open window.
 - **H13:** a `completed` fact exactly at the cut-off: the window is closed.
+- **H14:** J1's `completed` fact and J2's `started` fact are lost in one gap. By attribution (ADR-0031) J2's first cycle (08:30) lands in J1's cycles, so J1 shows 2 cycles for a quantity of 2, one of them J2's. Its cycles are not trusted while J2's `started` is missing (the attribution boundary is open): J1 stays `endLost` and `lost`, open to the cut-off, never closed on J2's cycle; J2 has no window.
+- **H15:** the same under plain reordering, nothing lost: J1's `completed` fact and J2's `started` fact have not arrived, and J2's first cycle (07:40) is counted in J1's three. J1's window is simply open, and J2 waits; nothing throws, and the arrival of the two facts settles both.
+- The recovery from cycles (H9) needs the boundary closed: the next job's `started` fact known, or no later job on the CNC, and exactly `quantity` cycles attributed.
 
 ### Case O1 – one job
 
@@ -604,6 +614,14 @@ At 07:25 the job is still running: its window runs to the cut-off and is provisi
 - PBT = 1 500 000 + 3 600 000 = 5 100 000. APT = 3 600 000. Own loss = 1 500 000. Ideal time = 14 × 240 000 = 3 360 000. Speed loss = 240 000.
 - A = 3 600 000 / 5 100 000 = 12/17 = 0.70588… → 0.7059. P = 14/15 → 0.9333. Q = 1/1.
 - OEE = 3 360 000 / 5 100 000 = 56/85 = 0.65882… → 0.6588. Check: 12/17 × 14/15 = 168/255 = 56/85.
+
+### Case O10 – a lost `completed` capped at the next job's start
+
+The job's `completed` fact is lost and its cycles are not all known, so its window ends at the next job's `started` fact, 08:05 (H6). The cap charges the next job's changeover (07:45–08:05) to this order; the value is flagged `endLost` and `lost`, provisional and never final.
+
+- PBT = 7 500 000 (06:00–08:05). APT = Running 06:25–07:45 = 4 800 000. Own loss = Setup 1 500 000 + 1 200 000 = 2 700 000.
+- Ideal time = 20 × 240 000 = 4 800 000. Speed loss = 0.
+- A = 4 800 000 / 7 500 000 = 16/25 = 0.6400. P = 1/1. Q = 1/1. OEE = 16/25 = 0.6400.
 
 ### Case F1 – first-pass yield of a short order
 

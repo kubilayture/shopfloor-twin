@@ -28,6 +28,8 @@ export const NO_ORDER_CAUSE = 'NO-ORDER';
 /** One job of a CNC's queue, as its job facts (and the command result) tell it. */
 export interface QueuedJob {
   readonly id: string;
+  /** The CNC; when given, `jobWindow` refuses a `next` job of another machine. */
+  readonly machine?: string;
   /** Plant time of the device's `accepted` fact; undefined while it is unknown (lost or not received). */
   readonly accepted?: Millis;
   /** The `accepted` fact is lost (a written-off gap), not merely not received yet. */
@@ -46,29 +48,31 @@ export interface QueuedJob {
   /** Blanks to machine: the job's number of OP10 cycles (ADR-0030). */
   readonly quantity?: number;
   /**
-   * The end times of the job's OP10 cycles known so far, attributed by unit (ADR-0031). With all
-   * `quantity` of them known, the last one is the job's completion even when its `completed` fact
-   * is lost (ADR-0030: `completed` is the end of the last OP10 cycle).
+   * The end times of the job's OP10 cycles known so far, attributed by unit (ADR-0031: the cycles
+   * after its `started` fact and before the next job's), in any order. While the next job's
+   * `started` fact is missing, that job's cycles are attributed here too, so they are trusted only
+   * once that boundary is closed (`completionOf`).
    */
   readonly cycleEnds?: readonly Millis[];
 }
 
 /**
- * The job's completion: its `completed` fact, or, when that fact is lost and every one of its
- * `quantity` OP10 cycles is known, the end of the last of them. Undefined otherwise.
+ * The job's completion: its `completed` fact, or, when that fact is lost, the end of its last OP10
+ * cycle (ADR-0030: `completed` is that instant), but only when the attribution boundary is closed
+ * and exactly `quantity` cycles are attributed. The boundary is closed when `next`, the following
+ * job in the same CNC's queue, has a known `started` fact, or when there is no following job
+ * (`next` undefined): otherwise the next job's cycles may sit in `cycleEnds`. Undefined in every
+ * other case (the window then ends `endLost`); never throws, so reordered or lost facts can't stop
+ * a rebuild.
  */
-export function completionOf(job: QueuedJob): Millis | undefined {
+export function completionOf(job: QueuedJob, next?: QueuedJob): Millis | undefined {
   if (job.completed !== undefined) return job.completed;
+  if (job.completedLost !== true) return undefined;
+  if (next !== undefined && next.started === undefined) return undefined;
   const ends = job.cycleEnds ?? [];
-  if (job.quantity !== undefined && ends.length > job.quantity) {
-    throw new RangeError(
-      `job ${job.id} has ${String(ends.length)} OP10 cycles but a quantity of ${String(job.quantity)}`,
-    );
-  }
-  if (job.completedLost !== true || job.quantity === undefined || job.quantity === 0) {
+  if (job.quantity === undefined || job.quantity === 0 || ends.length !== job.quantity) {
     return undefined;
   }
-  if (ends.length < job.quantity) return undefined;
   return ends.reduce((last, end) => (end > last ? end : last));
 }
 
@@ -102,7 +106,7 @@ export function headTimes(queue: readonly QueuedJob[]): HeadTime[] {
     const previous = i > 0 ? queue[i - 1] : undefined;
     let previousEnd: Millis | undefined;
     if (previous !== undefined) {
-      previousEnd = completionOf(previous);
+      previousEnd = completionOf(previous, job);
       if (previousEnd === undefined) {
         if (previous.completedLost === true) {
           return { kind: 'unknown', reason: 'previous-completed-lost' };
@@ -157,8 +161,11 @@ export interface JobWindow extends Range {
 /**
  * The job's window on its CNC up to `until` (the caller's cut-off: final-through on the MES side,
  * the snapshot time in the ground truth), or undefined when it has none yet: a waiting job, a head
- * time after `until`, or an unknown head time and no `started` fact. `next` is the following job on
- * the same CNC: its `started` fact caps a window whose end is lost. Throws when the job's completion
+ * time after `until`, or an unknown head time and no `started` fact. `next` is the following job in
+ * the same CNC's queue, undefined when there is none: it closes the attribution boundary for
+ * `completionOf`, and its `started` fact caps a window whose end is lost (the cap charges the next
+ * job's changeover to this one; the window is `lost` anyway). Prefer `jobWindows`, which pairs every
+ * job with its successor. Throws when `next` names another machine, or when the job's completion
  * lies before the window's start.
  */
 export function jobWindow(
@@ -177,7 +184,12 @@ export function jobWindow(
   } else {
     return undefined;
   }
-  const completion = completionOf(job);
+  if (job.machine !== undefined && next?.machine !== undefined && next.machine !== job.machine) {
+    throw new RangeError(
+      `job ${job.id} on ${job.machine}: its next job ${next.id} is on ${next.machine}, not the same CNC`,
+    );
+  }
+  const completion = completionOf(job, next);
   if (completion !== undefined && completion < from) {
     throw new RangeError(
       `job ${job.id}: its completion (${String(completion)}) is before its window starts (${String(from)}); the job facts are inconsistent`,
@@ -207,6 +219,24 @@ export function jobWindow(
     endLost,
     lost: endLost || (headUnknownReason !== undefined && LOST_REASONS.includes(headUnknownReason)),
   };
+}
+
+export interface QueuedJobWindow {
+  readonly job: QueuedJob;
+  readonly head: HeadTime;
+  readonly window: JobWindow | undefined;
+}
+
+/**
+ * Head time and window of every job of one CNC's queue (acceptance order), each window paired with
+ * its own successor in that queue (ADR-0036).
+ */
+export function jobWindows(queue: readonly QueuedJob[], until: Millis): QueuedJobWindow[] {
+  const heads = headTimes(queue);
+  return queue.map((job, i) => {
+    const head = heads[i] ?? { kind: 'waiting' };
+    return { job, head, window: jobWindow(job, head, until, queue[i + 1]) };
+  });
 }
 
 /** One state interval of a machine; `open` while it is still running at its `to` (the cut-off). */

@@ -10,7 +10,12 @@ import { isoTime } from '../headless/serialize.ts';
 import { AsOfAfterSimTimeError } from '../headless/trace-truth.ts';
 import type { LiveGroundTruth } from '../live/run.ts';
 import type {
+  ActionRequest,
+  ActionResult,
+  ConsoleAction,
   FailureInjection,
+  LotView,
+  OperatorsView,
   InjectDriftRequest,
   InjectDriftResult,
   InjectFailureRequest,
@@ -24,9 +29,10 @@ import type { EventHub } from './event-hub.ts';
 /**
  * The contract version (docs/contracts/simulator-control-api.md); 1.2 adds the OEE ground truth,
  * 1.3 failure injection and the alarm ground truth (#140), 1.4 the production mode and the order
- * ground truth (#172), 1.5 the leak-test drift injection (#196).
+ * ground truth (#172), 1.5 the leak-test drift injection (#196), 1.6 the trace ground truth with
+ * `?asOf` (#208), 1.7 the console actions and the lot and operator reads (#234).
  */
-export const CONTROL_API_VERSION = '1.6.0';
+export const CONTROL_API_VERSION = '1.7.0';
 export const API_PREFIX = '/api/v1';
 export const EVENTS_PATH = `${API_PREFIX}/events`;
 /** A WebSocket client that falls this far behind is disconnected rather than buffered without bound. */
@@ -508,6 +514,96 @@ export const driftBodySchema = z
   })
   .strict();
 
+const atBodyField = z
+  .string()
+  .optional()
+  .describe('Simulation time, ISO 8601 with an offset or Z; the current time when left out');
+
+/** The optional body of a lot action and a tool breakage (#234). */
+export const atBodySchema = z.object({ at: atBodyField }).strict();
+
+export const absenceBodySchema = z
+  .object({
+    shift: z
+      .string()
+      .describe('The shift bucket key `YYYY-MM-DD/<shift id>`; its start must be after simTime'),
+    operators: z
+      .array(z.string())
+      .min(1)
+      .describe('Operator ids rostered on that shift; absent whatever the roster draw says'),
+  })
+  .strict();
+
+const actionStatusSchema = z
+  .enum(['scheduled', 'applied'])
+  .describe('scheduled until `at`, applied once it took effect');
+
+export const lotActionSchema = z.object({
+  id: count.describe('Console actions are numbered on their own, in acceptance order'),
+  kind: z.enum(['lot-block', 'lot-release']),
+  lot: z.string(),
+  material: z.string(),
+  at: isoSchema,
+  status: actionStatusSchema,
+  appliedAt: isoSchema.optional(),
+});
+
+export const toolBreakageSchema = z.object({
+  id: count,
+  kind: z.literal('tool-breakage'),
+  machine: z.string(),
+  at: isoSchema,
+  status: z
+    .enum(['scheduled', 'applied', 'ignored'])
+    .describe('ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept'),
+  appliedAt: isoSchema.optional(),
+  cycles: count.optional().describe("The tool's cycle count when it broke"),
+});
+
+export const absenceSchema = z.object({
+  id: count,
+  kind: z.literal('operators-absent'),
+  shift: z.string().describe('`YYYY-MM-DD/<shift id>`'),
+  start: isoSchema.describe("The shift's start"),
+  operators: z.array(z.string()),
+  status: z.enum(['planned', 'applied']).describe('planned until the shift starts'),
+  appliedAt: isoSchema.optional(),
+});
+
+export const consoleActionSchema = z.union([lotActionSchema, toolBreakageSchema, absenceSchema]);
+
+export const lotsSchema = z.object({
+  lots: z.array(
+    z.object({
+      lot: z.string(),
+      material: z.string(),
+      remaining: count.describe('Units left in the lot'),
+      blocked: z.boolean().describe('A blocked lot is skipped as if it were empty'),
+    }),
+  ),
+});
+
+export const operatorsSchema = z.object({
+  currentShift: z
+    .string()
+    .nullable()
+    .describe('The running shift `YYYY-MM-DD/<shift id>`, or null between shifts'),
+  operators: z.array(
+    z.object({
+      id: z.string(),
+      shift: z.string().describe('The shift the operator is rostered on'),
+      skills: z.array(z.string()).describe('Stations the operator is qualified for'),
+      speedFactor: z.number(),
+      status: z
+        .enum(['present', 'absent', 'off-shift'])
+        .describe('In the current shift; off-shift when not rostered on it or between shifts'),
+      station: z.string().nullable().describe('The station staffed in the current shift'),
+      forced: z.boolean().describe('Absent in the current shift by a console action'),
+    }),
+  ),
+  absences: z.array(absenceSchema).describe('Every forced absence, planned or applied'),
+});
+
 export const groundTruthSchema = z.object({
   epoch: count.describe('Run epoch (Unix seconds), as the devices publish it (ADR-0015)'),
   productionMode: z.enum(PRODUCTION_MODES).describe('The production mode of the run (#172)'),
@@ -607,6 +703,16 @@ export interface ControlAppOptions {
    * `AsOfAfterSimTimeError` when it is after the simulation time (400; any other error is a 500).
    */
   readonly groundTruth?: (traceAsOf?: number) => GroundTruthReport;
+  /**
+   * Console actions and their read routes (#234, 1.7): lots, operators, lot block and release,
+   * forced absences, tool breakage. The routes exist only when given.
+   */
+  readonly console?: {
+    readonly act: (request: ActionRequest) => ActionResult;
+    readonly actions: () => readonly ConsoleAction[];
+    readonly lots: () => readonly LotView[];
+    readonly operators: () => OperatorsView;
+  };
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
   readonly version?: string;
 }
@@ -617,6 +723,7 @@ export async function buildControlApp({
   ready,
   faults = {},
   groundTruth,
+  console: consoleActions,
   logger = false,
   version = CONTROL_API_VERSION,
 }: ControlAppOptions): Promise<FastifyInstance> {
@@ -653,6 +760,10 @@ export async function buildControlApp({
       tags: [
         { name: 'simulation', description: 'Pacing of the live run' },
         { name: 'operations', description: 'Health and metrics' },
+        {
+          name: 'console',
+          description: 'Console actions on the plant: lots, operators and tool breakage (1.7)',
+        },
         {
           name: 'faults',
           description: 'Infrastructure faults for resilience tests, and failure injection',
@@ -1066,6 +1177,10 @@ export async function buildControlApp({
     );
   }
 
+  if (consoleActions) {
+    registerConsoleRoutes(app, pacer, consoleActions);
+  }
+
   app.get(EVENTS_PATH, { websocket: true, schema: { hide: true } }, (socket) => {
     metrics.clients.inc();
     const unsubscribe = hub.subscribe((line) => {
@@ -1129,6 +1244,253 @@ export async function buildControlApp({
   );
 
   return app;
+}
+
+const actionJson = (action: ConsoleAction) => {
+  const applied = action.appliedAt === undefined ? {} : { appliedAt: isoTime(action.appliedAt) };
+  switch (action.kind) {
+    case 'lot-block':
+    case 'lot-release':
+      return {
+        id: action.id,
+        kind: action.kind,
+        lot: action.lot,
+        material: action.material,
+        at: isoTime(action.at),
+        status: action.status,
+        ...applied,
+      };
+    case 'tool-breakage':
+      return {
+        id: action.id,
+        kind: action.kind,
+        machine: action.machine,
+        at: isoTime(action.at),
+        status: action.status,
+        ...applied,
+        ...(action.cycles === undefined ? {} : { cycles: action.cycles }),
+      };
+    case 'operators-absent':
+      return {
+        id: action.id,
+        kind: action.kind,
+        shift: action.shift,
+        start: isoTime(action.start),
+        operators: action.operators,
+        status: action.status,
+        ...applied,
+      };
+  }
+};
+
+/** The console's routes (#234, control API 1.7). */
+function registerConsoleRoutes(
+  app: FastifyInstance,
+  pacer: PacerControl,
+  actions: NonNullable<ControlAppOptions['console']>,
+): void {
+  const errors = {
+    200: json(z.object({ action: consoleActionSchema })),
+    400: json(errorSchema),
+    404: json(errorSchema),
+    409: json(errorSchema),
+  };
+  /** Sends a refusal with the status its code calls for, or the accepted action. */
+  const answer = (reply: FastifyReply, result: ActionResult) => {
+    if (result.ok) {
+      return { action: actionJson(result.action) };
+    }
+    switch (result.code) {
+      case 'unknown-lot':
+      case 'unknown-machine':
+      case 'unknown-operator':
+      case 'unknown-shift':
+        return reply.code(404).send({ error: 'Not Found', message: result.reason });
+      case 'in-the-past':
+      case 'calendar-boundary':
+      case 'shift-started':
+        return reply.code(409).send({ error: 'Conflict', message: result.reason });
+      case 'invalid-time':
+      case 'not-a-cnc':
+      case 'invalid-shift':
+      case 'no-operators':
+      case 'duplicate-operator':
+      case 'not-on-shift':
+        return reply.code(400).send({ error: 'Bad Request', message: result.reason });
+    }
+  };
+  const finished = (reply: FastifyReply) =>
+    reply.code(409).send({ error: 'Conflict', message: 'the run has finished' });
+  /** `at` of an optional `{ at? }` body: a time, undefined (now), or null when it is invalid. */
+  const atOf = (body: unknown): number | undefined | null => {
+    const at = (body as { at?: string } | undefined)?.at;
+    if (at === undefined) return undefined;
+    try {
+      return Temporal.Instant.from(at).epochMilliseconds;
+    } catch {
+      return null;
+    }
+  };
+  /** A POST without a body validates as `{}` (the `at` body is optional). */
+  const optionalBody = (
+    request: { body: unknown },
+    _reply: FastifyReply,
+    done: () => void,
+  ): void => {
+    request.body ??= {};
+    done();
+  };
+  const badAt = (reply: FastifyReply, body: unknown) =>
+    reply.code(400).send({
+      error: 'Bad Request',
+      message: `at must be ISO 8601 with an offset or Z, got "${String((body as { at?: string }).at)}"`,
+    });
+
+  app.get(
+    `${API_PREFIX}/lots`,
+    {
+      schema: {
+        tags: ['console'],
+        summary: 'Every material lot: what is left and whether it is blocked',
+        response: { 200: json(lotsSchema) },
+      },
+    },
+    () => ({
+      lots: actions.lots().map((lot) => ({
+        lot: lot.id,
+        material: lot.material,
+        remaining: lot.remaining,
+        blocked: lot.blocked,
+      })),
+    }),
+  );
+
+  for (const verb of ['block', 'release'] as const) {
+    app.post(
+      `${API_PREFIX}/lots/:lot/${verb}`,
+      {
+        preValidation: optionalBody,
+        schema: {
+          tags: ['console'],
+          summary:
+            verb === 'block'
+              ? 'Block a material lot, now or at a simulation time (skipped as if empty)'
+              : 'Release a blocked material lot, now or at a simulation time',
+          description:
+            'Scheduled as a simulation event at `at`, as failure injections are, and written to ' +
+            'the event log as a `lot` event. A blocked lot is skipped as if it were empty: the ' +
+            'consuming station starves with cause `MATERIAL:<material>` once no other lot of the ' +
+            'material is left; a release wakes every starved station. The body is optional. ' +
+            '404: unknown lot; 400: invalid `at`; 409: `at` in the past or on a calendar ' +
+            'boundary, or the run has finished.',
+          params: json(z.object({ lot: z.string() })),
+          body: json(atBodySchema),
+          response: errors,
+        },
+      },
+      (request, reply) => {
+        if (pacer.state === 'finished') return finished(reply);
+        const at = atOf(request.body);
+        if (at === null) return badAt(reply, request.body);
+        const { lot } = request.params as { lot: string };
+        return answer(
+          reply,
+          actions.act({
+            kind: verb === 'block' ? 'lot-block' : 'lot-release',
+            lot,
+            ...(at === undefined ? {} : { at }),
+          }),
+        );
+      },
+    );
+  }
+
+  app.get(
+    `${API_PREFIX}/operators`,
+    {
+      schema: {
+        tags: ['console'],
+        summary: 'The roster, who is present or absent in the current shift, forced absences',
+        response: { 200: json(operatorsSchema) },
+      },
+    },
+    () => {
+      const view = actions.operators();
+      return {
+        currentShift: view.currentShift,
+        operators: view.operators,
+        absences: view.absences.map(actionJson),
+      };
+    },
+  );
+
+  app.post(
+    `${API_PREFIX}/operators/absent`,
+    {
+      schema: {
+        tags: ['console'],
+        summary: 'Mark operators absent for a later shift, whatever their roster draw says',
+        description:
+          "Applied at the shift's start, which must be after the simulation time, so no running " +
+          "shift's staffing changes. The roster draw still happens (one per operator and shift), " +
+          'so every other shift is unchanged. The event log gets an `absence` event at the ' +
+          "shift's start, before its `operator` events. Marking both ASM-01-qualified operators " +
+          'of a shift leaves ASM-01 `Idle` with cause `NO-OPERATOR`. 404: unknown operator or ' +
+          'no such shift; 400: a malformed shift key, an operator not rostered on it, an id ' +
+          'listed twice; 409: the shift has started, or the run has finished.',
+        body: json(absenceBodySchema),
+        response: errors,
+      },
+    },
+    (request, reply) => {
+      if (pacer.state === 'finished') return finished(reply);
+      const { shift, operators } = request.body as { shift: string; operators: string[] };
+      return answer(reply, actions.act({ kind: 'operators-absent', shift, operators }));
+    },
+  );
+
+  app.post(
+    `${API_PREFIX}/faults/tool/:machine`,
+    {
+      preValidation: optionalBody,
+      schema: {
+        tags: ['faults'],
+        summary: "Break a CNC's tool, now or at a simulation time",
+        description:
+          "At `at` the tool's wear goes to end of life (1.0). A cycle in progress completes " +
+          'normally and draws its defect at wear 1.0; the tool is changed at the next start ' +
+          '(`Setup` with cause `TOOL-CHANGE`), as at a natural end of life. No random draw is ' +
+          'added or removed. The event log gets a `tool-breakage` event. The body is optional. ' +
+          '404: unknown machine; 400: not a CNC or an invalid `at`; 409: `at` in the past or on ' +
+          'a calendar boundary, or the run has finished.',
+        params: json(z.object({ machine: z.string() })),
+        body: json(atBodySchema),
+        response: errors,
+      },
+    },
+    (request, reply) => {
+      if (pacer.state === 'finished') return finished(reply);
+      const at = atOf(request.body);
+      if (at === null) return badAt(reply, request.body);
+      const { machine } = request.params as { machine: string };
+      return answer(
+        reply,
+        actions.act({ kind: 'tool-breakage', machine, ...(at === undefined ? {} : { at }) }),
+      );
+    },
+  );
+
+  app.get(
+    `${API_PREFIX}/actions`,
+    {
+      schema: {
+        tags: ['console'],
+        summary: 'Every console action of the run, in order, with its outcome',
+        response: { 200: json(z.object({ actions: z.array(consoleActionSchema) })) },
+      },
+    },
+    () => ({ actions: actions.actions().map(actionJson) }),
+  );
 }
 
 function createMetrics(pacer: PacerControl, hub: EventHub) {

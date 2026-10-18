@@ -42,3 +42,12 @@ export type {
   InjectionSpec,
   LeakDriftSpec,
 } from './injections.ts';
+export { ACTION_KINDS, actionIssues, checkActions, parseShiftKey, shiftStart } from './actions.ts';
+export type {
+  ActionIssue,
+  ActionIssueCode,
+  ActionSpec,
+  LotActionSpec,
+  OperatorsAbsentSpec,
+  ToolBreakageSpec,
+} from './actions.ts';

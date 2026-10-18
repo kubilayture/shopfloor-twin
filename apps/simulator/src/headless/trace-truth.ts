@@ -205,6 +205,9 @@ export class TraceTruth {
       case 'program-loaded':
       case 'injection-held':
       case 'injection-applied':
+      case 'lot':
+      case 'absence':
+      case 'tool-breakage':
         return;
     }
     const unit = this.#unit(event.machineId, event.partId, event.product);

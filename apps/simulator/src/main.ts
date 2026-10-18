@@ -73,6 +73,12 @@ const app = await buildControlApp({
     drift: { inject: (request) => run.injectLeakDrift(request), list: () => run.drifts() },
   },
   groundTruth: (traceAsOf) => ({ epoch: servers.epoch, ...run.groundTruth(traceAsOf) }),
+  console: {
+    act: (request) => run.act(request),
+    actions: () => run.actions(),
+    lots: () => run.lots(),
+    operators: () => run.operators(),
+  },
   logger: { level: env.LOG_LEVEL },
 });
 const log = app.log;

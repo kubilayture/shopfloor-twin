@@ -306,6 +306,7 @@ Assumption to review: the whole line stops for the break. In many plants CNCs ke
 - The first present operator in roster order who is qualified for the station takes it, and an `operator` event records who, plus the list of absent operators.
 - The operator's `speedFactor` multiplies the station's mean cycle time: 1.1 means 10% slower than ideal. This is the main source of performance loss at the manual bottleneck.
 - With no qualified operator present, the station is `Idle` with cause `NO-OPERATOR` for the shift. Upstream fills up and blocks; downstream starves.
+- **Forced absence (#234, ADR-0037):** a console action (`POST /api/v1/operators/absent`, or `operators-absent` in a headless run's `actions`) names a shift `YYYY-MM-DD/<shift id>` whose start is after the simulation time and a list of operators rostered on it. At that shift's start every listed operator is absent whatever the draw says; the draw still happens, one per operator and shift on its own stream, so the number of draws and every other shift's staffing are unchanged. An `absence` event (`shiftId`, `shiftDate`, `operators` in roster order) comes before the shift's `operator` events, whose `absent` lists include the forced ones. Every shift has two operators qualified for ASM-01, so one absence changes nothing; marking both leaves ASM-01 `Idle` with cause `NO-OPERATOR` at the shift's start.
 
 ### Validation
 
@@ -325,6 +326,9 @@ Assumption to review: the whole line stops for the break. In many plants CNCs ke
 - A speed factor of 1.2 gives exactly 180 s at ASM-01.
 - With nobody present, ASM-01 never runs (`NO-OPERATOR`).
 - Absences occur at the configured rate (chi-square test).
+
+`console-actions.test.ts` (#234): marking `op-a1` and `op-a2` absent for Tuesday's shift A leaves ASM-01 `Idle` `NO-OPERATOR` at its start and never `Running` in it; the run before is the plain run, every other shift's `operator` events are the plain run's, and every roster stream drew as often; the roster view (present, absent, off shift, forced) and the refusals. `control/console.test.ts` asserts the same for shift B through the control API.
+
 - Over two weeks with every model on, time accounting and conservation stay exact and the run is deterministic.
 
 ### Reference week
@@ -353,6 +357,21 @@ Source: `apps/simulator/src/plant/quality.ts` and `line.ts`. Parameters: `config
 - A defective part still gets its serial (the DMC is laser-marked at the end of the cycle). It is then scrapped at OP10 with reason `DIMENSIONAL` and never goes downstream.
 - After `lifeCycles` (default 400), the next cycle waits for a tool change: `Setup` with cause `TOOL-CHANGE` for `changeMinutes` (default 8).
 - The weekly schedule counts blanks started, so scrap reduces good output.
+
+### Tool breakage (#234)
+
+Source: `act` in `apps/simulator/src/plant/line.ts` and `ToolWear.break` in `quality.ts` (Phase 9 plan, "Console actions", ADR-0037). A console action (`POST /api/v1/faults/tool/{machine}`, control API 1.7, or `tool-breakage` in a headless run's `actions`) names a CNC and a time `at`. It is defined against the tool model above, not as a breakdown:
+
+- **At `at`** (a simulation event, as a failure injection): the tool's cycle count is set to its `lifeCycles`, so its wear is 1.0, and a `tool-breakage` event records the count before (`cycles`). Nothing else happens then: no state change, no alarm.
+- **A cycle in progress** completes normally and draws its defect at wear 1.0 (the end-of-life probability, 5 % by default). `needsChange` is then true, so `#tryStart` changes the tool before the next cycle, as at end of life: `Setup` with cause `TOOL-CHANGE` for `changeMinutes`. With no cycle in progress the change happens at the next start (for an idle CNC in orders mode, when its next job starts).
+- **Draws:** every OP10 cycle still makes exactly one `bernoulli` on `{cnc}/quality/defect`; only its probability changes. The breakage and the tool change draw nothing (`changeMinutes` is fixed). So the run before `at` is identical to the run without it, and every stream draws the same sequence of values; their timing after `at` may move, as with any injection.
+- **Not a `Down`:** a breakage with its own failure code would change `failures.yaml`, a simulation input, and so `configSha256` of every golden (Phase 9 plan, "Out of scope").
+- **Inside a `TOOL-CHANGE` setup:** the tool being fitted has not cut yet, so a breakage that falls due during the machine's own tool change changes nothing (no second change, no longer setup). It is still written, as `tool-breakage` with `ignored: tool-change-in-progress` and the new tool's count, and the action's status is `ignored`. Deterministic: the line knows the setup's cause, whatever the order of requests. A breakage during a product changeover is applied.
+- **Caveat (older than #234, unchanged):** a tool change that follows a changeover directly (Setup → Setup) writes no state event of its own, so the log and the MES show one longer Setup with the changeover's cause, not a `TOOL-CHANGE`.
+- **Refused:** a machine without a tool (not an OP10 CNC, or an OP10 machine the schedule doesn't list in schedule mode, which has no tool), a time in the past or on a calendar boundary (as failure injections). The check is made when the action is accepted, so the run never meets a breakage it can't apply.
+- **Live posts at the current time:** an action without `at` (or with `at` equal to the simulation time) runs after the events already processed in that millisecond. Posted before the run starts it reproduces the headless run; posted mid-run its place among same-millisecond events is the live run's, which P9-08's timeline test must cover.
+
+**Validation** (`apps/simulator/src/plant/console-actions.test.ts`): with a curve that gives a defect only at wear 1.0 and no natural end of life, the run before `at` equals the plain run; the cycle in progress at `at` ends when it does in the plain run and is the one scrap (`DIMENSIONAL`), followed at once by `Setup TOOL-CHANGE`; with the default curve, the draws per stream up to `at` equal the plain run's, each CNC's defect draws equal its OP10 cycles, and the broken run has exactly one more tool change; an idle CNC changes its tool when its next job starts; refusals.
 
 ### Leak test (OP40)
 
@@ -429,7 +448,8 @@ Source: `apps/simulator/src/plant/materials.ts` and `line.ts`. Parameters: `conf
 
 - When no usable lot of a needed material is left, the station is `Starved` with cause `MATERIAL:<material>`, for example `MATERIAL:SK-1`.
 - ASM-01 checks its components **before** taking the part from the buffer, so the part stays in the buffer and the line upstream fills and blocks, as it would in a real plant.
-- A lot can be blocked and released (`ProductionLine.blockLot`, used by the control API in Phase 9 to simulate a quality hold). A blocked lot is skipped as if it were empty. Releasing it wakes every starved station.
+- A lot can be blocked and released. A blocked lot is skipped as if it were empty. Releasing it wakes every starved station.
+- **Lot actions (#234, ADR-0037):** the control API (`POST /api/v1/lots/{lot}/block` and `/release`, 1.7) and a headless run's `actions` (`lot-block`, `lot-release`) schedule the block or release as a simulation event at `at`, with the refusals of failure injections (a time in the past or on a calendar boundary, an unknown lot). It is written as a `lot` event (`lotId`, `material`, `transition: blocked | released`, `action`). It is the physical counterpart of an MES hold, never triggered by the MES (ADR-0035). `GET /api/v1/lots` lists every lot with what is left and whether it is blocked.
 
 ### Scenario-local stock (#196)
 
@@ -465,7 +485,7 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 
 ### Event log (`events.jsonl`)
 
-- **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the simulation sections of the validated plant configuration (`SIMULATION_FILES` in `plant-config`). Any change to a value in those files changes the hash; `oee.yaml`, `reasons.yaml` and `alarms.yaml` are not simulation inputs and are not hashed (ADR-0021, ADR-0024). A run with failure injections also lists them (`injections: [{ at, machine, code, repairMs? }]`); a run without has no such field, so its header is unchanged (#140). A leak-test drift is listed in the same list, in scenario order, as `{ kind: "leak-drift", at, until, machine, shift }` (#196); an entry without `kind` is a failure injection, so existing headers are unchanged. An orders-mode run adds `production: "orders"` and its `dispatches` (#172); a schedule-mode header has neither, so `week-01`'s and `alarms-01`'s headers and `events.sha256` are unchanged. The event schema stays `sim-event/1`: `job` is a new event type that only orders-mode runs write.
+- **Line 1, the run header** (`schema: sim-run/1`): `seed`, `start`, `end` (ISO 8601, UTC) and `configSha256`, a SHA-256 hash of the simulation sections of the validated plant configuration (`SIMULATION_FILES` in `plant-config`). Any change to a value in those files changes the hash; `oee.yaml`, `reasons.yaml` and `alarms.yaml` are not simulation inputs and are not hashed (ADR-0021, ADR-0024). A run with failure injections also lists them (`injections: [{ at, machine, code, repairMs? }]`); a run without has no such field, so its header is unchanged (#140). A leak-test drift is listed in the same list, in scenario order, as `{ kind: "leak-drift", at, until, machine, shift }` (#196); an entry without `kind` is a failure injection, so existing headers are unchanged. An orders-mode run adds `production: "orders"` and its `dispatches` (#172); a schedule-mode header has neither, so `week-01`'s and `alarms-01`'s headers and `events.sha256` are unchanged. The event schema stays `sim-event/1`: `job` is a new event type that only orders-mode runs write. A run with console actions (#234, ADR-0037) lists them under `actions` (`{ kind: lot-block | lot-release, at, lot }`, `{ kind: operators-absent, shift, operators }`, `{ kind: tool-breakage, at, machine }`), applied after the dispatches and the injections in list order with their own numbering; a run without has no such field, so every existing header and `events.sha256` is unchanged.
 - **Every other line is one event** with `schema: sim-event/1`, a run-wide sequence number `seq` starting at 1, and `at` in ISO 8601 UTC. Lines are in simulation-time order; events at the same millisecond keep the order in which the model produced them.
 - **No raw floats leave the model:** durations are rounded to whole milliseconds before scheduling (ADR-0006), and measurements are rounded to instrument resolution. The last bits of `Math.log`, `Math.cos` and `**` can differ between CPU architectures; the first golden run in CI (Linux x86) differed from a local run (macOS ARM) in exactly the unrounded leak readings.
 - **Byte stability:** keys are sorted at every level (string order, except that integer-like keys come first in numeric order, as JSON objects always do), and undefined fields are dropped. Values that are not plain JSON (`Map`, `Set`, `Temporal` objects, functions) are rejected instead of being written as `{}`. One function, `stableStringify`, writes every line, so the bytes depend only on the data, never on how an object was built.
@@ -484,6 +504,9 @@ Source: `apps/simulator/src/headless/`. How to run it: `docs/runbook.md`.
 | `injection-applied`          | `machineId`, `injection`, `code`                                                                              | A failure injection takes effect: the machine goes `Down` now     |
 | `job`                        | `machineId`, `transition` (`accepted`, `started`, `completed`), `commandId`, `orderId`, `product`, `quantity` | Orders mode only (#172): a job is accepted, started or completed  |
 | `leak-drift`                 | `machineId`, `injection`, `transition` (`applied`, `ended`), `shift`, `endedBy?` (`until`, `calibration`)     | Only runs with a drift (#196): a leak-test drift starts or ends   |
+| `lot`                        | `lotId`, `material`, `transition` (`blocked`, `released`), `action?`                                          | Only runs with a lot action (#234): a lot is blocked or released  |
+| `absence`                    | `shiftId`, `shiftDate`, `operators`                                                                           | Only runs with a forced absence (#234): at that shift's start     |
+| `tool-breakage`              | `machineId`, `action`, `cycles`, `ignored?` (`tool-change-in-progress`)                                       | Only runs with a tool breakage (#234): the tool's wear goes to 1  |
 
 These are the simulator's internal facts, the "truth". They are not the UNS payloads of plan section 5; the MES sees the plant only through OPC UA and MQTT from Phase 2 on.
 

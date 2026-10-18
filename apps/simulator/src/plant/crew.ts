@@ -37,11 +37,17 @@ export class Crew {
     return this.#stations;
   }
 
-  forShift(shiftId: string): ShiftCrew {
+  /**
+   * The crew of a shift: one absence draw per rostered operator, in roster order, always. An
+   * operator in `forced` (#234, ADR-0037) is absent whatever the draw says; the draw still
+   * happens, so the number of draws and every other shift stay the same.
+   */
+  forShift(shiftId: string, forced: ReadonlySet<string> = new Set()): ShiftCrew {
     const present: RosterEntry[] = [];
     const absent: string[] = [];
     for (const operator of this.#operators.filter((op) => op.shift === shiftId)) {
-      if (bernoulli(operator.absence, this.#absenceProbability)) {
+      const drawn = bernoulli(operator.absence, this.#absenceProbability);
+      if (drawn || forced.has(operator.id)) {
         absent.push(operator.id);
       } else {
         present.push(operator);

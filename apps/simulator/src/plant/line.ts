@@ -11,7 +11,11 @@ import {
 } from '@shopfloor/contracts';
 import {
   LEAK_TEST_CHARACTERISTIC,
+  actionIssues,
   driftIssues,
+  shiftStart,
+  type ActionIssueCode,
+  type OperatorsAbsentSpec,
   driftSteps,
   injectionIssues,
   type DriftIssueCode,
@@ -56,10 +60,12 @@ type StationEvent =
       readonly station: string;
       readonly injection: number;
     }
-  | { readonly type: 'wake'; readonly station: string };
+  | { readonly type: 'wake'; readonly station: string }
+  | { readonly type: 'tool-break'; readonly station: string; readonly action: number };
 
 export type LineEvent =
   | StationEvent
+  | { readonly type: 'lot-action'; readonly action: number }
   | { readonly type: 'calendar'; readonly boundary: CalendarBoundary }
   | { readonly type: 'calendar-refill'; readonly until: SimTime };
 
@@ -159,6 +165,47 @@ export type PlantEvent =
       readonly orderId: string;
       readonly product: string;
       readonly quantity: number;
+    }
+  | {
+      /**
+       * A console action (#234, ADR-0037) blocked a material lot (skipped as if empty) or released
+       * it. `action` is the action's id; a direct `blockLot` call has none. Only runs with a lot
+       * action write it.
+       */
+      readonly type: 'lot';
+      readonly at: SimTime;
+      readonly lotId: string;
+      readonly material: string;
+      readonly transition: 'blocked' | 'released';
+      readonly action?: number;
+    }
+  | {
+      /**
+       * A console action (#234, ADR-0037) made these operators absent for the shift that starts
+       * now, whatever their roster draw said. Written at the shift start, before its `operator`
+       * events; only runs with a forced absence write it.
+       */
+      readonly type: 'absence';
+      readonly at: SimTime;
+      readonly shiftId: string;
+      readonly shiftDate: string;
+      readonly operators: readonly string[];
+    }
+  | {
+      /**
+       * A console action (#234, ADR-0037) broke a CNC's tool: its wear is now end of life (1.0).
+       * `cycles` is the tool's cycle count before. Only runs with a tool breakage write it.
+       */
+      readonly type: 'tool-breakage';
+      readonly at: SimTime;
+      readonly machineId: string;
+      readonly action: number;
+      readonly cycles: number;
+      /**
+       * Set when the breakage fell inside the machine's own `TOOL-CHANGE` setup: the tool being
+       * fitted has not cut yet, so nothing changes (no second change).
+       */
+      readonly ignored?: 'tool-change-in-progress';
     };
 
 export interface Measurement {
@@ -360,6 +407,144 @@ interface Drift {
   endedBy: DriftEnd | undefined;
 }
 
+/**
+ * A scheduled console action's progress (#234): `scheduled` until its time, then `applied`, or
+ * `ignored` for a tool breakage that fell inside a `TOOL-CHANGE` setup.
+ */
+export type ActionStatus = 'scheduled' | 'applied' | 'ignored';
+
+/** A lot block or release (#234, ADR-0037) and what became of it. */
+export interface LotAction {
+  /** 1, 2, … in the order the line accepted console actions (their own numbering). */
+  readonly id: number;
+  readonly kind: 'lot-block' | 'lot-release';
+  readonly lot: string;
+  readonly material: string;
+  readonly at: SimTime;
+  readonly status: ActionStatus;
+  readonly appliedAt?: SimTime;
+}
+
+/** A tool breakage (#234, ADR-0037) and what became of it. */
+export interface ToolBreakage {
+  readonly id: number;
+  readonly kind: 'tool-breakage';
+  readonly machine: string;
+  readonly at: SimTime;
+  readonly status: ActionStatus;
+  readonly appliedAt?: SimTime;
+  /** The tool's cycle count when it broke. */
+  readonly cycles?: number;
+}
+
+/** A forced absence (#234, ADR-0037): `planned` until its shift starts, then `applied`. */
+export interface OperatorAbsence {
+  readonly id: number;
+  readonly kind: 'operators-absent';
+  /** The shift bucket key, `YYYY-MM-DD/<shift id>`. */
+  readonly shift: string;
+  /** The shift's start. */
+  readonly start: SimTime;
+  readonly operators: readonly string[];
+  readonly status: 'planned' | 'applied';
+  readonly appliedAt?: SimTime;
+}
+
+export type ConsoleAction = LotAction | ToolBreakage | OperatorAbsence;
+
+/**
+ * A console action as the control API or a headless run's `actions` gives it; `at` is the
+ * current simulation time when left out.
+ */
+export type ActionRequest =
+  | {
+      readonly kind: 'lot-block' | 'lot-release';
+      readonly lot: string;
+      readonly at?: SimTime | undefined;
+    }
+  | { readonly kind: 'tool-breakage'; readonly machine: string; readonly at?: SimTime | undefined }
+  | OperatorsAbsentSpec;
+
+export type ActionResult =
+  | { readonly ok: true; readonly action: ConsoleAction }
+  | {
+      readonly ok: false;
+      readonly code: ActionIssueCode | 'in-the-past' | 'shift-started';
+      readonly reason: string;
+    };
+
+/** A roster entry with where the operator is in the current shift (#234, `GET /operators`). */
+export interface OperatorView {
+  readonly id: string;
+  readonly shift: string;
+  readonly skills: readonly string[];
+  readonly speedFactor: number;
+  /** `off-shift` when the operator is not rostered on the current shift, or no shift runs. */
+  readonly status: 'present' | 'absent' | 'off-shift';
+  /** The station the operator staffs in the current shift, if any. */
+  readonly station: string | null;
+  /** Absent in the current shift by a console action rather than the roster draw. */
+  readonly forced: boolean;
+}
+
+export interface OperatorsView {
+  /** The shift bucket key of the running shift, or null between shifts. */
+  readonly currentShift: string | null;
+  readonly operators: readonly OperatorView[];
+  /** Every forced absence accepted so far, planned or applied, in acceptance order. */
+  readonly absences: readonly OperatorAbsence[];
+}
+
+/** A material lot as `GET /lots` shows it (#234). */
+export interface LotView {
+  readonly id: string;
+  readonly material: string;
+  readonly remaining: number;
+  readonly blocked: boolean;
+}
+
+interface LotActionRecord {
+  readonly id: number;
+  readonly kind: 'lot-block' | 'lot-release';
+  readonly lot: string;
+  readonly material: string;
+  readonly at: SimTime;
+  status: ActionStatus;
+  appliedAt: SimTime | undefined;
+}
+
+interface ToolBreakageRecord {
+  readonly id: number;
+  readonly kind: 'tool-breakage';
+  readonly machine: string;
+  readonly at: SimTime;
+  status: ActionStatus;
+  appliedAt: SimTime | undefined;
+  cycles: number | undefined;
+}
+
+interface AbsenceRecord {
+  readonly id: number;
+  readonly kind: 'operators-absent';
+  readonly shift: string;
+  readonly start: SimTime;
+  readonly operators: readonly string[];
+  status: OperatorAbsence['status'];
+  appliedAt: SimTime | undefined;
+}
+
+type ActionRecord = LotActionRecord | ToolBreakageRecord | AbsenceRecord;
+
+/** The crew of the running shift, for `GET /operators`. */
+interface CrewNow {
+  readonly key: string;
+  readonly shiftId: string;
+  readonly absent: ReadonlySet<string>;
+  readonly forced: ReadonlySet<string>;
+  /** Operator id → the station they staff. */
+  readonly stations: ReadonlyMap<string, string>;
+}
+
 interface Injection {
   readonly id: number;
   readonly machine: string;
@@ -432,6 +617,8 @@ interface Station {
   repairMs: number | undefined;
   /** Injections waiting for the machine to enter Running, in order (#140). */
   readonly held: Injection[];
+  /** In a `TOOL-CHANGE` setup (#234): a tool breakage then changes nothing. */
+  changingTool: boolean;
 }
 
 export interface LineOptions {
@@ -460,6 +647,9 @@ export class ProductionLine {
   /** Failure injections and drifts share one numbering (#196): ids in acceptance order. */
   #nextInjectionId = 1;
   readonly #jobs: Job[] = [];
+  /** Console actions (#234), in acceptance order, numbered on their own from 1. */
+  readonly #actions: ActionRecord[] = [];
+  #crewNow: CrewNow | undefined;
   /** Orders mode: every job this run accepted, by command id, line-wide (the dedup table). */
   readonly #acceptedCommands = new Map<string, Job>();
   readonly production: ProductionMode;
@@ -566,6 +756,7 @@ export class ProductionLine {
         failure: undefined,
         repairMs: undefined,
         held: [],
+        changingTool: false,
       };
     });
   }
@@ -589,7 +780,7 @@ export class ProductionLine {
       if (current.inBreak) {
         this.#onEvent({ type: 'shift', at: this.#now, action: 'break-start', shiftId, shiftDate });
       }
-      this.#staff(shiftId);
+      this.#staff(shiftId, shiftDate);
       this.#unavailable = current.inBreak ? 'PlannedStop' : undefined;
     }
     this.stations.forEach((station) => {
@@ -611,6 +802,10 @@ export class ProductionLine {
       this.#scheduleCalendar(simulation, event.until, event.until + CALENDAR_WINDOW);
       return;
     }
+    if (event.type === 'lot-action') {
+      this.#applyLotAction(event.action, simulation);
+      return;
+    }
     const station = this.#station(event.station);
     switch (event.type) {
       case 'clock':
@@ -619,6 +814,7 @@ export class ProductionLine {
         break;
       case 'setup-end':
         station.busy = false;
+        station.changingTool = false;
         if (this.#canWork(station)) {
           this.#tryStart(station, simulation);
         } else {
@@ -643,6 +839,9 @@ export class ProductionLine {
         break;
       case 'wake':
         this.#startInShift(station, simulation);
+        break;
+      case 'tool-break':
+        this.#applyToolBreak(station, event.action);
         break;
       case 'repair-end':
         this.#finishRepair(station, simulation);
@@ -690,7 +889,9 @@ export class ProductionLine {
     const { action, shiftId, shiftDate } = boundary;
     this.#onEvent({ type: 'shift', at: this.#now, action, shiftId, shiftDate });
     if (action === 'shift-start') {
-      this.#staff(shiftId);
+      this.#staff(shiftId, shiftDate);
+    } else if (action === 'shift-end') {
+      this.#crewNow = undefined;
     }
     this.#unavailable =
       action === 'break-start' ? 'PlannedStop' : action === 'shift-end' ? 'Off' : undefined;
@@ -708,8 +909,29 @@ export class ProductionLine {
     }
   }
 
-  #staff(shiftId: string): void {
-    const crew = this.#crew.forShift(shiftId);
+  #staff(shiftId: string, shiftDate: string): void {
+    const key = `${shiftDate}/${shiftId}`;
+    // Forced absences of this shift (#234): every listed operator, in roster order.
+    const forcing = this.#actions.filter(
+      (a): a is AbsenceRecord => a.kind === 'operators-absent' && a.shift === key,
+    );
+    const listed = new Set(forcing.flatMap((a) => a.operators));
+    const forced = this.#config.operators.operators
+      .map((op) => op.id)
+      .filter((id) => listed.has(id));
+    const crew = this.#crew.forShift(shiftId, listed);
+    if (forced.length > 0) {
+      for (const absence of forcing) {
+        absence.status = 'applied';
+        absence.appliedAt = this.#now;
+      }
+      this.#onEvent({ type: 'absence', at: this.#now, shiftId, shiftDate, operators: forced });
+    }
+    const stations = new Map<string, string>();
+    for (const [station, assignment] of crew.assignments) {
+      if (assignment) stations.set(assignment.operatorId, station);
+    }
+    this.#crewNow = { key, shiftId, absent: new Set(crew.absent), forced: listed, stations };
     for (const station of this.stations.filter((s) => s.requiresOperator)) {
       station.operator = crew.assignments.get(station.id);
       this.#onEvent({
@@ -1185,6 +1407,7 @@ export class ProductionLine {
     }
     if (station.tool?.needsChange) {
       station.tool.change();
+      station.changingTool = true;
       this.#occupy(
         station,
         'Setup',
@@ -1569,9 +1792,34 @@ export class ProductionLine {
     return { ok: true, position: 1 };
   }
 
+  /**
+   * Blocks or releases a lot now (a `lot` event without an action id). The control API and a
+   * headless run's `actions` go through `act`, which schedules it as a simulation event.
+   */
   blockLot(lotId: string, blocked: boolean, simulation: Simulation<LineEvent>): void {
     this.#now = simulation.now;
-    this.inventory.setBlocked(lotId, blocked);
+    this.#setLot(lotId, blocked, undefined, simulation);
+  }
+
+  /**
+   * A blocked lot is skipped as if it were empty (the consuming station starves with
+   * `MATERIAL:<material>` once no other lot is left); releasing it wakes every starved station.
+   */
+  #setLot(
+    lotId: string,
+    blocked: boolean,
+    action: number | undefined,
+    simulation: Simulation<LineEvent>,
+  ): void {
+    const material = this.inventory.setBlocked(lotId, blocked);
+    this.#onEvent({
+      type: 'lot',
+      at: this.#now,
+      lotId,
+      material,
+      transition: blocked ? 'blocked' : 'released',
+      ...(action === undefined ? {} : { action }),
+    });
     if (!blocked) {
       this.stations.forEach((station) => {
         if (station.machine.state === 'Starved') {
@@ -1579,6 +1827,217 @@ export class ProductionLine {
         }
       });
     }
+  }
+
+  /**
+   * Accepts a console action (#234, ADR-0037: the control API and a headless run's `actions`).
+   * A lot block or release and a tool breakage are scheduled as simulation events at `at` (now
+   * when left out), as failure injections are; a forced absence is applied at its shift's start,
+   * which must be after the current simulation time. Refused: an unknown lot, machine, shift or
+   * operator, a machine without a tool, an operator not rostered on the shift, a time in the past
+   * or on a calendar boundary, a shift already started.
+   */
+  act(request: ActionRequest, simulation: Simulation<LineEvent>): ActionResult {
+    this.#now = simulation.now;
+    if (request.kind === 'operators-absent') {
+      return this.#planAbsence(request);
+    }
+    const at = request.at ?? simulation.now;
+    const [issue] = actionIssues(this.#config, { ...request, at });
+    if (issue) {
+      return { ok: false, code: issue.code, reason: issue.message };
+    }
+    // A first-operation machine without a tool (a CNC the schedule doesn't list) has nothing to
+    // break: refused here, never at the event, which would abort the run.
+    if (
+      request.kind === 'tool-breakage' &&
+      !this.stations.find((s) => s.id === request.machine)?.tool
+    ) {
+      return { ok: false, code: 'not-a-cnc', reason: `${request.machine} has no tool` };
+    }
+    if (at < simulation.now) {
+      return {
+        ok: false,
+        code: 'in-the-past',
+        reason: `${new Date(at).toISOString()} is before the simulation time ${new Date(simulation.now).toISOString()}`,
+      };
+    }
+    const id = this.#actions.length + 1;
+    let action: ActionRecord;
+    if (request.kind === 'tool-breakage') {
+      action = {
+        id,
+        kind: request.kind,
+        machine: request.machine,
+        at,
+        status: 'scheduled',
+        appliedAt: undefined,
+        cycles: undefined,
+      };
+      simulation.schedule(at, { type: 'tool-break', station: request.machine, action: id });
+    } else {
+      action = {
+        id,
+        kind: request.kind,
+        lot: request.lot,
+        material: this.#config.stock.lots.find((lot) => lot.id === request.lot)?.material ?? '',
+        at,
+        status: 'scheduled',
+        appliedAt: undefined,
+      };
+      simulation.schedule(at, { type: 'lot-action', action: id });
+    }
+    this.#actions.push(action);
+    return { ok: true, action: this.#actionView(action) };
+  }
+
+  #planAbsence(request: OperatorsAbsentSpec): ActionResult {
+    const [issue] = actionIssues(this.#config, request);
+    if (issue) {
+      return { ok: false, code: issue.code, reason: issue.message };
+    }
+    const start = shiftStart(this.#config, request.shift);
+    if (start === undefined) {
+      return { ok: false, code: 'unknown-shift', reason: `no shift ${request.shift}` };
+    }
+    if (start <= this.#now) {
+      return {
+        ok: false,
+        code: 'shift-started',
+        reason: `shift ${request.shift} starts at ${new Date(start).toISOString()}, not after the simulation time ${new Date(this.#now).toISOString()}`,
+      };
+    }
+    const action: AbsenceRecord = {
+      id: this.#actions.length + 1,
+      kind: 'operators-absent',
+      shift: request.shift,
+      start,
+      operators: [...request.operators],
+      status: 'planned',
+      appliedAt: undefined,
+    };
+    this.#actions.push(action);
+    return { ok: true, action: this.#actionView(action) };
+  }
+
+  /** Every console action accepted so far, in order, with its outcome. */
+  actions(): ConsoleAction[] {
+    return this.#actions.map((action) => this.#actionView(action));
+  }
+
+  #actionView(action: LotActionRecord): LotAction;
+  #actionView(action: AbsenceRecord): OperatorAbsence;
+  #actionView(action: ActionRecord): ConsoleAction;
+  #actionView(action: ActionRecord): ConsoleAction {
+    const applied = action.appliedAt === undefined ? {} : { appliedAt: action.appliedAt };
+    switch (action.kind) {
+      case 'lot-block':
+      case 'lot-release':
+        return {
+          id: action.id,
+          kind: action.kind,
+          lot: action.lot,
+          material: action.material,
+          at: action.at,
+          status: action.status,
+          ...applied,
+        };
+      case 'tool-breakage':
+        return {
+          id: action.id,
+          kind: action.kind,
+          machine: action.machine,
+          at: action.at,
+          status: action.status,
+          ...applied,
+          ...(action.cycles === undefined ? {} : { cycles: action.cycles }),
+        };
+      case 'operators-absent':
+        return {
+          id: action.id,
+          kind: action.kind,
+          shift: action.shift,
+          start: action.start,
+          operators: [...action.operators],
+          status: action.status,
+          ...applied,
+        };
+    }
+  }
+
+  #action(id: number): ActionRecord {
+    const action = this.#actions.find((a) => a.id === id);
+    if (!action) {
+      throw new RangeError(`unknown console action ${String(id)}`);
+    }
+    return action;
+  }
+
+  #applyLotAction(id: number, simulation: Simulation<LineEvent>): void {
+    const action = this.#action(id);
+    if (action.kind !== 'lot-block' && action.kind !== 'lot-release') {
+      throw new RangeError(`console action ${String(id)} is not a lot action`);
+    }
+    action.status = 'applied';
+    action.appliedAt = this.#now;
+    this.#setLot(action.lot, action.kind === 'lot-block', action.id, simulation);
+  }
+
+  /**
+   * A tool breakage (#234, ADR-0037): the wear goes to end of life and nothing else happens now.
+   * A cycle in progress completes normally and draws its defect at wear 1.0; `needsChange` then
+   * makes the next `#tryStart` change the tool (`Setup TOOL-CHANGE`), as at a natural end of
+   * life. No random draw is added or removed. Inside the machine's own `TOOL-CHANGE` setup the
+   * tool being fitted has not cut yet: the breakage changes nothing (no second change) and is
+   * recorded as `ignored`.
+   */
+  #applyToolBreak(station: Station, id: number): void {
+    const action = this.#action(id);
+    if (action.kind !== 'tool-breakage' || !station.tool) {
+      throw new RangeError(`console action ${String(id)} is not a tool breakage on ${station.id}`);
+    }
+    action.appliedAt = this.#now;
+    const ignored = station.changingTool;
+    action.status = ignored ? 'ignored' : 'applied';
+    const cycles = ignored ? station.tool.cycles : station.tool.break();
+    action.cycles = cycles;
+    this.#onEvent({
+      type: 'tool-breakage',
+      at: this.#now,
+      machineId: station.id,
+      action: action.id,
+      cycles,
+      ...(ignored ? { ignored: 'tool-change-in-progress' as const } : {}),
+    });
+  }
+
+  /** Every lot in file order, with what is left and whether it is blocked (#234). */
+  lots(): LotView[] {
+    return this.inventory.lots();
+  }
+
+  /** The roster with each operator's place in the current shift, and the forced absences. */
+  operators(): OperatorsView {
+    const crew = this.#crewNow;
+    return {
+      currentShift: crew?.key ?? null,
+      operators: this.#config.operators.operators.map((op): OperatorView => {
+        // The running shift's crew, when the operator is rostered on it.
+        const shift = crew?.shiftId === op.shift ? crew : undefined;
+        return {
+          id: op.id,
+          shift: op.shift,
+          skills: [...op.skills],
+          speedFactor: op.speedFactor,
+          status: !shift ? 'off-shift' : shift.absent.has(op.id) ? 'absent' : 'present',
+          station: shift?.stations.get(op.id) ?? null,
+          forced: shift?.forced.has(op.id) ?? false,
+        };
+      }),
+      absences: this.#actions
+        .filter((a): a is AbsenceRecord => a.kind === 'operators-absent')
+        .map((a) => this.#actionView(a)),
+    };
   }
 
   #occupy(

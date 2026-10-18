@@ -181,6 +181,7 @@ export class WasherModbusServer {
       case 'injection-applied':
       case 'leak-drift':
       case 'job':
+      case 'tool-breakage':
         break;
     }
   }

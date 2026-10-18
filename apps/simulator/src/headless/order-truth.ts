@@ -180,6 +180,9 @@ export class OrderTruth {
       case 'injection-held':
       case 'injection-applied':
       case 'leak-drift':
+      case 'lot':
+      case 'absence':
+      case 'tool-breakage':
         break;
     }
   }

@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ShopFloor Twin simulator control API",
-    "version": "1.6.0",
+    "version": "1.7.0",
     "description": "Controls the pacing of the live simulation and streams its plant events. Plant events: WebSocket at /api/v1/events (see docs/contracts/simulator-control-api.md)."
   },
   "components": {
@@ -4817,6 +4817,1497 @@
         }
       }
     },
+    "/api/v1/lots": {
+      "get": {
+        "summary": "Every material lot: what is left and whether it is blocked",
+        "tags": [
+          "console"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "lots": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "lot": {
+                            "type": "string"
+                          },
+                          "material": {
+                            "type": "string"
+                          },
+                          "remaining": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Units left in the lot"
+                          },
+                          "blocked": {
+                            "type": "boolean",
+                            "description": "A blocked lot is skipped as if it were empty"
+                          }
+                        },
+                        "required": [
+                          "lot",
+                          "material",
+                          "remaining",
+                          "blocked"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "lots"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/lots/{lot}/block": {
+      "post": {
+        "summary": "Block a material lot, now or at a simulation time (skipped as if empty)",
+        "tags": [
+          "console"
+        ],
+        "description": "Scheduled as a simulation event at `at`, as failure injections are, and written to the event log as a `lot` event. A blocked lot is skipped as if it were empty: the consuming station starves with cause `MATERIAL:<material>` once no other lot of the material is left; a release wakes every starved station. The body is optional. 404: unknown lot; 400: invalid `at`; 409: `at` in the past or on a calendar boundary, or the run has finished.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "at": {
+                    "description": "Simulation time, ISO 8601 with an offset or Z; the current time when left out",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "lot",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Console actions are numbered on their own, in acceptance order"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "lot-block",
+                                "lot-release"
+                              ]
+                            },
+                            "lot": {
+                              "type": "string"
+                            },
+                            "material": {
+                              "type": "string"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "scheduled",
+                                "applied"
+                              ],
+                              "description": "scheduled until `at`, applied once it took effect"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "lot",
+                            "material",
+                            "at",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "tool-breakage"
+                              ]
+                            },
+                            "machine": {
+                              "type": "string"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "scheduled",
+                                "applied",
+                                "ignored"
+                              ],
+                              "description": "ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "cycles": {
+                              "description": "The tool's cycle count when it broke",
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "machine",
+                            "at",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "operators-absent"
+                              ]
+                            },
+                            "shift": {
+                              "type": "string",
+                              "description": "`YYYY-MM-DD/<shift id>`"
+                            },
+                            "start": {
+                              "type": "string",
+                              "description": "The shift's start"
+                            },
+                            "operators": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "planned",
+                                "applied"
+                              ],
+                              "description": "planned until the shift starts"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "shift",
+                            "start",
+                            "operators",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "action"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/lots/{lot}/release": {
+      "post": {
+        "summary": "Release a blocked material lot, now or at a simulation time",
+        "tags": [
+          "console"
+        ],
+        "description": "Scheduled as a simulation event at `at`, as failure injections are, and written to the event log as a `lot` event. A blocked lot is skipped as if it were empty: the consuming station starves with cause `MATERIAL:<material>` once no other lot of the material is left; a release wakes every starved station. The body is optional. 404: unknown lot; 400: invalid `at`; 409: `at` in the past or on a calendar boundary, or the run has finished.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "at": {
+                    "description": "Simulation time, ISO 8601 with an offset or Z; the current time when left out",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "lot",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Console actions are numbered on their own, in acceptance order"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "lot-block",
+                                "lot-release"
+                              ]
+                            },
+                            "lot": {
+                              "type": "string"
+                            },
+                            "material": {
+                              "type": "string"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "scheduled",
+                                "applied"
+                              ],
+                              "description": "scheduled until `at`, applied once it took effect"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "lot",
+                            "material",
+                            "at",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "tool-breakage"
+                              ]
+                            },
+                            "machine": {
+                              "type": "string"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "scheduled",
+                                "applied",
+                                "ignored"
+                              ],
+                              "description": "ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "cycles": {
+                              "description": "The tool's cycle count when it broke",
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "machine",
+                            "at",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "operators-absent"
+                              ]
+                            },
+                            "shift": {
+                              "type": "string",
+                              "description": "`YYYY-MM-DD/<shift id>`"
+                            },
+                            "start": {
+                              "type": "string",
+                              "description": "The shift's start"
+                            },
+                            "operators": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "planned",
+                                "applied"
+                              ],
+                              "description": "planned until the shift starts"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "shift",
+                            "start",
+                            "operators",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "action"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/operators": {
+      "get": {
+        "summary": "The roster, who is present or absent in the current shift, forced absences",
+        "tags": [
+          "console"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "currentShift": {
+                      "nullable": true,
+                      "description": "The running shift `YYYY-MM-DD/<shift id>`, or null between shifts",
+                      "type": "string"
+                    },
+                    "operators": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "shift": {
+                            "type": "string",
+                            "description": "The shift the operator is rostered on"
+                          },
+                          "skills": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Stations the operator is qualified for"
+                          },
+                          "speedFactor": {
+                            "type": "number"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "present",
+                              "absent",
+                              "off-shift"
+                            ],
+                            "description": "In the current shift; off-shift when not rostered on it or between shifts"
+                          },
+                          "station": {
+                            "nullable": true,
+                            "description": "The station staffed in the current shift",
+                            "type": "string"
+                          },
+                          "forced": {
+                            "type": "boolean",
+                            "description": "Absent in the current shift by a console action"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "shift",
+                          "skills",
+                          "speedFactor",
+                          "status",
+                          "station",
+                          "forced"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "absences": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "operators-absent"
+                            ]
+                          },
+                          "shift": {
+                            "type": "string",
+                            "description": "`YYYY-MM-DD/<shift id>`"
+                          },
+                          "start": {
+                            "type": "string",
+                            "description": "The shift's start"
+                          },
+                          "operators": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "planned",
+                              "applied"
+                            ],
+                            "description": "planned until the shift starts"
+                          },
+                          "appliedAt": {
+                            "type": "string",
+                            "description": "ISO 8601 UTC"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "kind",
+                          "shift",
+                          "start",
+                          "operators",
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Every forced absence, planned or applied"
+                    }
+                  },
+                  "required": [
+                    "currentShift",
+                    "operators",
+                    "absences"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/operators/absent": {
+      "post": {
+        "summary": "Mark operators absent for a later shift, whatever their roster draw says",
+        "tags": [
+          "console"
+        ],
+        "description": "Applied at the shift's start, which must be after the simulation time, so no running shift's staffing changes. The roster draw still happens (one per operator and shift), so every other shift is unchanged. The event log gets an `absence` event at the shift's start, before its `operator` events. Marking both ASM-01-qualified operators of a shift leaves ASM-01 `Idle` with cause `NO-OPERATOR`. 404: unknown operator or no such shift; 400: a malformed shift key, an operator not rostered on it, an id listed twice; 409: the shift has started, or the run has finished.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "shift": {
+                    "type": "string",
+                    "description": "The shift bucket key `YYYY-MM-DD/<shift id>`; its start must be after simTime"
+                  },
+                  "operators": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Operator ids rostered on that shift; absent whatever the roster draw says"
+                  }
+                },
+                "required": [
+                  "shift",
+                  "operators"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Console actions are numbered on their own, in acceptance order"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "lot-block",
+                                "lot-release"
+                              ]
+                            },
+                            "lot": {
+                              "type": "string"
+                            },
+                            "material": {
+                              "type": "string"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "scheduled",
+                                "applied"
+                              ],
+                              "description": "scheduled until `at`, applied once it took effect"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "lot",
+                            "material",
+                            "at",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "tool-breakage"
+                              ]
+                            },
+                            "machine": {
+                              "type": "string"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "scheduled",
+                                "applied",
+                                "ignored"
+                              ],
+                              "description": "ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "cycles": {
+                              "description": "The tool's cycle count when it broke",
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "machine",
+                            "at",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "operators-absent"
+                              ]
+                            },
+                            "shift": {
+                              "type": "string",
+                              "description": "`YYYY-MM-DD/<shift id>`"
+                            },
+                            "start": {
+                              "type": "string",
+                              "description": "The shift's start"
+                            },
+                            "operators": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "planned",
+                                "applied"
+                              ],
+                              "description": "planned until the shift starts"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "shift",
+                            "start",
+                            "operators",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "action"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/faults/tool/{machine}": {
+      "post": {
+        "summary": "Break a CNC's tool, now or at a simulation time",
+        "tags": [
+          "faults"
+        ],
+        "description": "At `at` the tool's wear goes to end of life (1.0). A cycle in progress completes normally and draws its defect at wear 1.0; the tool is changed at the next start (`Setup` with cause `TOOL-CHANGE`), as at a natural end of life. No random draw is added or removed. The event log gets a `tool-breakage` event. The body is optional. 404: unknown machine; 400: not a CNC or an invalid `at`; 409: `at` in the past or on a calendar boundary, or the run has finished.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "at": {
+                    "description": "Simulation time, ISO 8601 with an offset or Z; the current time when left out",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "machine",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Console actions are numbered on their own, in acceptance order"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "lot-block",
+                                "lot-release"
+                              ]
+                            },
+                            "lot": {
+                              "type": "string"
+                            },
+                            "material": {
+                              "type": "string"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "scheduled",
+                                "applied"
+                              ],
+                              "description": "scheduled until `at`, applied once it took effect"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "lot",
+                            "material",
+                            "at",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "tool-breakage"
+                              ]
+                            },
+                            "machine": {
+                              "type": "string"
+                            },
+                            "at": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "scheduled",
+                                "applied",
+                                "ignored"
+                              ],
+                              "description": "ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            },
+                            "cycles": {
+                              "description": "The tool's cycle count when it broke",
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "machine",
+                            "at",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "operators-absent"
+                              ]
+                            },
+                            "shift": {
+                              "type": "string",
+                              "description": "`YYYY-MM-DD/<shift id>`"
+                            },
+                            "start": {
+                              "type": "string",
+                              "description": "The shift's start"
+                            },
+                            "operators": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "planned",
+                                "applied"
+                              ],
+                              "description": "planned until the shift starts"
+                            },
+                            "appliedAt": {
+                              "type": "string",
+                              "description": "ISO 8601 UTC"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "kind",
+                            "shift",
+                            "start",
+                            "operators",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "action"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/actions": {
+      "get": {
+        "summary": "Every console action of the run, in order, with its outcome",
+        "tags": [
+          "console"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "Console actions are numbered on their own, in acceptance order"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "lot-block",
+                                  "lot-release"
+                                ]
+                              },
+                              "lot": {
+                                "type": "string"
+                              },
+                              "material": {
+                                "type": "string"
+                              },
+                              "at": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "scheduled",
+                                  "applied"
+                                ],
+                                "description": "scheduled until `at`, applied once it took effect"
+                              },
+                              "appliedAt": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "kind",
+                              "lot",
+                              "material",
+                              "at",
+                              "status"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "tool-breakage"
+                                ]
+                              },
+                              "machine": {
+                                "type": "string"
+                              },
+                              "at": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "scheduled",
+                                  "applied",
+                                  "ignored"
+                                ],
+                                "description": "ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept"
+                              },
+                              "appliedAt": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "cycles": {
+                                "description": "The tool's cycle count when it broke",
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "kind",
+                              "machine",
+                              "at",
+                              "status"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "operators-absent"
+                                ]
+                              },
+                              "shift": {
+                                "type": "string",
+                                "description": "`YYYY-MM-DD/<shift id>`"
+                              },
+                              "start": {
+                                "type": "string",
+                                "description": "The shift's start"
+                              },
+                              "operators": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "planned",
+                                  "applied"
+                                ],
+                                "description": "planned until the shift starts"
+                              },
+                              "appliedAt": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "kind",
+                              "shift",
+                              "start",
+                              "operators",
+                              "status"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "actions"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health/live": {
       "get": {
         "summary": "The process is up",
@@ -4928,6 +6419,10 @@
     {
       "name": "operations",
       "description": "Health and metrics"
+    },
+    {
+      "name": "console",
+      "description": "Console actions on the plant: lots, operators and tool breakage (1.7)"
     },
     {
       "name": "faults",

@@ -412,7 +412,7 @@ describe('pacer cues (#235, the infrastructure entries of a live timeline)', () 
     const simulation = new Simulation<number>(T0);
     simulation.schedule(T0, 0);
     simulation.schedule(T0 + HOUR, 1);
-    const calls: number[] = [];
+    const fired: string[] = [];
     const pacer = new LivePacer<number>({
       simulation,
       handle: () => undefined,
@@ -420,26 +420,28 @@ describe('pacer cues (#235, the infrastructure entries of a live timeline)', () 
       end: T0 + 2 * HOUR,
       clock,
     });
-    pacer.cue({ at: T0 + 30 * SECOND, kind: 'speed', speed: 60 });
-    pacer.cue({ at: T0 + 90 * SECOND, kind: 'call', run: () => calls.push(clock.now()) });
-    pacer.cue({ at: T0 + 150 * SECOND, kind: 'pause' });
+    pacer.onCue = (cue) => fired.push(`${cue.kind}@${String(clock.now())}`);
+    // Off whole seconds, so no 1 s timer tick lines up with them by chance.
+    pacer.cue({ at: T0 + 30_500, kind: 'speed', speed: 60 });
+    pacer.cue({ at: T0 + 90_250, kind: 'call', run: () => undefined });
+    pacer.cue({ at: T0 + 150_123, kind: 'pause' });
     pacer.start();
     let last = pacer.simNow();
     while (pacer.state === 'running' && clock.now() < 60_000) {
-      clock.advance(7);
+      clock.advance(1);
       const now = pacer.simNow();
       expect(now).toBeGreaterThanOrEqual(last);
-      // At 10× until 30 s (3 s of wall time), then 60×: never ahead of that schedule.
+      // At 10× until 30.5 s (3,050 ms of wall time), then 60×: never ahead of that schedule.
       const wall = clock.now();
-      const expected = wall <= 3_000 ? wall * 10 : 30_000 + (wall - 3_000) * 60;
-      expect(now - T0).toBeLessThanOrEqual(Math.min(expected, 150_000));
+      const expected = wall <= 3_050 ? wall * 10 : 30_500 + (wall - 3_050) * 60;
+      expect(now - T0).toBeLessThanOrEqual(Math.min(expected, 150_123));
       last = now;
     }
-    // 3 s at 10× to 30 s, then 1 s at 60× to 90 s and 2 s more to 150 s: due at 4 s and 5 s.
-    expect(calls).toEqual([4_000]);
+    // Due at 3,050 ms; then (90,250 − 30,500) / 60 = 995.8 ms later, rounded up to 4,046; and
+    // (150,123 − 30,500) / 60 = 1,993.7 ms after the speed cue, rounded up to 5,044.
+    expect(fired).toEqual(['speed@3050', 'call@4046', 'pause@5044']);
     expect(pacer.state).toBe('paused');
-    expect(pacer.simNow()).toBe(T0 + 150 * SECOND);
-    expect(clock.now()).toBeLessThanOrEqual(5_007);
+    expect(pacer.simNow()).toBe(T0 + 150_123);
   });
 
   it('refuses a cue in the past or with a speed out of range', () => {

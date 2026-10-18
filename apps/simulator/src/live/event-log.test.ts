@@ -68,6 +68,33 @@ describe('EventLogWriter when a write fails (#235 review)', () => {
     expect(readFileSync(path, 'utf8')).toBe('{"a":1}\n');
   });
 
+  it('after a failure reports nothing more and writes nothing, however often it is fed', () => {
+    const path = join(folder, 'failed-twice.jsonl');
+    const errors: unknown[] = [];
+    let attempts = 0;
+    const log = new EventLogWriter(path, {
+      flushBytes: 1,
+      flushMs: 60_000,
+      onError: (error) => errors.push(error),
+      // Every write fails, so any write after the first failure would be a second error.
+      write: () => {
+        attempts++;
+        throw Object.assign(new Error('no space left'), { code: 'ENOSPC' });
+      },
+    });
+    log.append('{"a":1}');
+    expect(errors).toHaveLength(1);
+    expect(log.failed).toBe(true);
+    for (let i = 0; i < 5; i++) {
+      log.append(`{"after":${String(i)}}`);
+      log.flush();
+    }
+    log.close();
+    expect(attempts).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(readFileSync(path, 'utf8')).toBe('');
+  });
+
   it('writes the rest of a chunk a partial write left', () => {
     const path = join(folder, 'partial.jsonl');
     const log = new EventLogWriter(path, {

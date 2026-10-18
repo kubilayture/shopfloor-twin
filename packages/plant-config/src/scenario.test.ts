@@ -335,6 +335,29 @@ describe('scenario schema bounds (#235 review)', () => {
       lot: 'L',
     }));
     expect(issuesOf({ ...HEAD, actions: lots }).map((i) => i.path)).toEqual(['actions']);
+    const failures = (n: number) =>
+      Array.from({ length: n }, () => ({
+        at: '2026-10-12T04:00:00Z',
+        machine: 'cnc-01',
+        code: 'SPINDLE-OVERLOAD',
+      }));
+    expect(issuesOf({ ...HEAD, injections: failures(MAX_TIMELINE_ENTRIES) })).toEqual([]);
+    expect(
+      issuesOf({ ...HEAD, injections: failures(MAX_TIMELINE_ENTRIES + 1) }).map((i) => i.path),
+    ).toEqual(['injections']);
+    const dispatches = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        commandId: `C${String(i)}`,
+        machine: 'cnc-01',
+        orderId: `O${String(i)}`,
+        product: 'VB-100',
+        quantity: 1,
+        notBefore: '2026-10-12T03:00:00Z',
+      }));
+    expect(issuesOf({ ...HEAD, dispatches: dispatches(MAX_TIMELINE_ENTRIES) })).toEqual([]);
+    expect(
+      issuesOf({ ...HEAD, dispatches: dispatches(MAX_TIMELINE_ENTRIES + 1) }).map((i) => i.path),
+    ).toEqual(['dispatches']);
   });
 });
 

@@ -455,6 +455,17 @@ function orderReadsStale(queryClient: QueryClient, orderId: string): void {
 }
 
 /**
+ * The trace reads (#202, `queryKeys.traceAll` in api/queries.ts, which imports this module): a
+ * hold push, an order pushed `completed` or `closed`, or a confirmed subscription makes them stale; only an open trace page
+ * refetches (a read under way is restarted, so it can't answer from before the change).
+ */
+export const TRACE_READS = ['trace'] as const;
+
+function traceReadsStale(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries({ queryKey: TRACE_READS });
+}
+
+/**
  * Options of the `['live', …]` queries. Pushed data changes many times a second: structural
  * sharing would compare whole sample buffers on every message (and, as buffers are appended in
  * place, would keep the old object). States live as long as the tab; a machine's telemetry is
@@ -551,6 +562,11 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
     case 'order':
       upsertOrder(queryClient, message.order);
       orderReadsStale(queryClient, message.order.id);
+      // An order completing closes its last carton (ADR-0034); genealogy has no push of its own.
+      // Other order changes (release, dispatch, start) change no trace answer.
+      if (message.order.status === 'completed' || message.order.status === 'closed') {
+        traceReadsStale(queryClient);
+      }
       return;
     case 'command':
       upsertCommand(queryClient, message.command);
@@ -562,8 +578,13 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
     // whatever reads quality data is read again.
     case 'spc-signal':
     case 'spc-characteristic':
+      void queryClient.invalidateQueries({ queryKey: ['quality'] });
+      return;
     case 'quality-hold':
       void queryClient.invalidateQueries({ queryKey: ['quality'] });
+      // A hold opened, decided or its scope grew: the trace pages name holds on every node and
+      // a carton's `held` (#202).
+      traceReadsStale(queryClient);
       return;
     case 'subscribed':
       // `orders` has no snapshot: a change between the screen's read and the subscription taking
@@ -572,6 +593,8 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
         for (const prefix of ORDER_READS)
           void queryClient.invalidateQueries({ queryKey: [prefix] });
       }
+      // Nor has `quality`: a hold change before the subscription took effect is read again.
+      if (message.topic === 'quality' || message.topic === 'orders') traceReadsStale(queryClient);
       return;
     case 'unsubscribed':
     case 'error':

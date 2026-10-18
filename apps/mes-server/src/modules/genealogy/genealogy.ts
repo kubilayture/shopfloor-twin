@@ -1,3 +1,4 @@
+import { BLANK_OPERATION } from '@shopfloor/contracts/mes-api';
 import type { LotList } from '@shopfloor/contracts/erp-api';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import { Counter, type Registry } from 'prom-client';
@@ -970,7 +971,7 @@ export class Genealogy {
       this.#options.masterData.routings(),
     ]);
     this.#machines = equipment.map((e) => e.id).sort(byText);
-    this.#firstOperation = routings[0]?.operations[0]?.operation ?? 'OP10';
+    this.#firstOperation = routings[0]?.operations[0]?.operation ?? BLANK_OPERATION;
     this.#workCenterOf = new Map(equipment.map((e) => [e.id, e.workCenter.id]));
     this.#bomOf = new Map(routings.map((r) => [r.product, r.bom.map(bomLine)]));
     this.#idealCycle = new Map(

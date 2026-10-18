@@ -1,6 +1,7 @@
 import {
   ALARMS_TOPIC,
   ORDERS_TOPIC,
+  QUALITY_TOPIC,
   SHIFTS_TOPIC,
   terminalTopic,
   type TerminalViewDto,
@@ -13,6 +14,7 @@ import {
   ORDER_READS,
   resetLiveOrders,
   resetLiveShifts,
+  TRACE_READS,
   type LiveAlarmKpi,
   type LiveAlarms,
   type LiveDowntime,
@@ -139,6 +141,25 @@ export function useOrdersTopic(): void {
       release();
       resetLiveOrders(queryClient);
     };
+  }, [client, queryClient]);
+}
+
+/**
+ * Holds what the trace pages follow (#202). Genealogy has no push: `quality` brings hold changes
+ * (opened, decided, scope grown) and `orders` an order completed or closed (its last carton
+ * closes); each
+ * reads the trace answers again (`connectLiveToCache`), and so does the confirmed subscription,
+ * as neither topic has a snapshot. Everything else a trace shows grows with facts and is polled
+ * (`tracePollMs`). The orders topic is held as the orders screens hold it (`useOrdersTopic`), so
+ * its pushed set starts empty and is emptied again when the page lets go.
+ */
+export function useTraceTopics(): void {
+  const client = useLiveClient();
+  const queryClient = useQueryClient();
+  useOrdersTopic();
+  useEffect(() => {
+    void queryClient.invalidateQueries({ queryKey: TRACE_READS });
+    return client.subscribe(QUALITY_TOPIC);
   }, [client, queryClient]);
 }
 

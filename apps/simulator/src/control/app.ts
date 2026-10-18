@@ -509,7 +509,7 @@ export const lineOeeSchema = z
           z.object({
             machine: z.string(),
             headTime: isoSchema.nullable(),
-            headSource: z.enum(['accepted', 'previous-completed']).nullable(),
+            headSource: z.enum(['accepted', 'previous-completed', 'notBefore']).nullable(),
             window: z.object({ from: isoSchema, to: isoSchema, open: z.boolean() }).nullable(),
             cycles: count,
             oee: oeeResultSchema.nullable(),

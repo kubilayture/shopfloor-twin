@@ -133,13 +133,18 @@ describe('line-oee.json of the golden scenarios (#230)', () => {
           if (job) job.completed = Date.parse(e.at);
         }
       }
+      // The dispatches' notBefore (the run header's), the third term (ADR-0036 amendment).
+      const notBefore = new Map(
+        (options.dispatches ?? []).map((d) => [d.commandId, d.notBefore] as const),
+      );
       const head = new Map<string, number>();
       for (const queue of queues.values()) {
         queue.forEach((job, i) => {
           const previous = queue[i - 1];
-          if (previous === undefined) head.set(job.id, job.accepted);
+          const earliest = notBefore.get(job.id) ?? job.accepted;
+          if (previous === undefined) head.set(job.id, Math.max(job.accepted, earliest));
           else if (previous.completed !== undefined) {
-            head.set(job.id, Math.max(job.accepted, previous.completed));
+            head.set(job.id, Math.max(job.accepted, previous.completed, earliest));
           }
         });
       }
@@ -247,6 +252,54 @@ describe('line-oee.json of the golden scenarios (#230)', () => {
       oee: { fraction: '671/900', decimal: '0.7456' },
       aboveOne: false,
     });
+  });
+
+  it('orders-01: hand-checked PO-2610-007 and Monday shift C under the notBefore amendment', async () => {
+    const doc = JSON.parse(
+      await readFile(resolve(GOLDEN, 'orders-01', 'line-oee.json'), 'utf8'),
+    ) as LineOeeSection;
+    // PO-2610-007, 20 × VB-200 on CNC-01: accepted at the run's start, PO-2610-005 before it
+    // completes Monday 16:19:59.737Z, but its notBefore is Tuesday 08:17Z: head time
+    // max(03:00Z Mon, 16:19:59.737Z Mon, 08:17Z Tue) = 08:17Z Tue (`notBefore`). Window
+    // 08:17:00–10:33:19.033 = 8 179 033 ms: Setup VB-100→VB-200 08:17–08:42 (1 500 000), Running
+    // with three micro-stops (5 194 + 11 913 + 43 957 = 61 064 ms). APT 6 679 033; 20 cycles, one
+    // scrap: ideal 20 × 330 000 = 6 600 000. OEE = 6 600 000 × 19 / (8 179 033 × 20).
+    const order = doc.orders['PO-2610-007'];
+    expect(order?.jobOee['PO-2610-007~OP10~1']).toMatchObject({
+      headTime: '2026-10-13T08:17:00.000Z',
+      headSource: 'notBefore',
+      window: { from: '2026-10-13T08:17:00.000Z', to: '2026-10-13T10:33:19.033Z', open: false },
+    });
+    expect(order?.oee.totals).toMatchObject({
+      plannedBusyMs: 8_179_033,
+      actualProductionMs: 6_679_033,
+      microStopMs: 61_064,
+      idealMs: 6_600_000,
+      good: 19,
+      produced: 20,
+    });
+    expect(order?.oee.oee).toEqual({ fraction: '6270000/8179033', decimal: '0.7666' });
+    // In progress 08:17Z to its last pack 11:05:58.664Z (no break inside): 10 138 664 ms;
+    // 19 × 210 000 = 3 990 000 → 0.3935.
+    expect(order?.line).toMatchObject({
+      from: '2026-10-13T08:17:00.000Z',
+      to: '2026-10-13T11:05:58.664Z',
+      plannedBusyMs: 10_138_664,
+      idealMs: '3990000/1',
+      oee: { fraction: '498750/1267333', decimal: '0.3935' },
+    });
+    // Monday shift C (22:00–06:00 Istanbul): PO-2610-005 completed at 16:25:23Z, and both
+    // remaining orders wait for Tuesday's notBefore: no order in progress, planned busy time 0,
+    // line OEE null (before the amendment: 27 000 000 ms planned and 0).
+    expect(doc.line.shifts['2026-10-12/C']).toMatchObject({
+      plannedBusyMs: 0,
+      good: {},
+      oee: null,
+      aboveOne: false,
+    });
+    // Monday shift B ends its in-progress time at PO-2610-005's completion: 11:00–16:25:23.014Z
+    // less the break 15:00–15:30Z = 17 723 014 ms.
+    expect(doc.line.shifts['2026-10-12/B']?.plannedBusyMs).toBe(17_723_014);
   });
 
   it('week-01: hand-checked hour 10:00–11:00 Istanbul on Monday, above 1 after the break', async () => {

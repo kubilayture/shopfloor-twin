@@ -1723,6 +1723,11 @@ export class ProductionLine {
     };
   }
 
+  /** The `notBefore` of an accepted job (#230: the line OEE truth's head time), or undefined. */
+  jobNotBefore(commandId: string): SimTime | undefined {
+    return this.#acceptedCommands.get(commandId)?.notBefore;
+  }
+
   /** Every job accepted so far (orders mode), in acceptance order, with its progress. */
   jobs(): JobView[] {
     return this.#jobs.map((job) => this.#jobView(job));

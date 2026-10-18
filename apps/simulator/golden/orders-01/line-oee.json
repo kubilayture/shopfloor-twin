@@ -61,16 +61,16 @@
       "to": "2026-10-12T06:24:07.054Z"
     },
     {
-      "from": "2026-10-12T05:55:27.166Z",
-      "open": true,
-      "orderId": "PO-2610-009",
-      "to": "2026-10-14T03:00:00.000Z"
-    },
-    {
-      "from": "2026-10-12T16:19:59.737Z",
+      "from": "2026-10-13T08:17:00.000Z",
       "open": false,
       "orderId": "PO-2610-007",
       "to": "2026-10-13T11:05:58.664Z"
+    },
+    {
+      "from": "2026-10-13T08:17:00.000Z",
+      "open": true,
+      "orderId": "PO-2610-009",
+      "to": "2026-10-14T03:00:00.000Z"
     }
   ],
   "line": {
@@ -281,10 +281,10 @@
         },
         "idealMs": "1050000/1",
         "oee": {
-          "decimal": "0.2917",
-          "fraction": "7/24"
+          "decimal": "0.6894",
+          "fraction": "525000/761507"
         },
-        "plannedBusyMs": 3600000,
+        "plannedBusyMs": 1523014,
         "provisional": false,
         "to": "2026-10-12T17:00:00.000Z"
       },
@@ -293,11 +293,8 @@
         "from": "2026-10-12T17:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-12T18:00:00.000Z"
       },
@@ -306,11 +303,8 @@
         "from": "2026-10-12T18:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-12T19:00:00.000Z"
       },
@@ -319,11 +313,8 @@
         "from": "2026-10-12T19:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-12T20:00:00.000Z"
       },
@@ -332,11 +323,8 @@
         "from": "2026-10-12T20:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-12T21:00:00.000Z"
       },
@@ -345,11 +333,8 @@
         "from": "2026-10-12T21:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-12T22:00:00.000Z"
       },
@@ -358,11 +343,8 @@
         "from": "2026-10-12T22:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-12T23:00:00.000Z"
       },
@@ -371,11 +353,8 @@
         "from": "2026-10-12T23:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 1800000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-13T00:00:00.000Z"
       },
@@ -384,11 +363,8 @@
         "from": "2026-10-13T00:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-13T01:00:00.000Z"
       },
@@ -397,11 +373,8 @@
         "from": "2026-10-13T01:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-13T02:00:00.000Z"
       },
@@ -410,11 +383,8 @@
         "from": "2026-10-13T02:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-13T03:00:00.000Z"
       },
@@ -423,11 +393,8 @@
         "from": "2026-10-13T03:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-13T04:00:00.000Z"
       },
@@ -436,11 +403,8 @@
         "from": "2026-10-13T04:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-13T05:00:00.000Z"
       },
@@ -449,11 +413,8 @@
         "from": "2026-10-13T05:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-13T06:00:00.000Z"
       },
@@ -462,11 +423,8 @@
         "from": "2026-10-13T06:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 3600000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-13T07:00:00.000Z"
       },
@@ -475,11 +433,8 @@
         "from": "2026-10-13T07:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 1800000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-13T08:00:00.000Z"
       },
@@ -491,10 +446,10 @@
         },
         "idealMs": "420000/1",
         "oee": {
-          "decimal": "0.1167",
-          "fraction": "7/60"
+          "decimal": "0.1628",
+          "fraction": "7/43"
         },
-        "plannedBusyMs": 3600000,
+        "plannedBusyMs": 2580000,
         "provisional": false,
         "to": "2026-10-13T09:00:00.000Z"
       },
@@ -794,10 +749,10 @@
         },
         "idealMs": "10650000/1",
         "oee": {
-          "decimal": "0.3944",
-          "fraction": "71/180"
+          "decimal": "0.6009",
+          "fraction": "5325000/8861507"
         },
-        "plannedBusyMs": 27000000,
+        "plannedBusyMs": 17723014,
         "provisional": false,
         "to": "2026-10-12T19:00:00.000Z"
       },
@@ -806,11 +761,8 @@
         "from": "2026-10-12T19:00:00.000Z",
         "good": {},
         "idealMs": "0/1",
-        "oee": {
-          "decimal": "0.0000",
-          "fraction": "0/1"
-        },
-        "plannedBusyMs": 27000000,
+        "oee": null,
+        "plannedBusyMs": 0,
         "provisional": false,
         "to": "2026-10-13T03:00:00.000Z"
       },
@@ -822,10 +774,10 @@
         },
         "idealMs": "7560000/1",
         "oee": {
-          "decimal": "0.2800",
-          "fraction": "7/25"
+          "decimal": "0.7730",
+          "fraction": "126/163"
         },
-        "plannedBusyMs": 27000000,
+        "plannedBusyMs": 9780000,
         "provisional": false,
         "to": "2026-10-13T11:00:00.000Z"
       },
@@ -1909,8 +1861,8 @@
       "jobOee": {
         "PO-2610-007~OP10~1": {
           "cycles": 20,
-          "headSource": "previous-completed",
-          "headTime": "2026-10-12T16:19:59.737Z",
+          "headSource": "notBefore",
+          "headTime": "2026-10-13T08:17:00.000Z",
           "machine": "cnc-01",
           "oee": {
             "anomaly": false,
@@ -1958,7 +1910,7 @@
             },
             "totals": {
               "actualProductionMs": 6679033,
-              "excludedMs": 57420263,
+              "excludedMs": 0,
               "good": 19,
               "idealMs": 6600000,
               "longStopMs": 0,
@@ -1975,7 +1927,7 @@
             }
           },
           "window": {
-            "from": "2026-10-12T16:19:59.737Z",
+            "from": "2026-10-13T08:17:00.000Z",
             "open": false,
             "to": "2026-10-13T10:33:19.033Z"
           }
@@ -1986,16 +1938,16 @@
       ],
       "line": {
         "aboveOne": false,
-        "from": "2026-10-12T16:19:59.737Z",
+        "from": "2026-10-13T08:17:00.000Z",
         "good": {
           "VB-200": 19
         },
         "idealMs": "3990000/1",
         "oee": {
-          "decimal": "0.0624",
-          "fraction": "3990000/63958927"
+          "decimal": "0.3935",
+          "fraction": "498750/1267333"
         },
-        "plannedBusyMs": 63958927,
+        "plannedBusyMs": 10138664,
         "provisional": false,
         "to": "2026-10-13T11:05:58.664Z"
       },
@@ -2046,7 +1998,7 @@
         },
         "totals": {
           "actualProductionMs": 6679033,
-          "excludedMs": 57420263,
+          "excludedMs": 0,
           "good": 19,
           "idealMs": 6600000,
           "longStopMs": 0,
@@ -2081,8 +2033,8 @@
       "jobOee": {
         "PO-2610-009~OP10~1": {
           "cycles": 184,
-          "headSource": "previous-completed",
-          "headTime": "2026-10-12T05:55:27.166Z",
+          "headSource": "notBefore",
+          "headTime": "2026-10-13T08:17:00.000Z",
           "machine": "cnc-02",
           "oee": {
             "anomaly": false,
@@ -2130,7 +2082,7 @@
             },
             "totals": {
               "actualProductionMs": 61987466,
-              "excludedMs": 98492834,
+              "excludedMs": 3600000,
               "good": 184,
               "idealMs": 60720000,
               "longStopMs": 292534,
@@ -2147,7 +2099,7 @@
             }
           },
           "window": {
-            "from": "2026-10-12T05:55:27.166Z",
+            "from": "2026-10-13T08:17:00.000Z",
             "open": true,
             "to": "2026-10-14T03:00:00.000Z"
           }
@@ -2158,16 +2110,16 @@
       ],
       "line": {
         "aboveOne": false,
-        "from": "2026-10-12T05:55:27.166Z",
+        "from": "2026-10-13T08:17:00.000Z",
         "good": {
           "VB-200": 183
         },
         "idealMs": "38430000/1",
         "oee": {
-          "decimal": "0.2537",
-          "fraction": "19215000/75736417"
+          "decimal": "0.6025",
+          "fraction": "1281/2126"
         },
-        "plannedBusyMs": 151472834,
+        "plannedBusyMs": 63780000,
         "provisional": true,
         "to": "2026-10-14T03:00:00.000Z"
       },
@@ -2218,7 +2170,7 @@
         },
         "totals": {
           "actualProductionMs": 61987466,
-          "excludedMs": 98492834,
+          "excludedMs": 3600000,
           "good": 184,
           "idealMs": 60720000,
           "longStopMs": 292534,

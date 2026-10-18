@@ -4368,7 +4368,8 @@
                                       "type": "string",
                                       "enum": [
                                         "accepted",
-                                        "previous-completed"
+                                        "previous-completed",
+                                        "notBefore"
                                       ]
                                     },
                                     "window": {

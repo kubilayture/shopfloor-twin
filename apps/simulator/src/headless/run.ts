@@ -238,7 +238,15 @@ export function runHeadless(
 
   const truth = new GroundTruth(config, start);
   const traceTruth = new TraceTruth(config);
-  const lineOeeTruth = new LineOeeTruth(config, start, production, analysisConfigHash(config));
+  // The dispatch's notBefore of each accepted job, read from the line when its `accepted` event is
+  // recorded (the event itself doesn't carry it, so the event log stays as it is).
+  const lineOeeTruth = new LineOeeTruth(
+    config,
+    start,
+    production,
+    analysisConfigHash(config),
+    (id) => line.jobNotBefore(id),
+  );
 
   let sequence = 0;
   let checker: InvariantChecker | undefined;

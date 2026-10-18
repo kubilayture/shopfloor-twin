@@ -49,16 +49,16 @@
       "to": "2026-10-12T12:43:08.513Z"
     },
     {
-      "from": "2026-10-12T10:41:36.555Z",
-      "open": false,
-      "orderId": "PO-2610-106",
-      "to": "2026-10-13T08:20:40.241Z"
-    },
-    {
       "from": "2026-10-12T10:41:54.571Z",
       "open": false,
       "orderId": "PO-2610-105",
       "to": "2026-10-13T19:29:09.107Z"
+    },
+    {
+      "from": "2026-10-13T03:00:00.000Z",
+      "open": false,
+      "orderId": "PO-2610-106",
+      "to": "2026-10-13T08:20:40.241Z"
     },
     {
       "from": "2026-10-13T06:47:39.243Z",
@@ -1779,8 +1779,8 @@
       "jobOee": {
         "PO-2610-106~OP10~1": {
           "cycles": 36,
-          "headSource": "previous-completed",
-          "headTime": "2026-10-12T10:41:36.555Z",
+          "headSource": "notBefore",
+          "headTime": "2026-10-13T03:00:00.000Z",
           "machine": "cnc-02",
           "oee": {
             "anomaly": false,
@@ -1828,7 +1828,7 @@
             },
             "totals": {
               "actualProductionMs": 12159243,
-              "excludedMs": 58703445,
+              "excludedMs": 0,
               "good": 36,
               "idealMs": 11880000,
               "longStopMs": 0,
@@ -1845,7 +1845,7 @@
             }
           },
           "window": {
-            "from": "2026-10-12T10:41:36.555Z",
+            "from": "2026-10-13T03:00:00.000Z",
             "open": false,
             "to": "2026-10-13T06:47:39.243Z"
           }
@@ -1856,16 +1856,16 @@
       ],
       "line": {
         "aboveOne": false,
-        "from": "2026-10-12T10:41:36.555Z",
+        "from": "2026-10-13T03:00:00.000Z",
         "good": {
           "VB-200": 36
         },
         "idealMs": "7560000/1",
         "oee": {
-          "decimal": "0.1042",
-          "fraction": "3780000/36271843"
+          "decimal": "0.4335",
+          "fraction": "1080000/2491463"
         },
-        "plannedBusyMs": 72543686,
+        "plannedBusyMs": 17440241,
         "provisional": false,
         "to": "2026-10-13T08:20:40.241Z"
       },
@@ -1916,7 +1916,7 @@
         },
         "totals": {
           "actualProductionMs": 12159243,
-          "excludedMs": 58703445,
+          "excludedMs": 0,
           "good": 36,
           "idealMs": 11880000,
           "longStopMs": 0,

@@ -150,6 +150,7 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     options.start,
     options.production ?? 'schedule',
     analysisConfigHash(options.config),
+    (id) => line.jobNotBefore(id),
   );
   const line = new ProductionLine({
     config: options.config,

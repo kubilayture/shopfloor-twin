@@ -10,8 +10,9 @@
  *   before it (ADR-0031, the started-fact rule); the part keeps that job's order for its later
  *   cycles. Blanks taken (`material-consumed` on a CNC) count as the order's units started.
  * - **Job windows:** each CNC's queue holds every accepted job in acceptance order (the truth has
- *   every fact, so no job is lost or unknown); `jobWindows` gives head times and windows up to the
- *   cut-off. Order OEE (`orderOee`) over the windows with the CNC's state intervals, the attributed
+ *   every fact, so no job is lost or unknown), each with its dispatch's `notBefore`; `jobWindows`
+ *   gives head times (`max(accepted, previous completed, notBefore)`, ADR-0036 amendment) and
+ *   windows up to the cut-off. Order OEE (`orderOee`) over the windows with the CNC's state intervals, the attributed
  *   OP10 cycles and the OP10 ideal cycle; first-pass yield (`firstPassYield`) beside it.
  * - **Order completion** (ADR-0031): every job completed, every blank taken, every unit terminal
  *   (packed good at the last operation, or scrapped); the time of the latest record, the order
@@ -99,9 +100,12 @@ export interface LineValueJson {
 
 export interface JobOeeJson {
   readonly machine: string;
-  /** `max(accepted, previous job's completed)` on the CNC, or null while the job is waiting. */
+  /**
+   * `max(accepted, previous job's completed, notBefore)` on the CNC (ADR-0036 and its amendment),
+   * or null while the job is waiting.
+   */
   readonly headTime: string | null;
-  readonly headSource: 'accepted' | 'previous-completed' | null;
+  readonly headSource: 'accepted' | 'previous-completed' | 'notBefore' | null;
   readonly window: { readonly from: string; readonly to: string; readonly open: boolean } | null;
   /** OP10 cycles attributed by the started-fact rule. */
   readonly cycles: number;
@@ -178,6 +182,7 @@ interface Job {
   readonly product: string;
   readonly quantity: number;
   readonly accepted: SimTime;
+  readonly notBefore: SimTime | undefined;
   started?: SimTime;
   completed?: SimTime;
   readonly cycles: TimedCycleCount[];
@@ -211,13 +216,22 @@ export class LineOeeTruth {
   readonly #firstOperation: string;
   readonly #lastOperation: string;
   readonly #records: Recorded[] = [];
+  readonly #jobNotBefore: (commandId: string) => SimTime | undefined;
+  /** Each accepted job's dispatch `notBefore`, learnt when its `accepted` event is recorded. */
+  readonly #notBefore = new Map<string, SimTime>();
 
+  /**
+   * `jobNotBefore` gives an accepted job's dispatch `notBefore` (the line's job registry): the
+   * `accepted` event doesn't carry it, so the event log stays as it is (ADR-0036 amendment).
+   */
   constructor(
     config: PlantConfig,
     start: SimTime,
     production: ProductionMode,
     analysisConfigSha256: string,
+    jobNotBefore: (commandId: string) => SimTime | undefined = () => undefined,
   ) {
+    this.#jobNotBefore = jobNotBefore;
     this.#config = config;
     this.#start = start;
     this.#production = production;
@@ -240,6 +254,10 @@ export class LineOeeTruth {
         this.#operation.get(event.machineId) === this.#firstOperation)
     ) {
       this.#records.push(event);
+    }
+    if (event.type === 'job' && event.transition === 'accepted') {
+      const notBefore = this.#jobNotBefore(event.commandId);
+      if (notBefore !== undefined) this.#notBefore.set(event.commandId, notBefore);
     }
   }
 
@@ -391,6 +409,7 @@ export class LineOeeTruth {
         id: job.id,
         machine,
         accepted: job.accepted,
+        ...(job.notBefore === undefined ? {} : { notBefore: job.notBefore }),
         ...(job.started === undefined ? {} : { started: job.started }),
         ...(job.completed === undefined ? {} : { completed: job.completed }),
         quantity: job.quantity,
@@ -421,7 +440,8 @@ export class LineOeeTruth {
         : undefined;
       const heads = orderJobs.flatMap((job) => {
         const head = windows.get(job.id)?.head;
-        return head?.kind === 'head' ? [head.at] : [];
+        // A head time after the cut-off (a notBefore still ahead) doesn't start the order yet.
+        return head?.kind === 'head' && head.at <= until ? [head.at] : [];
       });
       const range =
         heads.length === 0 ? undefined : { from: Math.min(...heads), to: completedAt ?? until };
@@ -454,7 +474,9 @@ export class LineOeeTruth {
             headTime: head.kind === 'head' ? isoTime(head.at) : null,
             headSource:
               head.kind === 'head' &&
-              (head.source === 'accepted' || head.source === 'previous-completed')
+              (head.source === 'accepted' ||
+                head.source === 'previous-completed' ||
+                head.source === 'notBefore')
                 ? head.source
                 : null,
             window:
@@ -581,6 +603,7 @@ export class LineOeeTruth {
         product: event.product,
         quantity: event.quantity,
         accepted: event.at,
+        notBefore: this.#notBefore.get(event.commandId),
         cycles: [],
       };
       jobs.set(job.id, job);

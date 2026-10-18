@@ -388,13 +388,33 @@ export async function checkTraceAsOf(
         },
         {
           units: [...before].sort((a, b) => a - b),
-          orders: ordersBefore,
+          // The answer's own orders (re-review MEDIUM): those of an order only units consuming
+          // the lot after T lead to are left out, so a dropped order differs from the cut.
+          orders: answer.orders
+            .filter((o) => ordersBefore.includes(o) || !ordersExtra.has(o))
+            .sort(),
           cartons: answer.cartons.filter((c) => closedAtT.has(c)),
           consumed: answer.consumed - consumedAfter,
         },
         `.lot ${answer.lot}`,
       ),
     );
+    // The answer's unit refs agree with the backward traces (order, carton, status).
+    for (const unit of units) {
+      const ref = {
+        orderId: unit.orderId,
+        carton: unit.carton,
+        status: unit.status,
+      };
+      const serialSide = {
+        orderId: orderOf.get(unit.partId) ?? null,
+        carton: cartonOf.get(unit.partId) ?? null,
+        status: statusOf.get(unit.partId) ?? null,
+      };
+      lotDiffs.push(
+        ...jsonDifferences(serialSide, ref, `.lot ${answer.lot} unit ${String(unit.partId)}`),
+      );
+    }
     const otherOrders = answer.orders.filter((o) => !ordersBefore.includes(o));
     const unexplained = otherOrders.filter((o) => !ordersExtra.has(o));
     if (unexplained.length > 0) {

@@ -17,6 +17,7 @@ import {
   userListSchema,
   userSchema,
   userUpdateRequestSchema,
+  orderOeeSchema,
   type ProblemType,
   type SessionDto,
   type UserDto,
@@ -47,7 +48,7 @@ import type { Execution } from '../execution/index.ts';
 import type { Orders } from '../orders/index.ts';
 import type { Holds, Quality } from '../quality/index.ts';
 import type { Genealogy } from '../genealogy/index.ts';
-import { pareto, type DowntimeFeed, type Oee, type OeeScope } from '../oee/index.ts';
+import { pareto, type DowntimeFeed, type Oee, type OeeScope, type OrderOee } from '../oee/index.ts';
 import { ShiftError, type ShiftRecord, type Shifts } from '../shifts/index.ts';
 import {
   alarmKpiDto,
@@ -65,7 +66,8 @@ import { bucketDto, recordDto, shiftInstanceDto } from './oee-dto.ts';
 import { executionRoutes, type ExecutionApi } from './execution-routes.ts';
 import { genealogyRoutes, type GenealogyApi } from './genealogy-routes.ts';
 import { holdRoutes, type HoldsApi } from './hold-routes.ts';
-import { orderRoutes, type OrdersApi } from './order-routes.ts';
+import { orderOeeDto } from './order-oee-dto.ts';
+import { orderParams, orderRoutes, type OrdersApi } from './order-routes.ts';
 import { qualityRoutes, type QualityApi } from './quality-routes.ts';
 import { terminalRoutes, workCentersOf, type TerminalApi } from './terminal-routes.ts';
 import { memoizeOrderExecution, terminalView } from './terminal-view.ts';
@@ -195,6 +197,8 @@ export interface ApiSources {
     | 'config'
     | 'shiftPattern'
   >;
+  /** Order OEE (#231); `GET /oee/orders/{id}` answers 503 without it. */
+  readonly orderOee?: Pick<OrderOee, 'order' | 'onChange'>;
   /** Downtime record changes for the `downtime` push topic (#120). */
   readonly downtime?: Pick<DowntimeFeed, 'subscribe'>;
   /** Operator coding writes and their audit (#121). */
@@ -1139,6 +1143,36 @@ export async function registerRealtime(
             to: iso(query.to),
             buckets: buckets.map(bucketDto),
           };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/oee/orders/:id',
+          summary: 'Order OEE over its job windows, every job and the first-pass yield',
+          description:
+            'Derived on read (ADR-0036 and its P9-04 amendment): each job of the order is head ' +
+            "of its CNC's queue from max(accepted ?? acceptedAt, the previous job's completion, " +
+            "notBefore); its window runs to its completion, or to the CNC's final-through while " +
+            "open. Inside the windows the CNC's states give A, P and Q by the equipment rules " +
+            '(ADR-0021), the OP10 cycles attributed by unit (ADR-0031), summed time-weighted over ' +
+            'the jobs. The first-pass yield across the routing (units packed good with every ' +
+            'record good ÷ blanks taken) is beside it, never multiplied in. `final` once every ' +
+            'input is final through the windows and no further job can come; never on a lost ' +
+            'path (`lost`). The same body is pushed on `oee:order:<id>`.',
+          tags: ['oee', 'orders'],
+          params: orderParams,
+          query: z.strictObject({}),
+          response: orderOeeSchema,
+          errors: [400, 404, 503],
+        },
+        async ({ params }) => {
+          const source = ready().sources.orderOee;
+          if (!source) throw new HttpProblem(503, 'order OEE is not available');
+          const view = await source.order(params.id);
+          if (!view) throw new HttpProblem(404, `no order ${params.id}`);
+          return orderOeeDto(view);
         },
       );
 
@@ -2573,6 +2607,7 @@ export async function registerRealtime(
         ingest: sources.ingest,
         catalog: new Set(catalog.keys()),
         oee: sources.oee,
+        ...(sources.orderOee ? { orderOee: sources.orderOee } : {}),
         oeeTopics: new Map<string, { scope: OeeScope; members: readonly string[] }>([
           ...[...catalog.keys()].map((id): [string, { scope: OeeScope; members: string[] }] => [
             id,

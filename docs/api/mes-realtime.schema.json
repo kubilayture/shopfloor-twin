@@ -50,6 +50,11 @@
                 },
                 {
                   "type": "string",
+                  "pattern": "^oee:order:[A-Za-z0-9][A-Za-z0-9._-]{0,39}$",
+                  "description": "oee:order:<order number>"
+                },
+                {
+                  "type": "string",
                   "pattern": "^alarm-kpi:(plant|(position|equipment):[A-Za-z0-9][A-Za-z0-9_-]{0,63})$",
                   "description": "alarm-kpi:plant, alarm-kpi:position:<id> or alarm-kpi:equipment:<id>"
                 },
@@ -114,6 +119,11 @@
                   "type": "string",
                   "pattern": "^oee:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
                   "description": "oee:<equipment or work center>"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^oee:order:[A-Za-z0-9][A-Za-z0-9._-]{0,39}$",
+                  "description": "oee:order:<order number>"
                 },
                 {
                   "type": "string",
@@ -1521,6 +1531,1146 @@
             "topic",
             "hour",
             "shift"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "snapshot"
+            },
+            "topic": {
+              "type": "string",
+              "pattern": "^oee:order:[A-Za-z0-9][A-Za-z0-9._-]{0,39}$",
+              "description": "oee:order:<order number>"
+            },
+            "order": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "orderId": {
+                      "type": "string"
+                    },
+                    "product": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "description": "The order status (orders module)"
+                    },
+                    "oee": {
+                      "type": "object",
+                      "properties": {
+                        "availability": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "fraction": {
+                                  "type": "string",
+                                  "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                },
+                                "decimal": {
+                                  "type": "string",
+                                  "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                }
+                              },
+                              "required": [
+                                "fraction",
+                                "decimal"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An exact ratio"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "APT / PBT; null when PBT = 0"
+                        },
+                        "performance": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "fraction": {
+                                  "type": "string",
+                                  "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                },
+                                "decimal": {
+                                  "type": "string",
+                                  "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                }
+                              },
+                              "required": [
+                                "fraction",
+                                "decimal"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An exact ratio"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Ideal time / APT, not clamped (P > 1 is possible per hour); null when PBT or APT is 0"
+                        },
+                        "quality": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "fraction": {
+                                  "type": "string",
+                                  "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                },
+                                "decimal": {
+                                  "type": "string",
+                                  "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                }
+                              },
+                              "required": [
+                                "fraction",
+                                "decimal"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An exact ratio"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "good / produced (first-pass yield); null when PBT = 0 or nothing was produced"
+                        },
+                        "oee": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "fraction": {
+                                  "type": "string",
+                                  "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                },
+                                "decimal": {
+                                  "type": "string",
+                                  "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                }
+                              },
+                              "required": [
+                                "fraction",
+                                "decimal"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An exact ratio"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "(ideal × good) / (PBT × produced); 0 when nothing was produced; null when PBT = 0 or anomaly"
+                        },
+                        "anomaly": {
+                          "type": "boolean",
+                          "description": "Cycles were counted although APT = 0"
+                        },
+                        "provisional": {
+                          "type": "boolean",
+                          "description": "An open Stopped interval below the threshold counts as a micro-stop for now"
+                        },
+                        "totals": {
+                          "type": "object",
+                          "properties": {
+                            "plannedBusyMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Milliseconds of simulation time"
+                            },
+                            "actualProductionMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Milliseconds of simulation time"
+                            },
+                            "excludedMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "PlannedStop, Maintenance and Off, or the whole unscheduled bucket"
+                            },
+                            "longStopMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Stopped intervals at or above the micro-stop threshold"
+                            },
+                            "microStopMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Stopped intervals below the threshold (part of APT)"
+                            },
+                            "idealMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Σ ideal cycle ms × produced count"
+                            },
+                            "good": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "scrap": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "rework": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "produced": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "plannedBusyMs",
+                            "actualProductionMs",
+                            "excludedMs",
+                            "longStopMs",
+                            "microStopMs",
+                            "idealMs",
+                            "good",
+                            "scrap",
+                            "rework",
+                            "produced"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "unplanned": {
+                          "type": "object",
+                          "properties": {
+                            "good": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "produced": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "idealMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Milliseconds of simulation time"
+                            }
+                          },
+                          "required": [
+                            "good",
+                            "produced",
+                            "idealMs"
+                          ],
+                          "additionalProperties": false,
+                          "description": "Cycles of the unscheduled no-shift bucket, kept out of P and Q"
+                        },
+                        "losses": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "availability": {
+                                  "type": "object",
+                                  "properties": {
+                                    "own": {
+                                      "type": "object",
+                                      "properties": {
+                                        "stopped": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "down": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "setup": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "idle": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "total": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        }
+                                      },
+                                      "required": [
+                                        "stopped",
+                                        "down",
+                                        "setup",
+                                        "idle",
+                                        "total"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "external": {
+                                      "type": "object",
+                                      "properties": {
+                                        "starved": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "blocked": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "total": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        }
+                                      },
+                                      "required": [
+                                        "starved",
+                                        "blocked",
+                                        "total"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": [
+                                    "own",
+                                    "external"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "performance": {
+                                  "type": "object",
+                                  "properties": {
+                                    "microStops": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991,
+                                      "description": "Milliseconds of simulation time"
+                                    },
+                                    "speed": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991,
+                                      "description": "APT − micro-stops − ideal time; negative when P > 1"
+                                    },
+                                    "total": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991,
+                                      "description": "Milliseconds of simulation time"
+                                    }
+                                  },
+                                  "required": [
+                                    "microStops",
+                                    "speed",
+                                    "total"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "quality": {
+                                  "type": "object",
+                                  "properties": {
+                                    "fraction": {
+                                      "type": "string",
+                                      "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                    },
+                                    "decimal": {
+                                      "type": "string",
+                                      "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                    }
+                                  },
+                                  "required": [
+                                    "fraction",
+                                    "decimal"
+                                  ],
+                                  "additionalProperties": false,
+                                  "description": "Ideal ms × (1 − Q), exact"
+                                }
+                              },
+                              "required": [
+                                "availability",
+                                "performance",
+                                "quality"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Inside planned busy time, in ms; null when PBT = 0"
+                        }
+                      },
+                      "required": [
+                        "availability",
+                        "performance",
+                        "quality",
+                        "oee",
+                        "anomaly",
+                        "provisional",
+                        "totals",
+                        "unplanned",
+                        "losses"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Order OEE: the equipment rules over every job window of the order, summed time-weighted"
+                    },
+                    "open": {
+                      "type": "boolean",
+                      "description": "A job window is still open"
+                    },
+                    "pending": {
+                      "type": "boolean",
+                      "description": "A job has no window yet (waiting, or head time unknown)"
+                    },
+                    "headTimeUnknown": {
+                      "type": "boolean"
+                    },
+                    "endLost": {
+                      "type": "boolean"
+                    },
+                    "lost": {
+                      "type": "boolean",
+                      "description": "A fact a window needs is lost for good: never final"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "The order OEE (and every job) is final: every command settled and no further job to come, every window closed, the CNC states final and covering each window, every OP10 cycle attributed; never on a lost path"
+                    },
+                    "jobs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "commandId": {
+                            "type": "string"
+                          },
+                          "machine": {
+                            "type": "string"
+                          },
+                          "deviceEpoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "quantity": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Blanks to machine (OP10 cycles)"
+                          },
+                          "notBefore": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "The dispatch's earliest start (command state)"
+                          },
+                          "head": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "head",
+                                  "waiting",
+                                  "unknown"
+                                ]
+                              },
+                              "at": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "The head time when `head`"
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "accepted",
+                                      "acceptedAt",
+                                      "previous-completed",
+                                      "previous-last-cycle",
+                                      "notBefore"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reason": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "accepted-unknown",
+                                      "accepted-lost",
+                                      "previous-completed-lost",
+                                      "previous-completed-missing"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "When `unknown`"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "at",
+                              "source",
+                              "reason"
+                            ],
+                            "additionalProperties": false,
+                            "description": "max(accepted ?? acceptedAt, previous job’s completion, notBefore) on the CNC"
+                          },
+                          "window": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "from": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                    "description": "The head time, or the `started` fact when the head time is unknown"
+                                  },
+                                  "to": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                    "description": "The job's completion, or the cut-off while open"
+                                  },
+                                  "open": {
+                                    "type": "boolean",
+                                    "description": "The job has not completed by the cut-off (transient)"
+                                  },
+                                  "headTimeUnknown": {
+                                    "type": "boolean",
+                                    "description": "The window starts at `started` and leaves out the changeover: provisional"
+                                  },
+                                  "endLost": {
+                                    "type": "boolean",
+                                    "description": "The job's `completed` fact is lost and its cycles don't tell its end"
+                                  },
+                                  "lost": {
+                                    "type": "boolean",
+                                    "description": "A fact the window needs is lost for good: never final"
+                                  }
+                                },
+                                "required": [
+                                  "from",
+                                  "to",
+                                  "open",
+                                  "headTimeUnknown",
+                                  "endLost",
+                                  "lost"
+                                ],
+                                "additionalProperties": false,
+                                "description": "A job's window on its CNC (ADR-0036)"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Null while the job has no window yet"
+                          },
+                          "cycles": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "OP10 cycles attributed to the job by unit (ADR-0031)"
+                          },
+                          "oee": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "availability": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "fraction": {
+                                            "type": "string",
+                                            "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                          },
+                                          "decimal": {
+                                            "type": "string",
+                                            "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                          }
+                                        },
+                                        "required": [
+                                          "fraction",
+                                          "decimal"
+                                        ],
+                                        "additionalProperties": false,
+                                        "description": "An exact ratio"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "APT / PBT; null when PBT = 0"
+                                  },
+                                  "performance": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "fraction": {
+                                            "type": "string",
+                                            "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                          },
+                                          "decimal": {
+                                            "type": "string",
+                                            "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                          }
+                                        },
+                                        "required": [
+                                          "fraction",
+                                          "decimal"
+                                        ],
+                                        "additionalProperties": false,
+                                        "description": "An exact ratio"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Ideal time / APT, not clamped (P > 1 is possible per hour); null when PBT or APT is 0"
+                                  },
+                                  "quality": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "fraction": {
+                                            "type": "string",
+                                            "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                          },
+                                          "decimal": {
+                                            "type": "string",
+                                            "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                          }
+                                        },
+                                        "required": [
+                                          "fraction",
+                                          "decimal"
+                                        ],
+                                        "additionalProperties": false,
+                                        "description": "An exact ratio"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "good / produced (first-pass yield); null when PBT = 0 or nothing was produced"
+                                  },
+                                  "oee": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "fraction": {
+                                            "type": "string",
+                                            "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                          },
+                                          "decimal": {
+                                            "type": "string",
+                                            "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                          }
+                                        },
+                                        "required": [
+                                          "fraction",
+                                          "decimal"
+                                        ],
+                                        "additionalProperties": false,
+                                        "description": "An exact ratio"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "(ideal × good) / (PBT × produced); 0 when nothing was produced; null when PBT = 0 or anomaly"
+                                  },
+                                  "anomaly": {
+                                    "type": "boolean",
+                                    "description": "Cycles were counted although APT = 0"
+                                  },
+                                  "provisional": {
+                                    "type": "boolean",
+                                    "description": "An open Stopped interval below the threshold counts as a micro-stop for now"
+                                  },
+                                  "totals": {
+                                    "type": "object",
+                                    "properties": {
+                                      "plannedBusyMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Milliseconds of simulation time"
+                                      },
+                                      "actualProductionMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Milliseconds of simulation time"
+                                      },
+                                      "excludedMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "PlannedStop, Maintenance and Off, or the whole unscheduled bucket"
+                                      },
+                                      "longStopMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Stopped intervals at or above the micro-stop threshold"
+                                      },
+                                      "microStopMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Stopped intervals below the threshold (part of APT)"
+                                      },
+                                      "idealMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Σ ideal cycle ms × produced count"
+                                      },
+                                      "good": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "scrap": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "rework": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "produced": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "plannedBusyMs",
+                                      "actualProductionMs",
+                                      "excludedMs",
+                                      "longStopMs",
+                                      "microStopMs",
+                                      "idealMs",
+                                      "good",
+                                      "scrap",
+                                      "rework",
+                                      "produced"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "unplanned": {
+                                    "type": "object",
+                                    "properties": {
+                                      "good": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "produced": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "idealMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Milliseconds of simulation time"
+                                      }
+                                    },
+                                    "required": [
+                                      "good",
+                                      "produced",
+                                      "idealMs"
+                                    ],
+                                    "additionalProperties": false,
+                                    "description": "Cycles of the unscheduled no-shift bucket, kept out of P and Q"
+                                  },
+                                  "losses": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "availability": {
+                                            "type": "object",
+                                            "properties": {
+                                              "own": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "stopped": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "down": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "setup": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "idle": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "total": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "stopped",
+                                                  "down",
+                                                  "setup",
+                                                  "idle",
+                                                  "total"
+                                                ],
+                                                "additionalProperties": false
+                                              },
+                                              "external": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "starved": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "blocked": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "total": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "starved",
+                                                  "blocked",
+                                                  "total"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            },
+                                            "required": [
+                                              "own",
+                                              "external"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          "performance": {
+                                            "type": "object",
+                                            "properties": {
+                                              "microStops": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991,
+                                                "description": "Milliseconds of simulation time"
+                                              },
+                                              "speed": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991,
+                                                "description": "APT − micro-stops − ideal time; negative when P > 1"
+                                              },
+                                              "total": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991,
+                                                "description": "Milliseconds of simulation time"
+                                              }
+                                            },
+                                            "required": [
+                                              "microStops",
+                                              "speed",
+                                              "total"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          "quality": {
+                                            "type": "object",
+                                            "properties": {
+                                              "fraction": {
+                                                "type": "string",
+                                                "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                              },
+                                              "decimal": {
+                                                "type": "string",
+                                                "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                              }
+                                            },
+                                            "required": [
+                                              "fraction",
+                                              "decimal"
+                                            ],
+                                            "additionalProperties": false,
+                                            "description": "Ideal ms × (1 − Q), exact"
+                                          }
+                                        },
+                                        "required": [
+                                          "availability",
+                                          "performance",
+                                          "quality"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Inside planned busy time, in ms; null when PBT = 0"
+                                  }
+                                },
+                                "required": [
+                                  "availability",
+                                  "performance",
+                                  "quality",
+                                  "oee",
+                                  "anomaly",
+                                  "provisional",
+                                  "totals",
+                                  "unplanned",
+                                  "losses"
+                                ],
+                                "additionalProperties": false,
+                                "description": "OEE of one bucket (ADR-0021)"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The job’s OEE over its window; null without one"
+                          },
+                          "final": {
+                            "type": "boolean",
+                            "description": "Every input of the job’s window is final"
+                          }
+                        },
+                        "required": [
+                          "commandId",
+                          "machine",
+                          "deviceEpoch",
+                          "quantity",
+                          "notBefore",
+                          "head",
+                          "window",
+                          "cycles",
+                          "oee",
+                          "final"
+                        ],
+                        "additionalProperties": false,
+                        "description": "One job of an order: its head time, window and OEE"
+                      },
+                      "description": "The order's jobs in acceptance order"
+                    },
+                    "firstPassYield": {
+                      "type": "object",
+                      "properties": {
+                        "firstPassGood": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Units packed good with every record good"
+                        },
+                        "started": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Blanks taken (units plus blanks still in a CNC)"
+                        },
+                        "yield": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "fraction": {
+                                  "type": "string",
+                                  "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                },
+                                "decimal": {
+                                  "type": "string",
+                                  "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                }
+                              },
+                              "required": [
+                                "fraction",
+                                "decimal"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An exact ratio"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "firstPassGood / started; null before a blank"
+                        },
+                        "final": {
+                          "type": "boolean",
+                          "description": "The order is complete (ADR-0031): no unit can come back"
+                        }
+                      },
+                      "required": [
+                        "firstPassGood",
+                        "started",
+                        "yield",
+                        "final"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Across the routing, beside the order OEE, never multiplied in"
+                    },
+                    "completedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "ADR-0031 completion: the latest terminal record"
+                    },
+                    "cutoffs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "machine": {
+                            "type": "string"
+                          },
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "at": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "machine",
+                          "epoch",
+                          "at"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Each CNC queue's cut-off (its final-through, exclusive), where an open window ends"
+                    }
+                  },
+                  "required": [
+                    "orderId",
+                    "product",
+                    "status",
+                    "oee",
+                    "open",
+                    "pending",
+                    "headTimeUnknown",
+                    "endLost",
+                    "lost",
+                    "final",
+                    "jobs",
+                    "firstPassYield",
+                    "completedAt",
+                    "cutoffs"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Order OEE over job windows, with the job breakdown and first-pass yield (#231)"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The order OEE now; null for an unknown order"
+            }
+          },
+          "required": [
+            "type",
+            "topic",
+            "order"
           ],
           "additionalProperties": false
         },
@@ -3458,6 +4608,1145 @@
             "topic",
             "hour",
             "shift"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "oee-order"
+            },
+            "topic": {
+              "type": "string",
+              "pattern": "^oee:order:[A-Za-z0-9][A-Za-z0-9._-]{0,39}$",
+              "description": "oee:order:<order number>"
+            },
+            "order": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "orderId": {
+                      "type": "string"
+                    },
+                    "product": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "description": "The order status (orders module)"
+                    },
+                    "oee": {
+                      "type": "object",
+                      "properties": {
+                        "availability": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "fraction": {
+                                  "type": "string",
+                                  "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                },
+                                "decimal": {
+                                  "type": "string",
+                                  "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                }
+                              },
+                              "required": [
+                                "fraction",
+                                "decimal"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An exact ratio"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "APT / PBT; null when PBT = 0"
+                        },
+                        "performance": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "fraction": {
+                                  "type": "string",
+                                  "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                },
+                                "decimal": {
+                                  "type": "string",
+                                  "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                }
+                              },
+                              "required": [
+                                "fraction",
+                                "decimal"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An exact ratio"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Ideal time / APT, not clamped (P > 1 is possible per hour); null when PBT or APT is 0"
+                        },
+                        "quality": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "fraction": {
+                                  "type": "string",
+                                  "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                },
+                                "decimal": {
+                                  "type": "string",
+                                  "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                }
+                              },
+                              "required": [
+                                "fraction",
+                                "decimal"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An exact ratio"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "good / produced (first-pass yield); null when PBT = 0 or nothing was produced"
+                        },
+                        "oee": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "fraction": {
+                                  "type": "string",
+                                  "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                },
+                                "decimal": {
+                                  "type": "string",
+                                  "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                }
+                              },
+                              "required": [
+                                "fraction",
+                                "decimal"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An exact ratio"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "(ideal × good) / (PBT × produced); 0 when nothing was produced; null when PBT = 0 or anomaly"
+                        },
+                        "anomaly": {
+                          "type": "boolean",
+                          "description": "Cycles were counted although APT = 0"
+                        },
+                        "provisional": {
+                          "type": "boolean",
+                          "description": "An open Stopped interval below the threshold counts as a micro-stop for now"
+                        },
+                        "totals": {
+                          "type": "object",
+                          "properties": {
+                            "plannedBusyMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Milliseconds of simulation time"
+                            },
+                            "actualProductionMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Milliseconds of simulation time"
+                            },
+                            "excludedMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "PlannedStop, Maintenance and Off, or the whole unscheduled bucket"
+                            },
+                            "longStopMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Stopped intervals at or above the micro-stop threshold"
+                            },
+                            "microStopMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Stopped intervals below the threshold (part of APT)"
+                            },
+                            "idealMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Σ ideal cycle ms × produced count"
+                            },
+                            "good": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "scrap": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "rework": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "produced": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "plannedBusyMs",
+                            "actualProductionMs",
+                            "excludedMs",
+                            "longStopMs",
+                            "microStopMs",
+                            "idealMs",
+                            "good",
+                            "scrap",
+                            "rework",
+                            "produced"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "unplanned": {
+                          "type": "object",
+                          "properties": {
+                            "good": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "produced": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "idealMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Milliseconds of simulation time"
+                            }
+                          },
+                          "required": [
+                            "good",
+                            "produced",
+                            "idealMs"
+                          ],
+                          "additionalProperties": false,
+                          "description": "Cycles of the unscheduled no-shift bucket, kept out of P and Q"
+                        },
+                        "losses": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "availability": {
+                                  "type": "object",
+                                  "properties": {
+                                    "own": {
+                                      "type": "object",
+                                      "properties": {
+                                        "stopped": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "down": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "setup": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "idle": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "total": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        }
+                                      },
+                                      "required": [
+                                        "stopped",
+                                        "down",
+                                        "setup",
+                                        "idle",
+                                        "total"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "external": {
+                                      "type": "object",
+                                      "properties": {
+                                        "starved": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "blocked": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        },
+                                        "total": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991,
+                                          "description": "Milliseconds of simulation time"
+                                        }
+                                      },
+                                      "required": [
+                                        "starved",
+                                        "blocked",
+                                        "total"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": [
+                                    "own",
+                                    "external"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "performance": {
+                                  "type": "object",
+                                  "properties": {
+                                    "microStops": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991,
+                                      "description": "Milliseconds of simulation time"
+                                    },
+                                    "speed": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991,
+                                      "description": "APT − micro-stops − ideal time; negative when P > 1"
+                                    },
+                                    "total": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991,
+                                      "description": "Milliseconds of simulation time"
+                                    }
+                                  },
+                                  "required": [
+                                    "microStops",
+                                    "speed",
+                                    "total"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "quality": {
+                                  "type": "object",
+                                  "properties": {
+                                    "fraction": {
+                                      "type": "string",
+                                      "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                    },
+                                    "decimal": {
+                                      "type": "string",
+                                      "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                    }
+                                  },
+                                  "required": [
+                                    "fraction",
+                                    "decimal"
+                                  ],
+                                  "additionalProperties": false,
+                                  "description": "Ideal ms × (1 − Q), exact"
+                                }
+                              },
+                              "required": [
+                                "availability",
+                                "performance",
+                                "quality"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Inside planned busy time, in ms; null when PBT = 0"
+                        }
+                      },
+                      "required": [
+                        "availability",
+                        "performance",
+                        "quality",
+                        "oee",
+                        "anomaly",
+                        "provisional",
+                        "totals",
+                        "unplanned",
+                        "losses"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Order OEE: the equipment rules over every job window of the order, summed time-weighted"
+                    },
+                    "open": {
+                      "type": "boolean",
+                      "description": "A job window is still open"
+                    },
+                    "pending": {
+                      "type": "boolean",
+                      "description": "A job has no window yet (waiting, or head time unknown)"
+                    },
+                    "headTimeUnknown": {
+                      "type": "boolean"
+                    },
+                    "endLost": {
+                      "type": "boolean"
+                    },
+                    "lost": {
+                      "type": "boolean",
+                      "description": "A fact a window needs is lost for good: never final"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "The order OEE (and every job) is final: every command settled and no further job to come, every window closed, the CNC states final and covering each window, every OP10 cycle attributed; never on a lost path"
+                    },
+                    "jobs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "commandId": {
+                            "type": "string"
+                          },
+                          "machine": {
+                            "type": "string"
+                          },
+                          "deviceEpoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "quantity": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Blanks to machine (OP10 cycles)"
+                          },
+                          "notBefore": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "The dispatch's earliest start (command state)"
+                          },
+                          "head": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "head",
+                                  "waiting",
+                                  "unknown"
+                                ]
+                              },
+                              "at": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "The head time when `head`"
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "accepted",
+                                      "acceptedAt",
+                                      "previous-completed",
+                                      "previous-last-cycle",
+                                      "notBefore"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reason": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "accepted-unknown",
+                                      "accepted-lost",
+                                      "previous-completed-lost",
+                                      "previous-completed-missing"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "When `unknown`"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "at",
+                              "source",
+                              "reason"
+                            ],
+                            "additionalProperties": false,
+                            "description": "max(accepted ?? acceptedAt, previous job’s completion, notBefore) on the CNC"
+                          },
+                          "window": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "from": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                    "description": "The head time, or the `started` fact when the head time is unknown"
+                                  },
+                                  "to": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                    "description": "The job's completion, or the cut-off while open"
+                                  },
+                                  "open": {
+                                    "type": "boolean",
+                                    "description": "The job has not completed by the cut-off (transient)"
+                                  },
+                                  "headTimeUnknown": {
+                                    "type": "boolean",
+                                    "description": "The window starts at `started` and leaves out the changeover: provisional"
+                                  },
+                                  "endLost": {
+                                    "type": "boolean",
+                                    "description": "The job's `completed` fact is lost and its cycles don't tell its end"
+                                  },
+                                  "lost": {
+                                    "type": "boolean",
+                                    "description": "A fact the window needs is lost for good: never final"
+                                  }
+                                },
+                                "required": [
+                                  "from",
+                                  "to",
+                                  "open",
+                                  "headTimeUnknown",
+                                  "endLost",
+                                  "lost"
+                                ],
+                                "additionalProperties": false,
+                                "description": "A job's window on its CNC (ADR-0036)"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Null while the job has no window yet"
+                          },
+                          "cycles": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "OP10 cycles attributed to the job by unit (ADR-0031)"
+                          },
+                          "oee": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "availability": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "fraction": {
+                                            "type": "string",
+                                            "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                          },
+                                          "decimal": {
+                                            "type": "string",
+                                            "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                          }
+                                        },
+                                        "required": [
+                                          "fraction",
+                                          "decimal"
+                                        ],
+                                        "additionalProperties": false,
+                                        "description": "An exact ratio"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "APT / PBT; null when PBT = 0"
+                                  },
+                                  "performance": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "fraction": {
+                                            "type": "string",
+                                            "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                          },
+                                          "decimal": {
+                                            "type": "string",
+                                            "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                          }
+                                        },
+                                        "required": [
+                                          "fraction",
+                                          "decimal"
+                                        ],
+                                        "additionalProperties": false,
+                                        "description": "An exact ratio"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Ideal time / APT, not clamped (P > 1 is possible per hour); null when PBT or APT is 0"
+                                  },
+                                  "quality": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "fraction": {
+                                            "type": "string",
+                                            "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                          },
+                                          "decimal": {
+                                            "type": "string",
+                                            "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                          }
+                                        },
+                                        "required": [
+                                          "fraction",
+                                          "decimal"
+                                        ],
+                                        "additionalProperties": false,
+                                        "description": "An exact ratio"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "good / produced (first-pass yield); null when PBT = 0 or nothing was produced"
+                                  },
+                                  "oee": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "fraction": {
+                                            "type": "string",
+                                            "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                          },
+                                          "decimal": {
+                                            "type": "string",
+                                            "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                          }
+                                        },
+                                        "required": [
+                                          "fraction",
+                                          "decimal"
+                                        ],
+                                        "additionalProperties": false,
+                                        "description": "An exact ratio"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "(ideal × good) / (PBT × produced); 0 when nothing was produced; null when PBT = 0 or anomaly"
+                                  },
+                                  "anomaly": {
+                                    "type": "boolean",
+                                    "description": "Cycles were counted although APT = 0"
+                                  },
+                                  "provisional": {
+                                    "type": "boolean",
+                                    "description": "An open Stopped interval below the threshold counts as a micro-stop for now"
+                                  },
+                                  "totals": {
+                                    "type": "object",
+                                    "properties": {
+                                      "plannedBusyMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Milliseconds of simulation time"
+                                      },
+                                      "actualProductionMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Milliseconds of simulation time"
+                                      },
+                                      "excludedMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "PlannedStop, Maintenance and Off, or the whole unscheduled bucket"
+                                      },
+                                      "longStopMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Stopped intervals at or above the micro-stop threshold"
+                                      },
+                                      "microStopMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Stopped intervals below the threshold (part of APT)"
+                                      },
+                                      "idealMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Σ ideal cycle ms × produced count"
+                                      },
+                                      "good": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "scrap": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "rework": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "produced": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      }
+                                    },
+                                    "required": [
+                                      "plannedBusyMs",
+                                      "actualProductionMs",
+                                      "excludedMs",
+                                      "longStopMs",
+                                      "microStopMs",
+                                      "idealMs",
+                                      "good",
+                                      "scrap",
+                                      "rework",
+                                      "produced"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "unplanned": {
+                                    "type": "object",
+                                    "properties": {
+                                      "good": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "produced": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "idealMs": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991,
+                                        "description": "Milliseconds of simulation time"
+                                      }
+                                    },
+                                    "required": [
+                                      "good",
+                                      "produced",
+                                      "idealMs"
+                                    ],
+                                    "additionalProperties": false,
+                                    "description": "Cycles of the unscheduled no-shift bucket, kept out of P and Q"
+                                  },
+                                  "losses": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "availability": {
+                                            "type": "object",
+                                            "properties": {
+                                              "own": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "stopped": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "down": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "setup": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "idle": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "total": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "stopped",
+                                                  "down",
+                                                  "setup",
+                                                  "idle",
+                                                  "total"
+                                                ],
+                                                "additionalProperties": false
+                                              },
+                                              "external": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "starved": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "blocked": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  },
+                                                  "total": {
+                                                    "type": "integer",
+                                                    "minimum": -9007199254740991,
+                                                    "maximum": 9007199254740991,
+                                                    "description": "Milliseconds of simulation time"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "starved",
+                                                  "blocked",
+                                                  "total"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            },
+                                            "required": [
+                                              "own",
+                                              "external"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          "performance": {
+                                            "type": "object",
+                                            "properties": {
+                                              "microStops": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991,
+                                                "description": "Milliseconds of simulation time"
+                                              },
+                                              "speed": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991,
+                                                "description": "APT − micro-stops − ideal time; negative when P > 1"
+                                              },
+                                              "total": {
+                                                "type": "integer",
+                                                "minimum": -9007199254740991,
+                                                "maximum": 9007199254740991,
+                                                "description": "Milliseconds of simulation time"
+                                              }
+                                            },
+                                            "required": [
+                                              "microStops",
+                                              "speed",
+                                              "total"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          "quality": {
+                                            "type": "object",
+                                            "properties": {
+                                              "fraction": {
+                                                "type": "string",
+                                                "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                              },
+                                              "decimal": {
+                                                "type": "string",
+                                                "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                              }
+                                            },
+                                            "required": [
+                                              "fraction",
+                                              "decimal"
+                                            ],
+                                            "additionalProperties": false,
+                                            "description": "Ideal ms × (1 − Q), exact"
+                                          }
+                                        },
+                                        "required": [
+                                          "availability",
+                                          "performance",
+                                          "quality"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Inside planned busy time, in ms; null when PBT = 0"
+                                  }
+                                },
+                                "required": [
+                                  "availability",
+                                  "performance",
+                                  "quality",
+                                  "oee",
+                                  "anomaly",
+                                  "provisional",
+                                  "totals",
+                                  "unplanned",
+                                  "losses"
+                                ],
+                                "additionalProperties": false,
+                                "description": "OEE of one bucket (ADR-0021)"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The job’s OEE over its window; null without one"
+                          },
+                          "final": {
+                            "type": "boolean",
+                            "description": "Every input of the job’s window is final"
+                          }
+                        },
+                        "required": [
+                          "commandId",
+                          "machine",
+                          "deviceEpoch",
+                          "quantity",
+                          "notBefore",
+                          "head",
+                          "window",
+                          "cycles",
+                          "oee",
+                          "final"
+                        ],
+                        "additionalProperties": false,
+                        "description": "One job of an order: its head time, window and OEE"
+                      },
+                      "description": "The order's jobs in acceptance order"
+                    },
+                    "firstPassYield": {
+                      "type": "object",
+                      "properties": {
+                        "firstPassGood": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Units packed good with every record good"
+                        },
+                        "started": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "description": "Blanks taken (units plus blanks still in a CNC)"
+                        },
+                        "yield": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "fraction": {
+                                  "type": "string",
+                                  "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                },
+                                "decimal": {
+                                  "type": "string",
+                                  "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                }
+                              },
+                              "required": [
+                                "fraction",
+                                "decimal"
+                              ],
+                              "additionalProperties": false,
+                              "description": "An exact ratio"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "firstPassGood / started; null before a blank"
+                        },
+                        "final": {
+                          "type": "boolean",
+                          "description": "The order is complete (ADR-0031): no unit can come back"
+                        }
+                      },
+                      "required": [
+                        "firstPassGood",
+                        "started",
+                        "yield",
+                        "final"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Across the routing, beside the order OEE, never multiplied in"
+                    },
+                    "completedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "ADR-0031 completion: the latest terminal record"
+                    },
+                    "cutoffs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "machine": {
+                            "type": "string"
+                          },
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "at": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "machine",
+                          "epoch",
+                          "at"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Each CNC queue's cut-off (its final-through, exclusive), where an open window ends"
+                    }
+                  },
+                  "required": [
+                    "orderId",
+                    "product",
+                    "status",
+                    "oee",
+                    "open",
+                    "pending",
+                    "headTimeUnknown",
+                    "endLost",
+                    "lost",
+                    "final",
+                    "jobs",
+                    "firstPassYield",
+                    "completedAt",
+                    "cutoffs"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Order OEE over job windows, with the job breakdown and first-pass yield (#231)"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "topic",
+            "order"
           ],
           "additionalProperties": false
         },

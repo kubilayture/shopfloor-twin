@@ -509,6 +509,97 @@ export const shiftOeeSchema = z.object({
   workCenters: z.array(oeeBucketSchema).describe('Every work center with data'),
 });
 
+// ---- Order OEE (#231, ADR-0036 and its P9-04 amendment) ----
+
+/** Where a job's head time comes from (`oee-core` `headTimes`). */
+export const HEAD_SOURCES = [
+  'accepted',
+  'acceptedAt',
+  'previous-completed',
+  'previous-last-cycle',
+  'notBefore',
+] as const;
+/** Why a job's head time is unknown; the `-lost` ones never resolve. */
+export const HEAD_UNKNOWN_REASONS = [
+  'accepted-unknown',
+  'accepted-lost',
+  'previous-completed-lost',
+  'previous-completed-missing',
+] as const;
+
+export const jobWindowSchema = z
+  .object({
+    from: time.describe('The head time, or the `started` fact when the head time is unknown'),
+    to: time.describe("The job's completion, or the cut-off while open"),
+    open: z.boolean().describe('The job has not completed by the cut-off (transient)'),
+    headTimeUnknown: z
+      .boolean()
+      .describe('The window starts at `started` and leaves out the changeover: provisional'),
+    endLost: z
+      .boolean()
+      .describe("The job's `completed` fact is lost and its cycles don't tell its end"),
+    lost: z.boolean().describe('A fact the window needs is lost for good: never final'),
+  })
+  .describe("A job's window on its CNC (ADR-0036)");
+
+export const orderJobOeeSchema = z
+  .object({
+    commandId: z.string(),
+    machine: z.string(),
+    deviceEpoch: int,
+    quantity: int.describe('Blanks to machine (OP10 cycles)'),
+    notBefore: time.describe("The dispatch's earliest start (command state)"),
+    head: z
+      .object({
+        kind: z.enum(['head', 'waiting', 'unknown']),
+        at: time.nullable().describe('The head time when `head`'),
+        source: z.enum(HEAD_SOURCES).nullable(),
+        reason: z.enum(HEAD_UNKNOWN_REASONS).nullable().describe('When `unknown`'),
+      })
+      .describe('max(accepted ?? acceptedAt, previous job’s completion, notBefore) on the CNC'),
+    window: jobWindowSchema.nullable().describe('Null while the job has no window yet'),
+    cycles: int.describe('OP10 cycles attributed to the job by unit (ADR-0031)'),
+    oee: oeeResultSchema.nullable().describe('The job’s OEE over its window; null without one'),
+    final: z.boolean().describe('Every input of the job’s window is final'),
+  })
+  .describe('One job of an order: its head time, window and OEE');
+
+export const orderOeeSchema = z
+  .object({
+    orderId: z.string(),
+    product: z.string(),
+    status: z.string().describe('The order status (orders module)'),
+    oee: oeeResultSchema.describe(
+      'Order OEE: the equipment rules over every job window of the order, summed time-weighted',
+    ),
+    open: z.boolean().describe('A job window is still open'),
+    pending: z.boolean().describe('A job has no window yet (waiting, or head time unknown)'),
+    headTimeUnknown: z.boolean(),
+    endLost: z.boolean(),
+    lost: z.boolean().describe('A fact a window needs is lost for good: never final'),
+    final: z
+      .boolean()
+      .describe(
+        'The order OEE (and every job) is final: every command settled and no further job to come, every window closed, the CNC states final and covering each window, every OP10 cycle attributed; never on a lost path',
+      ),
+    jobs: z.array(orderJobOeeSchema).describe("The order's jobs in acceptance order"),
+    firstPassYield: z
+      .object({
+        firstPassGood: int.describe('Units packed good with every record good'),
+        started: int.describe('Blanks taken (units plus blanks still in a CNC)'),
+        yield: ratioSchema.nullable().describe('firstPassGood / started; null before a blank'),
+        final: z.boolean().describe('The order is complete (ADR-0031): no unit can come back'),
+      })
+      .describe('Across the routing, beside the order OEE, never multiplied in'),
+    completedAt: time.nullable().describe('ADR-0031 completion: the latest terminal record'),
+    cutoffs: z
+      .array(z.object({ machine: z.string(), epoch: int, at: time.nullable() }))
+      .describe(
+        "Each CNC queue's cut-off (its final-through, exclusive), where an open window ends",
+      ),
+  })
+  .describe('Order OEE over job windows, with the job breakdown and first-pass yield (#231)');
+
 export const reasonCodesSchema = z.object({
   reasons: z
     .array(
@@ -1411,6 +1502,9 @@ export type ShiftInstanceDto = z.infer<typeof shiftInstanceSchema>;
 export type ShiftList = z.infer<typeof shiftListSchema>;
 export type CurrentShift = z.infer<typeof currentShiftSchema>;
 export type ShiftOee = z.infer<typeof shiftOeeSchema>;
+export type JobWindowDto = z.infer<typeof jobWindowSchema>;
+export type OrderJobOeeDto = z.infer<typeof orderJobOeeSchema>;
+export type OrderOeeDto = z.infer<typeof orderOeeSchema>;
 export type ReasonCodes = z.infer<typeof reasonCodesSchema>;
 export type DowntimeRecordDto = z.infer<typeof downtimeRecordSchema>;
 export type DowntimeList = z.infer<typeof downtimeListSchema>;
@@ -1435,6 +1529,11 @@ const oeeTopic = z
   .string()
   .regex(/^oee:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)
   .describe('oee:<equipment or work center>');
+/** An order's OEE (#231): `oee:order:<order number>`. */
+const oeeOrderTopic = z
+  .string()
+  .regex(/^oee:order:[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/)
+  .describe('oee:order:<order number>');
 const alarmKpiTopic = z
   .string()
   .regex(/^alarm-kpi:(plant|(position|equipment):[A-Za-z0-9][A-Za-z0-9_-]{0,63})$/)
@@ -1448,6 +1547,7 @@ const topic = z.union([
   z.literal(QUALITY_TOPIC),
   telemetryTopic,
   oeeTopic,
+  oeeOrderTopic,
   alarmKpiTopic,
   terminalTopicSchema,
 ]);
@@ -1510,6 +1610,11 @@ export const serverMessageSchema = z
     }),
     z.object({
       type: z.literal('snapshot'),
+      topic: oeeOrderTopic,
+      order: orderOeeSchema.nullable().describe('The order OEE now; null for an unknown order'),
+    }),
+    z.object({
+      type: z.literal('snapshot'),
       topic: alarmKpiTopic,
       hour: alarmKpiBucketSchema
         .nullable()
@@ -1525,6 +1630,11 @@ export const serverMessageSchema = z
       topic: oeeTopic,
       hour: oeeBucketSchema.nullable(),
       shift: oeeBucketSchema.nullable(),
+    }),
+    z.object({
+      type: z.literal('oee-order'),
+      topic: oeeOrderTopic,
+      order: orderOeeSchema.nullable(),
     }),
     z.object({
       type: z.literal('downtime'),

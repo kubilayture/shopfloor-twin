@@ -11,7 +11,7 @@ import { DowntimeCoding, Equipment, downtimeRules } from './modules/equipment/in
 import { Identity, type IdentityLog } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
-import { DowntimeFeed, Oee } from './modules/oee/index.ts';
+import { DowntimeFeed, Oee, OrderOee } from './modules/oee/index.ts';
 import { Execution } from './modules/execution/index.ts';
 import { Genealogy } from './modules/genealogy/index.ts';
 import { ErpClient, MqttCommandPublisher, Orders } from './modules/orders/index.ts';
@@ -70,6 +70,7 @@ const identity = new Identity({ db: identityDb, log: identityLog });
 let ingest: Ingest | undefined;
 let equipment: Equipment | undefined;
 let oee: Oee | undefined;
+let orderOee: OrderOee | undefined;
 let downtime: DowntimeFeed | undefined;
 let coding: DowntimeCoding | undefined;
 let alarms: Alarms | undefined;
@@ -140,6 +141,7 @@ async function shutdown(signal: string): Promise<void> {
     async () => shifts?.stop(),
     () => {
       oee?.stop();
+      orderOee?.stop();
       downtime?.stop();
       coding?.stop();
       return Promise.resolve();
@@ -380,6 +382,21 @@ try {
   await executionModule.start();
   ordersModule.useBlankCounter(executionModule);
   await genealogyModule.start();
+  // Order OEE (#231): derived on read from the command state, the units and the CNCs' pieces,
+  // through the API's pool; final orders kept in memory.
+  const orderOeeModule = new OrderOee({
+    orders: ordersModule,
+    execution: executionModule,
+    equipment: equipmentModule,
+    ingest,
+    masterData: apiMasterData,
+    shiftPattern: await masterData.shiftPattern(),
+    config: plant.config.oee,
+    idealCycleMs: idealCycleMs(plant.config),
+    operations: plant.config.products.operations,
+  });
+  orderOee = orderOeeModule;
+  orderOeeModule.start();
   // SPC (#200): measurements from the leak tester's cycle facts, limit versions and signal
   // episodes on final data; the charts are derived on read through the API's pool.
   const qualityModule = new Quality({
@@ -447,6 +464,7 @@ try {
     equipment,
     ingest,
     oee,
+    orderOee: orderOeeModule,
     downtime,
     coding: {
       code: (key, request) => codingModule.code(key, request),

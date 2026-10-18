@@ -11,6 +11,13 @@
  * - `Oee.paretoInputs(...)` and `pareto(...)`: the downtime Pareto (loss by reason, without a
  *   row limit; micro-stops by cause); `DowntimeFeed`: record changes for push; `downtimeId(record)`: the API's record id.
  *
+ * Order OEE (#231, ADR-0036 and its P9-04 amendment), per order and job, derived on read:
+ * - `OrderOee.order(id)`: the order OEE over its job windows, every job (head time, window, OEE)
+ *   and the first-pass yield, each with its finality; final results kept in memory.
+ * - `OrderOee.onChange(listener)`: an order id, or null when any order may have moved (push).
+ * - Pure (`order-queue.ts`): `commandQueues`, `queuedJob`, `acceptanceOrder`, `inQueue`,
+ *   `orderSlice`: each CNC's queue from the orders module's command state, lost facts included.
+ *
  * Scheduled shifts and shift buckets (`shiftInstances`, `shiftBuckets`, …) come from the pure
  * `@shopfloor/shift-calendar` (#144), which the `shifts` module uses too.
  */
@@ -35,3 +42,7 @@ export type {
   ParetoMicroStop,
   ParetoReason,
 } from './downtime.ts';
+export { OrderOee, piecesFinal, wholeIntervals } from './order-oee.ts';
+export type { OrderJobView, OrderOeeOptions, OrderOeeSources, OrderOeeView } from './order-oee.ts';
+export { acceptanceOrder, commandQueues, inQueue, orderSlice, queuedJob } from './order-queue.ts';
+export type { CommandQueue, DeviceCut, QueueCommand } from './order-queue.ts';

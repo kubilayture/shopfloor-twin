@@ -11,7 +11,8 @@
  * - Once it holds the lock (not when inherited): refuses to start below 25 GiB free on the host or
  *   15 GiB in Docker's data root, saying which (exit 2).
  * - Runs the command in its own process group with `SHOPFLOOR_HEAVY_LOCK` set, so its children
- *   inherit the lock; passes SIGINT, SIGTERM and SIGHUP on to that group (a second signal kills
+ *   inherit the lock, and records that group in the lock (alive while the group runs, also after
+ *   this wrapper is killed); passes SIGINT, SIGTERM and SIGHUP on to that group (a second signal kills
  *   it); releases the lock when the command ends and exits with its code.
  *
  * Usage: node scripts/heavy.ts <command> [arguments…]
@@ -58,6 +59,9 @@ const child = spawn(command, args, {
   detached: true,
   env: { ...process.env, ...lock.env },
 });
+// The command's own process group keeps the lock alive if this wrapper dies first (SIGKILL): the
+// suite it started still runs, so the lock must not look stale.
+if (child.pid !== undefined) lock.recordGroup(child.pid);
 const signals = { received: 0 };
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.on(signal, () => {

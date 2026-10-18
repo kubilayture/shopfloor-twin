@@ -125,6 +125,9 @@ function run(
   });
   const running = { child, exited };
   current = running;
+  // Each job's process group keeps the heavy-suite lock alive (#228), also if the gate itself is
+  // killed while the job runs.
+  if (child.pid !== undefined) lock.recordGroup(child.pid);
   return exited.finally(() => {
     if (current === running) current = undefined;
   });

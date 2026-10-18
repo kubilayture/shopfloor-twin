@@ -1,6 +1,15 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -12,17 +21,24 @@ import {
   MIN_DOCKER_FREE_BYTES,
   MIN_HOST_FREE_BYTES,
   acquireHeavyLock,
+  bootTime,
   breakStaleLock,
   diskProbeImage,
+  dockerProbeProblem,
+  fakeProbe,
+  holderLiveness,
   diskProblems,
   lockTimeoutMs,
   parseDfAvailableBytes,
   processLiveness,
+  processStartTime,
+  readGroups,
   readHolder,
+  recordGroup,
   releaseLock,
   tryTakeLock,
   type HeavyLockHolder,
-  type Liveness,
+  type LockProbe,
 } from './heavy-lock.ts';
 
 // Every test works on a lock of its own under a temporary directory: the real lock at
@@ -50,11 +66,10 @@ const holder = (pid: number, token = `t-${String(pid)}`): HeavyLockHolder => ({
   token,
 });
 const errno = (code: string) => Object.assign(new Error(code), { code });
-/** Liveness from a fixed set of dead PIDs (no real processes involved). */
-const deadPids =
-  (...dead: number[]) =>
-  (pid: number): Liveness =>
-    dead.includes(pid) ? 'dead' : 'alive';
+/** Every process alive (no real processes involved). */
+const allAlive: LockProbe = fakeProbe({}, { pid: () => 'alive' });
+/** Every process and group dead. */
+const allDead: LockProbe = fakeProbe();
 
 describe('processLiveness (#228): stale only on ESRCH', () => {
   it('is alive when kill(pid, 0) succeeds', () => {
@@ -88,7 +103,9 @@ describe('processLiveness (#228): stale only on ESRCH', () => {
 
 describe('the lock directory (#228)', () => {
   it('lives at the fixed path under the home directory, not the temporary directory', () => {
-    expect(HEAVY_LOCK_PATH).toBe(join(homedir(), '.cache', 'shopfloor-twin', 'heavy.lock'));
+    expect(HEAVY_LOCK_PATH).toBe(
+      join(userInfo().homedir, '.cache', 'shopfloor-twin', 'heavy.lock'),
+    );
     expect(HEAVY_LOCK_PATH.startsWith(tmpdir())).toBe(false);
   });
 
@@ -125,12 +142,13 @@ describe('the lock directory (#228)', () => {
 });
 
 describe('acquireHeavyLock (#228)', () => {
-  it('takes a free lock, records pid, command and start time, and releases it', async () => {
+  it('takes a free lock, records pid, command, start, boot and process start, and releases it', async () => {
     const lock = await acquireHeavyLock({
       lockPath,
       command: 'pnpm gate',
       env: {},
       log,
+      probe: fakeProbe({}, { boot: () => '1791650654', processStart: () => 'Sun Oct 18' }),
       now: () => Date.parse('2026-10-18T09:00:00Z'),
     });
     expect(lock.inherited).toBe(false);
@@ -139,6 +157,8 @@ describe('acquireHeavyLock (#228)', () => {
       command: 'pnpm gate',
       startedAt: '2026-10-18T09:00:00.000Z',
       token: lock.holder.token,
+      boot: '1791650654',
+      processStart: 'Sun Oct 18',
     });
     expect(lock.env).toEqual({ [HEAVY_LOCK_ENV]: lock.holder.token });
     lock.release();
@@ -184,7 +204,7 @@ describe('acquireHeavyLock (#228)', () => {
         env: { [HEAVY_LOCK_ENV]: 't-other' },
         timeoutMs: 30,
         pollMs: 5,
-        liveness: deadPids(),
+        probe: allAlive,
         log,
       }),
     ).rejects.toBeInstanceOf(HeavyLockTimeoutError);
@@ -198,7 +218,7 @@ describe('acquireHeavyLock (#228)', () => {
       command: 'pnpm test:e2e',
       env: {},
       pollMs: 5,
-      liveness: deadPids(),
+      probe: allAlive,
       log,
     });
     expect(lock.inherited).toBe(false);
@@ -215,7 +235,7 @@ describe('acquireHeavyLock (#228)', () => {
       env: {},
       timeoutMs: 40,
       pollMs: 5,
-      liveness: deadPids(),
+      probe: allAlive,
       log,
     }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(HeavyLockTimeoutError);
@@ -230,7 +250,7 @@ describe('acquireHeavyLock (#228)', () => {
       command: 'x',
       env: { HEAVY_LOCK_TIMEOUT_MS: '25' },
       pollMs: 5,
-      liveness: deadPids(),
+      probe: allAlive,
       log,
     }).catch((e: unknown) => e);
     expect((error as HeavyLockTimeoutError).timeoutMs).toBe(25);
@@ -244,7 +264,7 @@ describe('acquireHeavyLock (#228)', () => {
       env: {},
       timeoutMs: 1_000,
       pollMs: 5,
-      liveness: deadPids(66),
+      probe: allDead,
       log,
     });
     expect(readHolder(lockPath)?.token).toBe(lock.holder.token);
@@ -254,10 +274,15 @@ describe('acquireHeavyLock (#228)', () => {
 
   it('never breaks the lock of a holder that answers EPERM', async () => {
     tryTakeLock(lockPath, holder(55));
-    const eperm = (pid: number) =>
-      processLiveness(pid, () => {
-        throw errno('EPERM');
-      });
+    const eperm = fakeProbe(
+      {},
+      {
+        pid: (pid) =>
+          processLiveness(pid, () => {
+            throw errno('EPERM');
+          }),
+      },
+    );
     await expect(
       acquireHeavyLock({
         lockPath,
@@ -265,7 +290,7 @@ describe('acquireHeavyLock (#228)', () => {
         env: {},
         timeoutMs: 30,
         pollMs: 5,
-        liveness: eperm,
+        probe: eperm,
         log,
       }),
     ).rejects.toBeInstanceOf(HeavyLockTimeoutError);
@@ -350,14 +375,14 @@ describe('breakStaleLock (#228)', () => {
   it('leaves a lock that a new holder took after the stale one was read', () => {
     const stale = holder(66);
     tryTakeLock(lockPath, holder(67));
-    expect(breakStaleLock(lockPath, stale, deadPids(66, 67))).toBe(false);
+    expect(breakStaleLock(lockPath, stale, () => true, allDead.pid)).toBe(false);
     expect(readHolder(lockPath)?.token).toBe('t-67');
   });
 
   it('does nothing while another process holds the guard', () => {
     tryTakeLock(lockPath, holder(66));
     writeFileSync(`${lockPath}.break`, '12345');
-    expect(breakStaleLock(lockPath, holder(66), deadPids(66))).toBe(false);
+    expect(breakStaleLock(lockPath, holder(66), () => true, allAlive.pid)).toBe(false);
     expect(readHolder(lockPath)?.token).toBe('t-66');
     expect(existsSync(`${lockPath}.break`)).toBe(true);
   });
@@ -365,11 +390,236 @@ describe('breakStaleLock (#228)', () => {
   it('removes a guard left by a dead process, then breaks on the next attempt', () => {
     tryTakeLock(lockPath, holder(66));
     writeFileSync(`${lockPath}.break`, '12345');
-    expect(breakStaleLock(lockPath, holder(66), deadPids(66, 12345))).toBe(false);
+    expect(breakStaleLock(lockPath, holder(66), () => true, allDead.pid)).toBe(false);
     expect(existsSync(`${lockPath}.break`)).toBe(false);
-    expect(breakStaleLock(lockPath, holder(66), deadPids(66))).toBe(true);
+    expect(breakStaleLock(lockPath, holder(66), () => true, allDead.pid)).toBe(true);
     expect(existsSync(lockPath)).toBe(false);
     expect(existsSync(`${lockPath}.break`)).toBe(false);
+  });
+});
+
+describe('review of PR #248 (#228)', () => {
+  it('returns false, not a crash, when the guard vanishes between the link and the read', () => {
+    tryTakeLock(lockPath, holder(66));
+    // A dangling symlink: the link fails with EEXIST, the read with ENOENT, deterministically.
+    symlinkSync(join(dir, 'gone'), `${lockPath}.break`);
+    expect(breakStaleLock(lockPath, holder(66), () => true, allDead.pid)).toBe(false);
+    expect(readHolder(lockPath)?.token).toBe('t-66');
+  });
+
+  it('tolerates the guard being removed under it after a successful break', () => {
+    tryTakeLock(lockPath, holder(66));
+    const stillStale = () => {
+      rmSync(`${lockPath}.break`, { force: true }); // another breaker's cleanup, say
+      return true;
+    };
+    expect(breakStaleLock(lockPath, holder(66), stillStale, allDead.pid)).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it('polls (no busy spin) and honours the timeout while a live process holds the guard', async () => {
+    tryTakeLock(lockPath, holder(66));
+    writeFileSync(`${lockPath}.break`, String(process.pid));
+    let calls = 0;
+    const probe = fakeProbe(
+      {},
+      {
+        pid: (pid) => {
+          calls += 1;
+          return pid === process.pid ? 'alive' : 'dead';
+        },
+      },
+    );
+    const started = Date.now();
+    const error: unknown = await acquireHeavyLock({
+      lockPath,
+      command: 'x',
+      env: {},
+      timeoutMs: 150,
+      pollMs: 25,
+      probe,
+      log,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(HeavyLockTimeoutError);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // About 150 / 25 polls, two probe calls each; a spin makes thousands.
+    expect(calls).toBeLessThan(40);
+    expect(logs.filter((line) => line.includes('stale lock of cmd-66'))).toHaveLength(1);
+    expect(readHolder(lockPath)?.token).toBe('t-66');
+  });
+
+  it('survives many processes breaking the same stale lock at once', async () => {
+    const exited = spawn(process.execPath, ['-e', '']);
+    const deadPid = exited.pid ?? 0;
+    await new Promise((done) => exited.on('exit', done));
+    tryTakeLock(lockPath, holder(deadPid));
+    const module = resolve(import.meta.dirname, 'heavy-lock.ts');
+    const trail = join(dir, 'trail.txt');
+    writeFileSync(trail, '');
+    const script = `
+      import { appendFileSync } from 'node:fs';
+      import { acquireHeavyLock } from ${JSON.stringify(module)};
+      const lock = await acquireHeavyLock({ lockPath: process.argv[1], command: 'p', env: {}, pollMs: 5, timeoutMs: 60000, log: () => {} });
+      appendFileSync(process.argv[2], 'in ' + process.pid + '\\n');
+      await new Promise((r) => setTimeout(r, 5));
+      appendFileSync(process.argv[2], 'out ' + process.pid + '\\n');
+      lock.release();
+    `;
+    const codes = await Promise.all(
+      Array.from(
+        { length: 16 },
+        () =>
+          new Promise<number | null>((done) => {
+            const child = spawn(
+              process.execPath,
+              ['--input-type=module', '-e', script, lockPath, trail],
+              { stdio: 'inherit' },
+            );
+            child.on('exit', done);
+          }),
+      ),
+    );
+    expect(codes).toEqual(Array.from({ length: 16 }, () => 0));
+    const lines = readFileSync(trail, 'utf8').trim().split('\n');
+    expect(lines).toHaveLength(32);
+    for (let i = 0; i < lines.length; i += 2) {
+      const pid = lines[i]?.split(' ')[1];
+      expect(lines[i]).toBe(`in ${pid ?? ''}`);
+      expect(lines[i + 1]).toBe(`out ${pid ?? ''}`);
+    }
+  }, 60_000);
+
+  it('records process groups only under the holding token', () => {
+    tryTakeLock(lockPath, holder(66));
+    expect(recordGroup(lockPath, 't-other', 4242)).toBe(false);
+    expect(recordGroup(lockPath, 't-66', 4242)).toBe(true);
+    expect(recordGroup(lockPath, 't-66', 1)).toBe(false);
+    expect(readGroups(lockPath)).toEqual([4242]);
+  });
+
+  it('keeps a lock alive while a recorded group runs after its holder died', async () => {
+    tryTakeLock(lockPath, holder(66));
+    recordGroup(lockPath, 't-66', 4242);
+    expect(holderLiveness(lockPath, holder(66), fakeProbe({ groups: [4242] }))).toBe('alive');
+    expect(holderLiveness(lockPath, holder(66), fakeProbe())).toBe('dead');
+    await expect(
+      acquireHeavyLock({
+        lockPath,
+        command: 'x',
+        env: {},
+        timeoutMs: 30,
+        pollMs: 5,
+        probe: fakeProbe({ groups: [4242] }),
+        log,
+      }),
+    ).rejects.toBeInstanceOf(HeavyLockTimeoutError);
+  });
+
+  it('keeps the lock while a real detached group runs, and breaks it once the group is gone', async () => {
+    const exited = spawn(process.execPath, ['-e', '']);
+    const deadPid = exited.pid ?? 0;
+    await new Promise((done) => exited.on('exit', done));
+    const suite = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    const pgid = suite.pid ?? 0;
+    try {
+      tryTakeLock(lockPath, holder(deadPid));
+      recordGroup(lockPath, `t-${String(deadPid)}`, pgid);
+      expect(holderLiveness(lockPath, holder(deadPid))).toBe('alive');
+      process.kill(-pgid, 'SIGKILL');
+      await new Promise((done) => suite.on('exit', done));
+      expect(holderLiveness(lockPath, holder(deadPid))).toBe('dead');
+      const lock = await acquireHeavyLock({
+        lockPath,
+        command: 'x',
+        env: {},
+        timeoutMs: 2_000,
+        pollMs: 5,
+        log,
+      });
+      expect(lock.inherited).toBe(false);
+      lock.release();
+    } finally {
+      try {
+        process.kill(-pgid, 'SIGKILL');
+      } catch {
+        // gone already
+      }
+    }
+  });
+
+  it('counts a lock from an earlier boot as stale, even if its PID now exists', () => {
+    const old = { ...holder(66), boot: '100' };
+    tryTakeLock(lockPath, old);
+    const probe = fakeProbe({ pids: [66] }, { boot: () => '200' });
+    expect(holderLiveness(lockPath, old, probe)).toBe('dead');
+    expect(holderLiveness(lockPath, old, fakeProbe({ pids: [66] }, { boot: () => '100' }))).toBe(
+      'alive',
+    );
+  });
+
+  it('counts a reused PID (another process start time) as dead', () => {
+    const held = { ...holder(66), processStart: 'Sun Oct 18 10:00:00 2026' };
+    tryTakeLock(lockPath, held);
+    const same = fakeProbe({ pids: [66] }, { processStart: () => 'Sun Oct 18 10:00:00 2026' });
+    const reused = fakeProbe({ pids: [66] }, { processStart: () => 'Sun Oct 18 11:30:00 2026' });
+    expect(holderLiveness(lockPath, held, same)).toBe('alive');
+    expect(holderLiveness(lockPath, held, reused)).toBe('dead');
+  });
+
+  it('waits for a lock directory without a valid holder, then breaks it after the grace', async () => {
+    mkdirSync(lockPath, { recursive: true });
+    writeFileSync(join(lockPath, 'holder.json'), '{"truncated');
+    await expect(
+      acquireHeavyLock({
+        lockPath,
+        command: 'x',
+        env: {},
+        timeoutMs: 30,
+        pollMs: 5,
+        noHolderGraceMs: 60_000,
+        probe: allDead,
+        log,
+      }),
+    ).rejects.toBeInstanceOf(HeavyLockTimeoutError);
+    expect(logs.filter((line) => line.includes('no valid holder.json'))).toHaveLength(1);
+    const lock = await acquireHeavyLock({
+      lockPath,
+      command: 'x',
+      env: {},
+      timeoutMs: 1_000,
+      pollMs: 5,
+      noHolderGraceMs: 0,
+      probe: allDead,
+      log,
+    });
+    expect(readHolder(lockPath)?.token).toBe(lock.holder.token);
+    lock.release();
+  });
+
+  it('reads the boot time and process start times of this machine', async () => {
+    expect(bootTime()).toMatch(/^\d+$/);
+    expect(processStartTime(process.pid)).toBeTruthy();
+    const exited = spawn(process.execPath, ['-e', '']);
+    const pid = exited.pid ?? 0;
+    await new Promise((done) => exited.on('exit', done));
+    expect(processStartTime(pid)).toBeUndefined();
+  });
+
+  it('says why the Docker disk probe failed: image missing, Docker down, or else', () => {
+    const image = 'eclipse-mosquitto:2.1.2-alpine';
+    const missing = Object.assign(new Error('Command failed'), {
+      stderr: `docker: Error response from daemon: No such image: ${image}`,
+    });
+    expect(dockerProbeProblem(image, missing)).toContain(`docker pull ${image}`);
+    const down = Object.assign(new Error('Command failed'), {
+      stderr:
+        'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?',
+    });
+    expect(dockerProbeProblem(image, down)).toMatch(/^Docker is not running/);
+    expect(dockerProbeProblem(image, new Error('boom'))).toContain('boom');
   });
 });
 

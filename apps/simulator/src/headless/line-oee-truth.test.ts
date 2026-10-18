@@ -342,7 +342,12 @@ describe('LineOeeTruth on synthetic events (#230)', () => {
       ended.record(event);
     }
     expect(cut).toEqual(ended.build(T0 + 2 * HOUR + 10 * 60_000));
-    expect(() => truth.build(now, T0 - 1)).toThrow(/before the run's start/);
+    // A cut before the start sees nothing.
+    expect(truth.build(now, T0 - 1)).toMatchObject({
+      plannedStops: [],
+      line: { hours: {}, shifts: {} },
+      orders: {},
+    });
   });
 
   it('refuses a job fact before its acceptance', () => {

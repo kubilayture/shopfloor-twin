@@ -248,10 +248,8 @@ export class LineOeeTruth {
    * time: only the events before it, cut there, as a run that ended at `asOf` gives it.
    */
   build(now: SimTime, asOf?: SimTime): LineOeeSection {
-    const until = asOf ?? now;
-    if (until < this.#start) {
-      throw new RangeError(`the cut-off ${isoTime(until)} is before the run's start`);
-    }
+    // A cut before the start sees nothing, as at the start.
+    const until = Math.max(asOf ?? now, this.#start);
     const records =
       asOf === undefined ? this.#records : this.#records.filter((record) => record.at < asOf);
     return this.#section(records, until);
@@ -334,10 +332,14 @@ export class LineOeeTruth {
     const intervals = new Map<string, TimelineInterval[]>();
     for (const [id, list] of facts) {
       const closed = intervalsFromFacts(list, until);
+      // Only the interval of the last fact is still running at the cut-off.
+      const lastAt = list.at(-1)?.at;
       intervals.set(
         id,
-        closed.map((interval, i) =>
-          i === closed.length - 1 && interval.to === until ? { ...interval, open: true } : interval,
+        closed.map((interval) =>
+          interval.from === lastAt && interval.to === until
+            ? { ...interval, open: true }
+            : interval,
         ),
       );
     }

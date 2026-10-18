@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #229 merged (PR #247, `02378b1`): `oee-core` order OEE over head-time windows, line throughput OEE (`aboveOne`), the bottleneck derived per product (ASM-01), first-pass yield; ADR-0036; reference cases in `docs/oee-reference-cases.md`; both configuration hashes and the goldens unchanged.
 - Phase 9 plan accepted (PR #226, `3e3ef33`): `docs/phases/phase-09-plan.md` and master plan rev. 9, after review rounds 1 to 3. Issues #228–#246 (P9-01 to P9-19) under milestone "Phase 09 – Simulation console, scenarios and hardening" (milestone 10); size XL in four waves with a checkpoint after wave A; phase log `docs/phases/phase-09-log.md` started.
 
 - **Phase 8 closed**: all 7 exit criteria met by local runs; tag `phase-08` after #205 merges (report: `docs/phases/phase-08-report.md`; learning notes: `docs/learning/phase-08.md`; data model: `docs/data-model.md`, confirmed current through migration `0032`, regenerated without a change, 14 new tables, 73 in ten module schemas). Exit criterion 7's last clause is recorded at the close: `pnpm verify --concurrency=1` passed uncached (`TURBO_FORCE=1`) three times in a row on `2afc764` with random property seeds (470 s, 462 s, 457 s; 2,102 tests each). The closing `pnpm gate` passed on the #205 branch at `27395dd` (`GATE-OK`, with `TURBO_FORCE=1`: verify 460.5 s, golden 1.5 s, e2e 716.5 s, smoke 85.4 s, reconcile 1,647.9 s with all three passes OK), and `pnpm test:trace-perf` passed there (backward p95 2.91 ms, forward p95 32.04 ms over 1,493 units); records in the report. No golden snapshot was regenerated in Phase 8 (the `trace.json` files are new). Every gate exception of the phase's PRs is listed in the report.
@@ -132,7 +133,7 @@
 
 ## Next up
 
-- Wave A beside #228: #229 (P9-02, `oee-core` order and line OEE) and #234 (P9-07, simulator console actions); then #230 (P9-03), #235 (P9-08) and #236 (P9-09), and the wave A checkpoint in the phase log.
+- Wave A beside #228: #234 (P9-07, simulator console actions); then #230 (P9-03, on #229's `oee-core`), #235 (P9-08) and #236 (P9-09), and the wave A checkpoint in the phase log.
 
 ## Blockers and open questions for the owner
 

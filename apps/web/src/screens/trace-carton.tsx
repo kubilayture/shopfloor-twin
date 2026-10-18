@@ -149,7 +149,11 @@ function CartonTrace({ carton }: { readonly carton: string }) {
           <Finality final={trace.final} notFinal={trace.notFinal} />
           <Summary trace={trace} />
           <Members trace={trace} />
-          <Holds holds={trace.holds} what="this carton and its members" />
+          <Holds
+            holds={trace.holds}
+            what="this carton and its members"
+            subject={{ kind: 'carton', id: carton }}
+          />
           <p className="mt-6 text-sm text-slate-700">
             The MES crew of each cycle is on the serial pages (follow a member’s serial).
           </p>

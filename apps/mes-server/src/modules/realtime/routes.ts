@@ -8,23 +8,33 @@ import { z } from 'zod';
 export class HttpProblem extends Error {
   readonly status: number;
   readonly type: ProblemType | undefined;
+  /** The holds a refusal names (#203), served as the problem's `holds`. */
+  readonly holds: readonly string[] | undefined;
 
-  constructor(status: number, detail: string, type?: ProblemType) {
+  constructor(status: number, detail: string, type?: ProblemType, holds?: readonly string[]) {
     super(detail);
     this.status = status;
     this.type = type;
+    this.holds = holds;
   }
 }
 
 export const PROBLEM_TYPE = 'application/problem+json';
 
-export function problem(status: number, detail: string, url: string, type?: ProblemType) {
+export function problem(
+  status: number,
+  detail: string,
+  url: string,
+  type?: ProblemType,
+  holds?: readonly string[],
+) {
   return {
     type: type ?? 'about:blank',
     title: STATUS_CODES[status] ?? 'Error',
     status,
     detail,
     instance: url.split('?', 1)[0] ?? url,
+    ...(holds === undefined ? {} : { holds: [...holds] }),
   };
 }
 

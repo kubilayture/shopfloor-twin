@@ -174,6 +174,11 @@ export const PROBLEM_TYPES = {
   holdStale: 'urn:shopfloor:hold-stale',
   /** 409 (#201): a release or rejection of a hold that is decided already. */
   holdDecided: 'urn:shopfloor:hold-decided',
+  /**
+   * 409 (#203 review): an open hold with the same subject and reason exists already; the problem's
+   * `holds` names it.
+   */
+  holdExists: 'urn:shopfloor:hold-exists',
   /** 409 (#201): an order's close while a unit of it (or the order itself) is in an open hold. */
   qualityHold: 'urn:shopfloor:quality-hold',
   /**
@@ -210,6 +215,12 @@ export const problemSchema = z
     status: int,
     detail: z.string(),
     instance: z.string().describe('The request path'),
+    holds: z
+      .array(z.uuid())
+      .optional()
+      .describe(
+        'The holds a refusal names (#203): the open holds blocking a close (quality-hold), the open hold already on the subject (hold-exists)',
+      ),
   })
   .describe('An error (RFC 9457 problem details), served as application/problem+json');
 

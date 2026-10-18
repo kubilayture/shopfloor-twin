@@ -703,6 +703,82 @@ export class Holds {
   }
 
   /**
+   * Open holds that touch one of these orders (#203, the terminal's banners): on the order itself,
+   * or with a unit of it in the scope as last derived (`hold_unit`: a display, never a decision),
+   * each with the orders of `orderIds` it touches; newest first, at most `limit`.
+   */
+  async openOnOrders(
+    orderIds: readonly string[],
+    limit = 10,
+  ): Promise<{ holds: { hold: HoldRecord; orders: string[] }[]; truncated: boolean }> {
+    if (orderIds.length === 0) return { holds: [], truncated: false };
+    const db = this.#readDb;
+    const ids = [...new Set(orderIds)];
+    const touched = new Map<string, Set<string>>();
+    const add = (hold: string, order: string) => {
+      const set = touched.get(hold);
+      if (set) set.add(order);
+      else touched.set(hold, new Set([order]));
+    };
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const [byUnit, bySubject] = await Promise.all([
+        db
+          .selectFrom('quality.hold_unit as u')
+          .innerJoin('quality.hold as h', 'h.id', 'u.hold_id')
+          .select(['h.id', 'u.order_id'])
+          .distinct()
+          .where('h.state', '=', 'open')
+          .where('u.order_id', 'in', chunk)
+          .execute(),
+        db
+          .selectFrom('quality.hold')
+          .select(['id', 'subject_id'])
+          .where('state', '=', 'open')
+          .where('subject_kind', '=', 'order')
+          .where('subject_id', 'in', chunk)
+          .execute(),
+      ]);
+      for (const row of byUnit) if (row.order_id !== null) add(row.id, row.order_id);
+      for (const row of bySubject) add(row.id, row.subject_id);
+    }
+    if (touched.size === 0) return { holds: [], truncated: false };
+    const rows = await db
+      .selectFrom('quality.hold')
+      .selectAll()
+      .where('id', 'in', [...touched.keys()])
+      .orderBy('opened_at', 'desc')
+      .orderBy('id')
+      .limit(limit + 1)
+      .execute();
+    const records = await this.#records(db, rows.slice(0, limit));
+    return {
+      holds: records.map((hold) => ({
+        hold,
+        orders: [...(touched.get(hold.id) ?? [])].sort(byText),
+      })),
+      truncated: rows.length > limit,
+    };
+  }
+
+  /**
+   * Of these lots, those an open hold is on as its subject (#203 review: the terminal marks a lot in
+   * use as held from the holds themselves, not from the scope copy).
+   */
+  async openLotHolds(lots: readonly string[]): Promise<Set<string>> {
+    if (lots.length === 0) return new Set();
+    const rows = await this.#readDb
+      .selectFrom('quality.hold')
+      .select('subject_id')
+      .distinct()
+      .where('state', '=', 'open')
+      .where('subject_kind', '=', 'lot')
+      .where('subject_id', 'in', [...new Set(lots)])
+      .execute();
+    return new Set(rows.map((r) => r.subject_id));
+  }
+
+  /**
    * The units tested since the last in-control point before a signal episode, with their orders
    * and cartons: the scope a quality user may hold (plan "Signals and people"); never a hold by
    * itself. Undefined for an unknown or withdrawn signal.
@@ -759,6 +835,26 @@ export class Holds {
         // First, before anything else (review round 2, MEDIUM D): a close holding it has its
         // guard's answer and commits before this hold exists, or waits for this one.
         await lockHolds(trx);
+        // One open hold per subject and reason (#203 review): under the lock, so two openings at
+        // once can't both pass. Another reason on the same subject is a separate hold.
+        const existing = await trx
+          .selectFrom('quality.hold')
+          .select('id')
+          .where('state', '=', 'open')
+          .where('subject_kind', '=', request.subject.kind)
+          .where('subject_id', '=', request.subject.id)
+          .where('reason', '=', request.reason)
+          .orderBy('opened_at')
+          .execute();
+        if (existing.length > 0) {
+          const ids = existing.map((row) => row.id);
+          throw new QualityError(
+            'conflict',
+            `an open hold on ${request.subject.kind} ${request.subject.id} with reason ${request.reason} exists already: ${ids.join(', ')}`,
+            PROBLEM_TYPES.holdExists,
+            ids,
+          );
+        }
         const scope = await this.#options.genealogy.scope(request.subject, { db: trx });
         const counts = this.#counts(scope, plantAt);
         await trx

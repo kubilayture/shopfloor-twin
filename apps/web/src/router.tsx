@@ -4,6 +4,7 @@ import { identityRoutes } from './routes/identity.ts';
 import { oeeRoutes } from './routes/oee.ts';
 import { orderRoutes } from './routes/orders.ts';
 import { plantRoutes } from './routes/plant.ts';
+import { qualityRoutes } from './routes/quality.ts';
 import { rootRoute } from './routes/root.tsx';
 import { shiftRoutes } from './routes/shifts.ts';
 import { terminalRoutes } from './routes/terminal.ts';
@@ -14,6 +15,7 @@ export type { LoginSearch } from './routes/identity.ts';
 export type { DowntimeSearch, OeeSearch } from './routes/oee.ts';
 export type { OrderListSearch } from './routes/orders.ts';
 export type { DetailSearch } from './routes/plant.ts';
+export type { HoldListSearch, HoldOpenSearch, SpcChartSearch } from './routes/quality.ts';
 export type { ShiftReportSearch } from './routes/shifts.ts';
 export type { SerialSearch, TraceSearchParams } from './routes/trace.ts';
 
@@ -29,6 +31,7 @@ const routeTree = rootRoute.addChildren([
   ...identityRoutes,
   ...terminalRoutes,
   ...traceRoutes,
+  ...qualityRoutes,
 ]);
 
 export function createAppRouter(history?: RouterHistory) {

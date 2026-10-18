@@ -83,7 +83,7 @@ const listQuery = z
 
 const problemOf = (error: unknown): unknown =>
   error instanceof QualityError
-    ? new HttpProblem(STATUS[error.kind], error.message, error.type)
+    ? new HttpProblem(STATUS[error.kind], error.message, error.type, error.holds)
     : error;
 
 const subjectDto = (s: HoldRecord['subject']): HoldSubjectDto => ({ kind: s.kind, id: s.id });
@@ -302,7 +302,7 @@ export function holdRoutes(
       access: 'quality:hold',
       summary: 'Opens a quality hold on a lot, serial, carton or order',
       description:
-        'The scope is derived through the genealogy and grows with facts (a unit that consumes a held lot later, or whose fact arrives late, joins it). 404 for a subject the MES doesn’t know (a lot not imported from the ERP, a serial or carton genealogy hasn’t seen, an unknown order); 422 for a reason not listed in quality.yaml for an opening. Serializes with order closes on one advisory lock; notifies the ERP (`{holdId}~opened~1`) in the same transaction; audited `hold.open`. ' +
+        'The scope is derived through the genealogy and grows with facts (a unit that consumes a held lot later, or whose fact arrives late, joins it). 404 for a subject the MES doesn’t know (a lot not imported from the ERP, a serial or carton genealogy hasn’t seen, an unknown order); 422 for a reason not listed in quality.yaml for an opening; 409 urn:shopfloor:hold-exists (with `holds`) while an open hold on the same subject with the same reason exists. Serializes with order closes on one advisory lock; notifies the ERP (`{holdId}~opened~1`) in the same transaction; audited `hold.open`. ' +
         GUARDS,
       tags: ['quality'],
       params: z.strictObject({}),

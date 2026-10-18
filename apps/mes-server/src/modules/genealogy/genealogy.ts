@@ -219,6 +219,24 @@ export interface LotConsumption {
 const PART_BATCH = 300;
 /** Units a forward trace or a carton answers at most. */
 export const TRACE_UNIT_LIMIT = 5_000;
+
+/** A round of genealogy rebuilt units (#203). */
+export interface GenealogyChange {
+  readonly type: 'units';
+}
+
+/** A machine's last cycle that reported lots, with them (#203). */
+export interface LastLots {
+  readonly equipment: string;
+  readonly operation: string;
+  readonly epoch: number;
+  readonly partId: number;
+  readonly serial: string | null;
+  readonly pass: number;
+  readonly seq: number;
+  readonly at: Date;
+  readonly lots: readonly { readonly lot: string; readonly material: string | null }[];
+}
 const silent: GenealogyLog = {
   info: () => undefined,
   warn: () => undefined,
@@ -289,6 +307,13 @@ export class Genealogy {
   #stopping = false;
   #kick: NodeJS.Timeout | undefined;
   #unsubscribe: (() => void) | undefined;
+  readonly #listeners = new Set<(change: GenealogyChange) => void>();
+  /**
+   * Per machine, its newest cycle with lots (#203 review): loaded once at start, then kept as
+   * units are stored, so the terminal never reads a machine's history. Machines that never
+   * reported a lot have no entry.
+   */
+  readonly #lastLots = new Map<string, LastLots>();
 
   constructor(options: GenealogyOptions) {
     this.#options = options;
@@ -318,6 +343,7 @@ export class Genealogy {
    */
   async start(): Promise<void> {
     await this.#loadMaster();
+    await this.#loadLastLots();
     this.follow();
     this.#started = true;
     if (this.#options.erp) {
@@ -419,6 +445,7 @@ export class Genealogy {
         const cutoff = this.#placementCutoff(processed);
         for (const id of orders) await this.#placeOrder(id, processed, cutoff);
         this.#processed = processed;
+        if (dirty.length > 0) this.#emit({ type: 'units' });
       } catch (error) {
         // What this round took is put back, so a failed round (a lost connection, a deadlock)
         // loses no unit or order it heard of.
@@ -868,6 +895,120 @@ export class Genealogy {
       members.set(id, [...(members.get(id) ?? []), { epoch: row.epoch, partId: row.part_id }]);
     }
     return members;
+  }
+
+  /**
+   * Called after a round that rebuilt units (#203: the terminal's lots in use follow it). Returns
+   * the unsubscribe.
+   */
+  onChange(listener: (change: GenealogyChange) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #emit(change: GenealogyChange): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener(change);
+      } catch (error) {
+        this.#log.error({ err: error }, 'genealogy listener failed');
+      }
+    }
+  }
+
+  /**
+   * Per machine, its last cycle that consumed lots (newest epoch, then device sequence), as
+   * genealogy has stored it (#203: the terminal's "lots in use"; a round behind the facts), from
+   * memory. Machines that never reported a lot are left out.
+   */
+  lastLots(equipment: readonly string[]): Promise<LastLots[]> {
+    return Promise.resolve(
+      equipment.flatMap((machine) => {
+        const found = this.#lastLots.get(machine);
+        return found ? [found] : [];
+      }),
+    );
+  }
+
+  /** Each machine's newest cycle with lots from the tables (the link index backwards). */
+  async #loadLastLots(): Promise<void> {
+    for (const machine of this.#machines) {
+      const newest = await this.#readDb
+        .selectFrom('genealogy.genealogy_link')
+        .select(['epoch', 'seq', 'part_id'])
+        .where('kind', '=', 'lot-unit')
+        .where('equipment', '=', machine)
+        .orderBy('epoch', 'desc')
+        .orderBy('seq', 'desc')
+        .limit(1)
+        .executeTakeFirst();
+      if (!newest) continue;
+      const seq = newest.seq;
+      if (seq === null) continue;
+      const [links, record, unit] = await Promise.all([
+        this.#readDb
+          .selectFrom('genealogy.genealogy_link')
+          .select(['lot', 'material'])
+          .where('kind', '=', 'lot-unit')
+          .where('equipment', '=', machine)
+          .where('epoch', '=', newest.epoch)
+          .where('seq', '=', seq)
+          .orderBy('position')
+          .execute(),
+        this.#readDb
+          .selectFrom('genealogy.unit_record')
+          .select(['operation', 'pass', 'completed_at'])
+          .where('equipment', '=', machine)
+          .where('epoch', '=', newest.epoch)
+          .where('seq', '=', seq)
+          .executeTakeFirst(),
+        this.#readDb
+          .selectFrom('genealogy.serial_unit')
+          .select(['serial'])
+          .where('epoch', '=', newest.epoch)
+          .where('part_id', '=', newest.part_id)
+          .executeTakeFirst(),
+      ]);
+      if (!record) continue;
+      this.#lastLots.set(machine, {
+        equipment: machine,
+        operation: record.operation,
+        epoch: newest.epoch,
+        partId: newest.part_id,
+        serial: unit?.serial ?? null,
+        pass: record.pass,
+        seq,
+        at: record.completed_at,
+        lots: links.flatMap((l) => (l.lot === null ? [] : [{ lot: l.lot, material: l.material }])),
+      });
+    }
+  }
+
+  /** Stored units' cycles with lots move each machine's newest one forward (after the commit). */
+  #noteLots(
+    epoch: number,
+    built: readonly { unit: UnitRecord; records: readonly TracedRecord[] }[],
+  ): void {
+    for (const { unit, records } of built) {
+      for (const r of records) {
+        if (r.lots === null || r.lots.length === 0) continue;
+        const known = this.#lastLots.get(r.equipment);
+        if (known && (known.epoch > epoch || (known.epoch === epoch && known.seq > r.seq))) {
+          continue;
+        }
+        this.#lastLots.set(r.equipment, {
+          equipment: r.equipment,
+          operation: r.operation,
+          epoch,
+          partId: unit.partId,
+          serial: unit.serial,
+          pass: r.pass,
+          seq: r.seq,
+          at: r.at,
+          lots: r.lots.map((l) => ({ lot: l.lot, material: l.material })),
+        });
+      }
+    }
   }
 
   /** The lots imported from the ERP, by id. */
@@ -1394,6 +1535,7 @@ export class Genealogy {
         }
       }
     });
+    this.#noteLots(epoch, built);
     for (const type of raised) this.#incidents?.inc({ type });
     for (const { unit, records } of built) {
       const key = `${String(epoch)}/${String(unit.partId)}`;

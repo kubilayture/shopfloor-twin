@@ -196,6 +196,57 @@ export function getJson<S extends z.ZodType>(
   });
 }
 
+/** A tagged read's answer: the body with its `ETag`, or `notModified` when the tag still holds. */
+export type TaggedAnswer<T> =
+  | { readonly notModified: true }
+  | { readonly notModified: false; readonly data: T; readonly etag: string | null };
+
+/**
+ * GET with `If-None-Match` (#203, the SPC chart's ETag, ADR-0032): a 304 answers `notModified`
+ * (the caller keeps what it has), any other answer is handled as by `getJson`.
+ */
+export async function getJsonTagged<S extends z.ZodType>(
+  path: string,
+  schema: S,
+  etag: string | undefined,
+  signal?: AbortSignal,
+): Promise<TaggedAnswer<z.output<S>>> {
+  let response: Response;
+  const sentAt = Date.now();
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      cache: 'no-store',
+      headers: { accept: 'application/json', ...(etag ? { 'if-none-match': etag } : {}) },
+      ...(signal ? { signal } : {}),
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    throw new ApiError('The MES cannot be reached', 0);
+  }
+  noteServerDate(response, sentAt);
+  if (response.status === 304) return { notModified: true };
+  if (!response.ok) {
+    const problem = await problemOf(response);
+    throw new ApiError(
+      problem ? `${problem.title}: ${problem.detail}` : `HTTP ${String(response.status)}`,
+      response.status,
+      problem,
+      retryAfterOf(response),
+    );
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new ApiError('The MES sent an answer that is not JSON', response.status);
+  }
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    throw new ApiError(`Unexpected answer from ${path}: ${parsed.error.message}`, response.status);
+  }
+  return { notModified: false, data: parsed.data, etag: response.headers.get('etag') };
+}
+
 /**
  * A write (ADR-0023): a JSON body to a relative URL, so it goes same-origin through the proxy and
  * the browser sends the page's `Origin`. Never a form or `text/plain` body (the MES answers 415).

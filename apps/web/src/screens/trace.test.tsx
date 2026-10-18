@@ -193,6 +193,10 @@ describe('serial page (backward trace)', () => {
       `/quality/holds/${HOLD_ID}`,
     );
     expect(screen.getByTestId('holds-screen-link').getAttribute('href')).toBe('/quality/holds');
+    // A quality user may hold this serial: a link to #203's form, prefilled.
+    expect(screen.getByTestId('trace-hold-open').getAttribute('href')).toBe(
+      '/quality/holds/new?kind=serial&id=VB-100-000042',
+    );
     // Holds are opened and decided on #203's screen, never here.
     expect(screen.queryAllByRole('button')).toHaveLength(1); // the header's Log out
     expect(screen.getByTestId('trace-unit').dataset.carton).toBe('');
@@ -447,6 +451,8 @@ describe('lot page (forward trace)', () => {
     expect(page.dataset).toMatchObject({ consumed: '2', truncated: 'true', held: 'true' });
     expect(subscribed(app)).toEqual(expect.arrayContaining(['quality', 'orders']));
     expect(screen.getByTestId('lot-held')).toBeTruthy();
+    // An operator may not hold: no link to the form.
+    expect(screen.queryByTestId('trace-hold-open')).toBeNull();
     expect(screen.getByTestId('lot-truncated')).toBeTruthy();
     expect(screen.getByTestId('trace-finality').dataset.notFinal).toBe('ASM-01');
     expect(screen.getByTestId('lot-master').dataset).toMatchObject({
@@ -544,6 +550,10 @@ describe('carton page', () => {
     expect(screen.getByTestId('carton-unit-3-42').dataset.serial).toBe('VB-100-000042');
     expect(screen.getByTestId('carton-lots').dataset.count).toBe('2');
     expect(screen.getByTestId(`hold-${HOLD_ID}`).dataset.subjectKind).toBe('serial');
+    // A supervisor may hold the carton.
+    expect(screen.getByTestId('trace-hold-open').getAttribute('href')).toBe(
+      '/quality/holds/new?kind=carton&id=PO-1001-C01',
+    );
     expect(subscribed(app)).toEqual(expect.arrayContaining(['quality', 'orders']));
   });
 

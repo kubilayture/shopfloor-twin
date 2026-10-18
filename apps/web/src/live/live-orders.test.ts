@@ -96,10 +96,12 @@ describe('live orders', () => {
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const keys = () => invalidate.mock.calls.map(([filters]) => filters?.queryKey);
     applyMessage(client, { type: 'subscribed', topic: 'quality', metric: null });
-    expect(keys()).toEqual([['trace']]);
+    // The trace pages and (#203) every quality read.
+    expect(keys()).toEqual([['trace'], ['quality']]);
     invalidate.mockClear();
+    // A hold push reads the hold's detail (#203) and the trace pages again.
     applyMessage(client, { type: 'quality-hold', event: 'scope', hold: hold() });
-    expect(keys()).toEqual([['quality'], ['trace']]);
+    expect(keys()).toEqual([['quality', 'hold', hold().id], ['trace']]);
   });
 
   it('forgets every pushed order and command on reset', () => {

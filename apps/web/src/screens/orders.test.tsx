@@ -13,6 +13,7 @@ import {
   result,
 } from '../test/order-fixtures.ts';
 import { orderMes, orderState, type Write } from '../test/order-mes.ts';
+import { HOLD_ID, HOLD_ID_2, hold } from '../test/quality-fixtures.ts';
 import { renderApp, settle } from '../test/render-app.tsx';
 
 afterEach(() => {
@@ -418,6 +419,66 @@ describe('order detail', () => {
     expect(screen.getByTestId('action-problem-type').textContent).toContain(
       'urn:shopfloor:sign-off-missing',
     );
+  });
+
+  it('on a close refused for a quality hold links the holds; genealogy-pending says to retry (#203)', async () => {
+    const base = order('PO-1001', { status: 'completed', version: 9 });
+    const onOrder = hold({ subject: { kind: 'order', id: 'PO-1001' } });
+    const state = orderState([base], { holds: [onOrder] });
+    let answer = 'hold';
+    const write: Write = (_method, path) => {
+      if (answer === 'hold') {
+        answer = 'pending';
+        // The ids come from `holds` (the detail names only one, as an older MES's would differ).
+        return new Response(
+          JSON.stringify({
+            type: PROBLEM_TYPES.qualityHold,
+            title: 'Conflict',
+            status: 409,
+            detail: `order PO-1001 has units in open quality holds: ${HOLD_ID}`,
+            instance: path,
+            holds: [HOLD_ID, HOLD_ID_2],
+          }),
+          { status: 409, headers: { 'content-type': 'application/problem+json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          type: PROBLEM_TYPES.genealogyPending,
+          title: 'Conflict',
+          status: 409,
+          detail: 'order PO-1001: genealogy has not processed every fact of its units yet',
+          instance: path,
+        }),
+        {
+          status: 409,
+          headers: { 'content-type': 'application/problem+json', 'retry-after': '2' },
+        },
+      );
+    };
+    vi.stubGlobal('fetch', orderMes(state, write).fetch);
+    const app = await renderApp('/orders/PO-1001');
+    await app.open();
+    // The holds on the order itself, and a way to open one.
+    expect(await screen.findByTestId(`hold-row-${HOLD_ID}`)).toBeTruthy();
+    expect(screen.getByTestId('order-hold-open').getAttribute('href')).toBe(
+      '/quality/holds/new?kind=order&id=PO-1001',
+    );
+    expect(app.factory.last.sent).toContainEqual({ type: 'subscribe', topic: 'quality' });
+    fireEvent.click(screen.getByTestId('action-close'));
+    fireEvent.click(screen.getByTestId('action-submit'));
+    const message = await screen.findByTestId('action-message');
+    expect(message.dataset.kind).toBe('quality-hold');
+    expect(screen.getByTestId(`action-hold-${HOLD_ID}`).getAttribute('href')).toBe(
+      `/quality/holds/${HOLD_ID}`,
+    );
+    expect(screen.getByTestId(`action-hold-${HOLD_ID_2}`)).toBeTruthy();
+    // Sent again: genealogy is behind, retryable.
+    fireEvent.click(screen.getByTestId('action-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('action-message').dataset.kind).toBe('genealogy-pending');
+    });
+    expect(screen.getByTestId('action-message').textContent).toContain('Try again in 2 s');
   });
 
   it('starts another order with no open action (panels keyed by id)', async () => {

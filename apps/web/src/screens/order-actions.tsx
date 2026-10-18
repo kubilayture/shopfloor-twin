@@ -7,6 +7,7 @@ import {
 } from '@shopfloor/contracts/mes-api';
 import type { Permission } from '@shopfloor/contracts/identity';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
 import { useEffect, useId, useRef, useState } from 'react';
 import { writeOrder, type OrderActionBody } from '../api/orders.ts';
 import { useAuth, useUnsavedDraft } from '../auth/auth.tsx';
@@ -108,6 +109,22 @@ function FailureText({ failure }: { readonly failure: OrderFailure }) {
       className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
     >
       <p>{failure.text}</p>
+      {failure.holds && failure.holds.length > 0 ? (
+        <ul className="mt-1 list-disc pl-5" data-testid="action-holds">
+          {failure.holds.map((id) => (
+            <li key={id}>
+              <Link
+                to="/quality/holds/$id"
+                params={{ id }}
+                data-testid={`action-hold-${id}`}
+                className="text-sky-800 underline"
+              >
+                Hold {id}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {failure.type ? (
         <p className="mt-1 font-mono text-xs" data-testid="action-problem-type">
           Problem type: {failure.type}

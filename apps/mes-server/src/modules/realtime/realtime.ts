@@ -46,6 +46,7 @@ import type { EquipmentInfo, MasterData } from '../master-data/index.ts';
 import type { Execution } from '../execution/index.ts';
 import type { Orders } from '../orders/index.ts';
 import type { Holds, Quality } from '../quality/index.ts';
+import type { Genealogy } from '../genealogy/index.ts';
 import { pareto, type DowntimeFeed, type Oee, type OeeScope } from '../oee/index.ts';
 import { ShiftError, type ShiftRecord, type Shifts } from '../shifts/index.ts';
 import {
@@ -248,11 +249,11 @@ export interface ApiSources {
   /** Units, an order's execution and scrap records (#175); the execution routes answer 503 without it. */
   readonly execution?: ExecutionApi & Partial<Pick<Execution, 'onChange'>>;
   /** Lots, serials, cartons and the trace queries (#199); the trace routes answer 503 without it. */
-  readonly genealogy?: GenealogyApi;
+  readonly genealogy?: GenealogyApi & Partial<Pick<Genealogy, 'lastLots' | 'onChange'>>;
   /** SPC characteristics, charts and signals (#200); the quality routes answer 503 without it. */
-  readonly quality?: QualityApi & Partial<Pick<Quality, 'onChange'>>;
+  readonly quality?: QualityApi & Partial<Pick<Quality, 'onChange' | 'machines'>>;
   /** Quality holds (#201); the hold routes answer 503 without them, the traces name no hold. */
-  readonly holds?: HoldsApi & Partial<Pick<Holds, 'onChange'>>;
+  readonly holds?: HoldsApi & Partial<Pick<Holds, 'onChange' | 'openOnOrders' | 'openLotHolds'>>;
 }
 
 export interface RealtimeOptions {
@@ -913,6 +914,7 @@ export async function registerRealtime(
               detail,
               request.url,
               !busy && error instanceof HttpProblem ? error.type : undefined,
+              !busy && error instanceof HttpProblem ? error.holds : undefined,
             ),
           );
       });
@@ -2511,7 +2513,7 @@ export async function registerRealtime(
 
   /** What the terminal needs, once the orders and shifts modules are attached with it (#177). */
   function terminalSources(found: Attached): TerminalApi | undefined {
-    const { orders, shifts, execution, equipment } = found.sources;
+    const { orders, shifts, execution, equipment, quality, holds, genealogy } = found.sources;
     if (
       !orders?.operations ||
       !orders.commands ||
@@ -2533,6 +2535,26 @@ export async function registerRealtime(
       orders: orders as TerminalApi['orders'],
       shifts: shifts as TerminalApi['shifts'],
       ...(execution ? { execution: executionMemo(execution) } : {}),
+      // What quality says about the work center (#203): read-only banners.
+      ...(quality?.machines
+        ? {
+            quality: {
+              machines: quality.machines.bind(quality),
+              signals: quality.signals.bind(quality),
+            },
+          }
+        : {}),
+      ...(holds?.openOnOrders && holds.openLotHolds
+        ? {
+            holds: {
+              openOnOrders: holds.openOnOrders.bind(holds),
+              openLotHolds: holds.openLotHolds.bind(holds),
+            },
+          }
+        : {}),
+      ...(genealogy?.lastLots
+        ? { genealogy: { lastLots: genealogy.lastLots.bind(genealogy) } }
+        : {}),
       catalog: found.catalog,
     };
   }
@@ -2569,6 +2591,9 @@ export async function registerRealtime(
           : {}),
         ...(sources.holds?.onChange
           ? { holds: { onChange: sources.holds.onChange.bind(sources.holds) } }
+          : {}),
+        ...(sources.genealogy?.onChange
+          ? { genealogy: { onChange: sources.genealogy.onChange.bind(sources.genealogy) } }
           : {}),
         ...(sources.execution?.onChange
           ? { execution: { onChange: sources.execution.onChange.bind(sources.execution) } }

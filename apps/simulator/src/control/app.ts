@@ -553,7 +553,9 @@ export const toolBreakageSchema = z.object({
   kind: z.literal('tool-breakage'),
   machine: z.string(),
   at: isoSchema,
-  status: actionStatusSchema,
+  status: z
+    .enum(['scheduled', 'applied', 'ignored'])
+    .describe('ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept'),
   appliedAt: isoSchema.optional(),
   cycles: count.optional().describe("The tool's cycle count when it broke"),
 });

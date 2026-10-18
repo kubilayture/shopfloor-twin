@@ -4992,9 +4992,10 @@
                               "type": "string",
                               "enum": [
                                 "scheduled",
-                                "applied"
+                                "applied",
+                                "ignored"
                               ],
-                              "description": "scheduled until `at`, applied once it took effect"
+                              "description": "ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept"
                             },
                             "appliedAt": {
                               "type": "string",
@@ -5268,9 +5269,10 @@
                               "type": "string",
                               "enum": [
                                 "scheduled",
-                                "applied"
+                                "applied",
+                                "ignored"
                               ],
-                              "description": "scheduled until `at`, applied once it took effect"
+                              "description": "ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept"
                             },
                             "appliedAt": {
                               "type": "string",
@@ -5687,9 +5689,10 @@
                               "type": "string",
                               "enum": [
                                 "scheduled",
-                                "applied"
+                                "applied",
+                                "ignored"
                               ],
-                              "description": "scheduled until `at`, applied once it took effect"
+                              "description": "ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept"
                             },
                             "appliedAt": {
                               "type": "string",
@@ -5963,9 +5966,10 @@
                               "type": "string",
                               "enum": [
                                 "scheduled",
-                                "applied"
+                                "applied",
+                                "ignored"
                               ],
-                              "description": "scheduled until `at`, applied once it took effect"
+                              "description": "ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept"
                             },
                             "appliedAt": {
                               "type": "string",
@@ -6213,9 +6217,10 @@
                                 "type": "string",
                                 "enum": [
                                   "scheduled",
-                                  "applied"
+                                  "applied",
+                                  "ignored"
                                 ],
-                                "description": "scheduled until `at`, applied once it took effect"
+                                "description": "ignored: it fell inside a TOOL-CHANGE setup, so the new tool was kept"
                               },
                               "appliedAt": {
                                 "type": "string",

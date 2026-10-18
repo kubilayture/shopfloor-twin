@@ -203,6 +203,39 @@ describe('lot block and release (#234)', () => {
     expect(plain.events.some((e) => e.type === 'lot')).toBe(false);
   });
 
+  it('records a block of a blocked lot and a release of a free lot, changing nothing', () => {
+    const config = structuredClone(defaults);
+    const t = START + 1 * HOUR + 7 * MINUTE;
+    const end = START + 3 * HOUR;
+    const blockedOnce = simulate(config, [{ kind: 'lot-block', lot: 'SK1-2610-01', at: t }], end);
+    const blockedTwice = simulate(
+      config,
+      [
+        { kind: 'lot-block', lot: 'SK1-2610-01', at: t },
+        { kind: 'lot-block', lot: 'SK1-2610-01', at: t + MINUTE },
+        { kind: 'lot-release', lot: 'SK2-2610-01', at: t + 2 * MINUTE },
+      ],
+      end,
+    );
+    // Accepted, applied and written, but no other event differs.
+    expect(blockedTwice.results.map((r) => r.ok)).toEqual([true, true, true]);
+    expect(blockedTwice.line.actions().map((a) => a.status)).toEqual([
+      'applied',
+      'applied',
+      'applied',
+    ]);
+    const lots = blockedTwice.events.filter((e) => e.type === 'lot');
+    expect(lots.map((e) => [e.at, e.lotId, e.transition, e.action])).toEqual([
+      [t, 'SK1-2610-01', 'blocked', 1],
+      [t + MINUTE, 'SK1-2610-01', 'blocked', 2],
+      [t + 2 * MINUTE, 'SK2-2610-01', 'released', 3],
+    ]);
+    const others = (events: readonly PlantEvent[]) => events.filter((e) => e.type !== 'lot');
+    expect(others(blockedTwice.events)).toEqual(others(blockedOnce.events));
+    expect(blockedTwice.line.lots().find((l) => l.id === 'SK1-2610-01')?.blocked).toBe(true);
+    expect(blockedTwice.line.lots().find((l) => l.id === 'SK2-2610-01')?.blocked).toBe(false);
+  });
+
   it('lists the lots with what is left and whether they are blocked', () => {
     const config = structuredClone(defaults);
     const run = simulate(
@@ -513,6 +546,53 @@ describe('tool breakage (#234)', () => {
       to: 'Setup',
       cause: 'TOOL-CHANGE',
     });
+  });
+
+  it('ignores a breakage inside a TOOL-CHANGE setup: the new tool is kept, no second change', () => {
+    const config = structuredClone(defaults);
+    config.process.tool.lifeCycles = 10;
+    const end = START + 4 * HOUR;
+    const plain = simulate(config, [], end);
+    const change = states(plain.events, 'cnc-01').find(
+      (e) => e.to === 'Setup' && e.cause === 'TOOL-CHANGE',
+    );
+    expect(change).toBeDefined();
+    const at = (change?.at ?? 0) + 3 * MINUTE + 17;
+    const run = simulate(config, [{ kind: 'tool-breakage', machine: 'cnc-01', at }], end);
+    // Every event as in the plain run, plus the recorded no-op.
+    expect(run.events.filter((e) => e.type !== 'tool-breakage')).toEqual(plain.events);
+    expect(run.events.filter((e) => e.type === 'tool-breakage')).toEqual([
+      {
+        type: 'tool-breakage',
+        at,
+        machineId: 'cnc-01',
+        action: 1,
+        cycles: 0,
+        ignored: 'tool-change-in-progress',
+      },
+    ]);
+    expect(run.line.actions()).toMatchObject([{ status: 'ignored', appliedAt: at, cycles: 0 }]);
+    // Right after the setup ends the breakage counts again.
+    const after = (change?.at ?? 0) + 8 * MINUTE + 1;
+    const late = simulate(config, [{ kind: 'tool-breakage', machine: 'cnc-01', at: after }], end);
+    expect(late.line.actions()).toMatchObject([{ status: 'applied' }]);
+  });
+
+  it('refuses a first-operation machine without a tool instead of failing at the event', () => {
+    const config = structuredClone(defaults);
+    // A CNC the schedule doesn't list gets no tool in schedule mode.
+    config.schedule.machines = Object.fromEntries(
+      Object.entries(config.schedule.machines).filter(([id]) => id !== 'cnc-02'),
+    );
+    const end = START + 2 * HOUR;
+    const run = simulate(
+      config,
+      [{ kind: 'tool-breakage', machine: 'cnc-02', at: START + HOUR }],
+      end,
+    );
+    expect(run.results).toEqual([{ ok: false, code: 'not-a-cnc', reason: 'cnc-02 has no tool' }]);
+    expect(run.simulation.now).toBeGreaterThan(START + HOUR);
+    expect(run.line.actions()).toEqual([]);
   });
 
   it('refuses a machine without a tool, an unknown machine, the past and a boundary', () => {

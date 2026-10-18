@@ -201,6 +201,11 @@ export type PlantEvent =
       readonly machineId: string;
       readonly action: number;
       readonly cycles: number;
+      /**
+       * Set when the breakage fell inside the machine's own `TOOL-CHANGE` setup: the tool being
+       * fitted has not cut yet, so nothing changes (no second change).
+       */
+      readonly ignored?: 'tool-change-in-progress';
     };
 
 export interface Measurement {
@@ -402,8 +407,11 @@ interface Drift {
   endedBy: DriftEnd | undefined;
 }
 
-/** A scheduled console action's progress (#234): `scheduled` until its time, then `applied`. */
-export type ActionStatus = 'scheduled' | 'applied';
+/**
+ * A scheduled console action's progress (#234): `scheduled` until its time, then `applied`, or
+ * `ignored` for a tool breakage that fell inside a `TOOL-CHANGE` setup.
+ */
+export type ActionStatus = 'scheduled' | 'applied' | 'ignored';
 
 /** A lot block or release (#234, ADR-0037) and what became of it. */
 export interface LotAction {
@@ -609,6 +617,8 @@ interface Station {
   repairMs: number | undefined;
   /** Injections waiting for the machine to enter Running, in order (#140). */
   readonly held: Injection[];
+  /** In a `TOOL-CHANGE` setup (#234): a tool breakage then changes nothing. */
+  changingTool: boolean;
 }
 
 export interface LineOptions {
@@ -746,6 +756,7 @@ export class ProductionLine {
         failure: undefined,
         repairMs: undefined,
         held: [],
+        changingTool: false,
       };
     });
   }
@@ -803,6 +814,7 @@ export class ProductionLine {
         break;
       case 'setup-end':
         station.busy = false;
+        station.changingTool = false;
         if (this.#canWork(station)) {
           this.#tryStart(station, simulation);
         } else {
@@ -1395,6 +1407,7 @@ export class ProductionLine {
     }
     if (station.tool?.needsChange) {
       station.tool.change();
+      station.changingTool = true;
       this.#occupy(
         station,
         'Setup',
@@ -1834,6 +1847,14 @@ export class ProductionLine {
     if (issue) {
       return { ok: false, code: issue.code, reason: issue.message };
     }
+    // A first-operation machine without a tool (a CNC the schedule doesn't list) has nothing to
+    // break: refused here, never at the event, which would abort the run.
+    if (
+      request.kind === 'tool-breakage' &&
+      !this.stations.find((s) => s.id === request.machine)?.tool
+    ) {
+      return { ok: false, code: 'not-a-cnc', reason: `${request.machine} has no tool` };
+    }
     if (at < simulation.now) {
       return {
         ok: false,
@@ -1966,16 +1987,19 @@ export class ProductionLine {
    * A tool breakage (#234, ADR-0037): the wear goes to end of life and nothing else happens now.
    * A cycle in progress completes normally and draws its defect at wear 1.0; `needsChange` then
    * makes the next `#tryStart` change the tool (`Setup TOOL-CHANGE`), as at a natural end of
-   * life. No random draw is added or removed.
+   * life. No random draw is added or removed. Inside the machine's own `TOOL-CHANGE` setup the
+   * tool being fitted has not cut yet: the breakage changes nothing (no second change) and is
+   * recorded as `ignored`.
    */
   #applyToolBreak(station: Station, id: number): void {
     const action = this.#action(id);
     if (action.kind !== 'tool-breakage' || !station.tool) {
       throw new RangeError(`console action ${String(id)} is not a tool breakage on ${station.id}`);
     }
-    action.status = 'applied';
     action.appliedAt = this.#now;
-    const cycles = station.tool.break();
+    const ignored = station.changingTool;
+    action.status = ignored ? 'ignored' : 'applied';
+    const cycles = ignored ? station.tool.cycles : station.tool.break();
     action.cycles = cycles;
     this.#onEvent({
       type: 'tool-breakage',
@@ -1983,6 +2007,7 @@ export class ProductionLine {
       machineId: station.id,
       action: action.id,
       cycles,
+      ...(ignored ? { ignored: 'tool-change-in-progress' as const } : {}),
     });
   }
 

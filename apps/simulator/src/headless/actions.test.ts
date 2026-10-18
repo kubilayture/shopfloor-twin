@@ -86,6 +86,28 @@ describe('console actions in a headless run (#234)', () => {
     ).toThrow(/actions\[0\]: asm-01 has no tool/);
   });
 
+  it('refuses an action at exactly the end and a shift that starts exactly at the end', () => {
+    const run = (end: number, actions: readonly ActionSpec[]) => () =>
+      runHeadless({ config, seed: SEED, start: START, end, actions }, () => undefined);
+    // An end off every calendar boundary, so only the run's span refuses it.
+    const end = START + 5 * HOUR + 7 * MINUTE;
+    expect(run(end, [{ kind: 'lot-block', at: end, lot: 'SK1-2610-01' }])).toThrow(
+      /^actions\[0\]: 2026-10-12T08:07:00\.000Z is outside the run \[start, end\)$/,
+    );
+    expect(run(end, [{ kind: 'tool-breakage', at: end - 1, machine: 'cnc-01' }])).not.toThrow();
+    // Shift B starts at 11:00Z: a run ending then never staffs it.
+    const shiftB = Date.UTC(2026, 9, 12, 11);
+    const absent: ActionSpec = {
+      kind: 'operators-absent',
+      shift: '2026-10-12/B',
+      operators: ['op-b1'],
+    };
+    expect(run(shiftB, [absent])).toThrow(
+      /^actions\[0\]: shift 2026-10-12\/B does not start inside the run \(start, end\)$/,
+    );
+    expect(run(shiftB + 1, [absent])).not.toThrow();
+  });
+
   it('gives the event log of a live run that accepted the same actions before it started', () => {
     const { lines } = headless(ACTIONS);
     const clock = new ManualClock();

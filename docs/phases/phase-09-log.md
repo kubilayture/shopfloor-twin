@@ -77,3 +77,6 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed  | 731.6 s |                                                |
     | smoke     | passed  | 90.3 s  | web and MES on ephemeral ports 33051 and 33050 |
     | reconcile | skipped | 0 s     | not in the review's `GATE_STEPS`               |
+
+  - **Re-review** (approved): three test gaps closed on `947707e`: the sparse-cue pacer test puts its cues off whole seconds (30.5 s, 90.25 s, 150.123 s) and asserts the wall time each fires at (3,050, 4,046 and 5,044 ms), so the 1 s timer cap can't hide a horizon that ignores cues (reverting the horizon fix by hand fails it); `EventLogWriter` makes no write and no second report after a failure, however often it is fed; the 1,000-entry cap of the golden `injections` and `dispatches` lists.
+  - **Reconcile** on `947707e` (`GATE_STEPS=reconcile`, `GATE_PROJECT=gate235e`, `GATE_TAG=pr235e`, under the heavy lock; the simulator changed after the full reconcile on `35933d8`): reconcile passed in 1,679.3 s (alarms OK, orders OK, quality OK), `GATE-OK`; free at the start: host 33.7 GiB, Docker 79.4 GiB.

@@ -16,12 +16,13 @@
  * golden week, not on whatever arrived.
  */
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { loadPlantConfig } from '@shopfloor/plant-config';
 import { HOUR } from '@shopfloor/oee-core';
+import { sql } from 'kysely';
 import { describe, expect, it } from 'vitest';
 import { createDatabase } from './db/database.ts';
 import { Equipment, downtimeRules } from './modules/equipment/index.ts';
@@ -78,9 +79,7 @@ describe.skipIf(url === undefined)('trace-performance load (#204)', () => {
 
       const db = createDatabase(url ?? '', 4);
       try {
-        const user = (
-          await db.selectNoFrom((eb) => eb.fn<string>('current_user', []).as('u')).execute()
-        )[0]?.u;
+        const user = (await sql<{ u: string }>`SELECT current_user AS u`.execute(db)).rows[0]?.u;
         expect(user).toBe('mes_app');
         const masterData = new MasterData(db);
         await masterData.seed(plant);
@@ -164,9 +163,18 @@ describe.skipIf(url === undefined)('trace-performance load (#204)', () => {
           largest.units.length,
         ]);
         expect(await genealogy.incidents()).toEqual([]);
-        console.log(
-          `trace-perf load: week-01, ${String(facts.length)} facts, ${units.n} units, largest lot ${largest.lot} with ${String(largest.units.length)} units, in ${String(Math.round(performance.now() - started))} ms`,
-        );
+        // What was loaded, for the measurement's report (TRACE_PERF_LOAD_REPORT, a file the
+        // caller names): a skipped or failed load writes none.
+        const loadReport = {
+          scenario: 'week-01',
+          facts: facts.length,
+          units: Number(units.n),
+          largestLot: { lot: largest.lot, units: largest.units.length },
+          ms: Math.round(performance.now() - started),
+        };
+        console.log(`trace-perf load: ${JSON.stringify(loadReport)}`);
+        const reportPath = process.env.TRACE_PERF_LOAD_REPORT;
+        if (reportPath) await writeFile(reportPath, JSON.stringify(loadReport));
         await genealogy.stop();
         await execution.stop();
         await orders.stop();

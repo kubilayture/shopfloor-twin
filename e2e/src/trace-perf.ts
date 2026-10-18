@@ -25,7 +25,7 @@
  * stay (the caller's tag).
  */
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { lotTraceSchema, serialTraceSchema } from '@shopfloor/contracts/mes-api';
@@ -184,6 +184,8 @@ async function main(): Promise<boolean> {
     const url = `postgres://mes_app:${stack.value('DB_APP_PASSWORD')}@127.0.0.1:${dbPort}/shopfloor`;
 
     log('loading week-01 through the golden harness as mes_app');
+    const loadReport = join(RESULTS, 'load.json');
+    await rm(loadReport, { force: true });
     const loadFrom = Date.now();
     const loader = await run(
       'pnpm',
@@ -197,11 +199,14 @@ async function main(): Promise<boolean> {
         'vitest.e2e.config.ts',
         'src/trace-perf-load.e2e.test.ts',
       ],
-      { TRACE_PERF_DATABASE_URL: url },
+      { TRACE_PERF_DATABASE_URL: url, TRACE_PERF_LOAD_REPORT: loadReport },
     );
     report.loadMs = Date.now() - loadFrom;
-    // Run, not skipped: the loader's own line.
-    const loaded = /trace-perf load: (.*)/.exec(loader.stdout)?.[1];
+    // Run, not skipped: the loader's own report (a skipped or failed load writes none).
+    const loaded = await readFile(loadReport, 'utf8').then(
+      (text) => JSON.parse(text) as unknown,
+      () => undefined,
+    );
     if (loader.code !== 0 || loaded === undefined) {
       throw new Error(`the loader failed or was skipped (exit ${String(loader.code)})`);
     }

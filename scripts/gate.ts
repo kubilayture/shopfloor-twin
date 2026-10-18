@@ -9,7 +9,7 @@
  *    project with a throw-away env file made from `.env.example`, every `*_PASSWORD` and `*_TOKEN`
  *    a random value generated here (the required secrets appended when missing); the repository's
  *    own `.env` is neither read nor touched;
- * 5. `reconcile`: `pnpm test:reconcile` (both passes) with the smoke's images
+ * 5. `reconcile`: `pnpm test:reconcile` (all three passes, #204) with the smoke's images
  *    (`RECONCILE_SKIP_BUILD=1`, the same tag).
  *
  * Then it removes the project's volumes, the images it built and the env file, and prints one

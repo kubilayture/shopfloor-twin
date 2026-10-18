@@ -132,7 +132,7 @@ function HoldRow({ hold }: { readonly hold: HoldDto }) {
         ) : null}
       </td>
       <td className={cell}>
-        {hold.openedBy}, {timeOf(hold.openedAt)}
+        {hold.openedBy}, {timeOf(hold.openedPlantAt ?? hold.openedAt)}
       </td>
       <td className={cell}>{scopeText(hold.scope)}</td>
       <td className={cell}>{hold.heldMaterialConsumed}</td>
@@ -341,6 +341,12 @@ interface OpenResult {
 
 const subjectKey = (s: HoldSubjectDto): string => `${s.kind}:${s.id}`;
 
+/** A subject skipped for its open holds, until the user confirms. */
+interface Existing {
+  readonly subject: HoldSubjectDto;
+  readonly holds: readonly HoldDto[];
+}
+
 /** The subjects a signal's suggested scope offers: its orders, cartons and serials. */
 export function suggestedSubjects(suggestion: HoldSuggestionDto): HoldSubjectDto[] {
   const serials = [
@@ -448,6 +454,7 @@ export function HoldOpen() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [problems, setProblems] = useState<string[]>([]);
   const [results, setResults] = useState<OpenResult[]>([]);
+  const [existing, setExisting] = useState<Existing[]>([]);
   const sending = useRef(false);
   const kindId = useId();
   const idId = useId();
@@ -460,9 +467,29 @@ export function HoldOpen() {
   // The first listed reason until one is chosen.
   const chosenReason = reason === '' ? (openReasons[0]?.id ?? '') : reason;
   const write = useMutation({
-    mutationFn: async (subjects: readonly HoldSubjectDto[]) => {
+    mutationFn: async ({
+      subjects,
+      confirmed,
+    }: {
+      readonly subjects: readonly HoldSubjectDto[];
+      /** The user confirmed opening these although they have open holds already. */
+      readonly confirmed: boolean;
+    }) => {
       const out: OpenResult[] = [];
+      const held: Existing[] = [];
       for (const subject of subjects) {
+        if (!confirmed) {
+          // A subject with an open hold is skipped until the user says otherwise (#203 review):
+          // a resubmitted form never opens a second hold by accident.
+          const existing = await getHolds({ states: ['open'], subject }).then(
+            (found) => found.holds,
+            () => [],
+          );
+          if (existing.length > 0) {
+            held.push({ subject, holds: existing });
+            continue;
+          }
+        }
         try {
           const hold = await openHold({
             subject,
@@ -482,16 +509,21 @@ export function HoldOpen() {
           });
         }
       }
-      return out;
+      return { out, held };
     },
     onSettled: () => {
       sending.current = false;
     },
-    onSuccess: (out) => {
-      setResults(out);
+    onSuccess: ({ out, held }) => {
+      const done = new Set(out.map((r) => subjectKey(r.subject)));
+      setResults((before) => [...before.filter((r) => !done.has(subjectKey(r.subject))), ...out]);
+      setExisting(held);
+      // What opened is no longer chosen: sending the form again can't hold it twice.
+      const opened = new Set(out.flatMap((r) => (r.hold ? [subjectKey(r.subject)] : [])));
+      setSelected((before) => new Set([...before].filter((key) => !opened.has(key))));
       void queryClient.invalidateQueries({ queryKey: qualityKeys.holdsAll });
       const [only] = out;
-      if (out.length === 1 && only?.hold && fromSignal === undefined) {
+      if (out.length === 1 && held.length === 0 && only?.hold && fromSignal === undefined) {
         void navigate({ to: '/quality/holds/$id', params: { id: only.hold.id } });
       }
     },
@@ -544,8 +576,9 @@ export function HoldOpen() {
           setProblems(found);
           if (found.length > 0) return;
           setResults([]);
+          setExisting([]);
           sending.current = true;
-          write.mutate(subjects as HoldSubjectDto[]);
+          write.mutate({ subjects: subjects as HoldSubjectDto[], confirmed: false });
         }}
       >
         {fromSignal !== undefined ? (
@@ -659,6 +692,63 @@ export function HoldOpen() {
           </button>
         </div>
       </form>
+      {existing.length > 0 ? (
+        <div
+          role="alert"
+          data-testid="open-existing"
+          className="mt-3 rounded border border-amber-800 bg-amber-50 p-3 text-sm text-amber-950"
+        >
+          <p>Not opened: these subjects have open holds already.</p>
+          <ul className="mt-1 list-disc pl-5">
+            {existing.map((e) => (
+              <li
+                key={subjectKey(e.subject)}
+                data-testid={`open-existing-${e.subject.kind}-${e.subject.id}`}
+              >
+                {subjectText(e.subject)}:{' '}
+                {e.holds.map((h, i) => (
+                  <span key={h.id}>
+                    {i > 0 ? ', ' : ''}
+                    <Link
+                      to="/quality/holds/$id"
+                      params={{ id: h.id }}
+                      className="text-sky-800 underline"
+                    >
+                      {h.reason}
+                    </Link>
+                  </span>
+                ))}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              data-testid="open-confirm"
+              className={buttonClass}
+              disabled={write.isPending}
+              onClick={() => {
+                if (sending.current) return;
+                sending.current = true;
+                write.mutate({ subjects: existing.map((e) => e.subject), confirmed: true });
+              }}
+            >
+              Open another hold on {existing.length === 1 ? 'it' : 'them'} anyway
+            </button>
+            <button
+              type="button"
+              data-testid="open-skip"
+              className={buttonClass}
+              onClick={() => {
+                setExisting([]);
+              }}
+            >
+              Leave {existing.length === 1 ? 'it' : 'them'} as{' '}
+              {existing.length === 1 ? 'it is' : 'they are'}
+            </button>
+          </div>
+        </div>
+      ) : null}
       {results.length > 0 ? (
         <ul className="mt-3 flex flex-col gap-2" data-testid="open-results">
           {results.map((r) => (
@@ -1057,7 +1147,19 @@ function Scope({ detail }: { readonly detail: HoldDetailDto }) {
                 <td className={cell}>
                   {u.epoch} / {u.partId}
                 </td>
-                <td className={cell}>{u.orderId ?? '–'}</td>
+                <td className={cell}>
+                  {u.orderId ? (
+                    <Link
+                      to="/orders/$id"
+                      params={{ id: u.orderId }}
+                      className="text-sky-800 underline"
+                    >
+                      {u.orderId}
+                    </Link>
+                  ) : (
+                    '–'
+                  )}
+                </td>
                 <td className={cell}>{u.carton ?? '–'}</td>
                 <td className={cell}>{timeOf(u.joinedAt)}</td>
               </tr>

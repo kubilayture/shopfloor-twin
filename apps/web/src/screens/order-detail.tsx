@@ -724,7 +724,6 @@ function History({ detail }: { readonly detail: OrderDetailDto }) {
   );
 }
 
-/** One order (#176): what it is, its actions, operations, commands, incidents and confirmations. */
 /**
  * The holds on this order as a subject (#203), live, and the way to open one. Holds on a lot,
  * serial or carton that cover units of the order are named when a close is refused for them.
@@ -774,6 +773,7 @@ function OrderHolds({ id }: { readonly id: string }) {
   );
 }
 
+/** One order (#176): what it is, its actions, operations, commands, incidents and confirmations. */
 function OrderDetail({ id }: { readonly id: string }) {
   const heading = useHeadingFocus<HTMLHeadingElement>();
   const queryClient = useQueryClient();

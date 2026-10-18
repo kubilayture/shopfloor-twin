@@ -378,8 +378,8 @@ describe('the operator terminal (#177)', () => {
             pass: 1,
             at: at(105),
             lots: [
-              { lot: 'K1', material: 'SK-1' },
-              { lot: 'P1', material: 'SP-100' },
+              { lot: 'K1', material: 'SK-1', held: true },
+              { lot: 'P1', material: 'SP-100', held: false },
             ],
           },
         ],

@@ -429,12 +429,17 @@ describe('order detail', () => {
     const write: Write = (_method, path) => {
       if (answer === 'hold') {
         answer = 'pending';
-        return problem(
-          409,
-          'Conflict',
-          `order PO-1001 has units in open quality holds: ${HOLD_ID}, ${HOLD_ID_2}`,
-          path,
-          PROBLEM_TYPES.qualityHold,
+        // The ids come from `holds` (the detail names only one, as an older MES's would differ).
+        return new Response(
+          JSON.stringify({
+            type: PROBLEM_TYPES.qualityHold,
+            title: 'Conflict',
+            status: 409,
+            detail: `order PO-1001 has units in open quality holds: ${HOLD_ID}`,
+            instance: path,
+            holds: [HOLD_ID, HOLD_ID_2],
+          }),
+          { status: 409, headers: { 'content-type': 'application/problem+json' } },
         );
       }
       return new Response(

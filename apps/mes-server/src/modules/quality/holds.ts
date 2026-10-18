@@ -762,6 +762,23 @@ export class Holds {
   }
 
   /**
+   * Of these lots, those an open hold is on as its subject (#203 review: the terminal marks a lot in
+   * use as held from the holds themselves, not from the scope copy).
+   */
+  async openLotHolds(lots: readonly string[]): Promise<Set<string>> {
+    if (lots.length === 0) return new Set();
+    const rows = await this.#readDb
+      .selectFrom('quality.hold')
+      .select('subject_id')
+      .distinct()
+      .where('state', '=', 'open')
+      .where('subject_kind', '=', 'lot')
+      .where('subject_id', 'in', [...new Set(lots)])
+      .execute();
+    return new Set(rows.map((r) => r.subject_id));
+  }
+
+  /**
    * The units tested since the last in-control point before a signal episode, with their orders
    * and cartons: the scope a quality user may hold (plan "Signals and people"); never a hold by
    * itself. Undefined for an unknown or withdrawn signal.
@@ -818,6 +835,26 @@ export class Holds {
         // First, before anything else (review round 2, MEDIUM D): a close holding it has its
         // guard's answer and commits before this hold exists, or waits for this one.
         await lockHolds(trx);
+        // One open hold per subject and reason (#203 review): under the lock, so two openings at
+        // once can't both pass. Another reason on the same subject is a separate hold.
+        const existing = await trx
+          .selectFrom('quality.hold')
+          .select('id')
+          .where('state', '=', 'open')
+          .where('subject_kind', '=', request.subject.kind)
+          .where('subject_id', '=', request.subject.id)
+          .where('reason', '=', request.reason)
+          .orderBy('opened_at')
+          .execute();
+        if (existing.length > 0) {
+          const ids = existing.map((row) => row.id);
+          throw new QualityError(
+            'conflict',
+            `an open hold on ${request.subject.kind} ${request.subject.id} with reason ${request.reason} exists already: ${ids.join(', ')}`,
+            PROBLEM_TYPES.holdExists,
+            ids,
+          );
+        }
         const scope = await this.#options.genealogy.scope(request.subject, { db: trx });
         const counts = this.#counts(scope, plantAt);
         await trx

@@ -17,6 +17,7 @@ import {
 } from '@shopfloor/contracts/erp-api';
 import {
   PROBLEM_TYPES,
+  problemSchema,
   cartonTraceSchema,
   holdDetailSchema,
   holdListSchema,
@@ -268,6 +269,8 @@ interface Harness {
   readonly sup: { by: typeof SAM; requestId: string };
   /** Pauses the next opening's transaction before its COMMIT until the returned release. */
   pauseOpening(): { reached: Promise<number>; release: () => void };
+  /** Another genealogy module on the same tables and sources, started (a restart). */
+  restartGenealogy(): Promise<Genealogy>;
 }
 
 async function harness(
@@ -337,17 +340,19 @@ async function harness(
     clock,
     tickMs: 0,
   });
-  const genealogy = new Genealogy({
-    db,
-    ingest,
-    execution: options.wrapExecution ? options.wrapExecution(execution) : execution,
-    orders,
-    masterData,
-    erp,
-    packing: { operation: 'OP50', capacity: { ...plant.packing.capacity } },
-    tickMs: 0,
-    lotPollMs: 0,
-  });
+  const newGenealogy = () =>
+    new Genealogy({
+      db,
+      ingest,
+      execution,
+      orders,
+      masterData,
+      erp,
+      packing: { operation: 'OP50', capacity: { ...plant.packing.capacity } },
+      tickMs: 0,
+      lotPollMs: 0,
+    });
+  const genealogy = newGenealogy();
   genealogy.follow();
   await execution.start();
   cleanups.push(() => execution.stop());
@@ -389,6 +394,12 @@ async function harness(
     identity,
     qa: { by: { userId: quinn.id, username: 'quinn', roles: ['quality'] }, requestId: 'req-q' },
     sup: { by: { ...SAM, userId: sam.id }, requestId: 'req-s' },
+    restartGenealogy: async () => {
+      const again = newGenealogy();
+      await again.start();
+      cleanups.push(() => again.stop());
+      return again;
+    },
     pauseOpening: () => {
       let release: () => void = () => undefined;
       let reached: (pid: number) => void = () => undefined;
@@ -825,6 +836,13 @@ describe('the close guard (#201, review rounds 1–3)', () => {
       { lot: 'K1', material: 'SK-1' },
       { lot: 'P1', material: 'SP-100' },
     ]);
+    // Kept in memory as units are stored; a restart loads the same from the tables.
+    const restarted = await h.restartGenealogy();
+    expect(await restarted.lastLots(['asm-01', 'cnc-01', 'wsh-01'])).toEqual(lots);
+    await send(h, [...h.line.unit(2, { blank: 'B2', kit: 'K2' })]);
+    await settle(h);
+    const later = await h.genealogy.lastLots(['asm-01']);
+    expect([later[0]?.partId, later[0]?.lots.map((l) => l.lot)]).toEqual([2, ['K2', 'P1']]);
   });
 
   it('refuses a close while genealogy has not processed every fact of the order’s units (409 genealogy-pending, retryable)', async () => {
@@ -1010,6 +1028,17 @@ describe('the hold routes (#201)', () => {
     expect(created.statusCode, created.body).toBe(200);
     const hold = holdSchema.parse(created.json());
     expect(hold.openedBy).toBe('quinn');
+    // A second open hold on the same subject with the same reason is refused, naming the first
+    // (#203 review); another reason is a hold of its own (released at once below).
+    const again = await post('/api/v1/quality/holds', {
+      subject: { kind: 'lot', id: 'K1' },
+      reason: 'SUSPECT-LOT',
+    });
+    expect(again.statusCode, again.body).toBe(409);
+    expect(problemSchema.parse(again.json())).toMatchObject({
+      type: PROBLEM_TYPES.holdExists,
+      holds: [hold.id],
+    });
     expect(
       (await post('/api/v1/quality/holds', { subject: { kind: 'lot', id: 'K1' }, reason: 'NOPE' }))
         .statusCode,
@@ -1098,6 +1127,7 @@ describe('the hold routes (#201)', () => {
       409,
       PROBLEM_TYPES.qualityHold,
     ]);
+    expect(problemSchema.parse(close.json()).holds).toEqual([secondId]);
   });
 });
 

@@ -91,6 +91,10 @@ export function subjectHref(subject: HoldSubjectDto): string {
 export const isOpenEpisode = (signal: SpcSignalDto): boolean =>
   signal.status !== 'withdrawn' && signal.closedBy === null;
 
+/** Whether a final episode's extent can still grow (shaded apart on the chart). */
+export const isGrowing = (signal: SpcSignalDto): boolean =>
+  signal.status === 'final' && !signal.extentFinal;
+
 /** Whether an acknowledgement is still possible (once per episode, never once withdrawn). */
 export const canAcknowledgeSignal = (signal: SpcSignalDto): boolean =>
   signal.status !== 'withdrawn' && signal.acknowledged === null;
@@ -194,10 +198,12 @@ export const holdIdsIn = (text: string): string[] => [
 
 /** A failed quality write: `writeFailure`'s kinds and the quality module's 409s. */
 export interface QualityFailure {
-  readonly kind: WriteFailure['kind'] | 'stale' | 'decided' | 'withdrawn' | 'state';
+  readonly kind: WriteFailure['kind'] | 'stale' | 'decided' | 'withdrawn' | 'state' | 'exists';
   readonly text: string;
   /** The problem type the MES answered (`urn:shopfloor:…`). */
   readonly type: string | undefined;
+  /** The holds the refusal names (`hold-exists`: the open hold already on the subject). */
+  readonly holds?: readonly string[];
 }
 
 export function qualityFailure(
@@ -237,6 +243,15 @@ export function qualityFailure(
           type,
           text: `${texts.not}: the episode was withdrawn (a late reading re-derived it away; 409).`,
         };
+      case PROBLEM_TYPES.holdExists: {
+        const holds = error.problem?.holds ?? holdIdsIn(detail);
+        return {
+          kind: 'exists',
+          type,
+          holds,
+          text: `${texts.not}: an open hold with this subject and reason exists already (409); see it below.`,
+        };
+      }
       case PROBLEM_TYPES.limitsV1Missing:
         return {
           kind: 'state',
@@ -335,14 +350,26 @@ export function suggestedWindow(
   return { from: first.at, to: last.at };
 }
 
-/** First-pass points of the I chart inside [from, to] (what a window would be estimated from). */
-export function pointsInWindow(points: readonly SpcPointDto[], from: string, to: string): number {
+/**
+ * Final first-pass points of the I chart shown inside [from, to] (a window is estimated from final
+ * readings only), and whether the window starts before the first point shown (`pointsFrom`: the
+ * MES counts readings this page doesn't show).
+ */
+export function pointsInWindow(
+  points: readonly SpcPointDto[],
+  from: string,
+  to: string,
+  pointsFrom: string | null = null,
+): { readonly final: number; readonly beyondShown: boolean } {
   const a = Date.parse(from);
   const b = Date.parse(to);
-  return points.filter((p) => {
-    const t = Date.parse(p.at);
-    return t >= a && t <= b;
-  }).length;
+  return {
+    final: points.filter((p) => {
+      const t = Date.parse(p.at);
+      return p.final && t >= a && t <= b;
+    }).length,
+    beyondShown: pointsFrom !== null && a < Date.parse(pointsFrom),
+  };
 }
 
 /** The limits draft's problems before sending. */

@@ -142,21 +142,24 @@ describe('opening a hold', () => {
     expect(within(result).getByTestId('open-message').textContent).toContain('no lot K9');
   });
 
-  it('holds subjects from a signal’s suggested scope, one hold each', async () => {
+  it('holds subjects from a signal’s suggested scope, one hold each; a resubmit never holds one twice', async () => {
     const state = qualityState({ suggestions: { 2: suggestion() } });
     let n = 0;
+    let refuseCarton = true;
     const write: Write = (_method, _path, body) => {
       n += 1;
       const request = body as HoldOpenRequest;
-      if (request.subject.kind === 'carton') {
+      if (request.subject.kind === 'carton' && refuseCarton) {
+        refuseCarton = false;
         return problem(409, 'Conflict', 'busy', '/api/v1/quality/holds');
       }
-      return json(
-        hold({
-          id: `0f0e0d0c-0b0a-4900-8800-00000000010${String(n)}`,
-          subject: request.subject,
-        }),
-      );
+      const opened = hold({
+        id: `0f0e0d0c-0b0a-4900-8800-00000000010${String(n)}`,
+        subject: request.subject,
+        reason: request.reason,
+      });
+      state.holds = [...state.holds, opened];
+      return json(opened);
     };
     const server = qualityMes(state, write);
     vi.stubGlobal('fetch', server.fetch);
@@ -180,6 +183,58 @@ describe('opening a hold', () => {
       { subject: { kind: 'order', id: 'PO-1001' }, reason: 'SPC-SIGNAL' },
       { subject: { kind: 'carton', id: 'PO-1001-C02' }, reason: 'SPC-SIGNAL' },
     ]);
+    // The order opened: it is no longer chosen, so sending again retries only the carton.
+    expect(screen.getByTestId<HTMLInputElement>('suggest-order-PO-1001').checked).toBe(false);
+    expect(screen.getByTestId('open-submit').textContent).toBe('Open 1 hold');
+    fireEvent.click(screen.getByTestId('open-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('open-result-carton-PO-1001-C02').dataset.kind).toBe('opened');
+    });
+    expect(server.posts().map((p) => p.body)).toHaveLength(3);
+    expect(server.posts()[2]?.body).toEqual({
+      subject: { kind: 'carton', id: 'PO-1001-C02' },
+      reason: 'SPC-SIGNAL',
+    });
+    // Chosen again by hand, the order already has an open hold: skipped until confirmed.
+    fireEvent.click(screen.getByTestId('suggest-order-PO-1001'));
+    fireEvent.click(screen.getByTestId('open-submit'));
+    expect(await screen.findByTestId('open-existing-order-PO-1001')).toBeTruthy();
+    expect(server.posts()).toHaveLength(3);
+    fireEvent.click(screen.getByTestId('open-skip'));
+    expect(screen.queryByTestId('open-existing')).toBeNull();
+    fireEvent.click(screen.getByTestId('open-submit'));
+    fireEvent.click(await screen.findByTestId('open-confirm'));
+    await waitFor(() => {
+      expect(server.posts()).toHaveLength(4);
+    });
+    expect(server.posts()[3]?.body).toEqual({
+      subject: { kind: 'order', id: 'PO-1001' },
+      reason: 'SPC-SIGNAL',
+    });
+  });
+
+  it('shows the hold that exists already when the MES refuses a duplicate (409 hold-exists)', async () => {
+    const write: Write = (_method, path) =>
+      new Response(
+        JSON.stringify({
+          type: PROBLEM_TYPES.holdExists,
+          title: 'Conflict',
+          status: 409,
+          detail: 'an open hold exists already',
+          instance: path,
+          holds: [HOLD_ID],
+        }),
+        { status: 409, headers: { 'content-type': 'application/problem+json' } },
+      );
+    vi.stubGlobal('fetch', qualityMes(qualityState(), write).fetch);
+    await renderApp('/quality/holds/new?kind=lot&id=K1', { session: QUALITY });
+    await screen.findByTestId('hold-open-form');
+    fireEvent.click(screen.getByTestId('open-submit'));
+    const result = await screen.findByTestId('open-result-lot-K1');
+    expect(result.dataset.kind).toBe('exists');
+    expect(
+      within(result).getByTestId('open-message-holds').querySelector('a')?.getAttribute('href'),
+    ).toBe(`/quality/holds/${HOLD_ID}`);
   });
 
   it('says when the signal suggests nothing (unknown or withdrawn)', async () => {

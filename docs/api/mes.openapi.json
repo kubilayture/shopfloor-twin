@@ -12,7 +12,7 @@
         "properties": {
           "type": {
             "type": "string",
-            "description": "about:blank (the status says it all), or a stable URI a client tells apart: urn:shopfloor:handover-closed, urn:shopfloor:handover-not-open, urn:shopfloor:note-stale, urn:shopfloor:note-limit, urn:shopfloor:coding-stale, urn:shopfloor:shelf-stale, urn:shopfloor:host-not-allowed, urn:shopfloor:write-origin, urn:shopfloor:writes-off, urn:shopfloor:write-not-json, urn:shopfloor:write-rate, urn:shopfloor:unauthenticated, urn:shopfloor:forbidden, urn:shopfloor:password-change-required, urn:shopfloor:password-rejected, urn:shopfloor:user-exists, urn:shopfloor:login-rate, urn:shopfloor:order-stale, urn:shopfloor:order-state, urn:shopfloor:commands-unsettled, urn:shopfloor:scrap-stale, urn:shopfloor:sign-off-missing, urn:shopfloor:operation-stale, urn:shopfloor:operation-state, urn:shopfloor:not-signed-on, urn:shopfloor:terminal-session-required, urn:shopfloor:no-shift, urn:shopfloor:limits-stale, urn:shopfloor:signal-stale, urn:shopfloor:limits-v1-missing, urn:shopfloor:limits-ended, urn:shopfloor:signal-acknowledged, urn:shopfloor:signal-withdrawn, urn:shopfloor:hold-stale, urn:shopfloor:hold-decided, urn:shopfloor:quality-hold, urn:shopfloor:genealogy-pending"
+            "description": "about:blank (the status says it all), or a stable URI a client tells apart: urn:shopfloor:handover-closed, urn:shopfloor:handover-not-open, urn:shopfloor:note-stale, urn:shopfloor:note-limit, urn:shopfloor:coding-stale, urn:shopfloor:shelf-stale, urn:shopfloor:host-not-allowed, urn:shopfloor:write-origin, urn:shopfloor:writes-off, urn:shopfloor:write-not-json, urn:shopfloor:write-rate, urn:shopfloor:unauthenticated, urn:shopfloor:forbidden, urn:shopfloor:password-change-required, urn:shopfloor:password-rejected, urn:shopfloor:user-exists, urn:shopfloor:login-rate, urn:shopfloor:order-stale, urn:shopfloor:order-state, urn:shopfloor:commands-unsettled, urn:shopfloor:scrap-stale, urn:shopfloor:sign-off-missing, urn:shopfloor:operation-stale, urn:shopfloor:operation-state, urn:shopfloor:not-signed-on, urn:shopfloor:terminal-session-required, urn:shopfloor:no-shift, urn:shopfloor:limits-stale, urn:shopfloor:signal-stale, urn:shopfloor:limits-v1-missing, urn:shopfloor:limits-ended, urn:shopfloor:signal-acknowledged, urn:shopfloor:signal-withdrawn, urn:shopfloor:hold-stale, urn:shopfloor:hold-decided, urn:shopfloor:hold-exists, urn:shopfloor:quality-hold, urn:shopfloor:genealogy-pending"
           },
           "title": {
             "type": "string"
@@ -28,6 +28,15 @@
           "instance": {
             "type": "string",
             "description": "The request path"
+          },
+          "holds": {
+            "description": "The holds a refusal names (#203): the open holds blocking a close (quality-hold), the open hold already on the subject (hold-exists)",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
           }
         },
         "required": [
@@ -9851,7 +9860,7 @@
         "tags": [
           "orders"
         ],
-        "description": "completed → closed; posts `closed` to the ERP. Refused (409 urn:shopfloor:quality-hold) while an open quality hold covers a unit of the order or the order itself, and (409 urn:shopfloor:genealogy-pending, with Retry-After) while genealogy has not processed every fact of its units (#201); the check and hold opening serialize on one lock. Every operation must be signed off at its terminal (409 urn:shopfloor:sign-off-missing). Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user; a write needs a session also with MES_AUTH=off (401). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:close` (MES_AUTH=on; ADR-0026).",
+        "description": "completed → closed; posts `closed` to the ERP. Refused (409 urn:shopfloor:quality-hold, the blocking holds in the problem’s `holds`) while an open quality hold covers a unit of the order or the order itself, and (409 urn:shopfloor:genealogy-pending, with Retry-After) while genealogy has not processed every fact of its units (#201); the check and hold opening serialize on one lock. Every operation must be signed off at its terminal (409 urn:shopfloor:sign-off-missing). Names the order's `version` (409 urn:shopfloor:order-stale when it is not the current one); audited with the session’s user; a write needs a session also with MES_AUTH=off (401). Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `order:close` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {
@@ -12228,11 +12237,16 @@
                                         "string",
                                         "null"
                                       ]
+                                    },
+                                    "held": {
+                                      "type": "boolean",
+                                      "description": "An open hold is on this lot (its subject)"
                                     }
                                   },
                                   "required": [
                                     "lot",
-                                    "material"
+                                    "material",
+                                    "held"
                                   ],
                                   "additionalProperties": false
                                 }
@@ -20500,7 +20514,7 @@
         "tags": [
           "quality"
         ],
-        "description": "The scope is derived through the genealogy and grows with facts (a unit that consumes a held lot later, or whose fact arrives late, joins it). 404 for a subject the MES doesn’t know (a lot not imported from the ERP, a serial or carton genealogy hasn’t seen, an unknown order); 422 for a reason not listed in quality.yaml for an opening. Serializes with order closes on one advisory lock; notifies the ERP (`{holdId}~opened~1`) in the same transaction; audited `hold.open`. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `quality:hold` (MES_AUTH=on; ADR-0026).",
+        "description": "The scope is derived through the genealogy and grows with facts (a unit that consumes a held lot later, or whose fact arrives late, joins it). 404 for a subject the MES doesn’t know (a lot not imported from the ERP, a serial or carton genealogy hasn’t seen, an unknown order); 422 for a reason not listed in quality.yaml for an opening; 409 urn:shopfloor:hold-exists (with `holds`) while an open hold on the same subject with the same reason exists. Serializes with order closes on one advisory lock; notifies the ERP (`{holdId}~opened~1`) in the same transaction; audited `hold.open`. Writes need an Origin of this host (or allowlisted), `Sec-Fetch-Site: same-origin` when sent, and application/json (ADR-0023). Access: permission `quality:hold` (MES_AUTH=on; ADR-0026).",
         "requestBody": {
           "required": true,
           "content": {

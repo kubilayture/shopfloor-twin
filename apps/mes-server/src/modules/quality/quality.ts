@@ -123,11 +123,19 @@ export type QualityErrorKind = 'not-found' | 'conflict' | 'invalid';
 export class QualityError extends Error {
   readonly kind: QualityErrorKind;
   readonly type: ProblemType | undefined;
+  /** The holds a refusal names (`hold-exists`, #203). */
+  readonly holds: readonly string[] | undefined;
 
-  constructor(kind: QualityErrorKind, message: string, type?: ProblemType) {
+  constructor(
+    kind: QualityErrorKind,
+    message: string,
+    type?: ProblemType,
+    holds?: readonly string[],
+  ) {
     super(message);
     this.kind = kind;
     this.type = type;
+    this.holds = holds;
   }
 }
 
@@ -644,6 +652,12 @@ export class Quality {
       readonly status?: readonly SignalStatus[];
       readonly withdrawn?: boolean;
       readonly unacknowledged?: boolean;
+      /** Only episodes not closed yet. */
+      readonly open?: boolean;
+      /** Episodes open or not acknowledged yet (#203: the terminal's banners). */
+      readonly openOrUnacknowledged?: boolean;
+      /** False: no baseline episodes. */
+      readonly baseline?: boolean;
       readonly limit?: number;
     } = {},
   ): Promise<{ signals: SignalRecord[]; truncated: boolean }> {
@@ -658,6 +672,13 @@ export class Quality {
       select = select.where('status', '<>', 'withdrawn');
     }
     if (query.unacknowledged === true) select = select.where('ack_by', 'is', null);
+    if (query.open === true) select = select.where('closed_seq', 'is', null);
+    if (query.openOrUnacknowledged === true) {
+      select = select.where((eb) =>
+        eb.or([eb('closed_seq', 'is', null), eb('ack_by', 'is', null)]),
+      );
+    }
+    if (query.baseline === false) select = select.where('baseline', '=', false);
     const rows = await select
       .orderBy('first_at', 'desc')
       .orderBy('id', 'desc')

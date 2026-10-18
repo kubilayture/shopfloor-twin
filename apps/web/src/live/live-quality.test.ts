@@ -74,11 +74,7 @@ describe('the quality topic in the cache (#203)', () => {
     expect(read(client)?.characteristics['leak-rate']?.version).toBe(4);
     upsertHold(client, hold({ version: 3, state: 'released' }));
     expect(read(client)?.holds[HOLD_ID]?.state).toBe('released');
-    expect(stale().sort()).toEqual([
-      'quality/characteristics',
-      'quality/chart/leak-rate/|',
-      `quality/hold/${HOLD_ID}`,
-    ]);
+    expect(stale().sort()).toEqual(['quality/chart/leak-rate/|', `quality/hold/${HOLD_ID}`]);
     resetLiveQuality(client);
     expect(read(client)?.holds).toEqual({});
     // Reset without a set does nothing.

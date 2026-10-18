@@ -271,6 +271,30 @@ describe('quality: measurements, limit version 1 and episodes on final data (#20
       'opened',
       'opened',
     ]);
+    // Every extent change is pushed (the web keeps the later message at an equal row version,
+    // #203 review): the closing point came as `updated` with the episode's new extent.
+    const closing = h.changes.find((c) => c.type === 'signal' && c.event === 'updated');
+    expect(
+      closing?.type === 'signal' ? [closing.signal.closedBy?.seq, closing.signal.rowVersion] : [],
+    ).toEqual([8, 1]);
+    // The terminal's filters in SQL (#203 review): open, and open or not acknowledged.
+    const charts = async (query: Parameters<typeof h.quality.signals>[0]) =>
+      (await h.quality.signals({ characteristic: 'leak-rate', ...query })).signals
+        .map((s) => s.chart)
+        .sort();
+    expect(await charts({ open: true })).toEqual(['R', 'Xbar']);
+    expect(await charts({ openOrUnacknowledged: true, baseline: false })).toEqual([
+      'I',
+      'R',
+      'Xbar',
+    ]);
+    const closed = (await h.signals()).find((s) => s.chart === 'I');
+    await h.quality.acknowledge(
+      closed?.id ?? 0,
+      { version: closed?.rowVersion ?? 0, comment: 'ok' },
+      h.by,
+    );
+    expect(await charts({ openOrUnacknowledged: true })).toEqual(['R', 'Xbar']);
     // Version 1 is never re-derived by later readings.
     expect((await h.quality.limits('leak-rate'))?.length).toBe(1);
   });

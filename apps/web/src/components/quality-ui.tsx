@@ -1,4 +1,5 @@
 import type { HoldState, SpcSignalDto } from '@shopfloor/contracts/mes-api';
+import { Link } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 import { HOLD_STATE_TEXT, SIGNAL_STATUS_TEXT, type QualityFailure } from '../domain/quality.ts';
 import { formatPlantTime } from '../domain/time.ts';
@@ -125,6 +126,17 @@ export function FailureMessage({
       className="rounded border border-red-800 bg-red-50 p-2 text-sm text-red-950"
     >
       <p>{failure.text}</p>
+      {failure.holds && failure.holds.length > 0 ? (
+        <ul className="mt-1 list-disc pl-5" data-testid={`${testId}-holds`}>
+          {failure.holds.map((id) => (
+            <li key={id}>
+              <Link to="/quality/holds/$id" params={{ id }} className="text-sky-800 underline">
+                Hold {id}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {failure.type ? <p className="mt-1 font-mono text-xs">Problem type: {failure.type}</p> : null}
     </div>
   );

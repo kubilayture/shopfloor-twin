@@ -380,7 +380,8 @@ export function orderFailure(error: unknown): OrderFailure {
     }
     if (type === PROBLEM_TYPES.qualityHold) {
       // #201, #203: the detail names the open holds that cover a unit of the order (or the order).
-      const holds = holdIdsIn(detail);
+      // The problem's `holds` (#203 review); the ids in its detail only from an older MES.
+      const holds = error.problem?.holds ?? holdIdsIn(detail);
       return {
         kind: 'quality-hold',
         type,

@@ -33,7 +33,10 @@ const NO_QUALITY: LiveQuality = { signals: {}, holds: {}, characteristics: {}, s
 /**
  * Whether `incoming` replaces `known` for the same episode: its `rowVersion` rises with an
  * acknowledgement and a status change, not with growth (ADR-0032 amendment), so at the same
- * version the later message (a grown extent) wins; a lower version never does.
+ * version the later message (a grown extent) wins; a lower version never does. This rests on the
+ * MES pushing every extent change (`updated`, in commit order on the one socket; its quality test
+ * pins that a closing point emits one) and on a write's answer never being older than the pushes
+ * before it at the same version (an acknowledgement raises the version).
  */
 export const newerSignal = (incoming: SpcSignalDto, known: SpcSignalDto): boolean =>
   incoming.rowVersion >= known.rowVersion;
@@ -129,7 +132,6 @@ export function applyQualityMessage(queryClient: QueryClient, message: QualityMe
       void queryClient.invalidateQueries({
         queryKey: ['quality', 'chart', message.characteristic.id],
       });
-      void queryClient.invalidateQueries({ queryKey: ['quality', 'characteristics'] });
       return;
     case 'quality-hold':
       queryClient.setQueryData<LiveQuality>(liveQualityKey, (live) =>

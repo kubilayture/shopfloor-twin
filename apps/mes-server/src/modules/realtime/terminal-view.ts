@@ -36,13 +36,10 @@ export interface TerminalViewSources {
   /** SPC episodes of the work center's machines (#203); none without it. */
   readonly quality?: Pick<Quality, 'machines' | 'signals'>;
   /** Open holds touching its orders (#203); none without them. */
-  readonly holds?: Pick<Holds, 'openOnOrders'>;
+  readonly holds?: Pick<Holds, 'openOnOrders' | 'openLotHolds'>;
   /** The lots of each machine's last cycle (#203); none without it. */
   readonly genealogy?: Pick<Genealogy, 'lastLots'>;
 }
-
-/** Signals one characteristic's read takes, newest first, before the terminal filters them. */
-const SIGNAL_READ = 200;
 
 /**
  * What quality says about the work center (#203, plan "Operator terminal"): the open holds that
@@ -67,36 +64,39 @@ async function terminalQuality(
   if (sources.quality) {
     for (const { characteristic, equipment } of sources.quality.machines()) {
       if (!here.has(equipment)) continue;
+      // Filtered in SQL: not withdrawn, not baseline, open or not acknowledged yet.
       const found = await sources.quality.signals({
         characteristic,
         status: ['provisional', 'final'],
-        limit: SIGNAL_READ,
+        openOrUnacknowledged: true,
+        baseline: false,
+        limit: TERMINAL_LIMITS.signals,
       });
-      signals.push(
-        ...found.signals.filter(
-          (s) => !s.baseline && (s.closedBy === null || s.acknowledged === null),
-        ),
-      );
+      truncated ||= found.truncated;
+      signals.push(...found.signals);
     }
   }
   signals.sort((a, b) => b.first.at - a.first.at || b.id - a.id);
   if (signals.length > TERMINAL_LIMITS.signals) truncated = true;
-  const lots = sources.genealogy ? await sources.genealogy.lastLots(machines) : [];
+  const lots = (sources.genealogy ? await sources.genealogy.lastLots(machines) : []).filter(
+    (l) => l.lots.length > 0,
+  );
+  const held = sources.holds
+    ? await sources.holds.openLotHolds(lots.flatMap((l) => l.lots.map((x) => x.lot)))
+    : new Set<string>();
   return {
     holds,
     signals: signals.slice(0, TERMINAL_LIMITS.signals).map(signalDto),
-    lots: lots
-      .filter((l) => l.lots.length > 0)
-      .map((l) => ({
-        equipment: l.equipment,
-        operation: l.operation,
-        epoch: l.epoch,
-        partId: l.partId,
-        serial: l.serial,
-        pass: l.pass,
-        at: iso(l.at),
-        lots: l.lots.map((x) => ({ lot: x.lot, material: x.material })),
-      })),
+    lots: lots.map((l) => ({
+      equipment: l.equipment,
+      operation: l.operation,
+      epoch: l.epoch,
+      partId: l.partId,
+      serial: l.serial,
+      pass: l.pass,
+      at: iso(l.at),
+      lots: l.lots.map((x) => ({ lot: x.lot, material: x.material, held: held.has(x.lot) })),
+    })),
     truncated,
   };
 }

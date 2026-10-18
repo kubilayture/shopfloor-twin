@@ -253,7 +253,7 @@ export interface ApiSources {
   /** SPC characteristics, charts and signals (#200); the quality routes answer 503 without it. */
   readonly quality?: QualityApi & Partial<Pick<Quality, 'onChange' | 'machines'>>;
   /** Quality holds (#201); the hold routes answer 503 without them, the traces name no hold. */
-  readonly holds?: HoldsApi & Partial<Pick<Holds, 'onChange' | 'openOnOrders'>>;
+  readonly holds?: HoldsApi & Partial<Pick<Holds, 'onChange' | 'openOnOrders' | 'openLotHolds'>>;
 }
 
 export interface RealtimeOptions {
@@ -914,6 +914,7 @@ export async function registerRealtime(
               detail,
               request.url,
               !busy && error instanceof HttpProblem ? error.type : undefined,
+              !busy && error instanceof HttpProblem ? error.holds : undefined,
             ),
           );
       });
@@ -2543,7 +2544,14 @@ export async function registerRealtime(
             },
           }
         : {}),
-      ...(holds?.openOnOrders ? { holds: { openOnOrders: holds.openOnOrders.bind(holds) } } : {}),
+      ...(holds?.openOnOrders && holds.openLotHolds
+        ? {
+            holds: {
+              openOnOrders: holds.openOnOrders.bind(holds),
+              openLotHolds: holds.openLotHolds.bind(holds),
+            },
+          }
+        : {}),
       ...(genealogy?.lastLots
         ? { genealogy: { lastLots: genealogy.lastLots.bind(genealogy) } }
         : {}),

@@ -173,7 +173,13 @@ export const terminalLotsSchema = z
     serial: z.string().nullable(),
     pass: int,
     at: time.describe('Plant time the cycle completed'),
-    lots: z.array(z.object({ lot: z.string(), material: z.string().nullable() })),
+    lots: z.array(
+      z.object({
+        lot: z.string(),
+        material: z.string().nullable(),
+        held: z.boolean().describe('An open hold is on this lot (its subject)'),
+      }),
+    ),
   })
   .describe('The lots a machine’s last cycle that reported lots consumed, as genealogy has it');
 

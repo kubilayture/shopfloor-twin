@@ -346,6 +346,9 @@ describe('SPC chart page', () => {
     fireEvent.click(screen.getByTestId('limits-submit'));
     expect(screen.getByTestId('limits-invalid').textContent).toContain('must not be after');
     fireEvent.change(screen.getByTestId('limits-to'), { target: { value: '2026-10-15T09:00:00' } });
+    // Final points only (102 is provisional); the window starts inside what is shown.
+    expect(screen.getByTestId('limits-window-points').dataset.final).toBe('1');
+    expect(screen.getByTestId('limits-window-points').dataset.beyondShown).toBe('false');
     fireEvent.click(screen.getByTestId('limits-submit'));
     const message = await screen.findByTestId('limits-message');
     expect(message.dataset.kind).toBe('stale');

@@ -213,11 +213,19 @@ export type OrderErrorKind = 'not-found' | 'conflict' | 'invalid';
 export class OrderError extends Error {
   readonly kind: OrderErrorKind;
   readonly type: ProblemType | undefined;
+  /** The open holds a close was refused for (`quality-hold`, #203). */
+  readonly holds: readonly string[] | undefined;
 
-  constructor(kind: OrderErrorKind, message: string, type?: ProblemType) {
+  constructor(
+    kind: OrderErrorKind,
+    message: string,
+    type?: ProblemType,
+    holds?: readonly string[],
+  ) {
     super(message);
     this.kind = kind;
     this.type = type;
+    this.holds = holds;
   }
 }
 
@@ -781,6 +789,7 @@ export class Orders {
           refusal.kind === 'quality-hold'
             ? PROBLEM_TYPES.qualityHold
             : PROBLEM_TYPES.genealogyPending,
+          refusal.kind === 'quality-hold' ? refusal.holds : undefined,
         );
       }
       const missing = await trx

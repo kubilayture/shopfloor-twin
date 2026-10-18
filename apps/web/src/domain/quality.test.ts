@@ -21,6 +21,7 @@ import {
   fromPlantInput,
   holdIdsIn,
   holdMatches,
+  isGrowing,
   isOpenEpisode,
   isStale,
   limitsDraftProblems,
@@ -86,6 +87,9 @@ describe('quality rules (#203)', () => {
     expect(finalityText(closed)).toBe('Final, extent final');
     expect(finalityText(signal(5, { status: 'final' }))).toMatch(/extent can still grow/);
     expect(finalityText(withdrawn)).toBe('Withdrawn');
+    expect([isGrowing(signal(6, { status: 'final' })), isGrowing(closed), isGrowing(open)]).toEqual(
+      [true, false, false],
+    );
   });
 
   it('merges pushed episodes by id: newer or equal row version wins, removed ones go', () => {
@@ -174,7 +178,8 @@ describe('quality rules (#203)', () => {
       PROBLEM_TYPES.signalWithdrawn,
       PROBLEM_TYPES.limitsV1Missing,
       PROBLEM_TYPES.limitsEnded,
-    ].map((type) => qualityFailure(problemError(type), texts));
+      PROBLEM_TYPES.holdExists,
+    ].map((type) => qualityFailure(problemError(type, `exists: ${HOLD_ID}`), texts));
     expect(kinds.map((k) => k.kind)).toEqual([
       'stale',
       'stale',
@@ -184,7 +189,24 @@ describe('quality rules (#203)', () => {
       'withdrawn',
       'state',
       'state',
+      'exists',
     ]);
+    // The existing hold from the detail when the problem lacks `holds` (an older MES) …
+    expect(kinds[8]?.holds).toEqual([HOLD_ID]);
+    // … and from `holds` when it has them.
+    expect(
+      qualityFailure(
+        new ApiError('x', 409, {
+          type: PROBLEM_TYPES.holdExists,
+          title: 'Conflict',
+          status: 409,
+          detail: 'exists',
+          instance: '/x',
+          holds: [HOLD_ID_2],
+        }),
+        texts,
+      ).holds,
+    ).toEqual([HOLD_ID_2]);
     expect(kinds[0]?.type).toBe(PROBLEM_TYPES.limitsStale);
     expect(qualityFailure(problemError('about:blank'), texts)).toMatchObject({
       kind: 'conflict',
@@ -244,6 +266,14 @@ describe('quality rules (#203)', () => {
     });
     expect(suggestedWindow(view)).toEqual({ from: point(2, 0).at, to: point(3, 0).at });
     expect(suggestedWindow(chart({ points: { I: [], MR: [], Xbar: [], R: [] } }))).toBeUndefined();
-    expect(pointsInWindow(view.points.I, point(2, 0).at, point(4, 0).at)).toBe(3);
+    // Final points only; a window before the first point shown says so.
+    expect(pointsInWindow(view.points.I, point(2, 0).at, point(4, 0).at)).toEqual({
+      final: 2,
+      beyondShown: false,
+    });
+    expect(pointsInWindow(view.points.I, point(1, 0).at, point(4, 0).at, point(2, 0).at)).toEqual({
+      final: 3,
+      beyondShown: true,
+    });
   });
 });

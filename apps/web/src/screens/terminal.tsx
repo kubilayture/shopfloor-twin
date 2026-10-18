@@ -471,14 +471,10 @@ function TerminalWork({
  */
 function QualityBanners({ view }: { readonly view: TerminalViewDto }) {
   const { holds, signals, lots, truncated } = view.quality;
-  const heldLots = new Set(
-    holds.filter((h) => h.hold.subject.kind === 'lot').map((h) => h.hold.subject.id),
-  );
   if (holds.length === 0 && signals.length === 0 && lots.length === 0) return null;
   return (
     <section
       aria-labelledby="terminal-quality"
-      aria-live="polite"
       data-testid="terminal-quality"
       className="flex flex-col gap-3"
     >
@@ -486,7 +482,7 @@ function QualityBanners({ view }: { readonly view: TerminalViewDto }) {
         Quality
       </h2>
       {holds.length > 0 ? (
-        <ul className="flex flex-col gap-2" data-testid="terminal-holds">
+        <ul className="flex flex-col gap-2" data-testid="terminal-holds" aria-live="polite">
           {holds.map(({ hold, orders }) => (
             <li
               key={hold.id}
@@ -498,7 +494,7 @@ function QualityBanners({ view }: { readonly view: TerminalViewDto }) {
               <p className="text-lg">
                 {hold.reason} · orders here: {orders.join(', ')} · {hold.scope.units} unit
                 {hold.scope.units === 1 ? '' : 's'} held so far · opened by {hold.openedBy}{' '}
-                {formatPlantTime(hold.openedAt)}
+                {formatPlantTime(hold.openedPlantAt ?? hold.openedAt)}
               </p>
               <p className="text-base">
                 Keep the held goods apart; quality releases or rejects the hold. The order cannot be
@@ -509,7 +505,7 @@ function QualityBanners({ view }: { readonly view: TerminalViewDto }) {
         </ul>
       ) : null}
       {signals.length > 0 ? (
-        <ul className="flex flex-col gap-2" data-testid="terminal-signals">
+        <ul className="flex flex-col gap-2" data-testid="terminal-signals" aria-live="polite">
           {signals.map((signal) => (
             <li
               key={signal.id}
@@ -548,14 +544,12 @@ function QualityBanners({ view }: { readonly view: TerminalViewDto }) {
                   <span
                     key={`${x.lot}-${String(i)}`}
                     data-testid={`terminal-lot-${x.lot}`}
-                    data-held={String(heldLots.has(x.lot))}
+                    data-held={String(x.held)}
                   >
                     {i > 0 ? ', ' : ''}
                     {x.material ? `${x.material} ` : ''}
                     <span className="font-mono">{x.lot}</span>
-                    {heldLots.has(x.lot) ? (
-                      <strong className="text-red-900"> (on hold)</strong>
-                    ) : null}
+                    {x.held ? <strong className="text-red-900"> (on hold)</strong> : null}
                   </span>
                 ))}
               </li>

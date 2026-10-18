@@ -100,7 +100,7 @@ describe('the terminal view’s quality part (#203)', () => {
   });
 
   it('shows open holds, open or unacknowledged episodes of its machines, and the last lots', async () => {
-    const asked: string[] = [];
+    const asked: unknown[] = [];
     const ack = { by: 'quinn', at: new Date(T0), plantAt: null, comment: 'seen' };
     const view = await terminalView(
       sources({
@@ -110,6 +110,10 @@ describe('the terminal view’s quality part (#203)', () => {
             expect(ids).toEqual([]);
             return Promise.resolve({ holds: [{ hold: HOLD, orders: ['X-1'] }], truncated: false });
           },
+          openLotHolds: (lots) => {
+            expect(lots).toEqual(['K1', 'P1']);
+            return Promise.resolve(new Set(['K1']));
+          },
         },
         quality: {
           machines: () => [
@@ -117,14 +121,13 @@ describe('the terminal view’s quality part (#203)', () => {
             { characteristic: 'torque', equipment: 'cnc-01' },
           ],
           signals: (query) => {
-            asked.push(query?.characteristic ?? '');
+            asked.push(query);
+            // The module filters (open or unacknowledged, no baseline, not withdrawn).
             return Promise.resolve({
               signals: [
+                signal(2, { acknowledged: ack, status: 'final' }),
                 signal(5),
-                signal(4, { closedBy: ref(5, 5) }), // closed, unacknowledged: shown
-                signal(3, { closedBy: ref(4, 4), acknowledged: ack }), // closed and seen: not
-                signal(2, { acknowledged: ack, status: 'final' }), // open, acknowledged: shown
-                signal(1, { baseline: true }), // baseline: not
+                signal(4, { closedBy: ref(5, 5) }),
               ],
               truncated: false,
             });
@@ -141,8 +144,12 @@ describe('the terminal view’s quality part (#203)', () => {
                 partId: 7,
                 serial: 'VB-7',
                 pass: 1,
+                seq: 7,
                 at: new Date(T0),
-                lots: [{ lot: 'K1', material: 'SK-1' }],
+                lots: [
+                  { lot: 'K1', material: 'SK-1' },
+                  { lot: 'P1', material: 'SP-100' },
+                ],
               },
               {
                 equipment: 'lkt-01',
@@ -151,6 +158,7 @@ describe('the terminal view’s quality part (#203)', () => {
                 partId: 7,
                 serial: null,
                 pass: 1,
+                seq: 8,
                 at: new Date(T0),
                 lots: [],
               },
@@ -162,7 +170,15 @@ describe('the terminal view’s quality part (#203)', () => {
       CATALOG,
     );
     const parsed = terminalViewSchema.parse(view);
-    expect(asked).toEqual(['leak-rate']);
+    expect(asked).toEqual([
+      {
+        characteristic: 'leak-rate',
+        status: ['provisional', 'final'],
+        openOrUnacknowledged: true,
+        baseline: false,
+        limit: 10,
+      },
+    ]);
     expect(parsed.quality.holds.map((h) => [h.hold.id, h.orders])).toEqual([[HOLD.id, ['X-1']]]);
     expect(parsed.quality.signals.map((s) => s.id)).toEqual([5, 4, 2]);
     expect(parsed.quality.lots).toEqual([
@@ -174,7 +190,10 @@ describe('the terminal view’s quality part (#203)', () => {
         serial: 'VB-7',
         pass: 1,
         at: '2026-10-12T06:00:00.000Z',
-        lots: [{ lot: 'K1', material: 'SK-1' }],
+        lots: [
+          { lot: 'K1', material: 'SK-1', held: true },
+          { lot: 'P1', material: 'SP-100', held: false },
+        ],
       },
     ]);
     expect(parsed.quality.truncated).toBe(false);
@@ -184,14 +203,15 @@ describe('the terminal view’s quality part (#203)', () => {
     const view = await terminalView(
       sources({
         holds: {
-          openOnOrders: () => Promise.resolve({ holds: [], truncated: true }),
+          openOnOrders: () => Promise.resolve({ holds: [], truncated: false }),
+          openLotHolds: () => Promise.resolve(new Set<string>()),
         },
         quality: {
           machines: () => [{ characteristic: 'leak-rate', equipment: 'lkt-01' }],
           signals: () =>
             Promise.resolve({
-              signals: Array.from({ length: 12 }, (_, i) => signal(i + 1)),
-              truncated: false,
+              signals: Array.from({ length: 10 }, (_, i) => signal(i + 1)),
+              truncated: true,
             }),
         },
       }),
@@ -199,6 +219,6 @@ describe('the terminal view’s quality part (#203)', () => {
       CATALOG,
     );
     expect(view.quality.truncated).toBe(true);
-    expect(view.quality.signals.map((s) => s.id)).toEqual([12, 11, 10, 9, 8, 7, 6, 5, 4, 3]);
+    expect(view.quality.signals.map((s) => s.id)).toEqual([10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
   });
 });

@@ -866,7 +866,9 @@ function LimitsForm({
   const from = fromPlantInput(draft.from);
   const to = fromPlantInput(draft.to);
   const inWindow =
-    from !== undefined && to !== undefined ? pointsInWindow(chart.points.I, from, to) : undefined;
+    from !== undefined && to !== undefined
+      ? pointsInWindow(chart.points.I, from, to, chart.pointsFrom)
+      : undefined;
   return (
     <form
       ref={form}
@@ -938,8 +940,17 @@ function LimitsForm({
             />
           </label>
           {inWindow !== undefined ? (
-            <p className="self-end text-sm" data-testid="limits-window-points">
-              {inWindow} first-pass points shown lie in it.
+            <p
+              className="self-end text-sm"
+              data-testid="limits-window-points"
+              data-final={String(inWindow.final)}
+              data-beyond-shown={String(inWindow.beyondShown)}
+            >
+              {inWindow.final} final first-pass points shown lie in it
+              {inWindow.beyondShown
+                ? '; it starts before the first point shown, so the MES counts more readings than this page shows (show every reading to see them)'
+                : ''}
+              .
             </p>
           ) : null}
         </div>

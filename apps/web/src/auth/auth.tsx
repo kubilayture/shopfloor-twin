@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from 'react';
 import { getSession, logout } from '../api/identity.ts';
+import { forgetCharts } from '../api/quality.ts';
 import { authEventsFor } from './events.ts';
 import { useLiveClient } from '../live/live-context.tsx';
 
@@ -110,6 +111,8 @@ export function useUnsavedDraft(dirty: boolean): void {
 function forgetData(queryClient: QueryClient): void {
   queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== sessionKey[0] });
   queryClient.getMutationCache().clear();
+  // The SPC chart answers kept for `If-None-Match` (#203) go with the cache.
+  forgetCharts();
 }
 
 /**

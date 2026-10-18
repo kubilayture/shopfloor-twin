@@ -8108,11 +8108,16 @@
                                     "string",
                                     "null"
                                   ]
+                                },
+                                "held": {
+                                  "type": "boolean",
+                                  "description": "An open hold is on this lot (its subject)"
                                 }
                               },
                               "required": [
                                 "lot",
-                                "material"
+                                "material",
+                                "held"
                               ],
                               "additionalProperties": false
                             }
@@ -9910,11 +9915,16 @@
                                     "string",
                                     "null"
                                   ]
+                                },
+                                "held": {
+                                  "type": "boolean",
+                                  "description": "An open hold is on this lot (its subject)"
                                 }
                               },
                               "required": [
                                 "lot",
-                                "material"
+                                "material",
+                                "held"
                               ],
                               "additionalProperties": false
                             }

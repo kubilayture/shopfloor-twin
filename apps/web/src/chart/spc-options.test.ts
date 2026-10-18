@@ -88,16 +88,26 @@ describe('SPC chart options (#203)', () => {
   it('shades each episode of its chart that is not withdrawn; one point gets a visible span', () => {
     const areas = episodeAreas(
       [
-        signal(1, { status: 'final', last: { ...signal(1).last, at: '2026-10-15T06:00:00.000Z' } }),
+        signal(1, {
+          status: 'final',
+          extentFinal: true,
+          last: { ...signal(1).last, at: '2026-10-15T06:00:00.000Z' },
+        }),
         signal(2),
         signal(3, { status: 'withdrawn' }),
         signal(4, { chart: 'R' }),
+        signal(5, { status: 'final' }),
       ],
       'I',
     ) as [{ name: string; xAxis: number; itemStyle: { color: string } }, { xAxis: number }][];
-    expect(areas.map(([a]) => a.name)).toEqual(['Rule 1', 'Rule 1 (provisional)']);
+    expect(areas.map(([a]) => a.name)).toEqual([
+      'Rule 1',
+      'Rule 1 (provisional)',
+      'Rule 1 (extent not final)',
+    ]);
     expect(areas[0]?.[0].itemStyle.color).toBe(SPC_COLORS.episodeFinal);
     expect(areas[1]?.[0].itemStyle.color).toBe(SPC_COLORS.episodeProvisional);
+    expect(areas[2]?.[0].itemStyle.color).toBe(SPC_COLORS.episodeGrowing);
     const one = areas[1];
     expect((one?.[1].xAxis ?? 0) - (one?.[0].xAxis ?? 0)).toBe(40_000);
     expect(areas[0]?.[0].xAxis).toBe(Date.parse(signal(1).first.at));

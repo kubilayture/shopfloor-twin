@@ -6,6 +6,7 @@ import type {
   SpcSignalDto,
 } from '@shopfloor/contracts/mes-api';
 import type { EChartsCoreOption } from 'echarts/core';
+import { isGrowing } from '../domain/quality.ts';
 import { formatPlantTime } from '../domain/time.ts';
 
 // One SPC chart (#203, ADR-0032): the points on plant time, the limits of the version judging each
@@ -25,6 +26,8 @@ export const SPC_COLORS = {
   zone: '#94a3b8',
   retest: '#6d28d9',
   episodeFinal: 'rgba(185, 28, 28, 0.12)',
+  /** Final, its extent still growing (the tester not final through its last point). */
+  episodeGrowing: 'rgba(190, 24, 93, 0.12)',
   episodeProvisional: 'rgba(180, 83, 9, 0.12)',
 } as const;
 const axisText = { color: INK, fontSize: 12 };
@@ -82,13 +85,18 @@ export function episodeAreas(signals: readonly SpcSignalDto[], chart: SpcChartNa
         from -= ONE_POINT_SPAN_MS;
         to += ONE_POINT_SPAN_MS;
       }
+      const growing = isGrowing(s);
       return [
         {
-          name: `Rule ${String(s.rule)}${s.status === 'provisional' ? ' (provisional)' : ''}`,
+          name: `Rule ${String(s.rule)}${s.status === 'provisional' ? ' (provisional)' : growing ? ' (extent not final)' : ''}`,
           xAxis: from,
           itemStyle: {
             color:
-              s.status === 'provisional' ? SPC_COLORS.episodeProvisional : SPC_COLORS.episodeFinal,
+              s.status === 'provisional'
+                ? SPC_COLORS.episodeProvisional
+                : growing
+                  ? SPC_COLORS.episodeGrowing
+                  : SPC_COLORS.episodeFinal,
           },
         },
         { xAxis: to },

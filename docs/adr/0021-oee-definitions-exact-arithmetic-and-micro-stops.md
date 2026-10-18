@@ -175,3 +175,7 @@ Master plan section 7 says that from Phase 7 "Idle without a dispatched order is
 
 - **OEE:** `Equipment.oeeInputs` also reads the Idle `NO-ORDER` milliseconds per (equipment, epoch, hour) from the stored pieces (which keep the cause; the hourly aggregate does not), in the same snapshot as the hourly rows, and the `oee` module passes them as `noOrderIdleMs` (at most the hour's Idle). `orders-01`'s OEE equals the ground truth per machine and work center, shift and hour (golden reconciliation).
 - **Downtime records:** under `scheduledTime: orders` an Idle `NO-ORDER` interval is outside planned busy time, so it is no availability loss and makes no downtime record (`DowntimeRules.unplanned`); the Pareto of a shift still sums to its availability losses. Under `shift-calendar` it would be a `PLANNED/NO-ORDER` record as before. Schedule-mode runs have no `NO-ORDER`, so nothing changes for them.
+
+## Note (#229): option (c) decided
+
+The line-throughput OEE, option (c) of "Work centers", is decided in ADR-0036: good packed units × the bottleneck's effective cycle ÷ line planned busy time, with the bottleneck derived from the routing and an order OEE over job windows beside it. The work-center OEE of (b) stays as it is.

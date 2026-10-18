@@ -361,3 +361,292 @@ ASM-01 has no operator this shift and stays Idle `NO-OPERATOR` for the whole hou
 
 - PBT = 3 600 000. APT = 0. Own loss = 3 600 000. Ideal time = 0, nothing produced.
 - A = 0/1. P is null (APT = 0). Q is null (nothing produced). OEE = 0/1: nothing was produced in planned time. Not an anomaly: there are no counts.
+
+## Phase 9: bottleneck, order OEE and line OEE
+
+Cases B1–B4, H1–H8, O1–O9, F1 and L1–L11 (#229, ADR-0036) check the derived bottleneck, the head time of a job, the order OEE over job windows, the first-pass yield across the routing and the line throughput OEE. They drive `packages/oee-core/src/order-line-reference-cases.test.ts` as the tables above drive theirs. The micro-stop threshold is the one above; order cases use `scheduledTime: orders`.
+
+Times are plant clock times of one day (`hh:mm` or `hh:mm:ss`), read as ms from its midnight: only differences matter. A range `06:00–14:00` is half-open. Ideal cycle times are those of `config/plant/products.yaml`: OP10 VB-100 240 000 ms and VB-200 330 000 ms; OP30 VB-100 150 000 ms and VB-200 210 000 ms.
+
+Definitions:
+
+- **Bottleneck** of a product: the operation with the largest **effective cycle**, its ideal cycle ÷ the number of machines that run it (`plant.yaml`), ties to the earlier operation of the routing. Effective cycles are exact fractions.
+- **Head time** of a job: `max(accepted, previous job's completed)` on its CNC, where `accepted` is the device's `accepted` fact, or the command result's `acceptedAt` when the fact is unknown. Unknown (`headTimeUnknown`) when neither is known, or when the previous job's `completed` fact is lost (`lost`), or missing while this job has started. A job whose predecessor has not completed and which has not started is `waiting`.
+- **Job window:** from the head time to the job's `completed` fact, or to the cut-off (`Until`) while it is open. With an unknown head time it starts at the job's `started` fact, which leaves the changeover out: the result is provisional and never final.
+- **Order OEE:** the equipment rules (definitions above, `orders` rule) applied to the CNC's states inside each window and summed over the order's jobs; produced and good are the job's OP10 cycles, given here by job (the MES attributes them by unit, ADR-0031). A Stopped interval is judged by its whole length, also where the window cuts it.
+- **First-pass yield:** units packed good at OP50 with every record good (no rework, no retest) ÷ units started (blanks taken).
+- **Line planned busy time:** the bucket's scheduled time minus planned stops (breaks, planned maintenance on the bottleneck); in orders mode only where at least one order is in progress, from its first job's head time to its completion. `–` in `Orders in progress` is schedule mode (no such restriction); `none` is orders mode with no order in progress.
+- **Line OEE:** Σ good packed × the bottleneck's effective cycle ÷ line planned busy time; null (`–`) when the planned busy time is 0; not capped: above 1 it is flagged `aboveOne`. Per order, the same ratio over the order's in-progress time with its own good units; orders overlap, so per-order values are **not additive**.
+
+## Bottleneck, Phase 9
+
+| Case | Equipment per operation                                                         | Product | Ideal cycle (ms)                                                  | Bottleneck | Machines               | Effective cycle (ms) |
+| ---- | ------------------------------------------------------------------------------- | ------- | ----------------------------------------------------------------- | ---------- | ---------------------- | -------------------- |
+| B1   | OP10 cnc-01, cnc-02; OP20 wsh-01; OP30 asm-01; OP40 lkt-01; OP50 pck-01         | VB-100  | OP10 240 000; OP20 60 000; OP30 150 000; OP40 90 000; OP50 30 000 | OP30       | asm-01                 | 150000/1             |
+| B2   | OP10 cnc-01, cnc-02; OP20 wsh-01; OP30 asm-01; OP40 lkt-01; OP50 pck-01         | VB-200  | OP10 330 000; OP20 60 000; OP30 210 000; OP40 90 000; OP50 30 000 | OP30       | asm-01                 | 210000/1             |
+| B3   | OP10 cnc-01, cnc-02; OP20 wsh-01; OP30 asm-01; OP40 lkt-01; OP50 pck-01         | VB-300  | OP10 300 000; OP20 60 000; OP30 150 000; OP40 90 000; OP50 30 000 | OP10       | cnc-01, cnc-02         | 150000/1             |
+| B4   | OP10 cnc-01, cnc-02, cnc-03; OP20 wsh-01; OP30 asm-01; OP40 lkt-01; OP50 pck-01 | VB-100  | OP10 500 000; OP20 60 000; OP30 150 000; OP40 90 000; OP50 30 000 | OP10       | cnc-01, cnc-02, cnc-03 | 500000/3             |
+
+## Head times, Phase 9
+
+Rows of one case and machine are that CNC's queue in acceptance order. `Accepted at` is the command result's `acceptedAt`.
+
+| Case | Machine | Job | Accepted | Accepted at | Started | Completed | Until | Head time                          | Window                           |
+| ---- | ------- | --- | -------- | ----------- | ------- | --------- | ----- | ---------------------------------- | -------------------------------- |
+| H1   | cnc-01  | J1  | 06:00    | 06:00       | 06:25   | 07:40     | 12:00 | 06:00 accepted                     | 06:00–07:40                      |
+| H2   | cnc-01  | J1  | 06:00    | 06:00       | 06:25   | 07:40     | 12:00 | 06:00 accepted                     | 06:00–07:40                      |
+| H2   | cnc-01  | J2  | 06:05    | 06:05       | 08:05   | 10:00     | 12:00 | 07:40 previous-completed           | 07:40–10:00                      |
+| H3   | cnc-01  | J1  | 06:00    | –           | 06:25   | 07:40     | 12:00 | 06:00 accepted                     | 06:00–07:40                      |
+| H3   | cnc-01  | J2  | 08:00    | –           | 08:25   | 10:00     | 12:00 | 08:00 accepted                     | 08:00–10:00                      |
+| H4   | cnc-02  | J1  | –        | 06:00       | 06:25   | 07:40     | 12:00 | 06:00 acceptedAt                   | 06:00–07:40                      |
+| H5   | cnc-02  | J1  | –        | –           | 06:25   | 07:40     | 12:00 | unknown accepted-unknown           | 06:25–07:40 headTimeUnknown      |
+| H6   | cnc-01  | J1  | 06:00    | –           | 06:25   | lost      | 12:00 | 06:00 accepted                     | 06:00–12:00 open                 |
+| H6   | cnc-01  | J2  | 06:05    | –           | 08:05   | 10:00     | 12:00 | unknown previous-completed-lost    | 08:05–10:00 headTimeUnknown      |
+| H7   | cnc-02  | J1  | 06:00    | –           | 06:25   | –         | 07:00 | 06:00 accepted                     | 06:00–07:00 open                 |
+| H7   | cnc-02  | J2  | 06:05    | –           | –       | –         | 07:00 | waiting                            | –                                |
+| H8   | cnc-02  | J1  | 06:00    | –           | 06:25   | –         | 09:00 | 06:00 accepted                     | 06:00–09:00 open                 |
+| H8   | cnc-02  | J2  | 06:05    | –           | 08:05   | –         | 09:00 | unknown previous-completed-missing | 08:05–09:00 open headTimeUnknown |
+
+## Inputs, Phase 9 order OEE
+
+`Previous completed` is the `completed` fact of the job before this one on its CNC (`–`: the first job, `lost`: a written-off gap). `States` are the CNC's state facts (`time state [cause]`); the last state lasts until `Until`, open. `Cycles` are the job's OP10 cycles, `product result count @time`, the time deciding whether they are scheduled.
+
+| Case | Job | Machine | Accepted | Accepted at | Previous completed | Started | Completed | Until | Scheduled                | States                                                                                                                          | Cycles                                       |
+| ---- | --- | ------- | -------- | ----------- | ------------------ | ------- | --------- | ----- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| O1   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:00   | 07:00     | 12:00 | 06:00–14:00              | 06:00 Running; 07:00 Idle NO-ORDER                                                                                              | VB-100 good 14 @07:00                        |
+| O2   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | 08:05     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 08:05 Idle NO-ORDER                                                                      | VB-100 good 23 @08:05; VB-100 scrap 1 @08:05 |
+| O3   | J1  | cnc-01  | 06:00    | 06:00       | 06:30              | 06:55   | 08:15     | 12:00 | 06:00–14:00              | 06:00 Running; 06:30 Setup CHANGEOVER; 06:55 Running; 08:15 Idle NO-ORDER                                                       | VB-200 good 14 @08:15                        |
+| O3   | J2  | cnc-02  | 06:00    | 06:00       | –                  | 06:25   | 07:45     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 07:45 Idle NO-ORDER                                                                      | VB-200 good 13 @07:45; VB-200 scrap 1 @07:45 |
+| O4   | J1  | cnc-02  | 13:00    | 13:00       | –                  | 13:25   | 19:05     | 20:00 | 06:00–14:00; 14:00–22:00 | 13:00 Setup CHANGEOVER; 13:25 Running; 18:00 PlannedStop BREAK; 18:30 Running; 19:05 Idle NO-ORDER                              | VB-100 good 30 @13:59; VB-100 good 45 @19:05 |
+| O5   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | 09:00     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 07:00 Stopped JAM; 07:01 Running; 07:30 Down SPINDLE; 08:00 Running; 09:00 Idle NO-ORDER | VB-200 good 21 @09:00; VB-200 scrap 1 @09:00 |
+| O6   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | 07:05     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 07:05 Idle NO-ORDER                                                                      | VB-100 good 9 @07:05; VB-100 scrap 1 @07:05  |
+| O7   | J1  | cnc-01  | –        | 06:00       | –                  | 06:25   | 08:05     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 08:05 Idle NO-ORDER                                                                      | VB-100 good 23 @08:05; VB-100 scrap 1 @08:05 |
+| O8   | J1  | cnc-01  | –        | –           | –                  | 06:25   | 08:05     | 12:00 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running; 08:05 Idle NO-ORDER                                                                      | VB-100 good 23 @08:05; VB-100 scrap 1 @08:05 |
+| O9   | J1  | cnc-01  | 06:00    | 06:00       | –                  | 06:25   | –         | 07:25 | 06:00–14:00              | 06:00 Setup CHANGEOVER; 06:25 Running                                                                                           | VB-100 good 14 @07:24                        |
+
+## Expected totals, Phase 9 order OEE
+
+| Case | PBT        | APT        | Own availability loss | External availability loss | Micro-stops | Speed loss | Ideal time | Good | Produced |
+| ---- | ---------- | ---------- | --------------------- | -------------------------- | ----------- | ---------- | ---------- | ---- | -------- |
+| O1   | 3 600 000  | 3 600 000  | 0                     | 0                          | 0           | 240 000    | 3 360 000  | 14   | 14       |
+| O2   | 7 500 000  | 6 000 000  | 1 500 000             | 0                          | 0           | 240 000    | 5 760 000  | 23   | 24       |
+| O3   | 12 600 000 | 9 600 000  | 3 000 000             | 0                          | 0           | 360 000    | 9 240 000  | 27   | 28       |
+| O4   | 20 100 000 | 18 600 000 | 1 500 000             | 0                          | 0           | 600 000    | 18 000 000 | 75   | 75       |
+| O5   | 10 800 000 | 7 500 000  | 3 300 000             | 0                          | 60 000      | 180 000    | 7 260 000  | 21   | 22       |
+| O6   | 3 900 000  | 2 400 000  | 1 500 000             | 0                          | 0           | 0          | 2 400 000  | 9    | 10       |
+| O7   | 7 500 000  | 6 000 000  | 1 500 000             | 0                          | 0           | 240 000    | 5 760 000  | 23   | 24       |
+| O8   | 6 000 000  | 6 000 000  | 0                     | 0                          | 0           | 240 000    | 5 760 000  | 23   | 24       |
+| O9   | 5 100 000  | 3 600 000  | 1 500 000             | 0                          | 0           | 240 000    | 3 360 000  | 14   | 14       |
+
+## Expected results, Phase 9 order OEE
+
+| Case | A     | P       | Q     | OEE    | A (4 dp) | P (4 dp) | Q (4 dp) | OEE (4 dp) | Flags                        |
+| ---- | ----- | ------- | ----- | ------ | -------- | -------- | -------- | ---------- | ---------------------------- |
+| O1   | 1/1   | 14/15   | 1/1   | 14/15  | 1.0000   | 0.9333   | 1.0000   | 0.9333     | –                            |
+| O2   | 4/5   | 24/25   | 23/24 | 92/125 | 0.8000   | 0.9600   | 0.9583   | 0.7360     | –                            |
+| O3   | 16/21 | 77/80   | 27/28 | 99/140 | 0.7619   | 0.9625   | 0.9643   | 0.7071     | –                            |
+| O4   | 62/67 | 30/31   | 1/1   | 60/67  | 0.9254   | 0.9677   | 1.0000   | 0.8955     | –                            |
+| O5   | 25/36 | 121/125 | 21/22 | 77/120 | 0.6944   | 0.9680   | 0.9545   | 0.6417     | –                            |
+| O6   | 8/13  | 1/1     | 9/10  | 36/65  | 0.6154   | 1.0000   | 0.9000   | 0.5538     | –                            |
+| O7   | 4/5   | 24/25   | 23/24 | 92/125 | 0.8000   | 0.9600   | 0.9583   | 0.7360     | –                            |
+| O8   | 1/1   | 24/25   | 23/24 | 23/25  | 1.0000   | 0.9600   | 0.9583   | 0.9200     | provisional, headTimeUnknown |
+| O9   | 12/17 | 14/15   | 1/1   | 56/85  | 0.7059   | 0.9333   | 1.0000   | 0.6588     | provisional, open            |
+
+## First-pass yield, Phase 9
+
+`Units` lists unit routes as `n × records`, each record `operation result` in plant-time order.
+
+| Case | Started | Units                                                                                                                                                                                                                                 | First-pass good | FPY  | FPY (4 dp) |
+| ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- | ---- | ---------- |
+| F1   | 10      | 1 × OP10 scrap; 7 × OP10 good, OP20 good, OP30 good, OP40 good, OP50 good; 1 × OP10 good, OP20 good, OP30 good, OP40 rework, OP30 good, OP40 good, OP50 good; 1 × OP10 good, OP20 good, OP30 good, OP40 rework, OP30 good, OP40 scrap | 7               | 7/10 | 0.7000     |
+
+## Line OEE, Phase 9
+
+`Bottleneck cycle` is the effective cycle per product (cases B1 and B2). Planned stops are the shift break (10:00–10:30 in shift A, 18:00–18:30 in shift B) and any planned maintenance on the bottleneck.
+
+| Case | Bucket      | Scheduled   | Planned stops            | Orders in progress                 | Good packed         | Bottleneck cycle (ms)          |
+| ---- | ----------- | ----------- | ------------------------ | ---------------------------------- | ------------------- | ------------------------------ |
+| L1   | 13:00–14:00 | 06:00–14:00 | 10:00–10:30              | PO-1 06:00–12:40                   | –                   | VB-100 150 000; VB-200 210 000 |
+| L2   | 08:00–09:00 | 06:00–14:00 | 10:00–10:30              | PO-1 06:00–08:30; PO-2 08:15–12:00 | VB-100 14; VB-200 3 | VB-100 150 000; VB-200 210 000 |
+| L3   | 06:00–08:30 | 06:00–14:00 | 10:00–10:30              | PO-1 06:00–08:30                   | VB-100 50           | VB-100 150 000; VB-200 210 000 |
+| L4   | 08:15–12:00 | 06:00–14:00 | 10:00–10:30              | PO-2 08:15–12:00                   | VB-200 45           | VB-100 150 000; VB-200 210 000 |
+| L5   | 12:00–13:00 | 06:00–14:00 | 10:00–10:30              | PO-2 08:15–12:10; PO-3 12:30–14:00 | VB-200 1            | VB-100 150 000; VB-200 210 000 |
+| L6   | 15:00–16:00 | 14:00–22:00 | 18:00–18:30              | PO-4 13:00–20:00                   | VB-100 26           | VB-100 150 000; VB-200 210 000 |
+| L7   | 18:00–19:00 | 14:00–22:00 | 18:00–18:30              | PO-4 13:00–20:00                   | VB-100 14           | VB-100 150 000; VB-200 210 000 |
+| L8   | 18:00–19:00 | 14:00–22:00 | 18:00–18:30              | PO-4 13:00–20:00                   | VB-100 12           | VB-100 150 000; VB-200 210 000 |
+| L9   | 09:00–10:00 | 06:00–14:00 | 10:00–10:30              | PO-5 06:00–14:00                   | VB-200 10           | VB-100 150 000; VB-200 210 000 |
+| L10  | 06:00–14:00 | 06:00–14:00 | 10:00–10:30; 12:00–12:15 | –                                  | VB-100 160          | VB-100 150 000; VB-200 210 000 |
+| L11  | 22:00–23:00 | 06:00–14:00 | 10:00–10:30              | none                               | –                   | VB-100 150 000; VB-200 210 000 |
+
+## Expected line OEE, Phase 9
+
+| Case | Line PBT   | Ideal time | Good | Line OEE | Line OEE (4 dp) | Flags    |
+| ---- | ---------- | ---------- | ---- | -------- | --------------- | -------- |
+| L1   | 0          | 0          | 0    | –        | –               | –        |
+| L2   | 3 600 000  | 2 730 000  | 17   | 91/120   | 0.7583          | –        |
+| L3   | 9 000 000  | 7 500 000  | 50   | 5/6      | 0.8333          | –        |
+| L4   | 11 700 000 | 9 450 000  | 45   | 21/26    | 0.8077          | –        |
+| L5   | 2 400 000  | 210 000    | 1    | 7/80     | 0.0875          | –        |
+| L6   | 3 600 000  | 3 900 000  | 26   | 13/12    | 1.0833          | aboveOne |
+| L7   | 1 800 000  | 2 100 000  | 14   | 7/6      | 1.1667          | aboveOne |
+| L8   | 1 800 000  | 1 800 000  | 12   | 1/1      | 1.0000          | –        |
+| L9   | 3 600 000  | 2 100 000  | 10   | 7/12     | 0.5833          | –        |
+| L10  | 26 100 000 | 24 000 000 | 160  | 80/87    | 0.9195          | –        |
+| L11  | 0          | 0          | 0    | –        | –               | –        |
+
+## Step-by-step arithmetic, Phase 9
+
+### Cases B1 and B2 – parallel machines: the largest raw cycle is not the bottleneck
+
+OP10 runs on two CNCs, so one VB-100 costs the line 240 000 ÷ 2 = 120 000 ms of OP10 time; OP20 60 000, OP30 150 000 (one machine), OP40 90 000, OP50 30 000. The largest effective cycle is OP30's 150 000: ASM-01, although OP10's raw 240 000 is the largest ideal cycle. VB-200: OP10 330 000 ÷ 2 = 165 000 against OP30's 210 000: ASM-01 again. So the plant's designed bottleneck is ASM-01 for both products, and the line OEE's numerator uses 150 000 and 210 000 ms per good unit.
+
+### Case B3 – a tie goes to the earlier operation
+
+A product with OP10 300 000 ms on two CNCs has an effective OP10 cycle of 150 000, equal to OP30's 150 000. The tie goes to the earlier operation of the routing: OP10, on CNC-01 and CNC-02, effective cycle 150 000.
+
+### Case B4 – a fractional effective cycle
+
+Three CNCs on OP10 at 500 000 ms: 500 000 ÷ 3 = 166 666.67 ms, kept exact as 500000/3, above OP30's 150 000: the bottleneck is OP10 on all three CNCs.
+
+### Cases H1–H8 – head times and windows
+
+- **H1:** the first job on the CNC is head from its acceptance, 06:00; it completes at 07:40, so its window is 06:00–07:40, its 25-minute changeover included.
+- **H2:** J2 is accepted at 06:05 while J1 runs; it becomes head when J1 completes: max(06:05, 07:40) = 07:40. Its changeover 07:40–08:05 is in its window, 07:40–10:00.
+- **H3:** J2 is accepted at 08:00, after J1 completed at 07:40: max(08:00, 07:40) = 08:00. The CNC's Idle `NO-ORDER` from 07:40 to 08:00 belongs to no job.
+- **H4:** the `accepted` fact is lost; the command result's `acceptedAt` (06:00) gives the same instant, so the head time is known and the order can be final.
+- **H5:** neither the fact nor `acceptedAt` is known: the head time is unknown and the window starts at the `started` fact, 06:25, leaving out the changeover: `headTimeUnknown`, provisional and never final.
+- **H6:** J1's `completed` fact is lost: J1's window stays open up to the cut-off, and J2's head time is unknown; its window starts at its `started` fact, 08:05.
+- **H7:** at 07:00 J1 is still running (open window 06:00–07:00) and J2 waits: no window yet.
+- **H8:** J1's `completed` fact has not arrived but J2 has started: J2's head time is unknown until the fact arrives; its window runs from its `started` fact to the cut-off, open.
+
+### Case O1 – one job
+
+CNC-01 starts the job at once (no changeover) and runs 60 minutes for 14 VB-100.
+
+- PBT = APT = 3 600 000. Ideal time = 14 × 240 000 = 3 360 000. Speed loss = 240 000.
+- A = 1/1. P = 3 360 000 / 3 600 000 = 14/15 → 0.9333. Q = 1/1. OEE = 14/15 → 0.9333.
+
+### Case O2 – a changeover before `started`
+
+The job is head from 06:00 (its acceptance; the first job of the run changes over from `none`). The changeover 06:00–06:25 lies before its `started` fact and inside its window, so it counts against this order. Running 06:25–08:05 = 6 000 000; 24 cycles, one scrap.
+
+- PBT = 1 500 000 + 6 000 000 = 7 500 000. APT = 6 000 000. Own loss = Setup = 1 500 000.
+- Ideal time = 24 × 240 000 = 5 760 000. Speed loss = 240 000.
+- A = 6 000 000 / 7 500 000 = 4/5 = 0.8000. P = 5 760 000 / 6 000 000 = 24/25 = 0.9600. Q = 23/24 = 0.95833… → 0.9583.
+- OEE = (5 760 000 × 23) / (7 500 000 × 24) = 92/125 = 0.7360. Check: 4/5 × 24/25 × 23/24 = 92/125.
+
+### Case O3 – two jobs on two CNCs
+
+The order's two jobs run in parallel. On CNC-01 the previous job (another order) runs until 06:30, so J1 is head from max(06:00, 06:30) = 06:30; CNC-01's Running before 06:30 is the other order's. J1: Setup 1 500 000 and Running 4 800 000 in 06:30–08:15; J2 on CNC-02: Setup 1 500 000 and Running 4 800 000 in 06:00–07:45.
+
+- PBT = 6 300 000 + 6 300 000 = 12 600 000. APT = 9 600 000. Own loss = 3 000 000.
+- Ideal time = 28 × 330 000 = 9 240 000. Speed loss = 360 000. Good = 14 + 13 = 27, produced 28.
+- A = 9 600 000 / 12 600 000 = 16/21 = 0.76190… → 0.7619. P = 9 240 000 / 9 600 000 = 77/80 = 0.9625. Q = 27/28 = 0.96428… → 0.9643.
+- OEE = (9 240 000 × 27) / (12 600 000 × 28) = (11 × 27) / (15 × 28) = 297/420 = 99/140 = 0.70714… → 0.7071. Check: 16/21 × 77/80 × 27/28 = 33 264/47 040 = 99/140.
+
+### Case O4 – across a shift boundary and a break
+
+The job runs from shift A into shift B; the shift boundary at 14:00 splits nothing in the sum, and shift B's break (PlannedStop 18:00–18:30) is excluded as in every bucket. Running 13:25–18:00 and 18:30–19:05 = 16 500 000 + 2 100 000 = 18 600 000.
+
+- PBT = 1 500 000 + 18 600 000 = 20 100 000 (PlannedStop 1 800 000 excluded). APT = 18 600 000. Own loss = 1 500 000.
+- Ideal time = 75 × 240 000 = 18 000 000. Speed loss = 600 000.
+- A = 18 600 000 / 20 100 000 = 62/67 = 0.92537… → 0.9254. P = 18 000 000 / 18 600 000 = 30/31 = 0.96774… → 0.9677. Q = 1/1.
+- OEE = 18 000 000 / 20 100 000 = 60/67 = 0.89552… → 0.8955. Check: 62/67 × 30/31 = 1 860/2 077 = 60/67.
+
+### Case O5 – a micro-stop and a breakdown
+
+A 60-second jam (below the threshold: performance loss) and a 30-minute spindle breakdown (Down: availability loss). Running 35 + 29 + 60 minutes = 7 440 000.
+
+- PBT = 10 800 000 (06:00–09:00). APT = 7 440 000 + 60 000 = 7 500 000. Own loss = Setup 1 500 000 + Down 1 800 000 = 3 300 000.
+- Ideal time = 22 × 330 000 = 7 260 000. Speed loss = 7 500 000 − 60 000 − 7 260 000 = 180 000.
+- A = 7 500 000 / 10 800 000 = 25/36 = 0.69444… → 0.6944. P = 7 260 000 / 7 500 000 = 121/125 = 0.9680. Q = 21/22 → 0.9545.
+- OEE = (7 260 000 × 21) / (10 800 000 × 22) = (33 × 21) / 1 080 = 693/1 080 = 77/120 = 0.64166… → 0.6417.
+
+### Case O6 – a short order
+
+Ten blanks, one OP10 scrap: the order is short (case F1 follows its units). Running 06:25–07:05 = 2 400 000.
+
+- PBT = 3 900 000. APT = 2 400 000. Own loss = 1 500 000. Ideal time = 10 × 240 000 = 2 400 000. Speed loss = 0.
+- A = 2 400 000 / 3 900 000 = 8/13 = 0.61538… → 0.6154. P = 1/1. Q = 9/10 = 0.9000.
+- OEE = 8/13 × 9/10 = 36/65 = 0.55384… → 0.5538.
+
+### Case O7 – the `accepted` fact replaced by `acceptedAt`
+
+O2 with its `accepted` fact lost: the command result's `acceptedAt` (06:00) is the plant time of that same fact, so the head time, the window and every value equal O2's, and nothing is provisional.
+
+### Case O8 – the head time unknown
+
+O2 with neither the `accepted` fact nor `acceptedAt`: the window starts at `started` (06:25), so the changeover is left out and the order looks better than it is. Flagged `headTimeUnknown` and provisional, never final.
+
+- PBT = APT = 6 000 000. Ideal time = 5 760 000. Speed loss = 240 000.
+- A = 1/1. P = 24/25 = 0.9600. Q = 23/24 → 0.9583. OEE = 24/25 × 23/24 = 23/25 = 0.9200.
+
+### Case O9 – an open window
+
+At 07:25 the job is still running: its window runs to the cut-off and is provisional (`open`).
+
+- PBT = 1 500 000 + 3 600 000 = 5 100 000. APT = 3 600 000. Own loss = 1 500 000. Ideal time = 14 × 240 000 = 3 360 000. Speed loss = 240 000.
+- A = 3 600 000 / 5 100 000 = 12/17 = 0.70588… → 0.7059. P = 14/15 → 0.9333. Q = 1/1.
+- OEE = 3 360 000 / 5 100 000 = 56/85 = 0.65882… → 0.6588. Check: 12/17 × 14/15 = 168/255 = 56/85.
+
+### Case F1 – first-pass yield of a short order
+
+O6's order: 10 blanks; one OP10 scrap; 7 units straight through; one fails the leak test, is reworked and packs good on its second pass; one fails twice and is scrapped. Packed good = 8, first-pass good = 7 (the reworked unit packs, but not on its first pass).
+
+- FPY = 7/10 = 0.7000. The order OEE's Q (9/10) sees only OP10; the leak test's scrap and rework show here.
+
+### Case L1 – no order in progress
+
+PO-1 completed at 12:40, and no other order is in progress in 13:00–14:00: line planned busy time 0, so line OEE is null, not 0 (the line's counterpart of Idle `NO-ORDER`).
+
+### Case L2 – two overlapping orders
+
+PO-1 is in progress until 08:30 and PO-2 from 08:15: the union covers the whole hour, so line PBT = 3 600 000 (the overlap counts once).
+
+- Ideal time = 14 × 150 000 + 3 × 210 000 = 2 100 000 + 630 000 = 2 730 000.
+- Line OEE = 2 730 000 / 3 600 000 = 91/120 = 0.75833… → 0.7583.
+
+### Cases L3 and L4 – per-order line OEE is not additive
+
+- **L3:** PO-1 over its in-progress time 06:00–08:30: PBT = 9 000 000, ideal time = 50 × 150 000 = 7 500 000, line OEE = 5/6 = 0.8333.
+- **L4:** PO-2 over 08:15–12:00 minus the break: PBT = 225 − 30 = 195 minutes = 11 700 000; ideal time = 45 × 210 000 = 9 450 000; line OEE = 21/26 = 0.80769… → 0.8077.
+- Their PBTs sum to 20 700 000, but the line was planned busy for 06:00–12:00 minus the break = 19 800 000: 08:15–08:30 belongs to both orders. Per-order line OEE is therefore not additive, and the shift's line OEE is never a sum of them.
+
+### Case L5 – a rework that packs in a later bucket
+
+PO-2's last unit was reworked and packs at 12:10, which is its completion, so PO-2 is in progress until 12:10; PO-3 is in progress from 12:30. Line PBT in 12:00–13:00 = 10 + 30 minutes = 2 400 000. The reworked unit counts where it is packed:
+
+- Ideal time = 1 × 210 000. Line OEE = 210 000 / 2 400 000 = 7/80 = 0.0875.
+
+### Case L6 – above 1 from a fast operator
+
+Shift B's ASM-01 operator `op-b1` works at speed factor 0.95, faster than ideal; with the line fed, 26 VB-100 are packed in an hour against the bottleneck's 24.
+
+- Ideal time = 26 × 150 000 = 3 900 000. Line OEE = 3 900 000 / 3 600 000 = 13/12 = 1.08333… → 1.0833, flagged `aboveOne`, not capped.
+
+### Cases L7 and L8 – above 1 from buffer drain, and exactly 1
+
+The 18:00–19:00 hour holds shift B's break, so line PBT = 1 800 000. After the break the buffers before OP40 and OP50 drain into the half hour:
+
+- **L7:** 14 VB-100 packed: 2 100 000 / 1 800 000 = 7/6 = 1.16666… → 1.1667, `aboveOne`.
+- **L8:** 12 packed: 1 800 000 / 1 800 000 = 1/1 = 1.0000, not above 1, no flag.
+
+Capping L6 or L7 at 1 would make the hours of the shift sum to less ideal time than the shift itself holds.
+
+### Case L9 – only one CNC working
+
+Only CNC-01 has a job (PO-5, VB-200); CNC-02 is Idle `NO-ORDER`. One CNC makes about 3 600 000 / 330 000 = 10.9 parts an hour, so 10 are packed. The designed bottleneck stays ASM-01 (210 000 ms per VB-200):
+
+- Ideal time = 10 × 210 000 = 2 100 000. Line OEE = 2 100 000 / 3 600 000 = 7/12 = 0.58333… → 0.5833.
+- The CNC is the actual constraint, and that shows as the lower value. Taking the working CNC as the bottleneck (330 000 ms) would have given 3 300 000 / 3 600 000 = 0.9167 and changed what the numerator means from bucket to bucket.
+
+### Case L10 – a schedule-mode shift with planned maintenance on the bottleneck
+
+Shift A in schedule mode (`–`: no in-progress restriction), the break 10:00–10:30 and a planned maintenance of ASM-01 12:00–12:15:
+
+- Line PBT = 480 − 30 − 15 = 435 minutes = 26 100 000. Ideal time = 160 × 150 000 = 24 000 000.
+- Line OEE = 24 000 000 / 26 100 000 = 80/87 = 0.91954… → 0.9195.
+
+### Case L11 – outside the schedule
+
+22:00–23:00 lies outside the scheduled shift A: line PBT = 0 and line OEE is null, whatever the orders.

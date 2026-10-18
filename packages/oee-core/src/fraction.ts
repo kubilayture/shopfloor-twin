@@ -39,6 +39,9 @@ export function fraction(num: bigint, den = 1n): Fraction {
 export const multiply = (a: Fraction, b: Fraction): Fraction =>
   fraction(a.num * b.num, a.den * b.den);
 
+export const add = (a: Fraction, b: Fraction): Fraction =>
+  fraction(a.num * b.den + b.num * a.den, a.den * b.den);
+
 /** -1, 0 or 1 as a is below, equal to or above b. */
 export function compare(a: Fraction, b: Fraction): -1 | 0 | 1 {
   const difference = a.num * b.den - b.num * a.den;

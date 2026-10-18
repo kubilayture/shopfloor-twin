@@ -1,0 +1,24 @@
+# Override for the reconciliation's quality pass (#204), after docker-compose.yml and
+# e2e/compose.reconcile.yml, used only by e2e/src/reconcile.ts: the golden scenario quality-01's
+# own inputs (Phase 8 plan "Leak drift injection and scenario stock", ADR-0033):
+#
+# - the ERP mock serves quality-01's dataset (apps/simulator/golden/quality-01/orders.json, already
+#   in the ERP's schema, its `lots` equal to the scenario's stock), so the MES imports its orders
+#   and its small lots;
+# - the simulator runs on the scenario's stock (SIM_STOCK, control API "Configuration"), not
+#   config/plant/stock.yaml, so its lots change inside shift A as in the headless run.
+#
+# The production mode (SIM_PRODUCTION=orders) and the MES's ERP poll interval come from the run's
+# env file, as in the orders pass. The drift is posted through the control API before the resume.
+
+services:
+  erp:
+    environment:
+      ERP_DATASET: /app/golden/quality-01/orders.json
+    volumes:
+      - ./apps/simulator/golden/quality-01/orders.json:/app/golden/quality-01/orders.json:ro
+  simulator:
+    environment:
+      SIM_STOCK: /app/golden/quality-01/stock.yaml
+    volumes:
+      - ./apps/simulator/golden/quality-01/stock.yaml:/app/golden/quality-01/stock.yaml:ro

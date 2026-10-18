@@ -61,10 +61,25 @@
  * codes the scrap, the supervisor's close (`closed` in the ERP) and the audit log; finally the
  * MES's outbox posted again after an MES restart, leaving the ERP unchanged.
  *
+ * Phase 8 (#204): a third pass runs quality-01's shift A in orders mode on its own project, with the
+ * scenario's ERP dataset and stock (e2e/compose.reconcile-quality.yml: ERP_DATASET, SIM_STOCK). The
+ * import and the release and dispatch through the UI are the orders pass's; then the scenario's
+ * leak drift is posted through the control API 1.5 (`POST /faults/drift/lkt-01`) before the resume.
+ * During the shift Playwright judges every SPC episode on the SPC page and the Line A1 terminal
+ * within 2 s (browser/quality/live), an operator signed on to Line A1 throughout. After the drain
+ * and the Phase 4–7 comparisons above (src/quality-pass.ts): three projections of shift A at T =
+ * Monday 14:00 Istanbul through `traceAsOf` are equal: the headless reference run with `end` at T,
+ * the live ground truth `?asOf=T` and the MES's answers (a forward trace of every lot of the ERP's
+ * list, a backward trace of each serial, the SPC chart API), the MES's final; then through the UI
+ * (browser/quality/final) a serial's trace page with its crew, holds from the drift's episode and a
+ * lot, the terminal's banners, the close refused (`quality-hold`) while held and allowed after the
+ * release; each ERP notification held exactly once; the audit; the MES's outbox posted again after
+ * an MES restart (replayed +N, created +0, the ERP unchanged, notifications included).
+ *
  * Usage: pnpm test:reconcile. Results (per pass: report.json, compose.log on failure, Playwright
- * traces) go to e2e/results/<pass>/. Environment: RECONCILE_PASSES (default `alarms,orders`),
- * RECONCILE_PROJECT (Compose project prefix, default shopfloor-reconcile; each pass adds
- * `-alarms` or `-orders`),
+ * traces) go to e2e/results/<pass>/. Environment: RECONCILE_PASSES (default
+ * `alarms,orders,quality`), RECONCILE_PROJECT (Compose project prefix, default
+ * shopfloor-reconcile; each pass adds `-alarms`, `-orders` or `-quality`),
  * RECONCILE_TAG (image tag, default reconcile; give parallel runs their own),
  * RECONCILE_SKIP_BUILD=1 (use the images already built), RECONCILE_BROWSER=0 (no Playwright),
  * OVERVIEW_SAMPLE_MS and OEE_SAMPLE_MS (how long each live check samples, default 90000 each; the
@@ -95,8 +110,10 @@ import {
   provisionUsers,
   gauge,
   groundTruthSchema,
+  type Drift,
   type GroundTruth,
   type Injection,
+  type ScenarioDrift,
   type ScenarioInjection,
 } from './clients.ts';
 import {
@@ -122,31 +139,74 @@ import {
   type PassContext,
   type ScenarioDispatch,
 } from './orders-pass.ts';
+import {
+  checkNotifications,
+  checkTraceAsOf,
+  mesTrace,
+  referenceRun,
+  checkCrew,
+  type CrewWindow,
+} from './quality-pass.ts';
 import { REPO, Stack } from './stack.ts';
+import { episodeIdentity, traceConfigOf, type TraceSectionJson } from './trace-shapes.ts';
 
 const SPEED = 60;
 /** Simulated time past shift end before the simulator is paused (5 wall seconds at 60×). */
 const MARGIN_MS = 5 * 60_000;
 const RESULTS = join(REPO, 'e2e/results');
 /** The two passes (#178), each a golden scenario the live run reproduces on its own project. */
-type PassName = 'alarms' | 'orders';
-const PASSES: Readonly<Record<PassName, { golden: string; evidence: string }>> = {
+type PassName = 'alarms' | 'orders' | 'quality';
+const PASS_NAMES: readonly PassName[] = ['alarms', 'orders', 'quality'];
+const PASSES: Readonly<
+  Record<PassName, { golden: string; evidence: string; injections: number; drifts: number }>
+> = {
   // #147: week-01's seed with injected failures; its event log equals week-01's up to the first
   // injection (headless, #140).
   alarms: {
     golden: 'alarms-01',
     evidence:
       'apps/simulator/src/headless/alarms-01.test.ts: logs exactly what week-01 logs up to the first injection',
+    // Shift A's failure injections: 13 on Cell M1, the fleeting one on LKT-01.
+    injections: 14,
+    drifts: 0,
   },
   // #178: orders mode, the jobs dispatched through LoadOrder at the idle start (#172, B3).
   orders: {
     golden: 'orders-01',
     evidence:
       'apps/simulator/src/opcua/live-dispatch.test.ts: reproduces headless orders-01 when the jobs are dispatched through LoadOrder at the idle start, then injected',
+    injections: 14,
+    drifts: 0,
+  },
+  // #204: orders mode on the scenario's stock and ERP dataset, one leak drift in shift A, no
+  // failure injection; its shift-A reference run is a prefix of the full run (#208).
+  quality: {
+    golden: 'quality-01',
+    evidence:
+      'apps/simulator/src/headless/quality-01.test.ts: the shift-A reference run (end 14:00) logs a prefix of the full run, its trace is traceAsOf 14:00; apps/simulator/src/opcua/live-dispatch.test.ts: dispatch through LoadOrder at the idle start reproduces headless',
+    injections: 0,
+    drifts: 1,
   },
 };
 /** The ERP's dataset override of the orders pass. */
 const ORDERS_COMPOSE = 'e2e/compose.reconcile-orders.yml';
+/** The ERP's dataset and the simulator's stock of the quality pass (#204). */
+const QUALITY_COMPOSE = 'e2e/compose.reconcile-quality.yml';
+/**
+ * The quality pass (#204): the lot held from its trace page and the order of shift A it covers
+ * (quality-01: SK1-Q01-01, consumed by PO-2610-101 and PO-2610-102, both completed in shift A),
+ * whose close is refused while held; the characteristic; the live SPC check's end (simulated), 5
+ * minutes before the end of shift A, after the drift's end (10:50 UTC).
+ */
+const QUALITY_LOT = 'SK1-Q01-01';
+const QUALITY_CLOSE_ORDER = 'PO-2610-101';
+const CHARACTERISTIC = 'leak-rate';
+const SPC_BEFORE_END_MS = 5 * 60_000;
+/**
+ * The live check's operator signs on this long (simulated) after the start of shift A (#204
+ * review MEDIUM 2), so units whose OP30 ran before it test the crew's absence too.
+ */
+const CREW_FROM_MS = 60 * 60_000;
 /** Orders mode: a completed order to sign off and close, and the one whose scrap is coded. */
 const CLOSE_ORDER = 'PO-2610-001';
 const SCRAP_ORDER = 'PO-2610-007';
@@ -181,10 +241,10 @@ const OEE_FINAL_MS = 30_000;
 const DEADLINE_MS = Number(process.env.RECONCILE_DEADLINE_MS ?? 25 * 60_000);
 
 const projectPrefix = process.env.RECONCILE_PROJECT ?? 'shopfloor-reconcile';
-const passNames = (process.env.RECONCILE_PASSES ?? 'alarms,orders')
+const passNames = (process.env.RECONCILE_PASSES ?? PASS_NAMES.join(','))
   .split(',')
   .map((p) => p.trim())
-  .filter((p): p is PassName => p === 'alarms' || p === 'orders');
+  .filter((p): p is PassName => (PASS_NAMES as readonly string[]).includes(p));
 /** The run's supervisor (#170): created per run, with a generated password. */
 const RECONCILE_USER = 'reconcile-supervisor';
 /** The orders pass's other users (#178), by what they are for, each with a generated password. */
@@ -362,6 +422,8 @@ interface Report {
   pieces?: { count: number; violations: string[] };
   /** The orders pass (#178): import, dispatch, orders after the drain, refusals, terminal, ERP. */
   orders?: Record<string, unknown>;
+  /** The quality pass (#204): the drift, the time cut, the trace page, holds, close, ERP. */
+  quality?: Record<string, unknown>;
   incidents?: unknown[];
   rejectedMessages?: number;
   /** The live checks: the overview (#100), the OEE dashboard (#123) and the alarms (#147). */
@@ -392,7 +454,9 @@ interface Report {
 
 async function main(): Promise<boolean> {
   await rm(RESULTS, { recursive: true, force: true });
-  if (passNames.length === 0) throw new Error('RECONCILE_PASSES names no pass (alarms, orders)');
+  if (passNames.length === 0) {
+    throw new Error(`RECONCILE_PASSES names no pass (${PASS_NAMES.join(', ')})`);
+  }
   const outcomes: [PassName, boolean][] = [];
   for (const [n, name] of passNames.entries()) {
     // The images are built once, by the first pass.
@@ -406,7 +470,9 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
   const RESULTS_DIR = join(RESULTS, pass);
   const GOLDEN = join(REPO, 'apps/simulator/golden', PASSES[pass].golden);
   const goldenName = PASSES[pass].golden;
-  const orders = pass === 'orders';
+  const quality = pass === 'quality';
+  /** Orders mode: the orders pass and the quality pass (#204) run orders-mode scenarios. */
+  const orders = pass === 'orders' || quality;
   const project = `${projectPrefix}-${pass}`;
   await mkdir(RESULTS_DIR, { recursive: true });
   log(`pass ${pass}: ${goldenName} on project ${project}`);
@@ -436,7 +502,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
   const scenario = JSON.parse(await readFile(join(GOLDEN, 'scenario.json'), 'utf8')) as {
     seed: number;
     start: string;
-    injections?: ScenarioInjection[];
+    injections?: (ScenarioInjection | ScenarioDrift)[];
     production?: 'orders';
     erp?: { dataset: string; release: string[] };
     dispatches?: ScenarioDispatch[];
@@ -444,15 +510,14 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
   if (orders !== (scenario.production === 'orders')) {
     throw new Error(`${goldenName} is not a scenario for the ${pass} pass`);
   }
-  // Every injection here is posted as a failure (`/faults/failure`). A `leak-drift` (#196, a
-  // scenario entry with `kind`, as in quality-01) is not one: the live quality pass (#204) posts it
-  // to `/faults/drift/{machine}` and runs on the scenario's own stock. Refused here, not misread.
-  const drifts = (scenario.injections ?? []).filter(
-    (injection) => (injection as { kind?: unknown }).kind !== undefined,
+  // A scenario entry with a `kind` (#196) is a leak drift, posted to `/faults/drift/{machine}`;
+  // any other kind is refused here, not misread as a failure injection.
+  const unknownKinds = (scenario.injections ?? []).filter(
+    (i) => 'kind' in i && (i as { kind: unknown }).kind !== 'leak-drift',
   );
-  if (drifts.length > 0) {
+  if (unknownKinds.length > 0) {
     throw new Error(
-      `${goldenName}: ${String(drifts.length)} injection(s) with a kind (leak-drift) need the quality pass (#204)`,
+      `${goldenName}: injections of an unknown kind: ${JSON.stringify(unknownKinds)}`,
     );
   }
   const loaded = await loadPlantConfig(join(REPO, 'config/plant'));
@@ -469,18 +534,28 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
   }
   const shiftKey = shift.key;
   const stopAt = shift.to + MARGIN_MS;
-  // Shift A's injections, in the scenario's order (the order fixes the queue's tie-breaking).
-  const injections = (scenario.injections ?? []).filter(
+  // Shift A's injections and drifts, in the scenario's order (the order fixes the queue's
+  // tie-breaking; drifts and failure injections share one numbering, control API 1.5).
+  const scheduled = (scenario.injections ?? []).filter(
     (i) => Date.parse(i.at) >= shift.from && Date.parse(i.at) < shift.to,
   );
-  // Exactly the 14 of shift A (13 on Cell M1, the fleeting one on LKT-01; orders-01 has the same).
-  if (injections.length !== 14) {
-    throw new Error(`${GOLDEN}: ${String(injections.length)} injections in ${shift.key}, not 14`);
+  const isDrift = (i: ScenarioInjection | ScenarioDrift): i is ScenarioDrift => 'kind' in i;
+  const injections = scheduled.filter((i): i is ScenarioInjection => !isDrift(i));
+  const drifts = scheduled.filter(isDrift);
+  // Exactly the scenario's: alarms-01 and orders-01 14 failures in shift A (13 on Cell M1, the
+  // fleeting one on LKT-01), quality-01 one drift and no failure.
+  if (injections.length !== PASSES[pass].injections || drifts.length !== PASSES[pass].drifts) {
+    throw new Error(
+      `${GOLDEN}: ${String(injections.length)} injections and ${String(drifts.length)} drifts in ${shift.key}, not ${String(PASSES[pass].injections)} and ${String(PASSES[pass].drifts)}`,
+    );
   }
-  const alarmsUntil = Math.max(...injections.map((i) => Date.parse(i.at))) + ALARMS_SAMPLE_PAST_MS;
+  const injectionTimes = injections.map((i) => Date.parse(i.at));
+  const alarmsUntil =
+    injectionTimes.length === 0 ? shift.to : Math.max(...injectionTimes) + ALARMS_SAMPLE_PAST_MS;
   // The OEE check (first) ends this long (simulated) before the first injection, so the alarm
   // check has time to start before it, however slow the environment.
-  const oeeUntil = Math.min(...injections.map((i) => Date.parse(i.at))) - OEE_BEFORE_INJECTION_MS;
+  const oeeUntil =
+    injectionTimes.length === 0 ? shift.to : Math.min(...injectionTimes) - OEE_BEFORE_INJECTION_MS;
   report.seed = scenario.seed;
   report.shiftKey = shiftKey;
 
@@ -497,7 +572,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
       // Orders mode (#178): the CNCs run only LoadOrder jobs; the MES pulls the ERP every second.
       ...(orders ? { SIM_PRODUCTION: 'orders', ERP_POLL_MS: '1000' } : {}),
     },
-    files: orders ? [ORDERS_COMPOSE] : [],
+    files: quality ? [QUALITY_COMPOSE] : orders ? [ORDERS_COMPOSE] : [],
   });
   let browser: Promise<number> | undefined;
   // Ctrl+C or a cancelled job: remove the stack and the env file with its passwords, then exit.
@@ -680,29 +755,30 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
 
         // The scenario's shift A injections, before the resume, in its order: the same events in
         // the queue as in the headless run (control API 1.3, "Determinism").
-        const posted: Injection[] = [];
-        for (const injection of injections) posted.push(await sim.inject(injection));
-        const expectedPosted = injections.map((i, n) => [
-          n + 1,
-          i.machine,
-          i.code,
-          Date.parse(i.at),
-          i.repairMs ?? null,
-        ]);
-        const actualPosted = posted.map((i) => [
-          i.id,
-          i.machine,
-          i.code,
-          Date.parse(i.at),
-          i.repairMs ?? null,
-        ]);
+        // Drifts (#204) go to `/faults/drift/{machine}` (control API 1.5), in the same order.
+        const posted: (Injection | Drift)[] = [];
+        for (const entry of scheduled) {
+          posted.push(isDrift(entry) ? await sim.drift(entry) : await sim.inject(entry));
+        }
+        const expectedPosted = scheduled.map((i, n) =>
+          isDrift(i)
+            ? [n + 1, i.machine, 'leak-drift', Date.parse(i.at), i.shift, Date.parse(i.until)]
+            : [n + 1, i.machine, i.code, Date.parse(i.at), i.repairMs ?? null],
+        );
+        const actualPosted = posted.map((i) =>
+          'shift' in i
+            ? [i.id, i.machine, 'leak-drift', Date.parse(i.at), i.shift, Date.parse(i.until)]
+            : [i.id, i.machine, i.code, Date.parse(i.at), i.repairMs ?? null],
+        );
         if (
           JSON.stringify(actualPosted) !== JSON.stringify(expectedPosted) ||
           posted.some((i) => i.status !== 'scheduled')
         ) {
           throw new Error(`injections not scheduled as posted: ${JSON.stringify(posted)}`);
         }
-        log(`scheduled ${String(posted.length)} injections of ${shiftKey}`);
+        log(
+          `scheduled ${String(injections.length)} injections and ${String(drifts.length)} drifts of ${shiftKey}`,
+        );
 
         if (!orders) {
           log('starting web');
@@ -718,7 +794,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
         const resumedAt = Date.now();
         await sim.resume();
         if (withBrowser) {
-          browser = runBrowser(orders ? 'orders-live' : 'live', {
+          browser = runBrowser(quality ? 'quality-live' : orders ? 'orders-live' : 'live', {
             RECONCILE_WEB_URL: webUrl,
             RECONCILE_SIM_URL: sim.base,
             RECONCILE_MES_URL: mes.base,
@@ -727,6 +803,14 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             RECONCILE_SHIFT: shiftKey,
             RECONCILE_ALARMS_UNTIL: new Date(alarmsUntil).toISOString(),
             RECONCILE_OEE_UNTIL: new Date(oeeUntil).toISOString(),
+            ...(quality
+              ? {
+                  RECONCILE_CHARACTERISTIC: CHARACTERISTIC,
+                  RECONCILE_SPC_UNTIL: new Date(shift.to - SPC_BEFORE_END_MS).toISOString(),
+                  RECONCILE_DRIFT_EPISODE: await goldenDriftEpisode(GOLDEN),
+                  RECONCILE_CREW_FROM: new Date(shift.from + CREW_FROM_MS).toISOString(),
+                }
+              : {}),
             ...browserLogin,
           });
         }
@@ -1032,6 +1116,32 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
           };
         };
 
+        // The drifts (#204): applied at their start, ended by their `until`, inside shift A.
+        if (drifts.length > 0) {
+          const listed = await sim.drifts();
+          report.quality = {
+            ...report.quality,
+            drifts: listed,
+          };
+          for (const [n, drift] of listed.entries()) {
+            const expected = drifts[n];
+            if (
+              !expected ||
+              drift.status !== 'ended' ||
+              drift.endedBy !== 'until' ||
+              Date.parse(drift.appliedAt ?? '') !== Date.parse(expected.at) ||
+              Date.parse(drift.endedAt ?? '') !== Date.parse(expected.until)
+            ) {
+              fail(
+                `drift ${String(drift.id)} not applied and ended as scheduled: ${JSON.stringify(drift)}`,
+              );
+            }
+          }
+          if (listed.length !== drifts.length) {
+            fail(`${String(listed.length)} drifts listed, ${String(drifts.length)} posted`);
+          }
+        }
+
         // The injections: every one of shift A applied inside it (held ones a little later).
         const applied = await sim.injections();
         report.injections = {
@@ -1191,12 +1301,14 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
           fleeting: line?.fleeting ?? 0,
           hours: report.alarms.hoursCompared,
         };
+        // quality-01 injects no failure (its alarms are compared above, not counted here).
         if (
-          JSON.stringify(injected.raises) !== JSON.stringify([14, 13, 1]) ||
-          injected.floods < 1 ||
-          !injected.chattering ||
-          injected.fleeting < 1 ||
-          injected.hours < 4
+          !quality &&
+          (JSON.stringify(injected.raises) !== JSON.stringify([14, 13, 1]) ||
+            injected.floods < 1 ||
+            !injected.chattering ||
+            injected.fleeting < 1 ||
+            injected.hours < 4)
         ) {
           fail(`${shiftKey} alarm KPIs miss the injected alarms: ${JSON.stringify(injected)}`);
         }
@@ -1283,11 +1395,15 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             report: await readJson(join(RESULTS_DIR, 'overview-latency.json')),
             oee: await readJson(join(RESULTS_DIR, 'oee-latency.json')),
             alarms: await readJson(join(RESULTS_DIR, 'alarms-latency.json')),
-            ...(orders ? { terminal: await requiredJson('terminal-latency.json') } : {}),
+            ...(quality
+              ? { spc: await requiredJson('spc-latency.json') }
+              : orders
+                ? { terminal: await requiredJson('terminal-latency.json') }
+                : {}),
           };
           if (exitCode !== 0) {
             fail(
-              `the live ${orders ? 'alarms, OEE or terminal' : 'alarms, overview or OEE'} check failed (Playwright exit ${String(exitCode)})`,
+              `the live ${quality ? 'SPC and terminal' : orders ? 'alarms, OEE or terminal' : 'alarms, overview or OEE'} check failed (Playwright exit ${String(exitCode)})`,
             );
           }
         }
@@ -1295,7 +1411,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
 
         // 6. Orders mode (#178, exit criteria 4 and 5), after the drain: the orders, the refusals,
         //    the step to a scrap, the terminals and the close, the audit, the outbox posted again.
-        if (orders && ctx) {
+        if (pass === 'orders' && ctx) {
           const operations = loaded.config.products.operations;
           ordersReport.afterDrain = await checkOrdersAfterDrain(
             ctx,
@@ -1356,6 +1472,117 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             .sort();
           ordersReport.repost = await repostOutbox(ctx, ids);
           log(`outbox posted again: ${JSON.stringify(ordersReport.repost)}`);
+          phase('repost');
+        }
+
+        // 6. The quality pass (#204, exit criterion 5), after the drain: the time cut at the end
+        //    of shift A, the trace page, the holds and the close, the ERP's notifications, the
+        //    audit, the outbox posted again.
+        if (quality && ctx) {
+          const qualityReport: Record<string, unknown> = { ...report.quality };
+          report.quality = qualityReport;
+          const cut = shift.to;
+          const cutIso = new Date(cut).toISOString();
+          const reference = await referenceRun(goldenName, cutIso);
+          const liveJson = await sim.groundTruthJson(cutIso);
+          if (liveJson.traceAsOf !== cutIso) {
+            fail(
+              `the live truth was not cut at ${cutIso}: traceAsOf ${String(liveJson.traceAsOf)}`,
+            );
+          }
+          const config = traceConfigOf(loaded.config);
+          const side = await mesTrace(
+            ctx,
+            config,
+            loaded.config.process.leakTest.resolution,
+            truth.epoch,
+            reference.section.orders.map((o) => o.orderId),
+          );
+          qualityReport.traceAsOf = await checkTraceAsOf(ctx, {
+            cut,
+            reference,
+            live: liveJson.trace as TraceSectionJson,
+            mes: side,
+            characteristic: CHARACTERISTIC,
+          });
+          log(`time cut at ${cutIso}: ${JSON.stringify(qualityReport.traceAsOf)}`);
+          phase('traceAsOf');
+
+          // The live check's operator at Line A1 by the simulator's clock (crew-window.json):
+          // in the OP30 crew of every unit packed before T exactly while signed on; the trace
+          // page's serial by that rule. Then the drift's first episode and its triggering unit.
+          const crewWindow = (await requiredJson('crew-window.json')) as CrewWindow | undefined;
+          const crew = crewWindow
+            ? checkCrew(ctx, side, cut, crewWindow, loaded.config.process.leakTest.operation)
+            : undefined;
+          qualityReport.crew = crew?.report;
+          const traceCase = crew?.traceCase;
+          const chart = await mes.spcChart(CHARACTERISTIC);
+          const driftKey = (
+            qualityReport.traceAsOf as { drift: { mesFirstEpisode: string | null } }
+          ).drift.mesFirstEpisode;
+          const signal = chart.signals.find(
+            (s) =>
+              episodeIdentity({
+                chart: s.chart,
+                rule: s.rule,
+                version: s.version,
+                partId: s.first.partId,
+                pass: s.first.pass,
+              }) === driftKey,
+          );
+          const signalSerial = side.serials
+            .flatMap((a) => a.units)
+            .find((u) => u.partId === signal?.first.partId)?.serial;
+          if (!signal || !signalSerial)
+            fail(`the drift's episode ${String(driftKey)} or its serial`);
+          const exitCode = await runBrowser('quality-final', {
+            RECONCILE_WEB_URL: webUrl,
+            RECONCILE_MES_URL: mes.base,
+            RECONCILE_RESULTS: RESULTS_DIR,
+            RECONCILE_SIM_URL: sim.base,
+            RECONCILE_TRACE_CASE: JSON.stringify(traceCase ?? null),
+            RECONCILE_SIGNAL: String(signal?.id ?? ''),
+            RECONCILE_SIGNAL_SERIAL: signalSerial ?? '',
+            RECONCILE_LOT_HOLD: QUALITY_LOT,
+            RECONCILE_CLOSE_ORDER: QUALITY_CLOSE_ORDER,
+            ...browserLogin,
+          });
+          const final = (await requiredJson('quality-final.json')) as
+            { holds: string[] } | undefined;
+          qualityReport.final = final;
+          if (exitCode !== 0) {
+            fail(`the trace page, holds or close failed (Playwright exit ${String(exitCode)})`);
+          }
+          phase('qualityFinal');
+
+          const holds = (final?.holds ?? []).filter((id) => id !== '');
+          await until(
+            'the outbox posted every quality notification',
+            async () =>
+              (await stack.sqlJson<number>(
+                `SELECT count(*) FROM orders.erp_message_log WHERE direction = 'out' AND status <> 'sent'`,
+              )) === 0,
+            60_000,
+          ).catch((error: unknown) => {
+            fail(error instanceof Error ? error.message : String(error));
+          });
+          qualityReport.notifications = await checkNotifications(ctx, holds);
+          qualityReport.audit = await qualityAudit(stack, {
+            quality: ORDER_USERS.quality.username,
+            supervisor: RECONCILE_USER,
+            closeOrder: QUALITY_CLOSE_ORDER,
+            holds,
+            fail,
+          });
+          const orderIds = reference.section.orders.map((o) => o.orderId).sort();
+          qualityReport.repost = await repostOutbox(
+            ctx,
+            orderIds,
+            [QUALITY_LOT],
+            ['quality-notification'],
+          );
+          log(`outbox posted again: ${JSON.stringify(qualityReport.repost)}`);
           phase('repost');
         }
 
@@ -1458,6 +1685,87 @@ function readJson(path: string): Promise<unknown> {
     (text) => JSON.parse(text) as unknown,
     () => undefined,
   );
+}
+
+/** The drift's first episode in a golden scenario's `trace.json` (#208), as an identity. */
+async function goldenDriftEpisode(golden: string): Promise<string> {
+  const trace = JSON.parse(await readFile(join(golden, 'trace.json'), 'utf8')) as TraceSectionJson;
+  const first = trace.drifts?.[0]?.firstEpisode;
+  if (!first) throw new Error(`${golden}/trace.json has no drift with a first episode`);
+  return episodeIdentity(first);
+}
+
+/**
+ * The quality pass's audit (#204, exit criterion 4 live): the quality user's two hold openings and
+ * one release and the supervisor's close of the order are in `identity.audit_log` with the user, a
+ * role of theirs, `authenticated` and the request id, on the holds and the order.
+ */
+async function qualityAudit(
+  stack: Stack,
+  input: {
+    readonly quality: string;
+    readonly supervisor: string;
+    readonly closeOrder: string;
+    readonly holds: readonly string[];
+    readonly fail: (message: string) => void;
+  },
+): Promise<Record<string, unknown>> {
+  const rows = await stack.sqlJson<
+    {
+      action: string;
+      username: string;
+      roles: string[];
+      authenticated: boolean;
+      requestId: string | null;
+      entity: string;
+    }[]
+  >(
+    `SELECT coalesce(json_agg(json_build_object('action', action, 'username', username,
+       'roles', roles, 'authenticated', authenticated, 'requestId', request_id,
+       'entity', entity_type || ':' || entity_id) ORDER BY id), '[]')
+     FROM identity.audit_log
+     WHERE action IN ('hold.open', 'hold.release', 'hold.reject', 'hold.comment', 'order.close')`,
+  );
+  const tally = (action: string, user: string) =>
+    rows.filter((r) => r.action === action && r.username === user).length;
+  const found = {
+    open: tally('hold.open', input.quality),
+    release: tally('hold.release', input.quality),
+    close: tally('order.close', input.supervisor),
+    others: rows.filter(
+      (r) =>
+        !(
+          (r.username === input.quality && ['hold.open', 'hold.release'].includes(r.action)) ||
+          (r.username === input.supervisor && r.action === 'order.close')
+        ),
+    ).length,
+  };
+  if (found.open !== 2 || found.release !== 1 || found.close !== 1 || found.others !== 0) {
+    input.fail(`quality audit: ${JSON.stringify({ found, rows })}`);
+  }
+  const holdEntities = new Set(
+    rows
+      .filter((r) => r.action.startsWith('hold.'))
+      .map((r) => r.entity.split(':').slice(1).join(':')),
+  );
+  if (input.holds.some((id) => !holdEntities.has(id))) {
+    input.fail(
+      `quality audit: holds ${input.holds.join(', ')}, audited ${[...holdEntities].join(', ')}`,
+    );
+  }
+  const closed = rows.find((r) => r.action === 'order.close');
+  if (closed && !closed.entity.endsWith(`:${input.closeOrder}`)) {
+    input.fail(`quality audit: the close is on ${closed.entity}, not ${input.closeOrder}`);
+  }
+  const bad = rows.filter(
+    (r) =>
+      !r.authenticated ||
+      r.requestId === null ||
+      !r.roles.includes(r.username === input.supervisor ? 'supervisor' : 'quality'),
+  );
+  if (bad.length > 0)
+    input.fail(`quality audit rows without user, role or request: ${JSON.stringify(bad)}`);
+  return { ...found, rows: rows.length };
 }
 
 /** An alarm KPI bucket of the MES in the ground truth's shape (`AlarmKpisJson`, sim-summary/3). */

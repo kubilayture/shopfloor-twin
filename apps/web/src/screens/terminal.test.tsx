@@ -354,8 +354,18 @@ describe('the operator terminal (#177)', () => {
     const app = await renderApp('/terminal/line-a1', { session: 'fetch' });
     await signOnAs('olga');
     await app.open();
-    // Nothing to say: no banner.
-    expect(screen.queryByTestId('terminal-quality')).toBeNull();
+    // Nothing to say: no banner, but the live lists are mounted already (#203 final review), so
+    // the first hold or signal is announced: a live region inserted with its content is not.
+    const holdList = screen.getByTestId('terminal-holds');
+    const signalList = screen.getByTestId('terminal-signals');
+    for (const list of [holdList, signalList]) {
+      expect([list.getAttribute('aria-live'), list.children.length]).toEqual(['polite', 0]);
+      // Never hidden while empty (#204 review): a live region with `display: none` is not one.
+      expect(list.className.split(/\s+/).filter((c) => /(^|:)hidden$/.test(c))).toEqual([]);
+      expect(list.hidden).toBe(false);
+    }
+    expect(screen.getByTestId('terminal-quality').dataset.empty).toBe('true');
+    expect(screen.queryByTestId('terminal-lots')).toBeNull();
     const held = hold({ subject: { kind: 'lot', id: 'K1' } });
     const view = viewOf({
       crew: mes.view.crew,
@@ -388,6 +398,11 @@ describe('the operator terminal (#177)', () => {
     });
     await app.push({ type: 'terminal', topic: 'terminal:line-a1', view });
     const banner = screen.getByTestId(`terminal-hold-${held.id}`);
+    // Into the same live regions, not new ones.
+    expect(screen.getByTestId('terminal-holds')).toBe(holdList);
+    expect(screen.getByTestId('terminal-signals')).toBe(signalList);
+    expect(holdList.contains(banner)).toBe(true);
+    expect(signalList.children).toHaveLength(2);
     expect(banner.dataset.subject).toBe('lot:K1');
     expect(banner.textContent).toContain('orders here: O-1');
     const open = screen.getByTestId('terminal-signal-4');
@@ -410,6 +425,9 @@ describe('the operator terminal (#177)', () => {
       view: { ...view, quality: { ...view.quality, holds: [] } },
     });
     expect(screen.queryByTestId(`terminal-hold-${held.id}`)).toBeNull();
+    // The emptied list stays mounted for the next hold.
+    expect(screen.getByTestId('terminal-holds')).toBe(holdList);
+    expect(holdList.children).toHaveLength(0);
   });
 
   it('on sign-off ends the session and forgets everything: the next operator sees none of the drafts', async () => {

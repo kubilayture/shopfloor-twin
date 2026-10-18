@@ -8,6 +8,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:reconcile": "node src/reconcile.ts",
+    "test:trace-perf": "node src/trace-perf.ts",
     "playwright:install": "playwright install --only-shell chromium"
   },
   "dependencies": {
@@ -15,6 +16,8 @@
     "@shopfloor/contracts": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/shift-calendar": "workspace:*",
+    "@shopfloor/spc-core": "workspace:*",
+    "@shopfloor/trace-core": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {

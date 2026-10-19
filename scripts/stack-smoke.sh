@@ -360,14 +360,21 @@ mes_container=$(docker compose ps -q mes)
 edge_network=$(docker inspect "$mes_container" \
   --format '{{range $name, $net := .NetworkSettings.Networks}}{{println $name}}{{end}}' | grep '_edge$' || true)
 [ -n "$edge_network" ] || fail "the MES is not on the edge network"
-edge_gateways=$(docker network inspect "$edge_network" \
-  --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}|{{index .Options "com.docker.network.bridge.inhibit_ipv4"}}|{{.Internal}}')
-[ "$edge_gateways" = '|true|true' ] ||
-  fail "the edge network has a gateway or is not internal ($edge_gateways)"
+# JSON forms: a plain template prints an unset address field as "invalid IP".
+edge_settings=$(docker network inspect "$edge_network" \
+  --format '{{json .IPAM.Config}}|{{index .Options "com.docker.network.bridge.inhibit_ipv4"}}|{{.Internal}}')
+case "$edge_settings" in
+  *'"Gateway"'*) fail "the edge network has an IPAM gateway ($edge_settings)" ;;
+  *'|true|true') ;;
+  *) fail "the edge network is not internal with inhibit_ipv4 ($edge_settings)" ;;
+esac
 for service in mes web; do
-  gateway=$(docker inspect "$(docker compose ps -q "$service")" \
-    --format "{{(index .NetworkSettings.Networks \"$edge_network\").Gateway}}")
-  [ -z "$gateway" ] || fail "$service has a gateway on the edge network ($gateway)"
+  endpoint=$(docker inspect "$(docker compose ps -q "$service")" \
+    --format "{{json (index .NetworkSettings.Networks \"$edge_network\")}}")
+  case "$endpoint" in
+    *'"Gateway":""'*) ;;
+    *) fail "$service has a gateway on the edge network ($endpoint)" ;;
+  esac
 done
 echo "ok: edge network internal, without a gateway (IPAM and endpoints)"
 

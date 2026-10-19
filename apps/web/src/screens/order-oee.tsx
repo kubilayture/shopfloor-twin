@@ -194,7 +194,7 @@ function OrderLineCard({ order }: { readonly order: OrderOeeDto }) {
       {line ? (
         <>
           <RatioHeadline label="Line OEE" ratio={line.oee} testId="order-line-oee-value" />
-          <dl className="grid grid-cols-[1fr_auto] gap-x-4 text-sm">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 text-sm [&_dd]:text-right [&_dt]:whitespace-nowrap">
             <dt className="text-slate-700">In progress</dt>
             <dd className="text-right">
               {time(line.from)} to {time(line.to)}

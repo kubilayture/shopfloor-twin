@@ -344,3 +344,28 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed  | 1,226.4 s |                                         |
     | smoke     | passed  | 89.1 s    |                                         |
     | reconcile | passed  | 1,652.4 s | alarms OK, orders OK, quality OK        |
+- #238 (P9-11, branch `feat/238-derived-work`, wave B; ADR-0032 and ADR-0035 amendments; no migration): MES derived work.
+  - **Incremental SPC:** `SpcDerivation` in `spc-core` resumes from the earliest changed reading (moving ranges, subgroups from the start of the affected one, rule windows, episodes from the first that reaches the point before), keeps the unchanged tail's judgments, and derives whole after a limit version change; `chart()` equals `spcChart` exactly. `spcChart` stays the definition, so `trace.json` is byte-identical (`pnpm test:golden`).
+  - **Property test** (`incremental.test.ts`, 500 runs, 8,000 once by hand): random universes (epochs rare or every few readings, retests, equal positions, outliers) fed by random scripts (batches in random order with readings held back, duplicates, removals, in-place changes of value, position and pass, version 1, a later version from a window, a version ended); after every operation `chart()` equals `spcChart`, and `kind` is `new` exactly on appends. Six mutants killed (one by a deterministic rule 2 case).
+  - **MES:** the `quality` module charts through the derivation; episodes, `planSignals`, finality and withdrawal unchanged; the golden SPC reconciliation also checks incremental equals whole on every partial tick. Hold scopes are rebuilt for every hold at once on `Genealogy.onChange` (now also after a carton rewrite) and on an opening or decision, deferred out of the round; no 1 s timer; `genealogy-pending` and the close guard unchanged. Copies kept in memory by the holds module.
+  - **Histograms** (edges 1, 2.5, 5, 10, 20, 25, 50, 100, 250 ms, 0.5 s, 1 s; `apps/mes-server/src/metrics.ts`): `mes_quality_spc_derive_seconds{kind=new|late}`, `mes_quality_chart_read_seconds`, `mes_quality_hold_scope_seconds`, `mes_genealogy_round_seconds`; each module's `onTiming` gives the raw timings the budget tests use.
+  - **Budgets** (gate run, raw timings, asserted):
+
+    | Measurement                                   | Target              | `week-01`                    | Synthetic month (8,756 readings) |
+    | --------------------------------------------- | ------------------- | ---------------------------- | -------------------------------- |
+    | new reading, `mes_quality_spc_derive_seconds` | p95 ≤ 10 ms         | 1.8 ms                       | 2.7 ms                           |
+    | late reading (30 held back)                   | p95 ≤ 20 ms         | 4.5 ms                       | 11.0 ms                          |
+    | default chart read (last 500)                 | p50 ≤ 10 ms (month) | 4.0 ms                       | 7.3 ms                           |
+    | 200 open holds: round p95 + scope p95 − base  | ≤ 50 ms             | 31.6 ms (16.1 + 31.7 − 16.1) | —                                |
+
+  - **Decisions:** the synthetic month is `week-01`'s leak tests four times over in one epoch (parts and serials renumbered), not cut (about 50 s); a version write and the first derivation after a start count as `late` (whole derivations); the holds budget rebuilds after every round of the measured half (an upper bound: the MES rebuilds only on a change); the hold budget's holds are inserted directly (7 lot holds, 193 serial holds), since opening 200 through the API measures nothing of the budget.
+  - **Deviations:** the first gate (`b8e0a2e`) failed on the month's late p95 (21.9 ms); fixed by one batched `UPDATE … FROM jsonb_to_recordset` per derivation's episode updates, a subgroup mean reduced once (same fraction), binary insertion of a few changed readings; the hold copies kept in memory took the hold budget from 43.8 to about 31 ms. `HoldsOptions.tickMs` became `follow` (tests set `follow: false`).
+  - **Gate** on `b942995` (`GATE_PROJECT=gate238`, `GATE_TAG=pr238`, `TURBO_FORCE=1`), `GATE-OK`; free at the start: host 37.8 GiB, Docker 73.4 GiB.
+
+    | Step      | Result | Time      | Notes                                   |
+    | --------- | ------ | --------- | --------------------------------------- |
+    | verify    | passed | 495.1 s   | `pnpm verify --concurrency=1`, uncached |
+    | golden    | passed | 1.5 s     | all four goldens                        |
+    | e2e       | passed | 1,457.2 s | the three budget tests included         |
+    | smoke     | passed | 88.5 s    |                                         |
+    | reconcile | passed | 1,650.9 s | alarms OK, orders OK, quality OK        |

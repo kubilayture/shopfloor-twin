@@ -34,16 +34,22 @@ export type TestClient =
       readonly user?: { readonly userName: string; readonly password: string };
     };
 
-const certificateManagers = new Map<string, OPCUACertificateManager>();
+const certificateManagers = new Map<string, Promise<OPCUACertificateManager>>();
 
-/** One certificate manager per folder and process: node-opcua locks the folder it manages. */
-function certificateManager(folder: string): OPCUACertificateManager {
+/**
+ * One certificate manager per folder and process (node-opcua locks the folder it manages),
+ * initialised once before its first use: clients that start at the same moment and initialise it
+ * each on their own can read its trust list before it is loaded and refuse a pinned server
+ * (`BadCertificateUntrusted`).
+ */
+function certificateManager(folder: string): Promise<OPCUACertificateManager> {
   let manager = certificateManagers.get(folder);
   if (!manager) {
-    manager = new OPCUACertificateManager({
+    const created = new OPCUACertificateManager({
       rootFolder: folder,
       automaticallyAcceptUnknownCertificate: false,
     });
+    manager = created.initialize().then(() => created);
     certificateManagers.set(folder, manager);
   }
   return manager;
@@ -65,7 +71,7 @@ export async function connect(
           securityPolicy: SecurityPolicy.Basic256Sha256,
           certificateFile: pkiFiles(as.pkiFolder).certificateFile,
           privateKeyFile: pkiFiles(as.pkiFolder).privateKeyFile,
-          clientCertificateManager: certificateManager(as.pkiFolder),
+          clientCertificateManager: await certificateManager(as.pkiFolder),
         });
   await client.connect(opcuaEndpoint('localhost', port));
   try {

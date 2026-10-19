@@ -54,20 +54,22 @@ export interface SecurityCheckOptions {
 
 export class SecurityCheckError extends Error {}
 
-const managers = new Map<string, OPCUACertificateManager>();
-function manager(folder: string): OPCUACertificateManager {
+const managers = new Map<string, Promise<OPCUACertificateManager>>();
+/** One manager per folder, initialised once before its first use (see `testing.ts`). */
+function manager(folder: string): Promise<OPCUACertificateManager> {
   let found = managers.get(folder);
   if (!found) {
-    found = new OPCUACertificateManager({
+    const created = new OPCUACertificateManager({
       rootFolder: folder,
       automaticallyAcceptUnknownCertificate: false,
     });
+    found = created.initialize().then(() => created);
     managers.set(folder, found);
   }
   return found;
 }
 
-function secureClient(folder: string): OPCUAClient {
+async function secureClient(folder: string): Promise<OPCUAClient> {
   return OPCUAClient.create({
     applicationName: 'shopfloor-twin tools',
     applicationUri: TOOLS_APPLICATION_URI,
@@ -77,7 +79,7 @@ function secureClient(folder: string): OPCUAClient {
     securityPolicy: SecurityPolicy.Basic256Sha256,
     certificateFile: pkiFiles(folder).certificateFile,
     privateKeyFile: pkiFiles(folder).privateKeyFile,
-    clientCertificateManager: manager(folder),
+    clientCertificateManager: await manager(folder),
   });
 }
 
@@ -92,7 +94,7 @@ async function withSession<T>(
   use: (session: ClientSession) => Promise<T>,
   forceAnonymous = false,
 ): Promise<T> {
-  const client = secureClient(folder);
+  const client = await secureClient(folder);
   try {
     await client.connect(endpoint);
     if (forceAnonymous) {
@@ -147,7 +149,7 @@ export async function checkOpcuaSecurity(options: SecurityCheckOptions): Promise
       connectionStrategy: { maxRetry: 1 },
       certificateFile: pkiFiles(options.toolsFolder).certificateFile,
       privateKeyFile: pkiFiles(options.toolsFolder).privateKeyFile,
-      clientCertificateManager: manager(options.toolsFolder),
+      clientCertificateManager: await manager(options.toolsFolder),
     });
     let endpoints: EndpointDescription[];
     try {

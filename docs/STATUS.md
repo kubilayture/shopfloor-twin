@@ -2,11 +2,29 @@
 
 ## Current phase: 09 – Simulation console, scenarios and hardening (in progress; plan accepted in #226; Phase 8 closed 2026-10-18)
 
-## Exit criteria progress: Phase 8 closed with 7 / 7 met by local runs (GitHub Actions could not run; deviations and gate exceptions in `docs/phases/phase-08-report.md`); Phase 9: 0 / 9 (wave A started)
+## Exit criteria progress: Phase 8 closed with 7 / 7 met by local runs (GitHub Actions could not run; deviations and gate exceptions in `docs/phases/phase-08-report.md`); Phase 9: 1 / 9 met (3, scenario playback), 2 partly met (1, golden order and line OEE: line OEE in the MES remains; 9, no regression: the SignAndEncrypt check and the closing `verify` runs remain), 6 not started (wave A checkpoint in `docs/phases/phase-09-log.md`)
 
 ## Done since last update
 
-- #231 done (branch `feat/231-mes-order-oee`, wave B; ADR-0036 amendment P9-04; no migration): MES order OEE per order and job, derived on read from the command state (queue with `notBefore`, lost facts), units and CNC pieces; `GET /api/v1/oee/orders/{id}` (route matrix 91) and push `oee:order:<id>`; golden reconciliation of `orders-01` (7 final, 1 open) and `quality-01` (6, 1) equal to `line-oee.json` in order, in bounded disorder and shuffled with 10 % duplicates, judged on partial data. Line OEE is #232.
+- Wave A checkpoint (`docs/phases/phase-09-log.md`, 2026-10-19). Its three conditions are met:
+  - `line-oee.json` is committed for the four goldens;
+  - the goldens' `events.sha256`, `summary.json` (with both configuration hashes) and `trace.json` are byte-identical;
+  - the every-kind timeline gives the same event log live (1×, 7.5×, 60×, stepped) and headless, and recorded dispatches replay byte for byte.
+
+  The entry records the wave's decisions:
+  - the `notBefore` head time;
+  - completion per ADR-0031;
+  - control API minors in merge order (1.7 to 1.10);
+  - the `sim-core` external lane;
+  - time plus event count (Q2);
+  - `inputOrder`, `endAfterEvents` and `stopAt`;
+  - `/scenario/recorded` kept off `/sim/`;
+  - exact-route allowlist matching.
+
+  It also records the deviations, the risks carried forward and the follow-ups parked on #232, #233, #237 and #245. The verdict is go for waves B and C.
+
+- #236 merged (PR #253, `0b73097`): dispatch recording (`acceptedAt`, `afterEvents`), `GET /api/v1/scenario/recorded` (control API 1.10) and headless replay byte for byte, `LoadOrder` through OPC UA included; `inputOrder`, `endAfterEvents`, `stopAt`, `configSha256` checked; probe Q2; ADR-0037 amendment; goldens byte-identical. Wave A complete.
+- #231 merged (PR #252, `3da7c3b`; branch `feat/231-mes-order-oee`, wave B; ADR-0036 amendment P9-04; no migration): MES order OEE per order and job, derived on read from the command state (queue with `notBefore`, lost facts), units and CNC pieces; `GET /api/v1/oee/orders/{id}` (route matrix 91) and push `oee:order:<id>`; golden reconciliation of `orders-01` (7 final, 1 open) and `quality-01` (6, 1) equal to `line-oee.json` in order, in bounded disorder and shuffled with 10 % duplicates, judged on partial data. Line OEE is #232.
 - #235 merged (PR #250, `c9f8537`): scenario timelines (`config/scenarios/*.yaml`, one schema with the golden `scenario.json`), headless and live playback, the live event log `SIM_EVENT_LOG`, the `external` lane in `sim-core`'s queue, control API 1.9, ADR-0037 amendment; goldens byte-identical.
 - #230 merged (PR #251, `182e297`): the order and line OEE ground truth, `line-oee.json` beside the four goldens and `lineOee` in the live ground truth (cut by `?asOf`), control API 1.8, ADR-0036 amendment.
 - #234 merged (PR #249, `86592fb`): simulator console actions (`GET /lots`, `/operators`, `/actions`, lot block and release, forced absence, tool breakage), control API 1.7, ADR-0037; goldens byte-identical.
@@ -134,11 +152,22 @@
 
 ## In progress
 
-- #236 (P9-09) dispatch recording and headless replay (branch `feat/236-dispatch-replay`, wave A; full gate before the pull request): the live run records every job it accepts with its point of the run (`acceptedAt`, `afterEvents`), `GET /api/v1/scenario/recorded` (control API 1.10) serves the run as a `scenario.json` (dispatches, injections, actions, an `end` just after the simulation time) and the headless run replays it to the live event log byte for byte, MES `LoadOrder` calls mid-run through the OPC UA method included; duplicate and refused calls are not recorded; injections and actions replayed in their acceptance order (`inputOrder`), the replay stopped at the run's own event count (`endAfterEvents`), `configSha256` checked (review of PR #253); probe Q2 changed the recorded shape from the device sequence to the event count; ADR-0037 amendment; goldens byte-identical.
+- #232 (P9-05, wave B): MES line OEE per hour, shift and order, with the bottleneck in the API and push, and golden reconciliation of all four goldens. It also takes #252's review follow-ups:
+  - the low-survivor unit cases;
+  - a revision marker on views with incidents;
+  - gap lookups by each machine's own epoch;
+  - the truth's planned-stop, in-progress and completion conventions.
 
 ## Next up
 
-- Wave A checkpoint in the phase log after #236. P9-10 (#237) adds `GET /api/v1/actions` and the scenario routes to the `/sim/` allowlist as exact routes, not prefixes; `GET /api/v1/scenario/recorded` (1.10, #236) stays off it (it reveals the seed and `configSha256`, like `/ground-truth`) and is reached directly with the control token.
+- Wave B:
+  - P9-06 (#233) after #232. Its order topics need a budget apart from the dashboard's 16 `oee:` topics.
+  - P9-10 (#237) in the second PR slot. Its `/sim/` allowlist names exact routes: `GET /api/v1/actions`, `GET /scenario`, `GET /scenarios` and `POST /scenario`, with the earlier console routes. `GET /api/v1/scenario/recorded` stays off it, because it reveals the seed and `configSha256` like `/ground-truth`; it is reached directly with the control token.
+  - P9-11 (#238).
+- Wave C, as dependencies and the two-PR limit allow:
+  - P9-12 (#239) opens with probe Q1.
+  - P9-13 (#240) and P9-17 (#244) need only P9-01.
+- Carried to P9-18 (#245): order-OEE read cost (derived on read, golden p95 28.5 and 45.1 ms) in P1 against T4 and T5.
 
 ## Blockers and open questions for the owner
 

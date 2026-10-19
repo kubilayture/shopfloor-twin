@@ -4,7 +4,11 @@ import { STATUS_CODES } from 'node:http';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyReply } from 'fastify';
 import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
 import { z } from 'zod';
-import { MAX_TIMELINE_ENTRIES, TIMELINE_ACTIONS } from '@shopfloor/plant-config';
+import {
+  MAX_RECORDED_ENTRIES,
+  MAX_TIMELINE_ENTRIES,
+  TIMELINE_ACTIONS,
+} from '@shopfloor/plant-config';
 import type { PacerState, PacerStatus } from '../live/pacer.ts';
 import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { isoTime } from '../headless/serialize.ts';
@@ -25,6 +29,7 @@ import type {
 } from '../plant/line.ts';
 import { PRODUCTION_MODES } from '../plant/line.ts';
 import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
+import { RecordingTooLargeError, type RecordedScenario } from '../live/recording.ts';
 import type { ScenarioControl } from '../live/timeline.ts';
 import type { EventHub } from './event-hub.ts';
 
@@ -34,9 +39,9 @@ import type { EventHub } from './event-hub.ts';
  * ground truth (#172), 1.5 the leak-test drift injection (#196), 1.6 the trace ground truth with
  * `?asOf` (#208), 1.7 the console actions and the lot and operator reads (#234), 1.8 the order
  * and line OEE ground truth `lineOee`, cut by `?asOf` too (#230), 1.9 the scenario timelines
- * (#235).
+ * (#235), 1.10 the recording of the run's dispatches and inputs, `GET /scenario/recorded` (#236).
  */
-export const CONTROL_API_VERSION = '1.9.0';
+export const CONTROL_API_VERSION = '1.10.0';
 export const API_PREFIX = '/api/v1';
 /** The largest `POST /scenario` body (#235 review): far above MAX_TIMELINE_ENTRIES entries. */
 export const SCENARIO_BODY_LIMIT = 512 * 1024;
@@ -768,6 +773,94 @@ export const timelineSchema = z.object({
   ),
 });
 
+/**
+ * The recorded run (#236, 1.10): a `scenario.json` document (`plant-config`'s scenario schema) a
+ * headless run replays to the live event log (`headless --timeline <file>`).
+ */
+export const recordedScenarioSchema = z.object({
+  description: z.string(),
+  seed: count,
+  start: isoSchema,
+  days: count.describe('Whole days covering `end`'),
+  end: isoSchema.describe(
+    "One millisecond after the run's simulation time, or after the latest accepted input not due yet",
+  ),
+  endAfterEvents: count.describe(
+    'Events the run had processed: the replay stops exactly there, so the logs are equal line for line',
+  ),
+  stopAt: isoSchema.describe(
+    "The run's simulation time at the stop: the replay's clock and summaries end there",
+  ),
+  configSha256: z
+    .string()
+    .describe("The run's configuration hash: the replay refuses another configuration"),
+  config: z.string().describe('The configuration folder, relative to the repository root'),
+  stock: z
+    .string()
+    .optional()
+    .describe("SIM_STOCK's file name: save the document beside that file to replay it"),
+  production: z.literal('orders').optional(),
+  dispatches: z
+    .array(
+      z.object({
+        commandId: z.string(),
+        machine: z.string(),
+        orderId: z.string(),
+        product: z.string(),
+        quantity: count,
+        notBefore: isoSchema,
+        acceptedAt: isoSchema
+          .optional()
+          .describe('The simulation time of the acceptance; absent for a job accepted while idle'),
+        afterEvents: count
+          .optional()
+          .describe('Events the run had processed when it accepted the job, with `acceptedAt`'),
+      }),
+    )
+    .optional()
+    .describe(
+      'Every accepted job, in acceptance order; duplicate and refused calls are not listed',
+    ),
+  injections: z
+    .array(
+      z.union([
+        z.object({
+          at: isoSchema,
+          machine: z.string(),
+          code: z.string(),
+          repairMs: z.number().optional(),
+        }),
+        z.object({
+          kind: z.literal('leak-drift'),
+          at: isoSchema,
+          until: isoSchema,
+          machine: z.string(),
+          shift: z.number(),
+        }),
+      ]),
+    )
+    .optional(),
+  actions: z
+    .array(
+      z.union([
+        z.object({ kind: z.enum(['lot-block', 'lot-release']), at: isoSchema, lot: z.string() }),
+        z.object({ kind: z.literal('tool-breakage'), at: isoSchema, machine: z.string() }),
+        z.object({
+          kind: z.literal('operators-absent'),
+          shift: z.string(),
+          operators: z.array(z.string()),
+        }),
+      ]),
+    )
+    .optional(),
+  inputOrder: z
+    .array(z.enum(['injection', 'action']))
+    .optional()
+    .describe(
+      'The order the injections and actions were accepted in, interleaved (only when both are there)',
+    ),
+});
+
 export const scenarioBodySchema = z.union([
   z.object({ name: z.string().describe('A committed timeline of config/scenarios') }).strict(),
   z
@@ -841,6 +934,8 @@ export interface ControlAppOptions {
   };
   /** Scenario timelines (#235, 1.9): load one while idle, its progress, the committed ones. */
   readonly scenario?: ScenarioControl;
+  /** The run's recording (#236, 1.10, `GET /scenario/recorded`); the route exists only when given. */
+  readonly recorded?: () => RecordedScenario;
   /** True once the live event log (`SIM_EVENT_LOG`) failed to write (#235 review); a gauge. */
   readonly eventLogFailed?: () => boolean;
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
@@ -855,6 +950,7 @@ export async function buildControlApp({
   groundTruth,
   console: consoleActions,
   scenario,
+  recorded,
   eventLogFailed,
   logger = false,
   version = CONTROL_API_VERSION,
@@ -902,7 +998,8 @@ export async function buildControlApp({
         },
         {
           name: 'scenario',
-          description: 'Scenario timelines of config/scenarios, played live (1.9)',
+          description:
+            'Scenario timelines of config/scenarios, played live (1.9), and the recording of the run (1.10)',
         },
       ],
     },
@@ -1320,6 +1417,41 @@ export async function buildControlApp({
 
   if (scenario) {
     registerScenarioRoutes(app, pacer, scenario);
+  }
+
+  if (recorded) {
+    app.get(
+      `${API_PREFIX}/scenario/recorded`,
+      {
+        schema: {
+          tags: ['scenario'],
+          summary: "The run's dispatches and inputs so far, as a scenario a headless run replays",
+          description:
+            'A `scenario.json` document (#236): every job the line accepted (a `LoadOrder` call ' +
+            'or a start-time dispatch), in acceptance order, with the simulation time and the ' +
+            'number of events processed when it was accepted (`acceptedAt`, `afterEvents`; ' +
+            'neither for a job accepted while the run was idle at its start), and the injections ' +
+            'and console actions the run accepted. Duplicate and refused `LoadOrder` calls change ' +
+            'nothing and are not listed. `headless --timeline <file>` replays it: it stops at ' +
+            '`endAfterEvents`, where the run stood, so its event log equals the live one line for ' +
+            "line (`end` is one millisecond after the run's simulation time, or after the latest " +
+            'accepted input not due yet). `inputOrder` interleaves the injections and actions in acceptance ' +
+            'order; `configSha256` is checked by the replay. 413: a list longer than ' +
+            `${String(MAX_RECORDED_ENTRIES)} entries.`,
+          response: { 200: json(recordedScenarioSchema), 413: json(errorSchema) },
+        },
+      },
+      (_request, reply) => {
+        try {
+          return recorded();
+        } catch (error) {
+          if (error instanceof RecordingTooLargeError) {
+            return reply.code(413).send({ error: 'Content Too Large', message: error.message });
+          }
+          throw error;
+        }
+      },
+    );
   }
 
   app.get(EVENTS_PATH, { websocket: true, schema: { hide: true } }, (socket) => {

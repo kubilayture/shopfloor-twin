@@ -51,6 +51,9 @@ export async function generateOpenApi(): Promise<string> {
       view: () => undefined,
       list: () => Promise.resolve([]),
     },
+    recorded: () => {
+      throw new Error('not served');
+    },
   });
   await app.ready();
   const document = app.swagger();

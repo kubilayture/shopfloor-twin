@@ -1,14 +1,22 @@
 /**
  * The scenario routes of the control API (#235, 1.9): `POST /scenario` by name or inline while
- * idle, `GET /scenario` with each entry's progress, `GET /scenarios`, and their refusals.
+ * idle, `GET /scenario` with each entry's progress, `GET /scenarios`, and their refusals; and the
+ * recording of the run, `GET /scenario/recorded` (#236, 1.10).
  */
 import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MAX_TIMELINE_ENTRIES, type PlantConfig } from '@shopfloor/plant-config';
+import {
+  MAX_RECORDED_ENTRIES,
+  MAX_TIMELINE_ENTRIES,
+  parseScenario,
+  scenarioPlan,
+  type PlantConfig,
+} from '@shopfloor/plant-config';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { SCENARIOS } from '../headless/timeline.ts';
+import { RecordingTooLargeError } from '../live/recording.ts';
 import { createLiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import { scenarioControl } from '../live/timeline.ts';
@@ -64,8 +72,8 @@ const post = (server: FastifyInstance, payload: object) =>
   server.inject({ method: 'POST', url: '/api/v1/scenario', payload });
 
 describe('scenario routes (1.9, #235)', () => {
-  it('is version 1.9', () => {
-    expect(CONTROL_API_VERSION).toBe('1.9.0');
+  it('is version 1.10 (#236)', () => {
+    expect(CONTROL_API_VERSION).toBe('1.10.0');
   });
 
   it('lists the committed timelines', async () => {
@@ -228,5 +236,150 @@ describe('scenario routes (1.9, #235)', () => {
     const res = await post(app, { name: 'example' });
     expect(res.statusCode).toBe(409);
     expect(res.json<{ message: string }>().message).toBe('the run has finished');
+  });
+});
+
+describe('the recorded run (1.10, #236)', () => {
+  it('serves the accepted dispatches at their points and the inputs, as a scenario document', async () => {
+    const clock = new ManualClock();
+    const run = createLiveRun({
+      config,
+      seed: SEED,
+      start: T0,
+      speed: 60,
+      clock,
+      production: 'orders',
+    });
+    app = await buildControlApp({
+      pacer: run.pacer,
+      hub: new EventHub(),
+      ready: () => true,
+      recorded: () => run.recorded({ config: 'config/plant', stock: 'stock-01.yaml' }),
+    });
+    const job = (commandId: string, product: string) => ({
+      commandId,
+      orderId: commandId,
+      product,
+      quantity: 3,
+      notBefore: T0,
+    });
+    expect(run.line.loadOrder('cnc-01', job('C-1', 'VB-100'), run.simulation).ok).toBe(true);
+    expect(
+      run.injectFailure({
+        machine: 'cnc-01',
+        code: 'COOLANT-PRESSURE',
+        at: T0 + 7_200_123,
+        repairMs: 4_000,
+      }).ok,
+    ).toBe(true);
+    // An action accepted between two injections, and a drift: `inputOrder` keeps the order.
+    expect(run.act({ kind: 'tool-breakage', machine: 'cnc-02', at: T0 + 3_600_007 }).ok).toBe(true);
+    expect(
+      run.injectLeakDrift({
+        machine: 'lkt-01',
+        shift: 0.5,
+        at: T0 + 1_800_009,
+        until: T0 + 5_400_009,
+      }).ok,
+    ).toBe(true);
+    run.pacer.start();
+    clock.advance(60_000);
+    run.pacer.pause();
+    const now = run.simulation.now;
+    expect(run.line.loadOrder('cnc-02', job('C-2', 'VB-200'), run.simulation).ok).toBe(true);
+    // A retried call: the same job, nothing added, nothing recorded.
+    expect(run.line.loadOrder('cnc-02', job('C-2', 'VB-200'), run.simulation)).toMatchObject({
+      ok: true,
+      duplicate: true,
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/scenario/recorded' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<Record<string, unknown>>();
+    expect(body).toEqual(
+      JSON.parse(JSON.stringify(run.recorded({ config: 'config/plant', stock: 'stock-01.yaml' }))),
+    );
+    expect(body).toMatchObject({
+      seed: SEED,
+      start: '2026-10-12T03:00:00.000Z',
+      days: 1,
+      end: new Date(T0 + 7_200_124).toISOString(),
+      endAfterEvents: run.simulation.processed,
+      configSha256: expect.stringMatching(/^[0-9a-f]{64}$/) as unknown,
+      config: 'config/plant',
+      stock: 'stock-01.yaml',
+      production: 'orders',
+      dispatches: [
+        { commandId: 'C-1', machine: 'cnc-01', notBefore: '2026-10-12T03:00:00.000Z' },
+        {
+          commandId: 'C-2',
+          machine: 'cnc-02',
+          acceptedAt: new Date(now).toISOString(),
+          afterEvents: run.simulation.processed,
+        },
+      ],
+      injections: [
+        {
+          at: '2026-10-12T05:00:00.123Z',
+          machine: 'cnc-01',
+          code: 'COOLANT-PRESSURE',
+          repairMs: 4_000,
+        },
+        {
+          kind: 'leak-drift',
+          at: '2026-10-12T03:30:00.009Z',
+          until: '2026-10-12T04:30:00.009Z',
+          machine: 'lkt-01',
+          shift: 0.5,
+        },
+      ],
+      actions: [{ kind: 'tool-breakage', at: '2026-10-12T04:00:00.007Z', machine: 'cnc-02' }],
+      inputOrder: ['injection', 'action', 'injection'],
+    });
+    expect((body.dispatches as object[])[0]).not.toHaveProperty('acceptedAt');
+    // The schema a headless run reads takes it as it is.
+    const parsed = parseScenario(body);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(scenarioPlan(parsed.scenario).end).toBe(T0 + 7_200_124);
+  });
+
+  it('answers 413 for a run past the recording bound', async () => {
+    app = await buildControlApp({
+      pacer: createLiveRun({ config, seed: SEED, start: T0, clock: new ManualClock() }).pacer,
+      hub: new EventHub(),
+      ready: () => true,
+      recorded: () => {
+        throw new RecordingTooLargeError('dispatches', MAX_RECORDED_ENTRIES + 1);
+      },
+    });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/scenario/recorded' });
+    expect(res.statusCode).toBe(413);
+    expect(res.json<{ message: string }>().message).toBe(
+      `the run has ${String(MAX_RECORDED_ENTRIES + 1)} dispatches, more than a recording takes (${String(MAX_RECORDED_ENTRIES)})`,
+    );
+  });
+
+  it('refuses to load a recording live: it is replayed headless', async () => {
+    const { app } = await setup();
+    const res = await post(app, {
+      timeline: {
+        seed: SEED,
+        start: '2026-10-12T03:00:00.000Z',
+        days: 1,
+        config: 'config/plant',
+        configSha256: 'a'.repeat(64),
+        endAfterEvents: 0,
+        stopAt: '2026-10-12T03:00:00.000Z',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ message: string }>().message).toMatch(/replayed headless/);
+  });
+
+  it('exists only when the run gives its recording', async () => {
+    const { app } = await setup();
+    expect((await app.inject({ method: 'GET', url: '/api/v1/scenario/recorded' })).statusCode).toBe(
+      404,
+    );
   });
 });

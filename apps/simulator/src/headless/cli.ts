@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { scenarioNames, scenarioOptions } from './golden.ts';
-import { loadTimeline, timelineNames, timelinePath } from './timeline.ts';
+import { loadTimeline, timelineNames, timelinePath, withEarlierEnd } from './timeline.ts';
 import {
   lineOeeDocument,
   runHeadless,
@@ -135,7 +135,8 @@ if (options.timeline !== undefined) {
     if (options.scenarioEnd <= run.start || options.scenarioEnd > run.end) {
       usage(`--end must be after the timeline's start and not after its end`);
     }
-    run = { ...run, end: options.scenarioEnd };
+    // An earlier end replaces a recording's own stop (#236 review).
+    run = withEarlierEnd(run, options.scenarioEnd);
   }
 } else if (options.scenario === undefined) {
   const loaded = await loadPlantConfig(resolve(options.config));

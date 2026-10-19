@@ -1,6 +1,6 @@
 # ADR-0030: Order-driven simulator: production mode `orders`, idempotent `LoadOrder` and job facts
 
-- Status: accepted
+- Status: accepted (the limit on jobs dispatched mid-run closed by #236: recorded live and replayed headless, ADR-0037's second amendment)
 - Date: 2026-10-16
 - Deciders: Claude (#172), within the Phase 7 plan ("Order-driven simulator", review decisions B3, H1, H2, M3, M4 and M6); recorded for the owner under the standing instruction of 2026-10-15
 

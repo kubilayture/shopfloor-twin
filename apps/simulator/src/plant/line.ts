@@ -320,9 +320,30 @@ interface Job {
   readonly notBefore: SimTime;
   readonly position: number;
   readonly acceptedAt: SimTime;
+  /** Events the simulation had processed when the job was accepted (#236, the recording). */
+  readonly afterEvents: number;
   taken: number;
   startedAt: SimTime | undefined;
   completedAt: SimTime | undefined;
+}
+
+/** An external input's kind (#236 review): a failure or drift injection, or a console action. */
+export type InputKind = 'injection' | 'action';
+
+/**
+ * An accepted job as the live recording keeps it (#236, `GET /scenario/recorded`): the dispatch
+ * itself and where in the run it was accepted, the simulation time and the number of events
+ * processed by then, which together name the exact point between two events.
+ */
+export interface RecordedDispatch {
+  readonly commandId: string;
+  readonly machine: string;
+  readonly orderId: string;
+  readonly product: string;
+  readonly quantity: number;
+  readonly notBefore: SimTime;
+  readonly acceptedAt: SimTime;
+  readonly afterEvents: number;
 }
 
 /** Longest command and order id `LoadOrder` takes. */
@@ -649,6 +670,12 @@ export class ProductionLine {
   readonly #jobs: Job[] = [];
   /** Console actions (#234), in acceptance order, numbered on their own from 1. */
   readonly #actions: ActionRecord[] = [];
+  /**
+   * The order the line accepted its external inputs in (#236 review): an injection or drift
+   * (`injection`, one numbering) or a console action (`action`). Their external events share the
+   * queue's lane in acceptance order, so a replay must accept them in this order too.
+   */
+  readonly #inputOrder: InputKind[] = [];
   #crewNow: CrewNow | undefined;
   /** Orders mode: every job this run accepted, by command id, line-wide (the dedup table). */
   readonly #acceptedCommands = new Map<string, Job>();
@@ -1130,6 +1157,7 @@ export class ProductionLine {
       appliedAt: undefined,
     };
     this.#injections.push(injection);
+    this.#inputOrder.push('injection');
     // External (#235): at `at`, before the model's own events, wherever in the run it is accepted.
     simulation.schedule(
       at,
@@ -1211,6 +1239,7 @@ export class ProductionLine {
       endedBy: undefined,
     };
     this.#drifts.push(drift);
+    this.#inputOrder.push('injection');
     simulation.schedule(
       at,
       { type: 'drift-start', station: request.machine, injection: drift.id },
@@ -1589,7 +1618,6 @@ export class ProductionLine {
         reason: `LoadOrder needs production mode "orders"; the simulator runs "${this.production}"`,
       };
     }
-    this.#now = simulation.now;
     const known = this.#acceptedCommands.get(request.commandId);
     if (known) {
       const same =
@@ -1637,6 +1665,9 @@ export class ProductionLine {
         reason: `${machineId} already has ${String(MAX_QUEUED_JOBS)} jobs queued`,
       };
     }
+    // Only an accepted call touches the line (#236): a duplicate or refused one changes nothing,
+    // so the recording leaves it out and a headless replay needs nothing for it.
+    this.#now = simulation.now;
     const job: Job = {
       commandId: request.commandId,
       orderId: request.orderId,
@@ -1646,6 +1677,7 @@ export class ProductionLine {
       notBefore: request.notBefore,
       position: station.jobs.length + 1,
       acceptedAt: this.#now,
+      afterEvents: simulation.processed,
       taken: 0,
       startedAt: undefined,
       completedAt: undefined,
@@ -1731,6 +1763,31 @@ export class ProductionLine {
   /** The `notBefore` of an accepted job (#230: the line OEE truth's head time), or undefined. */
   jobNotBefore(commandId: string): SimTime | undefined {
     return this.#acceptedCommands.get(commandId)?.notBefore;
+  }
+
+  /**
+   * Every job accepted so far (orders mode), in acceptance order, with where in the run it was
+   * accepted (#236): what a headless run needs to give it at the same point.
+   */
+  recordedDispatches(): RecordedDispatch[] {
+    return this.#jobs.map((job) => ({
+      commandId: job.commandId,
+      machine: job.machine,
+      orderId: job.orderId,
+      product: job.product,
+      quantity: job.quantity,
+      notBefore: job.notBefore,
+      acceptedAt: job.acceptedAt,
+      afterEvents: job.afterEvents,
+    }));
+  }
+
+  /**
+   * The kinds of the external inputs accepted so far, in acceptance order (#236 review): with the
+   * injections (failures and drifts by id) and the actions (by id), the exact acceptance order.
+   */
+  inputOrder(): InputKind[] {
+    return [...this.#inputOrder];
   }
 
   /** Every job accepted so far (orders mode), in acceptance order, with its progress. */
@@ -1902,6 +1959,7 @@ export class ProductionLine {
       simulation.schedule(at, { type: 'lot-action', action: id }, 'external');
     }
     this.#actions.push(action);
+    this.#inputOrder.push('action');
     return { ok: true, action: this.#actionView(action) };
   }
 
@@ -1931,6 +1989,7 @@ export class ProductionLine {
       appliedAt: undefined,
     };
     this.#actions.push(action);
+    this.#inputOrder.push('action');
     return { ok: true, action: this.#actionView(action) };
   }
 

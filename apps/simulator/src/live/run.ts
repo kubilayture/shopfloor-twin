@@ -1,7 +1,12 @@
 import type { InjectionSpec, PlantConfig, Scenario } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
 import { isoTime } from '../headless/serialize.ts';
-import { analysisConfigHash, applyDispatches, type DispatchSpec } from '../headless/run.ts';
+import {
+  analysisConfigHash,
+  applyDispatches,
+  configHash,
+  type DispatchSpec,
+} from '../headless/run.ts';
 import { LineOeeTruth, type LineOeeSection } from '../headless/line-oee-truth.ts';
 import { GroundTruth, type GroundTruthSummary } from '../headless/summary.ts';
 import {
@@ -31,6 +36,7 @@ import {
 import type { MachineState } from '../plant/machine-state.ts';
 import { ProcessValues } from '../plant/process-values.ts';
 import { LivePacer, type WallClock } from './pacer.ts';
+import { recordScenario, type RecordedScenario } from './recording.ts';
 import {
   LiveTimeline,
   type InfrastructureHooks,
@@ -149,6 +155,19 @@ export interface LiveRun {
   loadTimeline(scenario: Scenario, name?: string | null): TimelineLoadResult;
   /** The loaded timeline with each entry's progress, or undefined. */
   timeline(): TimelineView | undefined;
+  /**
+   * The recording so far (#236, `GET /scenario/recorded`): a `scenario.json` a headless run
+   * replays to this run's event log, with every accepted dispatch at its point of the run.
+   */
+  recorded(where: RecordingPlace): RecordedScenario;
+}
+
+/** Where the recorded run's configuration is, as a scenario names it (#236). */
+export interface RecordingPlace {
+  /** The configuration folder, relative to the repository root. */
+  readonly config: string;
+  /** The stock file's name, when the run used one (`SIM_STOCK`). */
+  readonly stock?: string | undefined;
 }
 
 export function createLiveRun(options: LiveOptions): LiveRun {
@@ -258,5 +277,21 @@ export function createLiveRun(options: LiveOptions): LiveRun {
     operators: () => line.operators(),
     loadTimeline: (scenario, name) => timeline.load(scenario, name ?? null),
     timeline: () => timeline.view(),
+    recorded: (where) =>
+      recordScenario({
+        seed: options.seed,
+        start: options.start,
+        simNow: simulation.now,
+        production: line.production,
+        configSha256: configHash(options.config),
+        processed: simulation.processed,
+        inputOrder: line.inputOrder(),
+        config: where.config,
+        stock: where.stock,
+        dispatches: line.recordedDispatches(),
+        injections: line.injections(),
+        drifts: line.drifts(),
+        actions: line.actions(),
+      }),
   };
 }

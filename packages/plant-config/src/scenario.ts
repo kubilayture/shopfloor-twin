@@ -28,6 +28,16 @@ export const TIMELINE_SPEED = { min: 0.5, max: 60 } as const;
  */
 export const MAX_TIMELINE_ENTRIES = 1_000;
 
+/**
+ * The most entries each list of a recorded run may have (#236 review): a recording (a document
+ * with `configSha256`) is written by a live run, not by hand, and a long run with the MES
+ * dispatching every order passes 1,000 jobs. `GET /scenario/recorded` refuses a run past it (413).
+ */
+export const MAX_RECORDED_ENTRIES = 100_000;
+
+/** The kinds `inputOrder` interleaves (#236 review): an injection (failure or drift) or an action. */
+export const INPUT_KINDS = ['injection', 'action'] as const;
+
 export const SCENARIO_PRODUCTION_MODES = ['schedule', 'orders'] as const;
 
 /** ISO 8601 with an offset or Z, as integer ms; undefined when it is not one. */
@@ -79,6 +89,13 @@ const dispatchFields = {
   product: text,
   quantity,
   notBefore: instant,
+  /**
+   * A dispatch recorded live (#236, `GET /scenario/recorded`): the simulation time it was accepted
+   * at, with `afterEvents`. Both or neither; without them it is given at the start time.
+   */
+  acceptedAt: instant.optional(),
+  /** The number of events the run had processed when it was accepted (#236), with `acceptedAt`. */
+  afterEvents: z.number().int().min(0).optional(),
 };
 const actionItem = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.enum(['lot-block', 'lot-release']), at: instant, lot: text }),
@@ -127,7 +144,10 @@ export const timelineEntrySchema = z.discriminatedUnion('action', [
     operators: z.array(text),
   }),
   z.strictObject({ action: z.literal('tool-breakage'), at: instant, machine: text }),
-  /** Headless only: given at the run's start, as a golden scenario's `dispatches`. */
+  /**
+   * Headless only: given at the run's start, as a golden scenario's `dispatches`, or at its
+   * recorded point (`acceptedAt`, `afterEvents`, #236).
+   */
   z.strictObject({ action: z.literal('dispatch'), ...dispatchFields }),
   z.strictObject({
     action: z.literal('speed'),
@@ -170,6 +190,30 @@ export const scenarioSchema = z
         (days) => Number.isSafeInteger(days * 86_400_000),
         'days must be a whole number of milliseconds (days × 86,400,000 an integer)',
       ),
+    /**
+     * An earlier end inside the span (#236), as the headless CLI's `--end`: a recording of a live
+     * run ends just after the time the run had reached.
+     */
+    end: instant.optional(),
+    /**
+     * A recorded run (#236 review): the replay stops once it has processed exactly this many events,
+     * where the live run stood, so the two logs are equal line for line. With `stopAt`.
+     */
+    endAfterEvents: z.number().int().min(0).optional(),
+    /**
+     * A recorded run (#236 re-review): the live run's simulation time at the stop, with
+     * `endAfterEvents`. The replay's clock ends there and its summaries are taken there, as the live
+     * ground truth is.
+     */
+    stopAt: instant.optional(),
+    /**
+     * The `configSha256` of the run a recording was made from (#236 review): checked against the
+     * configuration the replay loads. Its presence marks a recorded document (`MAX_RECORDED_ENTRIES`).
+     */
+    configSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/, 'expected a SHA-256 in lowercase hex')
+      .optional(),
     /** The configuration folder, relative to the repository root. */
     config: text,
     /** A stock file in the scenario's folder, in place of the configuration's `stock.yaml`. */
@@ -179,15 +223,92 @@ export const scenarioSchema = z
     erp: z.strictObject({ dataset: text, release: z.array(text) }).optional(),
     injections: z
       .array(z.union([failureInjection, driftInjection]))
-      .max(MAX_TIMELINE_ENTRIES)
+      .max(MAX_RECORDED_ENTRIES)
       .optional(),
-    dispatches: z.array(z.strictObject(dispatchFields)).max(MAX_TIMELINE_ENTRIES).optional(),
-    actions: z.array(actionItem).max(MAX_TIMELINE_ENTRIES).optional(),
+    dispatches: z.array(z.strictObject(dispatchFields)).max(MAX_RECORDED_ENTRIES).optional(),
+    actions: z.array(actionItem).max(MAX_RECORDED_ENTRIES).optional(),
+    /**
+     * The order the injections and actions were accepted in, interleaved (#236 review): one kind
+     * per entry, each list's entries taken in list order. Without it, every injection comes before
+     * every action. Their external events share one lane in acceptance order, so an injection and
+     * an action of one millisecond, or a drift's end and an action, depend on it.
+     */
+    inputOrder: z
+      .array(z.enum(INPUT_KINDS))
+      .max(2 * MAX_RECORDED_ENTRIES)
+      .optional(),
     timeline: z.array(timelineEntrySchema).max(MAX_TIMELINE_ENTRIES).optional(),
   })
   .superRefine((scenario, context) => {
+    // A hand-written golden list keeps the timeline's bound; a recording has its own (above).
+    if (scenario.configSha256 === undefined) {
+      for (const key of ['injections', 'dispatches', 'actions', 'inputOrder'] as const) {
+        const length = scenario[key]?.length ?? 0;
+        if (length > MAX_TIMELINE_ENTRIES) {
+          context.addIssue({
+            code: 'custom',
+            path: [key],
+            message: `at most ${String(MAX_TIMELINE_ENTRIES)} entries (a recorded run, with configSha256, takes ${String(MAX_RECORDED_ENTRIES)})`,
+          });
+        }
+      }
+    }
+    if ((scenario.stopAt === undefined) !== (scenario.endAfterEvents === undefined)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['stopAt'],
+        message: 'a recorded stop has both stopAt and endAfterEvents, or neither',
+      });
+    }
+    if (scenario.inputOrder !== undefined) {
+      const count = (kind: (typeof INPUT_KINDS)[number]) =>
+        scenario.inputOrder?.filter((k) => k === kind).length ?? 0;
+      if (
+        count('injection') !== (scenario.injections?.length ?? 0) ||
+        count('action') !== (scenario.actions?.length ?? 0)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['inputOrder'],
+          message: 'inputOrder must name each injection and each action once',
+        });
+      }
+    }
+    if (scenario.end !== undefined) {
+      const start = instantMs(scenario.start);
+      const end = instantMs(scenario.end);
+      if (
+        start !== undefined &&
+        end !== undefined &&
+        (end <= start || end > start + scenario.days * 86_400_000)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['end'],
+          message: 'end must be after start and not after start + days',
+        });
+      }
+    }
+    const timed = (
+      entries: readonly { acceptedAt?: string | undefined; afterEvents?: number | undefined }[],
+      path: (index: number) => (string | number)[],
+    ) => {
+      entries.forEach((entry, index) => {
+        if ((entry.acceptedAt === undefined) !== (entry.afterEvents === undefined)) {
+          context.addIssue({
+            code: 'custom',
+            path: path(index),
+            message: 'a recorded dispatch has both acceptedAt and afterEvents, or neither',
+          });
+        }
+      });
+    };
+    timed(scenario.dispatches ?? [], (index) => ['dispatches', index]);
+    (scenario.timeline ?? []).forEach((entry, index) => {
+      if (entry.action === 'dispatch') timed([entry], () => ['timeline', index]);
+    });
     if (scenario.timeline !== undefined) {
-      for (const key of ['injections', 'dispatches', 'actions'] as const) {
+      for (const key of ['injections', 'dispatches', 'actions', 'inputOrder'] as const) {
         if (scenario[key] !== undefined) {
           context.addIssue({
             code: 'custom',
@@ -214,7 +335,10 @@ export const scenarioSchema = z
 
 export type Scenario = z.output<typeof scenarioSchema>;
 
-/** A scenario dispatch: one `LoadOrder` at the start time (times in integer ms). */
+/**
+ * A scenario dispatch: one `LoadOrder` at the start time, or, recorded live (#236), at the point
+ * `acceptedAt` and `afterEvents` name (times in integer ms).
+ */
 export interface DispatchEntrySpec {
   readonly commandId: string;
   readonly machine: string;
@@ -222,6 +346,8 @@ export interface DispatchEntrySpec {
   readonly product: string;
   readonly quantity: number;
   readonly notBefore: number;
+  readonly acceptedAt?: number;
+  readonly afterEvents?: number;
 }
 
 /** A timeline entry outside the plant model, played by a live run only (times in integer ms). */
@@ -253,6 +379,14 @@ export interface ScenarioPlan {
   readonly injections: readonly InjectionSpec[];
   readonly dispatches: readonly DispatchEntrySpec[];
   readonly actions: readonly ActionSpec[];
+  /** Recorded (#236 review): the injections and actions interleaved in acceptance order. */
+  readonly inputOrder?: readonly (typeof INPUT_KINDS)[number][];
+  /** Recorded (#236 review): stop after exactly this many events, with `stopAt`. */
+  readonly endAfterEvents?: number;
+  /** Recorded (#236 re-review): the simulation time of the stop. */
+  readonly stopAt?: number;
+  /** Recorded (#236 review): the configuration hash the replay must match. */
+  readonly configSha256?: string;
   readonly infrastructure: readonly InfrastructureSpec[];
   readonly origins: ScenarioOrigins;
 }
@@ -322,6 +456,9 @@ export function scenarioPlan(scenario: Scenario): ScenarioPlan {
     product: d.product,
     quantity: d.quantity,
     notBefore: ms(d.notBefore),
+    ...(d.acceptedAt === undefined || d.afterEvents === undefined
+      ? {}
+      : { acceptedAt: ms(d.acceptedAt), afterEvents: d.afterEvents }),
   });
   (scenario.dispatches ?? []).forEach((d, index) => {
     dispatches.push(dispatch(d));
@@ -425,11 +562,15 @@ export function scenarioPlan(scenario: Scenario): ScenarioPlan {
   return {
     seed: scenario.seed,
     start,
-    end: start + scenario.days * 86_400_000,
+    end: scenario.end === undefined ? start + scenario.days * 86_400_000 : ms(scenario.end),
     production: scenario.production ?? 'schedule',
     injections,
     dispatches,
     actions,
+    ...(scenario.inputOrder === undefined ? {} : { inputOrder: scenario.inputOrder }),
+    ...(scenario.endAfterEvents === undefined ? {} : { endAfterEvents: scenario.endAfterEvents }),
+    ...(scenario.stopAt === undefined ? {} : { stopAt: ms(scenario.stopAt) }),
+    ...(scenario.configSha256 === undefined ? {} : { configSha256: scenario.configSha256 }),
     infrastructure,
     origins,
   };
@@ -481,6 +622,17 @@ export function checkScenarioPlan(
       message: 'dispatches need production mode "orders"',
     });
   }
+  issues.push(
+    ...recordedDispatchIssues(
+      plan.dispatches,
+      start,
+      end,
+      origins.dispatches,
+      plan.stopAt === undefined || plan.endAfterEvents === undefined
+        ? undefined
+        : { at: plan.stopAt, events: plan.endAfterEvents },
+    ),
+  );
   const equipment = config.plant.areas.flatMap((area) =>
     area.workCenters.flatMap((workCenter) => workCenter.equipment),
   );
@@ -519,6 +671,67 @@ export function checkScenarioPlan(
       });
     }
     windows.set(device, { until: entry.until ?? Infinity, path });
+  });
+  return issues;
+}
+
+/**
+ * The order rules of recorded dispatches (#236): every dispatch given at the start comes before
+ * every recorded one, and recorded ones are in acceptance order (neither the time nor the event
+ * count goes back) inside the run `[start, end)`; with a recorded stop (`stopAt`,
+ * `endAfterEvents`, #236 re-review), the stop is inside the run and no dispatch comes after it.
+ * Shared with the headless run's own checks.
+ */
+export function recordedDispatchIssues(
+  dispatches: readonly {
+    readonly acceptedAt?: number | undefined;
+    readonly afterEvents?: number | undefined;
+  }[],
+  start: number,
+  end: number,
+  paths: readonly string[] = [],
+  stop?: { readonly at: number; readonly events: number },
+): { path: string; message: string }[] {
+  const issues: { path: string; message: string }[] = [];
+  if (stop && (stop.at < start || stop.at >= end)) {
+    issues.push({
+      path: 'stopAt',
+      message: `stopAt ${iso(stop.at)} is outside the run [start, end)`,
+    });
+  }
+  let previous: { at: number; events: number } | undefined;
+  dispatches.forEach((dispatch, index) => {
+    const path = paths[index] ?? `dispatches[${String(index)}]`;
+    const { acceptedAt, afterEvents } = dispatch;
+    if (acceptedAt === undefined || afterEvents === undefined) {
+      if (previous) {
+        issues.push({
+          path,
+          message: 'a dispatch given at the start must come before every recorded dispatch',
+        });
+      }
+      return;
+    }
+    if (acceptedAt < start || acceptedAt >= end) {
+      issues.push({
+        path,
+        message: `acceptedAt ${iso(acceptedAt)} is outside the run [start, end)`,
+      });
+    }
+    if (previous && (acceptedAt < previous.at || afterEvents < previous.events)) {
+      issues.push({
+        path,
+        message:
+          'recorded dispatches must be in acceptance order (acceptedAt and afterEvents never go back)',
+      });
+    }
+    previous = { at: acceptedAt, events: afterEvents };
+    if (stop && (acceptedAt > stop.at || afterEvents > stop.events)) {
+      issues.push({
+        path,
+        message: `a recorded dispatch after the recorded stop (${String(stop.events)} events at ${iso(stop.at)})`,
+      });
+    }
   });
   return issues;
 }

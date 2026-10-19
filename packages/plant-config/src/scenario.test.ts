@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { formatIssues, loadPlantConfig } from './load.ts';
 import {
+  MAX_RECORDED_ENTRIES,
   MAX_TIMELINE_ENTRIES,
   TIMELINE_ACTIONS,
   checkScenarioPlan,
@@ -458,6 +459,211 @@ describe('checkScenarioPlan edges (#235 review)', () => {
         message: 'overlaps the modbus-silent window of timeline[4] (until the end)',
       },
     ]);
+  });
+});
+
+describe('recorded runs (#236)', () => {
+  const T0 = Date.UTC(2026, 9, 12, 3);
+  const job = (commandId: string, extra: object = {}) => ({
+    commandId,
+    machine: 'cnc-01',
+    orderId: commandId,
+    product: 'VB-100',
+    quantity: 2,
+    notBefore: '2026-10-12T03:00:00.000Z',
+    ...extra,
+  });
+
+  it('takes an earlier end inside the span, and dispatches recorded at their points', () => {
+    const plan = scenarioPlan(
+      parsed({
+        ...HEAD,
+        end: '2026-10-12T05:00:00.001Z',
+        production: 'orders',
+        dispatches: [
+          job('C0'),
+          job('C1', { acceptedAt: '2026-10-12T04:00:00.000Z', afterEvents: 40 }),
+          job('C2', { acceptedAt: '2026-10-12T04:00:00.000Z', afterEvents: 40 }),
+        ],
+      }),
+    );
+    expect(plan.end).toBe(T0 + 2 * 3_600_000 + 1);
+    expect(plan.dispatches.map((d) => [d.acceptedAt, d.afterEvents])).toEqual([
+      [undefined, undefined],
+      [T0 + 3_600_000, 40],
+      [T0 + 3_600_000, 40],
+    ]);
+    expect(plan.dispatches[0]).not.toHaveProperty('acceptedAt');
+    expect(checkScenarioPlan(config, plan)).toEqual([]);
+    // A timeline's dispatch entry takes them too.
+    const timeline = scenarioPlan(
+      parsed({
+        ...HEAD,
+        production: 'orders',
+        timeline: [
+          {
+            action: 'dispatch',
+            ...job('C1', { acceptedAt: '2026-10-12T04:00:00Z', afterEvents: 3 }),
+          },
+        ],
+      }),
+    );
+    expect(timeline.dispatches[0]?.afterEvents).toBe(3);
+  });
+
+  it('refuses an end outside the span, and half a recorded point', () => {
+    expect(issuesOf({ ...HEAD, end: '2026-10-12T03:00:00Z' })).toEqual([
+      { path: 'end', message: 'end must be after start and not after start + days' },
+    ]);
+    expect(issuesOf({ ...HEAD, end: '2026-10-13T03:00:00.001Z' })).toHaveLength(1);
+    expect(parseScenario({ ...HEAD, end: '2026-10-13T03:00:00Z' }).ok).toBe(true);
+    expect(
+      issuesOf({
+        ...HEAD,
+        production: 'orders',
+        dispatches: [job('C1', { afterEvents: 3 })],
+        timeline: undefined,
+      }),
+    ).toEqual([
+      {
+        path: 'dispatches[0]',
+        message: 'a recorded dispatch has both acceptedAt and afterEvents, or neither',
+      },
+    ]);
+    expect(issuesOf({ ...HEAD, dispatches: [job('C1', { afterEvents: -1 })] })).not.toEqual([]);
+  });
+
+  it('names recorded dispatches out of acceptance order, outside the run, or before a start-time one', () => {
+    const plan = scenarioPlan(
+      parsed({
+        ...HEAD,
+        end: '2026-10-12T05:00:00Z',
+        production: 'orders',
+        dispatches: [
+          job('C1', { acceptedAt: '2026-10-12T04:00:00Z', afterEvents: 40 }),
+          job('C2', { acceptedAt: '2026-10-12T03:59:00Z', afterEvents: 41 }),
+          job('C3', { acceptedAt: '2026-10-12T04:30:00Z', afterEvents: 39 }),
+          job('C4'),
+          job('C5', { acceptedAt: '2026-10-12T05:00:00Z', afterEvents: 50 }),
+        ],
+      }),
+    );
+    expect(checkScenarioPlan(config, plan).map((i) => i.path)).toEqual([
+      'dispatches[1]',
+      'dispatches[2]',
+      'dispatches[3]',
+      'dispatches[4]',
+    ]);
+    expect(checkScenarioPlan(config, plan)[3]?.message).toMatch(/outside the run/);
+  });
+});
+
+describe('recorded runs, review of #236', () => {
+  const SHA = 'a'.repeat(64);
+  const lots = (n: number) =>
+    Array.from({ length: n }, () => ({ kind: 'lot-block', at: '2026-10-12T04:00:00Z', lot: 'L' }));
+  const failure = { at: '2026-10-12T04:00:00Z', machine: 'cnc-01', code: 'SPINDLE-OVERLOAD' };
+
+  it('takes up to MAX_RECORDED_ENTRIES per list in a recording, MAX_TIMELINE_ENTRIES otherwise', () => {
+    expect(issuesOf({ ...HEAD, actions: lots(MAX_TIMELINE_ENTRIES + 1) })).toEqual([
+      {
+        path: 'actions',
+        message: `at most ${String(MAX_TIMELINE_ENTRIES)} entries (a recorded run, with configSha256, takes ${String(MAX_RECORDED_ENTRIES)})`,
+      },
+    ]);
+    expect(
+      issuesOf({ ...HEAD, configSha256: SHA, actions: lots(MAX_TIMELINE_ENTRIES + 1) }),
+    ).toEqual([]);
+    expect(
+      issuesOf({ ...HEAD, configSha256: SHA, actions: lots(MAX_RECORDED_ENTRIES + 1) }).map(
+        (i) => i.path,
+      ),
+    ).toEqual(['actions']);
+    expect(issuesOf({ ...HEAD, configSha256: 'ABC' }).map((i) => i.path)).toEqual(['configSha256']);
+  });
+
+  it('maps inputOrder, endAfterEvents and configSha256 onto the plan', () => {
+    const plan = scenarioPlan(
+      parsed({
+        ...HEAD,
+        configSha256: SHA,
+        endAfterEvents: 12,
+        stopAt: '2026-10-12T04:30:00.000Z',
+        injections: [failure],
+        actions: lots(2),
+        inputOrder: ['action', 'injection', 'action'],
+      }),
+    );
+    expect([plan.configSha256, plan.endAfterEvents, plan.stopAt, plan.inputOrder]).toEqual([
+      SHA,
+      12,
+      Date.UTC(2026, 9, 12, 4, 30),
+      ['action', 'injection', 'action'],
+    ]);
+    const plain = scenarioPlan(parsed({ ...HEAD, injections: [failure] }));
+    expect(plain).not.toHaveProperty('inputOrder');
+    expect(plain).not.toHaveProperty('endAfterEvents');
+    expect(plain).not.toHaveProperty('stopAt');
+    expect(plain).not.toHaveProperty('configSha256');
+  });
+
+  it('refuses an inputOrder that does not name each entry once, or beside a timeline', () => {
+    const message = 'inputOrder must name each injection and each action once';
+    expect(
+      issuesOf({ ...HEAD, injections: [failure], actions: lots(1), inputOrder: ['action'] }),
+    ).toEqual([{ path: 'inputOrder', message }]);
+    expect(
+      issuesOf({
+        ...HEAD,
+        injections: [failure],
+        actions: lots(1),
+        inputOrder: ['injection', 'injection'],
+      }),
+    ).toEqual([{ path: 'inputOrder', message }]);
+    expect(issuesOf({ ...HEAD, timeline: [], inputOrder: [] }).map((i) => i.path)).toEqual([
+      'inputOrder',
+    ]);
+    expect(
+      issuesOf({ ...HEAD, endAfterEvents: -1, stopAt: '2026-10-12T04:00:00Z' }).map((i) => i.path),
+    ).toEqual(['endAfterEvents']);
+  });
+
+  it('refuses half a recorded stop, a stop outside the run, and a dispatch after the stop', () => {
+    const message = 'a recorded stop has both stopAt and endAfterEvents, or neither';
+    expect(issuesOf({ ...HEAD, endAfterEvents: 3 })).toEqual([{ path: 'stopAt', message }]);
+    expect(issuesOf({ ...HEAD, stopAt: '2026-10-12T04:00:00Z' })).toEqual([
+      { path: 'stopAt', message },
+    ]);
+    const job = (afterEvents: number, acceptedAt: string) => ({
+      commandId: `C${String(afterEvents)}`,
+      machine: 'cnc-01',
+      orderId: 'O',
+      product: 'VB-100',
+      quantity: 1,
+      notBefore: '2026-10-12T03:00:00Z',
+      acceptedAt,
+      afterEvents,
+    });
+    const plan = (stopAt: string, endAfterEvents: number) =>
+      checkScenarioPlan(
+        config,
+        scenarioPlan(
+          parsed({
+            ...HEAD,
+            production: 'orders',
+            configSha256: SHA,
+            stopAt,
+            endAfterEvents,
+            dispatches: [job(10, '2026-10-12T04:00:00Z')],
+          }),
+        ),
+      );
+    expect(plan('2026-10-12T04:00:00Z', 10)).toEqual([]);
+    expect(plan('2026-10-12T04:00:00Z', 9).map((i) => i.message)).toEqual([
+      'a recorded dispatch after the recorded stop (9 events at 2026-10-12T04:00:00.000Z)',
+    ]);
+    expect(plan('2026-10-12T03:59:59.999Z', 10).map((i) => i.path)).toEqual(['dispatches[0]']);
+    expect(plan('2026-10-13T03:00:00Z', 10).map((i) => i.path)).toEqual(['stopAt']);
   });
 });
 

@@ -161,7 +161,7 @@
 
 ## In progress
 
-- #239 (P9-12, wave C): pushed on `feat/239-opcua-security`, awaiting its pull request and review.
+- #239 (P9-12, wave C): PR #260, the security review's six findings fixed on `feat/239-opcua-security`, awaiting re-review.
 - #233 (P9-06, wave B): pushed on `feat/233-web-oee`, awaiting its pull request and review.
 
 ## Next up
@@ -169,6 +169,7 @@
 - Wave B: complete once #233 and #238 merge.
 - Wave C, as dependencies and the two-PR limit allow:
   - P9-13 (#240) and P9-17 (#244) need only P9-01.
+- Carried to P9-15 (#242): OPC UA logins have only a 250 ms wait per refused password (#239 review); S5's per-account and per-address throttling should cover them.
 - Carried to P9-18 (#245): order-OEE read cost (derived on read, golden p95 28.5 and 45.1 ms) in P1 against T4 and T5.
 
 ## Blockers and open questions for the owner

@@ -23,6 +23,7 @@ import {
   constructEventFilter,
   resolveNodeId,
   type ClientSession,
+  type NodeId,
 } from 'node-opcua';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLiveRun, type LiveRun } from '../live/run.ts';
@@ -39,6 +40,14 @@ import {
   type DocumentedVariable,
   type TestClient,
 } from './testing.ts';
+
+/** The plant event type each project event type projects (ADR-0009). */
+const PLANT_EVENT_TYPE = new Map<string, string>([
+  [OPCUA_EVENT_TYPES.stateChange, 'state'],
+  [OPCUA_EVENT_TYPES.cycleComplete, 'cycle-complete'],
+  [OPCUA_EVENT_TYPES.alarm, 'alarm'],
+  [OPCUA_EVENT_TYPES.job, 'job'],
+]);
 
 // Monday 06:00 Istanbul: the scripted shift is the first morning shift of the week.
 const T0 = Date.UTC(2026, 9, 12, 3);
@@ -283,6 +292,7 @@ describe('OPC UA integration at 60× under SignAndEncrypt (#56, #239, plan secti
       constructEventFilter([
         ...OPCUA_EVENT_FIELDS.common.map((f) => `${String(nsIndex)}:${f}`),
         'Time',
+        'EventType',
       ]);
     const clients = await Promise.all(
       OPCUA_MACHINES.flatMap((machine) =>
@@ -299,6 +309,7 @@ describe('OPC UA integration at 60× under SignAndEncrypt (#56, #239, plan secti
           });
           const sequences: number[] = [];
           const times: number[] = [];
+          const types: string[] = [];
           const item = await subscription.monitor(
             { nodeId: resolveNodeId('i=2253'), attributeId: AttributeIds.EventNotifier },
             {
@@ -310,15 +321,24 @@ describe('OPC UA integration at 60× under SignAndEncrypt (#56, #239, plan secti
             TimestampsToReturn.Both,
           );
           item.on('changed', (values: unknown) => {
-            const [sequence, machineId, time] = (values as { value: unknown }[]).map(
+            const [sequence, machineId, time, eventType] = (values as { value: unknown }[]).map(
               (v) => v.value,
             );
             if (machineId === machine.id) {
               sequences.push(Number(sequence));
               times.push((time as Date).getTime());
+              types.push(PLANT_EVENT_TYPE.get(String((eventType as NodeId).value)) ?? 'other');
             }
           });
-          return { machine: machine.id, client, connection, subscription, sequences, times };
+          return {
+            machine: machine.id,
+            client,
+            connection,
+            subscription,
+            sequences,
+            times,
+            types,
+          };
         }),
       ),
     );
@@ -355,6 +375,9 @@ describe('OPC UA integration at 60× under SignAndEncrypt (#56, #239, plan secti
       // Content, not just numbering: event N carries the simulation time of the model's N-th event.
       for (const c of clients.filter((client) => client.machine === machine.id)) {
         expect(c.times, machine.id).toEqual(emitted.map((e) => e.at));
+        // And its type (exit criterion 9: every event keeps its (machine, seq, type) under
+        // SignAndEncrypt, #239).
+        expect(c.types, machine.id).toEqual(emitted.map((e) => e.type));
       }
     }
     await Promise.all(

@@ -29,14 +29,16 @@ map "$http_origin|$scheme://$http_host" $sim_same_origin {
     "~^([^|]+)\|\1$" 1;
     default 0;
 }
-# The upgrade headers go to the control API only from the event-stream location, which sets
-# $sim_ws to 1 (#237 review); every other /sim/ route sends `Upgrade: ""` and `Connection: close`.
-map $sim_ws $sim_upgrade {
-    1 $http_upgrade;
+# The upgrade headers sent to the control API (#237 review): the browser's only for the event
+# stream, `Upgrade: ""` and `Connection: close` for every other /sim/ route. Keyed by the request
+# line's path, not a `set` in the location: the auth_request subrequest shares the request's
+# variables and runs the server-level rewrite phase again, which would reset such a variable.
+map $request_uri $sim_upgrade {
+    "~^/sim/api/v1/events(\?|\z)" $http_upgrade;
     default "";
 }
-map "$sim_ws:$http_upgrade" $sim_connection {
-    "~^1:.+" upgrade;
+map $request_uri $sim_connection {
+    "~^/sim/api/v1/events(\?|\z)" $connection_upgrade;
     default close;
 }
 map "$sim_write:$sim_same_origin:$http_sec_fetch_site" $sim_origin_refused {
@@ -62,8 +64,6 @@ server {
     # The simulator's control API (#237), on the default network; reached only through /sim/.
     set $sim_upstream http://simulator:4800;
     set $sim_token "${SIM_CONTROL_TOKEN}";
-    # 1 only in the event-stream location (the upgrade headers, above).
-    set $sim_ws 0;
     charset utf-8;
 
     gzip on;
@@ -204,7 +204,6 @@ server {
     # The plant event stream (WebSocket): read-only; a paused run may send nothing for long.
     location = /sim/api/v1/events {
         limit_except GET { deny all; }
-        set $sim_ws 1;
         include /etc/nginx/snippets/sim-proxy.conf;
         proxy_read_timeout 1h;
     }

@@ -36,7 +36,16 @@ if (!parsed.ok) {
 }
 const env = parsed.env;
 // The `edge` network (#237): its CIDR from the MES's own alias there; in Compose a must.
-const edgeCidr = await learnEdgeCidr(env.MES_EDGE_ALIAS);
+let edgeCidr = await learnEdgeCidr(env.MES_EDGE_ALIAS);
+// In Compose a network attached a moment late gets a few seconds before the MES gives up.
+for (
+  let attempt = 1;
+  edgeCidr === undefined && env.MES_EDGE_REQUIRED === 'on' && attempt <= 10;
+  attempt++
+) {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  edgeCidr = await learnEdgeCidr(env.MES_EDGE_ALIAS);
+}
 if (edgeCidr === undefined && env.MES_EDGE_REQUIRED === 'on') {
   console.error(
     `MES_EDGE_ALIAS ${env.MES_EDGE_ALIAS} does not resolve to a local interface; the MES is not ` +

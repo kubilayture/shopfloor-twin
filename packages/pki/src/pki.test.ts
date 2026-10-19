@@ -9,6 +9,8 @@ import {
   createCertificateAuthority,
   createEmptyCrl,
   createKeyAndCertificate,
+  EMPTIED_FOLDERS,
+  UnknownIdentityError,
   ensureOpcuaPki,
   inspectCertificate,
   issueCertificate,
@@ -74,6 +76,8 @@ describe('ensureOpcuaPki, the pki step', () => {
         identity.role === 'server' ? SERVER_AUTH : CLIENT_AUTH,
       ]);
       expect(info.notAfter.getTime() - Date.now()).toBeGreaterThan(364 * DAY_MS);
+      // A leaf may not sign certificates (#239 review).
+      expect(info.keyCertSign).toBe(false);
       const files = pkiFiles(identity.folder);
       expect(
         keyMatchesCertificate(
@@ -116,34 +120,60 @@ describe('ensureOpcuaPki, the pki step', () => {
     }
   });
 
-  it('removes a renewed peer’s old pin under any file name, and leaves foreign files alone', async () => {
+  it('makes trusted/certs exactly the pins and empties the CRL and issuer folders (#239 review)', async () => {
     await ensureOpcuaPki(roots);
-    const cnc = pkiFiles(join(roots.simulator, 'cnc-01')).trustedCerts;
+    const folder = join(roots.simulator, 'cnc-01');
+    const cnc = pkiFiles(folder).trustedCerts;
     const oldGateway = await readFile(pkiFiles(roots.gateway).certificateFile, 'utf8');
     await writeFile(join(cnc, 'copied-by-hand.pem'), oldGateway);
-    const foreign = await createKeyAndCertificate({
-      commonName: 'someone else',
+    // What a server kept before #239: node-opcua accepted every client and pinned it.
+    const legacy = await createKeyAndCertificate({
+      commonName: 'legacy client',
       role: 'client',
-      applicationUri: 'urn:example:other',
+      applicationUri: 'urn:example:legacy',
       dnsNames: [],
       validityDays: 90,
       now: new Date(),
     });
-    await writeFile(join(cnc, 'other.pem'), foreign.certificatePem);
+    await writeFile(join(cnc, 'legacy-0123abcd.pem'), legacy.certificatePem);
     await writeFile(join(cnc, 'notes.txt'), 'not a certificate');
+    const ca = await createCertificateAuthority({
+      commonName: 'x',
+      validityDays: 60,
+      now: new Date(),
+    });
+    const crl = await createEmptyCrl(ca, new Date());
+    await writeFile(join(folder, 'trusted', 'crl', 'x.crl.pem'), crl);
+    await writeFile(join(folder, 'issuers', 'certs', 'x.pem'), ca.certificatePem);
+    await writeFile(join(folder, 'issuers', 'crl', 'x.crl.pem'), crl);
     const result = await ensureOpcuaPki({ ...roots, renew: ['edge-gateway'] });
     expect(result.identities.find((i) => i.name === 'edge-gateway')).toMatchObject({
       action: 'renewed',
       reason: 'renewal requested',
     });
-    expect(result.removed).toContain('cnc-01: copied-by-hand.pem');
-    expect(result.removed).toContain('cnc-01: edge-gateway.pem');
-    expect((await readdir(cnc)).sort()).toEqual([
-      'edge-gateway.pem',
-      'notes.txt',
-      'other.pem',
-      'tools.pem',
-    ]);
+    expect(result.removed).toEqual(
+      expect.arrayContaining([
+        'cnc-01: trusted/certs/edge-gateway.pem',
+        'cnc-01: trusted/certs/copied-by-hand.pem',
+        'cnc-01: trusted/certs/legacy-0123abcd.pem',
+        'cnc-01: trusted/certs/notes.txt',
+        'cnc-01: trusted/crl/x.crl.pem',
+        'cnc-01: issuers/certs/x.pem',
+        'cnc-01: issuers/crl/x.crl.pem',
+      ]),
+    );
+    expect((await readdir(cnc)).sort()).toEqual(['edge-gateway.pem', 'tools.pem']);
+    for (const empty of EMPTIED_FOLDERS) expect(await readdir(join(folder, empty))).toEqual([]);
+    const pinned = await readFile(join(cnc, 'edge-gateway.pem'), 'utf8');
+    expect(inspectCertificate(pinned).thumbprint).toBe(
+      (await certificate(roots.gateway)).thumbprint,
+    );
+  });
+
+  it('refuses to renew an identity it does not know', async () => {
+    await expect(ensureOpcuaPki({ ...roots, renew: ['tools', 'cnc-9'] })).rejects.toThrow(
+      UnknownIdentityError,
+    );
   });
 
   it.each([
@@ -254,6 +284,7 @@ describe('a certificate authority (probe Q1)', () => {
     expect(info.extendedKeyUsages).toEqual([CLIENT_AUTH]);
     expect(keyMatchesCertificate(issued.privateKeyPem, issued.certificatePem)).toBe(true);
     expect(inspectCertificate(ca.certificatePem).subject).toContain('CN=test CA');
+    expect(inspectCertificate(ca.certificatePem).keyCertSign).toBe(true);
     expect(await createEmptyCrl(ca, now)).toMatch(/^-----BEGIN X509 CRL-----/);
   });
 });

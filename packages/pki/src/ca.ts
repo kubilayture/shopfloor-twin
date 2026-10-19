@@ -117,3 +117,24 @@ export async function createEmptyCrl(ca: CertificateAuthority, now: Date): Promi
   });
   return `${x509.PemConverter.encode(crl.rawData, 'X509 CRL')}\n`;
 }
+
+/**
+ * A certificate authority made of an existing certificate and its PEM key: what someone holding a
+ * pinned leaf's key could sign with (the #239 review's test of a minted certificate).
+ */
+export async function certificateAuthorityFrom(
+  certificatePem: string,
+  privateKeyPem: string,
+): Promise<CertificateAuthority> {
+  const certificate = new x509.X509Certificate(certificatePem);
+  const algorithm = { name: ALGORITHM.name, hash: ALGORITHM.hash };
+  const privateKey = await webcrypto.subtle.importKey(
+    'pkcs8',
+    x509.PemConverter.decodeFirst(privateKeyPem),
+    algorithm,
+    true,
+    ['sign'],
+  );
+  const publicKey = await certificate.publicKey.export(algorithm, ['verify']);
+  return { certificatePem, privateKeyPem, keys: { publicKey, privateKey }, certificate };
+}

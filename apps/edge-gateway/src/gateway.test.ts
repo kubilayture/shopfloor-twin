@@ -67,9 +67,11 @@ afterAll(async () => {
   await broker.container.stop();
 });
 
+const OPCUA_PASSWORD = 'o'.repeat(32);
+
 describe('environment configuration (#75)', () => {
   it('applies defaults and requires the broker password without ever echoing it', () => {
-    const ok = parseEnv({ MQTT_PASSWORD: 'secret', OPCUA_GATEWAY_PASSWORD: 'opcua secret' });
+    const ok = parseEnv({ MQTT_PASSWORD: 'secret', OPCUA_GATEWAY_PASSWORD: OPCUA_PASSWORD });
     expect(ok.ok && ok.env).toMatchObject({
       GATEWAY_ID: 'gw-01',
       MQTT_URL: 'mqtt://127.0.0.1:1883',
@@ -85,11 +87,20 @@ describe('environment configuration (#75)', () => {
         /^OPCUA_GATEWAY_PASSWORD: .*\(got \(hidden\)\)$/,
       );
     }
+    // The simulator's rule (#239 review): 16–512 characters without whitespace, never echoed.
+    for (const bad of ['short', 'with a space in the middle']) {
+      const refused = parseEnv({ MQTT_PASSWORD: 'secret', OPCUA_GATEWAY_PASSWORD: bad });
+      expect(refused.ok).toBe(false);
+      if (!refused.ok) {
+        expect(refused.issues.join('\n')).toMatch(/^OPCUA_GATEWAY_PASSWORD: .*\(got \(hidden\)\)$/);
+        expect(refused.issues.join('\n')).not.toContain(bad);
+      }
+    }
     const none = parseEnv({ MQTT_PASSWORD: 'secret', OPCUA_SECURITY: 'none' });
     expect(none.ok && none.env.OPCUA_SECURITY).toBe('none');
     const bad = parseEnv({
       MQTT_PASSWORD: ' kept as is ',
-      OPCUA_GATEWAY_PASSWORD: 'opcua secret',
+      OPCUA_GATEWAY_PASSWORD: OPCUA_PASSWORD,
       MQTT_URL: 'http://x',
       GATEWAY_ID: 'GW 1',
     });
@@ -97,7 +108,10 @@ describe('environment configuration (#75)', () => {
     if (!bad.ok) {
       expect(bad.issues.map((i) => i.split(':')[0]).sort()).toEqual(['GATEWAY_ID', 'MQTT_URL']);
     }
-    const spaced = parseEnv({ MQTT_PASSWORD: ' kept as is ', OPCUA_GATEWAY_PASSWORD: 'x' });
+    const spaced = parseEnv({
+      MQTT_PASSWORD: ' kept as is ',
+      OPCUA_GATEWAY_PASSWORD: OPCUA_PASSWORD,
+    });
     expect(spaced.ok && spaced.env.MQTT_PASSWORD).toBe(' kept as is ');
     const missing = parseEnv({});
     expect(missing.ok).toBe(false);

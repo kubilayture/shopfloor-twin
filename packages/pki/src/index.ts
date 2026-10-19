@@ -24,7 +24,9 @@ export {
 } from './certificate.ts';
 export {
   DEFAULT_VALIDITY_DAYS,
+  EMPTIED_FOLDERS,
   RENEW_WITHIN_DAYS,
+  UnknownIdentityError,
   ensureOpcuaPki,
   type EnsurePkiOptions,
   type EnsurePkiResult,
@@ -33,6 +35,7 @@ export {
 } from './exchange.ts';
 export { requireOwnMaterial } from './require.ts';
 export {
+  certificateAuthorityFrom,
   createCertificateAuthority,
   createEmptyCrl,
   issueCertificate,

@@ -24,15 +24,15 @@ const ALGORITHM = {
 
 /**
  * OPC UA Part 6 6.2.2 for an application instance certificate: `digitalSignature`,
- * `nonRepudiation`, `keyEncipherment` and `dataEncipherment`, plus `keyCertSign` because it is
- * self-signed.
+ * `nonRepudiation`, `keyEncipherment` and `dataEncipherment`. No `keyCertSign` (#239 review):
+ * node-opcua ignores `cA=false`, so a pinned leaf that may sign certificates would be a CA for
+ * whoever holds its key; node-opcua verifies a self-signed leaf without it (tested).
  */
 const KEY_USAGE: x509.KeyUsageFlags =
   x509.KeyUsageFlags.digitalSignature |
   x509.KeyUsageFlags.nonRepudiation |
   x509.KeyUsageFlags.keyEncipherment |
-  x509.KeyUsageFlags.dataEncipherment |
-  x509.KeyUsageFlags.keyCertSign;
+  x509.KeyUsageFlags.dataEncipherment;
 
 const EXTENDED_KEY_USAGE: Record<IdentityRole, string> = {
   server: x509.ExtendedKeyUsage.serverAuth,
@@ -102,6 +102,8 @@ export interface CertificateInfo {
   /** SHA-1 of the DER, hex: OPC UA's certificate thumbprint. */
   readonly thumbprint: string;
   readonly der: Buffer;
+  /** Whether its key usage lets it sign certificates (`keyCertSign`). */
+  readonly keyCertSign: boolean;
 }
 
 export function inspectCertificate(pem: string | Buffer): CertificateInfo {
@@ -118,6 +120,10 @@ export function inspectCertificate(pem: string | Buffer): CertificateInfo {
       String,
     ),
     thumbprint: createHash('sha1').update(der).digest('hex'),
+    keyCertSign:
+      ((certificate.getExtension(x509.KeyUsagesExtension)?.usages ?? 0) &
+        x509.KeyUsageFlags.keyCertSign) !==
+      0,
     der,
   };
 }

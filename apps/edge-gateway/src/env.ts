@@ -31,8 +31,11 @@ export const envSchema = z
      * anonymous None sessions (tests that don't test security).
      */
     OPCUA_SECURITY: z.enum(OPCUA_SECURITY_MODES).default('sign-and-encrypt'),
-    /** The password of the OPC UA user `opcua-gateway`. Not trimmed. */
-    OPCUA_GATEWAY_PASSWORD: z.string().min(1).optional(),
+    /** The password of the OPC UA user `opcua-gateway`: the simulator's rule, 16–512 characters without whitespace. */
+    OPCUA_GATEWAY_PASSWORD: z
+      .string()
+      .regex(/^\S{16,512}$/, 'expected 16–512 characters without whitespace (as the simulator)')
+      .optional(),
     MODBUS_HOST: text.default('127.0.0.1'),
     MODBUS_PORT: port.default(5020),
     MODBUS_POLL_MS: integer.pipe(z.number().min(50).max(60_000)).default(250),

@@ -5,6 +5,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import {
   alarmDetailSchema,
   alarmHistorySchema,
@@ -689,7 +690,9 @@ export class ErpClient {
  * One HTTP request with exactly these headers (fetch adds or drops some, such as `Origin`):
  * resolves with the status and body. Each on a connection of its own (`agent: false`) and with the
  * body's Content-Length: Node frames no body of a DELETE by itself, so on a kept-alive connection
- * the server would read it as the start of the next request (#178).
+ * the server would read it as the start of the next request (#178). An `https:` URL (the web
+ * front since #241) goes over TLS, trusting the default store (the stack's dev CA through
+ * NODE_EXTRA_CA_CERTS or the harness's in-process trust).
  */
 export function rawRequest(
   method: string,
@@ -698,8 +701,9 @@ export function rawRequest(
   body?: string,
 ): Promise<{ status: number; text: string; setCookie: readonly string[] }> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest(
-      new URL(url),
+    const target = new URL(url);
+    const req = (target.protocol === 'https:' ? httpsRequest : httpRequest)(
+      target,
       {
         method,
         headers: {

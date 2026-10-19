@@ -226,14 +226,15 @@ done
 echo "ok: OPC UA servers listening on 4841-4845, Modbus on 5020"
 
 # The pki step (#239, ADR-0038): the one-shot service ran before the simulator and the gateway and
-# exited 0; its last line says how many certificates it made and how long that took.
+# exited 0. Its summary line says how many certificates it made and how long that took; the first
+# one is this project's first run (a later `up` reruns it, keeping what is valid).
 pki_container=$(docker compose ps --all --quiet pki)
 [ -n "$pki_container" ] || fail "no pki container"
 pki_state=$(docker inspect "$pki_container" --format '{{.State.Status}} {{.State.ExitCode}}')
 [ "$pki_state" = "exited 0" ] || fail "the pki step did not exit 0 ($pki_state)"
-pki_summary=$(docker compose logs --no-log-prefix pki 2>/dev/null | grep '^pki: ok' | tail -n 1)
+pki_summary=$(docker compose logs --no-log-prefix pki 2>/dev/null | grep '^pki: ok' | head -n 1)
 [ -n "$pki_summary" ] || fail "the pki step logged no summary"
-echo "ok: pki step exited 0 (${pki_summary#pki: ok, })"
+echo "ok: pki step exited 0 (first run: ${pki_summary#pki: ok, })"
 # Each PKI volume is mounted by its own component only (the pki step mounts all three while it
 # runs; the tools volume by no long-running service).
 for service in $(docker compose ps --format '{{.Service}}'); do

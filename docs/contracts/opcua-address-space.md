@@ -1,6 +1,6 @@
 # Contract: OPC UA address space
 
-Version 1.2 (Phase 8, #196: `LotMaterials`, `LotIds` and `Operator` on `CycleCompleteEventType`; 1.1 in Phase 7, #172: `LoadOrder`, `ShopFloor.ActiveOrder`, `ShopFloor.QueuedJobs` and `ShopFloorJobEventType` for the production mode `orders`; version 1 in Phase 2). Source of truth in code: `packages/contracts/src/opcua.ts`. A contract test (`apps/simulator/src/opcua/integration.test.ts`) reads the Project variables table of this file and checks it against the code and the running servers: every path, data type and machine in the Project variables table, and the fields in the Events table. It also checks the alarm codes per machine and `LoadProgram` and `LoadOrder` against the code; the Alarms table describes the rules in prose and is not parsed. Decisions: ADR-0008 (model), ADR-0009 (delivery), ADR-0010 (alarms), ADR-0030 (orders mode, `LoadOrder`, job facts), ADR-0033 (lots and operator on the cycle event). Any change bumps the version here and needs a changelog entry (plan section 2, Definition of Done).
+Version 1.3 (Phase 9, #239: SignAndEncrypt only, users `opcua-gateway` and `opcua-reader`, `LoadOrder` and `LoadProgram` callable by `opcua-gateway` only; 1.2 in Phase 8, #196: `LotMaterials`, `LotIds` and `Operator` on `CycleCompleteEventType`; 1.1 in Phase 7, #172: `LoadOrder`, `ShopFloor.ActiveOrder`, `ShopFloor.QueuedJobs` and `ShopFloorJobEventType` for the production mode `orders`; version 1 in Phase 2). Source of truth in code: `packages/contracts/src/opcua.ts`. A contract test (`apps/simulator/src/opcua/integration.test.ts`) reads the Project variables table of this file and checks it against the code and the running servers: every path, data type and machine in the Project variables table, and the fields in the Events table. It also checks the alarm codes per machine and `LoadProgram` and `LoadOrder` against the code; the Alarms table describes the rules in prose and is not parsed. Decisions: ADR-0008 (model), ADR-0009 (delivery), ADR-0010 (alarms), ADR-0030 (orders mode, `LoadOrder`, job facts), ADR-0033 (lots and operator on the cycle event), ADR-0038 (security). Any change bumps the version here and needs a changelog entry (plan section 2, Definition of Done).
 
 ## Endpoints
 
@@ -12,8 +12,10 @@ Version 1.2 (Phase 8, #196: `LotMaterials`, `LotIds` and `Operator` on `CycleCom
 | LKT-01  | `opc.tcp://<host>:4844` | Station         |
 | PCK-01  | `opc.tcp://<host>:4845` | Station         |
 
-- Security mode None in Phase 2; SignAndEncrypt follows in Phase 9.
-- Each server has its own certificate, generated on first start in `<pki>/<machine>`, with ApplicationUri `urn:orbis-components:shopfloor-twin:<machine>`.
+- **Security (1.3, #239, ADR-0038):** every endpoint is SignAndEncrypt, with the policies `Basic256Sha256` and `Aes128_Sha256_RsaOaep`; there is no None endpoint (in Compose; `OPCUA_SECURITY=none` serves an anonymous None endpoint for tests that don't test security, and only there). Security mode None and anonymous access until 1.2.
+- **Certificates:** each server's own key and self-signed certificate, made by the `pki` step (never by the server), at `<pki>/<machine>/own/certs/certificate.pem` and `own/private/private_key.pem`; SAN: the URI `urn:orbis-components:shopfloor-twin:<machine>` (the server's `ApplicationUri`) and DNS `simulator` and `localhost`; key usage `digitalSignature`, `nonRepudiation`, `keyEncipherment`, `dataEncipherment`, `keyCertSign`; extended key usage `serverAuth`.
+- **Client trust by pinned certificates, no CA:** a client certificate is accepted only when it is pinned in the server's `trusted/certs` (the gateway's and the tools client's, `urn:orbis-components:shopfloor-twin:edge-gateway` and `…:tools`); anything else is refused (`BadSecurityChecksFailed`), also a certificate issued by a CA. The client's `ApplicationUri` must be the first URI in its certificate's SAN (`BadCertificateUriInvalid`).
+- **Users:** user name and password only (no anonymous token is offered, and an anonymous token sent anyway is refused with `BadIdentityTokenInvalid`): `opcua-gateway` (role Operator) and `opcua-reader` (role Observer: browse, read, subscribe).
 - Servers advertise `MinSupportedSampleRate = 0` (ADR-0009).
 
 ## Namespaces and node ids
@@ -78,7 +80,8 @@ Value timestamps:
 | out `Position` | UInt32 | Position of the new campaign in the CNC queue (always 1: next) |
 
 - The campaign is put at the front of the CNC's queue. If the product differs from the one loaded, the CNC changes over (`Setup`, `CHANGEOVER A→B`) at its next cycle boundary, and `ShopFloor.Program` changes when the changeover starts. After the campaign the CNC continues with its remaining schedule.
-- Call it on the object `…ShopFloor` (calling it on the machine root gives `BadMethodInvalid`). Anonymous clients may call it in Phase 2 (Executable and UserExecutable are true); access control comes with security in Phase 9.
+- Call it on the object `…ShopFloor` (calling it on the machine root gives `BadMethodInvalid`).
+- **Access (1.3, #239):** callable by `opcua-gateway` only. The method's `RolePermissions` grant `Call` to the Operator role alone; any other session (`opcua-reader`) gets `BadUserAccessDenied`, and reads `UserExecutable` false. Until 1.2 any client, anonymous ones included, could call it.
 - Errors:
   - an unknown product, or a quantity outside 1–100,000, gives `BadInvalidArgument`, with the offending argument flagged in `inputArgumentResults`;
   - a call before the simulation is running gives `BadInvalidState`;
@@ -103,6 +106,7 @@ Value timestamps:
 | out `AcceptedSeq` | UInt32   | The `Sequence` of the job's `accepted` event (`ShopFloorJobEventType`); a duplicate returns the original's |
 | out `AcceptedAt`  | DateTime | The plant time of that event; a duplicate returns the original's                                           |
 
+- **Access (1.3, #239):** as `LoadProgram`: callable by `opcua-gateway` only; `opcua-reader` gets `BadUserAccessDenied`, checked before any argument.
 - **Dedup first.** The device looks the `CommandId` up in the run's table of accepted commands before any other check. The table is line-wide: a command id names one job on one CNC. A hit with the same job (`OrderId`, `Product`, `Quantity`, `NotBefore`) on the same CNC answers `Good` with `Duplicate = true` and the original outputs, even when `ExpiresAt` has passed or `DeviceEpoch` is wrong: a late call for an accepted job always learns that it was. A hit with another job, or for the other CNC, is `BadInvalidArgument` (`command-conflict`, flagged on `CommandId`).
 - **Only on a miss:** a `DeviceEpoch` other than this run's is `BadInvalidState` flagged on `DeviceEpoch` (`epoch-mismatch`); an `ExpiresAt` before the simulator's wall clock is `BadInvalidState` flagged on `ExpiresAt` (`expired`). So a command not accepted before its expiry is never accepted later, and an `expired` answer proves that it never was. Then the job's arguments: an unknown product, a quantity outside 1–100,000 or an empty or over-long id is `BadInvalidArgument` flagged on that argument; a queue of 50 jobs is `BadResourceUnavailable`.
 - A refusal flags exactly one argument in `inputArgumentResults` (the others `Good`), or none. The two refusals with no argument flagged differ in their status code, so a client can tell a retry from a definitive answer:

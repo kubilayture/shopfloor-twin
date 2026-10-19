@@ -140,9 +140,14 @@ export async function checkOpcuaSecurity(options: SecurityCheckOptions): Promise
   };
 
   for (const machine of OPCUA_MACHINES) {
+    // Discovery runs over a None channel; the tools certificate keeps node-opcua from making a
+    // default one in the home folder.
     const discovery = OPCUAClient.create({
       endpointMustExist: false,
       connectionStrategy: { maxRetry: 1 },
+      certificateFile: pkiFiles(options.toolsFolder).certificateFile,
+      privateKeyFile: pkiFiles(options.toolsFolder).privateKeyFile,
+      clientCertificateManager: manager(options.toolsFolder),
     });
     let endpoints: EndpointDescription[];
     try {

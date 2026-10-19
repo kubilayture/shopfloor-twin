@@ -43,6 +43,7 @@ import {
   useQualityTopic,
 } from '../live/live-context.tsx';
 import { HoldTable } from './holds.tsx';
+import { OrderOee } from './order-oee.tsx';
 import {
   ActionForm,
   buttonClass,
@@ -847,6 +848,7 @@ function OrderDetail({ id }: { readonly id: string }) {
               refetch: () => void execution.refetch(),
             }}
           />
+          <OrderOee id={id} />
           <Commands
             order={order}
             commands={commands}

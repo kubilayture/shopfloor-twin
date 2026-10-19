@@ -2,15 +2,19 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EQUIPMENT, PLANT, fakeFetch, json } from '../test/fixtures.ts';
 import {
+  BOTTLENECKS,
   CURRENT_SHIFT,
   PARETO,
   PREVIOUS_SHIFT,
   SHIFT,
   SHIFT_END,
+  SHIFT_KEY,
   SHIFT_START,
   bucket,
   emptyResult,
   hourBucket,
+  lineBucket,
+  lineOee,
   requestUrl,
   result,
 } from '../test/oee-fixtures.ts';
@@ -55,6 +59,18 @@ function api(overrides: Record<string, (url: URL) => Response> = {}) {
         ],
       }),
     '/api/v1/downtime/pareto': () => json(PARETO),
+    '/api/v1/oee/line': (url) =>
+      url.searchParams.get('bucket') === 'shift'
+        ? json(lineOee('shift', [lineBucket('shift', SHIFT_KEY, { final: true })]))
+        : json(
+            lineOee('hour', [
+              lineBucket('hour', '2026-10-15T03:00:00.000Z', { final: true }),
+              lineBucket('hour', '2026-10-15T04:00:00.000Z', {
+                oee: { fraction: '21/20', decimal: '1.0500' },
+                aboveOne: true,
+              }),
+            ]),
+          ),
     ...overrides,
   });
 }
@@ -76,7 +92,11 @@ describe('OEE dashboard', () => {
     const line = screen.getByTestId('oee-card-line-a1');
     expect(line.dataset.oee).toBe('n/a');
     expect(within(line).getByTestId('oee-value-line-a1').textContent).toBe('n/a');
-    expect(within(line).getByTestId('bottleneck-line-a1').textContent).toContain('asm-01');
+    // The bottleneck is the MES's answer (`GET /oee/line`), not a constant of the web.
+    const named = await within(line).findByTestId('bottleneck-line-a1');
+    expect(named.textContent).toContain('asm-01');
+    expect(named.textContent).toContain('VB-100, VB-200');
+    expect(named.dataset.equipment).toBe('asm-01');
 
     expect(screen.getByTestId('oee-machine-cnc-01').dataset.oee).toBe('0.6300');
     expect(within(screen.getByTestId('oee-machine-cnc-01')).getByText('Final')).toBeTruthy();
@@ -106,6 +126,7 @@ describe('OEE dashboard', () => {
     await screen.findByTestId('oee-card-cell-m1');
     await waitFor(() => {
       expect(app.factory.last.sent.map((message) => message.topic)).toEqual([
+        'oee:line',
         'states',
         'oee:cell-m1',
         'oee:line-a1',
@@ -222,6 +243,114 @@ describe('OEE dashboard', () => {
     await waitFor(() => {
       expect(fetched.some((url) => url.includes('scope=equipment&id=cnc-01'))).toBe(true);
     });
+  });
+
+  it('shows the line OEE of the shift, its hours and the bottleneck per product', async () => {
+    vi.stubGlobal('fetch', api());
+    await renderApp('/oee');
+    const card = await screen.findByTestId('line-oee-card');
+    await waitFor(() => {
+      expect(card.dataset.oee).toBe('0.7500');
+    });
+    expect(card.dataset.final).toBe('true');
+    expect(card.dataset.key).toBe(SHIFT_KEY);
+    expect(within(card).getByTestId('line-oee-value').textContent).toBe('0.7500');
+    expect(within(card).getByTestId('line-oee-value').dataset.fraction).toBe('3/4');
+    expect(within(card).getByTestId('line-oee-value-percent').textContent).toBe('75.00 %');
+    expect(within(card).getByTestId('line-oee-good').textContent).toBe('VB-100 100');
+    expect(within(card).getByTestId('line-oee-planned').textContent).toBe('333.3 min');
+    expect(within(card).getByTestId('line-oee-ideal').textContent).toBe('250.0 min');
+    expect(card.querySelector('[data-flag="final"]')?.textContent).toBe('Final');
+    expect(within(card).getByTestId('line-oee-mode').textContent).toContain(
+      'only while an order is in progress',
+    );
+    expect(within(card).queryByTestId('line-oee-above-one')).toBeNull();
+    const vb100 = within(card).getByTestId('line-bottleneck-VB-100');
+    expect(vb100.dataset.equipment).toBe('asm-01');
+    expect(vb100.textContent).toContain('150.000 s');
+    expect(within(card).getByTestId('line-bottleneck-VB-200').textContent).toContain('210.000 s');
+    // Hours: an hour above 1 says so, never capped.
+    const above = await within(card).findByTestId('line-hour-2026-10-15T04:00:00.000Z');
+    expect(above.dataset.oee).toBe('1.0500');
+    expect(above.dataset.aboveOne).toBe('true');
+    expect(above.textContent).toContain('above 1');
+    expect(within(card).getByTestId('line-hour-2026-10-15T03:00:00.000Z').dataset.final).toBe(
+      'true',
+    );
+    // The machine table marks the MES's bottleneck.
+    expect(within(screen.getByTestId('oee-machine-asm-01')).getByText('Bottleneck')).toBeTruthy();
+    expect(within(screen.getByTestId('oee-machine-cnc-01')).queryByText('Bottleneck')).toBeNull();
+  });
+
+  it('follows oee:line: the current shift and hour, above 1 explained, the bottleneck', async () => {
+    vi.stubGlobal('fetch', api());
+    const app = await renderApp('/oee');
+    await app.open();
+    const card = await screen.findByTestId('line-oee-card');
+    await waitFor(() => {
+      expect(card.dataset.oee).toBe('0.7500');
+    });
+    // A provisional push does not take back the final REST bucket.
+    await app.push({
+      type: 'snapshot',
+      topic: 'oee:line',
+      productionMode: 'orders',
+      bottlenecks: BOTTLENECKS,
+      hour: null,
+      shift: lineBucket('shift', SHIFT_KEY, { oee: { fraction: '1/2', decimal: '0.5000' } }),
+    });
+    expect(card.dataset.oee).toBe('0.7500');
+    // A final pushed value above 1 replaces it, with the reason on screen.
+    await app.push({
+      type: 'oee-line',
+      topic: 'oee:line',
+      productionMode: 'orders',
+      bottlenecks: [
+        {
+          product: 'VB-100',
+          operation: 'OP10',
+          equipment: ['cnc-01'],
+          idealCycleMs: 240_000,
+          effectiveCycleMs: '240000/1',
+        },
+      ],
+      hour: lineBucket('hour', '2026-10-15T05:00:00.000Z', {
+        oee: { fraction: '11/10', decimal: '1.1000' },
+        aboveOne: true,
+      }),
+      shift: lineBucket('shift', SHIFT_KEY, {
+        final: true,
+        revision: 1,
+        incidents: [{ machine: 'asm-01', epoch: 1, id: 7, seqFrom: 10, seqTo: 12 }],
+        mayRevise: true,
+        oee: { fraction: '21/20', decimal: '1.0500' },
+        aboveOne: true,
+      }),
+    });
+    expect(card.dataset.oee).toBe('1.0500');
+    expect(card.dataset.aboveOne).toBe('true');
+    expect(within(card).getByTestId('line-oee-above-one').textContent).toContain('not capped');
+    for (const flag of ['final', 'revision', 'incidents', 'may-revise', 'above-one']) {
+      expect(card.querySelector(`[data-flag="${flag}"]`)).toBeTruthy();
+    }
+    expect(within(card).getByTestId('line-hour-2026-10-15T05:00:00.000Z').dataset.oee).toBe(
+      '1.1000',
+    );
+    // The bottleneck follows the MES's answer (here, for the test, a CNC).
+    expect(within(screen.getByTestId('oee-machine-cnc-01')).getByText('Bottleneck')).toBeTruthy();
+    expect(within(screen.getByTestId('oee-machine-asm-01')).queryByText('Bottleneck')).toBeNull();
+    expect(screen.queryByTestId('bottleneck-line-a1')).toBeNull();
+    expect(screen.getByTestId('bottleneck-cell-m1').dataset.equipment).toBe('cnc-01');
+    // Another shift's bucket leaves the selected one alone.
+    await app.push({
+      type: 'oee-line',
+      topic: 'oee:line',
+      productionMode: 'orders',
+      bottlenecks: BOTTLENECKS,
+      hour: null,
+      shift: lineBucket('shift', '2026-10-15/B', { oee: { fraction: '0/1', decimal: '0.0000' } }),
+    });
+    expect(card.dataset.oee).toBe('0.7500');
   });
 
   it('says when no shift has started', async () => {

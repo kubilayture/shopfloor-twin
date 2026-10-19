@@ -1,15 +1,18 @@
 import {
   ALARMS_TOPIC,
+  LINE_OEE_TOPIC,
   ORDERS_TOPIC,
   QUALITY_TOPIC,
   SHIFTS_TOPIC,
   terminalTopic,
+  type OrderOeeDto,
   type TerminalViewDto,
 } from '@shopfloor/contracts/mes-api';
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, use, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import {
   liveKeys,
+  orderOeeTopic,
   resetLiveAlarms,
   ORDER_READS,
   resetLiveOrders,
@@ -18,6 +21,7 @@ import {
   type LiveAlarmKpi,
   type LiveAlarms,
   type LiveDowntime,
+  type LiveLineOee,
   type LiveOee,
   type LiveOrders,
   type LiveShifts,
@@ -127,6 +131,47 @@ export function useLiveTerminal(workCenter: string): TerminalViewDto | undefined
   }, [client, queryClient, workCenter]);
   return useQuery<TerminalViewDto>({ queryKey: liveKeys.terminal(workCenter), queryFn: skipToken })
     .data;
+}
+
+/**
+ * Holds `oee:order:<id>` (#233) for the order detail and returns the order OEE it pushes (null
+ * for an order the MES doesn't know). One topic per open detail, against the MES's own budget of
+ * 16 order OEE topics (#232), never the dashboard's 16 `oee:<id>` topics. The pushed copy is
+ * dropped when the screen lets go, so a later visit starts from a fresh snapshot.
+ */
+export function useLiveOrderOee(orderId: string): OrderOeeDto | null | undefined {
+  const client = useLiveClient();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const key = liveKeys.orderOee(orderId);
+    queryClient.removeQueries({ queryKey: key, exact: true });
+    const release = client.subscribe(orderOeeTopic(orderId));
+    return () => {
+      release();
+      queryClient.removeQueries({ queryKey: key, exact: true });
+    };
+  }, [client, queryClient, orderId]);
+  return useQuery<OrderOeeDto | null>({ queryKey: liveKeys.orderOee(orderId), queryFn: skipToken })
+    .data;
+}
+
+/**
+ * Holds `oee:line` (#233) for the OEE dashboard and returns what it pushes: the bottleneck per
+ * product and the line OEE of the hour and shift the plant clock is in. Its own budget at the MES
+ * (#232). Dropped when the screen lets go, as `useLiveOrderOee`.
+ */
+export function useLiveLineOee(): LiveLineOee | undefined {
+  const client = useLiveClient();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    queryClient.removeQueries({ queryKey: liveKeys.lineOee, exact: true });
+    const release = client.subscribe(LINE_OEE_TOPIC);
+    return () => {
+      release();
+      queryClient.removeQueries({ queryKey: liveKeys.lineOee, exact: true });
+    };
+  }, [client, queryClient]);
+  return useQuery<LiveLineOee>({ queryKey: liveKeys.lineOee, queryFn: skipToken }).data;
 }
 
 /**

@@ -2,14 +2,18 @@ import type {
   AlarmKpiBucketDto,
   AlarmOccurrenceDto,
   AlarmPointDto,
+  BottleneckDto,
   Clock,
   CommandDto,
   CurrentStateDto,
   DowntimeRecordDto,
   FloodEpisodeDto,
   HandoverNoteDto,
+  LineBucketDto,
+  LineOeeDto,
   OeeBucketDto,
   OrderDto,
+  OrderOeeDto,
   ServerMessage,
   ShiftRecordDto,
   TerminalViewDto,
@@ -98,7 +102,25 @@ export const liveKeys = {
   orders: ['live', 'orders'] as const,
   /** A work center's terminal view as last pushed on `terminal:<id>` (#177). */
   terminal: (workCenter: string) => ['live', 'terminal', workCenter] as const,
+  /** An order's OEE as last pushed on `oee:order:<id>` (#233); null for an unknown order. */
+  orderOee: (orderId: string) => ['live', 'oee-order', orderId] as const,
+  /** The line OEE of the current hour and shift as last pushed on `oee:line` (#233). */
+  lineOee: ['live', 'oee-line'] as const,
 };
+
+/** `oee:order:<order number>` (docs/api/realtime.md, #231). */
+export const orderOeeTopic = (orderId: string): string => `oee:order:${orderId}`;
+
+/**
+ * The pushed line throughput OEE (`oee:line`, #233): the production mode, the bottleneck per
+ * product and the hour and shift buckets the plant clock is in (null without a clock or shift).
+ */
+export interface LiveLineOee {
+  readonly productionMode: LineOeeDto['productionMode'];
+  readonly bottlenecks: readonly BottleneckDto[];
+  readonly hour: LineBucketDto | null;
+  readonly shift: LineBucketDto | null;
+}
 
 /**
  * Pushed orders and dispatch commands by id (upserts on the `orders` topic, #176), since the topic
@@ -200,6 +222,32 @@ function applyOee(
       ? HOUR_READS
       : [];
   for (const queryKey of reads) void queryClient.invalidateQueries({ queryKey });
+}
+
+/** REST reads of line OEE (`queryKeys.lineOeeAll`), stale when the clock moves on an hour. */
+const LINE_READS = [['line-oee']] as const;
+
+const lineMovedOn = (known: LineBucketDto | null | undefined, next: LineBucketDto | null) =>
+  known !== null && known !== undefined && next !== null && next.key !== known.key;
+
+/**
+ * A pushed line OEE (#233) replaces what `oee:line` held: only the hour and shift the plant clock
+ * is in are kept, so a bucket the clock has left is read from REST again, as for `applyOee`.
+ */
+function applyLineOee(queryClient: QueryClient, value: LiveLineOee): void {
+  const known = queryClient.getQueryData<LiveLineOee>(liveKeys.lineOee);
+  queryClient.setQueryData<LiveLineOee>(liveKeys.lineOee, value);
+  if (lineMovedOn(known?.hour, value.hour) || lineMovedOn(known?.shift, value.shift)) {
+    for (const queryKey of LINE_READS) void queryClient.invalidateQueries({ queryKey });
+  }
+}
+
+/** A pushed order OEE (#233) is the whole body of `GET /oee/orders/{id}`: it replaces the last. */
+function applyOrderOee(queryClient: QueryClient, topic: string, order: OrderOeeDto | null): void {
+  queryClient.setQueryData<OrderOeeDto | null>(
+    liveKeys.orderOee(topic.slice('oee:order:'.length)),
+    order,
+  );
 }
 
 /**
@@ -506,8 +554,16 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       } else if ('view' in message) {
         applyTerminal(queryClient, message.topic, message.view);
       } else if ('bottlenecks' in message) {
-        // Line OEE (#232): the dashboard subscribes to `oee:line` from #233 (P9-06) on.
-        return;
+        // Line OEE (#232), followed by the OEE dashboard (#233).
+        applyLineOee(queryClient, {
+          productionMode: message.productionMode,
+          bottlenecks: message.bottlenecks,
+          hour: message.hour,
+          shift: message.shift,
+        });
+      } else if ('order' in message) {
+        // An order's OEE (#231), followed by the order detail (#233).
+        applyOrderOee(queryClient, message.topic, message.order);
       } else if ('hour' in message) {
         applyOee(queryClient, message.topic, message.hour, message.shift);
       } else if ('samples' in message && message.samples.length > 0) {
@@ -535,11 +591,17 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
     case 'oee':
       applyOee(queryClient, message.topic, message.hour, message.shift);
       return;
-    // Order OEE (#231): the web subscribes to `oee:order:<id>` from #233 (P9-06) on.
+    // Order OEE (#231) on the order detail, line OEE (#232) on the OEE dashboard (#233).
     case 'oee-order':
+      applyOrderOee(queryClient, message.topic, message.order);
       return;
-    // Line OEE (#232): the dashboard subscribes to `oee:line` from #233 (P9-06) on.
     case 'oee-line':
+      applyLineOee(queryClient, {
+        productionMode: message.productionMode,
+        bottlenecks: message.bottlenecks,
+        hour: message.hour,
+        shift: message.shift,
+      });
       return;
     case 'downtime':
       queryClient.setQueryData<LiveDowntime>(liveKeys.downtime, (live) =>

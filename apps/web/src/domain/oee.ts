@@ -1,4 +1,11 @@
-import type { OeeBucketDto, OeeResultDto, Ratio } from '@shopfloor/contracts/mes-api';
+import type {
+  BottleneckDto,
+  LineBucketDto,
+  OeeBucketDto,
+  OeeResultDto,
+  OrderOeeDto,
+  Ratio,
+} from '@shopfloor/contracts/mes-api';
 import { fraction, multiply, toDecimal, type Fraction } from '@shopfloor/oee-core';
 
 /**
@@ -6,9 +13,6 @@ import { fraction, multiply, toDecimal, type Fraction } from '@shopfloor/oee-cor
  * never recomputed in floating point here. Anything derived is exact BigInt arithmetic
  * (`@shopfloor/oee-core`'s fractions) or string manipulation.
  */
-
-/** The designed bottleneck (plan section 5: OP30 assembly, 150 s against OP10's 120 s). */
-export const DESIGNED_BOTTLENECK = 'asm-01';
 
 export const NOT_APPLICABLE = 'n/a';
 
@@ -191,6 +195,189 @@ export function pickBucket<B extends { readonly final: boolean; readonly revisio
   rest: B | undefined,
   pushed: B | undefined,
 ): B | undefined {
+  if (!pushed) return rest;
+  if (!rest) return pushed;
+  if (rest.final && !pushed.final) return rest;
+  if (rest.revision > pushed.revision) return rest;
+  return pushed;
+}
+
+// ---- Order and line OEE (#233, ADR-0036) ----
+
+/**
+ * The machines the MES names as a bottleneck (`bottlenecks` of `GET /oee/line` and `oee:line`),
+ * each with the products it is the bottleneck of, in the MES's order. The web never decides the
+ * bottleneck itself: `oee-core` derives it from the routing (ideal cycle ÷ machines on the
+ * operation, the largest; ADR-0036).
+ */
+export function bottleneckMachines(
+  bottlenecks: readonly BottleneckDto[],
+): ReadonlyMap<string, readonly string[]> {
+  const machines = new Map<string, string[]>();
+  for (const { product, equipment } of bottlenecks) {
+    for (const id of equipment) {
+      const products = machines.get(id) ?? [];
+      if (!products.includes(product)) products.push(product);
+      machines.set(id, products);
+    }
+  }
+  return machines;
+}
+
+/** `150000/1` ms of line time per unit as seconds: `150.000 s`. */
+export function cycleText(effectiveCycleMs: string): string {
+  return secondsText(parseFraction(effectiveCycleMs));
+}
+
+/** Units packed good per product, in product order: `VB-100 12 · VB-200 3`, or `none`. */
+export function goodText(good: Readonly<Record<string, number>>): string {
+  const entries = Object.entries(good)
+    .filter(([, n]) => n !== 0)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return entries.length === 0
+    ? 'none'
+    : entries.map(([product, n]) => `${product} ${String(n)}`).join(' · ');
+}
+
+export interface StatusFlag {
+  readonly key: string;
+  readonly text: string;
+  readonly title: string;
+  /** `final` reads as settled; `notice` as something that may still change or needs a word. */
+  readonly tone: 'final' | 'notice';
+}
+
+/** Why a line value can exceed 1 (ADR-0036): shown with the flag, never capped. */
+export const ABOVE_ONE_TEXT =
+  'More was packed than the bottleneck’s ideal rate allows for this time: an operator faster than ideal, or WIP drained from the buffers. Reported as computed, not capped, so the hours and the shift agree.';
+
+const ABOVE_ONE: StatusFlag = {
+  key: 'above-one',
+  text: 'Above 1',
+  title: ABOVE_ONE_TEXT,
+  tone: 'notice',
+};
+
+function revisionFlags(value: {
+  readonly revision: number;
+  readonly incidents: readonly unknown[];
+  readonly mayRevise: boolean;
+}): StatusFlag[] {
+  const flags: StatusFlag[] = [];
+  if (value.revision > 0) {
+    flags.push({
+      key: 'revision',
+      text: `Revision ${String(value.revision)}`,
+      title: 'Changed after it was final (late data under a written-off gap)',
+      tone: 'notice',
+    });
+  }
+  const n = value.incidents.length;
+  if (n > 0) {
+    flags.push({
+      key: 'incidents',
+      text: `${String(n)} incident${n === 1 ? '' : 's'}`,
+      title: 'Sequence gaps written off under it (ADR-0018)',
+      tone: 'notice',
+    });
+  }
+  if (value.mayRevise) {
+    flags.push({
+      key: 'may-revise',
+      text: 'May be revised',
+      title: 'It lies over a written-off gap: even a final value may still change',
+      tone: 'notice',
+    });
+  }
+  return flags;
+}
+
+/** What may still change about a line OEE bucket, as text (never colour alone). */
+export function lineFlags(bucket: LineBucketDto): StatusFlag[] {
+  const flags: StatusFlag[] = [
+    bucket.final
+      ? {
+          key: 'final',
+          text: 'Final',
+          title: 'Nothing that can still arrive changes it',
+          tone: 'final',
+        }
+      : {
+          key: 'provisional',
+          text: 'Provisional',
+          title: 'An input is not final through the bucket’s end yet',
+          tone: 'notice',
+        },
+    ...revisionFlags(bucket),
+  ];
+  if (bucket.aboveOne) flags.push(ABOVE_ONE);
+  return flags;
+}
+
+/** Why an order's OEE is not final yet, as short phrases (empty when it is). */
+export function orderPending(order: OrderOeeDto): string[] {
+  if (order.final) return [];
+  const reasons: string[] = [];
+  if (order.lost) reasons.push('a fact a job window needs is lost: never final');
+  if (order.open) reasons.push('a job window is still open');
+  if (order.pending) reasons.push('a job has no window yet');
+  if (order.headTimeUnknown) reasons.push('a head time is unknown, its changeover left out');
+  if (order.endLost) reasons.push('a job’s completion is lost');
+  if (reasons.length === 0) reasons.push('its inputs are not final yet');
+  return reasons;
+}
+
+/** What may still change about an order's OEE (and its jobs), as text. */
+export function orderFlags(order: OrderOeeDto): StatusFlag[] {
+  return [
+    order.final
+      ? {
+          key: 'final',
+          text: 'Final',
+          title: 'Every job window closed and its inputs final',
+          tone: 'final',
+        }
+      : {
+          key: 'provisional',
+          text: order.lost ? 'Never final' : 'Provisional',
+          title: orderPending(order).join('; '),
+          tone: 'notice',
+        },
+    ...revisionFlags(order),
+  ];
+}
+
+/** The status of an order's own line OEE (`line` of `GET /oee/orders/{id}`). */
+export function orderLineFlags(line: NonNullable<OrderOeeDto['line']>): StatusFlag[] {
+  const flags: StatusFlag[] = [
+    line.final
+      ? {
+          key: 'final',
+          text: 'Final',
+          title: 'The order is complete and the bottleneck’s pieces final',
+          tone: 'final',
+        }
+      : {
+          key: 'provisional',
+          text: line.open ? 'Provisional (order in progress)' : 'Provisional',
+          title: line.open
+            ? 'The order is not complete: its in-progress time runs to the plant clock'
+            : 'An input is not final yet',
+          tone: 'notice',
+        },
+  ];
+  if (line.aboveOne) flags.push(ABOVE_ONE);
+  return flags;
+}
+
+/**
+ * The order OEE to show: the pushed body (`oee:order:<id>`) over the REST one, unless the REST
+ * answer is further along (final where the push is not, or a higher revision), as `pickBucket`.
+ */
+export function pickOrderOee(
+  rest: OrderOeeDto | undefined,
+  pushed: OrderOeeDto | null | undefined,
+): OrderOeeDto | undefined {
   if (!pushed) return rest;
   if (!rest) return pushed;
   if (rest.final && !pushed.final) return rest;

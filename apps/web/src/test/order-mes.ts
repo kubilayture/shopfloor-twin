@@ -3,6 +3,7 @@ import type {
   OrderDetail,
   OrderDto,
   OrderExecutionDto,
+  OrderOeeDto,
   executionIncidentListSchema,
 } from '@shopfloor/contracts/mes-api';
 import type { z } from 'zod';
@@ -25,12 +26,22 @@ export interface OrderState {
   executionIncidents: z.output<typeof executionIncidentListSchema>['incidents'];
   /** Quality holds (#203): `GET /quality/holds` answers those of the asked subject. */
   holds: HoldDto[];
+  /** Order OEE (#233) by order id: `GET /oee/orders/{id}` answers 404 for any other. */
+  orderOee: Record<string, OrderOeeDto>;
 }
 
 export type Write = (method: string, path: string, body: unknown) => Response;
 
 export function orderState(orders: OrderDto[], overrides: Partial<OrderState> = {}): OrderState {
-  return { orders, details: {}, executions: {}, executionIncidents: [], holds: [], ...overrides };
+  return {
+    orders,
+    details: {},
+    executions: {},
+    executionIncidents: [],
+    holds: [],
+    orderOee: {},
+    ...overrides,
+  };
 }
 
 /** The MES as the orders screens see it; `write` answers the POSTs. */
@@ -73,6 +84,14 @@ export function orderMes(state: OrderState, write: Write = () => json({})) {
     }
     if (path === '/api/v1/scrap-records') {
       return Promise.resolve(json({ records: [], truncated: false }));
+    }
+    const oee = /^\/api\/v1\/oee\/orders\/([^/]+)$/.exec(path);
+    if (oee) {
+      const id = decodeURIComponent(oee[1] ?? '');
+      const found = state.orderOee[id];
+      return Promise.resolve(
+        found ? json(found) : problem(404, 'Not Found', `no order ${id}`, path),
+      );
     }
     const match = /^\/api\/v1\/orders\/([^/]+)(\/execution)?$/.exec(path);
     if (match) {

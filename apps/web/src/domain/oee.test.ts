@@ -1,7 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { bucket, emptyResult, result } from '../test/oee-fixtures.ts';
 import {
+  BOTTLENECKS,
+  ORDER_LINE,
+  bucket,
+  emptyResult,
+  lineBucket,
+  orderOee,
+  result,
+} from '../test/oee-fixtures.ts';
+import {
+  bottleneckMachines,
   bucketFlags,
+  cycleText,
+  goodText,
+  lineFlags,
+  orderFlags,
+  orderLineFlags,
+  orderPending,
+  pickOrderOee,
   minutesText,
   parseFraction,
   percentText,
@@ -126,5 +142,95 @@ describe('bucket status', () => {
     expect(pickBucket(final, pushed)).toBe(final);
     const revised = bucket('cell-m1', { revision: 1 });
     expect(pickBucket(revised, pushed)).toBe(revised);
+  });
+});
+
+describe('order and line OEE (#233)', () => {
+  it('names the MES’s bottleneck machines with their products', () => {
+    const machines = bottleneckMachines([
+      ...BOTTLENECKS,
+      {
+        product: 'VB-300',
+        operation: 'OP10',
+        equipment: ['cnc-01', 'cnc-02'],
+        idealCycleMs: 400_000,
+        effectiveCycleMs: '200000/1',
+      },
+    ]);
+    expect([...machines]).toEqual([
+      ['asm-01', ['VB-100', 'VB-200']],
+      ['cnc-01', ['VB-300']],
+      ['cnc-02', ['VB-300']],
+    ]);
+    expect(bottleneckMachines([]).size).toBe(0);
+  });
+
+  it('formats cycles and packed units', () => {
+    expect(cycleText('150000/1')).toBe('150.000 s');
+    expect(cycleText('330000/2')).toBe('165.000 s');
+    expect(goodText({ 'VB-200': 3, 'VB-100': 12, 'VB-300': 0 })).toBe('VB-100 12 · VB-200 3');
+    expect(goodText({})).toBe('none');
+  });
+
+  it('flags a line bucket: final or provisional, revision, incidents, above 1', () => {
+    expect(lineFlags(lineBucket('shift', '2026-10-15/A')).map((f) => f.key)).toEqual([
+      'provisional',
+    ]);
+    const flags = lineFlags(
+      lineBucket('shift', '2026-10-15/A', {
+        final: true,
+        revision: 2,
+        incidents: [{ machine: 'asm-01', epoch: 1, id: 1, seqFrom: 1, seqTo: 2 }],
+        mayRevise: true,
+        aboveOne: true,
+      }),
+    );
+    expect(flags.map((f) => [f.key, f.text])).toEqual([
+      ['final', 'Final'],
+      ['revision', 'Revision 2'],
+      ['incidents', '1 incident'],
+      ['may-revise', 'May be revised'],
+      ['above-one', 'Above 1'],
+    ]);
+    expect(flags.find((f) => f.key === 'above-one')?.title).toContain('not capped');
+  });
+
+  it('says why an order OEE is provisional, and never final on a lost path', () => {
+    expect(orderPending(orderOee('PO-1'))).toEqual([]);
+    expect(orderFlags(orderOee('PO-1')).map((f) => f.key)).toEqual(['final']);
+    const open = orderOee('PO-1', { final: false, open: true, pending: true });
+    expect(orderPending(open)).toEqual(['a job window is still open', 'a job has no window yet']);
+    const lost = orderOee('PO-1', {
+      final: false,
+      lost: true,
+      headTimeUnknown: true,
+      endLost: true,
+    });
+    expect(orderFlags(lost)[0]?.text).toBe('Never final');
+    expect(orderPending(lost)).toHaveLength(3);
+    expect(orderPending(orderOee('PO-1', { final: false }))).toEqual([
+      'its inputs are not final yet',
+    ]);
+    const line = ORDER_LINE;
+    expect(orderLineFlags({ ...line, final: false, open: true })[0]?.text).toBe(
+      'Provisional (order in progress)',
+    );
+    expect(orderLineFlags({ ...line, final: false })[0]?.text).toBe('Provisional');
+    expect(orderLineFlags({ ...line, aboveOne: true }).map((f) => f.key)).toEqual([
+      'final',
+      'above-one',
+    ]);
+  });
+
+  it('picks the pushed order OEE unless REST is further along', () => {
+    const rest = orderOee('PO-1');
+    const pushed = orderOee('PO-1', { final: false });
+    expect(pickOrderOee(rest, undefined)).toBe(rest);
+    expect(pickOrderOee(rest, null)).toBe(rest);
+    expect(pickOrderOee(undefined, pushed)).toBe(pushed);
+    expect(pickOrderOee(rest, pushed)).toBe(rest);
+    const revised = orderOee('PO-1', { revision: 1 });
+    expect(pickOrderOee(revised, rest)).toBe(revised);
+    expect(pickOrderOee(rest, revised)).toBe(revised);
   });
 });

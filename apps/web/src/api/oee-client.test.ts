@@ -1,7 +1,24 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { json } from '../test/fixtures.ts';
-import { record, requestBody, requestUrl, SHIFT_END, SHIFT_START } from '../test/oee-fixtures.ts';
-import { ApiError, getDowntime, getOee, getShiftOee, putCoding } from './client.ts';
+import {
+  lineBucket,
+  lineOee,
+  orderOee,
+  record,
+  requestBody,
+  requestUrl,
+  SHIFT_END,
+  SHIFT_START,
+} from '../test/oee-fixtures.ts';
+import {
+  ApiError,
+  getDowntime,
+  getLineOee,
+  getOee,
+  getOrderOee,
+  getShiftOee,
+  putCoding,
+} from './client.ts';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -53,6 +70,32 @@ describe('OEE and downtime reads', () => {
       '/api/v1/shifts/2026-10-15/A/oee',
       '/api/v1/oee?scope=work-center&id=cell-m1&bucket=hour&from=2026-10-15T03%3A00%3A00.000Z&to=2026-10-15T11%3A00%3A00.000Z',
       '/api/v1/downtime?from=2026-10-15T03%3A00%3A00.000Z&to=2026-10-15T11%3A00%3A00.000Z&uncoded=true',
+    ]);
+  });
+});
+
+describe('order and line OEE reads (#233)', () => {
+  it('asks the MES with the documented paths and parses the answers', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      urls.push(url);
+      return Promise.resolve(
+        url.startsWith('/api/v1/oee/orders/')
+          ? json(orderOee('PO 1'))
+          : json(lineOee('shift', [lineBucket('shift', '2026-10-15/A')])),
+      );
+    });
+    expect((await getOrderOee('PO 1')).orderId).toBe('PO 1');
+    const line = await getLineOee({
+      bucket: 'shift',
+      from: Date.parse(SHIFT_START),
+      to: Date.parse(SHIFT_END),
+    });
+    expect(line.bottlenecks[0]?.equipment).toEqual(['asm-01']);
+    expect(urls).toEqual([
+      '/api/v1/oee/orders/PO%201',
+      '/api/v1/oee/line?bucket=shift&from=2026-10-15T03%3A00%3A00.000Z&to=2026-10-15T11%3A00%3A00.000Z',
     ]);
   });
 });

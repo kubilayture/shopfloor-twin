@@ -48,6 +48,14 @@ export const API_PREFIX = '/api/v1';
 /** The largest `POST /scenario` body (#235 review): far above MAX_TIMELINE_ENTRIES entries. */
 export const SCENARIO_BODY_LIMIT = 512 * 1024;
 export const EVENTS_PATH = `${API_PREFIX}/events`;
+/**
+ * The event stream's lifetime (#237 review): a connection is closed after this long with
+ * `EVENTS_LIFETIME_CLOSE`, so a console reconnects and nginx's permission check runs again (an
+ * upgrade is checked once; a logout, an expired session or a lost role ends access within this).
+ */
+export const DEFAULT_EVENTS_LIFETIME_MS = 5 * 60_000;
+/** The close code at the end of a stream's lifetime: reconnect (a private-use code, 4000–4999). */
+export const EVENTS_LIFETIME_CLOSE = 4100;
 /** A WebSocket client that falls this far behind is disconnected rather than buffered without bound. */
 export const MAX_CLIENT_BUFFER_BYTES = 4 * 1024 * 1024;
 
@@ -948,6 +956,8 @@ export interface ControlAppOptions {
    * never `main.ts` (its environment requires `SIM_CONTROL_TOKEN`).
    */
   readonly token: string | null;
+  /** How long an event-stream connection lives (default `DEFAULT_EVENTS_LIFETIME_MS`). */
+  readonly eventsLifetimeMs?: number;
 }
 
 /** The routes served without the token: the container's health check and Prometheus (#237). */
@@ -985,6 +995,7 @@ export async function buildControlApp({
   logger = false,
   version = CONTROL_API_VERSION,
   token,
+  eventsLifetimeMs = DEFAULT_EVENTS_LIFETIME_MS,
 }: ControlAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger,
@@ -1522,7 +1533,12 @@ export async function buildControlApp({
     socket.on('message', () => {
       socket.close(1003, 'this stream is read-only');
     });
+    const lifetime = setTimeout(() => {
+      socket.close(EVENTS_LIFETIME_CLOSE, 'stream lifetime reached; reconnect');
+    }, eventsLifetimeMs);
+    lifetime.unref();
     socket.on('close', () => {
+      clearTimeout(lifetime);
       unsubscribe();
       metrics.clients.dec();
     });

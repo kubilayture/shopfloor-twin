@@ -11,6 +11,8 @@ import { loadDefaultConfig } from '../plant/testing.ts';
 import { scenarioOptions } from '../headless/golden.ts';
 import { EVENT_SCHEMA, isoTime, stableStringify } from '../headless/serialize.ts';
 import {
+  DEFAULT_EVENTS_LIFETIME_MS,
+  EVENTS_LIFETIME_CLOSE,
   EVENTS_PATH,
   OPEN_PATHS,
   bearerMatches,
@@ -694,7 +696,7 @@ describe('control token (#237, 1.11)', () => {
   const TOKEN = 'b'.repeat(16) + 'c'.repeat(16);
   const auth = { authorization: `Bearer ${TOKEN}` };
 
-  async function tokenApp() {
+  async function tokenApp(eventsLifetimeMs?: number) {
     const hub = new EventHub();
     const run = createLiveRun({
       config,
@@ -707,6 +709,7 @@ describe('control token (#237, 1.11)', () => {
       },
     });
     app = await buildControlApp({
+      ...(eventsLifetimeMs === undefined ? {} : { eventsLifetimeMs }),
       token: TOKEN,
       pacer: run.pacer,
       hub,
@@ -837,6 +840,55 @@ describe('control token (#237, 1.11)', () => {
   });
 });
 
+describe('event-stream lifetime (#237 review)', () => {
+  it('closes a stream after its lifetime with 4100, so the client reconnects through the check', async () => {
+    expect(DEFAULT_EVENTS_LIFETIME_MS).toBe(300_000);
+    const { app: served } = await (async () => {
+      const hub = new EventHub();
+      const run = createLiveRun({ config, seed: 3, start: T0, clock: new ManualClock() });
+      app = await buildControlApp({
+        token: null,
+        pacer: run.pacer,
+        hub,
+        ready: () => true,
+        eventsLifetimeMs: 300,
+      });
+      return { app };
+    })();
+    const address = await served.listen({ host: '127.0.0.1', port: 0 });
+    const url = `${address.replace('http', 'ws')}${EVENTS_PATH}`;
+    const opened = Date.now();
+    const closed = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+      const socket = new WebSocket(url);
+      socket.addEventListener('close', (event) => {
+        resolve({ code: event.code, reason: event.reason });
+      });
+      socket.addEventListener('error', () => {
+        reject(new Error('the stream did not open'));
+      });
+    });
+    const lived = Date.now() - opened;
+    expect(closed).toEqual({
+      code: EVENTS_LIFETIME_CLOSE,
+      reason: 'stream lifetime reached; reconnect',
+    });
+    expect(lived).toBeGreaterThanOrEqual(250);
+    expect(lived).toBeLessThan(5_000);
+    // A new connection is a new upgrade: it opens again (behind nginx, through auth_request).
+    const again = await new Promise<string>((resolve) => {
+      const socket = new WebSocket(url);
+      socket.addEventListener('open', () => {
+        resolve('open');
+        socket.close();
+      });
+      socket.addEventListener('error', () => {
+        resolve('error');
+      });
+    });
+    expect(again).toBe('open');
+  });
+});
+
 describe('environment configuration (#54)', () => {
   it('applies defaults and coerces values', () => {
     const result = parseEnv({ ...TOKEN_ENV, SIM_SPEED: '30', CONTROL_PORT: '9000', SIM_SEED: '' });
@@ -893,6 +945,8 @@ describe('environment configuration (#54)', () => {
     ['SIM_STOCK', '   '],
     ['SIM_CONTROL_TOKEN', 'short'],
     ['SIM_CONTROL_TOKEN', 'with a space in it!'],
+    ['SIM_EVENTS_LIFETIME_MS', '999'],
+    ['SIM_EVENTS_LIFETIME_MS', '3600001'],
   ])('refuses %s=%j', (key, value) => {
     const result = parseEnv({ ...TOKEN_ENV, [key]: value });
     expect(result.ok).toBe(false);

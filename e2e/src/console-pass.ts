@@ -15,7 +15,9 @@
  *   leak-test drift, OPC UA offline and back, Modbus silent and back, a lot blocked and released,
  *   operators marked absent for a later shift, a tool breakage, the action list and the live plant
  *   event stream through nginx;
- * - the other roles see neither the console nor its link.
+ * - the other roles see neither the console nor its link;
+ * - a logout ends the event stream within its lifetime (4 s here, `SIM_EVENTS_LIFETIME_MS`) with
+ *   4100, and the reconnect is refused.
  *
  * The users are made through the API by the bootstrap admin (generated passwords, never written to
  * a file): `admin` and one user per other role.
@@ -42,6 +44,7 @@ const RESULTS = join(REPO, 'e2e/results/console');
 /** The committed timeline's seed and start (config/scenarios/monday-breakdown-and-recovery.yaml). */
 const SEED = '20261012';
 const START = '2026-10-12T06:00:00+03:00';
+const EVENTS_LIFETIME_MS = 4_000;
 /** One user per role besides the bootstrap admin. */
 const ROLE_USERS = {
   operator: { username: 'console-operator', roles: ['operator'] },
@@ -100,6 +103,9 @@ const stack = new Stack({
     SIM_START: START,
     SIM_SPEED: '60',
     SIM_AUTOSTART: 'false',
+    // A short event-stream lifetime (#237 review), so 3-stream-lifetime.spec.ts sees a logout end
+    // the stream within seconds.
+    SIM_EVENTS_LIFETIME_MS: String(EVENTS_LIFETIME_MS),
     IMAGE_TAG: tag,
   },
 });
@@ -165,6 +171,7 @@ try {
     CONSOLE_SIM_URL: simBase,
     CONSOLE_SIM_TOKEN: stack.value('SIM_CONTROL_TOKEN'),
     CONSOLE_MES_URL: mesBase,
+    CONSOLE_EVENTS_LIFETIME_MS: String(EVENTS_LIFETIME_MS),
   });
   if (code !== 0) throw new Error(`the console Playwright run failed (exit ${String(code)})`);
   log('CONSOLE-OK');

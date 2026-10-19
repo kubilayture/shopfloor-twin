@@ -36,6 +36,7 @@ RUN rm -f /etc/nginx/conf.d/default.conf
 COPY apps/web/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY apps/web/nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY apps/web/nginx/sim-proxy.conf /etc/nginx/snippets/sim-proxy.conf
+COPY apps/web/nginx/mes-headers.conf /etc/nginx/snippets/mes-headers.conf
 COPY apps/web/nginx/15-require-sim-token.sh /docker-entrypoint.d/15-require-sim-token.sh
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 8080

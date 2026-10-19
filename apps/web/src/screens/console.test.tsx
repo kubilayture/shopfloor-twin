@@ -364,6 +364,35 @@ it('says what nginx refused: a lost session (401) and a missing permission (403)
   );
 });
 
+it('closes the event stream when the status poll is refused, and reconnects after a lifetime close', async () => {
+  const sim = fakeSim();
+  let refuse = false;
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), 'http://localhost');
+    if (refuse && url.pathname === '/sim/api/v1/status') {
+      return new Response('<html>401</html>', { status: 401 });
+    }
+    return sim.fetch(input, init);
+  });
+  await renderApp('/console', { session: ADMIN });
+  await waitFor(() => {
+    expect(SilentSocket.instances).toHaveLength(1);
+  });
+  // The simulator ends the stream's lifetime: a new upgrade follows at once.
+  SilentSocket.instances[0]?.emit('close', { code: 4100 });
+  await waitFor(() => {
+    expect(SilentSocket.instances).toHaveLength(2);
+  });
+  // The session ends: the next status poll is 401, and the open socket is closed.
+  refuse = true;
+  await waitFor(
+    () => {
+      expect(SilentSocket.instances[1]?.closed).toBe(true);
+    },
+    { timeout: 4_000 },
+  );
+});
+
 it('tails the plant event stream from /sim/api/v1/events, newest first', async () => {
   const sim = fakeSim();
   vi.stubGlobal('fetch', sim.fetch);

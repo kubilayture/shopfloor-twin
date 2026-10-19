@@ -83,6 +83,9 @@ services:
       # The control API's bearer token (#237, control API 1.11): every route but /health/* and
       # /metrics needs it. nginx adds it to the console's /sim/ requests; the browser never has it.
       SIM_CONTROL_TOKEN: ${SIM_CONTROL_TOKEN:?Set SIM_CONTROL_TOKEN in .env (copy .env.example)}
+      # How long an event-stream connection lives (#237 review): the console reconnects, and
+      # nginx's permission check runs again, so a logout ends the stream within this.
+      SIM_EVENTS_LIFETIME_MS: ${SIM_EVENTS_LIFETIME_MS:-300000}
       OPCUA_HOST: ${SIM_OPCUA_HOST:-localhost}
       LOG_LEVEL: ${SIM_LOG_LEVEL:-info}
     ports:
@@ -287,10 +290,14 @@ services:
 networks:
   # nginx and the MES only (#237, ADR-0026 amendment): the MES trusts proxy headers only from this
   # network's subnet, which it learns at start (MES_EDGE_ALIAS), so the subnet is not pinned (a
-  # fixed one would collide between parallel Compose projects). `internal: true`: no gateway, so
-  # nothing in the VM or on the host routes into it; only its two containers reach each other here.
+  # fixed one would collide between parallel Compose projects). `internal: true` gives it no route
+  # out, and `inhibit_ipv4` (#237 review) no address on the bridge either: an internal network still
+  # has a gateway address (x.x.0.1) on the VM's host side, which would sit inside the trusted CIDR;
+  # without it nothing outside the two containers has an address in the subnet.
   edge:
     internal: true
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: 'true'
 
 volumes:
   db-data:

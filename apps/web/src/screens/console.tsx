@@ -66,6 +66,8 @@ export const LIST_POLL_MS = 5_000;
 /** The plant events kept on screen, and how often the list is redrawn. */
 export const EVENT_TAIL = 30;
 export const EVENT_FLUSH_MS = 1_000;
+/** The simulator's close code at the end of a stream's lifetime (control API 1.11). */
+export const EVENTS_LIFETIME_CLOSE = 4100;
 
 interface Outcome {
   readonly kind: 'done' | 'failed';
@@ -984,7 +986,10 @@ function List<T>({
 
 /**
  * The plant event stream (`/sim/api/v1/events`), the last `EVENT_TAIL` events, redrawn at most
- * once a second (at 60× a busy plant sends many). Reconnects 2 s after a close while shown.
+ * once a second (at 60× a busy plant sends many). Reconnects while shown: at once (250 ms) when the
+ * simulator ended the stream's lifetime (`EVENTS_LIFETIME_CLOSE`, #237 review: every new upgrade
+ * passes nginx's permission check again), 2 s after any other close. Not `enabled` (a status poll
+ * answered 401 or 403: the session ended or lost `sim:control`), the socket is closed at once.
  */
 export function usePlantEvents(enabled: boolean): {
   readonly lines: readonly string[];
@@ -1009,9 +1014,9 @@ export function usePlantEvents(enabled: boolean): {
         if (buffer.current.length > EVENT_TAIL)
           buffer.current.splice(0, buffer.current.length - EVENT_TAIL);
       });
-      socket.addEventListener('close', () => {
+      socket.addEventListener('close', (event: CloseEvent) => {
         setConnected(false);
-        if (!stopped) retry = setTimeout(open, 2_000);
+        if (!stopped) retry = setTimeout(open, event.code === EVENTS_LIFETIME_CLOSE ? 250 : 2_000);
       });
     };
     open();
@@ -1083,6 +1088,11 @@ export function Console() {
     queryFn: ({ signal }) => getReasonCodes(signal),
     enabled: allowed,
   });
+  // The session ended or lost sim:control (nginx's 401 or 403 on the poll): the event stream,
+  // checked only at its upgrade, closes now rather than at the end of its lifetime.
+  const denied =
+    status.error instanceof SimError &&
+    (status.error.status === 401 || status.error.status === 403);
   const machines = [...(equipment.data ?? [])].sort((a, b) => a.id.localeCompare(b.id));
   // Failure codes: the breakdown reasons' last segment (the simulator answers 404 for a code the
   // machine doesn't have).
@@ -1122,7 +1132,7 @@ export function Console() {
           <LotsPanel />
           <OperatorsPanel />
           <ActionsPanel />
-          <EventsPanel enabled={allowed} />
+          <EventsPanel enabled={!denied} />
         </>
       )}
     </section>

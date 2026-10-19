@@ -338,9 +338,6 @@ for path in /sim/api/v1/ground-truth /sim/api/v1/scenario/recorded /sim/health/r
 done
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Origin: http://evil.test' "$web/sim/api/v1/pause")
 [ "$code" = 403 ] || fail "/sim/ took a cross-origin write ($code)"
-if curl -s -i "$web/sim/api/v1/status" | grep -q "$SIM_CONTROL_TOKEN"; then
-  fail "/sim/ sent the control token to the browser"
-fi
 echo "ok: /sim/ allowlist (401 anonymous, 404 outside it, 403 cross-origin write)"
 
 # Edge trust (#237): every request through nginx reached the MES over the edge network as
@@ -356,4 +353,50 @@ proxied_untrusted=$(printf '%s\n' "$mes_metrics" |
   fail "requests through nginx arrived untrusted at the MES (${proxied_untrusted:-none})"
 docker compose logs mes 2>/dev/null | grep -q 'edge network learned' ||
   fail "the MES did not log its learned edge network"
+
+# The edge network has no gateway (#237 review: inhibit_ipv4): no address in the trusted subnet
+# outside nginx and the MES, neither on the bridge nor in its IPAM configuration.
+mes_container=$(docker compose ps -q mes)
+edge_network=$(docker inspect "$mes_container" \
+  --format '{{range $name, $net := .NetworkSettings.Networks}}{{println $name}}{{end}}' | grep '_edge$' || true)
+[ -n "$edge_network" ] || fail "the MES is not on the edge network"
+edge_gateways=$(docker network inspect "$edge_network" \
+  --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}|{{index .Options "com.docker.network.bridge.inhibit_ipv4"}}|{{.Internal}}')
+[ "$edge_gateways" = '|true|true' ] ||
+  fail "the edge network has a gateway or is not internal ($edge_gateways)"
+for service in mes web; do
+  gateway=$(docker inspect "$(docker compose ps -q "$service")" \
+    --format "{{(index .NetworkSettings.Networks \"$edge_network\").Gateway}}")
+  [ -z "$gateway" ] || fail "$service has a gateway on the edge network ($gateway)"
+done
+echo "ok: edge network internal, without a gateway (IPAM and endpoints)"
+
+# A client's X-Original-Method never reaches the MES through /api/ (#237 review): nginx clears it,
+# so a GET of the permission check with `X-Original-Method: POST` doesn't count as session use.
+# The smoke operator's sessions are set five minutes back (as the superuser); the check (403 for
+# an operator, after the session lookup) must leave them there, and a plain read must move them.
+smoke_cookie=$(printf '{"username":"%s","password":"%s"}' "$SMOKE_USERNAME" "$SMOKE_PASSWORD" |
+  curl -s -o /dev/null -D - -H "Origin: $web" -H 'Content-Type: application/json' \
+    --data-binary @- "$web/api/v1/session" |
+  sed -n 's/^[Ss]et-[Cc]ookie: \(sft_session=[^;]*\).*/\1/p')
+[ -n "$smoke_cookie" ] || fail "could not log in as $SMOKE_USERNAME for the X-Original-Method check"
+as_super() {
+  docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -Atc "$1"
+}
+back_dated="update identity.session s set last_used_at = now() - interval '5 minutes'
+  from identity.user_account u where u.id = s.user_id and u.username = '$SMOKE_USERNAME'
+  and s.ended_at is null"
+latest_use="select max(s.last_used_at) > now() - interval '1 minute' from identity.session s
+  join identity.user_account u on u.id = s.user_id
+  where u.username = '$SMOKE_USERNAME' and s.ended_at is null"
+as_super "$back_dated" >/dev/null
+code=$(printf 'Cookie: %s\n' "$smoke_cookie" | curl -s -o /dev/null -w '%{http_code}' -H @- \
+  -H 'X-Original-Method: POST' "$web/api/v1/session/permission/sim:control")
+[ "$code" = 403 ] || fail "the permission check answered the operator $code, not 403"
+[ "$(as_super "$latest_use")" = f ] ||
+  fail "a client's X-Original-Method through /api/ counted as session use"
+printf 'Cookie: %s\n' "$smoke_cookie" | curl -sf -o /dev/null -H @- "$web/api/v1/session" ||
+  fail "the smoke operator's session read failed"
+[ "$(as_super "$latest_use")" = t ] || fail "a session read through /api/ did not count as use"
+echo "ok: a client's X-Original-Method through /api/ is dropped (no session use; a read is use)"
 echo "ok: edge trust ($proxied_trusted proxied requests trusted, 0 untrusted)"

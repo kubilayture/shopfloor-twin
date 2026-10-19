@@ -1,6 +1,6 @@
 # ADR-0035: Quality holds: a scope derived from the genealogy, append-only transitions and a close guard on one advisory lock
 
-- Status: accepted (#201)
+- Status: accepted (#201; amended by #203 and #238, scopes rebuilt on change)
 - Date: 2026-10-18
 - Deciders: Claude (#201), within the Phase 8 plan ("Quality holds", review rounds 1–3); recorded for the owner under the standing instruction of 2026-10-15
 
@@ -86,3 +86,45 @@ Opening, releasing and rejecting a hold write a notification in the transition's
 - **`hold-exists`.** Opening a hold while an open hold with the same subject and the same reason exists is refused with 409 `urn:shopfloor:hold-exists`. The check runs inside the opening's transaction after the advisory lock, so two openings at once can't both pass. Another reason on the same subject is still a hold of its own (a supervisor's night stop and quality's own finding are separate decisions); a released or rejected hold doesn't count. The review of #203 found that a resubmitted form (the web opens one hold per chosen subject from a signal's suggested scope, one after the other) could open a second hold on a subject whose first opening had succeeded; the web now drops the subjects already opened and asks before opening a subject that has an open hold, and the MES refuses the duplicate in any case.
 - **`holds` on a problem.** `problemSchema` gains an optional `holds` array of hold ids (UUIDs): the existing open hold for `hold-exists`, and the open holds blocking a close for `quality-hold` (`OrderError` and `QualityError` carry them; `HttpProblem` serves them). Clients read the ids from there, not from `detail`.
 - **The terminal's lots in use** mark a lot as held from the open holds whose subject is that lot (`Holds.openLotHolds`), not through the scope copy `hold_unit` (a lot hold whose units belong to no order shown at the work center would otherwise go unmarked).
+
+## Amendment (P9-11, #238): scopes rebuilt on change
+
+This amendment replaces the negative consequence above: "every open, rejected and lot hold is derived again every second; … a Phase 9 item if holds number in the hundreds".
+
+- **On change, not on a timer.** `Holds` no longer has a 1 s timer. It rebuilds every hold's scope copy (`hold_unit`) and checks for `held-material-consumed` in two cases:
+  - after a genealogy round that rebuilt units or rewrote an order's cartons (`Genealogy.onChange`). This event now also fires on a carton rewrite, because a carton's members form a scope;
+  - after a hold opens or is decided.
+- **Scheduling.**
+  - Changes heard during a rebuild are coalesced into one more rebuild. A failed rebuild is retried after a second.
+  - Genealogy notifies its listeners after the round is timed, inside its own queue. The holds module defers its rebuild into its own queue with a `setTimeout`, so the round never waits for it.
+  - With `HoldsOptions.follow: false`, only `tick()` remains, and it rebuilds immediately. Tests that drive rounds by hand use it.
+- **Every hold at once.** A rebuild takes the same few queries whatever the number of holds:
+  - the holds themselves;
+  - the scopes of every open and rejected hold's subject, one query per subject kind (`Genealogy.scopes`, the same rule as `scope`);
+  - their stored copies;
+  - every held lot's consumptions (`Genealogy.lotsConsumptions`) and its known incidents.
+
+  One transaction then writes the changed copies. Incidents and the `scope` push events are as before.
+
+- **Unchanged:**
+  - the close guard, which never read `hold_unit`;
+  - `genealogy-pending`, which rests on genealogy's watermark and records;
+  - the advisory lock;
+  - the scope written in an opening's or a decision's own transaction;
+  - the ERP notifications;
+  - the copy's semantics, including a released hold's copy kept as it stood.
+- **Histograms.** Both use the derived-work bucket edges (`apps/mes-server/src/metrics.ts`):
+  - `mes_genealogy_round_seconds` times one round alone;
+  - `mes_quality_hold_scope_seconds` times one rebuild of every scope.
+
+  Each module's `onTiming` receives the raw timings.
+
+- **Measurement method** (`derived-work-holds.e2e.test.ts`):
+  - `week-01` is replayed in order through ingest, equipment, orders, execution and genealogy (schedule mode), twice with exactly the same deliveries. The first run has no hold. The second has 200 open holds, opened halfway through: one on each stock lot, the rest on serials spread over the units built so far.
+  - The second half of the week is delivered in chunks of 100 facts, 146 in all. A round follows each chunk. In the run with holds, a scope rebuild follows each round as well. This is an upper bound: the MES rebuilds only after a round that changed something.
+- **Measured:**
+  - round p95 with no hold: 16.8 ms;
+  - with 200 holds (6,771 units held at the end): round p95 17.9 ms; scope rebuild p50 32.3 ms, p95 39.7 ms, maximum 44.2 ms;
+  - **added: 40.8 ms against the 50 ms budget.** The test asserts the budget.
+- **Checks.** At the end of the replay, every hold's copy equals its scope derived from the genealogy. A unit test (`quality-holds.test.ts`) shows that the copy and `held-material-consumed` follow a genealogy round and an opening without `tick()`, and that a round that changes nothing triggers no rebuild.
+- **Known limit.** The rebuild's cost grows with the number of units held, which come mostly from the lot holds' scopes. Hundreds of lot holds on long-used lots would need a rebuild limited to the units a round changed.

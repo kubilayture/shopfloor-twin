@@ -1,6 +1,6 @@
 # ADR-0032: SPC: I-MR and X̄-R on first passes, frozen limit versions, Nelson rules and signal episodes
 
-- Status: accepted (#195, revised after the review of PR #210; amended by #200, the MES side)
+- Status: accepted (#195, revised after the review of PR #210; amended by #200, the MES side, and #238, the incremental derivation)
 - Date: 2026-10-17
 - Deciders: Claude (#195), within the Phase 8 plan and its review (PR #207, rounds 1–3); recorded for the owner under the standing instruction of 2026-10-15
 
@@ -104,3 +104,73 @@ The `quality` module (`apps/mes-server/src/modules/quality`, migration `0030`) r
 **Probe P3 (rebuild cost), measured on `week-01`** (2,189 first-pass readings, 36 episodes; `apps/mes-server/src/quality-spc.e2e.test.ts`, a local TimescaleDB container as `mes_app`). One tick per new reading, which rebuilds the part's measurements, derives the whole chart and episodes with `spc-core` and rewrites the changed episode rows, took **p50 10.7–12.1 ms and p95 13.3–14.1 ms** over the week's last 128 readings on an otherwise idle machine (three runs), and p95 16.4–17.8 ms in the final `pnpm test:e2e` runs, with other agents' suites on the machine. About 5–6 ms of a tick is `spcChart`; the rest is the database. **A late first-pass reading that moves every later moving range and subgroup exceeds the 20 ms budget:** 23–25 ms idle, 30–45 ms loaded, once per such reading. Per new reading the budget holds, so the module re-derives the whole chart and does not re-derive from the earliest changed point only; a late reading is rare (a gap filled late) and costs one tick above budget. Under heavier contention every suite ran up to three times slower and the p95 reached 27–56 ms, so the test guards only against a regression of that order (p95 under 60 ms) and logs the figures. **Read path** (same week): the chart body from memory, the whole week (1.05 MB of JSON) p50 10.7 ms; the default recent window (0.26 MB) p50 4.9 ms; ten at once 35 ms. The cost grows with the readings kept: a month (about 9,000) would need the incremental derivation or a window, a Phase 9 item with retention.
 
 **Golden reconciliation.** `quality-01`, `orders-01` and `week-01` equal `trace.json`'s SPC section in order (ticked every 50 facts), in bounded disorder, and shuffled with 10 % duplicates (ticked every 97 deliveries): version 1, every point of the four charts (hashed as the truth hashes them), the subgroups and every episode, all final at the end; the bounded and shuffled rows equal the in-order ones. Each tick on partial data checks that version 1, once there, is the truth's, that every final episode is one of the truth's, and that nothing is withdrawn. **Bounded disorder** (review H2) is what exercises finality: windows of 30–60 facts, each shuffled and delivered in chunks of 10–20 with a tick after each, with blocks of 20–40 and single facts held back and released windows later. Provisional episodes exist on many ticks (`week-01`: 168 of 525, up to 6 at once), and an episode once final must stay final with its identity. The mutants "every episode final" and "final through the tester's final-through + 10" both fail it, on an episode marked final that the truth doesn't have. In `quality-01` the drift's first episode is the truth's (I, rule 1, part 106) and opens 2 first-pass readings after the start, and the counterfactual readings, with the MES's own version 1, open no episode and fire no rule in the 60-reading window. The harness feeds the leak tester's facts only (the module reads nothing else), in a file of its own apart from the Phase 4–7 reconciliation harness.
+
+## Amendment (P9-11, #238): the incremental derivation
+
+The #200 amendment above recorded two known limits:
+
+- a late first-pass reading that moved every later point cost 23–25 ms with the machine idle, over probe P3's 20 ms budget;
+- a month of readings (about 9,000) would need the incremental derivation or a window.
+
+Phase 9 (plan "Derived-work costs", exit criterion 8) adds the incremental derivation. Both limits are now within budget.
+
+- **`SpcDerivation` in `spc-core`** (`packages/spc-core/src/incremental.ts`).
+  - It holds a characteristic's readings and limit versions. A change upserts or removes readings by key, or replaces the versions.
+  - Its `chart()` equals `spcChart` over the same readings and versions **exactly**: points, rules, segments, subgroups, pending and dropped readings, retests, and every episode with its extent, closing point and baseline flag.
+  - The definitions are unchanged. `spcChart` remains the definition, and `trace-core` and the simulator's ground truth keep using it, so `trace.json` is byte-identical.
+- **Resume from the earliest changed reading.** Rules only look back. Moving ranges, subgroups and runs depend only on the readings before them in chart order. So everything before the earliest changed first-pass reading is kept, and a change resumes from there:
+  - the I points from that reading on, and the moving ranges from it;
+  - the subgroups from the start of the subgroup it falls in, taking whichever is earlier in the order before and after the change (a removed reading drops its old subgroup);
+  - each new point's rules over its run's earlier points, whose zones are kept;
+  - per chart and rule, the episodes from the first one that reaches the point before the resumed one, because that episode's extent and closing point may change.
+- **The kept tail.** Readings that end the chart as before (the same objects in the same order) keep their points' values and zones.
+  - They also keep their rules, under two conditions: every point their longest rule window looks at is such a kept point, and the run does not start at the first kept point (such a run may have started earlier before the change).
+  - Only their segment index is renumbered, when a segment was added or removed before them.
+  - Zones are memoized per limit set and value.
+- **New, late and whole.**
+  - A new reading at the end of the chart re-derives one point per chart and at most one subgroup.
+  - A late reading re-derives from its place on, reusing the kept tail's judgments.
+  - A new or ended limit version derives the chart whole, because a version can apply from any position. The first derivation after a start is whole as well.
+- **Property test** (`incremental.test.ts`): 500 runs in every `pnpm test`, and one manual run of 8,000.
+  - The universe of readings has several device epochs (rare in some universes, every few readings in others), retests, equal positions told apart by key, and values tight around a centre with steps and outliers.
+  - A random script of up to 30 operations feeds one derivation:
+    - batches of the universe in random order, some held back and released later (late readings);
+    - a batch delivered again (a duplicate changes nothing);
+    - removals;
+    - a reading changed in place (its value, its position, or its pass, as a part's rebuild renumbers passes);
+    - limit version 1 from the readings so far;
+    - a later version estimated from a window, applying from a position at or just after a reading, with the previous open version ended there;
+    - the newest open version ended.
+  - After every operation, `chart()` must equal `spcChart` over the readings held and the versions in force. Each update's `kind` must be `new` exactly when it only appended first-pass readings.
+- **Mutants killed:**
+  - episodes not resumed before the resumed point;
+  - subgroups resumed from the start after the change only;
+  - a kept rule window one point short (killed deterministically by a unit case: a rule 2 run whose ninth point loses its signal when the first point moves);
+  - a point kept without renumbering its segment;
+  - a moved reading treated as unchanged;
+  - an MR point reused one reading early.
+- **The MES side.**
+  - The `quality` module keeps one derivation per characteristic. `#store` queues the changed readings, and the derivation applies them when the characteristic is derived. A limit write or version 1 replaces the versions.
+  - These are unchanged, because they read the same chart: episodes, `planSignals`, finality, withdrawal (`WITHDRAWN_FINAL`, `WITHDRAWN_PROVISIONAL`, `WITHDRAWN_VERSION`), `baseline-changed` and `control_limit`.
+  - The golden reconciliation now also checks the served chart on every tick of partial data (in order, in bounded disorder, and shuffled with duplicates). It must equal `spcChart` over the stored measurements.
+  - `quality-01`, `orders-01` and `week-01` still equal `trace.json`.
+- **Histograms.** Both use the derived-work bucket edges (1, 2.5, 5, 10, 20, 25, 50, 100, 250 ms, 0.5 s, 1 s), defined in `apps/mes-server/src/metrics.ts`.
+  - `mes_quality_spc_derive_seconds{kind}` times one derivation, including the database rewrite of the episodes. `new` means it only appended at the end of the chart, or changed no charted reading. `late` means it resumed inside the chart or derived it whole (a version write, or the first derivation after a start).
+  - `mes_quality_chart_read_seconds` times building one chart route body from the derivation in memory, without serialization.
+  - `QualityOptions.onTiming` receives every raw timing. The budget tests compute their percentiles from these, not from buckets.
+- **Measurement method** (`quality-spc.e2e.test.ts`, "derived-work budgets"; a local TimescaleDB container, run under the heavy lock):
+  - 30 first-pass readings after the baseline, spread over the run, are held back.
+  - The last 400 facts arrive one at a time; these give the new-reading timings.
+  - Then each held-back reading arrives alone; these give the late-reading timings.
+
+  | Run                                                       | New reading p50 / p95 / max | Late reading p50 / p95 / max | Default chart read p50 | Whole chart read p50 |
+  | --------------------------------------------------------- | --------------------------- | ---------------------------- | ---------------------- | -------------------- |
+  | `week-01` (2,189 first-pass readings, 36 episodes)        | 0.1 / **1.7** / 2.4 ms      | 4.0 / **7.3** / 9.5 ms       | 4.2 ms (0.26 MB)       | 9.3 ms (1.05 MB)     |
+  | synthetic month (8,756 first-pass readings, 152 episodes) | 0.5 / **2.6** / 4.3 ms      | 10.7 / **17.4** / 25.2 ms    | **8.0 ms** (0.36 MB)   | 36.6 ms (4.3 MB)     |
+  | budget                                                    | p95 ≤ 10 ms                 | p95 ≤ 20 ms                  | p50 ≤ 10 ms            |                      |
+
+- **Results.** All budgets are met, and the tests assert them.
+  - The synthetic month is `week-01`'s leak tests four times over in one device epoch. Each copy is a week later than the one before, with parts and serials renumbered.
+  - The month was not cut: its replay takes about 50 s.
+  - On a month, a late reading's cost is mostly writing the episodes again: after it, the X̄ and R points belong to other subgroups, so their provisional episodes are deleted and inserted. The chart itself costs about 6 ms in `spc-core` for a reading 150 places into 9,000.
+- **Known limit.** The month's late-reading p95 has about 15 % headroom, and its maximum (25 ms) is over the 20 ms budget. A late reading in a much longer chart, or one that rewrites many more episodes, can exceed the budget. Retention (dropping old readings from the derivation) is outside this issue.

@@ -1,4 +1,4 @@
-# Status — updated 2026-10-18
+# Status — updated 2026-10-19
 
 ## Current phase: 09 – Simulation console, scenarios and hardening (in progress; plan accepted in #226; Phase 8 closed 2026-10-18)
 
@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #231 done (branch `feat/231-mes-order-oee`, wave B; ADR-0036 amendment P9-04; no migration): MES order OEE per order and job, derived on read from the command state (queue with `notBefore`, lost facts), units and CNC pieces; `GET /api/v1/oee/orders/{id}` (route matrix 91) and push `oee:order:<id>`; golden reconciliation of `orders-01` (7 final, 1 open) and `quality-01` (6, 1) equal to `line-oee.json` in order, in bounded disorder and shuffled with 10 % duplicates, judged on partial data. Line OEE is #232.
 - #230 merged (PR #251, `182e297`): the order and line OEE ground truth, `line-oee.json` beside the four goldens and `lineOee` in the live ground truth (cut by `?asOf`), control API 1.8, ADR-0036 amendment.
 - #234 merged (PR #249, `86592fb`): simulator console actions (`GET /lots`, `/operators`, `/actions`, lot block and release, forced absence, tool breakage), control API 1.7, ADR-0037; goldens byte-identical.
 - #228 merged (PR #248, `9a072cd`): the heavy-suite lock at `~/.cache/shopfloor-twin/heavy.lock` for every heavy command, the smoke on ephemeral host ports, host and Docker disk checks, images and build cache cleaned per run, limits on the database, the broker and `migrate`, the Phase 9 rerun rows.

@@ -5,7 +5,14 @@ import type { AlarmEvent, AlarmKpiBucket, AlarmScope } from '../alarms/index.ts'
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { ExecutionChange } from '../execution/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
-import type { DowntimeChange, OeeBucket, OeeChange, OeeScope } from '../oee/index.ts';
+import type {
+  DowntimeChange,
+  OeeBucket,
+  OeeChange,
+  OeeScope,
+  OrderOeeChange,
+  OrderOeeView,
+} from '../oee/index.ts';
 import { alarmKpiDto, floodEpisodeDto, occurrenceDto, pointDto } from './alarm-dto.ts';
 import type { OrderChange } from '../orders/index.ts';
 import type { GenealogyChange } from '../genealogy/index.ts';
@@ -15,6 +22,7 @@ import { commandDto, orderDto } from './order-dto.ts';
 import { holdDto } from './hold-routes.ts';
 import { characteristicDto, signalDto } from './quality-dto.ts';
 import { bucketDto, recordDto } from './oee-dto.ts';
+import { orderOeeDto } from './order-oee-dto.ts';
 import { handoverNoteDto, shiftRecordDto } from './shift-dto.ts';
 import {
   ALARMS_TOPIC,
@@ -60,6 +68,14 @@ export interface PushSources {
       id: string,
     ): Promise<{ hour: OeeBucket | null; shift: OeeBucket | null }>;
     onChange(listener: (change: OeeChange) => void): () => void;
+  };
+  /**
+   * Order OEE (#231): `oee:order:<order number>`, paced like the buckets; a change names an order
+   * or a CNC (whose orders' topics turn dirty).
+   */
+  readonly orderOee?: {
+    order(orderId: string): Promise<OrderOeeView | undefined>;
+    onChange(listener: (change: OrderOeeChange) => void): () => void;
   };
   /** The ids `oee:<id>` may name, each with its scope and machines. */
   readonly oeeTopics?: ReadonlyMap<
@@ -186,6 +202,9 @@ interface Client {
 
 const MAX_HOLDS = 4;
 
+/** The order OEE topics (#231): `oee:order:<order number>`. */
+const ORDER_OEE_PREFIX = 'oee:order:';
+
 const PACED_NAMES = { oee: 'OEE', 'alarm-kpi': 'alarm KPI', terminal: 'terminal' } as const;
 
 /**
@@ -258,6 +277,8 @@ export class PushHub {
   #retry: NodeJS.Timeout | undefined;
   #lastClock: string | undefined;
   readonly #paced = new Map<string, PacedTopic>();
+  /** Per `oee:order:<id>` topic, the CNCs its order had jobs on when last computed. */
+  readonly #orderMachines = new Map<string, ReadonlySet<string>>();
 
   constructor(options: PushOptions = {}) {
     this.#options = {
@@ -317,6 +338,23 @@ export class PushHub {
           Math.max(10, Math.floor(this.#options.oeeMs / 4)),
         ).unref(),
       );
+    }
+    if (sources.orderOee) {
+      this.#detach.push(
+        sources.orderOee.onChange((change) => {
+          this.#onOrderOeeChange(change);
+        }),
+      );
+      if (!sources.oee) {
+        this.#timers.push(
+          setInterval(
+            () => {
+              this.#oeeTick();
+            },
+            Math.max(10, Math.floor(this.#options.oeeMs / 4)),
+          ).unref(),
+        );
+      }
     }
     if (sources.downtime) {
       this.#detach.push(
@@ -576,6 +614,10 @@ export class PushHub {
   }
 
   #oeeRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    if (request.topic.startsWith(ORDER_OEE_PREFIX)) {
+      this.#orderOeeRequest(client, sources, request);
+      return;
+    }
     const id = request.topic.slice('oee:'.length);
     const known = sources.oeeTopics?.get(id);
     const oee = sources.oee;
@@ -596,6 +638,36 @@ export class PushHub {
         snapshot: { type: 'snapshot', topic: name, hour, shift },
         delta: { type: 'oee', topic: name, hour, shift },
         json: JSON.stringify({ hour, shift }),
+      };
+    });
+  }
+
+  /**
+   * `oee:order:<id>` (#231): the order OEE, its jobs and first-pass yield, as
+   * `GET /oee/orders/{id}` answers it; a snapshot, then `oee-order` deltas paced like the buckets
+   * (at most one per `oeeMs`, only when the body changed). An unknown order is null.
+   */
+  #orderOeeRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    const source = sources.orderOee;
+    if (!source) {
+      this.#send(client, {
+        type: 'error',
+        code: 'unknown-topic',
+        detail: 'order OEE push is not available',
+      });
+      return;
+    }
+    const name = request.topic as `oee:order:${string}`;
+    const orderId = name.slice(ORDER_OEE_PREFIX.length);
+    this.#pacedRequest(client, request, 'oee', [], async () => {
+      const view = await source.order(orderId);
+      // The CNCs the order has jobs on: their states and commands turn the topic dirty.
+      this.#orderMachines.set(name, new Set(view?.jobs.map((job) => job.machine) ?? []));
+      const order = view === undefined ? null : orderOeeDto(view);
+      return {
+        snapshot: { type: 'snapshot', topic: name, order },
+        delta: { type: 'oee-order', topic: name, order },
+        json: JSON.stringify(order),
       };
     });
   }
@@ -884,6 +956,24 @@ export class PushHub {
     this.#dropPending(client, name);
     topic.awaiting.add(client);
     this.#computePaced(topic);
+  }
+
+  /**
+   * An order's OEE may have moved: its own topic, or for a CNC every order topic with a job on it
+   * (one not computed yet too); with neither, every order topic.
+   */
+  #onOrderOeeChange(change: OrderOeeChange): void {
+    for (const topic of this.#paced.values()) {
+      if (topic.kind !== 'oee' || !topic.name.startsWith(ORDER_OEE_PREFIX)) continue;
+      const machines = this.#orderMachines.get(topic.name);
+      const touched =
+        change.orderId !== undefined
+          ? topic.name === `${ORDER_OEE_PREFIX}${change.orderId}`
+          : change.machine !== undefined
+            ? machines === undefined || machines.has(change.machine)
+            : true;
+      if (touched) topic.dirty = true;
+    }
   }
 
   #onOeeChange(change: OeeChange): void {

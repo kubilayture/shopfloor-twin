@@ -430,7 +430,7 @@ export interface UnitRoute {
 }
 
 export interface FirstPassYield {
-  /** Units packed good with every record good: no rework, no retest. */
+  /** Units packed good with every record good and no operation repeated: no rework, no retest. */
   readonly firstPassGood: bigint;
   /** Units started (blanks taken). */
   readonly started: bigint;
@@ -463,7 +463,11 @@ export function firstPassYield(input: {
     const packed = unit.records.some(
       (record) => record.operation === input.lastOperation && record.result === 'good',
     );
-    if (packed && unit.records.every((record) => record.result === 'good')) good += 1n;
+    // An operation repeated is a rework or a retest even when the fact that sent it back is lost
+    // (a written-off gap): never first-pass (#231 review).
+    const once =
+      new Set(unit.records.map((record) => record.operation)).size === unit.records.length;
+    if (packed && once && unit.records.every((record) => record.result === 'good')) good += 1n;
   }
   const started = BigInt(input.started);
   if (good > started) {

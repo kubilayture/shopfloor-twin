@@ -319,6 +319,14 @@ export class PushHub {
   readonly #paced = new Map<string, PacedTopic>();
   /** Per `oee:order:<id>` topic, the CNCs its order had jobs on when last computed. */
   readonly #orderMachines = new Map<string, ReadonlySet<string>>();
+  /**
+   * The `oee:order:<id>` topics whose last body was not final in every part (the order OEE, its
+   * first-pass yield or its own line OEE, #233 review): the line value and the yield read machines
+   * beyond the order's CNCs (ASM-01's pieces, PCK-01's cycles, the units at every station) and the
+   * line value's `to` follows the plant clock while open, so any machine's change and the clock
+   * moving turn them dirty.
+   */
+  readonly #orderOpen = new Set<string>();
   /** The hours `oee:line` covered when last computed (its hour and shift bucket). */
   #lineSpan: { from: number; to: number } | undefined;
 
@@ -728,6 +736,11 @@ export class PushHub {
       // The CNCs the order has jobs on: their states and commands turn the topic dirty.
       this.#orderMachines.set(name, new Set(view?.jobs.map((job) => job.machine) ?? []));
       const order = view === undefined ? null : orderOeeDto(view);
+      if (order && !(order.final && order.firstPassYield.final && order.line?.final === true)) {
+        this.#orderOpen.add(name);
+      } else {
+        this.#orderOpen.delete(name);
+      }
       return {
         snapshot: { type: 'snapshot', topic: name, order },
         delta: { type: 'oee-order', topic: name, order },
@@ -1064,8 +1077,10 @@ export class PushHub {
   }
 
   /**
-   * An order's OEE may have moved: its own topic, or for a CNC every order topic with a job on it
-   * (one not computed yet too); with neither, every order topic.
+   * An order's OEE may have moved: its own topic, or for a machine every order topic with a job on
+   * it (one not computed yet too) and every order topic not final in every part (`#orderOpen`: its
+   * line value and yield read the bottleneck, the packing machine and every station); with
+   * neither, every order topic.
    */
   #onOrderOeeChange(change: OrderOeeChange): void {
     for (const topic of this.#paced.values()) {
@@ -1075,7 +1090,9 @@ export class PushHub {
         change.orderId !== undefined
           ? topic.name === `${ORDER_OEE_PREFIX}${change.orderId}`
           : change.machine !== undefined
-            ? machines === undefined || machines.has(change.machine)
+            ? machines === undefined ||
+              machines.has(change.machine) ||
+              this.#orderOpen.has(topic.name)
             : true;
       if (touched) topic.dirty = true;
     }
@@ -1154,6 +1171,14 @@ export class PushHub {
     const clockKey = clock && `${String(clock.epoch)}|${String(clock.watermark.getTime())}`;
     for (const topic of this.#paced.values()) {
       if (topic.kind === 'alarm-kpi' && topic.clock !== clockKey) topic.dirty = true;
+      // An open order line value runs to the plant clock (#233 review).
+      if (
+        topic.kind === 'oee-order' &&
+        this.#orderOpen.has(topic.name) &&
+        topic.clock !== clockKey
+      ) {
+        topic.dirty = true;
+      }
       if (topic.awaiting.size > 0 || (topic.dirty && now - topic.computedAt >= this.#pace(topic))) {
         topic.clock = clockKey;
         this.#computePaced(topic);
@@ -1174,6 +1199,9 @@ export class PushHub {
     const started = performance.now();
     topic.inFlight = true;
     topic.dirty = false;
+    // The plant clock this computation reads (a snapshot computed off the tick too).
+    const clock = this.#sources.equipment.watermarks()[0];
+    topic.clock = clock && `${String(clock.epoch)}|${String(clock.watermark.getTime())}`;
     topic.computedAt = now;
     topic
       .compute()
@@ -1222,6 +1250,8 @@ export class PushHub {
     for (const [name, topic] of this.#paced) {
       if (![...this.#clients].some((client) => client.paced.has(name)) && !topic.inFlight) {
         this.#paced.delete(name);
+        this.#orderMachines.delete(name);
+        this.#orderOpen.delete(name);
       }
     }
   }

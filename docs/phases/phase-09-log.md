@@ -299,3 +299,48 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed | 1,290.8 s |                                                |
     | smoke     | passed | 89.2 s    | web and MES on ephemeral ports 33289 and 33288 |
     | reconcile | passed | 1,650.6 s | alarms OK, orders OK, quality OK               |
+
+- #233 (P9-06, branch `feat/233-web-oee`, wave B; no migration, no contract change): order and line OEE in the web, and the `orders` reconcile pass compares them with the live truth.
+  - **Order detail** (`/orders/$id`, **OEE and first-pass yield**): the order OEE over its job windows (OEE, A, P, Q (OP10) as percent and the API's four decimals, the exact fraction in `data-fraction` and the tooltip), the first-pass yield across the routing beside it (never multiplied in), the order's own line OEE ("not additive across orders"), and per job its CNC, head time with its source, window, cycles, OEE, A, P, Q and status. Flags as text: **Final**, **Provisional** with its reasons (open window, job without a window, unknown head time, lost completion), **Never final** on a lost path, **Revision n**, **n incidents** (the written-off gaps listed), **May be revised**, **Above 1** with the reason. `GET /oee/orders/{id}` once, then `oee:order:<id>` while the detail is open (one topic per open order, on the MES's own budget of 16 order topics, #233 comment); the pushed body wins unless the REST one is final where it is not or has a higher revision (`pickOrderOee`).
+  - **OEE dashboard:** a **Line** card for the selected shift: line throughput OEE (packed good per product, ideal time at the bottleneck, line planned busy time, production mode), its hours, **Above 1** explained and never capped, and the bottleneck per product from `GET /oee/line` and `oee:line` (operation, machines, effective cycle = ideal ÷ machines). `DESIGNED_BOTTLENECK` is removed from `apps/web/src/domain/oee.ts`; the work center card and the machine table name the MES's bottleneck. `oee:line` is on its own budget, beside the 8 `oee:<id>` topics. A pushed hour or shift moving on rereads the line REST reads.
+  - **Reconcile, `orders` pass** (`e2e/src/orders-pass.ts` `checkOrderOee` and `checkOeeScreen`; Playwright project `orders-oee`, `e2e/browser/orders/oee`), right after the drain: the live truth's `lineOee` at `?asOf=` the end of shift A completes exactly 5 orders (asserted), the golden `line-oee.json`'s set, each equal to the golden's; the MES calls each one's order OEE, first-pass yield and own line OEE final (waited for) and equal to the truth (every job's head time, window, cycles and OEE included), no incident, revision 0; shift A's line OEE and its 8 hours are final and equal, and the bottleneck per product is the truth's. Then Playwright reads each order's detail and `/oee?shift=2026-10-12/A` once final; the page's decimals and fractions must equal the truth's for exactly the 5 orders.
+
+    | Order       | Order OEE | First-pass yield | Order line OEE |
+    | ----------- | --------- | ---------------- | -------------- |
+    | PO-2610-001 | 0.6509    | 1.0000           | 0.3254         |
+    | PO-2610-002 | 0.6767    | 1.0000           | 0.3491         |
+    | PO-2610-003 | 0.9756    | 1.0000           | 0.3640         |
+    | PO-2610-004 | 0.9951    | 1.0000           | 0.3818         |
+    | PO-2610-006 | 0.4890    | 1.0000           | 0.1929         |
+
+    Shift A's line OEE is 0.7456 (final, equal; the 08:00 hour 1.0167, above 1 and shown so), all 8 hours final and equal; on screen 5 orders and the line, equal. A first standalone run of the pass found the live OEE check's WebSocket frame log reading `result.oee` of the new `oee:line` snapshots; it now skips topics other than the work centers' and machines'.
+
+  - **Deviations:** the order OEE column on the orders list is cut (the plan's cut line): it would subscribe to or read every order; the order detail carries the values.
+  - **Gate** on `04cf615` (`GATE_PROJECT=gate233`, `GATE_TAG=pr233`, `TURBO_FORCE=1`, under the heavy lock), `GATE-OK`; free at the start: host 28.7 GiB, Docker 76.4 GiB.
+
+    | Step      | Result | Time      | Notes                                   |
+    | --------- | ------ | --------- | --------------------------------------- |
+    | verify    | passed | 487.2 s   | `pnpm verify --concurrency=1`, uncached |
+    | golden    | passed | 1.5 s     | all four goldens byte-identical         |
+    | e2e       | passed | 1,273.3 s |                                         |
+    | smoke     | passed | 92.6 s    |                                         |
+    | reconcile | passed | 1,651.4 s | alarms OK, orders OK, quality OK        |
+
+  - **Review of PR #258** (changes requested):
+    - **(1, medium-high)** an order detail open across completion could stay on a provisional line OEE: the web merged on the order's `final` only, and the MES refreshed `oee:order:<id>` only for the order's CNCs. **Web:** `pickOrderOee` merges part by part (the order OEE with its jobs, the first-pass yield, the line OEE each from the side where it is final). **MES:** while a body is not final in every part, any machine's pieces (ASM-01's decide `line.final`, PCK-01's packs and every station's units the yield) and the plant clock mark its topic dirty (`#orderOpen`; a computation records the clock it read). Unit tests on both sides.
+    - **(2)** the work center cards and the machine table say **Bottleneck: loading…** and **unknown (line OEE unavailable)** until the MES's bottleneck is known (test on the failing read).
+    - **(3)** the on-screen compare also takes each job's OEE and finality and `aboveOne` of the order's line value and of shift A's.
+    - **(4)** the MES's orders with `completedAt` before the cut must be the same 5.
+    - **(5)** `holdOrderOee` counts holders per order; a delta for an order nobody holds is ignored. `useLiveLineOee` documents its single consumer.
+    - **(6)** hour rows show revision, incidents (singular for one), may be revised and above 1; `n/a` tooltips name their cause; each set of badges has a **What the status means** disclosure (keyboard and touch).
+    - **(7)** unit tests of `checkOrderOee` on mocked contexts: 5 equal orders, 4 completed, an MES value changed, the order's line value changed, the live truth unlike the golden, the MES completing another set.
+  - **Gate after the review** on `eb4c026` (`GATE_PROJECT=gate233b`, `GATE_TAG=pr233b`, `TURBO_FORCE=1`), `GATE-OK`: verify 485.1 s, golden 1.6 s, e2e 1,286.8 s, smoke 96.7 s, reconcile 1,649.3 s (alarms OK, orders OK, quality OK; on screen 5 orders and the line equal).
+  - **Rebased onto `main` `cecde3c`** (#256; only the phase log and STATUS conflicted, both sides kept), then `GATE_STEPS=verify,e2e,smoke,reconcile` on `0d4dd69` (`GATE_PROJECT=gate233c`, `GATE_TAG=pr233c`, `TURBO_FORCE=1`), `GATE-OK`; free at the start: host 46.5 GiB, Docker 76.4 GiB.
+
+    | Step      | Result  | Time      | Notes                                   |
+    | --------- | ------- | --------- | --------------------------------------- |
+    | verify    | passed  | 482.1 s   | `pnpm verify --concurrency=1`, uncached |
+    | golden    | skipped | –         | not in `GATE_STEPS`                     |
+    | e2e       | passed  | 1,226.4 s |                                         |
+    | smoke     | passed  | 89.1 s    |                                         |
+    | reconcile | passed  | 1,652.4 s | alarms OK, orders OK, quality OK        |

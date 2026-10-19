@@ -16,8 +16,8 @@ import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { ShiftPicker, useShiftSelection } from '../components/shift-picker.tsx';
 import {
-  DESIGNED_BOTTLENECK,
   NOT_APPLICABLE,
+  bottleneckMachines,
   bucketFlags,
   minutesText,
   percentText,
@@ -29,6 +29,7 @@ import {
 } from '../domain/oee.ts';
 import { formatClockTime, formatPlantTime } from '../domain/time.ts';
 import { useLiveDowntime, useLiveOee, useLiveSubscriptions } from '../live/live-context.tsx';
+import { LineOeeCard, useLineOee } from './line-oee.tsx';
 
 const LIVE_REFRESH_MS = 30_000;
 /** A downtime push (a new record, a recode) rereads the Pareto, at most this often. */
@@ -101,13 +102,21 @@ function WorkCenterCard({
   name,
   rest,
   shiftKey,
-  bottleneck,
+  bottlenecks,
+  bottleneckState,
 }: {
   readonly id: string;
   readonly name: string;
   readonly rest: OeeBucketDto | undefined;
   readonly shiftKey: string;
-  readonly bottleneck: EquipmentDto | undefined;
+  /** Whether the MES's bottleneck is known yet (#233 review). */
+  readonly bottleneckState: 'known' | 'loading' | 'unknown';
+  /** The MES's bottleneck machines in this work center, with their products (#233). */
+  readonly bottlenecks: readonly {
+    equipment: EquipmentDto | undefined;
+    id: string;
+    products: readonly string[];
+  }[];
 }) {
   const bucket = useShiftBucket(id, rest, shiftKey);
   const result = bucket?.result;
@@ -153,14 +162,32 @@ function WorkCenterCard({
         ) : (
           <p className="text-sm text-slate-700">No data for this shift.</p>
         )}
-        {bottleneck ? (
+        {bottleneckState !== 'known' ? (
           <p
             data-testid={`bottleneck-${id}`}
+            data-state={bottleneckState}
             className="rounded bg-slate-100 px-2 py-1 text-sm text-slate-900"
           >
-            <span className="font-semibold">Bottleneck:</span> {bottleneck.name} (
-            <span className="font-mono">{bottleneck.id}</span>), by design. A work center&apos;s OEE
-            is time-weighted over its machines, not line throughput.
+            <span className="font-semibold">Bottleneck:</span>{' '}
+            {bottleneckState === 'loading' ? 'loading…' : 'unknown (line OEE unavailable)'}
+          </p>
+        ) : bottlenecks.length > 0 ? (
+          <p
+            data-testid={`bottleneck-${id}`}
+            data-state="known"
+            data-equipment={bottlenecks.map((b) => b.id).join(',')}
+            className="rounded bg-slate-100 px-2 py-1 text-sm text-slate-900"
+          >
+            <span className="font-semibold">Bottleneck:</span>{' '}
+            {bottlenecks.map((b, index) => (
+              <span key={b.id}>
+                {index > 0 ? '; ' : ''}
+                {b.equipment?.name ?? b.id} (<span className="font-mono">{b.id}</span>) for{' '}
+                {b.products.join(', ')}
+              </span>
+            ))}
+            , as the MES derives it. A work center&apos;s OEE is time-weighted over its machines,
+            not line throughput: that is the line card.
           </p>
         ) : null}
       </article>
@@ -173,11 +200,13 @@ function MachineRow({
   equipment,
   rest,
   shiftKey,
+  bottleneck,
 }: {
   readonly id: string;
   readonly equipment: EquipmentDto | undefined;
   readonly rest: OeeBucketDto;
   readonly shiftKey: string;
+  readonly bottleneck: boolean;
 }) {
   const bucket = useShiftBucket(id, rest, shiftKey) ?? rest;
   const { result } = bucket;
@@ -190,7 +219,7 @@ function MachineRow({
       <th scope="row" className="px-2 py-1 text-left font-medium">
         {equipment?.name ?? id}{' '}
         <span className="font-mono text-xs font-normal text-slate-700">{id}</span>
-        {id === DESIGNED_BOTTLENECK ? (
+        {bottleneck ? (
           <span className="ml-1 rounded border border-slate-600 px-1 text-xs font-normal">
             Bottleneck
           </span>
@@ -221,57 +250,74 @@ function MachineTable({
   buckets,
   names: known,
   shiftKey,
+  bottlenecks,
+  bottleneckState,
 }: {
   readonly buckets: readonly OeeBucketDto[];
   readonly names: Names;
   readonly shiftKey: string;
+  readonly bottlenecks: ReadonlyMap<string, readonly string[]>;
+  readonly bottleneckState: 'known' | 'loading' | 'unknown';
 }) {
   if (buckets.length === 0) return <p className="mt-2 text-sm">No machine has data yet.</p>;
   return (
-    <div className="relative mt-2 overflow-x-auto rounded-lg border border-slate-300 bg-white">
-      <table className="w-full min-w-[44rem] text-sm">
-        <caption className="sr-only">OEE per machine for the selected shift</caption>
-        <thead className="bg-slate-100 text-left">
-          <tr>
-            <th scope="col" className="px-2 py-1">
-              Machine
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              OEE
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              A
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              P
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              Q
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              Own loss
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              External loss
-            </th>
-            <th scope="col" className="px-2 py-1">
-              Status
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {buckets.map((bucket) => (
-            <MachineRow
-              key={bucket.id}
-              id={bucket.id}
-              equipment={known.equipment.get(bucket.id)}
-              rest={bucket}
-              shiftKey={shiftKey}
-            />
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <>
+      {bottleneckState !== 'known' ? (
+        <p
+          className="mt-2 text-sm"
+          data-testid="machine-bottleneck-state"
+          data-state={bottleneckState}
+        >
+          Bottleneck:{' '}
+          {bottleneckState === 'loading' ? 'loading…' : 'unknown (line OEE unavailable)'}
+        </p>
+      ) : null}
+      <div className="relative mt-2 overflow-x-auto rounded-lg border border-slate-300 bg-white">
+        <table className="w-full min-w-[44rem] text-sm">
+          <caption className="sr-only">OEE per machine for the selected shift</caption>
+          <thead className="bg-slate-100 text-left">
+            <tr>
+              <th scope="col" className="px-2 py-1">
+                Machine
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                OEE
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                A
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                P
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                Q
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                Own loss
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                External loss
+              </th>
+              <th scope="col" className="px-2 py-1">
+                Status
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {buckets.map((bucket) => (
+              <MachineRow
+                key={bucket.id}
+                id={bucket.id}
+                equipment={known.equipment.get(bucket.id)}
+                rest={bucket}
+                shiftKey={shiftKey}
+                bottleneck={bottlenecks.has(bucket.id)}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
@@ -642,7 +688,8 @@ export function OeeDashboard() {
     refetchInterval: selection.isCurrent ? LIVE_REFRESH_MS : false,
   });
 
-  // Live: every work center and machine (8 of the MES's 16 OEE topics) and downtime records.
+  // Live: every work center and machine (8 of the MES's 16 OEE topics) and downtime records;
+  // `oee:line` (useLineOee) counts against a budget of its own (#232).
   const topics = [...known.workCenters.keys(), ...known.equipment.keys()].map((id) => `oee:${id}`);
   useLiveSubscriptions(topics.length > 0 ? [...topics, DOWNTIME_TOPIC] : []);
 
@@ -655,6 +702,12 @@ export function OeeDashboard() {
   const scope: OeeScope =
     focus !== undefined && known.workCenters.has(focus) ? 'work-center' : 'equipment';
   const data = shiftOee.data;
+  const line = useLineOee(
+    data ? shiftKey : undefined,
+    data ? { start: Date.parse(data.start), end: Date.parse(data.end) } : undefined,
+    selection.isCurrent,
+  );
+  const bottlenecks = bottleneckMachines(line.bottlenecks);
   const focusRest = data
     ? [...data.workCenters, ...data.equipment].find((bucket) => bucket.id === focus)
     : undefined;
@@ -710,6 +763,14 @@ export function OeeDashboard() {
 
       {data && shiftKey !== undefined ? (
         <>
+          <section aria-labelledby="line-title" className="mt-6">
+            <h2 id="line-title" className="text-xl font-semibold">
+              Line
+            </h2>
+            <div className="mt-2">
+              <LineOeeCard view={line} equipment={known.equipment} />
+            </div>
+          </section>
           <section aria-labelledby="wc-title" className="mt-6">
             <h2 id="wc-title" className="text-xl font-semibold">
               Work centers
@@ -722,11 +783,13 @@ export function OeeDashboard() {
                   name={name}
                   rest={data.workCenters.find((bucket) => bucket.id === center)}
                   shiftKey={shiftKey}
-                  bottleneck={
-                    members.includes(DESIGNED_BOTTLENECK)
-                      ? known.equipment.get(DESIGNED_BOTTLENECK)
-                      : undefined
-                  }
+                  bottleneckState={line.bottleneckState}
+                  bottlenecks={members.flatMap((member) => {
+                    const products = bottlenecks.get(member);
+                    return products
+                      ? [{ id: member, equipment: known.equipment.get(member), products }]
+                      : [];
+                  })}
                 />
               ))}
             </ul>
@@ -735,7 +798,13 @@ export function OeeDashboard() {
             <h2 id="machines-title" className="text-xl font-semibold">
               Machines
             </h2>
-            <MachineTable buckets={data.equipment} names={known} shiftKey={shiftKey} />
+            <MachineTable
+              buckets={data.equipment}
+              names={known}
+              shiftKey={shiftKey}
+              bottlenecks={bottlenecks}
+              bottleneckState={line.bottleneckState}
+            />
           </section>
           {focus !== undefined ? (
             <section aria-labelledby="details-title" className="mt-6">

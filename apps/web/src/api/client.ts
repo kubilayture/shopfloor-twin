@@ -27,7 +27,9 @@ import {
   equipmentSchema,
   intervalsSchema,
   metricsSchema,
+  lineOeeSchema,
   oeeListSchema,
+  orderOeeSchema,
   paretoSchema,
   plantSchema,
   problemSchema,
@@ -76,7 +78,9 @@ import {
   type EquipmentDto,
   type IntervalDto,
   type Metrics,
+  type LineOeeDto,
   type OeeList,
+  type OrderOeeDto,
   type Pareto,
   type Plant,
   type Problem,
@@ -375,6 +379,24 @@ export function getOee(query: OeeQuery, signal?: AbortSignal): Promise<OeeList> 
     to: iso(query.to),
   });
   return getJson(`/oee?${params.toString()}`, oeeListSchema, signal);
+}
+
+/** An order's OEE over its job windows, its jobs, first-pass yield and line OEE (#231). */
+export function getOrderOee(id: string, signal?: AbortSignal): Promise<OrderOeeDto> {
+  return getJson(`/oee/orders/${segment(id)}`, orderOeeSchema, signal);
+}
+
+/** Line throughput OEE per hour or shift bucket over [from, to), with the bottlenecks (#232). */
+export function getLineOee(
+  query: { readonly bucket: 'hour' | 'shift'; readonly from: number; readonly to: number },
+  signal?: AbortSignal,
+): Promise<LineOeeDto> {
+  const params = new URLSearchParams({
+    bucket: query.bucket,
+    from: iso(query.from),
+    to: iso(query.to),
+  });
+  return getJson(`/oee/line?${params.toString()}`, lineOeeSchema, signal);
 }
 
 export function getPareto(

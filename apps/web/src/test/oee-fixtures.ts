@@ -1,7 +1,12 @@
 import type {
+  BottleneckDto,
   DowntimeRecordDto,
+  LineBucketDto,
+  LineOeeDto,
   OeeBucketDto,
   OeeResultDto,
+  OrderJobOeeDto,
+  OrderOeeDto,
   Pareto,
   ReasonCodes,
   ShiftInstanceDto,
@@ -219,6 +224,138 @@ export function record(overrides: Partial<DowntimeRecordDto> = {}): DowntimeReco
     codings: [],
     uncoded: true,
     version: 3,
+    ...overrides,
+  };
+}
+
+// ---- Order and line OEE (#233) ----
+
+/** The MES's bottleneck per product: ASM-01 for both (ideal ÷ 1 machine). */
+export const BOTTLENECKS: BottleneckDto[] = [
+  {
+    product: 'VB-100',
+    operation: 'OP30',
+    equipment: ['asm-01'],
+    idealCycleMs: 150_000,
+    effectiveCycleMs: '150000/1',
+  },
+  {
+    product: 'VB-200',
+    operation: 'OP30',
+    equipment: ['asm-01'],
+    idealCycleMs: 210_000,
+    effectiveCycleMs: '210000/1',
+  },
+];
+
+/**
+ * A line bucket: 100 good VB-100 × 150 s = 15 000 000 ms ideal over 20 000 000 ms planned,
+ * line OEE 3/4.
+ */
+export function lineBucket(
+  bucket: 'hour' | 'shift',
+  key: string,
+  overrides: Partial<LineBucketDto> = {},
+): LineBucketDto {
+  const from = bucket === 'shift' ? SHIFT_START : key;
+  const to = bucket === 'shift' ? SHIFT_END : new Date(Date.parse(key) + 3_600_000).toISOString();
+  return {
+    bucket,
+    key,
+    from,
+    to,
+    through: to,
+    plannedBusyMs: 20_000_000,
+    good: { 'VB-100': 100 },
+    idealMs: '15000000/1',
+    oee: { fraction: '3/4', decimal: '0.7500' },
+    aboveOne: false,
+    final: false,
+    incidents: [],
+    mayRevise: false,
+    revision: 0,
+    ...overrides,
+  };
+}
+
+export function lineOee(bucket: 'hour' | 'shift', buckets: LineBucketDto[]): LineOeeDto {
+  return {
+    bucket,
+    from: SHIFT_START,
+    to: SHIFT_END,
+    productionMode: 'orders',
+    bottlenecks: BOTTLENECKS,
+    buckets,
+  };
+}
+
+/** A job of an order: head at its accepted fact, a closed window, OEE 63/100 (`result`). */
+export function orderJob(
+  commandId: string,
+  overrides: Partial<OrderJobOeeDto> = {},
+): OrderJobOeeDto {
+  return {
+    commandId,
+    machine: 'cnc-01',
+    deviceEpoch: EPOCH,
+    quantity: 20,
+    notBefore: SHIFT_START,
+    head: { kind: 'head', at: SHIFT_START, source: 'accepted', reason: null },
+    window: {
+      from: SHIFT_START,
+      to: '2026-10-15T04:30:00.000Z',
+      open: false,
+      headTimeUnknown: false,
+      endLost: false,
+      lost: false,
+    },
+    cycles: 10,
+    oee: result(),
+    final: true,
+    ...overrides,
+  };
+}
+
+/** An order's own line OEE: 9 good × 150 s over 2 h in progress, 3/16; final. */
+export const ORDER_LINE: NonNullable<OrderOeeDto['line']> = {
+  from: SHIFT_START,
+  to: '2026-10-15T05:00:00.000Z',
+  through: '2026-10-15T05:00:00.000Z',
+  plannedBusyMs: 7_200_000,
+  good: { 'VB-100': 9 },
+  idealMs: '1350000/1',
+  oee: { fraction: '3/16', decimal: '0.1875' },
+  aboveOne: false,
+  open: false,
+  final: true,
+};
+
+/** An order's OEE (`GET /oee/orders/{id}`): final, one job, yield 9/10, line OEE 3/16. */
+export function orderOee(orderId: string, overrides: Partial<OrderOeeDto> = {}): OrderOeeDto {
+  return {
+    orderId,
+    product: 'VB-100',
+    status: 'completed',
+    oee: result(),
+    open: false,
+    pending: false,
+    headTimeUnknown: false,
+    endLost: false,
+    lost: false,
+    final: true,
+    jobs: [orderJob(`${orderId}-1`)],
+    firstPassYield: {
+      firstPassGood: 9,
+      started: 10,
+      yield: { fraction: '9/10', decimal: '0.9000' },
+      final: true,
+    },
+    completedAt: '2026-10-15T05:00:00.000Z',
+    cutoffs: [{ machine: 'cnc-01', epoch: EPOCH, at: '2026-10-15T06:00:00.000Z' }],
+    incidents: [],
+    mayRevise: false,
+    revision: 0,
+    line: ORDER_LINE,
     ...overrides,
   };
 }

@@ -18,6 +18,7 @@ import {
   equipmentListSchema,
   lineOeeSchema,
   oeeResultSchema,
+  orderOeeSchema,
   operatorKpiListSchema,
   paretoSchema,
   plantSchema,
@@ -380,6 +381,11 @@ export class MesClient {
       to: to.toISOString(),
     });
     return this.#get(`/api/v1/oee/line?${query.toString()}`, lineOeeSchema);
+  }
+
+  /** An order's OEE over its job windows, its jobs, first-pass yield and line OEE (#231). */
+  orderOee(id: string) {
+    return this.#get(`/api/v1/oee/orders/${encodeURIComponent(id)}`, orderOeeSchema);
   }
 
   /** OEE of one shift for every machine and work center (#120). */

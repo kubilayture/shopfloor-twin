@@ -15,6 +15,8 @@ import { defineConfig, devices } from '@playwright/test';
  *   the supervisor's release and dispatch through the UI;
  * - `orders-live`, during shift A: the OEE dashboard and the alarm checks as above, then the Line
  *   A1 terminal (counts within 2 s, start, pause, resume);
+ * - `orders-oee`, right after the drain (#233): each order completed in shift A on its detail
+ *   and shift A's line OEE on the dashboard, read from the page once final;
  * - `orders-final`, after the drain: sign-off at both terminals, drafts, scrap coding, close.
  * The quality-01 pass (#204, browser/quality; its dispatch is `orders-dispatch`):
  * - `quality-live`, during shift A with the drift: every SPC episode on the SPC page and the Line
@@ -65,6 +67,12 @@ export default defineConfig({
       name: 'orders-live',
       testMatch: ['1-oee-live.spec.ts', '2-alarms-live.spec.ts', 'orders/live/*.spec.ts'],
       outputDir: join(results, 'playwright', 'orders-live'),
+      use: { ...chromium },
+    },
+    {
+      name: 'orders-oee',
+      testDir: './browser/orders/oee',
+      outputDir: join(results, 'playwright', 'orders-oee'),
       use: { ...chromium },
     },
     {

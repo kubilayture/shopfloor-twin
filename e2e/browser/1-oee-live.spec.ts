@@ -115,6 +115,9 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
       if ((data.type !== 'oee' && data.type !== 'snapshot') || !data.topic?.startsWith('oee:')) {
         return;
       }
+      // Only the work center and machine topics: the dashboard also holds `oee:line` (#233),
+      // whose buckets carry no `result`.
+      if (!testIds.has(data.topic.slice('oee:'.length))) return;
       if (data.shift?.key !== shiftKey) return;
       const changes = pushed.get(data.topic.slice('oee:'.length));
       const value = data.shift.result.oee?.decimal ?? 'n/a';

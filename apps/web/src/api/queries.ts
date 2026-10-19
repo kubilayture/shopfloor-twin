@@ -19,6 +19,11 @@ export const queryKeys = {
   shiftOee: (shiftKey: string) => ['shift-oee', shiftKey] as const,
   hourlyOee: (id: string, shiftKey: string) => ['oee', 'hour', id, shiftKey] as const,
   pareto: (id: string, shiftKey: string) => ['pareto', id, shiftKey] as const,
+  // Line throughput OEE (#233): every read starts with `line-oee` (read again on a new hour).
+  lineOeeAll: ['line-oee'] as const,
+  lineOee: (bucket: 'hour' | 'shift', shiftKey: string) => ['line-oee', bucket, shiftKey] as const,
+  /** An order's OEE (#233), `GET /oee/orders/{id}`. */
+  orderOee: (id: string) => ['order-oee', id] as const,
   paretoAll: ['pareto'] as const,
   reasonCodes: ['reason-codes'] as const,
   downtime: (shiftKey: string) => ['downtime', shiftKey] as const,

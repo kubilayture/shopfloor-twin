@@ -2,11 +2,12 @@
 
 ## Current phase: 09 – Simulation console, scenarios and hardening (in progress; plan accepted in #226; Phase 8 closed 2026-10-18)
 
-## Exit criteria progress: Phase 8 closed with 7 / 7 met by local runs (GitHub Actions could not run; deviations and gate exceptions in `docs/phases/phase-08-report.md`); Phase 9: 1 / 9 met (3, scenario playback), 2 partly met (1, golden order and line OEE: line OEE in the MES remains; 9, no regression: the SignAndEncrypt check and the closing `verify` runs remain), 6 not started (wave A checkpoint in `docs/phases/phase-09-log.md`)
+## Exit criteria progress: Phase 8 closed with 7 / 7 met by local runs (GitHub Actions could not run; deviations and gate exceptions in `docs/phases/phase-08-report.md`); Phase 9: 2 / 9 met (3, scenario playback; 2, live order and line OEE, on `feat/233-web-oee`), 2 partly met (1, golden order and line OEE; 9, no regression: the SignAndEncrypt check and the closing `verify` runs remain), 6 not started (wave A checkpoint in `docs/phases/phase-09-log.md`)
 
 ## Done since last update
 
 - #237 done (branch `feat/237-sim-console`, wave B; control API 1.11; ADR-0037 and ADR-0026 amendments; no migration): the web `/console` (admin, `sim:control`) behind nginx's exact-route `/sim/` allowlist with the Origin check, `auth_request` to `GET /api/v1/session/permission/sim:control` (route matrix 94) and the injected `SIM_CONTROL_TOKEN` (required on every control route but health and metrics, compared in constant time); the internal `edge` network with the MES learning its CIDR from `mes-edge`, `X-Original-Method` trusted only from there (only console actions count as session use), `mes_http_proxy_requests_total{trusted}` in the smoke; `pnpm test:console` (7 Playwright tests) and the full gate passed.
+- #233 done (branch `feat/233-web-oee`, wave B; no migration): the order detail shows order OEE (A, P, Q, OEE), the jobs, first-pass yield and the order's line OEE with final, provisional, incidents and may-be-revised states, live on `oee:order:<id>`; the OEE dashboard a line card per shift with its hours, above 1 explained, and the MES's bottleneck per product, live on `oee:line` (`DESIGNED_BOTTLENECK` removed); the `orders` reconcile pass asserts exactly 5 orders completed in shift A and compares their order OEE, first-pass yield and line OEE, and shift A's line OEE and hours, with the live truth at `?asOf`, final, through the API and read from the page by Playwright. Orders list column cut (cut line). `GATE-OK` on `04cf615`.
 - #232 done (branch `feat/232-mes-line-oee`, wave B; ADR-0036 amendment P9-05; no migration): MES line throughput OEE per UTC hour, shift bucket and order, derived on read (good packed at PCK-01 × ASM-01's effective cycle ÷ planned busy time; in orders mode only in-progress time), final buckets kept in memory; `GET /api/v1/oee/line`, `GET /api/v1/oee/line/orders` (route matrix 93), the order OEE body's `line`, `mayRevise`, `revision`; push `oee:line`, order topics on their own budget; `MES_PRODUCTION_MODE`; golden reconciliation of all four goldens equal to `line-oee.json` in order, in bounded disorder and shuffled with 10 % duplicates; P9-04's follow-ups folded in.
 - Wave A checkpoint (`docs/phases/phase-09-log.md`, 2026-10-19). Its three conditions are met:
   - `line-oee.json` is committed for the four goldens;
@@ -154,17 +155,11 @@
 
 ## In progress
 
-- #232 (P9-05, wave B): MES line OEE per hour, shift and order, with the bottleneck in the API and push, and golden reconciliation of all four goldens. It also takes #252's review follow-ups:
-  - the low-survivor unit cases;
-  - a revision marker on views with incidents;
-  - gap lookups by each machine's own epoch;
-  - the truth's planned-stop, in-progress and completion conventions.
+- #233 (P9-06, wave B): pushed on `feat/233-web-oee`, awaiting its pull request and review.
 
 ## Next up
 
 - Wave B:
-  - P9-06 (#233) after #232. Its order topics need a budget apart from the dashboard's 16 `oee:` topics.
-  - P9-10 (#237) in the second PR slot. Its `/sim/` allowlist names exact routes: `GET /api/v1/actions`, `GET /scenario`, `GET /scenarios` and `POST /scenario`, with the earlier console routes. `GET /api/v1/scenario/recorded` stays off it, because it reveals the seed and `configSha256` like `/ground-truth`; it is reached directly with the control token.
   - P9-11 (#238).
 - Wave C, as dependencies and the two-PR limit allow:
   - P9-12 (#239) opens with probe Q1.

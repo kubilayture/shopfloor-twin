@@ -60,6 +60,13 @@
  * the sign-off at both terminals, a second operator who sees none of the first one's drafts and
  * codes the scrap, the supervisor's close (`closed` in the ERP) and the audit log; finally the
  * MES's outbox posted again after an MES restart, leaving the ERP unchanged.
+ * Phase 9 (#233, exit criterion 2), right after the drain: the live ground truth's line OEE cut
+ * at the end of shift A (`?asOf`) completes exactly the 5 orders orders-01 completes there (the
+ * golden `line-oee.json`'s set, each equal to it); the MES calls each one's order OEE, first-pass
+ * yield and own line OEE final (waited for) and equal to the truth, and shift A's line OEE, its
+ * eight hours and the bottleneck per product too; then Playwright reads them from each order's
+ * detail and from the OEE dashboard (browser/orders/oee) and the page's values must equal the
+ * truth's.
  *
  * Phase 8 (#204): a third pass runs quality-01's shift A in orders mode on its own project, with the
  * scenario's ERP dataset and stock (e2e/compose.reconcile-quality.yml: ERP_DATASET, SIM_STOCK). The
@@ -131,8 +138,11 @@ import {
   checkAuditAndClose,
   checkDispatch,
   checkImport,
+  checkOeeScreen,
+  checkOrderOee,
   checkOrdersAfterDrain,
   checkRefusals,
+  lineOeeTruthSchema,
   repostOutbox,
   stepToScrap,
   stepUntil,
@@ -1439,6 +1449,38 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             operations,
           );
           log(`orders after the drain: ${JSON.stringify(ordersReport.afterDrain)}`);
+          // Order and line OEE (#233, Phase 9 exit criterion 2): the orders completed in shift A
+          // and shift A's line OEE, final and equal to the live truth cut at the shift's end,
+          // through the API and then read from the order detail and the OEE dashboard.
+          const goldenLineOee = lineOeeTruthSchema.parse(
+            JSON.parse(await readFile(join(GOLDEN, 'line-oee.json'), 'utf8')),
+          );
+          const oee = await checkOrderOee(
+            ctx,
+            { from: shift.from, to: shift.to, shiftKey },
+            goldenLineOee,
+          );
+          ordersReport.oee = oee.report;
+          log(`order and line OEE: ${JSON.stringify(oee.report)}`);
+          phase('orderOee');
+          const oeeExit = await runBrowser('orders-oee', {
+            RECONCILE_WEB_URL: webUrl,
+            RECONCILE_MES_URL: mes.base,
+            RECONCILE_RESULTS: RESULTS_DIR,
+            RECONCILE_SHIFT: shiftKey,
+            RECONCILE_OEE_ORDERS: Object.keys(oee.expected.orders).join(','),
+            ...browserLogin,
+          });
+          const oeeScreen = await requiredJson('oee-screen.json');
+          ordersReport.oeeScreen =
+            oeeScreen === undefined ? undefined : checkOeeScreen(ctx, oeeScreen, oee.expected);
+          log(`order and line OEE on screen: ${JSON.stringify(ordersReport.oeeScreen)}`);
+          if (oeeExit !== 0) {
+            fail(
+              `the order detail or the OEE dashboard did not show the final OEE (Playwright exit ${String(oeeExit)})`,
+            );
+          }
+          phase('orderOeeScreen');
           const operator = users.get(ORDER_USERS.operator.username);
           const operator2 = users.get(ORDER_USERS.operator2.username);
           const maintenance = users.get(ORDER_USERS.maintenance.username);

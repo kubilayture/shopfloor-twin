@@ -5,6 +5,8 @@
  * them widens a tolerance: counts, quantities and messages are compared exactly.
  */
 import { setTimeout as sleep } from 'node:timers/promises';
+import type { LineBucketDto, OrderOeeDto } from '@shopfloor/contracts/mes-api';
+import { z } from 'zod';
 import {
   MesClient,
   mesLogin,
@@ -957,5 +959,465 @@ export async function repostOutbox(
     erpUnchanged: diffs.length === 0,
     erpPosts: posts,
     erpPostsByKind: postsByKind,
+  };
+}
+
+// ---- Order and line OEE (#233, Phase 9 exit criterion 2) ----
+
+/** orders-01 completes exactly these many orders in shift A (the golden run's set, plan rev. 9). */
+export const SHIFT_A_COMPLETED = 5;
+
+/** How long the MES may take to call an order's or shift A's OEE final after the drain. */
+const OEE_FINAL_WAIT_MS = 120_000;
+
+const ratioJson = z.object({ fraction: z.string(), decimal: z.string() });
+type RatioJson = z.infer<typeof ratioJson>;
+
+/** `oee-core`'s result as JSON: the ratios read here, every other key kept for the equality. */
+const oeeResultJson = z.looseObject({
+  availability: ratioJson.nullable(),
+  performance: ratioJson.nullable(),
+  quality: ratioJson.nullable(),
+  oee: ratioJson.nullable(),
+});
+
+const lineValueJson = z.object({
+  from: z.string(),
+  to: z.string(),
+  plannedBusyMs: z.number().int(),
+  good: z.record(z.string(), z.number().int()),
+  idealMs: z.string(),
+  oee: ratioJson.nullable(),
+  aboveOne: z.boolean(),
+  provisional: z.boolean(),
+});
+
+const truthOrderOee = z.object({
+  product: z.string(),
+  jobs: z.array(z.string()),
+  jobOee: z.record(z.string(), z.unknown()),
+  oee: oeeResultJson,
+  open: z.boolean(),
+  pending: z.boolean(),
+  headTimeUnknown: z.boolean(),
+  endLost: z.boolean(),
+  lost: z.boolean(),
+  firstPassYield: z.object({
+    firstPassGood: z.number().int(),
+    started: z.number().int(),
+    yield: ratioJson.nullable(),
+  }),
+  completedAt: z.string().nullable(),
+  line: lineValueJson.nullable(),
+});
+
+/**
+ * The order and line OEE truth (`line-oee.json`, `sim-line-oee/1`; the live ground truth's
+ * `lineOee`, cut by `?asOf`, control API 1.8): the parts this pass compares.
+ */
+export const lineOeeTruthSchema = z.object({
+  config: z.looseObject({ productionMode: z.string() }),
+  bottlenecks: z.record(
+    z.string(),
+    z.object({
+      operation: z.string(),
+      equipment: z.array(z.string()),
+      idealCycleMs: z.number().int(),
+      effectiveCycleMs: z.string(),
+    }),
+  ),
+  line: z.object({
+    hours: z.record(z.string(), lineValueJson),
+    shifts: z.record(z.string(), lineValueJson),
+  }),
+  orders: z.record(z.string(), truthOrderOee),
+});
+export type LineOeeTruth = z.infer<typeof lineOeeTruthSchema>;
+type TruthOrderOee = z.infer<typeof truthOrderOee>;
+
+/** The truth's head sources; the MES's others (`acceptedAt`, `previous-last-cycle`) are null there. */
+const HEAD_SOURCES_IN_TRUTH = new Set(['accepted', 'previous-completed', 'notBefore']);
+
+/**
+ * The MES's order OEE (`GET /oee/orders/{id}`) in the truth's shape, as the golden reconciliation
+ * of P9-04 compares them (apps/mes-server/src/order-oee.test-support.ts, `oeeShape`).
+ */
+function mesOrderShape(dto: OrderOeeDto) {
+  return {
+    product: dto.product,
+    jobs: dto.jobs.map((job) => job.commandId),
+    jobOee: Object.fromEntries(
+      dto.jobs.map((job) => [
+        job.commandId,
+        {
+          machine: job.machine,
+          headTime: job.head.at,
+          headSource:
+            job.head.source !== null && HEAD_SOURCES_IN_TRUTH.has(job.head.source)
+              ? job.head.source
+              : null,
+          window:
+            job.window === null
+              ? null
+              : { from: job.window.from, to: job.window.to, open: job.window.open },
+          cycles: job.cycles,
+          oee: job.oee,
+        },
+      ]),
+    ),
+    oee: dto.oee,
+    open: dto.open,
+    pending: dto.pending,
+    headTimeUnknown: dto.headTimeUnknown,
+    endLost: dto.endLost,
+    lost: dto.lost,
+    firstPassYield: {
+      firstPassGood: dto.firstPassYield.firstPassGood,
+      started: dto.firstPassYield.started,
+      yield: dto.firstPassYield.yield,
+    },
+    completedAt: dto.completedAt,
+  };
+}
+
+/** The truth's order without its line part (compared on its own). */
+function truthOrderShape(truth: TruthOrderOee): Omit<TruthOrderOee, 'line'> {
+  return { ...truth, line: undefined } as Omit<TruthOrderOee, 'line'>;
+}
+
+/** A line value without the truth's `provisional` and the MES's finality fields. */
+function lineShape(value: {
+  readonly from: string;
+  readonly to: string;
+  readonly plannedBusyMs: number;
+  readonly good: Readonly<Record<string, number>>;
+  readonly idealMs: string;
+  readonly oee: RatioJson | null;
+  readonly aboveOne: boolean;
+}) {
+  const { from, to, plannedBusyMs, good, idealMs, oee, aboveOne } = value;
+  return { from, to, plannedBusyMs, good, idealMs, oee, aboveOne };
+}
+
+/** What the OEE checks expect on screen: the truth's values of each order and of shift A. */
+export interface OeeExpected {
+  readonly orders: Readonly<
+    Record<
+      string,
+      {
+        readonly oee: z.infer<typeof oeeResultJson>;
+        readonly firstPassYield: TruthOrderOee['firstPassYield'];
+        readonly line: RatioJson | null;
+      }
+    >
+  >;
+  readonly shiftKey: string;
+  readonly line: RatioJson | null;
+  readonly bottlenecks: LineOeeTruth['bottlenecks'];
+}
+
+/**
+ * Phase 9 exit criterion 2 through the API (#233), after the drain: the live ground truth cut at
+ * the end of shift A (`?asOf`, the line OEE truth as a run that ended there gives it) completes
+ * exactly `SHIFT_A_COMPLETED` orders, the golden run's set, each equal to `line-oee.json`'s; the
+ * MES calls each one's order OEE, first-pass yield and own line OEE final (waited for) and equal
+ * to the truth's, with no incident under them; shift A's line OEE and each of its hours are final
+ * and equal, and the bottleneck per product is the truth's.
+ */
+export async function checkOrderOee(
+  ctx: PassContext,
+  cut: { readonly from: number; readonly to: number; readonly shiftKey: string },
+  golden: LineOeeTruth,
+) {
+  const asOf = new Date(cut.to).toISOString();
+  const json = await ctx.sim.groundTruthJson(asOf);
+  if (json.lineOeeAsOf !== asOf) {
+    ctx.fail(`the ground truth's lineOee is cut at ${String(json.lineOeeAsOf)}, not ${asOf}`);
+  }
+  const truth = lineOeeTruthSchema.parse(json.lineOee);
+  if (truth.config.productionMode !== 'orders') {
+    ctx.fail(`the live line OEE truth runs in ${truth.config.productionMode} mode, not orders`);
+  }
+  const completedIn = (orders: LineOeeTruth['orders']) =>
+    Object.entries(orders)
+      .filter(([, o]) => o.completedAt !== null && Date.parse(o.completedAt) < cut.to)
+      .map(([id]) => id)
+      .sort();
+  const completed = completedIn(truth.orders);
+  const goldenCompleted = completedIn(golden.orders);
+  if (completed.length !== SHIFT_A_COMPLETED || goldenCompleted.length !== SHIFT_A_COMPLETED) {
+    ctx.fail(
+      `orders completed in shift A: live ${String(completed.length)} (${completed.join(', ')}), golden ${String(goldenCompleted.length)}, not exactly ${String(SHIFT_A_COMPLETED)}`,
+    );
+  }
+  if (JSON.stringify(completed) !== JSON.stringify(goldenCompleted)) {
+    ctx.fail(
+      `orders completed in shift A: live ${completed.join(', ')}, golden ${goldenCompleted.join(', ')}`,
+    );
+  }
+
+  const orders: Record<
+    string,
+    {
+      oee: string | null;
+      firstPassYield: string | null;
+      line: string | null;
+      final: boolean;
+      goldenEqual: boolean;
+      mesEqual: boolean;
+      differences: string[];
+    }
+  > = {};
+  const expected: Record<string, OeeExpected['orders'][string]> = {};
+  for (const id of completed) {
+    const t = truth.orders[id];
+    if (!t) continue;
+    const differences: string[] = [];
+    // The live truth of an order completed before the cut is the golden run's.
+    const goldenDiffs = jsonDifferences(golden.orders[id] ?? null, t);
+    differences.push(...goldenDiffs.map((d) => `golden: ${d}`));
+    let dto: OrderOeeDto | undefined;
+    await until(
+      `${id}'s order OEE, first-pass yield and line OEE final`,
+      async () => {
+        dto = await ctx.mes.orderOee(id);
+        return dto.final && dto.firstPassYield.final && dto.line?.final === true;
+      },
+      OEE_FINAL_WAIT_MS,
+    ).catch((error: unknown) => {
+      differences.push(error instanceof Error ? error.message : String(error));
+    });
+    const mesDiffs = dto
+      ? [
+          ...jsonDifferences(truthOrderShape(t), mesOrderShape(dto)).map((d) => `order: ${d}`),
+          ...jsonDifferences(t.line && lineShape(t.line), dto.line && lineShape(dto.line)).map(
+            (d) => `line: ${d}`,
+          ),
+          ...(t.line?.provisional === false ? [] : ['the truth’s line is provisional at the cut']),
+          ...(dto.incidents.length === 0 && !dto.mayRevise && dto.revision === 0
+            ? []
+            : [
+                `incidents ${String(dto.incidents.length)}, mayRevise ${String(dto.mayRevise)}, revision ${String(dto.revision)}`,
+              ]),
+          ...(dto.status === 'completed' ? [] : [`status ${dto.status}`]),
+        ]
+      : ['no answer'];
+    differences.push(...mesDiffs.map((d) => `MES: ${d}`));
+    orders[id] = {
+      oee: dto?.oee.oee?.decimal ?? null,
+      firstPassYield: dto?.firstPassYield.yield?.decimal ?? null,
+      line: dto?.line?.oee?.decimal ?? null,
+      final: dto?.final === true,
+      goldenEqual: goldenDiffs.length === 0,
+      mesEqual: mesDiffs.length === 0,
+      differences,
+    };
+    expected[id] = { oee: t.oee, firstPassYield: t.firstPassYield, line: t.line?.oee ?? null };
+    if (differences.length > 0) ctx.fail(`${id} order OEE:\n  ${differences.join('\n  ')}`);
+  }
+
+  // Shift A's line OEE and its hours, final and equal; the bottleneck per product.
+  const truthShift = truth.line.shifts[cut.shiftKey];
+  if (!truthShift || truthShift.provisional) {
+    ctx.fail(`the truth has no final line OEE of ${cut.shiftKey}: ${JSON.stringify(truthShift)}`);
+  }
+  const truthHours = Object.entries(truth.line.hours)
+    .filter(([key]) => Date.parse(key) >= cut.from && Date.parse(key) < cut.to)
+    .sort(([a], [b]) => Date.parse(a) - Date.parse(b));
+  let shift: LineBucketDto | undefined;
+  let hours: LineBucketDto[] = [];
+  let bottlenecks: unknown;
+  let productionMode = '';
+  await until(
+    `${cut.shiftKey}'s line OEE and its hours final`,
+    async () => {
+      const [shifts, hourly] = await Promise.all([
+        ctx.mes.lineOee('shift', new Date(cut.from), new Date(cut.to)),
+        ctx.mes.lineOee('hour', new Date(cut.from), new Date(cut.to)),
+      ]);
+      shift = shifts.buckets.find((b) => b.key === cut.shiftKey);
+      hours = hourly.buckets;
+      productionMode = shifts.productionMode;
+      bottlenecks = Object.fromEntries(
+        shifts.bottlenecks.map(({ product, ...rest }) => [product, rest]),
+      );
+      return shift?.final === true && hours.length > 0 && hours.every((h) => h.final);
+    },
+    OEE_FINAL_WAIT_MS,
+  ).catch((error: unknown) => {
+    ctx.fail(error instanceof Error ? error.message : String(error));
+  });
+  const lineDiffs = [
+    ...jsonDifferences(truthShift && lineShape(truthShift), shift && lineShape(shift)).map(
+      (d) => `shift: ${d}`,
+    ),
+    ...(shift?.incidents.length === 0 && !shift.mayRevise && shift.revision === 0
+      ? []
+      : [`shift incidents, mayRevise or revision: ${JSON.stringify(shift)}`]),
+    ...jsonDifferences(
+      truthHours.map(([, value]) => lineShape(value)),
+      hours.map(lineShape),
+    ).map((d) => `hours: ${d}`),
+    ...jsonDifferences(truth.bottlenecks, bottlenecks).map((d) => `bottlenecks: ${d}`),
+    ...(productionMode === 'orders' ? [] : [`productionMode ${productionMode}`]),
+  ];
+  if (truthHours.length !== 8) {
+    ctx.fail(`the truth has ${String(truthHours.length)} hours in ${cut.shiftKey}, not 8`);
+  }
+  if (lineDiffs.length > 0) {
+    ctx.fail(
+      `${cut.shiftKey} line OEE (truth = expected, MES = actual):\n  ${lineDiffs.join('\n  ')}`,
+    );
+  }
+  return {
+    report: {
+      asOf,
+      completed,
+      expectedCompleted: SHIFT_A_COMPLETED,
+      goldenCompleted,
+      orders,
+      line: {
+        shiftKey: cut.shiftKey,
+        oee: shift?.oee?.decimal ?? null,
+        truth: truthShift?.oee?.decimal ?? null,
+        aboveOne: shift?.aboveOne ?? null,
+        final: shift?.final === true,
+        hours: hours.length,
+        hoursFinal: hours.filter((h) => h.final).length,
+        equal: lineDiffs.length === 0,
+      },
+      bottlenecks: truth.bottlenecks,
+    },
+    expected: {
+      orders: expected,
+      shiftKey: cut.shiftKey,
+      line: truthShift?.oee ?? null,
+      bottlenecks: truth.bottlenecks,
+    } satisfies OeeExpected,
+  };
+}
+
+const screenRatio = z.object({ decimal: z.string(), fraction: z.string() });
+
+/** What `browser/orders/oee` read from the page (`oee-screen.json`). */
+const oeeScreenSchema = z.object({
+  orders: z.record(
+    z.string(),
+    z.object({
+      final: z.string().nullable(),
+      incidents: z.string().nullable(),
+      revision: z.string().nullable(),
+      oee: screenRatio,
+      availability: screenRatio,
+      performance: screenRatio,
+      quality: screenRatio,
+      firstPassYield: z.object({
+        final: z.string().nullable(),
+        yield: screenRatio,
+        firstPassGood: z.number(),
+        started: z.number(),
+      }),
+      line: z.object({ final: z.string().nullable(), oee: screenRatio }),
+    }),
+  ),
+  line: z.object({
+    key: z.string().nullable(),
+    final: z.string().nullable(),
+    oee: screenRatio,
+    bottlenecks: z.array(
+      z.object({
+        product: z.string(),
+        operation: z.string().nullable(),
+        equipment: z.string().nullable(),
+      }),
+    ),
+    workCenterBottleneck: z.array(
+      z.object({ id: z.string().nullable(), equipment: z.string().nullable() }),
+    ),
+  }),
+});
+
+/** A ratio as the page shows it: the four decimals and the fraction, `n/a` for both when null. */
+const onScreen = (ratio: RatioJson | null) =>
+  ratio === null
+    ? { decimal: 'n/a', fraction: 'n/a' }
+    : { decimal: ratio.decimal, fraction: ratio.fraction };
+
+/**
+ * Phase 9 exit criterion 2 on screen (#233): the values `browser/orders/oee` read from each order
+ * detail and from the OEE dashboard equal the live truth's, every one marked final, for exactly
+ * the expected orders (count asserted) and shift A's line, with the bottleneck the truth's.
+ */
+export function checkOeeScreen(ctx: PassContext, read: unknown, expected: OeeExpected) {
+  const parsed = oeeScreenSchema.safeParse(read);
+  if (!parsed.success) {
+    ctx.fail(`oee-screen.json: ${parsed.error.message}`);
+    return { orders: 0, equal: false };
+  }
+  const screen = parsed.data;
+  const ids = Object.keys(expected.orders).sort();
+  const shown = Object.keys(screen.orders).sort();
+  const differences: string[] = [];
+  if (shown.length !== SHIFT_A_COMPLETED || JSON.stringify(shown) !== JSON.stringify(ids)) {
+    differences.push(`orders read: ${shown.join(', ')}; expected ${ids.join(', ')}`);
+  }
+  for (const id of ids) {
+    const want = expected.orders[id];
+    const got = screen.orders[id];
+    if (!want || !got) continue;
+    differences.push(
+      ...jsonDifferences(
+        {
+          final: 'true',
+          incidents: '0',
+          revision: '0',
+          oee: onScreen(want.oee.oee),
+          availability: onScreen(want.oee.availability),
+          performance: onScreen(want.oee.performance),
+          quality: onScreen(want.oee.quality),
+          firstPassYield: {
+            final: 'true',
+            yield: onScreen(want.firstPassYield.yield),
+            firstPassGood: want.firstPassYield.firstPassGood,
+            started: want.firstPassYield.started,
+          },
+          line: { final: 'true', oee: onScreen(want.line) },
+        },
+        got,
+      ).map((d) => `${id}: ${d}`),
+    );
+  }
+  const bottlenecks = Object.entries(expected.bottlenecks).map(([product, b]) => ({
+    product,
+    operation: b.operation,
+    equipment: b.equipment.join(','),
+  }));
+  differences.push(
+    ...jsonDifferences(
+      { key: expected.shiftKey, final: 'true', oee: onScreen(expected.line), bottlenecks },
+      {
+        key: screen.line.key,
+        final: screen.line.final,
+        oee: screen.line.oee,
+        bottlenecks: screen.line.bottlenecks,
+      },
+    ).map((d) => `line: ${d}`),
+  );
+  // The work center card names the same machines (the MES's answer, no constant of the web).
+  const machines = [...new Set(Object.values(expected.bottlenecks).flatMap((b) => b.equipment))];
+  const named = screen.line.workCenterBottleneck.flatMap((w) => (w.equipment ?? '').split(','));
+  if (JSON.stringify([...new Set(named)].sort()) !== JSON.stringify(machines.sort())) {
+    differences.push(`work center bottleneck ${named.join(', ')}, not ${machines.join(', ')}`);
+  }
+  if (differences.length > 0) {
+    ctx.fail(
+      `the order detail or the OEE dashboard shows other values than the truth (truth = expected):\n  ${differences.join('\n  ')}`,
+    );
+  }
+  return {
+    orders: shown.length,
+    line: screen.line.oee.decimal,
+    equal: differences.length === 0,
+    differences,
   };
 }

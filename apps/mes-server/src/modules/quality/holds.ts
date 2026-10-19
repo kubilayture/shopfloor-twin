@@ -306,17 +306,28 @@ const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const unitKey = (u: { epoch: number; partId: number }) => `${String(u.epoch)}/${String(u.partId)}`;
 
 /** What brings a hold's scope copy in line with its scope. */
+/** A unit of a hold's stored scope copy, as the rebuild compares it. */
+type CopyUnit = Pick<
+  Selectable<HoldUnitTable>,
+  'epoch' | 'part_id' | 'serial' | 'order_id' | 'carton_id'
+>;
+
 interface UnitPlan {
-  readonly gone: readonly Selectable<HoldUnitTable>[];
+  readonly gone: readonly CopyUnit[];
   readonly added: readonly HoldScopeUnit[];
   /** Units whose serial, order or carton changed. */
   readonly moved: readonly HoldScopeUnit[];
 }
 
-function planUnits(
-  stored: readonly Selectable<HoldUnitTable>[],
-  scope: readonly HoldScopeUnit[],
-): UnitPlan {
+const copyOf = (u: HoldScopeUnit): CopyUnit => ({
+  epoch: u.epoch,
+  part_id: u.partId,
+  serial: u.serial,
+  order_id: u.orderId,
+  carton_id: u.carton,
+});
+
+function planUnits(stored: readonly CopyUnit[], scope: readonly HoldScopeUnit[]): UnitPlan {
   const was = new Map(stored.map((u) => [unitKey({ epoch: u.epoch, partId: u.part_id }), u]));
   const now = new Map(scope.map((u) => [unitKey(u), u]));
   const gone = stored.filter((u) => !now.has(unitKey({ epoch: u.epoch, partId: u.part_id })));
@@ -360,6 +371,8 @@ export class Holds {
   /** A change was heard of since the last rebuild started. */
   #due = false;
   #unsubscribe: (() => void) | undefined;
+  /** The scope copies (`hold_unit`) as last read or written, by hold. */
+  readonly #copies = new Map<string, Map<string, CopyUnit>>();
   #started = false;
   #stopping = false;
 
@@ -1184,13 +1197,16 @@ export class Holds {
             lots.map((h) => h.subject_id),
             this.#db,
           ),
-      this.#storedUnits(live.map((h) => h.id)),
+      this.#loadCopies(live.map((h) => h.id)),
       this.#knownIncidents(lots.map((h) => h.id)),
     ]);
+    for (const id of this.#copies.keys()) {
+      if (!live.some((h) => h.id === id)) this.#copies.delete(id);
+    }
     const changed = new Set<string>();
     const plans: { readonly id: string; readonly plan: UnitPlan }[] = [];
     for (const [index, hold] of live.entries()) {
-      const plan = planUnits(stored.get(hold.id) ?? [], scopes[index] ?? []);
+      const plan = planUnits([...(stored.get(hold.id)?.values() ?? [])], scopes[index] ?? []);
       if (plan.gone.length + plan.added.length + plan.moved.length > 0) {
         plans.push({ id: hold.id, plan });
         changed.add(hold.id);
@@ -1200,6 +1216,14 @@ export class Holds {
       await this.#db.transaction().execute(async (trx) => {
         for (const { id, plan } of plans) await this.#applyUnits(trx, id, plan);
       });
+      // Committed: the copies in memory follow.
+      for (const { id, plan } of plans) {
+        const copy = this.#copies.get(id);
+        if (!copy) continue;
+        for (const unit of plan.gone)
+          copy.delete(unitKey({ epoch: unit.epoch, partId: unit.part_id }));
+        for (const unit of [...plan.added, ...plan.moved]) copy.set(unitKey(unit), copyOf(unit));
+      }
     }
     for (const hold of lots) {
       const raised = await this.#consumptions(
@@ -1219,22 +1243,25 @@ export class Holds {
     this.#options.onTiming?.({ metric: 'hold-scope', seconds, holds: holds.length });
   }
 
-  /** The stored scope copies of these holds, by hold. */
-  async #storedUnits(ids: readonly string[]): Promise<Map<string, Selectable<HoldUnitTable>[]>> {
-    const byHold = new Map<string, Selectable<HoldUnitTable>[]>();
-    for (let i = 0; i < ids.length; i += CHUNK) {
+  /**
+   * The stored scope copies of these holds, by hold: kept in memory once read (#238: the holds
+   * module is the copy's only writer, and every write goes through its queue), so a rebuild reads
+   * only the copies of holds it has not seen yet.
+   */
+  async #loadCopies(ids: readonly string[]): Promise<Map<string, Map<string, CopyUnit>>> {
+    const missing = ids.filter((id) => !this.#copies.has(id));
+    for (const id of missing) this.#copies.set(id, new Map());
+    for (let i = 0; i < missing.length; i += CHUNK) {
       const rows = await this.#db
         .selectFrom('quality.hold_unit')
-        .selectAll()
-        .where('hold_id', 'in', ids.slice(i, i + CHUNK))
+        .select(['hold_id', 'epoch', 'part_id', 'serial', 'order_id', 'carton_id'])
+        .where('hold_id', 'in', missing.slice(i, i + CHUNK))
         .execute();
-      for (const row of rows) {
-        const list = byHold.get(row.hold_id) ?? [];
-        list.push(row);
-        byHold.set(row.hold_id, list);
+      for (const { hold_id: hold, ...unit } of rows) {
+        this.#copies.get(hold)?.set(unitKey({ epoch: unit.epoch, partId: unit.part_id }), unit);
       }
     }
-    return byHold;
+    return this.#copies;
   }
 
   /** The facts of the `held-material-consumed` incidents of these holds, by hold. */
@@ -1268,6 +1295,8 @@ export class Holds {
       .execute();
     const plan = planUnits(stored, scope);
     await this.#applyUnits(trx, id, plan);
+    // Read again by the next rebuild (this transaction may still roll back).
+    this.#copies.delete(id);
     return plan.gone.length + plan.added.length + plan.moved.length > 0;
   }
 

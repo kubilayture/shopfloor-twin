@@ -165,12 +165,16 @@ Phase 9 (plan "Derived-work costs", exit criterion 8) adds the incremental deriv
 
   | Run                                                       | New reading p50 / p95 / max | Late reading p50 / p95 / max | Default chart read p50 | Whole chart read p50 |
   | --------------------------------------------------------- | --------------------------- | ---------------------------- | ---------------------- | -------------------- |
-  | `week-01` (2,189 first-pass readings, 36 episodes)        | 0.1 / **1.7** / 2.4 ms      | 4.0 / **7.3** / 9.5 ms       | 4.2 ms (0.26 MB)       | 9.3 ms (1.05 MB)     |
-  | synthetic month (8,756 first-pass readings, 152 episodes) | 0.5 / **2.6** / 4.3 ms      | 10.7 / **17.4** / 25.2 ms    | **8.0 ms** (0.36 MB)   | 36.6 ms (4.3 MB)     |
+  | `week-01` (2,189 first-pass readings, 36 episodes)        | 0.1 / **1.9** / 2.5 ms      | 3.9 / **5.6** / 5.6 ms       | 4.3 ms (0.26 MB)       | 9.2 ms (1.05 MB)     |
+  | synthetic month (8,756 first-pass readings, 152 episodes) | 0.4 / **2.7** / 3.1 ms      | 7.9 / **11.5** / 12.4 ms     | **7.3 ms** (0.36 MB)   | 32.8 ms (4.3 MB)     |
   | budget                                                    | p95 ≤ 10 ms                 | p95 ≤ 20 ms                  | p50 ≤ 10 ms            |                      |
 
 - **Results.** All budgets are met, and the tests assert them.
   - The synthetic month is `week-01`'s leak tests four times over in one device epoch. Each copy is a week later than the one before, with parts and serials renumbered.
   - The month was not cut: its replay takes about 50 s.
-  - On a month, a late reading's cost is mostly writing the episodes again: after it, the X̄ and R points belong to other subgroups, so their provisional episodes are deleted and inserted. The chart itself costs about 6 ms in `spc-core` for a reading 150 places into 9,000.
-- **Known limit.** The month's late-reading p95 has about 15 % headroom, and its maximum (25 ms) is over the 20 ms budget. A late reading in a much longer chart, or one that rewrites many more episodes, can exceed the budget. Retention (dropping old readings from the derivation) is outside this issue.
+  - On a month, a late reading's cost is mostly writing the episodes again: after it, the X̄ and R points belong to other subgroups, so their provisional episodes (about 30 at the start of the month) are deleted and inserted. The chart itself costs about 4–6 ms in `spc-core` for a reading 150 places into 9,000.
+  - The first gate run measured the month's late p95 at 21.9 ms, over budget. Three changes brought it to 11.5–12.1 ms in two runs:
+    - the episode updates of one derivation are now one `UPDATE … FROM jsonb_to_recordset` statement instead of one per row (the rows, row versions, `final_at` and the cleared withdrawal are written as before);
+    - a subgroup's mean is the sum of its whole steps over the count, reduced once. This is the same fraction, so `trace.json` is unchanged;
+    - the derivation places a few changed readings by binary search instead of sorting the chart's tail.
+- **Known limit.** A late reading in a much longer chart, or one that rewrites many more episodes, can still exceed the budget. Retention (dropping old readings from the derivation) is outside this issue.

@@ -250,9 +250,17 @@ export class SpcDerivation {
     else if (earliest.reading !== null) from = lowerBound(this.#ordered, earliest.reading);
     if (from < before || inserted.size > 0 || removed.size > 0 || whole) {
       const old = this.#ordered;
-      const tail = old.slice(from).filter((r) => !removed.has(r.key));
-      tail.push(...inserted.values());
-      tail.sort(compareReadings);
+      const tail =
+        removed.size === 0 ? old.slice(from) : old.slice(from).filter((r) => !removed.has(r.key));
+      // The kept tail is in order: a few new readings go in by binary search, many by a sort.
+      if (inserted.size <= 32) {
+        for (const reading of inserted.values()) {
+          tail.splice(lowerBound(tail, reading), 0, reading);
+        }
+      } else {
+        tail.push(...inserted.values());
+        tail.sort(compareReadings);
+      }
       // The subgroup the first changed reading fell in before the change: dropped with it.
       const alignedBefore = from < old.length ? this.#aligned(from) : from;
       const ordered = from === 0 ? tail : old.slice(0, from).concat(tail);

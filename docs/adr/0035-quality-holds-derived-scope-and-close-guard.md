@@ -101,7 +101,7 @@ This amendment replaces the negative consequence above: "every open, rejected an
 - **Every hold at once.** A rebuild takes the same few queries whatever the number of holds:
   - the holds themselves;
   - the scopes of every open and rejected hold's subject, one query per subject kind (`Genealogy.scopes`, the same rule as `scope`);
-  - their stored copies;
+  - their stored copies, read once and then kept in memory;
   - every held lot's consumptions (`Genealogy.lotsConsumptions`) and its known incidents.
 
   One transaction then writes the changed copies. Incidents and the `scope` push events are as before.
@@ -123,8 +123,9 @@ This amendment replaces the negative consequence above: "every open, rejected an
   - `week-01` is replayed in order through ingest, equipment, orders, execution and genealogy (schedule mode), twice with exactly the same deliveries. The first run has no hold. The second has 200 open holds, opened halfway through: one on each stock lot, the rest on serials spread over the units built so far.
   - The second half of the week is delivered in chunks of 100 facts, 146 in all. A round follows each chunk. In the run with holds, a scope rebuild follows each round as well. This is an upper bound: the MES rebuilds only after a round that changed something.
 - **Measured:**
-  - round p95 with no hold: 16.8 ms;
-  - with 200 holds (6,771 units held at the end): round p95 17.9 ms; scope rebuild p50 32.3 ms, p95 39.7 ms, maximum 44.2 ms;
-  - **added: 40.8 ms against the 50 ms budget.** The test asserts the budget.
+  - round p95 with no hold: 17.2 ms;
+  - with 200 holds (6,771 units held at the end): round p95 16.7 ms; scope rebuild p50 25.1 ms, p95 31.0 ms, maximum 36.7 ms;
+  - **added: 30.6 ms against the 50 ms budget.** The test asserts the budget.
+  - The first gate run, which reread every copy each time, measured 43.8 ms. The holds module now keeps the copies in memory after reading or writing them, since it is their only writer and every write goes through its queue. An opening or a decision drops its hold's entry, so the copy is read again.
 - **Checks.** At the end of the replay, every hold's copy equals its scope derived from the genealogy. A unit test (`quality-holds.test.ts`) shows that the copy and `held-material-consumed` follow a genealogy round and an opening without `tick()`, and that a round that changes nothing triggers no rebuild.
 - **Known limit.** The rebuild's cost grows with the number of units held, which come mostly from the lot holds' scopes. Hundreds of lot holds on long-used lots would need a rebuild limited to the units a round changed.

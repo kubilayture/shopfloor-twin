@@ -5,7 +5,7 @@
  * X̄-R on consecutive subgroups: centre X̿, limits X̿ ± A2·R̄; R chart centre R̄, limits D3·R̄ and
  * D4·R̄. Everything is an exact fraction of whole reading steps.
  */
-import { compare, multiply, type Fraction } from '@shopfloor/oee-core';
+import { compare, fraction, multiply, type Fraction } from '@shopfloor/oee-core';
 import { E2, MR_D4, subgroupConstants } from './constants.ts';
 import { add, divide, integer, mean, subtract, ZERO } from './rational.ts';
 import { segments, within, type Position, type Reading } from './readings.ts';
@@ -74,7 +74,12 @@ export function subgroup(readings: readonly Reading[]): Subgroup {
     key: last.key,
     position: { epoch: last.epoch, at: last.at, seq: last.seq },
     readings: [...readings],
-    mean: mean(values.map(integer)),
+    // The mean of whole steps: their sum over the count, reduced (the same fraction as the mean of
+    // the values as fractions, with one reduction instead of one per value).
+    mean: fraction(
+      values.reduce((sum, v) => sum + BigInt(v), 0n),
+      BigInt(values.length),
+    ),
     range: high - low,
   };
 }

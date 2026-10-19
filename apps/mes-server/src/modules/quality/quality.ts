@@ -1480,26 +1480,49 @@ export class Quality {
           .executeTakeFirstOrThrow();
         changes.push({ type: 'signal', event: 'withdrawn', signal: toSignal(row) });
       }
-      for (const u of plan.updates) {
-        const s = u.signal;
-        const row = await trx
-          .updateTable('quality.spc_signal')
-          .set((eb) => ({
-            ...extent(s),
+      // Every update in one statement (#238: a late reading changes several rows at once). A
+      // status change raises the row version, clears a withdrawal and stamps `final_at` when the
+      // row becomes final; growth alone changes the extent only.
+      for (let i = 0; i < plan.updates.length; i += 500) {
+        const batch = plan.updates.slice(i, i + 500);
+        const values = batch.map((u) => {
+          const e = extent(u.signal);
+          return {
+            ...e,
+            id: String(u.id),
+            first_at: e.first_at.toISOString(),
+            last_at: e.last_at.toISOString(),
+            closed_at: e.closed_at?.toISOString() ?? null,
             status: u.status,
-            ...(u.statusChanged
-              ? {
-                  row_version: eb('row_version', '+', 1),
-                  withdrawn_at: null,
-                  withdrawn_reason: null,
-                  ...(u.status === 'final' ? { final_at: now } : {}),
-                }
-              : {}),
-          }))
-          .where('id', '=', u.id)
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        changes.push({ type: 'signal', event: u.event, signal: toSignal(row) });
+            changed: u.statusChanged,
+          };
+        });
+        const { rows } = await sql<Selectable<SpcSignalTable>>`
+          UPDATE quality.spc_signal AS s SET
+            first_at = v.first_at, first_seq = v.first_seq,
+            last_epoch = v.last_epoch, last_part_id = v.last_part_id, last_pass = v.last_pass,
+            last_at = v.last_at, last_seq = v.last_seq, points = v.points,
+            closed_epoch = v.closed_epoch, closed_part_id = v.closed_part_id,
+            closed_pass = v.closed_pass, closed_at = v.closed_at, closed_seq = v.closed_seq,
+            baseline = v.baseline, extent_final = v.extent_final, status = v.status,
+            row_version = CASE WHEN v.changed THEN s.row_version + 1 ELSE s.row_version END,
+            withdrawn_at = CASE WHEN v.changed THEN NULL ELSE s.withdrawn_at END,
+            withdrawn_reason = CASE WHEN v.changed THEN NULL ELSE s.withdrawn_reason END,
+            final_at = CASE WHEN v.changed AND v.status = 'final' THEN ${now} ELSE s.final_at END
+          FROM jsonb_to_recordset(${JSON.stringify(values)}::jsonb) AS v(
+            id BIGINT, first_at TIMESTAMPTZ, first_seq BIGINT, last_epoch BIGINT,
+            last_part_id BIGINT, last_pass INTEGER, last_at TIMESTAMPTZ, last_seq BIGINT,
+            points INTEGER, closed_epoch BIGINT, closed_part_id BIGINT, closed_pass INTEGER,
+            closed_at TIMESTAMPTZ, closed_seq BIGINT, baseline BOOLEAN, extent_final BOOLEAN,
+            status TEXT, changed BOOLEAN)
+          WHERE s.id = v.id
+          RETURNING s.*`.execute(trx);
+        const byId = new Map(rows.map((row) => [String(row.id), row]));
+        for (const u of batch) {
+          const row = byId.get(String(u.id));
+          if (!row) throw new Error(`spc_signal ${String(u.id)} vanished during an update`);
+          changes.push({ type: 'signal', event: u.event, signal: toSignal(row) });
+        }
       }
       for (let i = 0; i < plan.inserts.length; i += 500) {
         const rows = await trx

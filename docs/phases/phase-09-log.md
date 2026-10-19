@@ -119,3 +119,12 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - **Tests:** `live/recording.test.ts`: a 60× `orders-01` run with two idle dispatches, the 14 injections, then mid-run calls (accepted, a duplicate retry, expired, another epoch, a command-id conflict, two in one millisecond, one after a pause and two steps) records seven jobs and replays byte for byte; a run with nothing to record replays; an action not due yet extends `end` (the live log a prefix); probe Q2's three shapes; misfit recordings refused. `opcua/live-dispatch-replay.test.ts`: the same through the five OPC UA servers and the real `LoadOrder` method (duplicate answering the original `AcceptedSeq`), byte for byte. Plus the route (`control/scenario.test.ts`), the schema (`plant-config`), `processed` (`sim-core`).
   - **Decisions:** refused, duplicate and expired calls not recorded (nothing to replay; the gateway and MES log them); the recording carries the run's injections and actions too, so a run with a timeline or console actions replays; an optional `end` in the schema rather than fractional `days`; control API 1.10 as the next minor after #235's 1.9.
   - **Deviations:** the recorded shape (event count, not device sequence), as the plan's Q2 rule allows. An injection or action posted mid-run for the simulation time itself keeps #235's limit (recording its point too was left out of scope). For #237: `GET /api/v1/scenario/recorded` must join the `/sim/` allowlist.
+  - **Gate** on `0eb7bde` (`GATE_PROJECT=gate236`, `GATE_TAG=pr236`, `TURBO_FORCE=1`, under the heavy lock after waiting for another gate), `GATE-OK`; free at the start: host 33.8 GiB, Docker 79.3 GiB.
+
+    | Step      | Result | Time      | Notes                                          |
+    | --------- | ------ | --------- | ---------------------------------------------- |
+    | verify    | passed | 472.7 s   | `pnpm verify --concurrency=1`, uncached        |
+    | golden    | passed | 1.6 s     | all four goldens, `line-oee.json` included     |
+    | e2e       | passed | 722.0 s   |                                                |
+    | smoke     | passed | 88.0 s    | web and MES on ephemeral ports 33093 and 33092 |
+    | reconcile | passed | 1,648.4 s | alarms OK, orders OK, quality OK               |

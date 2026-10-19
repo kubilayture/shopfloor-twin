@@ -45,6 +45,7 @@ import type { MachineState } from '../plant/machine-state.ts';
 import { machineryItemState, machineryOperationMode } from './machinery-state.ts';
 import {
   COMMAND_METHOD_PERMISSIONS,
+  ClientCertificateManager,
   SECURE_MODES,
   SECURE_POLICIES,
   onlyUserNameTokens,
@@ -121,6 +122,14 @@ const VARIABLE_TYPES: Record<OpcuaVariable, ValueKind> = {
 
 const TELEMETRY: readonly OpcuaVariable[] = ['spindleLoad', 'coolantTemperature'];
 
+/**
+ * Every variable the server adds is read-only to every client (address space 1.3, #239 review):
+ * node-opcua's `addVariable` defaults to CurrentRead | CurrentWrite, which let any session
+ * overwrite `State`, `Sequence`, the counters or an alarm's `Active`. The plant sets them with
+ * `setValueFromSource`, which the access level doesn't restrict.
+ */
+const READ_ONLY = { accessLevel: 'CurrentRead', userAccessLevel: 'CurrentRead' } as const;
+
 export class MachineServer {
   readonly machineId: string;
   readonly port: number;
@@ -156,7 +165,9 @@ export class MachineServer {
         : undefined;
     // No automatic acceptance in either mode (ADR-0038): a client certificate is trusted only when
     // the pki step pinned it in this server's trusted/certs.
-    const serverCertificateManager = new OPCUACertificateManager({
+    const serverCertificateManager = new (
+      security.mode === 'sign-and-encrypt' ? ClientCertificateManager : OPCUACertificateManager
+    )({
       rootFolder: options.pkiFolder,
       automaticallyAcceptUnknownCertificate: false,
     });
@@ -540,6 +551,7 @@ export class MachineServer {
         nodeId: `s=${this.machineId}.${path}`,
         dataType: kind,
         minimumSamplingInterval: isTelemetry ? 100 : 0,
+        ...READ_ONLY,
         ...(isTelemetry
           ? {
               value: {
@@ -572,6 +584,7 @@ export class MachineServer {
           nodeId: `s=${this.machineId}.${opcuaAlarmPath(code)}`,
           dataType: 'Boolean',
           minimumSamplingInterval: 0,
+          ...READ_ONLY,
         }),
       );
     }
@@ -660,6 +673,7 @@ export class MachineServer {
             dataType,
             ...(array ? { valueRank: 1, arrayDimensions: [0] } : {}),
             modellingRule: 'Mandatory',
+            ...READ_ONLY,
           });
         }
       }

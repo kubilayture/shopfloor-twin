@@ -255,7 +255,8 @@ echo "ok: each PKI volume mounted by its own component only"
 # Checklist S1 as the tools client (opcua-reader, the tools certificate every server pins), inside
 # the Compose network: SignAndEncrypt only, LoadOrder and LoadProgram refused with
 # BadUserAccessDenied (a permission refusal on a trusted certificate), an unpinned client
-# certificate refused, anonymous sessions and a wrong password refused.
+# certificate refused, anonymous sessions and a wrong password refused, and no variable writable
+# (none with CurrentWrite, every Write refused, on all five machines; #239 review).
 docker compose run --rm --no-deps opcua-tools || fail "OPC UA security checks failed"
 
 ready=$(curl -sf "$gateway_url/health/ready") || fail "gateway not ready"

@@ -5,6 +5,7 @@ import {
   OPCUA_MACHINES,
   OPCUA_METHODS,
   OPCUA_VARIABLES,
+  SHOPFLOOR_NAMESPACE_URI,
   opcuaEndpoint,
   opcuaNodeId,
   toIndexedNodeId,
@@ -17,7 +18,9 @@ import {
 } from '@shopfloor/pki';
 import {
   AttributeIds,
+  BrowseDirection,
   DataType,
+  NodeClass,
   MessageSecurityMode,
   OPCUACertificateManager,
   OPCUAClient,
@@ -27,6 +30,7 @@ import {
   resolveNodeId,
   type ClientSession,
   type EndpointDescription,
+  type NodeId,
   type UserIdentityInfo,
 } from 'node-opcua';
 
@@ -41,7 +45,9 @@ import {
  *   permission refusal, on a certificate the server trusts;
  * - a client certificate the server doesn't pin is refused (`BadSecurityChecksFailed`);
  * - an anonymous session is refused, by the server too (the token sent anyway);
- * - a wrong password is refused.
+ * - a wrong password is refused;
+ * - no variable of any machine is writable: none has the CurrentWrite bit, for `opcua-reader`, and
+ *   a Write of every variable is refused (`BadNotWritable` or `BadUserAccessDenied`).
  */
 export interface SecurityCheckOptions {
   readonly host: string;
@@ -271,4 +277,102 @@ export async function checkOpcuaSecurity(options: SecurityCheckOptions): Promise
     fail(`a wrong password was not refused: ${wrong}`);
   }
   log('ok: anonymous sessions and a wrong password are refused by the server');
+
+  let variables = 0;
+  for (const machine of OPCUA_MACHINES) {
+    const probe = await withSession(endpoint(machine.id), options.toolsFolder, reader, (s) =>
+      probeWrites(s, machine.id),
+    ).catch((error: unknown) => fail(`write probe on ${machine.id}: ${firstLine(error)}`));
+    if (probe.writableByAccessLevel.length > 0 || probe.writesNotRefused.length > 0) {
+      fail(
+        `${machine.id}: writable for opcua-reader: ${[...probe.writableByAccessLevel, ...probe.writesNotRefused].join(', ')}`,
+      );
+    }
+    variables += probe.variables;
+  }
+  log(
+    `ok: no variable is writable (${String(variables)} variables on five machines, every Write refused)`,
+  );
+}
+
+/** What a client may write under one machine (#239 review). */
+export interface WriteProbe {
+  /** Variables found by browsing the machine's object downwards. */
+  readonly variables: number;
+  /** Browse names whose AccessLevel or UserAccessLevel has the CurrentWrite bit. */
+  readonly writableByAccessLevel: string[];
+  /** `<browse name> <status>` of each Write not refused with BadNotWritable or BadUserAccessDenied. */
+  readonly writesNotRefused: string[];
+}
+
+const CURRENT_WRITE = 0x02;
+const VARIABLE: number = NodeClass.Variable;
+const OBJECT: number = NodeClass.Object;
+const REFUSED_WRITES = new Set(['BadNotWritable', 'BadUserAccessDenied']);
+
+/**
+ * Browses every variable under a machine's object (hierarchical references, depth first) and
+ * writes each one its own current value, in one Write request: a refusal by access level answers
+ * before any type check, so a Good or another code means the value could be changed.
+ */
+export async function probeWrites(session: ClientSession, machineId: string): Promise<WriteProbe> {
+  const namespaces = await session.readNamespaceArray();
+  const start = resolveNodeId(
+    toIndexedNodeId(`nsu=${SHOPFLOOR_NAMESPACE_URI};s=${machineId}`, namespaces),
+  );
+  const seen = new Set<string>([start.toString()]);
+  const queue: NodeId[] = [start];
+  const found: { nodeId: NodeId; name: string }[] = [];
+  while (queue.length > 0) {
+    const batch = queue.splice(0, 50);
+    const results = await session.browse(
+      batch.map((nodeId) => ({
+        nodeId,
+        referenceTypeId: 'HierarchicalReferences',
+        includeSubtypes: true,
+        browseDirection: BrowseDirection.Forward,
+        resultMask: 63,
+      })),
+    );
+    for (const result of results) {
+      for (const reference of result.references ?? []) {
+        const id = reference.nodeId.toString();
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const nodeId = resolveNodeId(reference.nodeId);
+        const nodeClass: number = reference.nodeClass;
+        if (nodeClass === VARIABLE) {
+          found.push({ nodeId, name: reference.browseName.toString() });
+        }
+        if (nodeClass === VARIABLE || nodeClass === OBJECT) {
+          queue.push(nodeId);
+        }
+      }
+    }
+  }
+  const attributes = await session.read(
+    found.flatMap(({ nodeId }) => [
+      { nodeId, attributeId: AttributeIds.AccessLevel },
+      { nodeId, attributeId: AttributeIds.UserAccessLevel },
+      { nodeId, attributeId: AttributeIds.Value },
+    ]),
+  );
+  const writableByAccessLevel = found
+    .filter((_, i) =>
+      [attributes[3 * i], attributes[3 * i + 1]].some(
+        (value) => (Number(value?.value.value) & CURRENT_WRITE) !== 0,
+      ),
+    )
+    .map((variable) => variable.name);
+  const writes = await session.write(
+    found.map(({ nodeId }, i) => ({
+      nodeId,
+      attributeId: AttributeIds.Value,
+      value: { value: attributes[3 * i + 2]?.value ?? { dataType: DataType.Null } },
+    })),
+  );
+  const writesNotRefused = found
+    .map((variable, i) => `${variable.name} ${writes[i]?.name ?? 'missing'}`)
+    .filter((line) => !REFUSED_WRITES.has(line.slice(line.lastIndexOf(' ') + 1)));
+  return { variables: found.length, writableByAccessLevel, writesNotRefused };
 }

@@ -8,26 +8,83 @@ import {
   opcuaNodeId,
   toIndexedNodeId,
 } from '@shopfloor/contracts';
-import { DataType, OPCUAClient, resolveNodeId, type ClientSession } from 'node-opcua';
+import { pkiFiles } from '@shopfloor/pki';
+import {
+  DataType,
+  MessageSecurityMode,
+  OPCUACertificateManager,
+  OPCUAClient,
+  SecurityPolicy,
+  UserTokenType,
+  resolveNodeId,
+  type ClientSession,
+} from 'node-opcua';
 
 export const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** How a test client connects (#239): over None, or SignAndEncrypt with a pinned certificate. */
+export type TestClient =
+  | { readonly mode: 'none' }
+  | {
+      readonly mode: 'sign-and-encrypt';
+      /** The client's own PKI folder (the pki step's `tools` or `gateway`, or an unpinned one). */
+      readonly pkiFolder: string;
+      readonly applicationUri: string;
+      /** User name and password; left out, the session is anonymous. */
+      readonly user?: { readonly userName: string; readonly password: string };
+    };
+
+const certificateManagers = new Map<string, OPCUACertificateManager>();
+
+/** One certificate manager per folder and process: node-opcua locks the folder it manages. */
+function certificateManager(folder: string): OPCUACertificateManager {
+  let manager = certificateManagers.get(folder);
+  if (!manager) {
+    manager = new OPCUACertificateManager({
+      rootFolder: folder,
+      automaticallyAcceptUnknownCertificate: false,
+    });
+    certificateManagers.set(folder, manager);
+  }
+  return manager;
+}
+
 export async function connect(
   port: number,
+  as: TestClient = { mode: 'none' },
 ): Promise<{ session: ClientSession; close: () => Promise<void> }> {
-  const client = OPCUAClient.create({
-    endpointMustExist: false,
-    connectionStrategy: { maxRetry: 2 },
-  });
+  const client =
+    as.mode === 'none'
+      ? OPCUAClient.create({ endpointMustExist: false, connectionStrategy: { maxRetry: 2 } })
+      : OPCUAClient.create({
+          endpointMustExist: false,
+          connectionStrategy: { maxRetry: 2 },
+          applicationName: 'shopfloor-twin test client',
+          applicationUri: as.applicationUri,
+          securityMode: MessageSecurityMode.SignAndEncrypt,
+          securityPolicy: SecurityPolicy.Basic256Sha256,
+          certificateFile: pkiFiles(as.pkiFolder).certificateFile,
+          privateKeyFile: pkiFiles(as.pkiFolder).privateKeyFile,
+          clientCertificateManager: certificateManager(as.pkiFolder),
+        });
   await client.connect(opcuaEndpoint('localhost', port));
-  const session = await client.createSession();
-  return {
-    session,
-    close: async () => {
-      await session.close();
-      await client.disconnect();
-    },
-  };
+  try {
+    const session = await client.createSession(
+      as.mode === 'sign-and-encrypt' && as.user
+        ? { type: UserTokenType.UserName, userName: as.user.userName, password: as.user.password }
+        : undefined,
+    );
+    return {
+      session,
+      close: async () => {
+        await session.close();
+        await client.disconnect();
+      },
+    };
+  } catch (error) {
+    await client.disconnect();
+    throw error;
+  }
 }
 
 export interface LoadOrderCall {

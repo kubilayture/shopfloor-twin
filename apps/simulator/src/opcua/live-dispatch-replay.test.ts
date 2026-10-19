@@ -54,6 +54,7 @@ describe('mid-run LoadOrder calls over OPC UA replay headless (#236)', () => {
         production: 'orders',
         wallClock: () => WALL,
         pkiFolder: pki.folder,
+        security: { mode: 'none' },
       });
       const attemptEvents: PlantEvent[] = [];
       live = createLiveRun({

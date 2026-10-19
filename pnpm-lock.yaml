@@ -173,6 +173,9 @@ catalogs:
     '@fastify/websocket':
       specifier: 11.3.4
       version: 11.3.4
+    '@peculiar/x509':
+      specifier: 2.1.0
+      version: 2.1.0
     '@playwright/test':
       specifier: 1.64.0
       version: 1.64.0
@@ -266,6 +269,9 @@ catalogs:
     react-dom:
       specifier: 19.3.0
       version: 19.3.0
+    reflect-metadata:
+      specifier: 0.2.2
+      version: 0.2.2
     tailwindcss:
       specifier: 4.3.3
       version: 4.3.3
@@ -334,6 +340,9 @@ importers:
       '@shopfloor/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@shopfloor/pki':
+        specifier: workspace:*
+        version: link:../../packages/pki
       '@shopfloor/plant-config':
         specifier: workspace:*
         version: link:../../packages/plant-config
@@ -523,6 +532,9 @@ importers:
       '@shopfloor/oee-core':
         specifier: workspace:*
         version: link:../../packages/oee-core
+      '@shopfloor/pki':
+        specifier: workspace:*
+        version: link:../../packages/pki
       '@shopfloor/plant-config':
         specifier: workspace:*
         version: link:../../packages/plant-config
@@ -830,6 +842,40 @@ importers:
         specifier: 'catalog:'
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(@vitest/coverage-v8@4.1.11)(jsdom@30.1.1)(vite@8.3.4(@types/node@26.6.5)(jiti@2.7.0)(yaml@2.9.1))
 
+  packages/pki:
+    dependencies:
+      '@peculiar/x509':
+        specifier: 'catalog:'
+        version: 2.1.0
+      '@shopfloor/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      reflect-metadata:
+        specifier: 'catalog:'
+        version: 0.2.2
+    devDependencies:
+      '@shopfloor/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@shopfloor/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.5
+      '@vitest/coverage-v8':
+        specifier: 'catalog:'
+        version: 4.1.11(vitest@4.1.11)
+      eslint:
+        specifier: 'catalog:'
+        version: 10.12.0(jiti@2.7.0)(supports-color@7.2.0)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(@vitest/coverage-v8@4.1.11)(jsdom@30.1.1)(vite@8.3.4(@types/node@26.6.5)(jiti@2.7.0)(yaml@2.9.1))
+
   packages/plant-config:
     dependencies:
       '@shopfloor/contracts':
@@ -963,6 +1009,9 @@ importers:
       '@shopfloor/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@shopfloor/pki':
+        specifier: workspace:*
+        version: link:../pki
       testcontainers:
         specifier: 'catalog:'
         version: 12.2.0(supports-color@7.2.0)

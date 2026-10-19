@@ -19,6 +19,7 @@
     "@shopfloor/alarm-core": "workspace:*",
     "@shopfloor/contracts": "workspace:*",
     "@shopfloor/oee-core": "workspace:*",
+    "@shopfloor/pki": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "@shopfloor/shift-calendar": "workspace:*",
     "@shopfloor/sim-core": "workspace:*",

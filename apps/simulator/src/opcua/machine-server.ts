@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import {
   LOAD_ORDER_INPUTS,
   OPCUA_EVENT_ARRAY_FIELDS,
@@ -10,12 +11,15 @@ import {
   opcuaAlarmPath,
   type OpcuaVariable,
 } from '@shopfloor/contracts';
+import { machineApplicationUri, requireOwnMaterial } from '@shopfloor/pki';
 import {
   DataType,
   DataValue,
   EventNotifierFlags,
+  MessageSecurityMode,
   OPCUACertificateManager,
   OPCUAServer,
+  SecurityPolicy,
   StatusCodes,
   VariantArrayType,
   nodesets,
@@ -25,6 +29,7 @@ import {
   type UAObject,
   type UAObjectType,
   type UAEventType,
+  type UAMethod,
   type UAVariable,
   type VariantOptions,
 } from 'node-opcua';
@@ -38,6 +43,14 @@ import type {
 } from '../plant/line.ts';
 import type { MachineState } from '../plant/machine-state.ts';
 import { machineryItemState, machineryOperationMode } from './machinery-state.ts';
+import {
+  COMMAND_METHOD_PERMISSIONS,
+  SECURE_MODES,
+  SECURE_POLICIES,
+  onlyUserNameTokens,
+  userManager,
+  type ServerSecurity,
+} from './security.ts';
 
 const MACHINERY = 'http://opcfoundation.org/UA/Machinery/';
 const MACHINE_TOOL = 'http://opcfoundation.org/UA/MachineTool/';
@@ -60,7 +73,14 @@ export interface MachineServerOptions {
   readonly kind: 'machine-tool' | 'station';
   readonly port: number;
   readonly host?: string;
+  /**
+   * This server's own PKI folder (`<pki>/<machineId>`). Under `sign-and-encrypt` it must already
+   * hold the certificate and key the `pki` step made (ADR-0038); the server refuses to start
+   * without them.
+   */
   readonly pkiFolder: string;
+  /** SignAndEncrypt with users and pinned clients, or `none` for tests that don't test security. */
+  readonly security: ServerSecurity;
   readonly alarmCodes?: readonly string[];
   readonly loadProgram?: (product: string, quantity: number) => LoadProgramResult;
   /**
@@ -128,21 +148,51 @@ export class MachineServer {
     this.#options = options;
     this.machineId = options.machineId;
     this.port = options.port;
+    const applicationUri = machineApplicationUri(options.machineId);
+    const security = options.security;
+    const own =
+      security.mode === 'sign-and-encrypt'
+        ? requireOwnMaterial(options.pkiFolder, applicationUri)
+        : undefined;
+    // No automatic acceptance in either mode (ADR-0038): a client certificate is trusted only when
+    // the pki step pinned it in this server's trusted/certs.
+    const serverCertificateManager = new OPCUACertificateManager({
+      rootFolder: options.pkiFolder,
+      automaticallyAcceptUnknownCertificate: false,
+    });
     this.#server = new OPCUAServer({
       port: options.port,
       ...(options.host ? { hostname: options.host } : {}),
       nodeset_filename: COMPANION_NODESETS,
-      serverCertificateManager: new OPCUACertificateManager({
-        rootFolder: options.pkiFolder,
-        automaticallyAcceptUnknownCertificate: true,
-      }),
+      serverCertificateManager,
+      ...(security.mode === 'sign-and-encrypt' && own
+        ? {
+            // The pki step's material, named explicitly: never one node-opcua would make.
+            certificateFile: own.certificateFile,
+            privateKeyFile: own.privateKeyFile,
+            securityModes: SECURE_MODES,
+            securityPolicies: SECURE_POLICIES,
+            allowAnonymous: false,
+            userManager: userManager(security.passwords),
+            // X.509 user tokens are not offered (onlyUserNameTokens); this empty store, which
+            // accepts nothing, keeps node-opcua off its shared default one all the same.
+            userCertificateManager: new OPCUACertificateManager({
+              rootFolder: join(options.pkiFolder, 'user-pki'),
+              automaticallyAcceptUnknownCertificate: false,
+            }),
+          }
+        : {
+            securityModes: [MessageSecurityMode.None],
+            securityPolicies: [SecurityPolicy.None],
+            allowAnonymous: true,
+          }),
       serverCapabilities: { minSupportedSampleRate: 0 },
       buildInfo: {
         productName: `ShopFloor Twin ${options.name}`,
         manufacturerName: 'Orbis Components (simulated)',
       },
       serverInfo: {
-        applicationUri: `${SHOPFLOOR_NAMESPACE_URI}:${options.machineId}`,
+        applicationUri,
         productUri: SHOPFLOOR_NAMESPACE_URI,
         applicationName: { text: `ShopFloor Twin ${options.machineId}` },
       },
@@ -171,6 +221,9 @@ export class MachineServer {
     }
     this.#build(addressSpace, telemetry);
     this.#initialise(startTime);
+    if (this.#options.security.mode === 'sign-and-encrypt') {
+      onlyUserNameTokens(this.#server);
+    }
     await this.#server.start();
     this.#started = true;
   }
@@ -544,6 +597,7 @@ export class MachineServer {
           },
         ],
       });
+      this.#restrict(method);
       method.bindMethod((inputArguments, _context, callback) => {
         const [product, quantity] = inputArguments.map((argument) => argument.value as unknown);
         const result: LoadProgramResult =
@@ -666,6 +720,7 @@ export class MachineServer {
         },
       ],
     });
+    this.#restrict(method);
     method.bindMethod((inputArguments, _context, callback) => {
       const values = inputArguments.map((argument) => argument.value as unknown);
       const [commandId, orderId, product, quantity, notBefore, deviceEpoch, expiresAt] = values;
@@ -733,6 +788,13 @@ export class MachineServer {
         ],
       });
     });
+  }
+
+  /** `LoadOrder` and `LoadProgram`: `Call` for `opcua-gateway` only (address space 1.3). */
+  #restrict(method: UAMethod): void {
+    if (this.#options.security.mode === 'sign-and-encrypt') {
+      method.setRolePermissions(COMMAND_METHOD_PERMISSIONS);
+    }
   }
 
   #exposes(variable: OpcuaVariable): boolean {

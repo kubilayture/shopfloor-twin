@@ -9,6 +9,7 @@ import { createLiveRun } from './live/run.ts';
 import { scenarioControl } from './live/timeline.ts';
 import { WasherModbusServer } from './modbus/washer-server.ts';
 import { PlantServers } from './opcua/plant-servers.ts';
+import type { ServerSecurity } from './opcua/security.ts';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -58,14 +59,33 @@ if (env.SIM_EVENT_LOG !== undefined) {
     writer.close();
   });
 }
-const servers = new PlantServers({
-  config: loaded.config,
-  start: env.SIM_START,
-  host: env.OPCUA_HOST,
-  portOffset: env.OPCUA_PORT_OFFSET,
-  production: env.SIM_PRODUCTION,
-  ...(env.OPCUA_PKI_DIR ? { pkiFolder: resolve(env.OPCUA_PKI_DIR) } : {}),
-});
+// OPC UA security (#239, ADR-0038): SignAndEncrypt with the pki step's certificates unless the
+// environment says `none`; without its certificate a server refuses to start (no self-made one).
+const security: ServerSecurity =
+  env.OPCUA_SECURITY === 'sign-and-encrypt'
+    ? {
+        mode: 'sign-and-encrypt',
+        passwords: {
+          gateway: env.OPCUA_GATEWAY_PASSWORD ?? '',
+          reader: env.OPCUA_READER_PASSWORD ?? '',
+        },
+      }
+    : { mode: 'none' };
+let servers: PlantServers;
+try {
+  servers = new PlantServers({
+    config: loaded.config,
+    start: env.SIM_START,
+    host: env.OPCUA_HOST,
+    portOffset: env.OPCUA_PORT_OFFSET,
+    production: env.SIM_PRODUCTION,
+    security,
+    ...(env.OPCUA_PKI_DIR ? { pkiFolder: resolve(env.OPCUA_PKI_DIR) } : {}),
+  });
+} catch (error) {
+  console.error(`OPC UA: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(2);
+}
 const washer = new WasherModbusServer({
   config: loaded.config,
   epoch: servers.epoch,

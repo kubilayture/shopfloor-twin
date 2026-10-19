@@ -8,6 +8,7 @@
     "./docker": "./src/docker.ts",
     "./broker": "./src/broker.ts",
     "./processes": "./src/processes.ts",
+    "./opcua-pki": "./src/opcua-pki.ts",
     "./ports": "./src/ports.ts",
     "./timing": "./src/timing.ts",
     "./heavy-lock": "./src/heavy-lock.ts"
@@ -27,6 +28,7 @@
   },
   "dependencies": {
     "@shopfloor/contracts": "workspace:*",
+    "@shopfloor/pki": "workspace:*",
     "testcontainers": "catalog:"
   }
 }

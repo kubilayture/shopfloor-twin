@@ -390,3 +390,18 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed | 1,447.7 s | the three budget tests included  |
     | smoke     | passed | 101.4 s   |                                  |
     | reconcile | passed | 1,653.5 s | alarms OK, orders OK, quality OK |
+
+- #239 (P9-12, branch `feat/239-opcua-security`, wave C, on `main` `79ce261`; OPC UA address space 1.3; ADR-0038): OPC UA SignAndEncrypt with the `pki` step, pinned certificates and restricted methods.
+  - **Probe Q1 first** (`apps/simulator/spikes/opcua-security.ts`, one security mode per process, servers and clients in one process): the five servers with two clients each (the gateway's certificate as `opcua-gateway`, the tools certificate as `opcua-reader`), seed 20261012. (a) The rest of Monday's shift A (06:00–14:00) on a manual clock (1 s of wall time every 5 ms, far faster than a real 60×): 1,546 events raised, 3,092 notifications, every client gap-free and in order in both modes; process CPU per notification. (b) 120 simulated minutes paced at 60× on the real clock: delivery latency from the raise to the client's notification, and process CPU per wall second. Node 26.11.1, `Basic256Sha256`.
+
+    | Where                                       | Mode           | CPU per notification | CPU at 60× (share of one core) | Latency p50 / p95 / max | Gap-free |
+    | ------------------------------------------- | -------------- | -------------------- | ------------------------------ | ----------------------- | -------- |
+    | Colima VM (4 CPU, 4 GiB), container 1.0 CPU | None           | 205 µs               | 0.008                          | 51.0 / 96.1 / 99.2 ms   | yes      |
+    | Colima VM (4 CPU, 4 GiB), container 1.0 CPU | SignAndEncrypt | 313 µs               | 0.021                          | 54.8 / 97.4 / 114.8 ms  | yes      |
+    | Host (M3, 8 cores)                          | None           | 135 µs               | 0.005                          | 50.2 / 96.0 / 101.0 ms  | yes      |
+    | Host (M3, 8 cores)                          | SignAndEncrypt | 170 µs               | 0.012                          | 54.8 / 97.2 / 130.3 ms  | yes      |
+
+    SignAndEncrypt costs about 0.11 ms of CPU per delivered notification (both ends together) in a 1-CPU container, about 1.3 % of one core for the whole plant at 60× (798 notifications in 2 wall minutes), and moves latency by a few milliseconds; the 100 ms publishing interval dominates it. Nothing here threatens T1–T6 (the simulator and the gateway are capped at 1.0 CPU each and the paced load is about 2 % of a core), so the issue went on.
+
+  - **Refusals (Q1, same run):** a client certificate the server doesn't pin: `BadSecurityChecksFailed` (the server logs `BadCertificateUntrusted`); the pinned tools certificate without a user: node-opcua's client refuses by itself (`Cannot find ANONYMOUS user token policy`; the server's own refusal of a forced anonymous token is in the tests below).
+  - **CRL behaviour of a CA-issued certificate (Q1):** a probe CA issued a client certificate (clientAuth, the tools URI), sent with its chain. LKT-01 trusting the CA in `trusted/certs` without a CRL refused it with `BadCertificateRevocationUnknown` (0x801b0000); PCK-01 trusting the CA with an empty CRL in `trusted/crl` accepted it. So a CA-based trust needs a CRL per CA kept current, and any certificate the CA ever signed (nginx's from P9-14 included) would open a session; pinned leaf certificates need neither. The choice of the plan (pinning) stands.

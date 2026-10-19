@@ -24,6 +24,7 @@ beforeAll(async () => {
         start: Date.UTC(2026, 9, 12, 3),
         portOffset,
         pkiFolder: pki.folder,
+        security: { mode: 'none' },
       }),
   ));
   started = servers;

@@ -37,6 +37,7 @@ describe('device sequence (ADR-0009, ADR-0033)', () => {
       config: options.config,
       start: options.start,
       pkiFolder: pki.folder,
+      security: { mode: 'none' },
       production: 'orders',
     });
     const lines: string[] = [];
@@ -76,6 +77,7 @@ describe('device sequence (ADR-0009, ADR-0033)', () => {
       config: options.config,
       start: options.start,
       pkiFolder: pki.folder,
+      security: { mode: 'none' },
     });
     const drifts: number[] = [];
     const run = createLiveRun({

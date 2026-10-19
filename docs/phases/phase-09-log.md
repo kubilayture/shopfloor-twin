@@ -334,3 +334,13 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     - **(5)** `holdOrderOee` counts holders per order; a delta for an order nobody holds is ignored. `useLiveLineOee` documents its single consumer.
     - **(6)** hour rows show revision, incidents (singular for one), may be revised and above 1; `n/a` tooltips name their cause; each set of badges has a **What the status means** disclosure (keyboard and touch).
     - **(7)** unit tests of `checkOrderOee` on mocked contexts: 5 equal orders, 4 completed, an MES value changed, the order's line value changed, the live truth unlike the golden, the MES completing another set.
+  - **Gate after the review** on `eb4c026` (`GATE_PROJECT=gate233b`, `GATE_TAG=pr233b`, `TURBO_FORCE=1`), `GATE-OK`: verify 485.1 s, golden 1.6 s, e2e 1,286.8 s, smoke 96.7 s, reconcile 1,649.3 s (alarms OK, orders OK, quality OK; on screen 5 orders and the line equal).
+  - **Rebased onto `main` `cecde3c`** (#256; only the phase log and STATUS conflicted, both sides kept), then `GATE_STEPS=verify,e2e,smoke,reconcile` on `0d4dd69` (`GATE_PROJECT=gate233c`, `GATE_TAG=pr233c`, `TURBO_FORCE=1`), `GATE-OK`; free at the start: host 46.5 GiB, Docker 76.4 GiB.
+
+    | Step      | Result  | Time      | Notes                                   |
+    | --------- | ------- | --------- | --------------------------------------- |
+    | verify    | passed  | 482.1 s   | `pnpm verify --concurrency=1`, uncached |
+    | golden    | skipped | –         | not in `GATE_STEPS`                     |
+    | e2e       | passed  | 1,226.4 s |                                         |
+    | smoke     | passed  | 89.1 s    |                                         |
+    | reconcile | passed  | 1,652.4 s | alarms OK, orders OK, quality OK        |

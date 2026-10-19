@@ -1,0 +1,15 @@
+# Grafana's only datasource (P9-17): the profile's Prometheus, by service name on the
+# `observability` network. Provisioned, so it can't be edited in the UI and is there on every start.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # The scrape interval of config/prometheus/prometheus.yml.
+      timeInterval: 5s

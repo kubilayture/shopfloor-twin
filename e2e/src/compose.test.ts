@@ -12,6 +12,10 @@ import { REPO } from './stack.ts';
  */
 
 interface Service {
+  readonly image?: string;
+  readonly profiles?: readonly string[];
+  readonly networks?: Readonly<Record<string, unknown>>;
+  readonly deploy?: { readonly resources?: { readonly limits?: Record<string, string> } };
   readonly ports?: readonly string[];
   readonly environment?: Readonly<Record<string, string>>;
   readonly volumes?: readonly string[];
@@ -109,6 +113,99 @@ describe('the hardened Compose (P9-14, checklist S8)', () => {
       .filter(([, s]) => (s.volumes ?? []).some((v) => v.startsWith('pki-ca:')))
       .map(([name]) => name);
     expect(mounting).toEqual(['pki']);
+  });
+});
+
+describe('the observability profile (P9-17, compose.observability.yml)', () => {
+  it('is opt-in: the default stack has neither service nor a variable of it, the profile names both', async () => {
+    const all = await services('docker-compose.yml');
+    expect(Object.keys(all)).not.toContain('prometheus');
+    expect(Object.keys(all)).not.toContain('grafana');
+    const text = await readFile(join(REPO, 'docker-compose.yml'), 'utf8');
+    expect(text).not.toMatch(/GRAFANA|PROMETHEUS/);
+    const observability = await services('compose.observability.yml');
+    expect(Object.keys(observability).sort()).toEqual(['grafana', 'prometheus']);
+    for (const service of Object.values(observability)) {
+      expect(service.profiles).toEqual(['observability']);
+    }
+    const scripts = (
+      JSON.parse(await readFile(join(REPO, 'package.json'), 'utf8')) as {
+        scripts: Record<string, string>;
+      }
+    ).scripts;
+    const files =
+      'docker compose --file docker-compose.yml --file compose.observability.yml --profile observability';
+    expect(scripts['stack:up:observability']).toBe(`${files} up -d --wait`);
+    expect(scripts['stack:down:observability']).toBe(`${files} down`);
+  });
+
+  it('pins both images, limits both and publishes them on 127.0.0.1 only', async () => {
+    const observability = await services('compose.observability.yml');
+    for (const [name, service] of Object.entries(observability)) {
+      expect(service.image, name).toMatch(/:v?\d+\.\d+\.\d+(-[a-z]+)?$/);
+      expect(service.deploy?.resources?.limits, name).toEqual({
+        cpus: expect.any(String) as string,
+        memory: expect.any(String) as string,
+      });
+    }
+    expect(
+      Object.fromEntries(
+        Object.entries(observability).map(([name, s]) => [name, published(s.ports)]),
+      ),
+    ).toEqual({
+      prometheus: [{ ip: '127.0.0.1', host: '${PROMETHEUS_PORT:-9090}', port: 9090 }],
+      grafana: [{ ip: '127.0.0.1', host: '${GRAFANA_PORT:-3000}', port: 3000 }],
+    });
+  });
+
+  it('has no default credentials: the Grafana admin password is required, no anonymous access', async () => {
+    const grafana = (await services('compose.observability.yml')).grafana;
+    expect(grafana?.environment?.GF_SECURITY_ADMIN_PASSWORD).toMatch(
+      /^\$\{GRAFANA_ADMIN_PASSWORD:\?[^}]+\}$/,
+    );
+    expect(grafana?.environment).toMatchObject({
+      GF_AUTH_ANONYMOUS_ENABLED: 'false',
+      GF_USERS_ALLOW_SIGN_UP: 'false',
+    });
+    const example = await readFile(join(REPO, '.env.example'), 'utf8');
+    expect(example).toMatch(/^GRAFANA_ADMIN_PASSWORD=$/m);
+  });
+
+  it('keeps Grafana off the plant networks and Prometheus off edge (the MES trusts edge only)', async () => {
+    const observability = await services('compose.observability.yml');
+    expect(Object.keys(observability.grafana?.networks ?? {})).toEqual(['observability']);
+    expect(Object.keys(observability.prometheus?.networks ?? {}).sort()).toEqual([
+      'default',
+      'observability',
+    ]);
+  });
+
+  it('scrapes every component by service name inside the network, never a host port', async () => {
+    const config = parse(
+      await readFile(join(REPO, 'config/prometheus/prometheus.yml'), 'utf8'),
+    ) as {
+      scrape_configs: { job_name: string; static_configs: { targets: string[] }[] }[];
+    };
+    const targets = Object.fromEntries(
+      config.scrape_configs.map((job) => [
+        job.job_name,
+        job.static_configs.flatMap((c) => c.targets),
+      ]),
+    );
+    expect(targets).toEqual({
+      prometheus: ['localhost:9090'],
+      mes: ['mes:4700'],
+      gateway: ['gateway:4900'],
+      simulator: ['simulator:4800'],
+      erp: ['erp:4600'],
+    });
+    // Each a service of the default network in docker-compose.yml.
+    const all = await services('docker-compose.yml');
+    for (const name of ['mes', 'gateway', 'simulator', 'erp']) {
+      expect(all[name], name).toBeDefined();
+      const networks = Object.keys(all[name]?.networks ?? { default: {} });
+      expect(networks, name).toContain('default');
+    }
   });
 });
 

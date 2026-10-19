@@ -1,0 +1,97 @@
+# Observability profile (P9-17, ADR-0012 amendment), after docker-compose.yml: opt-in, off by
+# default. `pnpm stack:up:observability` runs
+# `docker compose --file docker-compose.yml --file compose.observability.yml --profile observability up -d --wait`
+# (runbook, "Observability profile"). `pnpm stack:up` and `docker compose up` never read this file,
+# so the default stack needs no secret of it; both services are in the profile `observability`
+# besides, so a COMPOSE_FILE that names this file still starts them only with that profile.
+#
+# - Prometheus scrapes every component's /metrics on the project's default network
+#   (config/prometheus/prometheus.yml): the MES and the gateway stay unpublished (P9-14), and
+#   Prometheus is not on the `edge` network, so the MES's proxy-header trust is unchanged.
+# - Grafana has the provisioned Prometheus datasource and nothing else: the dashboards are on the
+#   Phase 9 cut line and were cut (runbook: queries for Explore). It is on the `observability`
+#   network only and reaches none of the plant's services. It keeps no state (no volume): its admin
+#   password is GRAFANA_ADMIN_PASSWORD at every start, and anything saved in its UI goes on recreate.
+# - Both are published on 127.0.0.1 only: Prometheus on PROMETHEUS_PORT (9090, no login, as the
+#   /metrics it reads), Grafana on GRAFANA_PORT (3000, login `admin` with GRAFANA_ADMIN_PASSWORD).
+#   A port of 0 lets Docker choose one (read it back with `docker compose port`).
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Disk (the owner's 256 GB machine): whichever limit is reached first. A perf run is minutes.
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_TIME:-3d}
+      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-1GB}
+      # No admin API (deleting series, snapshots) and no lifecycle API (reload, quit): their
+      # defaults, off, stated here so a change shows in review.
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      default: {}
+      observability: {}
+    ports:
+      - '127.0.0.1:${PROMETHEUS_PORT:-9090}:9090'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:9090/-/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    stop_grace_period: 15s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.3-slim
+    profiles: [observability]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env for the observability profile (copy .env.example)}
+      GF_SECURITY_DISABLE_GRAVATAR: 'true'
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      # Nothing leaves the machine: no usage reports, update checks, news feed or plugin installs.
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
+      GF_NEWS_NEWS_FEED_ENABLED: 'false'
+      GF_PLUGINS_PREINSTALL_DISABLED: 'true'
+      GF_LOG_LEVEL: ${GRAFANA_LOG_LEVEL:-warn}
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      observability: {}
+    ports:
+      - '127.0.0.1:${GRAFANA_PORT:-3000}:3000'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:3000/api/health']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    stop_grace_period: 10s
+    restart: unless-stopped
+
+networks:
+  # Prometheus and Grafana only: Grafana reaches Prometheus and nothing of the plant.
+  observability: {}
+
+volumes:
+  prometheus-data:

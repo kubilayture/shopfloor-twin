@@ -320,23 +320,24 @@ It ends with one record for the pull request's "Gate" section, also written to `
 
 A commit after the gate reruns the jobs its files touch, with `GATE_STEPS` (a comma list of `verify`, `golden`, `e2e`, `smoke`, `reconcile`), and the pull request names them:
 
-| Files changed                                                                                            | Rerun                                                   |
-| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| Documentation only (`docs/`, `*.md`)                                                                     | `verify` (formatting)                                   |
-| `apps/simulator`, `packages/sim-core`, `config/plant`                                                    | `verify,golden,e2e,smoke,reconcile`                     |
-| `packages/spc-core`, `packages/trace-core` (shape `trace.json`)                                          | `verify,golden,e2e,smoke,reconcile`                     |
-| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`                                              | `verify,e2e,smoke,reconcile`                            |
-| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*`                                            | `verify,smoke,reconcile`                                |
-| `e2e/` (reconciliation, Playwright)                                                                      | `verify,reconcile`                                      |
-| `scripts/stack-smoke*`                                                                                   | `verify,smoke`                                          |
-| `e2e/src/quality-pass.ts`, `e2e/browser/quality/` only                                                   | `verify,reconcile` with `RECONCILE_PASSES=quality`      |
-| `e2e/src/trace-perf.ts`, `apps/mes-server/src/trace-perf-load*`                                          | `verify,e2e` and `pnpm test:trace-perf`                 |
-| `apps/web/src/screens/console*`, `apps/web/nginx/`, `e2e/browser/console/`, `e2e/src/console-pass.ts`    | `verify,smoke` and `pnpm test:console`                  |
-| `packages/oee-core` (shapes `line-oee.json`, Phase 9)                                                    | `verify,golden,e2e,smoke,reconcile`                     |
-| `config/scenarios/`                                                                                      | `verify,golden,e2e`                                     |
-| `config/mosquitto/`, nginx (`apps/web/nginx/`), the `pki` step (`packages/pki`), `compose.dev-ports.yml` | `verify,e2e,smoke,reconcile` and `pnpm test:resilience` |
-| `e2e/src/resilience*`                                                                                    | `verify` and `pnpm test:resilience`                     |
-| `e2e/src/perf*`, `apps/mes-server/src/perf-replay*`, `compose.observability.yml`                         | `verify` and `pnpm test:perf`                           |
+| Files changed                                                                                            | Rerun                                                                   |
+| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Documentation only (`docs/`, `*.md`)                                                                     | `verify` (formatting)                                                   |
+| `apps/simulator`, `packages/sim-core`, `config/plant`                                                    | `verify,golden,e2e,smoke,reconcile`                                     |
+| `packages/spc-core`, `packages/trace-core` (shape `trace.json`)                                          | `verify,golden,e2e,smoke,reconcile`                                     |
+| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`                                              | `verify,e2e,smoke,reconcile`                                            |
+| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*`                                            | `verify,smoke,reconcile`                                                |
+| `e2e/` (reconciliation, Playwright)                                                                      | `verify,reconcile`                                                      |
+| `scripts/stack-smoke*`                                                                                   | `verify,smoke`                                                          |
+| `e2e/src/quality-pass.ts`, `e2e/browser/quality/` only                                                   | `verify,reconcile` with `RECONCILE_PASSES=quality`                      |
+| `e2e/src/trace-perf.ts`, `apps/mes-server/src/trace-perf-load*`                                          | `verify,e2e` and `pnpm test:trace-perf`                                 |
+| `apps/web/src/screens/console*`, `apps/web/nginx/`, `e2e/browser/console/`, `e2e/src/console-pass.ts`    | `verify,smoke` and `pnpm test:console`                                  |
+| `packages/oee-core` (shapes `line-oee.json`, Phase 9)                                                    | `verify,golden,e2e,smoke,reconcile`                                     |
+| `config/scenarios/`                                                                                      | `verify,golden,e2e`                                                     |
+| `config/mosquitto/`, nginx (`apps/web/nginx/`), the `pki` step (`packages/pki`), `compose.dev-ports.yml` | `verify,e2e,smoke,reconcile` and `pnpm test:resilience`                 |
+| `e2e/src/resilience*`                                                                                    | `verify` and `pnpm test:resilience`                                     |
+| `e2e/src/perf*`, `apps/mes-server/src/perf-replay*`, `compose.observability.yml`                         | `verify` and `pnpm test:perf`                                           |
+| `compose.observability.yml`, `config/prometheus/`, `config/grafana/`, `scripts/observability-smoke.ts`   | `verify`, `pnpm stack:smoke:observability` and `pnpm test:perf` (P9-18) |
 
 ## Full stack (Compose)
 
@@ -460,6 +461,47 @@ The web front is HTTPS only, on `https://localhost:8443` (`WEB_HTTPS_PORT`): no 
 - **`http://localhost:8080` no longer answers:** the web moved to `https://localhost:8443` in #241; update bookmarks and scripts. **400 "plain HTTP request was sent to HTTPS port":** use `https://`.
 - **Scripts and tools that used the MES on 4700, the gateway on 4900 or the database on 5442:** run the stack with `pnpm stack:up:dev` (the same stack, those three ports published on `127.0.0.1` again), go through the web front (`https://localhost:8443/api/v1/…` with the dev CA and a session), or use `docker compose exec` (`docker compose exec db psql -U shopfloor -d shopfloor`, `docker compose exec mes wget -qO- http://127.0.0.1:4700/metrics`).
 - **The harnesses** trust only the stack they start: they read `ca.pem` and `server.pem` from the web container, check that the handshake presents exactly that certificate, trust the CA in their own process and through `NODE_EXTRA_CA_CERTS` in their children, and launch Playwright's Chromium with `--ignore-certificate-errors-spki-list=<SPKI hash of that certificate>` (never `ignoreHTTPSErrors`), so the browser accepts that one key and refuses any other certificate (`e2e/browser/tls/tls.spec.ts`).
+
+### Observability profile (#244, P9-17, ADR-0012 amendment)
+
+Prometheus and Grafana beside the stack, opt-in (`compose.observability.yml`, profile `observability`): `pnpm stack:up` never starts them and needs nothing new. Prometheus scrapes every component's `/metrics` every 5 s inside the Compose network (the MES on `mes:4700`, the gateway on `gateway:4900`, the simulator on `simulator:4800`, the ERP mock on `erp:4600`, and itself), so the MES and the gateway stay unpublished. Grafana has the Prometheus datasource and **no dashboards** (on the Phase 9 cut line, cut): use its Explore view or Prometheus's own UI with the queries below.
+
+First time: add the Grafana admin's password to `.env` (the profile refuses to start without it; no default):
+
+```bash
+printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 16)" >> .env
+pnpm stack:up:observability      # the stack and the profile; add `--file compose.dev-ports.yml` by hand if you need both
+pnpm stack:down:observability    # stops both; plain `pnpm stack:down` leaves Prometheus and Grafana running
+```
+
+| What       | URL (127.0.0.1 only)                        | Login                              |
+| ---------- | ------------------------------------------- | ---------------------------------- |
+| Prometheus | <http://localhost:9090> (`PROMETHEUS_PORT`) | none (as the `/metrics` it reads)  |
+| Grafana    | <http://localhost:3000> (`GRAFANA_PORT`)    | `admin` / `GRAFANA_ADMIN_PASSWORD` |
+
+- **Grafana keeps no state** (no volume): the password is `.env`'s at every start (change it there and `pnpm stack:up:observability`); anything saved in its UI is gone when the container is recreated. Anonymous access and sign-up are off; it makes no outgoing call (no usage report, update check, news or plugin install). It is on its own `observability` network with Prometheus only.
+- **Prometheus keeps 3 days or 1 GB**, whichever comes first (`PROMETHEUS_RETENTION_TIME`, `PROMETHEUS_RETENTION_SIZE`), in the volume `prometheus-data`; `docker compose --file docker-compose.yml --file compose.observability.yml --profile observability down --volumes` removes it with the stack's.
+- **Limits:** 0.5 CPU and 256 MiB each. Measured with the stack at 60× (#244, Colima VM 4 GiB / 4 CPUs): see the phase log entry of #244.
+- **Ports:** `PROMETHEUS_PORT=0` or `GRAFANA_PORT=0` lets Docker choose a free port; read it back with `docker compose --file docker-compose.yml --file compose.observability.yml --profile observability port grafana 3000`.
+- **Check it:** `pnpm stack:smoke:observability` starts the stack and the profile (as `stack:up:observability`, from `.env` or `SMOKE_ENV_FILE`) and checks every target up, one metric of each component, Grafana's health, the refusal of anonymous and `admin:admin` logins, the datasource reaching Prometheus and both networks; it prints both containers' memory.
+- **Not in Prometheus:** the broker and the database (no exporter), nginx, and container CPU and memory (no cAdvisor: it needs the Docker socket; the Node services' `process_cpu_seconds_total` and `process_resident_memory_bytes` are there, and the performance suite reads the cgroups).
+
+Queries for the performance targets (Phase 9 plan, "Performance"; T1 and the pending gauge need P9-18's `mes_ingest_lag_seconds` and `mes_ingest_pending_messages`):
+
+| Target                    | Query                                                                                                                                                                                                       |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Targets up                | `up`                                                                                                                                                                                                        |
+| T1, ingest lag p95 / p99  | `histogram_quantile(0.95, sum by (le) (rate(mes_ingest_lag_seconds_bucket[1m])))` (0.99 likewise)                                                                                                           |
+| T1, pending messages      | `max_over_time(mes_ingest_pending_messages[1m])`                                                                                                                                                            |
+| T1, P1, replayed messages | `max_over_time(gateway_buffer_messages[5m])` (0 over the T1 window)                                                                                                                                         |
+| T2, drain rate            | `sum(rate(mes_ingest_messages_total[30s]))` (messages/s)                                                                                                                                                    |
+| T3, push                  | `sum by (type) (rate(mes_push_messages_total[1m]))`, `rate(mes_ws_dropped_total[5m])`                                                                                                                       |
+| T3, OEE derive (paced)    | `histogram_quantile(0.95, sum by (le, kind) (rate(mes_push_paced_compute_seconds_bucket[5m])))`                                                                                                             |
+| SPC and holds (P9-11)     | `histogram_quantile(0.95, sum by (le, kind) (rate(mes_quality_spc_derive_seconds_bucket[5m])))`; `mes_quality_chart_read_seconds`, `mes_quality_hold_scope_seconds`, `mes_genealogy_round_seconds` likewise |
+| T5, CPU per Node service  | `rate(process_cpu_seconds_total{job=~"mes\|gateway\|simulator"}[1m])` (cores)                                                                                                                               |
+| T5, memory                | `max_over_time(process_resident_memory_bytes[10m])` by job                                                                                                                                                  |
+| T6, simulator pace        | `sim_speed_ratio`, `sim_lag_seconds`                                                                                                                                                                        |
+| Outages (resilience)      | `increase(mes_ingest_suspensions_total[5m])`, `gateway_buffer_messages`, `gateway_mqtt_connected`                                                                                                           |
 
 ### Troubleshooting
 

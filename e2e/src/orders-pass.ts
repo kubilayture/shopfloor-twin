@@ -995,7 +995,7 @@ const lineValueJson = z.object({
 const truthOrderOee = z.object({
   product: z.string(),
   jobs: z.array(z.string()),
-  jobOee: z.record(z.string(), z.unknown()),
+  jobOee: z.record(z.string(), z.looseObject({ oee: oeeResultJson.nullable() })),
   oee: oeeResultJson,
   open: z.boolean(),
   pending: z.boolean(),
@@ -1108,19 +1108,23 @@ export interface OeeExpected {
         readonly oee: z.infer<typeof oeeResultJson>;
         readonly firstPassYield: TruthOrderOee['firstPassYield'];
         readonly line: RatioJson | null;
+        readonly lineAboveOne: boolean | null;
+        /** Each job in acceptance order: its OEE's four decimals (`n/a` when null). */
+        readonly jobs: readonly { readonly id: string; readonly oee: string }[];
       }
     >
   >;
   readonly shiftKey: string;
   readonly line: RatioJson | null;
+  readonly lineAboveOne: boolean | null;
   readonly bottlenecks: LineOeeTruth['bottlenecks'];
 }
 
 /**
  * Phase 9 exit criterion 2 through the API (#233), after the drain: the live ground truth cut at
  * the end of shift A (`?asOf`, the line OEE truth as a run that ended there gives it) completes
- * exactly `SHIFT_A_COMPLETED` orders, the golden run's set, each equal to `line-oee.json`'s; the
- * MES calls each one's order OEE, first-pass yield and own line OEE final (waited for) and equal
+ * exactly `SHIFT_A_COMPLETED` orders, the golden run's set, each equal to `line-oee.json`'s, and
+ * the MES's orders completed before the cut are the same; the MES calls each one's order OEE, first-pass yield and own line OEE final (waited for) and equal
  * to the truth's, with no incident under them; shift A's line OEE and each of its hours are final
  * and equal, and the bottleneck per product is the truth's.
  */
@@ -1153,6 +1157,16 @@ export async function checkOrderOee(
   if (JSON.stringify(completed) !== JSON.stringify(goldenCompleted)) {
     ctx.fail(
       `orders completed in shift A: live ${completed.join(', ')}, golden ${goldenCompleted.join(', ')}`,
+    );
+  }
+  // The MES's own set: its orders completed before the cut are the same (#233 review).
+  const mesCompleted = (await ctx.mes.orders()).orders
+    .filter((o) => o.completedAt !== null && Date.parse(o.completedAt) < cut.to)
+    .map((o) => o.id)
+    .sort();
+  if (JSON.stringify(mesCompleted) !== JSON.stringify(completed)) {
+    ctx.fail(
+      `orders the MES completed in shift A: ${mesCompleted.join(', ')}, the truth's ${completed.join(', ')}`,
     );
   }
 
@@ -1212,7 +1226,13 @@ export async function checkOrderOee(
       mesEqual: mesDiffs.length === 0,
       differences,
     };
-    expected[id] = { oee: t.oee, firstPassYield: t.firstPassYield, line: t.line?.oee ?? null };
+    expected[id] = {
+      oee: t.oee,
+      firstPassYield: t.firstPassYield,
+      line: t.line?.oee ?? null,
+      lineAboveOne: t.line?.aboveOne ?? null,
+      jobs: t.jobs.map((job) => ({ id: job, oee: t.jobOee[job]?.oee?.oee?.decimal ?? 'n/a' })),
+    };
     if (differences.length > 0) ctx.fail(`${id} order OEE:\n  ${differences.join('\n  ')}`);
   }
 
@@ -1275,6 +1295,7 @@ export async function checkOrderOee(
       completed,
       expectedCompleted: SHIFT_A_COMPLETED,
       goldenCompleted,
+      mesCompleted,
       orders,
       line: {
         shiftKey: cut.shiftKey,
@@ -1292,6 +1313,7 @@ export async function checkOrderOee(
       orders: expected,
       shiftKey: cut.shiftKey,
       line: truthShift?.oee ?? null,
+      lineAboveOne: truthShift?.aboveOne ?? null,
       bottlenecks: truth.bottlenecks,
     } satisfies OeeExpected,
   };
@@ -1317,12 +1339,20 @@ const oeeScreenSchema = z.object({
         firstPassGood: z.number(),
         started: z.number(),
       }),
-      line: z.object({ final: z.string().nullable(), oee: screenRatio }),
+      line: z.object({
+        final: z.string().nullable(),
+        aboveOne: z.string().nullable(),
+        oee: screenRatio,
+      }),
+      jobs: z.array(
+        z.object({ id: z.string(), oee: z.string().nullable(), final: z.string().nullable() }),
+      ),
     }),
   ),
   line: z.object({
     key: z.string().nullable(),
     final: z.string().nullable(),
+    aboveOne: z.string().nullable(),
     oee: screenRatio,
     bottlenecks: z.array(
       z.object({
@@ -1346,7 +1376,8 @@ const onScreen = (ratio: RatioJson | null) =>
 /**
  * Phase 9 exit criterion 2 on screen (#233): the values `browser/orders/oee` read from each order
  * detail and from the OEE dashboard equal the live truth's, every one marked final, for exactly
- * the expected orders (count asserted) and shift A's line, with the bottleneck the truth's.
+ * the expected orders (count asserted) and shift A's line: the order OEE, A, P, Q, first-pass
+ * yield, each job's OEE and finality, the line values and their `aboveOne`, and the bottleneck.
  */
 export function checkOeeScreen(ctx: PassContext, read: unknown, expected: OeeExpected) {
   const parsed = oeeScreenSchema.safeParse(read);
@@ -1381,7 +1412,12 @@ export function checkOeeScreen(ctx: PassContext, read: unknown, expected: OeeExp
             firstPassGood: want.firstPassYield.firstPassGood,
             started: want.firstPassYield.started,
           },
-          line: { final: 'true', oee: onScreen(want.line) },
+          line: {
+            final: 'true',
+            aboveOne: want.lineAboveOne === null ? null : String(want.lineAboveOne),
+            oee: onScreen(want.line),
+          },
+          jobs: want.jobs.map((job) => ({ ...job, final: 'true' })),
         },
         got,
       ).map((d) => `${id}: ${d}`),
@@ -1394,10 +1430,17 @@ export function checkOeeScreen(ctx: PassContext, read: unknown, expected: OeeExp
   }));
   differences.push(
     ...jsonDifferences(
-      { key: expected.shiftKey, final: 'true', oee: onScreen(expected.line), bottlenecks },
+      {
+        key: expected.shiftKey,
+        final: 'true',
+        aboveOne: expected.lineAboveOne === null ? null : String(expected.lineAboveOne),
+        oee: onScreen(expected.line),
+        bottlenecks,
+      },
       {
         key: screen.line.key,
         final: screen.line.final,
+        aboveOne: screen.line.aboveOne,
         oee: screen.line.oee,
         bottlenecks: screen.line.bottlenecks,
       },

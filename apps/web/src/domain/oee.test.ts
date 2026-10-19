@@ -233,4 +233,28 @@ describe('order and line OEE (#233)', () => {
     expect(pickOrderOee(revised, rest)).toBe(revised);
     expect(pickOrderOee(rest, revised)).toBe(revised);
   });
+
+  it('keeps each final part of the REST answer: a push final for the order but not its line', () => {
+    const rest = orderOee('PO-1');
+    const pushed = orderOee('PO-1', {
+      oee: result({ oee: { fraction: '1/2', decimal: '0.5000' } }),
+      line: { ...ORDER_LINE, final: false, open: true },
+      firstPassYield: { ...rest.firstPassYield, final: false },
+    });
+    const shown = pickOrderOee(rest, pushed);
+    // The order part from the push (both final), the line and the yield from REST (final there).
+    expect(shown?.oee.oee?.decimal).toBe('0.5000');
+    expect(shown?.line).toEqual(ORDER_LINE);
+    expect(shown?.firstPassYield.final).toBe(true);
+    // And the other way round: the push's final line over a provisional REST line.
+    const restOpen = orderOee('PO-1', { line: { ...ORDER_LINE, final: false } });
+    expect(pickOrderOee(restOpen, rest)).toBe(rest);
+    const pushedOpen = orderOee('PO-1', { final: false, line: ORDER_LINE });
+    const mixed = pickOrderOee(
+      orderOee('PO-1', { line: { ...ORDER_LINE, final: false } }),
+      pushedOpen,
+    );
+    expect(mixed?.final).toBe(true);
+    expect(mixed?.line?.final).toBe(true);
+  });
 });

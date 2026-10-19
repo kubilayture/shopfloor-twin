@@ -325,3 +325,12 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed | 1,273.3 s |                                         |
     | smoke     | passed | 92.6 s    |                                         |
     | reconcile | passed | 1,651.4 s | alarms OK, orders OK, quality OK        |
+
+  - **Review of PR #258** (changes requested):
+    - **(1, medium-high)** an order detail open across completion could stay on a provisional line OEE: the web merged on the order's `final` only, and the MES refreshed `oee:order:<id>` only for the order's CNCs. **Web:** `pickOrderOee` merges part by part (the order OEE with its jobs, the first-pass yield, the line OEE each from the side where it is final). **MES:** while a body is not final in every part, any machine's pieces (ASM-01's decide `line.final`, PCK-01's packs and every station's units the yield) and the plant clock mark its topic dirty (`#orderOpen`; a computation records the clock it read). Unit tests on both sides.
+    - **(2)** the work center cards and the machine table say **Bottleneck: loading…** and **unknown (line OEE unavailable)** until the MES's bottleneck is known (test on the failing read).
+    - **(3)** the on-screen compare also takes each job's OEE and finality and `aboveOne` of the order's line value and of shift A's.
+    - **(4)** the MES's orders with `completedAt` before the cut must be the same 5.
+    - **(5)** `holdOrderOee` counts holders per order; a delta for an order nobody holds is ignored. `useLiveLineOee` documents its single consumer.
+    - **(6)** hour rows show revision, incidents (singular for one), may be revised and above 1; `n/a` tooltips name their cause; each set of badges has a **What the status means** disclosure (keyboard and touch).
+    - **(7)** unit tests of `checkOrderOee` on mocked contexts: 5 equal orders, 4 completed, an MES value changed, the order's line value changed, the live truth unlike the golden, the MES completing another set.

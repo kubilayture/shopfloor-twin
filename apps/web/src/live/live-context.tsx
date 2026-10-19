@@ -11,6 +11,7 @@ import {
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, use, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import {
+  holdOrderOee,
   liveKeys,
   orderOeeTopic,
   resetLiveAlarms,
@@ -143,12 +144,12 @@ export function useLiveOrderOee(orderId: string): OrderOeeDto | null | undefined
   const client = useLiveClient();
   const queryClient = useQueryClient();
   useEffect(() => {
-    const key = liveKeys.orderOee(orderId);
-    queryClient.removeQueries({ queryKey: key, exact: true });
+    // Counted per order (`holdOrderOee`): two screens on one order share the copy.
+    const letGo = holdOrderOee(queryClient, orderId);
     const release = client.subscribe(orderOeeTopic(orderId));
     return () => {
       release();
-      queryClient.removeQueries({ queryKey: key, exact: true });
+      letGo();
     };
   }, [client, queryClient, orderId]);
   return useQuery<OrderOeeDto | null>({ queryKey: liveKeys.orderOee(orderId), queryFn: skipToken })
@@ -158,7 +159,9 @@ export function useLiveOrderOee(orderId: string): OrderOeeDto | null | undefined
 /**
  * Holds `oee:line` (#233) for the OEE dashboard and returns what it pushes: the bottleneck per
  * product and the line OEE of the hour and shift the plant clock is in. Its own budget at the MES
- * (#232). Dropped when the screen lets go, as `useLiveOrderOee`.
+ * (#232). Dropped when the screen lets go. One consumer at a time: only the OEE dashboard uses it
+ * (one route), so its copy is not counted; a second consumer would need a count as
+ * `holdOrderOee` keeps for order topics.
  */
 export function useLiveLineOee(): LiveLineOee | undefined {
   const client = useLiveClient();

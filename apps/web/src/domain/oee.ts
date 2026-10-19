@@ -371,8 +371,12 @@ export function orderLineFlags(line: NonNullable<OrderOeeDto['line']>): StatusFl
 }
 
 /**
- * The order OEE to show: the pushed body (`oee:order:<id>`) over the REST one, unless the REST
- * answer is further along (final where the push is not, or a higher revision), as `pickBucket`.
+ * The order OEE to show, part by part (#233 review): the pushed body (`oee:order:<id>`) over the
+ * REST one, except where the REST answer is further along. The order OEE with its jobs, the
+ * first-pass yield and the order's line OEE each turn final on their own, so each part is taken
+ * from the REST answer when it is final there and not in the push (or the REST answer has a
+ * higher revision), as `pickBucket` does for a bucket. A final part never changes again (or only
+ * with a higher revision), so mixing parts of two answers shows nothing that was never true.
  */
 export function pickOrderOee(
   rest: OrderOeeDto | undefined,
@@ -380,7 +384,17 @@ export function pickOrderOee(
 ): OrderOeeDto | undefined {
   if (!pushed) return rest;
   if (!rest) return pushed;
-  if (rest.final && !pushed.final) return rest;
-  if (rest.revision > pushed.revision) return rest;
-  return pushed;
+  const restAhead = rest.revision > pushed.revision;
+  const order = restAhead || (rest.final && !pushed.final);
+  // A part final on one side only comes from that side; otherwise from where the order part does.
+  const fromRest = <T>(r: T, p: T, final: (value: T) => boolean): boolean =>
+    restAhead || (final(r) !== final(p) ? final(r) : order);
+  const yieldPart = fromRest(rest.firstPassYield, pushed.firstPassYield, (f) => f.final);
+  const line = fromRest(rest.line, pushed.line, (l) => l?.final === true);
+  if (order === yieldPart && order === line) return order ? rest : pushed;
+  return {
+    ...(order ? rest : pushed),
+    firstPassYield: yieldPart ? rest.firstPassYield : pushed.firstPassYield,
+    line: line ? rest.line : pushed.line,
+  };
 }

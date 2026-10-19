@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { ApiError, getOrderOee } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
-import { RatioHeadline, RatioValue, StatusFlags } from '../components/oee-ui.tsx';
+import { NA_REASON, RatioHeadline, RatioValue, StatusFlags } from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import {
   ABOVE_ONE_TEXT,
@@ -85,16 +85,16 @@ function JobRow({ job }: { readonly job: OrderJobOeeDto }) {
       </td>
       <td className={`${cell} tabular-nums`}>{job.cycles}</td>
       <td className={cell}>
-        <RatioValue ratio={job.oee?.oee} />
+        <RatioValue ratio={job.oee?.oee} na={NA_REASON.oee} />
       </td>
       <td className={cell}>
-        <RatioValue ratio={job.oee?.availability} />
+        <RatioValue ratio={job.oee?.availability} na={NA_REASON.availability} />
       </td>
       <td className={cell}>
-        <RatioValue ratio={job.oee?.performance} />
+        <RatioValue ratio={job.oee?.performance} na={NA_REASON.performance} />
       </td>
       <td className={cell}>
-        <RatioValue ratio={job.oee?.quality} />
+        <RatioValue ratio={job.oee?.quality} na={NA_REASON.quality} />
       </td>
       <td className={cell}>{job.final ? 'Final' : 'Provisional'}</td>
     </tr>
@@ -109,19 +109,27 @@ function OrderOeeCard({ order }: { readonly order: OrderOeeDto }) {
       className="flex flex-col gap-2 rounded-lg border border-slate-300 bg-white p-4 shadow-sm"
     >
       <h3 className="font-semibold">Order OEE</h3>
-      <RatioHeadline label="OEE" ratio={oee.oee} testId="order-oee-oee" />
+      <RatioHeadline label="OEE" ratio={oee.oee} na={NA_REASON.oee} testId="order-oee-oee" />
       <dl className="grid grid-cols-[1fr_auto] gap-x-4 text-sm">
         <dt className="text-slate-700">Availability</dt>
         <dd className="text-right">
-          <RatioValue ratio={oee.availability} testId="order-oee-availability" />
+          <RatioValue
+            ratio={oee.availability}
+            na={NA_REASON.availability}
+            testId="order-oee-availability"
+          />
         </dd>
         <dt className="text-slate-700">Performance</dt>
         <dd className="text-right">
-          <RatioValue ratio={oee.performance} testId="order-oee-performance" />
+          <RatioValue
+            ratio={oee.performance}
+            na={NA_REASON.performance}
+            testId="order-oee-performance"
+          />
         </dd>
         <dt className="text-slate-700">Quality (OP10)</dt>
         <dd className="text-right">
-          <RatioValue ratio={oee.quality} testId="order-oee-quality" />
+          <RatioValue ratio={oee.quality} na={NA_REASON.quality} testId="order-oee-quality" />
         </dd>
         <dt className="text-slate-700">Planned busy time</dt>
         <dd className="text-right tabular-nums">{minutesText(oee.totals.plannedBusyMs)}</dd>
@@ -150,7 +158,12 @@ function FirstPassYieldCard({ order }: { readonly order: OrderOeeDto }) {
       className="flex flex-col gap-2 rounded-lg border border-slate-300 bg-white p-4 shadow-sm"
     >
       <h3 className="font-semibold">First-pass yield</h3>
-      <RatioHeadline label="Yield" ratio={fpy.yield} testId="order-fpy-yield" />
+      <RatioHeadline
+        label="Yield"
+        ratio={fpy.yield}
+        na={NA_REASON.yield}
+        testId="order-fpy-yield"
+      />
       <p className="text-sm">
         <span data-testid="order-fpy-good">{fpy.firstPassGood}</span> of{' '}
         <span data-testid="order-fpy-started">{fpy.started}</span> blanks taken packed good with
@@ -188,12 +201,18 @@ function OrderLineCard({ order }: { readonly order: OrderOeeDto }) {
       data-testid="order-line-oee"
       data-final={line ? String(line.final) : undefined}
       data-oee={line?.oee?.decimal ?? 'n/a'}
+      data-above-one={line ? String(line.aboveOne) : undefined}
       className="flex flex-col gap-2 rounded-lg border border-slate-300 bg-white p-4 shadow-sm"
     >
       <h3 className="font-semibold">Line OEE of this order</h3>
       {line ? (
         <>
-          <RatioHeadline label="Line OEE" ratio={line.oee} testId="order-line-oee-value" />
+          <RatioHeadline
+            label="Line OEE"
+            ratio={line.oee}
+            na={NA_REASON.line}
+            testId="order-line-oee-value"
+          />
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 text-sm [&_dd]:text-right [&_dt]:whitespace-nowrap">
             <dt className="text-slate-700">In progress</dt>
             <dd className="text-right">

@@ -813,3 +813,136 @@ describe('the OEE topics’ budgets and the line topic (#232)', () => {
     expect(socket.sent).toMatchObject([{ type: 'error', code: 'unknown-topic' }]);
   });
 });
+
+// The order OEE body is built by the test as JSON (`orderOeeDto` returns what `order()` gives).
+vi.mock('./order-oee-dto.ts', () => ({ orderOeeDto: (view: unknown) => view }));
+
+describe('order OEE topics refresh while a part is not final (#233 review)', () => {
+  const ratio = { fraction: '1/2', decimal: '0.5000' };
+  const body = (lineFinal: boolean) => ({
+    orderId: 'PO-1',
+    product: 'VB-100',
+    status: 'completed',
+    oee: {
+      availability: ratio,
+      performance: ratio,
+      quality: ratio,
+      oee: ratio,
+      anomaly: false,
+      provisional: false,
+      totals: {
+        plannedBusyMs: 1_000,
+        actualProductionMs: 500,
+        excludedMs: 0,
+        longStopMs: 0,
+        microStopMs: 0,
+        idealMs: 250,
+        good: 1,
+        scrap: 0,
+        rework: 0,
+        produced: 1,
+      },
+      unplanned: { good: 0, produced: 0, idealMs: 0 },
+      losses: null,
+    },
+    open: false,
+    pending: false,
+    headTimeUnknown: false,
+    endLost: false,
+    lost: false,
+    final: true,
+    jobs: [],
+    firstPassYield: { firstPassGood: 1, started: 1, yield: ratio, final: true },
+    completedAt: new Date(T0).toISOString(),
+    cutoffs: [],
+    incidents: [],
+    mayRevise: false,
+    revision: 0,
+    line: {
+      from: new Date(T0).toISOString(),
+      to: new Date(T0 + 60_000).toISOString(),
+      through: new Date(T0 + 60_000).toISOString(),
+      plannedBusyMs: 60_000,
+      good: { 'VB-100': 1 },
+      idealMs: '150000/1',
+      oee: { fraction: '5/2', decimal: '2.5000' },
+      aboveOne: true,
+      open: false,
+      final: lineFinal,
+    },
+  });
+
+  function orderSetup() {
+    const fake = fakeSources();
+    const listeners = new Set<(change: { orderId?: string; machine?: string }) => void>();
+    let calls = 0;
+    let lineFinal = false;
+    const sources: PushSources = {
+      ...fake.sources,
+      orderOee: {
+        order: () => {
+          calls++;
+          return Promise.resolve(body(lineFinal) as never);
+        },
+        onChange: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+    };
+    const hub = new PushHub({ clockMs: 60_000, heartbeatMs: 60_000, oeeMs: 10 });
+    hubs.push(hub);
+    hub.attach(sources);
+    const socket = new FakeSocket();
+    hub.connect(socket);
+    return {
+      socket,
+      fake,
+      calls: () => calls,
+      emit: (change: { orderId?: string; machine?: string }) => {
+        for (const listener of listeners) listener(change);
+      },
+      finish: () => {
+        lineFinal = true;
+      },
+    };
+  }
+
+  it('reads an order whose line OEE is open again on ASM-01 and PCK-01 changes and the clock, and stops once all is final', async () => {
+    const { socket, fake, calls, emit, finish } = orderSetup();
+    socket.request({ type: 'subscribe', topic: 'oee:order:PO-1' });
+    await advance(20);
+    expect(socket.sent.find((m) => m.type === 'snapshot')).toMatchObject({
+      topic: 'oee:order:PO-1',
+      order: { final: true, line: { final: false } },
+    });
+    expect(calls()).toBe(1);
+    // The bottleneck's pieces (the order has no job on ASM-01): read again.
+    emit({ machine: 'asm-01' });
+    await advance(20);
+    expect(calls()).toBe(2);
+    emit({ machine: 'pck-01' });
+    await advance(20);
+    expect(calls()).toBe(3);
+    // The plant clock moving: read again (the open line value runs to it).
+    fake.state('cnc-01', 30, 'Running');
+    await advance(20);
+    expect(calls()).toBe(4);
+    // Now every part is final: a delta, then ASM-01 and the clock no longer read it again.
+    finish();
+    emit({ machine: 'asm-01' });
+    await advance(20);
+    expect(calls()).toBe(5);
+    expect(socket.sent.filter((m) => m.type === 'oee-order').at(-1)).toMatchObject({
+      order: { line: { final: true } },
+    });
+    emit({ machine: 'asm-01' });
+    fake.state('cnc-01', 60, 'Idle');
+    await advance(20);
+    expect(calls()).toBe(5);
+    // Its own order's change still does.
+    emit({ orderId: 'PO-1' });
+    await advance(20);
+    expect(calls()).toBe(6);
+  });
+});

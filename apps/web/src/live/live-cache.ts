@@ -242,12 +242,45 @@ function applyLineOee(queryClient: QueryClient, value: LiveLineOee): void {
   }
 }
 
-/** A pushed order OEE (#233) is the whole body of `GET /oee/orders/{id}`: it replaces the last. */
+/**
+ * Who holds `oee:order:<id>` per query client (#233 review): a count per order, so two screens on
+ * the same order share the pushed copy and it is dropped only when the last lets go.
+ */
+const orderOeeHolders = new WeakMap<QueryClient, Map<string, number>>();
+
+/**
+ * Takes a hold on an order's pushed OEE: the first hold starts from an empty copy (a copy kept
+ * from an earlier visit may be stale), the last release drops it. Returns the release.
+ */
+export function holdOrderOee(queryClient: QueryClient, orderId: string): () => void {
+  const holders = orderOeeHolders.get(queryClient) ?? new Map<string, number>();
+  orderOeeHolders.set(queryClient, holders);
+  const key = liveKeys.orderOee(orderId);
+  const count = holders.get(orderId) ?? 0;
+  if (count === 0) queryClient.removeQueries({ queryKey: key, exact: true });
+  holders.set(orderId, count + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (holders.get(orderId) ?? 1) - 1;
+    if (left > 0) {
+      holders.set(orderId, left);
+      return;
+    }
+    holders.delete(orderId);
+    queryClient.removeQueries({ queryKey: key, exact: true });
+  };
+}
+
+/**
+ * A pushed order OEE (#233) is the whole body of `GET /oee/orders/{id}`: it replaces the last.
+ * A message for an order nobody holds (a delta that arrives after the unsubscribe) is dropped.
+ */
 function applyOrderOee(queryClient: QueryClient, topic: string, order: OrderOeeDto | null): void {
-  queryClient.setQueryData<OrderOeeDto | null>(
-    liveKeys.orderOee(topic.slice('oee:order:'.length)),
-    order,
-  );
+  const orderId = topic.slice('oee:order:'.length);
+  if (!orderOeeHolders.get(queryClient)?.has(orderId)) return;
+  queryClient.setQueryData<OrderOeeDto | null>(liveKeys.orderOee(orderId), order);
 }
 
 /**

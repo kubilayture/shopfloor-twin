@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { EQUIPMENT, PLANT, fakeFetch, json } from '../test/fixtures.ts';
+import { EQUIPMENT, PLANT, fakeFetch, json, problem } from '../test/fixtures.ts';
 import {
   BOTTLENECKS,
   CURRENT_SHIFT,
@@ -87,6 +87,9 @@ describe('OEE dashboard', () => {
     expect(within(cell).getByTestId('oee-own-cell-m1').textContent).toBe('2.5 min');
     expect(within(cell).getByTestId('oee-external-cell-m1').textContent).toBe('0.8 min');
     expect(within(cell).getByText('Provisional (2.0 min)')).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId('bottleneck-line-a1').dataset.state).toBe('known');
+    });
     expect(screen.queryByTestId('bottleneck-cell-m1')).toBeNull();
 
     const line = screen.getByTestId('oee-card-line-a1');
@@ -317,6 +320,10 @@ describe('OEE dashboard', () => {
       hour: lineBucket('hour', '2026-10-15T05:00:00.000Z', {
         oee: { fraction: '11/10', decimal: '1.1000' },
         aboveOne: true,
+        final: true,
+        revision: 1,
+        incidents: [{ machine: 'pck-01', epoch: 1, id: 3, seqFrom: 5, seqTo: 6 }],
+        mayRevise: true,
       }),
       shift: lineBucket('shift', SHIFT_KEY, {
         final: true,
@@ -333,8 +340,10 @@ describe('OEE dashboard', () => {
     for (const flag of ['final', 'revision', 'incidents', 'may-revise', 'above-one']) {
       expect(card.querySelector(`[data-flag="${flag}"]`)).toBeTruthy();
     }
-    expect(within(card).getByTestId('line-hour-2026-10-15T05:00:00.000Z').dataset.oee).toBe(
-      '1.1000',
+    const revisedHour = within(card).getByTestId('line-hour-2026-10-15T05:00:00.000Z');
+    expect(revisedHour.dataset.oee).toBe('1.1000');
+    expect(revisedHour.textContent).toContain(
+      'Final, revision 1, 1 incident, may be revised, above 1',
     );
     // The bottleneck follows the MES's answer (here, for the test, a CNC).
     expect(within(screen.getByTestId('oee-machine-cnc-01')).getByText('Bottleneck')).toBeTruthy();
@@ -351,6 +360,39 @@ describe('OEE dashboard', () => {
       shift: lineBucket('shift', '2026-10-15/B', { oee: { fraction: '0/1', decimal: '0.0000' } }),
     });
     expect(card.dataset.oee).toBe('0.7500');
+  });
+
+  it('says the bottleneck is loading, then unknown when the line OEE read fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      api({
+        '/api/v1/oee/line': () => new Promise<Response>(() => undefined) as unknown as Response,
+      }),
+    );
+    const loading = await renderApp('/oee');
+    const pending = await screen.findByTestId('bottleneck-line-a1');
+    expect(pending.dataset.state).toBe('loading');
+    expect(pending.textContent).toContain('loading…');
+    expect(screen.getByTestId('bottleneck-cell-m1').dataset.state).toBe('loading');
+    expect(screen.getByTestId('machine-bottleneck-state').textContent).toContain('loading…');
+    loading.unmount();
+
+    vi.stubGlobal(
+      'fetch',
+      api({
+        '/api/v1/oee/line': () =>
+          problem(503, 'Service Unavailable', 'line OEE is not available', '/api/v1/oee/line'),
+      }),
+    );
+    await renderApp('/oee');
+    await waitFor(() => {
+      expect(screen.getByTestId('bottleneck-line-a1').dataset.state).toBe('unknown');
+    });
+    expect(screen.getByTestId('bottleneck-line-a1').textContent).toContain(
+      'unknown (line OEE unavailable)',
+    );
+    expect(screen.getByTestId('machine-bottleneck-state').textContent).toContain('unknown');
+    expect(within(screen.getByTestId('oee-machine-asm-01')).queryByText('Bottleneck')).toBeNull();
   });
 
   it('says when no shift has started', async () => {

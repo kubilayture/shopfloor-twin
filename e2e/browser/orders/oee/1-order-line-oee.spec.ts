@@ -57,6 +57,7 @@ async function readOrder(page: Page, id: string) {
     },
     line: {
       final: await section.getByTestId('order-line-oee').getAttribute('data-final'),
+      aboveOne: await section.getByTestId('order-line-oee').getAttribute('data-above-one'),
       oee: await ratio(section.getByTestId('order-line-oee-value')),
     },
     jobs: await section.locator('[data-testid^="order-oee-job-"]').evaluateAll((rows) =>

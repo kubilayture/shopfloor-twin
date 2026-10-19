@@ -8,7 +8,7 @@ import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { useId } from 'react';
 import { getLineOee } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
-import { RatioHeadline, RatioValue, StatusFlags } from '../components/oee-ui.tsx';
+import { NA_REASON, RatioHeadline, RatioValue, StatusFlags } from '../components/oee-ui.tsx';
 import { QueryError } from '../components/query-error.tsx';
 import {
   ABOVE_ONE_TEXT,
@@ -33,6 +33,11 @@ export interface LineOeeView {
   /** The MES's bottleneck per product (`deriveBottlenecks`, ADR-0036); empty until read. */
   readonly bottlenecks: readonly BottleneckDto[];
   readonly productionMode: LineOeeDto['productionMode'] | undefined;
+  /**
+   * Whether the bottleneck is known (#233 review): `loading` until `GET /oee/line` or `oee:line`
+   * answered, `unknown` when the read failed and nothing was pushed.
+   */
+  readonly bottleneckState: 'known' | 'loading' | 'unknown';
   readonly shiftRead: UseQueryResult<LineOeeDto>;
   readonly hoursRead: UseQueryResult<LineOeeDto>;
 }
@@ -82,10 +87,13 @@ export function useLineOee(
     if (shown) byKey.set(shown.key, shown);
   }
   const hours = [...byKey.values()].sort((a, b) => Date.parse(a.from) - Date.parse(b.from));
+  const bottlenecks = pushed?.bottlenecks ?? shiftRead.data?.bottlenecks;
   return {
     shift,
     hours,
-    bottlenecks: pushed?.bottlenecks ?? shiftRead.data?.bottlenecks ?? [],
+    bottlenecks: bottlenecks ?? [],
+    bottleneckState:
+      bottlenecks !== undefined ? 'known' : shiftRead.isError ? 'unknown' : 'loading',
     productionMode: pushed?.productionMode ?? shiftRead.data?.productionMode,
     shiftRead,
     hoursRead,
@@ -125,6 +133,18 @@ function Bottlenecks({
       </p>
     </div>
   );
+}
+
+/** An hour row's status as text: finality, revision, incidents, may be revised, above 1. */
+export function hourStatus(hour: LineBucketDto): string {
+  const n = hour.incidents.length;
+  return [
+    hour.final ? 'Final' : 'Provisional',
+    ...(hour.revision > 0 ? [`revision ${String(hour.revision)}`] : []),
+    ...(n > 0 ? [`${String(n)} incident${n === 1 ? '' : 's'}`] : []),
+    ...(hour.mayRevise ? ['may be revised'] : []),
+    ...(hour.aboveOne ? ['above 1'] : []),
+  ].join(', ');
 }
 
 function LineHours({
@@ -171,17 +191,15 @@ function LineHours({
                 data-oee={hour.oee?.decimal ?? 'n/a'}
                 data-final={String(hour.final)}
                 data-above-one={String(hour.aboveOne)}
+                data-revision={String(hour.revision)}
+                data-may-revise={String(hour.mayRevise)}
               >
                 <td>{formatClockTime(hour.from)}</td>
                 <td className="text-right">
-                  <RatioValue ratio={hour.oee} />
+                  <RatioValue ratio={hour.oee} na={NA_REASON.line} />
                 </td>
                 <td className="text-right tabular-nums">{goodText(hour.good)}</td>
-                <td className="pl-2">
-                  {hour.final ? 'Final' : 'Provisional'}
-                  {hour.aboveOne ? ', above 1' : ''}
-                  {hour.incidents.length > 0 ? `, ${String(hour.incidents.length)} incidents` : ''}
-                </td>
+                <td className="pl-2">{hourStatus(hour)}</td>
               </tr>
             ))}
           </tbody>
@@ -227,7 +245,12 @@ export function LineOeeCard({
       ) : null}
       {shift ? (
         <>
-          <RatioHeadline label="Line OEE" ratio={shift.oee} testId="line-oee-value" />
+          <RatioHeadline
+            label="Line OEE"
+            ratio={shift.oee}
+            na={NA_REASON.line}
+            testId="line-oee-value"
+          />
           <dl className="grid grid-cols-[1fr_auto] gap-x-4 text-sm">
             <dt className="text-slate-700">Packed good</dt>
             <dd className="text-right tabular-nums" data-testid="line-oee-good">

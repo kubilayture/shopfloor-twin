@@ -103,11 +103,14 @@ function WorkCenterCard({
   rest,
   shiftKey,
   bottlenecks,
+  bottleneckState,
 }: {
   readonly id: string;
   readonly name: string;
   readonly rest: OeeBucketDto | undefined;
   readonly shiftKey: string;
+  /** Whether the MES's bottleneck is known yet (#233 review). */
+  readonly bottleneckState: 'known' | 'loading' | 'unknown';
   /** The MES's bottleneck machines in this work center, with their products (#233). */
   readonly bottlenecks: readonly {
     equipment: EquipmentDto | undefined;
@@ -159,9 +162,19 @@ function WorkCenterCard({
         ) : (
           <p className="text-sm text-slate-700">No data for this shift.</p>
         )}
-        {bottlenecks.length > 0 ? (
+        {bottleneckState !== 'known' ? (
           <p
             data-testid={`bottleneck-${id}`}
+            data-state={bottleneckState}
+            className="rounded bg-slate-100 px-2 py-1 text-sm text-slate-900"
+          >
+            <span className="font-semibold">Bottleneck:</span>{' '}
+            {bottleneckState === 'loading' ? 'loading…' : 'unknown (line OEE unavailable)'}
+          </p>
+        ) : bottlenecks.length > 0 ? (
+          <p
+            data-testid={`bottleneck-${id}`}
+            data-state="known"
             data-equipment={bottlenecks.map((b) => b.id).join(',')}
             className="rounded bg-slate-100 px-2 py-1 text-sm text-slate-900"
           >
@@ -238,59 +251,73 @@ function MachineTable({
   names: known,
   shiftKey,
   bottlenecks,
+  bottleneckState,
 }: {
   readonly buckets: readonly OeeBucketDto[];
   readonly names: Names;
   readonly shiftKey: string;
   readonly bottlenecks: ReadonlyMap<string, readonly string[]>;
+  readonly bottleneckState: 'known' | 'loading' | 'unknown';
 }) {
   if (buckets.length === 0) return <p className="mt-2 text-sm">No machine has data yet.</p>;
   return (
-    <div className="relative mt-2 overflow-x-auto rounded-lg border border-slate-300 bg-white">
-      <table className="w-full min-w-[44rem] text-sm">
-        <caption className="sr-only">OEE per machine for the selected shift</caption>
-        <thead className="bg-slate-100 text-left">
-          <tr>
-            <th scope="col" className="px-2 py-1">
-              Machine
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              OEE
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              A
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              P
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              Q
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              Own loss
-            </th>
-            <th scope="col" className="px-2 py-1 text-right">
-              External loss
-            </th>
-            <th scope="col" className="px-2 py-1">
-              Status
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {buckets.map((bucket) => (
-            <MachineRow
-              key={bucket.id}
-              id={bucket.id}
-              equipment={known.equipment.get(bucket.id)}
-              rest={bucket}
-              shiftKey={shiftKey}
-              bottleneck={bottlenecks.has(bucket.id)}
-            />
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <>
+      {bottleneckState !== 'known' ? (
+        <p
+          className="mt-2 text-sm"
+          data-testid="machine-bottleneck-state"
+          data-state={bottleneckState}
+        >
+          Bottleneck:{' '}
+          {bottleneckState === 'loading' ? 'loading…' : 'unknown (line OEE unavailable)'}
+        </p>
+      ) : null}
+      <div className="relative mt-2 overflow-x-auto rounded-lg border border-slate-300 bg-white">
+        <table className="w-full min-w-[44rem] text-sm">
+          <caption className="sr-only">OEE per machine for the selected shift</caption>
+          <thead className="bg-slate-100 text-left">
+            <tr>
+              <th scope="col" className="px-2 py-1">
+                Machine
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                OEE
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                A
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                P
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                Q
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                Own loss
+              </th>
+              <th scope="col" className="px-2 py-1 text-right">
+                External loss
+              </th>
+              <th scope="col" className="px-2 py-1">
+                Status
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {buckets.map((bucket) => (
+              <MachineRow
+                key={bucket.id}
+                id={bucket.id}
+                equipment={known.equipment.get(bucket.id)}
+                rest={bucket}
+                shiftKey={shiftKey}
+                bottleneck={bottlenecks.has(bucket.id)}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
@@ -756,6 +783,7 @@ export function OeeDashboard() {
                   name={name}
                   rest={data.workCenters.find((bucket) => bucket.id === center)}
                   shiftKey={shiftKey}
+                  bottleneckState={line.bottleneckState}
                   bottlenecks={members.flatMap((member) => {
                     const products = bottlenecks.get(member);
                     return products
@@ -775,6 +803,7 @@ export function OeeDashboard() {
               names={known}
               shiftKey={shiftKey}
               bottlenecks={bottlenecks}
+              bottleneckState={line.bottleneckState}
             />
           </section>
           {focus !== undefined ? (

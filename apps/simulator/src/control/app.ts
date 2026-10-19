@@ -788,6 +788,9 @@ export const recordedScenarioSchema = z.object({
   endAfterEvents: count.describe(
     'Events the run had processed: the replay stops exactly there, so the logs are equal line for line',
   ),
+  stopAt: isoSchema.describe(
+    "The run's simulation time at the stop: the replay's clock and summaries end there",
+  ),
   configSha256: z
     .string()
     .describe("The run's configuration hash: the replay refuses another configuration"),

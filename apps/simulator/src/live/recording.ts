@@ -17,9 +17,10 @@
  *   order. The headless run accepts them all at the start in that order, which equals the live run
  *   for every one accepted before the start or mid-run for a later time (#235's external lane); one
  *   posted mid-run for the simulation time itself is the limit #235 recorded.
- * - `configSha256`, which the replay checks against the configuration it loads, and
- *   `endAfterEvents`, the number of events the run had processed: the replay stops exactly there,
- *   so its event log equals the live log line for line, also after a single step.
+ * - `configSha256`, which the replay checks against the configuration it loads, and the stop:
+ *   `endAfterEvents`, the number of events the run had processed, and `stopAt`, its simulation
+ *   time. The replay stops exactly there, so its event log equals the live log line for line, also
+ *   after a single step, and its summaries are taken at `stopAt`, as the live ground truth is.
  *
  * `end` is one millisecond after the simulation time, or after the latest accepted injection or
  * action not due yet (an entry outside `[start, end)` is refused, and dropping one would renumber
@@ -100,6 +101,7 @@ export interface RecordedScenario {
   readonly days: number;
   readonly end: string;
   readonly endAfterEvents: number;
+  readonly stopAt: string;
   readonly configSha256: string;
   readonly config: string;
   readonly stock?: string;
@@ -202,6 +204,7 @@ export function recordScenario(input: RecordingInput): RecordedScenario {
     days: Math.max(1, Math.ceil((end - start) / DAY)),
     end: isoTime(end),
     endAfterEvents: input.processed,
+    stopAt: isoTime(simNow),
     configSha256: input.configSha256,
     config: input.config,
     ...(input.stock === undefined ? {} : { stock: input.stock }),

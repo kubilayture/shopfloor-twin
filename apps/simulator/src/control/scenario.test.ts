@@ -369,6 +369,7 @@ describe('the recorded run (1.10, #236)', () => {
         config: 'config/plant',
         configSha256: 'a'.repeat(64),
         endAfterEvents: 0,
+        stopAt: '2026-10-12T03:00:00.000Z',
       },
     });
     expect(res.statusCode).toBe(400);

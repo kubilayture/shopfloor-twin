@@ -588,19 +588,22 @@ describe('recorded runs, review of #236', () => {
         ...HEAD,
         configSha256: SHA,
         endAfterEvents: 12,
+        stopAt: '2026-10-12T04:30:00.000Z',
         injections: [failure],
         actions: lots(2),
         inputOrder: ['action', 'injection', 'action'],
       }),
     );
-    expect([plan.configSha256, plan.endAfterEvents, plan.inputOrder]).toEqual([
+    expect([plan.configSha256, plan.endAfterEvents, plan.stopAt, plan.inputOrder]).toEqual([
       SHA,
       12,
+      Date.UTC(2026, 9, 12, 4, 30),
       ['action', 'injection', 'action'],
     ]);
     const plain = scenarioPlan(parsed({ ...HEAD, injections: [failure] }));
     expect(plain).not.toHaveProperty('inputOrder');
     expect(plain).not.toHaveProperty('endAfterEvents');
+    expect(plain).not.toHaveProperty('stopAt');
     expect(plain).not.toHaveProperty('configSha256');
   });
 
@@ -620,9 +623,47 @@ describe('recorded runs, review of #236', () => {
     expect(issuesOf({ ...HEAD, timeline: [], inputOrder: [] }).map((i) => i.path)).toEqual([
       'inputOrder',
     ]);
-    expect(issuesOf({ ...HEAD, endAfterEvents: -1 }).map((i) => i.path)).toEqual([
-      'endAfterEvents',
+    expect(
+      issuesOf({ ...HEAD, endAfterEvents: -1, stopAt: '2026-10-12T04:00:00Z' }).map((i) => i.path),
+    ).toEqual(['endAfterEvents']);
+  });
+
+  it('refuses half a recorded stop, a stop outside the run, and a dispatch after the stop', () => {
+    const message = 'a recorded stop has both stopAt and endAfterEvents, or neither';
+    expect(issuesOf({ ...HEAD, endAfterEvents: 3 })).toEqual([{ path: 'stopAt', message }]);
+    expect(issuesOf({ ...HEAD, stopAt: '2026-10-12T04:00:00Z' })).toEqual([
+      { path: 'stopAt', message },
     ]);
+    const job = (afterEvents: number, acceptedAt: string) => ({
+      commandId: `C${String(afterEvents)}`,
+      machine: 'cnc-01',
+      orderId: 'O',
+      product: 'VB-100',
+      quantity: 1,
+      notBefore: '2026-10-12T03:00:00Z',
+      acceptedAt,
+      afterEvents,
+    });
+    const plan = (stopAt: string, endAfterEvents: number) =>
+      checkScenarioPlan(
+        config,
+        scenarioPlan(
+          parsed({
+            ...HEAD,
+            production: 'orders',
+            configSha256: SHA,
+            stopAt,
+            endAfterEvents,
+            dispatches: [job(10, '2026-10-12T04:00:00Z')],
+          }),
+        ),
+      );
+    expect(plan('2026-10-12T04:00:00Z', 10)).toEqual([]);
+    expect(plan('2026-10-12T04:00:00Z', 9).map((i) => i.message)).toEqual([
+      'a recorded dispatch after the recorded stop (9 events at 2026-10-12T04:00:00.000Z)',
+    ]);
+    expect(plan('2026-10-12T03:59:59.999Z', 10).map((i) => i.path)).toEqual(['dispatches[0]']);
+    expect(plan('2026-10-13T03:00:00Z', 10).map((i) => i.path)).toEqual(['stopAt']);
   });
 });
 

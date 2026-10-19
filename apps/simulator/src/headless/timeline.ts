@@ -73,7 +73,16 @@ export function planOptions(
     ...(plan.actions.length === 0 ? {} : { actions: plan.actions }),
     ...(plan.inputOrder === undefined ? {} : { inputOrder: plan.inputOrder }),
     ...(plan.endAfterEvents === undefined ? {} : { endAfterEvents: plan.endAfterEvents }),
+    ...(plan.stopAt === undefined ? {} : { stopAt: plan.stopAt }),
   };
+}
+
+/**
+ * A run cut at an earlier `end` (the CLI's `--end`): a recording's own stop (`endAfterEvents`,
+ * `stopAt`, #236 review) is dropped, since the new end replaces it.
+ */
+export function withEarlierEnd(run: HeadlessOptions, end: number): HeadlessOptions {
+  return { ...run, end, endAfterEvents: undefined, stopAt: undefined };
 }
 
 export interface LoadedTimeline {

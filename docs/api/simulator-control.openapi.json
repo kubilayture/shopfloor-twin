@@ -7928,6 +7928,10 @@
                       "maximum": 9007199254740991,
                       "description": "Events the run had processed: the replay stops exactly there, so the logs are equal line for line"
                     },
+                    "stopAt": {
+                      "type": "string",
+                      "description": "The run's simulation time at the stop: the replay's clock and summaries end there"
+                    },
                     "configSha256": {
                       "type": "string",
                       "description": "The run's configuration hash: the replay refuses another configuration"
@@ -8160,6 +8164,7 @@
                     "days",
                     "end",
                     "endAfterEvents",
+                    "stopAt",
                     "configSha256",
                     "config"
                   ],

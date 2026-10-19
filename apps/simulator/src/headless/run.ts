@@ -61,6 +61,12 @@ export interface HeadlessOptions {
    * run stood), before `end`; the event log is then the live one line for line.
    */
   readonly endAfterEvents?: number | undefined;
+  /**
+   * A recorded run (#236 re-review), with `endAfterEvents`: the live run's simulation time at the
+   * stop. The clock ends there, and the summary, trace and line OEE are taken there, as the live
+   * ground truth is, rather than at `end`.
+   */
+  readonly stopAt?: SimTime | undefined;
 }
 
 /**
@@ -145,6 +151,8 @@ export interface RunHeader {
   readonly inputOrder?: readonly InputKind[];
   /** Only for a recorded run (#236 review). */
   readonly endAfterEvents?: number;
+  /** Only for a recorded run (#236 re-review). */
+  readonly stopAt?: string;
 }
 
 export interface HeadlessResult {
@@ -191,6 +199,7 @@ export function runHeadless(
     actions = [],
     inputOrder,
     endAfterEvents,
+    stopAt,
   }: HeadlessOptions,
   writeLine: (line: string) => void,
 ): HeadlessResult {
@@ -240,7 +249,23 @@ export function runHeadless(
       });
     }
   });
-  issues.push(...recordedDispatchIssues(dispatches, start, end));
+  if ((stopAt === undefined) !== (endAfterEvents === undefined)) {
+    issues.push({
+      path: 'stopAt',
+      message: 'a recorded stop has both stopAt and endAfterEvents, or neither',
+    });
+  }
+  issues.push(
+    ...recordedDispatchIssues(
+      dispatches,
+      start,
+      end,
+      [],
+      stopAt === undefined || endAfterEvents === undefined
+        ? undefined
+        : { at: stopAt, events: endAfterEvents },
+    ),
+  );
   if (issues.length > 0) {
     throw new RangeError(issues.map((issue) => `${issue.path}: ${issue.message}`).join('; '));
   }
@@ -289,6 +314,7 @@ export function runHeadless(
     ...(actions.length === 0 ? {} : { actions: actions.map(headerAction) }),
     ...(inputOrder === undefined ? {} : { inputOrder: [...inputOrder] }),
     ...(endAfterEvents === undefined ? {} : { endAfterEvents }),
+    ...(stopAt === undefined ? {} : { stopAt: isoTime(stopAt) }),
   };
   writeLine(stableStringify(header));
 
@@ -344,23 +370,18 @@ export function runHeadless(
   };
   // Recorded dispatches (#236) at their points of the run, then the rest of it.
   replayDispatches(line, simulation, dispatches.filter(isRecorded), handle);
-  if (endAfterEvents === undefined) {
+  // The summaries are taken at `end`, or at a recorded run's stop (#236 re-review), where the live
+  // ground truth was.
+  let finishAt = end;
+  if (endAfterEvents === undefined || stopAt === undefined) {
     simulation.runUntil(end - 1, handle);
   } else {
-    // A recorded run (#236 review): exactly as far as the live run had processed.
-    while (simulation.processed < endAfterEvents) {
-      const next = simulation.nextEventTime;
-      if (next === undefined || next >= end) {
-        throw new RangeError(
-          `endAfterEvents ${String(endAfterEvents)}: only ${String(simulation.processed)} events are processed before ${isoTime(end)}; the recording does not fit this run`,
-        );
-      }
-      simulation.step(handle);
-    }
+    stopAtRecorded(simulation, endAfterEvents, stopAt, handle);
+    finishAt = stopAt;
   }
 
   const summary = truth.finish(
-    end,
+    finishAt,
     line,
     config.stock.lots.map((lot) => lot.id),
   );
@@ -371,8 +392,44 @@ export function runHeadless(
     invariantChecks: checker?.checks ?? 0,
     summary,
     trace: traceTruth.build(summary.orders),
-    lineOee: lineOeeTruth.build(end),
+    lineOee: lineOeeTruth.build(finishAt),
   };
+}
+
+/**
+ * Runs a replay to a recorded run's stop (#236 review and re-review): exactly `endAfterEvents`
+ * events, then the clock to `stopAt` without processing anything more, where the live run stood.
+ * Throws when the run can't stop there (the recording does not fit it).
+ */
+export function stopAtRecorded(
+  simulation: Simulation<LineEvent>,
+  endAfterEvents: number,
+  stopAt: SimTime,
+  handle: (event: LineEvent, simulation: Simulation<LineEvent>) => void,
+): void {
+  const misfit = (why: string) =>
+    new RangeError(
+      `recorded stop (${String(endAfterEvents)} events at ${isoTime(stopAt)}): ${why}; the recording does not fit this run`,
+    );
+  if (simulation.processed > endAfterEvents) {
+    throw misfit(`the run has processed ${String(simulation.processed)} events already`);
+  }
+  while (simulation.processed < endAfterEvents) {
+    const next = simulation.nextEventTime;
+    if (next === undefined || next > stopAt) {
+      throw misfit(
+        `only ${String(simulation.processed)} events are processed by ${isoTime(stopAt)}`,
+      );
+    }
+    simulation.step(handle);
+  }
+  if (simulation.now < stopAt) {
+    const next = simulation.nextEventTime;
+    if (next !== undefined && next <= stopAt) {
+      throw misfit(`an event is still due at ${isoTime(next)}`);
+    }
+    simulation.runUntil(stopAt, handle);
+  }
 }
 
 const headerAction = (action: ActionSpec): HeaderAction => {

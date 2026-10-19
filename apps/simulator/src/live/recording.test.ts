@@ -26,11 +26,14 @@ import {
   applyDispatches,
   isRecorded,
   runHeadless,
+  stopAtRecorded,
   type DispatchSpec,
   type HeadlessOptions,
+  type HeadlessResult,
 } from '../headless/run.ts';
 import { EVENT_SCHEMA, isoTime, stableStringify } from '../headless/serialize.ts';
-import { planOptions } from '../headless/timeline.ts';
+import { planOptions, withEarlierEnd } from '../headless/timeline.ts';
+import { traceSection } from '../headless/trace-truth.ts';
 import {
   ProductionLine,
   type LineEvent,
@@ -115,13 +118,18 @@ function live(speed = SPEED): Live {
 
 /** The headless replay of a recording: its event log without the header line. */
 function replay(recorded: RecordedScenario): string[] {
+  return replayRun(recorded).lines;
+}
+
+/** The headless replay with its result (summary, trace, line OEE) and its log without the header. */
+function replayRun(recorded: RecordedScenario): { lines: string[]; result: HeadlessResult } {
   // Through the document as JSON, as `GET /scenario/recorded` serves it and the CLI reads it.
   const parsed = parseScenario(JSON.parse(JSON.stringify(recorded)));
   if (!parsed.ok) throw new Error(JSON.stringify(parsed.issues));
   const options = planOptions(config, scenarioPlan(parsed.scenario), 'recorded');
   const lines: string[] = [];
-  runHeadless(options, (text) => lines.push(text));
-  return lines.slice(1);
+  const result = runHeadless(options, (text) => lines.push(text));
+  return { lines: lines.slice(1), result };
 }
 
 type Strategy = 'external-lane' | 'after-instant' | 'after-events';
@@ -316,9 +324,18 @@ describe('dispatch recording and headless replay (#236)', () => {
     expect(recorded.end).toBe(isoTime(later + 1));
     expect(recorded.actions).toEqual([{ kind: 'lot-block', at: isoTime(later), lot }]);
     expect(recorded.endAfterEvents).toBe(run.run.simulation.processed);
-    expect(replay(recorded)).toEqual(run.lines);
+    expect(recorded.stopAt).toBe(isoTime(run.run.simulation.now));
+    const { lines, result } = replayRun(recorded);
+    expect(lines).toEqual(run.lines);
+    // The summaries are taken at the stop, as the live ground truth is, not at the extended end.
+    const truth = run.run.groundTruth();
+    for (const [key, value] of Object.entries(result.summary)) {
+      expect(truth[key as keyof typeof truth], key).toEqual(value);
+    }
+    expect(truth.lineOee).toEqual(result.lineOee);
+    expect(truth.trace).toEqual(traceSection(result.trace));
     // Without the stop the replay runs on to `end`: the live log is only its prefix.
-    const longer = replay(without(recorded, 'endAfterEvents'));
+    const longer = replay(without(without(recorded, 'endAfterEvents'), 'stopAt'));
     expect(longer.length).toBeGreaterThan(run.lines.length);
     expect(longer.slice(0, run.lines.length)).toEqual(run.lines);
   });
@@ -592,6 +609,51 @@ describe('dispatch recording and headless replay (#236)', () => {
       expect(run([{ ...ofDispatch(0), afterEvents: 3 }])).toThrow(
         /both acceptedAt and afterEvents/,
       );
+    });
+
+    it('refuses a recorded stop before a recorded dispatch, and a run already past the stop', () => {
+      const list = [base()];
+      const stopped = (events: number, at: SimTime) => () =>
+        runHeadless({ ...options(list), endAfterEvents: events, stopAt: at }, () => undefined);
+      expect(stopped(9, orders.start + 40 * MINUTE)).toThrow(/after the recorded stop/);
+      expect(stopped(10, orders.start + 20 * MINUTE)).toThrow(/after the recorded stop/);
+      expect(stopped(10, orders.start + 2 * 60 * MINUTE)).toThrow(/stopAt .* is outside the run/);
+      expect(() => runHeadless({ ...options([]), endAfterEvents: 3 }, () => undefined)).toThrow(
+        /both stopAt and endAfterEvents/,
+      );
+      // A simulation already past the stop (a direct call without the checks).
+      const simulation = new Simulation<LineEvent>(orders.start);
+      simulation.schedule(orders.start, {} as LineEvent);
+      simulation.schedule(orders.start, {} as LineEvent);
+      simulation.step(() => undefined);
+      simulation.step(() => undefined);
+      expect(() => {
+        stopAtRecorded(simulation, 1, orders.start, () => undefined);
+      }).toThrow(/has processed 2 events already/);
+    });
+
+    it('refuses an inputOrder that does not name each injection and action once', () => {
+      const injection = { machine: 'cnc-01', code: 'COOLANT-PRESSURE', at: orders.start + 7 };
+      const lot = config.stock.lots[0]?.id ?? '';
+      const action = { kind: 'lot-block' as const, lot, at: orders.start + 11 };
+      const headless = (inputOrder: ('injection' | 'action')[]) => () =>
+        runHeadless(
+          { ...options([]), injections: [injection], actions: [action], inputOrder },
+          () => undefined,
+        );
+      expect(headless(['action'])).toThrow(/name each injection and each action once/);
+      expect(headless(['action', 'action'])).toThrow(/more actions than the run has/);
+      expect(headless(['injection', 'injection'])).toThrow(/more injections than the run has/);
+      expect(headless(['action', 'injection'])).not.toThrow();
+    });
+
+    it('--end drops the recorded stop', () => {
+      const run = { ...options([]), endAfterEvents: 5, stopAt: orders.start + MINUTE };
+      const cut = withEarlierEnd(run, orders.start + 30 * MINUTE);
+      expect(cut.end).toBe(orders.start + 30 * MINUTE);
+      expect(cut.endAfterEvents).toBeUndefined();
+      expect(cut.stopAt).toBeUndefined();
+      expect(() => runHeadless(cut, () => undefined)).not.toThrow();
     });
 
     it('refuses a duplicate recorded command', () => {

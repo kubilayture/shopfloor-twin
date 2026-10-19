@@ -197,9 +197,15 @@ export const scenarioSchema = z
     end: instant.optional(),
     /**
      * A recorded run (#236 review): the replay stops once it has processed exactly this many events,
-     * where the live run stood, so the two logs are equal line for line.
+     * where the live run stood, so the two logs are equal line for line. With `stopAt`.
      */
     endAfterEvents: z.number().int().min(0).optional(),
+    /**
+     * A recorded run (#236 re-review): the live run's simulation time at the stop, with
+     * `endAfterEvents`. The replay's clock ends there and its summaries are taken there, as the live
+     * ground truth is.
+     */
+    stopAt: instant.optional(),
     /**
      * The `configSha256` of the run a recording was made from (#236 review): checked against the
      * configuration the replay loads. Its presence marks a recorded document (`MAX_RECORDED_ENTRIES`).
@@ -246,6 +252,13 @@ export const scenarioSchema = z
           });
         }
       }
+    }
+    if ((scenario.stopAt === undefined) !== (scenario.endAfterEvents === undefined)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['stopAt'],
+        message: 'a recorded stop has both stopAt and endAfterEvents, or neither',
+      });
     }
     if (scenario.inputOrder !== undefined) {
       const count = (kind: (typeof INPUT_KINDS)[number]) =>
@@ -368,8 +381,10 @@ export interface ScenarioPlan {
   readonly actions: readonly ActionSpec[];
   /** Recorded (#236 review): the injections and actions interleaved in acceptance order. */
   readonly inputOrder?: readonly (typeof INPUT_KINDS)[number][];
-  /** Recorded (#236 review): stop after exactly this many events. */
+  /** Recorded (#236 review): stop after exactly this many events, with `stopAt`. */
   readonly endAfterEvents?: number;
+  /** Recorded (#236 re-review): the simulation time of the stop. */
+  readonly stopAt?: number;
   /** Recorded (#236 review): the configuration hash the replay must match. */
   readonly configSha256?: string;
   readonly infrastructure: readonly InfrastructureSpec[];
@@ -554,6 +569,7 @@ export function scenarioPlan(scenario: Scenario): ScenarioPlan {
     actions,
     ...(scenario.inputOrder === undefined ? {} : { inputOrder: scenario.inputOrder }),
     ...(scenario.endAfterEvents === undefined ? {} : { endAfterEvents: scenario.endAfterEvents }),
+    ...(scenario.stopAt === undefined ? {} : { stopAt: ms(scenario.stopAt) }),
     ...(scenario.configSha256 === undefined ? {} : { configSha256: scenario.configSha256 }),
     infrastructure,
     origins,
@@ -606,7 +622,17 @@ export function checkScenarioPlan(
       message: 'dispatches need production mode "orders"',
     });
   }
-  issues.push(...recordedDispatchIssues(plan.dispatches, start, end, origins.dispatches));
+  issues.push(
+    ...recordedDispatchIssues(
+      plan.dispatches,
+      start,
+      end,
+      origins.dispatches,
+      plan.stopAt === undefined || plan.endAfterEvents === undefined
+        ? undefined
+        : { at: plan.stopAt, events: plan.endAfterEvents },
+    ),
+  );
   const equipment = config.plant.areas.flatMap((area) =>
     area.workCenters.flatMap((workCenter) => workCenter.equipment),
   );
@@ -652,7 +678,9 @@ export function checkScenarioPlan(
 /**
  * The order rules of recorded dispatches (#236): every dispatch given at the start comes before
  * every recorded one, and recorded ones are in acceptance order (neither the time nor the event
- * count goes back) inside the run `[start, end)`. Shared with the headless run's own checks.
+ * count goes back) inside the run `[start, end)`; with a recorded stop (`stopAt`,
+ * `endAfterEvents`, #236 re-review), the stop is inside the run and no dispatch comes after it.
+ * Shared with the headless run's own checks.
  */
 export function recordedDispatchIssues(
   dispatches: readonly {
@@ -662,8 +690,15 @@ export function recordedDispatchIssues(
   start: number,
   end: number,
   paths: readonly string[] = [],
+  stop?: { readonly at: number; readonly events: number },
 ): { path: string; message: string }[] {
   const issues: { path: string; message: string }[] = [];
+  if (stop && (stop.at < start || stop.at >= end)) {
+    issues.push({
+      path: 'stopAt',
+      message: `stopAt ${iso(stop.at)} is outside the run [start, end)`,
+    });
+  }
   let previous: { at: number; events: number } | undefined;
   dispatches.forEach((dispatch, index) => {
     const path = paths[index] ?? `dispatches[${String(index)}]`;
@@ -691,6 +726,12 @@ export function recordedDispatchIssues(
       });
     }
     previous = { at: acceptedAt, events: afterEvents };
+    if (stop && (acceptedAt > stop.at || afterEvents > stop.events)) {
+      issues.push({
+        path,
+        message: `a recorded dispatch after the recorded stop (${String(stop.events)} events at ${iso(stop.at)})`,
+      });
+    }
   });
   return issues;
 }

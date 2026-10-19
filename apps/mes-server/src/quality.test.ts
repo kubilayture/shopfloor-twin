@@ -234,7 +234,7 @@ describe('quality: measurements, limit version 1 and episodes on final data (#20
   });
 
   it('derives a retest as new, not from its part’s first test; progress alone is not observed (#238)', async () => {
-    const h = await harness('retest-kind');
+    const h = await harness('retest_kind');
     // Part 1 fails and is reworked; parts 2–8 pass; part 1 comes back as seq 9 (pass 2).
     await h.cycle(1, 3.4, { partId: 1, result: 'rework' });
     for (let seq = 2; seq <= 8; seq++) await h.cycle(seq, 2.0 + (seq % 3) * 0.05);

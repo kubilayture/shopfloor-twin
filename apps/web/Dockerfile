@@ -28,13 +28,15 @@ RUN pnpm --filter @shopfloor/web build
 
 FROM nginxinc/nginx-unprivileged:1.30.6-alpine3.24 AS runtime
 # The server is a template (#237): the image's entrypoint renders it into conf.d at start with
-# SIM_CONTROL_TOKEN, the only variable substituted, after checking that the token is set.
+# SIM_CONTROL_TOKEN, the only variable substituted, after checking that the token is set (the
+# check script is executable in the repository; COPY keeps the mode, the classic builder has no
+# --chmod).
 ENV NGINX_ENVSUBST_FILTER=^SIM_CONTROL_TOKEN$
 RUN rm -f /etc/nginx/conf.d/default.conf
 COPY apps/web/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY apps/web/nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY apps/web/nginx/sim-proxy.conf /etc/nginx/snippets/sim-proxy.conf
-COPY --chmod=755 apps/web/nginx/15-require-sim-token.sh /docker-entrypoint.d/15-require-sim-token.sh
+COPY apps/web/nginx/15-require-sim-token.sh /docker-entrypoint.d/15-require-sim-token.sh
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 8080
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=12 \

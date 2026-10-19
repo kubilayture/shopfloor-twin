@@ -260,3 +260,12 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     - **(5)** unit-span gaps are looked up in each machine's current epoch and in the unit's run epoch when it differs; the line test stub honours epochs.
     - **(6)** an order's gaps include ASM-01 over its whole in-progress time.
     - **(7)** unit cases: PCK-01 scrap and rework cycles are not good packs; the revision is read through one ms past a span's end.
+  - **Gate after the review** on `55eed1b` (`GATE_PROJECT=gate232b`, `GATE_TAG=pr232b`, `TURBO_FORCE=1`, under the heavy lock), `GATE-OK`; free at the start: host 29.8 GiB, Docker 76.4 GiB. In its e2e run the order views' p95 stayed at or under 14.4 ms and the line reads' at or under 19.4 ms.
+
+    | Step      | Result | Time      | Notes                                   |
+    | --------- | ------ | --------- | --------------------------------------- |
+    | verify    | passed | 475.5 s   | `pnpm verify --concurrency=1`, uncached |
+    | golden    | passed | 1.6 s     | all four goldens byte-identical         |
+    | e2e       | passed | 1,254.8 s |                                         |
+    | smoke     | passed | 88 s      |                                         |
+    | reconcile | passed | 1,648.9 s | alarms OK, orders OK, quality OK        |

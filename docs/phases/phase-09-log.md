@@ -435,3 +435,12 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     - **(4, low)** client EKU: the servers' trust store is `ClientCertificateManager`, which refuses a chain whose leaf lacks `clientAuth` (`BadCertificateUseNotAllowed`; tested with a `serverAuth`-only certificate pinned by hand; `hasClientAuth` unit-tested on chains).
     - **(5, low)** a refused password answers after 250 ms (`isValidUserAsync` with a timer; 15 concurrent guesses take one wait, the event loop keeps ticking; tested); per-account and per-address throttling is carried to P9-15 (S5).
     - **(6, low)** `PKI_RENEW` with an unknown name exits 2 and changes nothing; the step prints `pki: !!! RENEWED … RESTART THE SIMULATOR AND THE GATEWAY … !!!` whenever it renews a certificate or changes trust; the runbook documents the automatic renewal at `up` and the restart it needs; the gateway's `OPCUA_GATEWAY_PASSWORD` takes the simulator's rule (16–512 characters, no whitespace).
+  - **After the review:** console run (`console239b`) 8 of 8, `CONSOLE-OK` in 62 s. Gate on `8395f7a` (`GATE_PROJECT=gate239b`, `GATE_TAG=pr239b`, `TURBO_FORCE=1`; `main` unmoved at `79ce261`, no rebase needed), `GATE-OK`; free at the start: host 35.7 GiB, Docker 73.4 GiB.
+
+    | Step      | Result | Time      | Notes                                                                                                             |
+    | --------- | ------ | --------- | ----------------------------------------------------------------------------------------------------------------- |
+    | verify    | passed | 518.6 s   | `pnpm verify --concurrency=1`, uncached                                                                           |
+    | golden    | passed | 1.7 s     | all four goldens byte-identical                                                                                   |
+    | e2e       | passed | 1,256.9 s |                                                                                                                   |
+    | smoke     | passed | 93.8 s    | `pki` first run 7 certificates, 20 pins, 901 ms; no variable writable (118 on five machines, every Write refused) |
+    | reconcile | passed | 1,657.8 s | alarms OK, orders OK, quality OK                                                                                  |

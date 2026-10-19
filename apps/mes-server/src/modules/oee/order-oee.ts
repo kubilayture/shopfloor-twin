@@ -557,9 +557,13 @@ export class OrderOee {
     // Units of the orders in each slice: the order's own (cycles, first-pass yield) and its
     // neighbours' (a lost `completed` fact recovered from the last cycle; a lost end).
     const slices = queues.map((queue) => ({ queue, ...orderSlice(queue, order.id) }));
+    // A neighbour's cycles matter only while its job has no `completed` fact (a lost completion
+    // recovered from its last cycle, a lost end): a completed neighbour's units aren't read (#232).
     const orderIds = new Set<string>([order.id]);
     for (const { queue, from, to } of slices) {
-      for (const c of queue.commands.slice(from, to)) orderIds.add(c.orderId);
+      for (const c of queue.commands.slice(from, to)) {
+        if (c.completedAt === null) orderIds.add(c.orderId);
+      }
     }
     const { unitsOf, cyclesOf } = await this.#unitsAndCycles(orderIds);
 

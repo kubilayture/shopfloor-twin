@@ -64,9 +64,11 @@ server {
     ssl_certificate_key /etc/nginx/tls/server-key.pem;
     # Mozilla's "modern" profile: TLS 1.3 only (its cipher suites are all AEAD with forward
     # secrecy; OpenSSL's defaults), the client's preference among them, no session tickets (their
-    # key would outlive a session), a small shared session cache for resumption.
+    # key would outlive a session), a small shared session cache for resumption. The hybrid
+    # post-quantum group X25519MLKEM768 first (OpenSSL 3.5 in the image; Chromium and Node 26
+    # negotiate it, #241 review), then the classical ones for any other client.
     ssl_protocols TLSv1.3;
-    ssl_ecdh_curve X25519:prime256v1:secp384r1;
+    ssl_ecdh_curve X25519MLKEM768:X25519:prime256v1:secp384r1;
     ssl_prefer_server_ciphers off;
     ssl_session_timeout 1d;
     ssl_session_cache shared:TLS:2m;

@@ -1663,6 +1663,46 @@ describe('console permission check and session use (#237)', () => {
     expect(await lastUsed(cookie)).toBe(clock);
   });
 
+  it("refuses an Origin whose scheme isn't the front's X-Forwarded-Proto, from the edge network only (#241 review)", async () => {
+    const password = passwords.get('c-operator') ?? '';
+    const write = (from: string, headers: Record<string, string>) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/session',
+        remoteAddress: from,
+        headers: { host, 'content-type': 'application/json', 'x-real-ip': '127.0.0.1', ...headers },
+        payload: JSON.stringify({ username: 'c-operator', password }),
+      });
+    const https = `https://${host}`;
+    // Through nginx: the browser's https Origin with nginx's X-Forwarded-Proto passes.
+    expect((await write(NGINX, { origin: https, 'x-forwarded-proto': 'https' })).statusCode).toBe(
+      200,
+    );
+    // The same host and port as http://, or no X-Forwarded-Proto at all: refused before the login.
+    for (const headers of [
+      { origin, 'x-forwarded-proto': 'https' },
+      { origin: https },
+      { origin: https, 'x-forwarded-proto': 'http, https' },
+    ]) {
+      const refused = await write(NGINX, headers);
+      expect(refused.statusCode, JSON.stringify(headers)).toBe(403);
+      expect(refused.json<{ type: string; detail: string }>()).toMatchObject({
+        type: PROBLEM_TYPES.writeOrigin,
+        detail: expect.stringMatching(/X-Forwarded-Proto/) as string,
+      });
+    }
+    // A read carrying an Origin is held to the same rule.
+    const read = await app.inject({
+      method: 'GET',
+      url: '/api/v1/session',
+      remoteAddress: NGINX,
+      headers: { host, origin, 'x-forwarded-proto': 'https', 'x-real-ip': '127.0.0.1' },
+    });
+    expect(read.statusCode).toBe(403);
+    // Outside the edge network the header isn't believed, so the scheme isn't judged (ADR-0023).
+    expect((await write(OUTSIDE, { origin, 'x-forwarded-proto': 'https' })).statusCode).toBe(200);
+  });
+
   it('counts proxied requests by whether they came over the edge network', async () => {
     const before = await registry.metrics();
     const value = (text: string, trusted: string): number =>

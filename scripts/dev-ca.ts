@@ -51,13 +51,21 @@ console.log(`stack:ca: wrote ${target}`);
 console.log(`  subject  ${ca.subject.replaceAll('\n', ', ')}`);
 console.log(`  valid    until ${new Date(ca.validTo).toISOString()}`);
 console.log(`  sha256   ${ca.fingerprint256}`);
-console.log('Trust it (it may sign only for localhost and 127.0.0.1: name constraints):');
 console.log(
-  `  macOS (Safari, Chrome):  security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db ${target}`,
+  'Trust it for TLS servers only (its name constraints cover TLS server names localhost and 127.0.0.1):',
+);
+console.log(
+  `  macOS (Safari, Chrome):  security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db ${target}`,
 );
 console.log(
   '  Firefox:                Settings > Privacy & Security > Certificates > View Certificates > Authorities > Import',
 );
 console.log(`  Node.js tools:          NODE_EXTRA_CA_CERTS=${target} node …`);
 console.log(`  curl:                   curl --cacert ${target} https://localhost:8443/healthz`);
+console.log(
+  '  Keychain Access instead: set only "Secure Sockets Layer (SSL)" to Always Trust, never "When using this certificate".',
+);
+console.log(
+  'It can vouch for every *.localhost name on any port: remove the trust when you are not using the project.',
+);
 console.log('Then open https://localhost:8443');

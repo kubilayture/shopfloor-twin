@@ -755,7 +755,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
           log('starting web');
           await stack.compose(['up', '--detach', '--wait', '--no-build', 'web']);
           // HTTPS (P9-14): the served certificate checked, the dev CA trusted, Chromium pinned.
-          const trust = await stack.webTrust();
+          const trust = await stack.webTrust({ sibling: true });
           webUrl = trust.url;
           browserTrust = trust.env;
           ordersReport.import = await checkImport(ctx);

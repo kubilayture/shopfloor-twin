@@ -144,7 +144,7 @@ try {
   const mesBase = await stack.url('mes', 4700);
   // HTTPS (P9-14): the served certificate checked against the pki step's; Playwright gets
   // NODE_EXTRA_CA_CERTS and Chromium the SPKI pin of this stack's certificate.
-  const trust = await stack.webTrust();
+  const trust = await stack.webTrust({ sibling: true });
   const web = trust.url;
   const simBase = await stack.url('simulator', 4800);
   await until('MES ready', () => new MesClient(mesBase).ready(), 60_000);

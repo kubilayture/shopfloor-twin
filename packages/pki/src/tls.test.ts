@@ -87,7 +87,11 @@ describe('ensureWebTls, the dev CA and the web certificate (ADR-0039)', () => {
     const caPem = await read(ca.certificateFile);
     const caCertificate = new X509Certificate(caPem);
     expect(caCertificate.ca).toBe(true);
-    expect(new Date(caCertificate.validTo).getTime() - Date.now()).toBeGreaterThan(1800 * DAY_MS);
+    // A year (#241 review), TLS servers only.
+    const caDays = (new Date(caCertificate.validTo).getTime() - Date.now()) / DAY_MS;
+    expect(caDays).toBeGreaterThan(364);
+    expect(caDays).toBeLessThan(366);
+    expect(inspectCertificate(caPem).extendedKeyUsages).toEqual([SERVER_AUTH]);
     expect((await stat(ca.privateKeyFile)).mode & 0o777).toBe(0o600);
     expect((await stat(join(options.ca, 'private'))).mode & 0o777).toBe(0o700);
     const authority = await certificateAuthorityFrom(caPem, await read(ca.privateKeyFile));
@@ -130,14 +134,20 @@ describe('ensureWebTls, the dev CA and the web certificate (ADR-0039)', () => {
     expect(actions(again)).toEqual([`${DEV_CA_IDENTITY}:kept`, `${WEB_IDENTITY}:kept`]);
     expect(again.webSpki).toBe(first.webSpki);
 
-    // 340 days on, the web certificate (365 days) is within 30 days of expiry; the CA isn't.
+    // 340 days on, both (a year each) are within 30 days of their end: a new CA and a new web.
     const later = await ensureWebTls({ ...options, now: new Date(Date.now() + 340 * DAY_MS) });
-    expect(actions(later)).toEqual([`${DEV_CA_IDENTITY}:kept`, `${WEB_IDENTITY}:renewed`]);
-    expect(later.identities[1]?.reason).toMatch(/within 30 days/);
+    expect(actions(later)).toEqual([`${DEV_CA_IDENTITY}:renewed`, `${WEB_IDENTITY}:renewed`]);
+    expect(later.identities[0]?.reason).toMatch(/within 30 days/);
     expect(later.webSpki).not.toBe(first.webSpki);
 
-    const renewedWeb = await ensureWebTls({ ...options, renew: ['web'] });
+    // A web certificate renewed alone never outlives its CA: both end together.
+    const sixMonths = new Date(Date.now() + 180 * DAY_MS);
+    const renewedWeb = await ensureWebTls({ ...options, renew: ['web'], now: sixMonths });
     expect(actions(renewedWeb)).toEqual([`${DEV_CA_IDENTITY}:kept`, `${WEB_IDENTITY}:renewed`]);
+    const caEnd = new X509Certificate(await read(devCaFiles(options.ca).certificateFile)).validTo;
+    const webEnd = new X509Certificate(await read(webTlsFiles(options.web).certificateFile))
+      .validTo;
+    expect(Date.parse(webEnd)).toBeLessThanOrEqual(Date.parse(caEnd));
 
     const renewedCa = await ensureWebTls({ ...options, renew: ['dev-ca'] });
     expect(actions(renewedCa)).toEqual([`${DEV_CA_IDENTITY}:renewed`, `${WEB_IDENTITY}:renewed`]);
@@ -171,16 +181,29 @@ describe('ensureWebTls, the dev CA and the web certificate (ADR-0039)', () => {
       reason: 'not issued by the current dev CA',
     });
 
-    // A CA the owner might have made by hand, without constraints: replaced (and so the web too).
+    // A CA the owner might have made by hand, without the EKU or without the constraints:
+    // replaced (and so the web too).
     const ca = devCaFiles(options.ca);
     await writeFile(ca.certificateFile, foreignCa.certificatePem);
     await writeFile(ca.privateKeyFile, foreignCa.privateKeyPem);
     const again = await ensureWebTls(options);
     expect(again.identities[0]).toMatchObject({
       action: 'renewed',
-      reason: 'name constraints differ',
+      reason: 'extended key usage missing',
     });
     expect(again.identities[1]?.action).toBe('renewed');
+    const unconstrained = await createCertificateAuthority({
+      commonName: 'unconstrained',
+      validityDays: 400,
+      now: new Date(),
+      extendedKeyUsages: [SERVER_AUTH],
+    });
+    await writeFile(ca.certificateFile, unconstrained.certificatePem);
+    await writeFile(ca.privateKeyFile, unconstrained.privateKeyPem);
+    expect((await ensureWebTls(options)).identities[0]).toMatchObject({
+      action: 'renewed',
+      reason: 'name constraints differ',
+    });
   });
 
   it("gives the web key nginx's group, readable by the group only (0640)", async () => {

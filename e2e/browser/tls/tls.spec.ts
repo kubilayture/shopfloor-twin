@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:https';
+import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { expect, test } from '@playwright/test';
 import { SECURE_SESSION_COOKIE } from '@shopfloor/contracts/identity';
@@ -16,6 +18,9 @@ import { account, logIn } from '../login.ts';
  *   no Strict-Transport-Security header;
  * - a certificate other than the stack's, valid for the same names but of another key and CA, is
  *   refused by the same browser: the pin accepts one key, not "any certificate";
+ * - so is one of the stack's own dev CA for the same names with another key (#241 review), minted
+ *   by the harness inside the `pki` container (RECONCILE_WEB_SIBLING): the pin is the leaf's key,
+ *   not the CA;
  * - plain HTTP to the web's port is answered 400 by nginx, with no redirect;
  * - a login sets `__Host-sft_session` with `Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/` and no
  *   `Domain`.
@@ -25,6 +30,19 @@ const pin = process.env[WEB_SPKI_ENV] ?? '';
 let foreign: Server | undefined;
 let foreignUrl = '';
 let foreignSpki = '';
+const siblingDir = process.env.RECONCILE_WEB_SIBLING ?? '';
+let sibling: Server | undefined;
+let siblingUrl = '';
+let siblingSpki = '';
+
+/** An HTTPS server on 127.0.0.1 presenting this certificate; resolves with its URL. */
+async function serve(key: string, cert: string): Promise<{ server: Server; url: string }> {
+  const server = createServer({ key, cert }, (_request, response) => {
+    response.end('<p>not the stack</p>');
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  return { server, url: `https://127.0.0.1:${String((server.address() as AddressInfo).port)}/` };
+}
 
 test.beforeAll(async () => {
   test.skip(web === '' || pin === '', 'runs inside pnpm test:reconcile or pnpm test:console');
@@ -43,18 +61,23 @@ test.beforeAll(async () => {
     now,
   });
   foreignSpki = spkiSha256(material.certificatePem);
-  foreign = createServer(
-    { key: material.privateKeyPem, cert: material.certificatePem },
-    (_request, response) => {
-      response.end('<p>not the stack</p>');
-    },
-  );
-  await new Promise<void>((done) => foreign?.listen(0, '127.0.0.1', done));
-  foreignUrl = `https://127.0.0.1:${String((foreign.address() as AddressInfo).port)}/`;
+  ({ server: foreign, url: foreignUrl } = await serve(
+    material.privateKeyPem,
+    material.certificatePem,
+  ));
+  if (siblingDir !== '') {
+    const cert = readFileSync(join(siblingDir, 'sibling.pem'), 'utf8');
+    siblingSpki = spkiSha256(cert);
+    ({ server: sibling, url: siblingUrl } = await serve(
+      readFileSync(join(siblingDir, 'sibling-key.pem'), 'utf8'),
+      cert,
+    ));
+  }
 });
 
 test.afterAll(() => {
   foreign?.close();
+  sibling?.close();
 });
 
 test("the page comes over TLS 1.3 with the pki step's certificate, without HSTS", async ({
@@ -74,6 +97,14 @@ test("the page comes over TLS 1.3 with the pki step's certificate, without HSTS"
 test('the same browser refuses a certificate other than the stack’s', async ({ page }) => {
   expect(foreignSpki).not.toBe(pin);
   await expect(page.goto(foreignUrl)).rejects.toThrow(/net::ERR_CERT_AUTHORITY_INVALID/);
+});
+
+test("the same browser refuses a certificate of the stack's own dev CA with another key", async ({
+  page,
+}) => {
+  expect(siblingDir, 'RECONCILE_WEB_SIBLING (the harness mints it)').not.toBe('');
+  expect(siblingSpki).not.toBe(pin);
+  await expect(page.goto(siblingUrl)).rejects.toThrow(/net::ERR_CERT_AUTHORITY_INVALID/);
 });
 
 test('plain HTTP to the web port is answered 400, without a redirect', async () => {

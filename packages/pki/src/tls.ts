@@ -23,6 +23,7 @@ import { RENEW_WITHIN_DAYS, type IdentityResult } from './exchange.ts';
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const SERVER_AUTH = '1.3.6.1.5.5.7.3.1';
 
 /** The identity names of `PKI_RENEW` this module answers. */
 export const DEV_CA_IDENTITY = 'dev-ca';
@@ -43,8 +44,11 @@ export const DEV_CA_PERMITTED: PermittedNames = {
   ipv4Addresses: WEB_IP_ADDRESSES,
 };
 
-/** The dev CA's validity: the owner trusts it once per stack, so longer than the leaf's. */
-export const DEV_CA_VALIDITY_DAYS = 1825;
+/**
+ * The dev CA's validity (#241 review: a year, not five): renewed by the step like every other
+ * certificate, the web certificate with it; the owner then trusts the new one.
+ */
+export const DEV_CA_VALIDITY_DAYS = 365;
 /** The web certificate's validity (below Apple's 825-day limit for TLS server certificates). */
 export const WEB_VALIDITY_DAYS = 365;
 
@@ -153,6 +157,8 @@ export async function ensureWebTls(options: EnsureWebTlsOptions): Promise<Ensure
       validityDays: caValidityDays,
       now,
       permitted: DEV_CA_PERMITTED,
+      // TLS servers only (#241 review): a chain through this CA serves no other purpose.
+      extendedKeyUsages: [SERVER_AUTH],
     });
     await writeAtomically(caPaths.privateKeyFile, ca.privateKeyPem, 0o600);
     await writeAtomically(caPaths.certificateFile, ca.certificatePem, 0o644);
@@ -172,11 +178,13 @@ export async function ensureWebTls(options: EnsureWebTlsOptions): Promise<Ensure
     // The group and mode follow the options also for a kept key.
     await setKeyAccess(webPaths.privateKeyFile, keyMode, options.keyGroup);
   } else {
+    // Never past the CA's own end: both are then renewed together (a new CA brings a new leaf).
+    const caDaysLeft = Math.floor((ca.certificate.notAfter.getTime() - now.getTime()) / DAY_MS);
     const material = await issueTlsServerCertificate(ca, {
       commonName: 'shopfloor-twin web',
       dnsNames: WEB_DNS_NAMES,
       ipAddresses: WEB_IP_ADDRESSES,
-      validityDays,
+      validityDays: Math.min(validityDays, caDaysLeft),
       now,
     });
     await writeAtomically(
@@ -234,6 +242,10 @@ async function whyReplaceCa(files: DevCaFiles, now: Date): Promise<string | unde
     const pem = await readFile(files.certificateFile, 'utf8');
     const certificate = new X509Certificate(pem);
     if (!certificate.ca) return 'not a CA certificate';
+    const usages = inspectCertificate(pem).extendedKeyUsages;
+    if (usages.length !== 1 || usages[0] !== SERVER_AUTH) {
+      return `extended key usage ${usages.join(', ') || 'missing'}`;
+    }
     if (expiresSoon(new Date(certificate.validTo), now)) {
       return `expires ${new Date(certificate.validTo).toISOString()}, within ${String(RENEW_WITHIN_DAYS)} days`;
     }
@@ -296,8 +308,6 @@ async function whyReplaceWeb(
   }
   return undefined;
 }
-
-const SERVER_AUTH = '1.3.6.1.5.5.7.3.1';
 
 async function setKeyAccess(path: string, mode: number, group: number | undefined): Promise<void> {
   // Group before mode: the key is never group-readable by a group other than nginx's.

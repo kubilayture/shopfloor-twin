@@ -57,6 +57,8 @@ function handshake({ servername, ca, maxVersion } = {}) {
       const result = {
         certificate: socket.getPeerX509Certificate(),
         protocol: socket.getProtocol(),
+        // The key exchange group (X25519MLKEM768 first on the server, #241 review), informative.
+        group: socket.getEphemeralKeyInfo()?.name ?? 'unknown',
       };
       socket.end();
       resolve(result);
@@ -65,6 +67,7 @@ function handshake({ servername, ca, maxVersion } = {}) {
   });
 }
 const expected = new X509Certificate(readFileSync(process.env.SMOKE_WEB_CERT));
+let group = 'unknown';
 for (const servername of ['localhost', undefined]) {
   const shake = await handshake({ servername });
   const name = servername ?? base.hostname;
@@ -75,6 +78,7 @@ for (const servername of ['localhost', undefined]) {
     );
   }
   if (shake.protocol !== 'TLSv1.3') fail(`the web negotiated ${shake.protocol}`);
+  group = shake.group;
 }
 const old = await handshake({ servername: 'localhost', maxVersion: 'TLSv1.2' });
 if (!old.error) fail(`the web accepted ${old.protocol}`);
@@ -87,7 +91,7 @@ if (otherName.error !== 'ERR_TLS_CERT_ALTNAME_INVALID') {
   fail(`the web's certificate for another name: ${otherName.error ?? 'accepted'}`);
 }
 console.log(
-  `ok: TLS 1.3 with the pki step's certificate (${expected.fingerprint256.slice(0, 23)}…) as localhost and ${base.hostname}; TLS 1.2, another name and no dev CA refused`,
+  `ok: TLS 1.3 with the pki step's certificate (${expected.fingerprint256.slice(0, 23)}…) as localhost and ${base.hostname}, group ${group}; TLS 1.2, another name and no dev CA refused`,
 );
 
 // The app shell, client-side routes and the headers nginx adds.

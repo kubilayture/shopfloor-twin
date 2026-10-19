@@ -82,13 +82,16 @@ export function nameConstraintsExtension(names: PermittedNames): x509.Extension 
 
 /**
  * A self-signed CA certificate (`keyCertSign`, `cRLSign`, CA:true, path length 0) and its key;
- * with `permitted`, a critical name constraints extension limiting what it may sign for.
+ * with `permitted`, a critical name constraints extension limiting what it may sign for; with
+ * `extendedKeyUsages`, an extended key usage extension limiting the purposes of its chain
+ * (OpenSSL and Node honour it on a CA; macOS needs the trust setting `-p ssl` besides, ADR-0039).
  */
 export async function createCertificateAuthority(options: {
   readonly commonName: string;
   readonly validityDays: number;
   readonly now: Date;
   readonly permitted?: PermittedNames;
+  readonly extendedKeyUsages?: readonly string[];
 }): Promise<CertificateAuthority> {
   const keys = (await crypto.subtle.generateKey(ALGORITHM, true, ['sign', 'verify'])) as KeyPair;
   const certificate = await x509.X509CertificateGenerator.createSelfSigned({
@@ -106,6 +109,9 @@ export async function createCertificateAuthority(options: {
       ),
       await x509.SubjectKeyIdentifierExtension.create(keys.publicKey),
       ...(options.permitted === undefined ? [] : [nameConstraintsExtension(options.permitted)]),
+      ...(options.extendedKeyUsages === undefined
+        ? []
+        : [new x509.ExtendedKeyUsageExtension([...options.extendedKeyUsages], false)]),
     ],
   });
   return {

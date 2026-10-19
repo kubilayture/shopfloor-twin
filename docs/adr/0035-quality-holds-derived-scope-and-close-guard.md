@@ -31,7 +31,7 @@ Chosen: 1b, 2c, 3b, 4b, 5b.
 
 A hold is on a lot, a serial (every unit with it: serials repeat across runs, ADR-0034), a carton or an order (its ERP order number, the MES's order id). Its scope is never listed by hand: `Genealogy.scope(subject)` answers the units the subject covers now (a lot: every unit with a `lot-unit` link to it at any operation and pass; a serial: its units; a carton: its members; an order: its units), each with its order and carton. A unit that consumes a held lot after the opening, or whose fact arrives late, joins the scope as soon as genealogy has its link.
 
-`quality.hold_unit` is a copy of the scope for reads (detail pages, trace answers, a carton's `held` flag): rebuilt every round (1 s) while the hold is open or rejected, kept as it stood once released, each unit with the wall time it joined. **No decision reads it**: the close guard derives the scope itself (below).
+`quality.hold_unit` is a copy of the scope for reads (detail pages, trace answers, a carton's `held` flag): rebuilt while the hold is open or rejected (every round, 1 s, until #238; on a genealogy change or a hold transition since, see the amendment below), kept as it stood once released, each unit with the wall time it joined. **No decision reads it**: the close guard derives the scope itself (below).
 
 Each hold stores `opened_plant_at`, the plant clock (the newest epoch's watermark) at the opening, and that epoch, `opened_epoch` (review round 1, MEDIUM 9; scripted golden holds pass both explicitly). "After the opening" compares positions, not bare times (review of PR #222, L1): a consumption in a newer device epoch is after it, one in an older epoch before it, one in the same epoch after it when its plant time is later; a release keeps its `decided_epoch` the same way. A consumption of a held lot after it (and before a release; a rejected lot stays blocked) raises `held-material-consumed` (`quality.hold_incident`, one per fact, lot and hold): the line kept using a held lot, which the MES can see but not stop. A released hold is still checked for consumptions before its release, so a late fact of that span is recorded too. Without a plant clock (no fact yet) `opened_plant_at` is null and every consumption counts as after it.
 
@@ -95,7 +95,7 @@ This amendment replaces the negative consequence above: "every open, rejected an
   - after a genealogy round that rebuilt units or rewrote an order's cartons (`Genealogy.onChange`). This event now also fires on a carton rewrite, because a carton's members form a scope;
   - after a hold opens or is decided.
 - **Scheduling.**
-  - Changes heard during a rebuild are coalesced into one more rebuild. A failed rebuild is retried after a second.
+  - Changes heard during a rebuild are coalesced into one more rebuild. A failed rebuild is retried every second until one succeeds, and it drops the copies kept in memory (a failure at COMMIT may or may not have committed), so the next rebuild reads them again.
   - Genealogy notifies its listeners after the round is timed, inside its own queue. The holds module defers its rebuild into its own queue with a `setTimeout`, so the round never waits for it.
   - With `HoldsOptions.follow: false`, only `tick()` remains, and it rebuilds immediately. Tests that drive rounds by hand use it.
 - **Every hold at once.** A rebuild takes the same few queries whatever the number of holds:

@@ -150,12 +150,12 @@ Phase 9 (plan "Derived-work costs", exit criterion 8) adds the incremental deriv
   - a moved reading treated as unchanged;
   - an MR point reused one reading early.
 - **The MES side.**
-  - The `quality` module keeps one derivation per characteristic. `#store` queues the changed readings, and the derivation applies them when the characteristic is derived. A limit write or version 1 replaces the versions.
+  - The `quality` module keeps one derivation per characteristic. `#store` queues the changed readings (a reading of a rebuilt part that is still there is an upsert, not a removal, so an unchanged one is no change and a retest does not resume the chart at its part's first test), and `#derive` applies the queue to the derivation inside its timed section. A limit write or version 1 replaces the versions.
   - These are unchanged, because they read the same chart: episodes, `planSignals`, finality, withdrawal (`WITHDRAWN_FINAL`, `WITHDRAWN_PROVISIONAL`, `WITHDRAWN_VERSION`), `baseline-changed` and `control_limit`.
   - The golden reconciliation now also checks the served chart on every tick of partial data (in order, in bounded disorder, and shuffled with duplicates). It must equal `spcChart` over the stored measurements.
   - `quality-01`, `orders-01` and `week-01` still equal `trace.json`.
 - **Histograms.** Both use the derived-work bucket edges (1, 2.5, 5, 10, 20, 25, 50, 100, 250 ms, 0.5 s, 1 s), defined in `apps/mes-server/src/metrics.ts`.
-  - `mes_quality_spc_derive_seconds{kind}` times one derivation, including the database rewrite of the episodes. `new` means it only appended at the end of the chart, or changed no charted reading. `late` means it resumed inside the chart or derived it whole (a version write, or the first derivation after a start).
+  - `mes_quality_spc_derive_seconds{kind}` times one derivation, including the database rewrite of the episodes. It is observed only for a derivation that applied a reading or limit change; one on the tester's progress alone is not observed. `new` means it only appended at the end of the chart, or changed retests only. `late` means it resumed inside the chart or derived it whole (a version write, or the first derivation after a start).
   - `mes_quality_chart_read_seconds` times building one chart route body from the derivation in memory, without serialization.
   - `QualityOptions.onTiming` receives every raw timing. The budget tests compute their percentiles from these, not from buckets.
 - **Measurement method** (`quality-spc.e2e.test.ts`, "derived-work budgets"; a local TimescaleDB container, run under the heavy lock):

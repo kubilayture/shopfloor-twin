@@ -43,6 +43,7 @@ import {
   type CharacteristicConfig,
   type DerivedSignal,
   type QualityChange,
+  type QualityTiming,
   type SignalRecord,
 } from './modules/quality/index.ts';
 import type { ApiSources } from './modules/realtime/index.ts';
@@ -105,6 +106,8 @@ interface Harness {
   readonly ingest: Ingest;
   quality: Quality;
   readonly changes: QualityChange[];
+  /** Every raw timing the module reported (#238). */
+  readonly timings: QualityTiming[];
   readonly clock: { now: number };
   /** The leak tester's cycle with this seq (part = seq unless given), a reading in Pa/min. */
   cycle(
@@ -144,6 +147,7 @@ async function harness(name: string, options: { gapGraceMs?: number } = {}): Pro
   });
   const feed = new UnsFeed(paths);
   const changes: QualityChange[] = [];
+  const timings: QualityTiming[] = [];
   const make = async (): Promise<Quality> => {
     const quality = new Quality({
       db,
@@ -151,6 +155,7 @@ async function harness(name: string, options: { gapGraceMs?: number } = {}): Pro
       characteristics: [SMALL],
       clock: () => new Date(clock.now),
       tickMs: 0,
+      onTiming: (t) => timings.push(t),
     });
     quality.onChange((change) => changes.push(change));
     await quality.start();
@@ -162,6 +167,7 @@ async function harness(name: string, options: { gapGraceMs?: number } = {}): Pro
     ingest,
     quality: await make(),
     changes,
+    timings,
     clock,
     cycle: async (seq, value, o = {}) => {
       const d = feed.cycle('lkt-01', E1, seq, T0 + seq * MINUTE, {
@@ -225,6 +231,30 @@ describe('quality: measurements, limit version 1 and episodes on final data (#20
     expect(view?.retests.map((r) => [r.partId, r.pass])).toEqual([[1, 2]]);
     expect(await h.quality.measurements('nope')).toBeUndefined();
     expect(await h.quality.chart('nope')).toBeUndefined();
+  });
+
+  it('derives a retest as new, not from its part’s first test; progress alone is not observed (#238)', async () => {
+    const h = await harness('retest-kind');
+    // Part 1 fails and is reworked; parts 2–8 pass; part 1 comes back as seq 9 (pass 2).
+    await h.cycle(1, 3.4, { partId: 1, result: 'rework' });
+    for (let seq = 2; seq <= 8; seq++) await h.cycle(seq, 2.0 + (seq % 3) * 0.05);
+    await h.tick();
+    const kinds = () => h.timings.flatMap((t) => (t.metric === 'spc-derive' ? [t.kind] : []));
+    h.timings.length = 0;
+    await h.cycle(9, 2.1, { partId: 1, result: 'good' });
+    await h.tick();
+    expect(kinds()).toEqual(['new']);
+    // A tick with nothing new derives nothing and observes nothing.
+    h.timings.length = 0;
+    await h.tick();
+    expect(kinds()).toEqual([]);
+    // A late first-pass reading (seq 10 held back, 11 delivered first) is late.
+    await h.cycle(11, 2.0);
+    await h.tick();
+    h.timings.length = 0;
+    await h.cycle(10, 2.05);
+    await h.tick();
+    expect(kinds()).toEqual(['late']);
   });
 
   it('estimates version 1 once the baseline is final, at its last reading, and judges it retroactively', async () => {
@@ -795,11 +825,18 @@ describe('quality: the API (#200)', () => {
         url,
         headers: { ...headers, cookie, 'if-none-match': etag },
       });
-    // The same query: 304. Another query is another representation: its own tag, 200.
+    // The same query: 304. Another query is another representation: its own tag, 200. Every
+    // body built is one `mes_quality_chart_read_seconds` observation; a 304 builds none (#238).
+    const reads = () => h.timings.filter((t) => t.metric === 'chart-read');
+    const before = reads().length;
+    expect(before).toBeGreaterThan(0);
     const again = await conditional('/api/v1/quality/characteristics/leak-rate/chart?all=true');
     expect([again.statusCode, again.body]).toEqual([304, '']);
+    expect(reads()).toHaveLength(before);
     const other = await conditional('/api/v1/quality/characteristics/leak-rate/chart');
     expect(other.statusCode).toBe(200);
+    expect(reads()).toHaveLength(before + 1);
+    expect(reads().at(-1)).toMatchObject({ characteristic: 'leak-rate' });
     expect(String(other.headers.etag)).not.toBe(etag);
     const measurements = measurementListSchema.parse(
       await get('/api/v1/quality/characteristics/leak-rate/measurements'),

@@ -1163,7 +1163,8 @@ export class Holds {
         if (!this.#due || this.#stopping) return;
         await this.#rebuild();
       }).catch((error: unknown) => {
-        // Retried after a second (a lost connection): the scopes stay as they were meanwhile.
+        // Retried every second until a rebuild succeeds (a lost connection): the scopes stay as
+        // they were meanwhile.
         this.#log.error({ err: error }, 'holds: rebuilding the scopes failed');
         this.#soon(1_000);
       });
@@ -1177,6 +1178,17 @@ export class Holds {
    * lot's consumptions and known incidents; then one transaction for the changed copies.
    */
   async #rebuild(): Promise<void> {
+    try {
+      await this.#rebuildScopes();
+    } catch (error) {
+      // A failed rebuild may have committed or not (a connection lost at COMMIT): the copies in
+      // memory are read again from the database by the next one.
+      this.#copies.clear();
+      throw error;
+    }
+  }
+
+  async #rebuildScopes(): Promise<void> {
     this.#due = false;
     const started = performance.now();
     const holds = await this.#db

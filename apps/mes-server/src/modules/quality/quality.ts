@@ -446,7 +446,7 @@ export class Quality {
     if (registers.length > 0) {
       this.#derived = new Histogram({
         name: 'mes_quality_spc_derive_seconds',
-        help: 'One derivation of a characteristic’s charts and episodes, the database rewrite included; kind new (only appended at the end of the chart) or late (resumed inside it, or derived whole)',
+        help: 'One derivation of a characteristic’s charts and episodes after a reading or limit change, the database rewrite included; kind new (only appended at the end of the chart, or a retest) or late (resumed inside it, or derived whole); derivations on progress alone are not observed',
         labelNames: ['kind'] as const,
         buckets: [...DERIVED_WORK_BUCKETS],
         registers,
@@ -1240,7 +1240,9 @@ export class Quality {
       const reading = toReading(row);
       state.readings.set(key, reading);
       state.rows.set(key, row);
-      // Removed first and set again: the derivation sees an unchanged reading as no change.
+      // A reading of the part that is still there is an upsert, not a removal: the derivation
+      // skips an unchanged one, so a retest does not resume the chart at the part's first test.
+      state.removals.delete(key);
       state.upserts.set(key, reading);
     }
     if (before.length === 0 && after.length === 0) return;
@@ -1275,6 +1277,9 @@ export class Quality {
       }
     }
     // The chart resumed from the earliest changed reading (#238), whole after a version change.
+    // A derivation with no reading or version to apply (the tester's progress moved, a retry) is
+    // not a derivation of a reading: it is not observed.
+    const observed = state.upserts.size > 0 || state.removals.size > 0 || state.versionsChanged;
     const update = state.derivation.update({
       remove: [...state.removals],
       upsert: [...state.upserts.values()],
@@ -1295,14 +1300,16 @@ export class Quality {
     state.readingsChanged = false;
     state.earliest = null;
     state.progress = signature;
-    const seconds = (performance.now() - started) / 1_000;
-    this.#derived?.observe({ kind: update.kind }, seconds);
-    this.#options.onTiming?.({
-      metric: 'spc-derive',
-      kind: update.kind,
-      characteristic: config.id,
-      seconds,
-    });
+    if (observed) {
+      const seconds = (performance.now() - started) / 1_000;
+      this.#derived?.observe({ kind: update.kind }, seconds);
+      this.#options.onTiming?.({
+        metric: 'spc-derive',
+        kind: update.kind,
+        characteristic: config.id,
+        seconds,
+      });
+    }
     if (readingsChanged) this.#summarySoon(state);
   }
 

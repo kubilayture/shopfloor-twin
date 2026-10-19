@@ -38,7 +38,7 @@ import {
 export interface SpcChange {
   /** Readings added, or replacing the reading with the same key (every pass). */
   readonly upsert?: readonly Reading[];
-  /** Keys of readings removed (unknown keys are ignored). */
+  /** Keys of readings removed (unknown keys are ignored; a key also upserted is replaced). */
   readonly remove?: readonly string[];
   /** The limit versions now, when a version was created or ended: the chart is derived whole. */
   readonly versions?: readonly LimitVersion[];
@@ -229,7 +229,10 @@ export class SpcDerivation {
         touch(old);
       } else this.#retests = null;
     };
+    // A key both removed and upserted is replaced: an unchanged reading is no change.
+    const upserted = new Set((change.upsert ?? []).map((r) => r.key));
     for (const key of change.remove ?? []) {
+      if (upserted.has(key)) continue;
       const old = this.#all.get(key);
       leave(old);
       this.#all.delete(key);

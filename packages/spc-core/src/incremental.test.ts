@@ -167,10 +167,15 @@ describe('spc-core incremental derivation', () => {
         universeArb,
         rulesArb,
         fc.array(opArb, { minLength: 1, maxLength: 30 }),
-        (universe, rules, ops) => {
+        fc.integer({ min: 2, max: 5 }),
+        (universe, rules, ops, size) => {
           const held = new Map<string, Reading>();
           let versions: LimitVersion[] = [];
-          const derivation = new SpcDerivation({ rules, subgroupSize: SIZE });
+          const derivation = new SpcDerivation({ rules, subgroupSize: size });
+          // \`new\` exactly when the change only appended first-pass readings at the end.
+          const expectKind = (before: readonly Reading[], kind: string): void => {
+            expect(kind).toBe(appendedOnly(before, [...held.values()]) ? 'new' : 'late');
+          };
           let cursor = 0;
           const withheld: Reading[] = [];
           const mix = <T>(items: readonly T[], salt: number): T[] =>
@@ -190,9 +195,7 @@ describe('spc-core incremental derivation', () => {
                 withheld.push(...next.splice(0, op.holdBack));
                 const batch = op.release ? [...next, ...withheld.splice(0)] : next;
                 for (const r of batch) held.set(r.key, r);
-                const update = derivation.update({ upsert: batch });
-                if (!appendedOnly(before, [...held.values()])) expect(update.kind).toBe('late');
-                else expect(update.kind).toBe('new');
+                expectKind(before, derivation.update({ upsert: batch }).kind);
                 break;
               }
               case 'again': {
@@ -209,7 +212,7 @@ describe('spc-core incremental derivation', () => {
                   (op.pick % (keys.length + 1)) + op.count,
                 );
                 for (const key of gone) held.delete(key);
-                derivation.update({ remove: gone });
+                expectKind(before, derivation.update({ remove: gone }).kind);
                 break;
               }
               case 'change': {
@@ -224,12 +227,20 @@ describe('spc-core incremental derivation', () => {
                       ? { ...old, at: Math.max(0, old.at + op.by * 1000) }
                       : { ...old, pass: old.pass === 1 ? 2 : 1 };
                 held.set(changed.key, changed);
-                derivation.update({ upsert: [changed] });
+                // Now and then removed and upserted again in one change (as a part's rebuild).
+                const update =
+                  op.by % 2 === 0
+                    ? derivation.update({ remove: [changed.key], upsert: [changed] })
+                    : derivation.update({ upsert: [changed] });
+                expectKind(before, update.kind);
                 break;
               }
               case 'v1': {
                 if (versions.length > 0) break;
-                const v1 = firstVersion([...held.values()], BASELINE);
+                const v1 = firstVersion([...held.values()], {
+                  subgroupSize: size,
+                  baselineSubgroups: 4,
+                });
                 if (v1 === null) break;
                 versions = [v1];
                 versionsChanged = true;
@@ -245,7 +256,7 @@ describe('spc-core incremental derivation', () => {
                 const [lo, hi] = comparePositions(a, b) <= 0 ? [a, b] : [b, a];
                 let limits;
                 try {
-                  limits = estimateLimits(ordered, { from: lo, to: hi }, SIZE);
+                  limits = estimateLimits(ordered, { from: lo, to: hi }, size);
                 } catch {
                   break;
                 }
@@ -289,7 +300,7 @@ describe('spc-core incremental derivation', () => {
               readings: [...held.values()],
               versions,
               rules,
-              subgroupSize: SIZE,
+              subgroupSize: size,
             });
             expect(derivation.chart()).toEqual(whole);
           }
@@ -376,6 +387,55 @@ describe('spc-core incremental derivation', () => {
     expect(derivation.chart()).toEqual(
       spcChart({ readings, versions: [v1], rules: DEFAULT_RULES, subgroupSize: SIZE }),
     );
+  });
+
+  it('judges a kept point again when its run now starts at the first kept point', () => {
+    // Epoch 2 opens with x and eight readings above the centre: rule 2 fires at the eighth (nine
+    // in the run with x). Removing x makes the eight the whole run: the kept points' windows are
+    // all kept points, but the run is one shorter, so rule 2 no longer fires.
+    const baseline: Reading[] = Array.from({ length: 12 }, (_, i) => ({
+      key: `b${String(i).padStart(2, '0')}`,
+      epoch: 1,
+      at: i,
+      seq: i,
+      pass: 1,
+      value: i % 2 === 0 ? 1990 : 2010,
+    }));
+    const x: Reading = { key: 'x', epoch: 2, at: 100, seq: 0, pass: 1, value: 2005 };
+    const above: Reading[] = Array.from({ length: 8 }, (_, i) => ({
+      key: `s${String(i)}`,
+      epoch: 2,
+      at: 101 + i,
+      seq: 1 + i,
+      pass: 1,
+      value: 2005,
+    }));
+    const v1 = firstVersion(baseline, BASELINE);
+    if (v1 === null) throw new Error('no version 1');
+    const derivation = new SpcDerivation({
+      rules: DEFAULT_RULES,
+      subgroupSize: SIZE,
+      versions: [v1],
+      readings: [...baseline, x, ...above],
+    });
+    expect(derivation.chart().points.I.at(-1)?.rules).toContain(2);
+    expect(derivation.update({ remove: ['x'] }).kind).toBe('late');
+    expect(derivation.chart().points.I.at(-1)?.rules).not.toContain(2);
+    expect(derivation.chart()).toEqual(
+      spcChart({
+        readings: [...baseline, ...above],
+        versions: [v1],
+        rules: DEFAULT_RULES,
+        subgroupSize: SIZE,
+      }),
+    );
+    // Removed and upserted unchanged in one change: no change, nothing resumed.
+    const last = above.at(-1);
+    if (last === undefined) throw new Error('no reading');
+    expect(derivation.update({ remove: [last.key], upsert: [last] })).toMatchObject({
+      kind: 'new',
+      from: 20,
+    });
   });
 
   it('refuses what the whole derivation refuses', () => {

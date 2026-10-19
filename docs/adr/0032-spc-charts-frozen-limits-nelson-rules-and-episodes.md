@@ -158,22 +158,22 @@ Phase 9 (plan "Derived-work costs", exit criterion 8) adds the incremental deriv
   - `mes_quality_spc_derive_seconds{kind}` times one derivation, including the database rewrite of the episodes. It is observed only for a derivation that applied a reading or limit change; one on the tester's progress alone is not observed. `new` means it only appended at the end of the chart, or changed retests only. `late` means it resumed inside the chart or derived it whole (a version write, or the first derivation after a start).
   - `mes_quality_chart_read_seconds` times building one chart route body from the derivation in memory, without serialization.
   - `QualityOptions.onTiming` receives every raw timing. The budget tests compute their percentiles from these, not from buckets.
-- **Measurement method** (`quality-spc.e2e.test.ts`, "derived-work budgets"; a local TimescaleDB container, run under the heavy lock):
+- **Measurement method** (`quality-spc.e2e.test.ts`, "derived-work budgets"; a local TimescaleDB container, run under the heavy lock; the figures below are the gate run on `7f6c453`, `gate238b`):
   - 30 first-pass readings after the baseline, spread over the run, are held back.
   - The last 400 facts arrive one at a time; these give the new-reading timings.
   - Then each held-back reading arrives alone; these give the late-reading timings.
 
   | Run                                                       | New reading p50 / p95 / max | Late reading p50 / p95 / max | Default chart read p50 | Whole chart read p50 |
   | --------------------------------------------------------- | --------------------------- | ---------------------------- | ---------------------- | -------------------- |
-  | `week-01` (2,189 first-pass readings, 36 episodes)        | 0.1 / **1.9** / 2.5 ms      | 3.9 / **5.6** / 5.6 ms       | 4.3 ms (0.26 MB)       | 9.2 ms (1.05 MB)     |
-  | synthetic month (8,756 first-pass readings, 152 episodes) | 0.4 / **2.7** / 3.1 ms      | 7.9 / **11.5** / 12.4 ms     | **7.3 ms** (0.36 MB)   | 32.8 ms (4.3 MB)     |
+  | `week-01` (2,189 first-pass readings, 36 episodes)        | 0.1 / **1.8** / 2.6 ms      | 3.3 / **4.2** / 4.5 ms       | 4.0 ms (0.26 MB)       | 8.8 ms (1.05 MB)     |
+  | synthetic month (8,756 first-pass readings, 152 episodes) | 0.3 / **2.6** / 2.8 ms      | 7.5 / **10.0** / 10.0 ms     | **6.9 ms** (0.36 MB)   | 31.9 ms (4.3 MB)     |
   | budget                                                    | p95 ≤ 10 ms                 | p95 ≤ 20 ms                  | p50 ≤ 10 ms            |                      |
 
 - **Results.** All budgets are met, and the tests assert them.
   - The synthetic month is `week-01`'s leak tests four times over in one device epoch. Each copy is a week later than the one before, with parts and serials renumbered.
   - The month was not cut: its replay takes about 50 s.
   - On a month, a late reading's cost is mostly writing the episodes again: after it, the X̄ and R points belong to other subgroups, so their provisional episodes (about 30 at the start of the month) are deleted and inserted. The chart itself costs about 4–6 ms in `spc-core` for a reading 150 places into 9,000.
-  - The first gate run measured the month's late p95 at 21.9 ms, over budget. Three changes brought it to 11.5–12.1 ms in two runs:
+  - The first gate run measured the month's late p95 at 21.9 ms, over budget. Three changes brought it to 11.0 ms in the second gate run (`b942995`) and 10.0 ms in the third (`7f6c453`):
     - the episode updates of one derivation are now one `UPDATE … FROM jsonb_to_recordset` statement instead of one per row (the rows, row versions, `final_at` and the cleared withdrawal are written as before);
     - a subgroup's mean is the sum of its whole steps over the count, reduced once. This is the same fraction, so `trace.json` is unchanged;
     - the derivation places a few changed readings by binary search instead of sorting the chart's tail.

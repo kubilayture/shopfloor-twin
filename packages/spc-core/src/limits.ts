@@ -61,7 +61,8 @@ export function subgroupsOf(ordered: readonly Reading[], size: number): Subgroup
   return { complete, pending: tail, dropped };
 }
 
-function subgroup(readings: readonly Reading[]): Subgroup {
+/** One subgroup of consecutive readings of one segment (internal to `spc-core`). */
+export function subgroup(readings: readonly Reading[]): Subgroup {
   const values = readings.map((r) => r.value);
   const last = readings.at(-1);
   if (last === undefined) {

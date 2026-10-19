@@ -12,6 +12,9 @@
  *   first-pass readings are final, created at its last reading, never re-derived (a late reading
  *   inside it raises the `baseline-changed` notice); `createLimits` / `endLimits` (`spc:limits`,
  *   audited, 409 `limits-stale`).
+ * - The chart: `spc-core`'s `SpcDerivation` per characteristic, resumed from the earliest changed
+ *   reading (#238, `mes_quality_spc_derive_seconds{kind}`), whole after a limit version change;
+ *   chart reads observed in `mes_quality_chart_read_seconds`.
  * - Episodes (`quality.spc_signal`): derived by `spc-core` from the readings and the versions,
  *   `provisional` until the tester is final through the triggering point, `final` after,
  *   `withdrawn` when re-derived away (a final one only by a fact from a written-off gap);
@@ -29,7 +32,9 @@
  *   `Orders.enqueueErpMessage` in the same transaction.
  * - `closeGuard()`: the orders module's `CloseGuard` (genealogy's watermark, then the scope derived
  *   at check time from the open holds' subjects and the genealogy links).
- * - `tick()`: the scope copy (`hold_unit`) and `held-material-consumed`; `onChange` for push.
+ * - The scope copy (`hold_unit`) and `held-material-consumed`, rebuilt for every hold at once on a
+ *   genealogy change and on an opening or decision (#238, `mes_quality_hold_scope_seconds`; no
+ *   timer); `tick()` rebuilds them now; `onChange` for push.
  * - Reads: `list`, `hold`, `detail`, `incidents`, `holdsOn(units, subjects)` (trace answers and
  *   carton `held`), `suggestion(signalId)`, `reasons()`.
  */
@@ -76,6 +81,7 @@ export type {
   QualityIngest,
   QualityLog,
   QualityOptions,
+  QualityTiming,
   QualityWriteContext,
   SignalRecord,
 } from './quality.ts';
@@ -94,6 +100,7 @@ export type {
   HoldsIngest,
   HoldsLog,
   HoldsOptions,
+  LotConsumptionRef,
   HoldsOrders,
 } from './holds.ts';
 export { windowOf } from './quality.ts';

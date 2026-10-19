@@ -34,6 +34,7 @@ export type QualityApi = Pick<
   | 'characteristic'
   | 'chart'
   | 'chartTag'
+  | 'observeChartRead'
   | 'measurements'
   | 'signals'
   | 'createLimits'
@@ -160,6 +161,7 @@ export function qualityRoutes(
       etag: true,
     },
     async ({ params, query, request, reply }) => {
+      const started = performance.now();
       const quality = deps.quality();
       // The tag names the derivation and the normalized query (`all`, `from`, `to`).
       const variant = [
@@ -176,11 +178,14 @@ export function qualityRoutes(
       }
       const view = await quality.chart(params.id);
       if (!view) throw new HttpProblem(404, `no characteristic ${params.id}`);
-      return spcChartDto(view, {
+      const body = spcChartDto(view, {
         ...(query.from === undefined ? {} : { from: query.from }),
         ...(query.to === undefined ? {} : { to: query.to }),
         all: query.all,
       });
+      // `mes_quality_chart_read_seconds` (#238): the body read and built (serialization aside).
+      quality.observeChartRead(params.id, (performance.now() - started) / 1_000);
+      return body;
     },
   );
 

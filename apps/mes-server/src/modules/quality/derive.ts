@@ -258,7 +258,7 @@ export const signalKey = (s: {
 /** The episodes of a chart as stored rows want them, with their finality. */
 export function derivedSignals(
   episodes: readonly Episode[],
-  positions: ReadonlyMap<string, Position>,
+  positions: { get(key: string): Position | undefined },
   progress: Progress,
 ): DerivedSignal[] {
   const ref = (key: string): PointRef => {

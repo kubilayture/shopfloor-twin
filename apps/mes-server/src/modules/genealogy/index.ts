@@ -16,7 +16,9 @@
  *   quality module's close guard requires (plan review round 2 HIGH C, #201).
  * - For quality holds (#201): `scope(subject, { orderId, db })` (the units a lot, serial, carton or
  *   order covers now, from the links, in the caller's transaction), `lotConsumptions(lot)`,
- *   `units(keys)`, `finalityAt(at, epochs)`.
+ *   `units(keys)`, `finalityAt(at, epochs)`; `scopes(subjects)` and `lotsConsumptions(lots)` for
+ *   every hold at once, and `onChange` after a round that changed units or cartons (#238: the
+ *   hold scopes are rebuilt on it, not on a timer). `mes_genealogy_round_seconds` times a round.
  * - Pure (`derive.ts`): `traceUnit`, `mismatches`, `placeCartons`, `finality`, `finalThrough`.
  */
 export { finalThrough, finality, mismatches, placeCartons, traceUnit } from './derive.ts';

@@ -79,7 +79,8 @@ export function checkRuleSet(rules: RuleSet): RuleSet {
   return { I: sorted(rules.I), MR: sorted(rules.MR), Xbar: sorted(rules.Xbar), R: sorted(rules.R) };
 }
 
-interface Zones {
+/** Where a value lies against a chart's limits (internal to `spc-core`). */
+export interface Zones {
   /** -1 below the centre, 0 on it, 1 above. */
   readonly side: -1 | 0 | 1;
   /** Strictly beyond 1σ, 2σ on its side. */
@@ -91,7 +92,7 @@ interface Zones {
   readonly outside: boolean;
 }
 
-function zones(value: Fraction, limits: Limits): Zones {
+export function zones(value: Fraction, limits: Limits): Zones {
   const deviation = subtract(value, limits.centre);
   const side = compare(deviation, integer(0));
   // 3·|x − centre| against k·(upper − centre) = k·3σ: no division.
@@ -163,6 +164,26 @@ export function ruleTriggers(values: readonly Fraction[], limits: Limits, rule: 
   return runTriggers(values, limits, [rule]).get(rule) ?? [];
 }
 
+/**
+ * Whether `rule` fires at index `i` of a run that starts at `runStart` (the arrays hold the run's
+ * points and may hold others before it): the window of {@link RULE_LENGTH} points ending at `i`
+ * must lie inside the run, but for rules 5 and 6, which may complete in a shorter window at the
+ * run's start. The single definition {@link runTriggers} and the incremental derivation share.
+ */
+export function firesAt(
+  rule: Rule,
+  z: readonly Zones[],
+  values: readonly Fraction[],
+  runStart: number,
+  i: number,
+): boolean {
+  const length = RULE_LENGTH[rule];
+  const partial = rule === 5 || rule === 6;
+  const full = i - length + 1;
+  const start = partial && full < runStart ? runStart : full;
+  return start >= runStart && fires(rule, z.slice(start, i + 1), values.slice(start, i + 1));
+}
+
 /** {@link ruleTriggers} for several rules, with the zones computed once. */
 export function runTriggers(
   values: readonly Fraction[],
@@ -170,17 +191,5 @@ export function runTriggers(
   rules: readonly Rule[],
 ): Map<Rule, boolean[]> {
   const z = values.map((value) => zones(value, limits));
-  return new Map(
-    rules.map((rule) => {
-      const length = RULE_LENGTH[rule];
-      const hits = values.map((_, i) => {
-        // Rules 5 and 6 may complete inside a shorter window at the run's start.
-        const partial = rule === 5 || rule === 6;
-        const full = i - length + 1;
-        const start = partial && full < 0 ? 0 : full;
-        return start >= 0 && fires(rule, z.slice(start, i + 1), values.slice(start, i + 1));
-      });
-      return [rule, hits];
-    }),
-  );
+  return new Map(rules.map((rule) => [rule, values.map((_, i) => firesAt(rule, z, values, 0, i))]));
 }

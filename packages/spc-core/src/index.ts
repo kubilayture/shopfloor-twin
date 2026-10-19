@@ -39,3 +39,5 @@ export type { Rule, RuleSet } from './rules.ts';
 export { firstVersion, spcChart, versionAt } from './chart.ts';
 export type { BaselineConfig, Episode, LimitVersion, Point, SpcChart, SpcInput } from './chart.ts';
 export { add, decimal, divide, integer, mean, subtract } from './rational.ts';
+export { SpcDerivation } from './incremental.ts';
+export type { SpcChange, SpcDerivationConfig, SpcUpdate } from './incremental.ts';

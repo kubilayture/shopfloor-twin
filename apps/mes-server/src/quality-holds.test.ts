@@ -280,6 +280,9 @@ async function harness(
     wrapExecution?: (e: Execution) => Execution;
     /** The holds see no plant clock (no fact yet): `opened_plant_at` null. */
     noClock?: boolean;
+    /** The holds follow the genealogy's changes (#238) instead of `tick()` alone. */
+    follow?: boolean;
+    onScopeRebuilt?: () => void;
   } = {},
 ): Promise<Harness> {
   const db = await freshDatabase(serverUrl, `holds_${name}`);
@@ -370,7 +373,8 @@ async function harness(
     ...(options.signals ? { signals: options.signals } : {}),
     clock: options.noClock === true ? () => undefined : clock,
     epoch: () => line.epoch,
-    tickMs: 0,
+    follow: options.follow === true,
+    ...(options.onScopeRebuilt ? { onTiming: () => options.onScopeRebuilt?.() } : {}),
     beforeCommit: async (trx) => {
       const current = pause;
       if (!current) return;
@@ -498,6 +502,57 @@ async function postAll(h: Harness): Promise<void> {
 }
 
 describe('quality holds: scope, lifecycle and notifications (#201)', () => {
+  it('rebuilds the scopes on a genealogy change and on an opening, not on a timer (#238)', async () => {
+    let rebuilds = 0;
+    const h = await harness('follow', {
+      follow: true,
+      onScopeRebuilt: () => {
+        rebuilds++;
+      },
+    });
+    const until = async (done: () => boolean | Promise<boolean>): Promise<void> => {
+      const deadline = Date.now() + 10_000;
+      while (!(await done())) {
+        if (Date.now() > deadline) throw new Error('not rebuilt in time');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    await dispatched(h, 'X-1', 3);
+    const l = h.line;
+    await send(h, [
+      l.job('accepted', 'X-1', 3),
+      l.job('started', 'X-1', 3),
+      ...l.unit(1, { blank: 'B1', kit: 'K1' }),
+    ]);
+    for (let round = 0; round < 2; round++) {
+      await h.orders.tick();
+      await h.execution.tick();
+      await h.genealogy.tick();
+    }
+    const opened = await h.holds.open(
+      { subject: { kind: 'lot', id: 'K1' }, reason: 'SUSPECT-LOT' },
+      h.qa,
+    );
+    // The opening asks for a rebuild (held-material-consumed is checked on it).
+    await until(() => rebuilds >= 2);
+    // Unit 2 consumes the held lot: the genealogy round that builds it changes the scope, and the
+    // holds rebuild on its change without being ticked.
+    await send(h, l.unit(2, { blank: 'B1', kit: 'K1' }));
+    for (let round = 0; round < 2; round++) {
+      await h.orders.tick();
+      await h.execution.tick();
+      await h.genealogy.tick();
+    }
+    await until(async () => (await h.holds.hold(opened.id))?.scope.units === 2);
+    await until(async () => (await h.holds.incidents()).length === 1);
+    // A round that changes nothing asks for no rebuild: none runs without a change.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const settled = rebuilds;
+    await h.genealogy.tick();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(rebuilds).toBe(settled);
+  });
+
   it('a lot hold’s scope follows the genealogy and grows with later consumption and late facts; held-material-consumed after the opening', async () => {
     const h = await harness('lot');
     await dispatched(h, 'X-1', 3);

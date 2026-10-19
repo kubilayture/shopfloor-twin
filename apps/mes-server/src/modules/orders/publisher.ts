@@ -21,9 +21,10 @@ export interface MqttPublisherOptions {
 }
 
 /**
- * The MES's command connection (#174): a second MQTT 5 connection of the broker user `mes` (which
- * may write `…/cmd/#`, ADR-0029), with its own client id so it never takes over ingest's
- * persistent session. Clean: the transactional outbox, not the broker, keeps what must be sent.
+ * The MES's command connection (#174): a second MQTT 5 connection, as the broker user `mes-cmd`
+ * (`MQTT_CMD_USERNAME`; the `mes` role, which may write `…/cmd/#`, ADR-0029), with its own client id
+ * `mes-server-cmd` (bound to that user, ADR-0039) so it never takes over ingest's persistent
+ * session. Clean: the transactional outbox, not the broker, keeps what must be sent.
  */
 export class MqttCommandPublisher implements CommandPublisher {
   readonly #client: MqttClient;

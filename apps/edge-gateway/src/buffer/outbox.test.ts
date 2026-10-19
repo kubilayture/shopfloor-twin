@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { TopicSequences } from '../identity.ts';
 import { MqttLink, NotConnectedError } from '../mqtt-link.ts';
 import type { UnsPublication } from '../publisher.ts';
-import { TEST_PASSWORDS, TcpProxy, startBroker } from '../testing.ts';
+import { TEST_PASSWORDS, TcpProxy, brokerLogin, startBroker } from '../testing.ts';
 import { Outbox, type Transport } from './outbox.ts';
 
 const dirs: string[] = [];
@@ -311,8 +311,7 @@ describe('store-and-forward with the real broker (#78)', () => {
     const subscribe = async () => {
       for (let attempt = 1; ; attempt++) {
         const mes = mqtt.connect(started.url, {
-          username: 'mes',
-          password: TEST_PASSWORDS.mes,
+          ...brokerLogin('mes'),
           protocolVersion: 5,
           reconnectPeriod: 0,
           connectTimeout: 5_000,

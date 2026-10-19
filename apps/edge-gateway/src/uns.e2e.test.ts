@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   TEST_PASSWORDS,
   TcpProxy,
+  brokerLogin,
   startBroker,
   startGateway,
   startSimulator,
@@ -87,8 +88,7 @@ class Consumer {
     for (;;) {
       try {
         client = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(front.port)}`, {
-          username: 'mes',
-          password: TEST_PASSWORDS.mes,
+          ...brokerLogin('mes'),
           protocolVersion: 5,
           reconnectPeriod: 0,
         });

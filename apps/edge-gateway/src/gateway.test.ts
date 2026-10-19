@@ -11,7 +11,7 @@ import { equipmentPaths } from './hierarchy.ts';
 import { buildGatewayHttp } from './http.ts';
 import { TopicSequences } from './identity.ts';
 import { MqttLink, NotConnectedError } from './mqtt-link.ts';
-import { TEST_PASSWORDS, startBroker, timed } from './testing.ts';
+import { TEST_PASSWORDS, brokerLogin, startBroker, timed, type BrokerUser } from './testing.ts';
 
 let broker: { url: string; container: StartedTestContainer };
 let config: PlantConfig;
@@ -26,10 +26,9 @@ async function until(condition: () => boolean, timeoutMs = 30_000): Promise<void
   }
 }
 
-async function client(user: keyof typeof TEST_PASSWORDS): Promise<MqttClient> {
+async function client(user: BrokerUser): Promise<MqttClient> {
   const c = await mqtt.connectAsync(broker.url, {
-    username: user,
-    password: TEST_PASSWORDS[user],
+    ...brokerLogin(user),
     protocolVersion: 5,
     reconnectPeriod: 0,
   });
@@ -262,16 +261,19 @@ describe('broker session and _sys status (#75)', () => {
     expect(elapsedMs).toBeLessThan(2_000 + maxLagMs);
   });
 
-  it('lists in the ACL exactly the areas of the plant, so `+` never has to match `_sys`', async () => {
-    const acl = await readFile(
-      resolve(import.meta.dirname, '../../../config/mosquitto/acl'),
-      'utf8',
-    );
+  it('lists in the ACLs exactly the areas of the plant, so `+` never has to match `_sys`', async () => {
+    const template = JSON.parse(
+      await readFile(
+        resolve(import.meta.dirname, '../../../config/mosquitto/dynamic-security.json'),
+        'utf8',
+      ),
+    ) as { roles: { acls: { topic: string }[] }[] };
+    const topics = template.roles.flatMap((role) => role.acls.map((acl) => acl.topic));
     const areas = new Set(
-      [...acl.matchAll(/^topic \w+ orbis\/gebze\/([a-z0-9-]+)\/\+/gm)].map((m) => m[1]),
+      topics.flatMap((topic) => /^orbis\/gebze\/([a-z0-9-]+)\/\+/.exec(topic)?.[1] ?? []),
     );
     expect([...areas].sort()).toEqual(config.plant.areas.map((a) => a.id).sort());
-    expect(acl).not.toMatch(/orbis\/gebze\/\+/);
+    expect(topics.filter((topic) => topic.startsWith('orbis/gebze/+'))).toEqual([]);
   });
 
   it('serves liveness, readiness from the broker session, and metrics', async () => {

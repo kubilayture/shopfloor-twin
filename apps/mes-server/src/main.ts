@@ -345,7 +345,7 @@ try {
   // on a connection of their own (client id `{MQTT_CLIENT_ID}-cmd`, never ingest's session).
   publisher = new MqttCommandPublisher({
     url: env.MQTT_URL,
-    username: env.MQTT_USERNAME,
+    username: env.MQTT_CMD_USERNAME,
     password: env.MQTT_PASSWORD,
     clientId: `${env.MQTT_CLIENT_ID}-cmd`,
     log: log.child({ module: 'orders', part: 'publisher' }),

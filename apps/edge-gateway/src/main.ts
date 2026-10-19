@@ -156,7 +156,7 @@ const executor = new CommandExecutor({
 });
 const commandLink = new CommandLink({
   url: env.MQTT_URL,
-  username: env.MQTT_USERNAME,
+  username: env.MQTT_CMD_USERNAME,
   password: env.MQTT_PASSWORD,
   clientId: `${env.GATEWAY_ID}-cmd`,
   areas: loaded.config.plant.areas.map((area) => area.id),

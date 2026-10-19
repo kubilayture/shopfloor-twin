@@ -8,7 +8,7 @@ import {
   type MachineState,
   type UnsMessage,
 } from '@shopfloor/contracts';
-import { TEST_PASSWORDS, startBroker } from '@shopfloor/test-kit/broker';
+import { brokerLogin, startBroker } from '@shopfloor/test-kit/broker';
 import { sql, type Kysely } from 'kysely';
 import mqtt, { type MqttClient } from 'mqtt';
 import pg from 'pg';
@@ -38,9 +38,7 @@ beforeAll(async () => {
   databaseUrl = database.url;
   brokerUrl = broker.url;
   publisher = await mqtt.connectAsync(brokerUrl, {
-    clientId: 'gw-01',
-    username: 'gw-01',
-    password: TEST_PASSWORDS['gw-01'],
+    ...brokerLogin('gw-01'),
     protocolVersion: 5,
   });
 }, 180_000);
@@ -71,15 +69,18 @@ async function setup(): Promise<{
   const db = createDatabase(url, 3);
   cleanup.push(() => db.destroy());
   await migrate(db, MIGRATIONS);
-  const clientId = `mes-test-${String(testNumber)}`;
+  // The broker binds the one client id mes-server to `mes` (ADR-0039): a fresh session per test
+  // instead of a fresh id, so no test resumes another's subscriptions or queued messages.
+  const { clientId } = brokerLogin('mes');
+  await (
+    await mqtt.connectAsync(brokerUrl, { ...brokerLogin('mes'), protocolVersion: 5, clean: true })
+  ).endAsync();
   const clock = { now: Date.parse('2026-10-15T10:00:00Z') };
   const start = async (options: Partial<IngestOptions> = {}): Promise<Ingest> => {
     const ingest = new Ingest({
       db,
       url: brokerUrl,
-      username: 'mes',
-      password: TEST_PASSWORDS.mes,
-      clientId,
+      ...brokerLogin('mes'),
       gapGraceMs: GRACE_MS,
       sweepIntervalMs: 0,
       reconnectPeriodMs: 200,

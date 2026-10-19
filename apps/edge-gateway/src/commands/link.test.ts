@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import mqtt, { type MqttClient } from 'mqtt';
 import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { TEST_PASSWORDS, startBroker } from '../testing.ts';
+import { brokerLogin, startBroker, type BrokerUser } from '../testing.ts';
 import { CommandLink, commandSubscriptions } from './link.ts';
 import { CommandStore, type InboxEntry } from './store.ts';
 
@@ -30,16 +30,28 @@ async function until(what: string, condition: () => boolean, timeoutMs = 30_000)
   }
 }
 
-async function client(user: keyof typeof TEST_PASSWORDS, clientId?: string): Promise<MqttClient> {
+async function client(user: BrokerUser): Promise<MqttClient> {
   const c = await mqtt.connectAsync(broker.url, {
-    username: user,
-    password: TEST_PASSWORDS[user],
+    ...brokerLogin(user),
     protocolVersion: 5,
     reconnectPeriod: 0,
-    ...(clientId ? { clientId } : {}),
   });
   cleanup.push(() => c.endAsync(true));
   return c;
+}
+
+/**
+ * Ends the persistent command session a previous test left: the broker binds the one client id
+ * gw-01-cmd to the user gw-01-cmd (ADR-0039), so every test would resume the same session.
+ */
+async function dropCommandSession(): Promise<void> {
+  const c = await mqtt.connectAsync(broker.url, {
+    ...brokerLogin('gw-01-cmd'),
+    protocolVersion: 5,
+    reconnectPeriod: 0,
+    clean: true,
+  });
+  await c.endAsync();
 }
 
 /** The outcome of a QoS 1 publish: the broker's PUBACK, or its refusal. */
@@ -49,16 +61,10 @@ const publish = (c: MqttClient, topic: string, payload = '{}'): Promise<string> 
     .then(() => 'acknowledged')
     .catch((error: unknown) => String(error));
 
-function link(
-  store: Pick<CommandStore, 'record'>,
-  received: InboxEntry[],
-  clientId = 'gw-01-cmd',
-): CommandLink {
+function link(store: Pick<CommandStore, 'record'>, received: InboxEntry[]): CommandLink {
   const l = new CommandLink({
     url: broker.url,
-    username: 'gw-01',
-    password: TEST_PASSWORDS['gw-01'],
-    clientId,
+    ...brokerLogin('gw-01-cmd'),
     areas: AREAS,
     sessionExpirySeconds: 600,
     store,
@@ -166,7 +172,8 @@ describe('command session (#173, ADR-0029)', () => {
       },
     };
     const received: InboxEntry[] = [];
-    const l = link(flaky, received, 'gw-01-cmd-flaky');
+    await dropCommandSession();
+    const l = link(flaky, received);
     l.start();
     await until('subscribed', () => l.subscribed);
     const mes = await client('mes');
@@ -179,6 +186,7 @@ describe('command session (#173, ADR-0029)', () => {
   });
 
   it('acknowledges and ignores a delivery outside an equipment command topic', async () => {
+    await dropCommandSession();
     const store = new CommandStore(join(dir, 'c.db'));
     cleanup.push(() => {
       store.close();
@@ -188,9 +196,7 @@ describe('command session (#173, ADR-0029)', () => {
     const received: InboxEntry[] = [];
     const l = new CommandLink({
       url: broker.url,
-      username: 'gw-01',
-      password: TEST_PASSWORDS['gw-01'],
-      clientId: 'gw-01-cmd-ignore',
+      ...brokerLogin('gw-01-cmd'),
       areas: AREAS,
       sessionExpirySeconds: 600,
       store,

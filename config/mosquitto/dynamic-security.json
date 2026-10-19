@@ -1,0 +1,227 @@
+{
+  "defaultACLAccess": {
+    "publishClientSend": false,
+    "publishClientReceive": false,
+    "subscribe": true,
+    "unsubscribe": true
+  },
+  "clients": [
+    {
+      "username": "healthcheck",
+      "clientid": "healthcheck",
+      "textdescription": "Broker healthcheck: reads the broker's own statistics only. Bound to client id healthcheck (ADR-0039): one probe at a time.",
+      "roles": [
+        {
+          "rolename": "healthcheck"
+        }
+      ]
+    },
+    {
+      "username": "dev",
+      "clientid": "dev",
+      "textdescription": "Manual testing: read-only. Bound to client id dev (ADR-0039): one dev session at a time, mosquitto_sub -i dev.",
+      "roles": [
+        {
+          "rolename": "dev"
+        }
+      ]
+    },
+    {
+      "username": "smoke-reader",
+      "clientid": "smoke-reader",
+      "textdescription": "The stack smoke's second reader: dev's role and password (MQTT_DEV_PASSWORD), so an ACL check can read while dev publishes.",
+      "roles": [
+        {
+          "rolename": "dev"
+        }
+      ]
+    },
+    {
+      "username": "gw-01",
+      "clientid": "gw-01",
+      "textdescription": "Edge gateway, publishing connection (ADR-0029).",
+      "roles": [
+        {
+          "rolename": "gateway"
+        }
+      ]
+    },
+    {
+      "username": "gw-01-cmd",
+      "clientid": "gw-01-cmd",
+      "textdescription": "Edge gateway, command connection (ADR-0029).",
+      "roles": [
+        {
+          "rolename": "gateway"
+        }
+      ]
+    },
+    {
+      "username": "mes",
+      "clientid": "mes-server",
+      "textdescription": "MES ingest: the persistent session.",
+      "roles": [
+        {
+          "rolename": "mes"
+        }
+      ]
+    },
+    {
+      "username": "mes-cmd",
+      "clientid": "mes-server-cmd",
+      "textdescription": "MES command connection (ADR-0029).",
+      "roles": [
+        {
+          "rolename": "mes"
+        }
+      ]
+    }
+  ],
+  "groups": [],
+  "roles": [
+    {
+      "rolename": "healthcheck",
+      "textdescription": "read $SYS/#",
+      "acls": [
+        {
+          "acltype": "publishClientReceive",
+          "topic": "$SYS/#",
+          "allow": true
+        }
+      ]
+    },
+    {
+      "rolename": "dev",
+      "textdescription": "read orbis/# and $SYS/#",
+      "acls": [
+        {
+          "acltype": "publishClientReceive",
+          "topic": "orbis/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientReceive",
+          "topic": "$SYS/#",
+          "allow": true
+        }
+      ]
+    },
+    {
+      "rolename": "gateway",
+      "textdescription": "Publishes machine data and its own component topics; reads commands and answers them (ADR-0029). May not publish cmd: only the MES commands. Areas are listed one by one (in step with config/plant/plant.yaml; a gateway test checks this): a + in the area position would also match _sys.",
+      "acls": [
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/machining/+/+/state/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/machining/+/+/telemetry/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/machining/+/+/events/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/machining/+/+/alarms/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientReceive",
+          "topic": "orbis/gebze/machining/+/+/cmd/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/machining/+/+/cmd-res/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/assembly/+/+/state/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/assembly/+/+/telemetry/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/assembly/+/+/events/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/assembly/+/+/alarms/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientReceive",
+          "topic": "orbis/gebze/assembly/+/+/cmd/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/assembly/+/+/cmd-res/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/_sys/edge-gateway/gw-01/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientReceive",
+          "topic": "orbis/gebze/_sys/edge-gateway/gw-01/#",
+          "allow": true
+        }
+      ]
+    },
+    {
+      "rolename": "mes",
+      "textdescription": "Reads everything (cmd-res included); publishes MES context, commands and its own component topics. May not publish cmd-res: only the gateway answers commands.",
+      "acls": [
+        {
+          "acltype": "publishClientReceive",
+          "topic": "orbis/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/machining/+/+/mes/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/machining/+/+/cmd/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/assembly/+/+/mes/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/assembly/+/+/cmd/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientSend",
+          "topic": "orbis/gebze/_sys/mes-server/#",
+          "allow": true
+        },
+        {
+          "acltype": "publishClientReceive",
+          "topic": "orbis/gebze/_sys/mes-server/#",
+          "allow": true
+        }
+      ]
+    }
+  ]
+}

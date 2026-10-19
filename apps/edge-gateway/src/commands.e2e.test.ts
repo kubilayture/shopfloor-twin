@@ -29,6 +29,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   TEST_PASSWORDS,
   TcpProxy,
+  brokerLogin,
   opcuaProxies,
   startBroker,
   startGateway,
@@ -192,8 +193,7 @@ beforeAll(async () => {
   env.OPCUA_PORT_OFFSET = String(block.offset);
   env.MODBUS_PORT = String(simulator.modbusPort);
   mes = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
-    username: 'mes',
-    password: TEST_PASSWORDS.mes,
+    ...brokerLogin('mes'),
     protocolVersion: 5,
     reconnectPeriod: 0,
   });

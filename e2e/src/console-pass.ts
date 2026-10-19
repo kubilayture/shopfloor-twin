@@ -17,7 +17,10 @@
  *   event stream through nginx;
  * - the other roles see neither the console nor its link;
  * - a logout ends the event stream within its lifetime (4 s here, `SIM_EVENTS_LIFETIME_MS`) with
- *   4100, and the reconnect is refused.
+ *   4100, and the reconnect is refused;
+ * - the HTTPS front (P9-14, checklist S4, browser/tls): the page over TLS 1.3 with the pki step's
+ *   certificate, Chromium pinned to that key alone (another certificate refused), plain HTTP to the
+ *   port refused, the session cookie `__Host-` and `Secure`.
  *
  * The users are made through the API by the bootstrap admin (generated passwords, never written to
  * a file): `admin` and one user per other role.
@@ -139,7 +142,10 @@ try {
   log('starting the stack (simulator idle at Monday 06:00)');
   await stack.compose(['up', '--detach', '--wait', '--no-build'], 600_000);
   const mesBase = await stack.url('mes', 4700);
-  const web = await stack.url('web', 8080);
+  // HTTPS (P9-14): the served certificate checked against the pki step's; Playwright gets
+  // NODE_EXTRA_CA_CERTS and Chromium the SPKI pin of this stack's certificate.
+  const trust = await stack.webTrust({ sibling: true });
+  const web = trust.url;
   const simBase = await stack.url('simulator', 4800);
   await until('MES ready', () => new MesClient(mesBase).ready(), 60_000);
   const sim = new SimulatorClient(simBase, stack.value('SIM_CONTROL_TOKEN'));
@@ -165,6 +171,7 @@ try {
   log('users made: admin and one per other role');
 
   const code = await runBrowser({
+    ...trust.env,
     RECONCILE_WEB_URL: web,
     RECONCILE_RESULTS: RESULTS,
     RECONCILE_ACCOUNTS: JSON.stringify(accounts),

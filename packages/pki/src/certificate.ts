@@ -1,10 +1,12 @@
-import { createHash, createPrivateKey, createPublicKey, randomBytes, webcrypto } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, randomBytes } from 'node:crypto';
 // @peculiar/x509 2 resolves its services through tsyringe, which needs this polyfill loaded first.
 import 'reflect-metadata';
 import * as x509 from '@peculiar/x509';
 import type { IdentityRole } from './layout.ts';
 
-x509.cryptoProvider.set(webcrypto);
+// The global Web Crypto (Node's webcrypto): its types are the global `Crypto` and `CryptoKey`
+// whether a consumer compiles with Node's types alone or with the DOM library too (e2e, P9-14).
+x509.cryptoProvider.set(crypto);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -59,7 +61,7 @@ export interface KeyAndCertificate {
 export async function createKeyAndCertificate(
   request: CertificateRequest,
 ): Promise<KeyAndCertificate> {
-  const keys = await webcrypto.subtle.generateKey(ALGORITHM, true, ['sign', 'verify']);
+  const keys = await crypto.subtle.generateKey(ALGORITHM, true, ['sign', 'verify']);
   // A positive 128-bit serial (the high bit clear, RFC 5280 4.1.2.2).
   const serial = randomBytes(16);
   serial[0] = (serial[0] ?? 0) & 0x7f;
@@ -83,7 +85,7 @@ export async function createKeyAndCertificate(
       ]),
     ],
   });
-  const pkcs8 = await webcrypto.subtle.exportKey('pkcs8', keys.privateKey);
+  const pkcs8 = await crypto.subtle.exportKey('pkcs8', keys.privateKey);
   return {
     privateKeyPem: x509.PemConverter.encode(pkcs8, 'PRIVATE KEY'),
     certificatePem: `${certificate.toString('pem')}\n`,
@@ -98,6 +100,8 @@ export interface CertificateInfo {
   /** The SAN's URIs, in order: node-opcua takes the first as the `applicationUri`. */
   readonly uris: readonly string[];
   readonly dnsNames: readonly string[];
+  /** The SAN's IP addresses (the web front's certificate, ADR-0039). */
+  readonly ipAddresses: readonly string[];
   readonly extendedKeyUsages: readonly string[];
   /** SHA-1 of the DER, hex: OPC UA's certificate thumbprint. */
   readonly thumbprint: string;
@@ -107,7 +111,7 @@ export interface CertificateInfo {
 }
 
 export function inspectCertificate(pem: string | Buffer): CertificateInfo {
-  const certificate = new x509.X509Certificate(pem);
+  const certificate = new x509.X509Certificate(typeof pem === 'string' ? pem : new Uint8Array(pem));
   const names = certificate.getExtension(x509.SubjectAlternativeNameExtension)?.names.items ?? [];
   const der = Buffer.from(certificate.rawData);
   return {
@@ -116,6 +120,7 @@ export function inspectCertificate(pem: string | Buffer): CertificateInfo {
     notAfter: certificate.notAfter,
     uris: names.filter((name) => name.type === 'url').map((name) => name.value),
     dnsNames: names.filter((name) => name.type === 'dns').map((name) => name.value),
+    ipAddresses: names.filter((name) => name.type === 'ip').map((name) => name.value),
     extendedKeyUsages: (certificate.getExtension(x509.ExtendedKeyUsageExtension)?.usages ?? []).map(
       String,
     ),

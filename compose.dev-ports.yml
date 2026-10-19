@@ -1,0 +1,27 @@
+# Development override (P9-14, ADR-0039), after docker-compose.yml: `pnpm stack:up:dev` runs
+# `docker compose -f docker-compose.yml -f compose.dev-ports.yml up -d --wait`.
+#
+# The hardened default (`pnpm stack:up`, `docker compose up`) publishes neither the MES, the
+# gateway nor the database: the browser reaches the MES only through nginx's HTTPS front. For
+# development this file publishes them again, on 127.0.0.1 only and on the ports of earlier phases:
+#
+# - the MES API and WebSocket on MES_HTTP_PORT (4700), plain HTTP: the Vite dev server's proxy
+#   (apps/web, MES_URL), curl, your own tools (a session cookie from a login);
+# - the gateway's health and metrics on GATEWAY_HTTP_PORT (4900);
+# - PostgreSQL on DB_PORT (5442): psql and the golden harness from the host.
+#
+# Harnesses don't use it: each publishes what it needs on ephemeral ports in its own project
+# (e2e/compose.reconcile.yml, e2e/compose.trace-perf.yml). The session cookie stays `Secure`
+# (MES_COOKIE_SECURE=on); set MES_COOKIE_SECURE=off when a browser on plain HTTP signs in straight
+# at the MES (runbook, "Full stack").
+
+services:
+  db:
+    ports:
+      - '127.0.0.1:${DB_PORT:-5442}:5432'
+  gateway:
+    ports:
+      - '127.0.0.1:${GATEWAY_HTTP_PORT:-4900}:4900'
+  mes:
+    ports:
+      - '127.0.0.1:${MES_HTTP_PORT:-4700}:4700'

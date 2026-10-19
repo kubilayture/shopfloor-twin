@@ -35,9 +35,32 @@ export {
 } from './exchange.ts';
 export { requireOwnMaterial } from './require.ts';
 export {
+  NAME_CONSTRAINTS_OID,
   certificateAuthorityFrom,
   createCertificateAuthority,
   createEmptyCrl,
   issueCertificate,
+  issueTlsServerCertificate,
+  nameConstraintsExtension,
   type CertificateAuthority,
+  type PermittedNames,
 } from './ca.ts';
+export {
+  DEV_CA_IDENTITY,
+  DEV_CA_PERMITTED,
+  DEV_CA_VALIDITY_DAYS,
+  TLS_IDENTITIES,
+  WEB_DNS_NAMES,
+  WEB_IDENTITY,
+  WEB_IP_ADDRESSES,
+  WEB_VALIDITY_DAYS,
+  devCaFiles,
+  ensureWebTls,
+  sha256Fingerprint,
+  spkiSha256,
+  webTlsFiles,
+  type DevCaFiles,
+  type EnsureWebTlsOptions,
+  type EnsureWebTlsResult,
+  type WebTlsFiles,
+} from './tls.ts';

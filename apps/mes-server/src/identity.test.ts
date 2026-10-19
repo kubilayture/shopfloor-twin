@@ -579,14 +579,19 @@ describe('identity module (#168)', () => {
 describe('environment and secrets (#168)', () => {
   const base = { DATABASE_URL: 'postgres://u@h/d', MQTT_PASSWORD: 'x' };
 
-  it('defaults MES_AUTH to on (#170) and MES_COOKIE_SECURE to off; the bootstrap password is optional and hidden', () => {
+  it('defaults MES_AUTH to on (#170) and MES_COOKIE_SECURE to on (#241); the bootstrap password is optional and hidden', () => {
     const parsed = parseEnv(base);
     expect(parsed.ok && parsed.env.MES_AUTH).toBe('on');
     expect(parseEnv({ ...base, MES_AUTH: 'off' })).toMatchObject({
       ok: true,
       env: { MES_AUTH: 'off' },
     });
-    expect(parsed.ok && parsed.env.MES_COOKIE_SECURE).toBe('off');
+    // Secure by default (P9-14, ADR-0039): plain HTTP straight to the MES sets it off explicitly.
+    expect(parsed.ok && parsed.env.MES_COOKIE_SECURE).toBe('on');
+    expect(parseEnv({ ...base, MES_COOKIE_SECURE: 'off' })).toMatchObject({
+      ok: true,
+      env: { MES_COOKIE_SECURE: 'off' },
+    });
     expect(parsed.ok && parsed.env.MES_BOOTSTRAP_ADMIN_PASSWORD).toBeUndefined();
     const short = 'too-short';
     const refused = parseEnv({ ...base, MES_BOOTSTRAP_ADMIN_PASSWORD: short, MES_AUTH: 'on' });
@@ -1656,6 +1661,46 @@ describe('console permission check and session use (#237)', () => {
     });
     expect(read.statusCode).toBe(200);
     expect(await lastUsed(cookie)).toBe(clock);
+  });
+
+  it("refuses an Origin whose scheme isn't the front's X-Forwarded-Proto, from the edge network only (#241 review)", async () => {
+    const password = passwords.get('c-operator') ?? '';
+    const write = (from: string, headers: Record<string, string>) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/session',
+        remoteAddress: from,
+        headers: { host, 'content-type': 'application/json', 'x-real-ip': '127.0.0.1', ...headers },
+        payload: JSON.stringify({ username: 'c-operator', password }),
+      });
+    const https = `https://${host}`;
+    // Through nginx: the browser's https Origin with nginx's X-Forwarded-Proto passes.
+    expect((await write(NGINX, { origin: https, 'x-forwarded-proto': 'https' })).statusCode).toBe(
+      200,
+    );
+    // The same host and port as http://, or no X-Forwarded-Proto at all: refused before the login.
+    for (const headers of [
+      { origin, 'x-forwarded-proto': 'https' },
+      { origin: https },
+      { origin: https, 'x-forwarded-proto': 'http, https' },
+    ]) {
+      const refused = await write(NGINX, headers);
+      expect(refused.statusCode, JSON.stringify(headers)).toBe(403);
+      expect(refused.json<{ type: string; detail: string }>()).toMatchObject({
+        type: PROBLEM_TYPES.writeOrigin,
+        detail: expect.stringMatching(/X-Forwarded-Proto/) as string,
+      });
+    }
+    // A read carrying an Origin is held to the same rule.
+    const read = await app.inject({
+      method: 'GET',
+      url: '/api/v1/session',
+      remoteAddress: NGINX,
+      headers: { host, origin, 'x-forwarded-proto': 'https', 'x-real-ip': '127.0.0.1' },
+    });
+    expect(read.statusCode).toBe(403);
+    // Outside the edge network the header isn't believed, so the scheme isn't judged (ADR-0023).
+    expect((await write(OUTSIDE, { origin, 'x-forwarded-proto': 'https' })).statusCode).toBe(200);
   });
 
   it('counts proxied requests by whether they came over the edge network', async () => {

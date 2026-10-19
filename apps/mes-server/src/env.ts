@@ -35,8 +35,10 @@ export const envSchema = z.object({
   // doesn't resolve to a local interface; off (the default, outside Compose) it then trusts none.
   MES_EDGE_ALIAS: text.default('mes-edge'),
   MES_EDGE_REQUIRED: z.enum(['on', 'off']).default('off'),
-  // `on` marks the session cookie `Secure` and names it `__Host-sft_session` (behind TLS only).
-  MES_COOKIE_SECURE: z.enum(['on', 'off']).default('off'),
+  // `on` (the default since P9-14, ADR-0039) marks the session cookie `Secure` and names it
+  // `__Host-sft_session`: the browser reaches the MES through nginx's HTTPS front. `off` only for a
+  // browser on plain HTTP straight to the MES (the Vite dev server; runbook), set explicitly.
+  MES_COOKIE_SECURE: z.enum(['on', 'off']).default('on'),
   // Optional: creates the user `admin` (must change its password) when no enabled admin exists.
   MES_BOOTSTRAP_ADMIN_PASSWORD: z
     .string()

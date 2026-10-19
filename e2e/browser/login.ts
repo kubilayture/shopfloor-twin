@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import { SECURE_SESSION_COOKIE, SESSION_COOKIE } from '@shopfloor/contracts/identity';
 
 /**
  * The run's user (#170): `pnpm test:reconcile` creates it through the bootstrap admin with a
@@ -44,17 +45,26 @@ async function untraced(page: Page, fill: () => Promise<void>): Promise<void> {
   }
 }
 
-/** The session cookie of the page's context, checked HttpOnly and SameSite=Strict (ADR-0026). */
+/**
+ * The session cookie of the page's context, checked HttpOnly and SameSite=Strict (ADR-0026), and
+ * over HTTPS (P9-14, ADR-0039) named `__Host-sft_session` and `Secure` (MES_COOKIE_SECURE=on, the
+ * Compose default).
+ */
 async function sessionCookie(page: Page): Promise<string> {
-  const session = (await page.context().cookies()).find((c) => c.name === 'sft_session');
+  const session = (await page.context().cookies()).find(
+    (c) => c.name === SECURE_SESSION_COOKIE || c.name === SESSION_COOKIE,
+  );
   if (!session) throw new Error('the login set no session cookie');
   expect([session.httpOnly, session.sameSite]).toEqual([true, 'Strict']);
-  return `sft_session=${session.value}`;
+  if (page.url().startsWith('https:')) {
+    expect([session.name, session.secure]).toEqual([SECURE_SESSION_COOKIE, true]);
+  }
+  return `${session.name}=${session.value}`;
 }
 
 /**
  * Logs in through `/login` as `user` (by default the run's user) and waits for the app to show
- * them signed in. Resolves with the session cookie (`sft_session=…`) for the test's own API calls.
+ * them signed in. Resolves with the session cookie (`__Host-sft_session=…` over HTTPS) for the test's own API calls.
  */
 export async function logIn(
   page: Page,

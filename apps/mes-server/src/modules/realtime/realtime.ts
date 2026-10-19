@@ -749,6 +749,31 @@ export async function registerRealtime(
     (request.routeOptions.config as Partial<RouteConfig> | undefined)?.touch?.(request) ?? true;
   const trustsProxy = options.trustsProxy ?? (() => false);
   /**
+   * The Origin's scheme behind the HTTPS front (#241 review, ADR-0039): a request nginx proxied
+   * over the `edge` network carries the scheme the browser used in `X-Forwarded-Proto` (always
+   * `https` there), so an Origin of that host and port with another scheme (`http://`, a page
+   * the front never serves) is refused. Only from `edge` is the header believed; an allowlisted
+   * origin (HTTP_ALLOWED_ORIGINS) is exempt, a request without Origin isn't a browser page.
+   */
+  const schemeRefusal = (request: FastifyRequest): string | undefined => {
+    const origin = request.headers.origin;
+    if (origin === undefined || allowedOrigins.has(origin) || !trustsProxy(request)) {
+      return undefined;
+    }
+    const proto = request.headers['x-forwarded-proto'];
+    let scheme: string | undefined;
+    try {
+      scheme = new URL(origin).protocol.replace(/:$/, '');
+    } catch {
+      scheme = undefined;
+    }
+    return typeof proto === 'string' && scheme === proto.toLowerCase()
+      ? undefined
+      : `origin scheme ${scheme ?? 'unknown'} is not the front's ${typeof proto === 'string' ? proto : 'unknown'} (X-Forwarded-Proto)`;
+  };
+  /** Upgrades refused by `schemeRefusal` in the hook; `verifyClient` answers them 403. */
+  const schemeRefusedUpgrades = new WeakSet<object>();
+  /**
    * Authentication (401) and permission (403), after the Host and Origin checks so a cross-site
    * request never learns whether a session exists (ADR-0026). With `MES_AUTH=off` (#170) only the
    * reads (`read`) and the WebSocket are served without one: every write still needs a session and
@@ -857,8 +882,9 @@ export async function registerRealtime(
       maxPayload: 4096,
       verifyClient: (info, done) => {
         const refused = refusal(info.req.headers);
-        if (refused === undefined) done(true);
-        else done(false, 403, refused.detail);
+        if (refused !== undefined) done(false, 403, refused.detail);
+        else if (schemeRefusedUpgrades.has(info.req)) done(false, 403, 'origin scheme not allowed');
+        else done(true);
       },
     },
     // A client that stopped reading would hold up shutdown for ws's 30 s close timeout.
@@ -885,6 +911,10 @@ export async function registerRealtime(
           // A refused Host or Origin: no session lookup; `verifyClient` answers the 403 (a reply
           // from this hook would be dropped with the upgrading socket).
           if (refusal(request.headers) !== undefined) return;
+          if (schemeRefusal(request) !== undefined) {
+            schemeRefusedUpgrades.add(request.raw);
+            return;
+          }
           if (!auth) return;
           const token = tokenOf(request);
           const principal =
@@ -900,17 +930,24 @@ export async function registerRealtime(
         const read = request.method === 'GET' || request.method === 'HEAD';
         // A write's Origin is checked by `writeRefusal`, after MES_WRITES (ADR-0023's order).
         const refused = refusal(read ? request.headers : { host: request.headers.host });
-        if (refused !== undefined) {
+        const scheme = read ? schemeRefusal(request) : undefined;
+        if (refused !== undefined || scheme !== undefined) {
+          const detail = refused?.detail ?? scheme ?? '';
           await reply
             .code(403)
             .type(PROBLEM_TYPE)
-            .send(problem(403, refused.detail, request.url, refused.type));
+            .send(problem(403, detail, request.url, refused?.type));
           return;
         }
         if (!read) {
           // Every other method is a write (ADR-0023); its answer names the request for the audit.
           reply.header('x-request-id', request.id);
-          const write = writeRefusal(request.headers, accessOf(request));
+          const schemeOfWrite = schemeRefusal(request);
+          const write =
+            writeRefusal(request.headers, accessOf(request)) ??
+            (schemeOfWrite === undefined
+              ? undefined
+              : { status: 403, detail: schemeOfWrite, type: PROBLEM_TYPES.writeOrigin });
           if (write !== undefined) {
             await problemReply(reply, request, write);
             return;

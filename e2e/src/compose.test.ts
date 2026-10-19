@@ -1,0 +1,153 @@
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
+import { REPO } from './stack.ts';
+
+/**
+ * The hardened Compose and the HTTPS front, read from the files (P9-14, ADR-0039, security checklist
+ * S4 and S8): what `docker compose up` publishes, what the dev override adds, and the nginx and
+ * Playwright settings the harnesses' trust depends on. The stack smoke checks the same on a
+ * running stack.
+ */
+
+interface Service {
+  readonly ports?: readonly string[];
+  readonly environment?: Readonly<Record<string, string>>;
+  readonly volumes?: readonly string[];
+  readonly depends_on?: Readonly<Record<string, { condition: string }>>;
+  readonly group_add?: readonly string[];
+}
+
+/** A Compose file's services; Compose's merge tags (`!reset`, `!override`) read as plain values. */
+async function services(file: string): Promise<Record<string, Service>> {
+  const text = await readFile(join(REPO, file), 'utf8');
+  const document = parse(text.replaceAll(/!(reset|override)\b/g, '')) as {
+    services: Record<string, Service>;
+  };
+  return document.services;
+}
+
+/** `host ip:host port:container port` (a range on both sides allowed) → the container ports. */
+function published(
+  ports: readonly string[] | undefined,
+): { ip: string; host: string; port: number }[] {
+  return (ports ?? []).flatMap((entry) => {
+    const match = /^(?<ip>[\d.]+):(?<host>.*):(?<from>\d+)(?:-(?<to>\d+))?$/.exec(entry);
+    if (!match?.groups) throw new Error(`unexpected port syntax: ${entry}`);
+    const { ip = '', host = '', from = '0', to } = match.groups;
+    const first = Number(from);
+    const last = to === undefined ? first : Number(to);
+    return Array.from({ length: last - first + 1 }, (_, n) => ({ ip, host, port: first + n }));
+  });
+}
+
+const portsOf = (all: Record<string, Service>) =>
+  Object.fromEntries(
+    Object.entries(all)
+      .map(([name, service]) => [name, published(service.ports).map((p) => p.port)] as const)
+      .filter(([, ports]) => ports.length > 0),
+  );
+
+describe('the hardened Compose (P9-14, checklist S8)', () => {
+  it('publishes exactly the S8 list on 127.0.0.1: web 8443, broker 1883, control API, OPC UA, Modbus, ERP', async () => {
+    const all = await services('docker-compose.yml');
+    expect(portsOf(all)).toEqual({
+      broker: [1883],
+      simulator: [4800, 4841, 4842, 4843, 4844, 4845, 5020],
+      erp: [4600],
+      web: [8443],
+    });
+    for (const service of Object.values(all)) {
+      for (const port of published(service.ports)) expect(port.ip).toBe('127.0.0.1');
+    }
+    // No 4700, 4900 or 5442 (nor the web's old 8080) on the host.
+    for (const name of ['mes', 'gateway', 'db']) expect(all[name]?.ports).toBeUndefined();
+    expect(published(all.web?.ports)).toEqual([
+      { ip: '127.0.0.1', host: '${WEB_HTTPS_PORT:-8443}', port: 8443 },
+    ]);
+  });
+
+  it('republishes the MES, the gateway and the database for development only (compose.dev-ports.yml)', async () => {
+    const dev = await services('compose.dev-ports.yml');
+    expect(Object.keys(dev).sort()).toEqual(['db', 'gateway', 'mes']);
+    expect(
+      Object.fromEntries(Object.entries(dev).map(([n, s]) => [n, published(s.ports)])),
+    ).toEqual({
+      db: [{ ip: '127.0.0.1', host: '${DB_PORT:-5442}', port: 5432 }],
+      gateway: [{ ip: '127.0.0.1', host: '${GATEWAY_HTTP_PORT:-4900}', port: 4900 }],
+      mes: [{ ip: '127.0.0.1', host: '${MES_HTTP_PORT:-4700}', port: 4700 }],
+    });
+    const scripts = (
+      JSON.parse(await readFile(join(REPO, 'package.json'), 'utf8')) as {
+        scripts: Record<string, string>;
+      }
+    ).scripts;
+    expect(scripts['stack:up']).toBe('docker compose up -d --wait');
+    expect(scripts['stack:up:dev']).toBe(
+      'docker compose --file docker-compose.yml --file compose.dev-ports.yml up -d --wait',
+    );
+  });
+
+  it("keeps the gate smoke's override hardened: nothing of the MES, gateway or database published", async () => {
+    const smoke = await services('e2e/compose.ephemeral-ports.yml');
+    expect(portsOf(smoke)).toEqual({ simulator: [4800], erp: [4600], web: [8443] });
+    for (const port of published(smoke.web?.ports)) expect(port).toMatchObject({ host: '' });
+  });
+
+  it("makes the cookie Secure by default and gives the web the pki step's certificate, read-only", async () => {
+    const all = await services('docker-compose.yml');
+    expect(all.mes?.environment?.MES_COOKIE_SECURE).toBe('${MES_COOKIE_SECURE:-on}');
+    expect(all.web?.volumes).toEqual(['web-tls:/etc/nginx/tls:ro']);
+    expect(all.web?.depends_on?.pki).toEqual({ condition: 'service_completed_successfully' });
+    expect(all.pki?.volumes).toEqual(
+      expect.arrayContaining(['pki-ca:/var/lib/pki/ca', 'web-tls:/var/lib/pki/web']),
+    );
+    expect(all.pki?.group_add).toEqual(['101']);
+    // The dev CA's key: in pki-ca, which only the one-shot pki step mounts.
+    const mounting = Object.entries(all)
+      .filter(([, s]) => (s.volumes ?? []).some((v) => v.startsWith('pki-ca:')))
+      .map(([name]) => name);
+    expect(mounting).toEqual(['pki']);
+  });
+});
+
+describe('the HTTPS front (P9-14, checklist S4)', () => {
+  it('listens on 8443 with TLS only, TLS 1.3, no redirect and no HSTS', async () => {
+    const dir = join(REPO, 'apps/web/nginx');
+    const template = await readFile(join(dir, 'default.conf.template'), 'utf8');
+    const directives = template
+      .split('\n')
+      .map((line) => line.replace(/#.*$/, '').trim())
+      .filter((line) => line !== '');
+    expect(directives.filter((line) => line.startsWith('listen '))).toEqual(['listen 8443 ssl;']);
+    expect(directives).toContain('ssl_protocols TLSv1.3;');
+    expect(directives).toContain('ssl_session_tickets off;');
+    expect(directives.filter((line) => /^return\s+30\d|^error_page\s+497/.test(line))).toEqual([]);
+    for (const file of await readdir(dir)) {
+      const text = (await readFile(join(dir, file), 'utf8'))
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('#'))
+        .join('\n');
+      expect(text, file).not.toMatch(/strict-transport-security/i);
+    }
+  });
+
+  it('never lets Playwright accept any certificate: the Chromium SPKI pin, not ignoreHTTPSErrors', async () => {
+    const config = await readFile(join(REPO, 'e2e/playwright.config.ts'), 'utf8');
+    expect(config).toContain('chromiumSpkiArgument(spki)');
+    const files = [
+      'e2e/playwright.config.ts',
+      ...(await readdir(join(REPO, 'e2e/browser'), { recursive: true }))
+        .filter((file) => file.endsWith('.ts'))
+        .map((file) => join('e2e/browser', file)),
+    ];
+    for (const file of files) {
+      const code = (await readFile(join(REPO, file), 'utf8'))
+        .split('\n')
+        .filter((line) => !/^\s*(\*|\/\/)/.test(line))
+        .join('\n');
+      expect(code, file).not.toMatch(/ignoreHTTPSErrors|ignore-certificate-errors(?!-spki-list)/);
+    }
+  });
+});

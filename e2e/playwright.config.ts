@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
+import { WEB_SPKI_ENV, chromiumSpkiArgument } from '@shopfloor/test-kit/tls';
 
 /**
  * The browser checks of the reconciliation (#100, #123, #147, #178). They run only inside
@@ -25,11 +26,24 @@ import { defineConfig, devices } from '@playwright/test';
  *   episode and a lot, the terminal's banners, the close refused while held and allowed after.
  * The console run (#237, `pnpm test:console`, src/console-pass.ts) has a project of its own,
  * `console` (browser/console): every `/sim/` refusal and every console action as admin.
+ * The HTTPS front (P9-14, ADR-0039, checklist S4; browser/tls) runs in `orders-dispatch` (the gate's
+ * reconciliation, while the simulator waits) and in `console`.
  * Every run holds the host-wide heavy-suite lock (#228, src/playwright-lock.ts).
  * Chromium only. On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
+ *
+ * TLS (P9-14): the web front serves a certificate of the stack's own dev CA, which Chromium doesn't
+ * trust. The harness passes the SPKI hash of that certificate (RECONCILE_WEB_SPKI, from the pki
+ * step's volume, checked against the handshake: e2e/src/stack.ts `webTrust`), and Chromium is
+ * launched with `--ignore-certificate-errors-spki-list` for that key alone. Never
+ * `ignoreHTTPSErrors`: it would accept any certificate (browser/tls/tls.spec.ts proves another
+ * one is refused). The test runner's own Node requests trust the CA through NODE_EXTRA_CA_CERTS.
  */
 const results = process.env.RECONCILE_RESULTS ?? join(import.meta.dirname, 'results');
-const chromium = devices['Desktop Chrome'];
+const spki = process.env[WEB_SPKI_ENV];
+const chromium = {
+  ...devices['Desktop Chrome'],
+  ...(spki ? { launchOptions: { args: [chromiumSpkiArgument(spki)] } } : {}),
+};
 
 export default defineConfig({
   testDir: './browser',
@@ -47,7 +61,7 @@ export default defineConfig({
   projects: [
     {
       name: 'live',
-      testIgnore: ['final/**', 'orders/**', 'quality/**', 'console/**'],
+      testIgnore: ['final/**', 'orders/**', 'quality/**', 'console/**', 'tls/**'],
       outputDir: join(results, 'playwright', 'live'),
       use: { ...chromium },
     },
@@ -59,7 +73,7 @@ export default defineConfig({
     },
     {
       name: 'orders-dispatch',
-      testDir: './browser/orders/dispatch',
+      testMatch: ['orders/dispatch/*.spec.ts', 'tls/*.spec.ts'],
       outputDir: join(results, 'playwright', 'orders-dispatch'),
       use: { ...chromium },
     },
@@ -95,7 +109,7 @@ export default defineConfig({
     },
     {
       name: 'console',
-      testDir: './browser/console',
+      testMatch: ['console/*.spec.ts', 'tls/*.spec.ts'],
       outputDir: join(results, 'playwright', 'console'),
       use: { ...chromium },
     },

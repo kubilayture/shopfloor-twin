@@ -301,11 +301,17 @@ async function until(what: string, check: () => Promise<boolean>, timeoutMs: num
  */
 let browserChild: ChildProcess | undefined;
 
+/**
+ * The web front's trust for every Playwright run (P9-14): NODE_EXTRA_CA_CERTS for the test runner's
+ * own requests and Chromium's SPKI pin (playwright.config.ts), set once the web is up.
+ */
+let browserTrust: Readonly<Record<string, string>> = {};
+
 function runBrowser(project: string, env: Record<string, string>): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn('pnpm', ['exec', 'playwright', 'test', '--project', project], {
       cwd: join(REPO, 'e2e'),
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...browserTrust, ...env },
       stdio: 'inherit',
     });
     browserChild = child;
@@ -748,7 +754,10 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
           ctx = { stack, mes, erp, sim, gateway, log, fail };
           log('starting web');
           await stack.compose(['up', '--detach', '--wait', '--no-build', 'web']);
-          webUrl = await stack.url('web', 8080);
+          // HTTPS (P9-14): the served certificate checked, the dev CA trusted, Chromium pinned.
+          const trust = await stack.webTrust({ sibling: true });
+          webUrl = trust.url;
+          browserTrust = trust.env;
           ordersReport.import = await checkImport(ctx);
           log(`the MES imported the ERP's orders: ${JSON.stringify(ordersReport.import)}`);
           const exitCode = await runBrowser('orders-dispatch', {
@@ -810,7 +819,10 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
         if (!orders) {
           log('starting web');
           await stack.compose(['up', '--detach', '--wait', '--no-build', 'web']);
-          webUrl = await stack.url('web', 8080);
+          // HTTPS (P9-14): the served certificate checked, the dev CA trusted, Chromium pinned.
+          const trust = await stack.webTrust();
+          webUrl = trust.url;
+          browserTrust = trust.env;
         }
         phase('webReady');
 

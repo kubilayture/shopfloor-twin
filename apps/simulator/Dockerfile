@@ -44,10 +44,13 @@ COPY packages/spc-core/src packages/spc-core/src
 COPY packages/trace-core/src packages/trace-core/src
 COPY apps/simulator/src apps/simulator/src
 # The simulator's PKI volume, and the mount points of the one-shot `pki` service and the
-# `opcua-tools` client (#239, ADR-0038), which run this image: a new named volume takes the
-# ownership of its mount point, so all of them belong to `node`.
+# `opcua-tools` client (#239, ADR-0038; the dev CA's and the web front's since P9-14, ADR-0039),
+# which run this image: a new named volume takes the ownership of its mount point, so all of them
+# belong to `node`.
 RUN mkdir -p /var/lib/simulator/pki /var/lib/pki/simulator /var/lib/pki/gateway /var/lib/pki/tools \
-  && chown node:node /var/lib/simulator/pki /var/lib/pki/simulator /var/lib/pki/gateway /var/lib/pki/tools
+    /var/lib/pki/ca /var/lib/pki/web \
+  && chown node:node /var/lib/simulator/pki /var/lib/pki/simulator /var/lib/pki/gateway /var/lib/pki/tools \
+    /var/lib/pki/ca /var/lib/pki/web
 USER node
 EXPOSE 4800 4841 4842 4843 4844 4845 5020
 HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=12 \

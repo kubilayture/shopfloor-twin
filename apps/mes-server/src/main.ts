@@ -248,6 +248,12 @@ try {
   } else {
     log.info('MES_AUTH=on: every route but the login needs a session');
   }
+  if (env.MES_COOKIE_SECURE === 'off') {
+    log.warn(
+      'MES_COOKIE_SECURE=off: the session cookie is sft_session without Secure, for a browser on ' +
+        'plain HTTP straight to the MES only (ADR-0039); behind the HTTPS front leave it on',
+    );
+  }
   ingest = new Ingest({
     db,
     readDb,

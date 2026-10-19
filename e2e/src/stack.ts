@@ -9,6 +9,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { establishWebTrust, type WebTrust } from '@shopfloor/test-kit/tls';
 
 const run = promisify(execFile);
 
@@ -37,6 +38,27 @@ export async function removeImages(
 }
 
 export const REPO = resolve(import.meta.dirname, '../..');
+
+/**
+ * Run inside the `pki` container (its image, its `pki-ca` volume): a one-day certificate of the
+ * stack's dev CA for the web's names with a fresh key, printed as JSON (#241 review).
+ */
+const MINT_SIBLING = `
+import { readFileSync } from 'node:fs';
+import { certificateAuthorityFrom, issueTlsServerCertificate } from '/app/packages/pki/src/index.ts';
+const ca = await certificateAuthorityFrom(
+  readFileSync('/var/lib/pki/ca/ca.pem', 'utf8'),
+  readFileSync('/var/lib/pki/ca/private/ca-key.pem', 'utf8'),
+);
+const minted = await issueTlsServerCertificate(ca, {
+  commonName: 'shopfloor-twin web',
+  dnsNames: ['localhost'],
+  ipAddresses: ['127.0.0.1'],
+  validityDays: 1,
+  now: new Date(),
+});
+console.log(JSON.stringify(minted));
+`;
 
 export interface StackOptions {
   readonly project: string;
@@ -125,11 +147,56 @@ export class Stack {
   }
 
   /** `http://127.0.0.1:<port>` of a service's published container port (ephemeral). */
-  async url(service: string, port: number): Promise<string> {
+  async url(service: string, port: number, scheme: 'http' | 'https' = 'http'): Promise<string> {
     const published = (await this.compose(['port', service, String(port)])).trim();
     const hostPort = /:(\d+)$/.exec(published)?.[1];
     if (hostPort === undefined) throw new Error(`${service}:${String(port)} is not published`);
-    return `http://127.0.0.1:${hostPort}`;
+    return `${scheme}://127.0.0.1:${hostPort}`;
+  }
+
+  /**
+   * The web front (P9-14, ADR-0039): `https://127.0.0.1:<port>` of nginx's 8443, after checking
+   * that it serves the certificate the pki step wrote and trusting the stack's dev CA in this
+   * process. The result's `env` makes a child trust it too (NODE_EXTRA_CA_CERTS) and gives
+   * Playwright's Chromium the SPKI pin of this certificate (never `ignoreHTTPSErrors`). With
+   * `sibling`, also a certificate of the same dev CA for the same names but another key, minted
+   * inside the one-shot `pki` container (the CA key never leaves its volume), in `sibling.pem` and
+   * `sibling-key.pem` of the run's own directory named by RECONCILE_WEB_SIBLING: the browser must
+   * refuse it too (#241 review; e2e/browser/tls).
+   */
+  async webTrust(options: { readonly sibling?: boolean } = {}): Promise<WebTrust> {
+    const dir = this.#dir;
+    if (dir === undefined) throw new Error('prepare() first');
+    const read = (file: string) =>
+      this.compose(['exec', '-T', 'web', 'cat', `/etc/nginx/tls/${file}`]);
+    const trust = await establishWebTrust({
+      url: await this.url('web', 8443, 'https'),
+      caPem: await read('ca.pem'),
+      serverPem: await read('server.pem'),
+      dir,
+    });
+    if (options.sibling !== true) return trust;
+    const out = await this.compose([
+      'run',
+      '--rm',
+      '--no-deps',
+      '-T',
+      'pki',
+      'node',
+      '--input-type=module',
+      '-e',
+      MINT_SIBLING,
+    ]);
+    const minted = JSON.parse(out.trim().split('\n').at(-1) ?? '{}') as {
+      certificatePem?: string;
+      privateKeyPem?: string;
+    };
+    if (minted.certificatePem === undefined || minted.privateKeyPem === undefined) {
+      throw new Error('could not mint a sibling web certificate in the pki container');
+    }
+    await writeFile(join(dir, 'sibling.pem'), minted.certificatePem, { mode: 0o600 });
+    await writeFile(join(dir, 'sibling-key.pem'), minted.privateKeyPem, { mode: 0o600 });
+    return { ...trust, env: { ...trust.env, RECONCILE_WEB_SIBLING: dir } };
   }
 
   /** Rows of a SQL query returning one JSON value, run in the `db` container. */

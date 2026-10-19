@@ -141,3 +141,12 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | reconcile | passed | 1,651.2 s | alarms OK, orders OK, quality OK               |
 
   - **Re-review** (approved, small items): rebased onto `main` after #252 (`3da7c3b`; conflicts only in STATUS and this log, both kept). (N1) The replay's summary and line OEE were computed to `end`: a recording now also carries `stopAt` (the run's simulation time at the stop, with `endAfterEvents`), the replay moves its clock there after the last event and takes the summary, trace and line OEE at `stopAt`; tested against the live ground truth at the stop on a run whose `end` was extended for an action not due yet. (N2) A recorded dispatch after the recorded stop (`afterEvents` > `endAfterEvents` or `acceptedAt` > `stopAt`), half a stop and a stop outside the run are refused (`recordedDispatchIssues`, schema and `runHeadless`); `stopAtRecorded` throws when the run has already processed more than `endAfterEvents`. (N3) Tests: a direct `runHeadless` with a mismatched `inputOrder` refused; `--end` drops the stop (`withEarlierEnd`, extracted from the CLI).
+  - **Gate after the re-review** on `18a1028` (`GATE_STEPS=verify,golden,e2e,smoke`, `GATE_PROJECT=gate236c`, `GATE_TAG=pr236c`, under the heavy lock; reconcile passed on `d4e7019` and these changes touch only the headless recording path), `GATE-OK`; free at the start: host 33.2 GiB, Docker 79.3 GiB.
+
+    | Step      | Result  | Time    | Notes                                          |
+    | --------- | ------- | ------- | ---------------------------------------------- |
+    | verify    | passed  | 397.5 s | `pnpm verify --concurrency=1`                  |
+    | golden    | passed  | 1.5 s   | all four goldens, `line-oee.json` included     |
+    | e2e       | passed  | 956.3 s |                                                |
+    | smoke     | passed  | 87.7 s  | web and MES on ephemeral ports 33156 and 33155 |
+    | reconcile | skipped | 0 s     | not in `GATE_STEPS`; passed on `d4e7019`       |

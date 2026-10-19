@@ -16,6 +16,7 @@ import {
   downtimeAuditSchema,
   downtimeListSchema,
   equipmentListSchema,
+  lineOeeSchema,
   oeeResultSchema,
   operatorKpiListSchema,
   paretoSchema,
@@ -352,6 +353,16 @@ export class MesClient {
   /** `shiftKey` as the ground truth keys it: `2026-10-12/A`. */
   shiftTotals(shiftKey: string) {
     return this.#get(`/api/v1/shifts/${shiftKey}/totals`, shiftTotalsSchema);
+  }
+
+  /** Line throughput OEE per hour or shift bucket over [from, to) (#232). */
+  lineOee(bucket: 'hour' | 'shift', from: Date, to: Date) {
+    const query = new URLSearchParams({
+      bucket,
+      from: from.toISOString(),
+      to: to.toISOString(),
+    });
+    return this.#get(`/api/v1/oee/line?${query.toString()}`, lineOeeSchema);
   }
 
   /** OEE of one shift for every machine and work center (#120). */

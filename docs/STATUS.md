@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #232 done (branch `feat/232-mes-line-oee`, wave B; ADR-0036 amendment P9-05; no migration): MES line throughput OEE per UTC hour, shift bucket and order, derived on read (good packed at PCK-01 × ASM-01's effective cycle ÷ planned busy time; in orders mode only in-progress time), final buckets kept in memory; `GET /api/v1/oee/line`, `GET /api/v1/oee/line/orders` (route matrix 93), the order OEE body's `line`, `mayRevise`, `revision`; push `oee:line`, order topics on their own budget; `MES_PRODUCTION_MODE`; golden reconciliation of all four goldens equal to `line-oee.json` in order, in bounded disorder and shuffled with 10 % duplicates; P9-04's follow-ups folded in.
 - Wave A checkpoint (`docs/phases/phase-09-log.md`, 2026-10-19). Its three conditions are met:
   - `line-oee.json` is committed for the four goldens;
   - the goldens' `events.sha256`, `summary.json` (with both configuration hashes) and `trace.json` are byte-identical;

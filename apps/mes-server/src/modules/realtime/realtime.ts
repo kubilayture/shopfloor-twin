@@ -18,6 +18,8 @@ import {
   userSchema,
   userUpdateRequestSchema,
   orderOeeSchema,
+  lineOeeSchema,
+  lineOrdersSchema,
   type ProblemType,
   type SessionDto,
   type UserDto,
@@ -48,7 +50,14 @@ import type { Execution } from '../execution/index.ts';
 import type { Orders } from '../orders/index.ts';
 import type { Holds, Quality } from '../quality/index.ts';
 import type { Genealogy } from '../genealogy/index.ts';
-import { pareto, type DowntimeFeed, type Oee, type OeeScope, type OrderOee } from '../oee/index.ts';
+import {
+  pareto,
+  type DowntimeFeed,
+  type LineOee,
+  type Oee,
+  type OeeScope,
+  type OrderOee,
+} from '../oee/index.ts';
 import { ShiftError, type ShiftRecord, type Shifts } from '../shifts/index.ts';
 import {
   alarmKpiDto,
@@ -67,6 +76,7 @@ import { executionRoutes, type ExecutionApi } from './execution-routes.ts';
 import { genealogyRoutes, type GenealogyApi } from './genealogy-routes.ts';
 import { holdRoutes, type HoldsApi } from './hold-routes.ts';
 import { orderOeeDto } from './order-oee-dto.ts';
+import { bottleneckDtos, lineBucketDto, orderLineDto } from './line-oee-dto.ts';
 import { orderParams, orderRoutes, type OrdersApi } from './order-routes.ts';
 import { qualityRoutes, type QualityApi } from './quality-routes.ts';
 import { terminalRoutes, workCentersOf, type TerminalApi } from './terminal-routes.ts';
@@ -137,6 +147,8 @@ import {
   noQuery,
   oeeListSchema,
   oeeQuery,
+  lineOeeQuery,
+  lineOrdersQuery,
   paretoQuery,
   paretoSchema,
   plantSchema,
@@ -199,6 +211,11 @@ export interface ApiSources {
   >;
   /** Order OEE (#231); `GET /oee/orders/{id}` answers 503 without it. */
   readonly orderOee?: Pick<OrderOee, 'order' | 'onChange'>;
+  /** Line OEE (#232); `GET /oee/line` and `GET /oee/line/orders` answer 503 without it. */
+  readonly lineOee?: Pick<
+    LineOee,
+    'buckets' | 'orders' | 'current' | 'model' | 'onChange' | 'productionMode'
+  >;
   /** Downtime record changes for the `downtime` push topic (#120). */
   readonly downtime?: Pick<DowntimeFeed, 'subscribe'>;
   /** Operator coding writes and their audit (#121). */
@@ -1173,6 +1190,79 @@ export async function registerRealtime(
           const view = await source.order(params.id);
           if (!view) throw new HttpProblem(404, `no order ${params.id}`);
           return orderOeeDto(view);
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/oee/line',
+          summary: 'Line throughput OEE per hour or shift bucket, with the bottleneck per product',
+          description:
+            'Derived on read (ADR-0036 and its P9-05 amendment): good units packed at the last ' +
+            "operation × the designed bottleneck's effective cycle per product (deriveBottlenecks: " +
+            'ideal cycle ÷ machines on the operation, the largest; ASM-01) ÷ line planned busy ' +
+            "time: the shift buckets minus the breaks and the bottleneck machines' Maintenance; in " +
+            'orders mode only while an order is in progress (from the earliest head time of its ' +
+            'jobs to its completion, ADR-0031). One ratio, no A × P × Q split; not capped ' +
+            '(`aboveOne`), null when nothing is planned. Planned time and packs count before the ' +
+            'plant clock (`through`). `final` once every input is final through the ' +
+            "bucket's end; `incidents` lists written-off gaps under it (`mayRevise`, `revision`). " +
+            'The current hour and shift are pushed on `oee:line`.',
+          tags: ['oee'],
+          query: lineOeeQuery,
+          response: lineOeeSchema,
+          errors: [400, 503],
+        },
+        async ({ query }) => {
+          const source = ready().sources.lineOee;
+          if (!source) throw new HttpProblem(503, 'line OEE is not available');
+          const [model, buckets] = await Promise.all([source.model(), source.buckets(query)]);
+          return {
+            bucket: query.bucket,
+            from: iso(query.from),
+            to: iso(query.to),
+            productionMode: source.productionMode,
+            bottlenecks: bottleneckDtos(model.bottlenecks),
+            buckets: buckets.map(lineBucketDto),
+          };
+        },
+      );
+
+      getRoute(
+        api,
+        {
+          url: '/oee/line/orders',
+          summary: 'Line throughput OEE per order over its in-progress time (not additive)',
+          description:
+            'Every order whose in-progress time (from the earliest head time of its jobs to its ' +
+            'completion, or the cut-off while open) overlaps the range, with its own good packed ' +
+            'units over that time (ADR-0036). Orders overlap, so these values are not additive ' +
+            'across orders. Empty in schedule mode. The same `line` is on `GET /oee/orders/{id}`.',
+          tags: ['oee', 'orders'],
+          query: lineOrdersQuery,
+          response: lineOrdersSchema,
+          errors: [400, 503],
+        },
+        async ({ query }) => {
+          const source = ready().sources.lineOee;
+          if (!source) throw new HttpProblem(503, 'line OEE is not available');
+          const [model, orders] = await Promise.all([source.model(), source.orders(query)]);
+          return {
+            from: iso(query.from),
+            to: iso(query.to),
+            productionMode: source.productionMode,
+            bottlenecks: bottleneckDtos(model.bottlenecks),
+            orders: orders.map((order) => ({
+              orderId: order.orderId,
+              product: order.product,
+              status: order.status,
+              line: orderLineDto(order.line),
+              incidents: order.incidents.map((incident) => ({ ...incident })),
+              mayRevise: order.mayRevise,
+              revision: order.revision,
+            })),
+          };
         },
       );
 
@@ -2608,6 +2698,7 @@ export async function registerRealtime(
         catalog: new Set(catalog.keys()),
         oee: sources.oee,
         ...(sources.orderOee ? { orderOee: sources.orderOee } : {}),
+        ...(sources.lineOee ? { lineOee: sources.lineOee } : {}),
         oeeTopics: new Map<string, { scope: OeeScope; members: readonly string[] }>([
           ...[...catalog.keys()].map((id): [string, { scope: OeeScope; members: string[] }] => [
             id,

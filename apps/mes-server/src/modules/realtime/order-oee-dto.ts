@@ -5,6 +5,7 @@
  */
 import type { OrderOeeDto } from '@shopfloor/contracts/mes-api';
 import type { OrderOeeView } from '../oee/index.ts';
+import { orderLineDto } from './line-oee-dto.ts';
 import { ratio, resultDto } from './oee-dto.ts';
 
 const iso = (at: number | Date): string => new Date(at).toISOString();
@@ -68,5 +69,8 @@ export function orderOeeDto(view: OrderOeeView): OrderOeeDto {
       at: cut.at === null ? null : iso(cut.at),
     })),
     incidents: view.incidents.map((incident) => ({ ...incident })),
+    mayRevise: view.mayRevise,
+    revision: view.revision,
+    line: view.line === null ? null : orderLineDto(view.line),
   };
 }

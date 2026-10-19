@@ -519,6 +519,23 @@ export class Equipment {
   }
 
   /**
+   * How often the final hours of (equipment, epoch) overlapping [from, to) changed after they were
+   * final (#232): the highest `bucket_finality` revision among them, 0 while none changed. Read from
+   * the finality rows themselves, never from `state_hourly`.
+   */
+  async revision(equipment: string, epoch: number, from: Date, to: Date): Promise<number> {
+    const row = await this.#readDb
+      .selectFrom('equipment.bucket_finality')
+      .select((eb) => eb.fn.max('revision').as('revision'))
+      .where('equipment', '=', equipment)
+      .where('epoch', '=', epoch)
+      .where('hour', '>', new Date(from.getTime() - HOUR))
+      .where('hour', '<', to)
+      .executeTakeFirst();
+    return row?.revision ?? 0;
+  }
+
+  /**
    * The hourly state rows (`stateHourly`) and the Stopped pieces (`stopPieces`) of the hours in
    * [from, to), read in one REPEATABLE READ snapshot (ADR-0021: so a concurrent interval update
    * can't make the stop pieces disagree with the Stopped time of the same read).
@@ -778,12 +795,15 @@ export class Equipment {
       .map(([epoch, watermark]) => ({ epoch, watermark: new Date(watermark) }));
   }
 
-  /** Stored pieces of one equipment overlapping [from, to), by time (and epoch), up to `limit`. */
+  /**
+   * Stored pieces of one equipment overlapping [from, to), by time (and epoch), up to `limit`; with
+   * `state`, only the pieces in that state (#232: the bottleneck's Maintenance).
+   */
   async intervals(
     equipment: string,
     from: Date,
     to: Date,
-    options: { readonly epoch?: number; readonly limit?: number } = {},
+    options: { readonly epoch?: number; readonly limit?: number; readonly state?: string } = {},
   ): Promise<StoredInterval[]> {
     let query = this.#readDb
       .selectFrom('equipment.equipment_state_interval')
@@ -794,6 +814,7 @@ export class Equipment {
       .where('start_time', '<', to)
       .where('end_time', '>', from);
     if (options.epoch !== undefined) query = query.where('epoch', '=', options.epoch);
+    if (options.state !== undefined) query = query.where('state', '=', options.state);
     if (options.limit !== undefined) query = query.limit(options.limit);
     const rows = await query.orderBy('start_time').orderBy('epoch').execute();
     return rows.map((row) => ({

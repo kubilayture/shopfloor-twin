@@ -11,7 +11,7 @@ import { DowntimeCoding, Equipment, downtimeRules } from './modules/equipment/in
 import { Identity, type IdentityLog } from './modules/identity/index.ts';
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
-import { DowntimeFeed, Oee, OrderOee } from './modules/oee/index.ts';
+import { DowntimeFeed, LineOee, Oee, OrderOee } from './modules/oee/index.ts';
 import { Execution } from './modules/execution/index.ts';
 import { Genealogy } from './modules/genealogy/index.ts';
 import { ErpClient, MqttCommandPublisher, Orders } from './modules/orders/index.ts';
@@ -71,6 +71,7 @@ let ingest: Ingest | undefined;
 let equipment: Equipment | undefined;
 let oee: Oee | undefined;
 let orderOee: OrderOee | undefined;
+let lineOee: LineOee | undefined;
 let downtime: DowntimeFeed | undefined;
 let coding: DowntimeCoding | undefined;
 let alarms: Alarms | undefined;
@@ -142,6 +143,7 @@ async function shutdown(signal: string): Promise<void> {
     () => {
       oee?.stop();
       orderOee?.stop();
+      lineOee?.stop();
       downtime?.stop();
       coding?.stop();
       return Promise.resolve();
@@ -397,6 +399,20 @@ try {
   });
   orderOee = orderOeeModule;
   orderOeeModule.start();
+  // Line OEE (#232): per hour and shift bucket from the packing machine's cycles, the bottleneck's
+  // pieces, the calendar and (orders mode) the orders' in-progress time; final buckets in memory.
+  const lineOeeModule = new LineOee({
+    orderOee: orderOeeModule,
+    ingest,
+    equipment: equipmentModule,
+    execution: executionModule,
+    shiftPattern: await masterData.shiftPattern(),
+    productionMode: env.MES_PRODUCTION_MODE,
+    log,
+  });
+  lineOee = lineOeeModule;
+  await lineOeeModule.start();
+  log.info({ productionMode: env.MES_PRODUCTION_MODE }, 'line OEE production mode');
   // SPC (#200): measurements from the leak tester's cycle facts, limit versions and signal
   // episodes on final data; the charts are derived on read through the API's pool.
   const qualityModule = new Quality({
@@ -465,6 +481,7 @@ try {
     ingest,
     oee,
     orderOee: orderOeeModule,
+    lineOee: lineOeeModule,
     downtime,
     coding: {
       code: (key, request) => codingModule.code(key, request),

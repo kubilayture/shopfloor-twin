@@ -3,6 +3,8 @@ import { Registry } from 'prom-client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
+import { fraction } from '@shopfloor/oee-core';
+import { lineValue, type LineBucket, type LineChange } from '../oee/index.ts';
 import type {
   CharacteristicRecord,
   HoldChange,
@@ -662,6 +664,152 @@ describe('the quality topic (#200)', () => {
     const { connect } = setup();
     const socket = connect();
     socket.request({ type: 'subscribe', topic: 'quality' });
+    expect(socket.sent).toMatchObject([{ type: 'error', code: 'unknown-topic' }]);
+  });
+});
+
+describe('the OEE topics’ budgets and the line topic (#232)', () => {
+  const HOUR = 3_600_000;
+  const bucket = (from: number, kind: 'hour' | 'shift'): LineBucket => ({
+    bucket: kind,
+    key: kind === 'hour' ? new Date(from).toISOString() : '2026-10-12/A',
+    value: lineValue({
+      bucket: { from, to: from + (kind === 'hour' ? HOUR : 8 * HOUR) },
+      cut: from + HOUR / 2,
+      scheduled: [{ from: T0, to: T0 + 8 * HOUR }],
+      plannedStops: [],
+      packs: [],
+      effectiveCycleMs: { 'VB-100': fraction(150_000n) },
+    }),
+    final: false,
+    incidents: [],
+    mayRevise: false,
+    revision: 0,
+  });
+
+  function lineSetup() {
+    const fake = fakeSources();
+    const lineListeners = new Set<(change: LineChange) => void>();
+    let currentCalls = 0;
+    let hourStart = T0 + 2 * HOUR;
+    const sources: PushSources = {
+      ...fake.sources,
+      oee: {
+        current: () => Promise.resolve({ hour: null, shift: null }),
+        onChange: () => () => undefined,
+      },
+      oeeTopics: new Map([
+        ['cnc-01', { scope: 'equipment', members: ['cnc-01'] }],
+        ['wsh-01', { scope: 'equipment', members: ['wsh-01'] }],
+      ]),
+      orderOee: {
+        order: () => Promise.resolve(undefined),
+        onChange: () => () => undefined,
+      },
+      lineOee: {
+        productionMode: 'orders',
+        model: () =>
+          Promise.resolve({
+            bottlenecks: {},
+            effectiveCycleMs: {},
+            bottleneckMachines: ['asm-01'],
+            packing: ['pck-01'],
+            first: ['cnc-01', 'cnc-02'],
+            machines: [],
+          }),
+        current: () => {
+          currentCalls++;
+          return Promise.resolve({ hour: bucket(hourStart, 'hour'), shift: bucket(T0, 'shift') });
+        },
+        onChange: (listener) => {
+          lineListeners.add(listener);
+          return () => lineListeners.delete(listener);
+        },
+      },
+    };
+    const hub = new PushHub({
+      clockMs: 60_000,
+      heartbeatMs: 60_000,
+      oeeMs: 10,
+      maxOeeTopics: 2,
+      maxOrderOeeTopics: 2,
+    });
+    hubs.push(hub);
+    hub.attach(sources);
+    const socket = new FakeSocket();
+    hub.connect(socket);
+    const emit = (change: LineChange) => {
+      for (const listener of lineListeners) listener(change);
+    };
+    return {
+      socket,
+      emit,
+      calls: () => currentCalls,
+      moveHour: (to: number) => (hourStart = to),
+    };
+  }
+
+  it('counts order topics against their own budget, and the line topic against neither', async () => {
+    const { socket } = lineSetup();
+    for (const topic of [
+      'oee:cnc-01',
+      'oee:wsh-01',
+      'oee:order:PO-1',
+      'oee:order:PO-2',
+      'oee:order:PO-3',
+      'oee:line',
+    ]) {
+      socket.request({ type: 'subscribe', topic });
+    }
+    await advance(20);
+    const errors = socket.sent.filter((m) => m.type === 'error');
+    expect(errors).toMatchObject([
+      { code: 'too-many-subscriptions', detail: 'at most 2 order OEE topics' },
+    ]);
+    expect(
+      socket.sent.filter((m) => m.type === 'subscribed').map((m) => ('topic' in m ? m.topic : '')),
+    ).toEqual(['oee:cnc-01', 'oee:wsh-01', 'oee:order:PO-1', 'oee:order:PO-2', 'oee:line']);
+  });
+
+  it('pushes the line topic’s snapshot, then a delta only for changes it reads', async () => {
+    const { socket, emit, calls, moveHour } = lineSetup();
+    socket.request({ type: 'subscribe', topic: 'oee:line' });
+    await advance(20);
+    const snapshot = socket.sent.find((m) => m.type === 'snapshot');
+    expect(snapshot).toMatchObject({
+      topic: 'oee:line',
+      productionMode: 'orders',
+      hour: { key: '2026-10-12T05:00:00.000Z', through: '2026-10-12T05:30:00.000Z' },
+      shift: { key: '2026-10-12/A' },
+    });
+    expect(calls()).toBe(1);
+    // A late fact of an hour before the topic's shift: not read again.
+    emit({ equipment: 'pck-01', from: new Date(T0 - 2 * HOUR), to: new Date(T0 - HOUR) });
+    await advance(20);
+    expect(calls()).toBe(1);
+    // An hour inside its shift, or the orders: computed again (no delta while the body is equal).
+    emit({ equipment: 'pck-01', from: new Date(T0 + HOUR), to: new Date(T0 + 2 * HOUR) });
+    await advance(20);
+    expect(calls()).toBe(2);
+    emit({ orders: true });
+    await advance(20);
+    expect(calls()).toBe(3);
+    expect(socket.types().filter((t) => t === 'oee-line')).toEqual([]);
+    // The clock moved on: a later hour's change brings the new hour as a delta.
+    moveHour(T0 + 3 * HOUR);
+    emit({ equipment: 'asm-01', from: new Date(T0 + 3 * HOUR), to: new Date(T0 + 4 * HOUR) });
+    await advance(20);
+    expect(socket.sent.filter((m) => m.type === 'oee-line')).toMatchObject([
+      { hour: { key: '2026-10-12T06:00:00.000Z' } },
+    ]);
+    socket.request({ type: 'unsubscribe', topic: 'oee:line' });
+    expect(socket.types().at(-1)).toBe('unsubscribed');
+  });
+
+  it('refuses the line topic without the module', () => {
+    const { connect } = setup();
+    const socket = connect();
+    socket.request({ type: 'subscribe', topic: 'oee:line' });
     expect(socket.sent).toMatchObject([{ type: 'error', code: 'unknown-topic' }]);
   });
 });

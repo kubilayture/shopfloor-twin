@@ -715,6 +715,8 @@ const ROUTES: Readonly<Record<string, Permission | 'session' | 'public'>> = {
   'GET /api/v1/oee': 'read',
   'GET /api/v1/shifts/{date}/{shift}/oee': 'read',
   'GET /api/v1/oee/orders/{id}': 'read',
+  'GET /api/v1/oee/line': 'read',
+  'GET /api/v1/oee/line/orders': 'read',
   'GET /api/v1/shifts': 'read',
   'GET /api/v1/shifts/current': 'read',
   'GET /api/v1/reason-codes': 'read',
@@ -899,7 +901,7 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     );
     const api = routes.filter((route) => route.includes(' /api/v1/'));
     expect(api.sort()).toEqual(Object.keys(ROUTES).sort());
-    expect(api).toHaveLength(91);
+    expect(api).toHaveLength(93);
     expect(routes.filter((r) => !r.includes(' /api/v1/')).sort()).toEqual([
       'GET /health/live',
       'GET /health/ready',

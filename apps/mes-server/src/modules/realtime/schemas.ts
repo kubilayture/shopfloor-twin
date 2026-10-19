@@ -209,6 +209,27 @@ export const oeeQuery = z
 
 export const shiftOeeQuery = z.strictObject({ epoch: epochParam.optional() });
 
+/** `GET /oee/line` (#232): hours or shift buckets over a range, as `GET /oee`. */
+export const lineOeeQuery = z
+  .strictObject({
+    bucket: z.enum(['hour', 'shift']).describe('UTC hours, or shift buckets (whole shifts)'),
+    from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
+    to: queryTime.describe(
+      'End of the range (exclusive), ISO 8601; at most 7 days after `from` for hours, 31 for shifts',
+    ),
+  })
+  .superRefine((query, ctx) => {
+    range(query.bucket === 'hour' ? LIMITS.oeeHourRangeMs : LIMITS.oeeShiftRangeMs)(query, ctx);
+  });
+
+/** `GET /oee/line/orders` (#232): the orders in progress over a range. */
+export const lineOrdersQuery = z
+  .strictObject({
+    from: queryTime.describe('Start of the range (inclusive), ISO 8601'),
+    to: queryTime.describe('End of the range (exclusive), ISO 8601; at most 31 days after `from`'),
+  })
+  .superRefine(range(LIMITS.oeeShiftRangeMs));
+
 export const shiftsQuery = z
   .strictObject({
     from: queryTime.describe('Start of the range (inclusive), ISO 8601'),

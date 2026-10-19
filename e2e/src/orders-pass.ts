@@ -238,6 +238,12 @@ export async function checkOrdersAfterDrain(
   shiftEnd: number,
   operations: readonly string[],
 ) {
+  // The MES plans line OEE as the plant runs: in orders mode (#232, MES_PRODUCTION_MODE from the
+  // simulator's SIM_PRODUCTION in Compose).
+  const line = await ctx.mes.lineOee('shift', new Date(shiftEnd - 3_600_000), new Date(shiftEnd));
+  if (line.productionMode !== 'orders') {
+    ctx.fail(`GET /oee/line answers productionMode ${line.productionMode}, not orders`);
+  }
   const facts = await acceptedFacts(ctx.stack);
   const once = truth.orders.jobs.every((j) => facts[j.commandId] === 1);
   if (!once || Object.keys(facts).length !== truth.orders.jobs.length) {

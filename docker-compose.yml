@@ -204,6 +204,9 @@ services:
       COMMAND_RESEND_MS: ${COMMAND_RESEND_MS:-15000}
       COMMAND_ATTEMPTS: ${COMMAND_ATTEMPTS:-5}
       COMMAND_FAIL_MARGIN_MS: ${COMMAND_FAIL_MARGIN_MS:-30000}
+      # Line OEE (#232): the simulator's production mode; in orders mode only in-progress time is
+      # planned line time.
+      MES_PRODUCTION_MODE: ${SIM_PRODUCTION:-schedule}
       LOG_LEVEL: ${MES_LOG_LEVEL:-info}
     ports:
       - '127.0.0.1:${MES_HTTP_PORT:-4700}:4700'

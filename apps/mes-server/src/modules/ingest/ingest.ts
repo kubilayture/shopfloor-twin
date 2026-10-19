@@ -28,6 +28,7 @@ import {
   toJobFact,
   type AlarmAnchor,
   type AlarmFact,
+  type GapIncident,
   type JobFact,
   type StoredCommandResult,
   type StoredAlarmSnapshot,
@@ -594,6 +595,41 @@ export class Ingest {
   }
 
   /**
+   * Completed cycles of one equipment with plant time in [from, to), every device epoch, by time
+   * (#232, line OEE): each one's time, product and result, read from the stored facts (never from
+   * `cycle_hourly`, which may lag a refresh), so a caller buckets them exactly.
+   */
+  async cycleResults(
+    equipment: string,
+    from: Date,
+    to: Date,
+  ): Promise<{ epoch: number; at: Date; product: string; result: string }[]> {
+    if (to.getTime() <= from.getTime()) return [];
+    const rows = await (this.#options.readDb ?? this.#options.db)
+      .selectFrom('ingest.equipment_event')
+      .select([
+        'epoch',
+        'source_time',
+        sql<string>`payload -> 'value' ->> 'product'`.as('product'),
+        sql<string>`payload -> 'value' ->> 'result'`.as('result'),
+      ])
+      .where('equipment', '=', equipment)
+      .where('event_type', '=', 'cycle')
+      .where('source_time', '>=', from)
+      .where('source_time', '<', to)
+      .orderBy('source_time')
+      .orderBy('epoch')
+      .orderBy('seq')
+      .execute();
+    return rows.map((row) => ({
+      epoch: row.epoch,
+      at: row.source_time,
+      product: row.product,
+      result: row.result,
+    }));
+  }
+
+  /**
    * Completed cycles per UTC hour of one (equipment, epoch) in [from, to), counted from the stored
    * facts (not the aggregate, which may lag a second): the count an hour has when it becomes final.
    */
@@ -989,6 +1025,115 @@ export class Ingest {
       settledSeq,
       settledTime: time?.source_time ?? null,
     };
+  }
+
+  /**
+   * `deviceProgress` of several equipment in two queries (#232: order and line OEE read one per
+   * machine on every derived read), outside the message queue like `deviceProgress`.
+   */
+  async deviceProgresses(equipment: readonly string[]): Promise<Map<string, DeviceProgress>> {
+    const result = new Map<string, DeviceProgress>();
+    const ids = [...new Set(equipment)];
+    if (ids.length === 0) return result;
+    const cursors = await this.#options.db
+      .selectFrom('ingest.source_cursor')
+      .select(['stream', 'epoch', 'seen', 'reported'])
+      .where(
+        'stream',
+        'in',
+        ids.map((id) => `device:${id}`),
+      )
+      .execute();
+    const byId = new Map(cursors.map((c) => [c.stream.slice('device:'.length), c]));
+    const wanted: { equipment: string; epoch: number; seq: number }[] = [];
+    for (const id of ids) {
+      const cursor = byId.get(id);
+      const settledSeq = cursor ? settledThrough(cursor.seen, cursor.reported) : null;
+      if (cursor && settledSeq !== null) {
+        wanted.push({ equipment: id, epoch: cursor.epoch, seq: settledSeq });
+      }
+    }
+    const times = new Map<string, Date | null>();
+    if (wanted.length > 0) {
+      const rows = await sql<{ equipment: string; t: Date | null }>`
+        SELECT w.equipment, (
+          SELECT e.source_time FROM ingest.equipment_event e
+          WHERE e.equipment = w.equipment AND e.epoch = w.epoch AND e.seq <= w.seq
+          ORDER BY e.seq DESC LIMIT 1
+        ) AS t
+        FROM (VALUES ${sql.join(
+          wanted.map((w) => sql`(${w.equipment}::text, ${w.epoch}::bigint, ${w.seq}::bigint)`),
+        )}) AS w(equipment, epoch, seq)`.execute(this.#options.db);
+      for (const row of rows.rows) times.set(row.equipment, row.t);
+    }
+    for (const id of ids) {
+      const cursor = byId.get(id);
+      if (!cursor) {
+        result.set(id, {
+          equipment: id,
+          epoch: null,
+          receivedThrough: null,
+          lastSeq: null,
+          seen: [],
+          settledSeq: null,
+          settledTime: null,
+        });
+        continue;
+      }
+      const first = cursor.seen[0];
+      result.set(id, {
+        equipment: id,
+        epoch: cursor.epoch,
+        receivedThrough: first !== undefined && first[0] <= 1 ? first[1] : null,
+        lastSeq: cursor.seen.at(-1)?.[1] ?? null,
+        seen: cursor.seen,
+        settledSeq: settledThrough(cursor.seen, cursor.reported),
+        settledTime: times.get(id) ?? null,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * The sequence-gap incidents (ADR-0018, written off or open) of several device streams, each
+   * with the times of the facts around it, in one query (#232): `settled`'s incidents without its
+   * settled time.
+   */
+  async gapIncidents(
+    streams: readonly { readonly equipment: string; readonly epoch: number }[],
+  ): Promise<({ readonly equipment: string; readonly epoch: number } & GapIncident)[]> {
+    if (streams.length === 0) return [];
+    const rows = await sql<{
+      id: string | number;
+      stream: string;
+      epoch: string | number;
+      seq_from: string | number;
+      seq_to: string | number;
+      after: Date | null;
+      before: Date | null;
+    }>`
+      SELECT i.id, i.stream, i.epoch, i.seq_from, i.seq_to,
+        (SELECT e.source_time FROM ingest.equipment_event e
+          WHERE e.equipment = substr(i.stream, 8) AND e.epoch = i.epoch AND e.seq < i.seq_from
+          ORDER BY e.seq DESC LIMIT 1) AS after,
+        (SELECT e.source_time FROM ingest.equipment_event e
+          WHERE e.equipment = substr(i.stream, 8) AND e.epoch = i.epoch AND e.seq > i.seq_to
+          ORDER BY e.seq LIMIT 1) AS before
+      FROM ingest.data_quality_incident i
+      WHERE i.origin = 'mes' AND i.type = 'sequence-gap'
+        AND (i.stream, i.epoch) IN (${sql.join(
+          streams.map((s) => sql`(${`device:${s.equipment}`}::text, ${s.epoch}::bigint)`),
+        )})
+      ORDER BY i.stream, i.epoch, i.seq_from`.execute(this.#options.db);
+    return rows.rows.map((row) => ({
+      equipment: row.stream.slice('device:'.length),
+      epoch: Number(row.epoch),
+      id: Number(row.id),
+      seqFrom: Number(row.seq_from),
+      seqTo: Number(row.seq_to),
+      after: row.after,
+      before: row.before,
+    }));
   }
 
   /**

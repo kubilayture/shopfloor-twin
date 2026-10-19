@@ -505,6 +505,9 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
         });
       } else if ('view' in message) {
         applyTerminal(queryClient, message.topic, message.view);
+      } else if ('bottlenecks' in message) {
+        // Line OEE (#232): the dashboard subscribes to `oee:line` from #233 (P9-06) on.
+        return;
       } else if ('hour' in message) {
         applyOee(queryClient, message.topic, message.hour, message.shift);
       } else if ('samples' in message && message.samples.length > 0) {
@@ -534,6 +537,9 @@ export function applyMessage(queryClient: QueryClient, message: ServerMessage): 
       return;
     // Order OEE (#231): the web subscribes to `oee:order:<id>` from #233 (P9-06) on.
     case 'oee-order':
+      return;
+    // Line OEE (#232): the dashboard subscribes to `oee:line` from #233 (P9-06) on.
+    case 'oee-line':
       return;
     case 'downtime':
       queryClient.setQueryData<LiveDowntime>(liveKeys.downtime, (live) =>

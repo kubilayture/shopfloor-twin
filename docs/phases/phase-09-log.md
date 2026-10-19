@@ -474,3 +474,20 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | --------- | ------ | ------- | -------------------------------------------------------------------------------------------------------------- |
     | verify    | passed | 509 s   | `pnpm verify --concurrency=1`, uncached                                                                        |
     | reconcile | passed | 1,696 s | alarms OK (the `final` project over HTTPS), orders OK, quality OK; the TLS spec in both `orders-dispatch` runs |
+
+  - **Security review of PR #262** (minor changes; TLS, ports, cookies, harness trust and regressions held), fixed in `979a05b`:
+    - **(1, medium)** the owner's macOS trust was for every purpose (name constraints cover TLS names only; the reviewer's code-signing, S/MIME and `clientAuth` certificates minted with the CA key were accepted): `pnpm stack:ca` and the runbook now use `security add-trusted-cert -r trustRoot -p ssl …`, Keychain Access only "Secure Sockets Layer (SSL)" to Always Trust; the CA carries the extended key usage `serverAuth` (OpenSSL and Node); ADR-0039 and the runbook say "for TLS server names".
+    - **(2, low)** the CA's validity is one year (the web certificate is issued never past it, so both renew together); `*.localhost` on any port, the owner's other local HTTPS services included, recorded as an accepted risk in ADR-0039 and the runbook, with the advice to remove the trust when the project isn't in use.
+    - **(3, low)** the `__Host-` cookie on localhost (other ports of the name): accepted risk, stated in ADR-0039; no host name change.
+    - **(4)** for requests trusted from `edge`, the MES's Origin guard requires the Origin's scheme to equal `X-Forwarded-Proto` (writes, reads with an Origin, WebSocket upgrades); `identity.test.ts`: https through nginx passes, `http://` of the same host and port, a missing or listed `X-Forwarded-Proto` refused (403 `write-origin`), a read with an `http://` Origin refused, the same headers from outside `edge` not judged.
+    - **(5)** `ssl_ecdh_curve X25519MLKEM768:X25519:prime256v1:secp384r1`: the smoke's Node handshake negotiates `X25519MLKEM768`; Chromium connects (the console run and the TLS spec).
+    - **(6)** the web's `8080/tcp` in `docker compose ps` is the base image's `EXPOSE 8080`, cosmetic (runbook, ADR-0039).
+    - **(7)** `e2e/browser/tls/tls.spec.ts`: a leaf of the stack's own dev CA for the same names with another key (minted by `Stack.webTrust({ sibling: true })` inside the `pki` container, so the CA key stays in its volume) is refused by the pinned browser with `ERR_CERT_AUTHORITY_INVALID`.
+  - **After the review:** `@shopfloor/pki` 21 tests, test-kit TLS 2, e2e unit 35, MES `identity` and `realtime` 62, all passed; console run (`console241c`) 13 of 13, `CONSOLE-OK`. Gate on `979a05b` (`GATE_STEPS=verify,e2e,smoke,reconcile`, `GATE_PROJECT=gate241c`, `GATE_TAG=pr241c`; `main` unmoved at `7ddc20b`), `GATE-OK`; free at the start: host 28.2 GiB, Docker 69.6 GiB.
+
+    | Step      | Result | Time      | Notes                                                               |
+    | --------- | ------ | --------- | ------------------------------------------------------------------- |
+    | verify    | passed | 499.4 s   | `pnpm verify --concurrency=1`                                       |
+    | e2e       | passed | 1,459.4 s |                                                                     |
+    | smoke     | passed | 96.1 s    | TLS 1.3, group `X25519MLKEM768`; hardened ports; `__Host-` cookie   |
+    | reconcile | passed | 1,666.1 s | alarms OK, orders OK (5 TLS tests in `orders-dispatch`), quality OK |

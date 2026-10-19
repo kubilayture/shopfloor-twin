@@ -241,3 +241,13 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | quality-01 | orders   | 48 (47)       | 6 (5)          | 6 / 1                     | 58 / 56 / 33                                                         | 29.0 / 27.0 / 32.4 |
 
     Order OEE (P9-04) unchanged: 7 + 1 and 6 + 1. **Performance:** a line read derives only the buckets not kept final; its p95 stays at or under 37.0 ms in every replay (Testcontainers, local), so no cache table. The order view (P9-04's read, now also carrying the order's line value, reading a neighbour's units only while its job has no `completed` fact and only the bottleneck's Maintenance pieces until the value can be final) has p95 33.0–62.8 ms in `orders-01` and 45.1–51.5 ms in `quality-01` in order and in bounded disorder, but 104.6 ms in `quality-01` fully shuffled, where all seven orders (PO-2610-105 with 400 units) are derived on every judgement. `week-01` stays final to Saturday 03:00Z (the weekend has no fact), the others to the last settled fact (CNC-02 at 02:56:59Z in `orders-01`).
+
+  - **Gate** on `4ba8f3d` (`GATE_PROJECT=gate232`, `GATE_TAG=pr232`, `TURBO_FORCE=1`, under the heavy lock), `GATE-OK`; free at the start: host 32.8 GiB, Docker 79.3 GiB. In its e2e run the line reads' p95 were 5.8–32.8 ms across the twelve replays; the order views' 31.4–55.0 ms except `quality-01` fully shuffled, 122.1 ms (104.6 ms in a run of its own).
+
+    | Step      | Result | Time      | Notes                                     |
+    | --------- | ------ | --------- | ----------------------------------------- |
+    | verify    | passed | 486 s     | `pnpm verify --concurrency=1`, uncached   |
+    | golden    | passed | 1.6 s     | all four goldens byte-identical           |
+    | e2e       | passed | 1,426 s   | `order-oee.e2e.test.ts` 12 tests, 693.1 s |
+    | smoke     | passed | 91.6 s    |                                           |
+    | reconcile | passed | 1,646.8 s | alarms OK, orders OK, quality OK          |

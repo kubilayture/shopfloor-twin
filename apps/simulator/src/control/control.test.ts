@@ -666,6 +666,7 @@ describe('control API (#54)', () => {
       '/api/v1/pause',
       '/api/v1/resume',
       '/api/v1/scenario',
+      '/api/v1/scenario/recorded',
       '/api/v1/scenarios',
       '/api/v1/speed',
       '/api/v1/status',

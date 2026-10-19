@@ -1,9 +1,9 @@
-import { basename, extname, resolve } from 'node:path';
+import { basename, extname, relative, resolve } from 'node:path';
 import { formatIssues, loadPlantConfig, readScenarioFile } from '@shopfloor/plant-config';
 import { buildControlApp } from './control/app.ts';
 import { parseEnv } from './control/env.ts';
 import { EventHub } from './control/event-hub.ts';
-import { timelinePath } from './headless/timeline.ts';
+import { REPO, timelinePath } from './headless/timeline.ts';
 import { EventLogWriter } from './live/event-log.ts';
 import { createLiveRun } from './live/run.ts';
 import { scenarioControl } from './live/timeline.ts';
@@ -132,6 +132,13 @@ const app = await buildControlApp({
     operators: () => run.operators(),
   },
   scenario: scenarioControl(run, resolve(env.SIM_SCENARIOS_DIR)),
+  // The recording names the configuration as a scenario does (#236): relative to the repository
+  // root (the image's /app), and the stock file by name, to be saved beside the document.
+  recorded: () =>
+    run.recorded({
+      config: relative(REPO, resolve(env.SIM_CONFIG_DIR)),
+      stock: env.SIM_STOCK === undefined ? undefined : basename(env.SIM_STOCK),
+    }),
   ...(eventLog === undefined ? {} : { eventLogFailed: () => eventLog.failed }),
   logger: { level: env.LOG_LEVEL },
 });

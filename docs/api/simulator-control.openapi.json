@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ShopFloor Twin simulator control API",
-    "version": "1.9.0",
+    "version": "1.10.0",
     "description": "Controls the pacing of the live simulation and streams its plant events. Plant events: WebSocket at /api/v1/events (see docs/contracts/simulator-control-api.md)."
   },
   "components": {
@@ -7885,6 +7885,269 @@
         }
       }
     },
+    "/api/v1/scenario/recorded": {
+      "get": {
+        "summary": "The run's dispatches and inputs so far, as a scenario a headless run replays",
+        "tags": [
+          "scenario"
+        ],
+        "description": "A `scenario.json` document (#236): every job the line accepted (a `LoadOrder` call or a start-time dispatch), in acceptance order, with the simulation time and the number of events processed when it was accepted (`acceptedAt`, `afterEvents`; neither for a job accepted while the run was idle at its start), and the injections and console actions the run accepted. Duplicate and refused `LoadOrder` calls change nothing and are not listed. `headless --timeline <file>` replays it: its event log equals the live one up to the run's simulation time (`end` is one millisecond after it, or after the latest accepted input not due yet).",
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "description": {
+                      "type": "string"
+                    },
+                    "seed": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "start": {
+                      "type": "string",
+                      "description": "ISO 8601 UTC"
+                    },
+                    "days": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Whole days covering `end`"
+                    },
+                    "end": {
+                      "type": "string",
+                      "description": "One millisecond after the run's simulation time, or after the latest accepted input not due yet"
+                    },
+                    "config": {
+                      "type": "string",
+                      "description": "The configuration folder, relative to the repository root"
+                    },
+                    "stock": {
+                      "description": "SIM_STOCK's file name: save the document beside that file to replay it",
+                      "type": "string"
+                    },
+                    "production": {
+                      "type": "string",
+                      "enum": [
+                        "orders"
+                      ]
+                    },
+                    "dispatches": {
+                      "description": "Every accepted job, in acceptance order; duplicate and refused calls are not listed",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "commandId": {
+                            "type": "string"
+                          },
+                          "machine": {
+                            "type": "string"
+                          },
+                          "orderId": {
+                            "type": "string"
+                          },
+                          "product": {
+                            "type": "string"
+                          },
+                          "quantity": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "notBefore": {
+                            "type": "string",
+                            "description": "ISO 8601 UTC"
+                          },
+                          "acceptedAt": {
+                            "description": "The simulation time of the acceptance; absent for a job accepted while idle",
+                            "type": "string"
+                          },
+                          "afterEvents": {
+                            "description": "Events the run had processed when it accepted the job, with `acceptedAt`",
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "commandId",
+                          "machine",
+                          "orderId",
+                          "product",
+                          "quantity",
+                          "notBefore"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "injections": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "at": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "machine": {
+                                "type": "string"
+                              },
+                              "code": {
+                                "type": "string"
+                              },
+                              "repairMs": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "at",
+                              "machine",
+                              "code"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "leak-drift"
+                                ]
+                              },
+                              "at": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "until": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "machine": {
+                                "type": "string"
+                              },
+                              "shift": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "at",
+                              "until",
+                              "machine",
+                              "shift"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    },
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "lot-block",
+                                  "lot-release"
+                                ]
+                              },
+                              "at": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "lot": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "at",
+                              "lot"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "tool-breakage"
+                                ]
+                              },
+                              "at": {
+                                "type": "string",
+                                "description": "ISO 8601 UTC"
+                              },
+                              "machine": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "at",
+                              "machine"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "operators-absent"
+                                ]
+                              },
+                              "shift": {
+                                "type": "string"
+                              },
+                              "operators": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "shift",
+                              "operators"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "description",
+                    "seed",
+                    "start",
+                    "days",
+                    "end",
+                    "config"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health/live": {
       "get": {
         "summary": "The process is up",
@@ -8007,7 +8270,7 @@
     },
     {
       "name": "scenario",
-      "description": "Scenario timelines of config/scenarios, played live (1.9)"
+      "description": "Scenario timelines of config/scenarios, played live (1.9), and the recording of the run (1.10)"
     }
   ]
 }

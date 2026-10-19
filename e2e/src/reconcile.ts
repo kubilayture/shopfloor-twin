@@ -672,7 +672,10 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
         //    which the MES anchors: it knows every machine's state from the first instant of the shift.
         log('starting the simulator (idle) and the gateway');
         await stack.compose(['up', '--detach', '--wait', '--no-build', 'simulator', 'gateway']);
-        const sim = new SimulatorClient(await stack.url('simulator', 4800));
+        const sim = new SimulatorClient(
+          await stack.url('simulator', 4800),
+          stack.value('SIM_CONTROL_TOKEN'),
+        );
         const gateway = new GatewayClient(await stack.url('gateway', 4900));
         const idle = await sim.status();
         if (idle.state !== 'idle' || Date.parse(idle.simTime) !== start) {
@@ -811,6 +814,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
           browser = runBrowser(quality ? 'quality-live' : orders ? 'orders-live' : 'live', {
             RECONCILE_WEB_URL: webUrl,
             RECONCILE_SIM_URL: sim.base,
+            RECONCILE_SIM_TOKEN: stack.value('SIM_CONTROL_TOKEN'),
             RECONCILE_MES_URL: mes.base,
             RECONCILE_RESULTS: RESULTS_DIR,
             RECONCILE_TERMINAL_ORDER: RUNNING_ORDER,
@@ -1555,6 +1559,7 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
             RECONCILE_MES_URL: mes.base,
             RECONCILE_RESULTS: RESULTS_DIR,
             RECONCILE_SIM_URL: sim.base,
+            RECONCILE_SIM_TOKEN: stack.value('SIM_CONTROL_TOKEN'),
             RECONCILE_TRACE_CASE: JSON.stringify(traceCase ?? null),
             RECONCILE_SIGNAL: String(signal?.id ?? ''),
             RECONCILE_SIGNAL_SERIAL: signalSerial ?? '',

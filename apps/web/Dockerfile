@@ -1,5 +1,6 @@
 # Web app: the Vite build of apps/web served by nginx, which proxies /api (REST and the WebSocket
-# at /api/v1/ws) to the MES (port 8080, non-root).
+# at /api/v1/ws) to the MES and, since #237, the console's allowlisted /sim/ routes to the
+# simulator's control API with SIM_CONTROL_TOKEN (port 8080, non-root).
 # Build from the repository root: docker build -f apps/web/Dockerfile .
 # The workspace packages copied below must match the app's dependencies:
 # `node scripts/check-dockerfiles.ts` (part of `pnpm verify`) checks it.
@@ -26,8 +27,17 @@ COPY apps/web/src apps/web/src
 RUN pnpm --filter @shopfloor/web build
 
 FROM nginxinc/nginx-unprivileged:1.30.6-alpine3.24 AS runtime
-COPY apps/web/nginx/default.conf /etc/nginx/conf.d/default.conf
+# The server is a template (#237): the image's entrypoint renders it into conf.d at start with
+# SIM_CONTROL_TOKEN, the only variable substituted, after checking that the token is set (the
+# check script is executable in the repository; COPY keeps the mode, the classic builder has no
+# --chmod).
+ENV NGINX_ENVSUBST_FILTER=^SIM_CONTROL_TOKEN$
+RUN rm -f /etc/nginx/conf.d/default.conf
+COPY apps/web/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY apps/web/nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
+COPY apps/web/nginx/sim-proxy.conf /etc/nginx/snippets/sim-proxy.conf
+COPY apps/web/nginx/mes-headers.conf /etc/nginx/snippets/mes-headers.conf
+COPY apps/web/nginx/15-require-sim-token.sh /docker-entrypoint.d/15-require-sim-token.sh
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 8080
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=12 \

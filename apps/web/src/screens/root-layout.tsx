@@ -99,6 +99,10 @@ export function RootLayout() {
     ...(auth.can('user:admin')
       ? [{ id: 'users', to: '/admin/users', label: 'Users' } as const]
       : []),
+    // The simulation console (#237): the simulated plant's levers, admin only.
+    ...(auth.can('sim:control')
+      ? [{ id: 'console', to: '/console', label: 'Console' } as const]
+      : []),
   ];
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 print:min-h-0 print:bg-white">

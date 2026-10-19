@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import swagger from '@fastify/swagger';
-import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
-import { Gauge, Registry, collectDefaultMetrics } from 'prom-client';
+import Fastify, {
+  type FastifyBaseLogger,
+  type FastifyInstance,
+  type FastifyRequest,
+} from 'fastify';
+import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
+import { NO_EDGE, type EdgeTrust } from './edge.ts';
 import {
   WS_PATH,
   registerRealtime,
@@ -37,6 +42,11 @@ export interface MesHttpOptions {
   /** Login buckets: all together (default 5/s, bursts of 10) and per user name (1/s, 5). */
   readonly loginRate?: { readonly perSecond: number; readonly burst: number };
   readonly userLoginRate?: { readonly perSecond: number; readonly burst: number };
+  /**
+   * The learned `edge` network (#237): only requests from it may carry trusted proxy headers
+   * (`X-Original-Method`, and `X-Real-IP` from P9-15). Default: nothing trusted.
+   */
+  readonly edge?: EdgeTrust;
 }
 
 export interface MesHttp {
@@ -62,6 +72,7 @@ export async function buildMesHttp({
   sessionCheckMs,
   loginRate,
   userLoginRate,
+  edge = NO_EDGE,
 }: MesHttpOptions): Promise<MesHttp> {
   // A request id per request (UUID): logged, returned as X-Request-Id on writes and audited.
   const app = Fastify({ logger, genReqId: () => randomUUID() });
@@ -74,6 +85,32 @@ export async function buildMesHttp({
     collect() {
       this.set(1);
     },
+  });
+  // Proxied requests (#237): those carrying `X-Real-IP` (nginx sets it on every request it
+  // proxies), by whether their source lies in the `edge` network. The smoke asserts that requests
+  // through nginx arrive trusted and none untrusted (`mes-edge`, never `mes`).
+  const proxied = new Counter({
+    name: 'mes_http_proxy_requests_total',
+    help: 'Requests carrying X-Real-IP, by whether they came from nginx over the edge network',
+    labelNames: ['trusted'] as const,
+    registers: [registry],
+  });
+  proxied.inc({ trusted: 'true' }, 0);
+  proxied.inc({ trusted: 'false' }, 0);
+  const trusted = new WeakMap<object, boolean>();
+  const trustsProxy = (request: FastifyRequest): boolean => {
+    let known = trusted.get(request.raw);
+    if (known === undefined) {
+      known = edge.trusts(request.raw.socket.remoteAddress);
+      trusted.set(request.raw, known);
+    }
+    return known;
+  };
+  app.addHook('onRequest', (request, _reply, done) => {
+    if (request.headers['x-real-ip'] !== undefined) {
+      proxied.inc({ trusted: String(trustsProxy(request)) });
+    }
+    done();
   });
   await app.register(swagger, {
     openapi: {
@@ -156,6 +193,7 @@ export async function buildMesHttp({
     ...(sessionCheckMs === undefined ? {} : { sessionCheckMs }),
     ...(loginRate === undefined ? {} : { loginRate }),
     ...(userLoginRate === undefined ? {} : { userLoginRate }),
+    trustsProxy,
   });
   return { app, registry, realtime };
 }

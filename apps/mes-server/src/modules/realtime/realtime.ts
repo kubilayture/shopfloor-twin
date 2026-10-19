@@ -311,7 +311,19 @@ export interface RealtimeOptions {
   readonly loginRate?: { readonly perSecond: number; readonly burst: number };
   /** Logins per user name (default `LIMITS`: 1 per second, bursts of 5). */
   readonly userLoginRate?: { readonly perSecond: number; readonly burst: number };
+  /**
+   * Whether a request came from nginx over the `edge` network (#237, `EdgeTrust`): only then are
+   * its proxy headers (`X-Original-Method`; `X-Real-IP` from P9-15) believed. Default: never.
+   */
+  readonly trustsProxy?: (request: FastifyRequest) => boolean;
 }
+
+/**
+ * The methods that count as a console action's use of the session (#237): every method but a
+ * read. The permission check itself is a GET (nginx's `auth_request`); the console request's own
+ * method comes in `X-Original-Method`, believed only from the `edge` network.
+ */
+const SESSION_USE_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
 
 /** What the API uses of the identity module. */
 export type IdentityApi = Pick<
@@ -732,6 +744,10 @@ export async function registerRealtime(
     parseToken(cookieValue(request.headers.cookie, cookieName));
   const accessOf = (request: FastifyRequest): Access =>
     (request.routeOptions.config as Partial<RouteConfig> | undefined)?.access ?? 'read';
+  /** Whether the request counts as use of its session (#237: `RouteConfig.touch`). */
+  const touchOf = (request: FastifyRequest): boolean =>
+    (request.routeOptions.config as Partial<RouteConfig> | undefined)?.touch?.(request) ?? true;
+  const trustsProxy = options.trustsProxy ?? (() => false);
   /**
    * Authentication (401) and permission (403), after the Host and Origin checks so a cross-site
    * request never learns whether a session exists (ADR-0026). With `MES_AUTH=off` (#170) only the
@@ -745,7 +761,7 @@ export async function registerRealtime(
     if (access === 'public' || (!auth && access === 'read')) return undefined;
     if (!identity?.started) return { status: 503, detail: 'the MES is starting' };
     const token = tokenOf(request);
-    const principal = token && (await identity.authenticate(token, { touch: true }));
+    const principal = token && (await identity.authenticate(token, { touch: touchOf(request) }));
     if (!principal) {
       return {
         status: 401,
@@ -2425,6 +2441,39 @@ export async function registerRealtime(
           errors: [400, 503],
         },
         ({ request }) => sessionDto(principalOf(request)),
+      );
+
+      // The console's permission check (#237, Phase 9 plan "Simulation console"): nginx asks it
+      // with `auth_request` before every `/sim/` request. Only a non-GET console action counts as
+      // use of the session, so the console's 1 s status poll doesn't keep an unattended console
+      // signed in (ADR-0026's idle expiry); the console request's method comes in
+      // `X-Original-Method`, believed only from nginx over the `edge` network.
+      getRoute(
+        api,
+        {
+          url: '/session/permission/:permission',
+          access: 'sim:control',
+          summary: "Whether the caller's session holds a permission nginx checks (204)",
+          description:
+            "nginx's `auth_request` for the simulation console's `/sim/` proxy (#237): 204 when " +
+            'the session holds the permission, 401 without a live session, 403 without the ' +
+            'permission. Only `sim:control` is checked here. Counts as use of the session only ' +
+            'when `X-Original-Method` names a non-GET method and the request came from nginx ' +
+            'over the `edge` network (`mes_http_proxy_requests_total{trusted}`); any other ' +
+            'source, or a GET, leaves the idle expiry where it is.',
+          tags: ['identity'],
+          params: z.strictObject({ permission: z.literal('sim:control') }),
+          query: noQuery,
+          response: z.unknown(),
+          noContent: true,
+          errors: [400, 503],
+          touch: (request) => {
+            if (!trustsProxy(request)) return false;
+            const method = request.headers['x-original-method'];
+            return typeof method === 'string' && SESSION_USE_METHODS.has(method.toUpperCase());
+          },
+        },
+        ({ reply }) => reply.code(204).send(),
       );
 
       writeRoute(

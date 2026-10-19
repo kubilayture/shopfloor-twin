@@ -31,12 +31,16 @@ export const PERMISSIONS = [
   'quality:hold',
   'quality:release',
   'user:admin',
+  // Phase 9 (#237, plan "Simulation console"): the console's `/sim/` proxy, checked by nginx's
+  // `auth_request` (`GET /api/v1/session/permission/sim:control`); no MES route needs it.
+  'sim:control',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
 /**
- * The permission matrix. `admin` administers users and nothing else (separation of duties); a
- * person who needs both gets both roles.
+ * The permission matrix. `admin` administers users and drives the simulation console (#237: the
+ * physical world under test, not a plant role) and nothing else (separation of duties); a person
+ * who needs both gets both roles.
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
   operator: [
@@ -86,7 +90,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
     // A supervisor can stop shipment at night; only quality decides that the goods are good.
     'quality:hold',
   ],
-  admin: ['read', 'user:admin'],
+  admin: ['read', 'user:admin', 'sim:control'],
 };
 
 /** Every permission any of the roles holds, in `PERMISSIONS` order. */

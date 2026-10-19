@@ -51,6 +51,8 @@ const MIN_AGREEMENT = 0.95;
 
 const mesUrl = process.env.RECONCILE_MES_URL;
 const simUrl = process.env.RECONCILE_SIM_URL;
+/** The control API's token (#237): the run passes it with the address. */
+const simToken = process.env.RECONCILE_SIM_TOKEN ?? '';
 /**
  * Sampling also ends when the paced clock reaches this (simulation time; the first injection less
  * a margin, from reconcile.ts), so the alarm check after it starts in time in a slow environment.
@@ -164,7 +166,7 @@ test('the OEE dashboard shows the API’s shift values and each change within 2 
   let end = startedSampling + SAMPLE_MS;
   let endedBy = 'OEE_SAMPLE_MS';
   if (simUrl && !Number.isNaN(sampleUntil)) {
-    const sim = new SimulatorClient(simUrl);
+    const sim = new SimulatorClient(simUrl, simToken);
     const { speed } = await sim.status();
     const sent = Date.now();
     const { pacedTime } = await sim.groundTruth();

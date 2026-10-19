@@ -48,6 +48,8 @@ const SHOWN = 'shown';
 const ABSENT = 'absent';
 
 const simUrl = process.env.RECONCILE_SIM_URL ?? '';
+/** The control API's token (#237): the run passes it with the address. */
+const simToken = process.env.RECONCILE_SIM_TOKEN ?? '';
 const mesUrl = process.env.RECONCILE_MES_URL ?? '';
 const results = process.env.RECONCILE_RESULTS;
 const characteristic = process.env.RECONCILE_CHARACTERISTIC ?? 'leak-rate';
@@ -122,7 +124,7 @@ test('every SPC episode of the drifted shift appears on the SPC page and the Lin
   test.skip(simUrl === '' || mesUrl === '', 'runs inside pnpm test:reconcile');
   expect(Number.isFinite(until)).toBe(true);
   test.setTimeout(20 * 60_000);
-  const sim = new SimulatorClient(simUrl);
+  const sim = new SimulatorClient(simUrl, simToken);
 
   // The operator at Line A1 (a terminal session and the crew row), the quality user at the desk.
   const terminal = await (await browser.newContext()).newPage();

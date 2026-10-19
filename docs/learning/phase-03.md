@@ -97,7 +97,7 @@ Watch the edge survive failures.
 2. Look at `curl -s localhost:4900/metrics | grep gateway_`: every machine connected, buffer at 0.
 3. `docker compose stop broker` for 30 s. The `gateway_buffer_messages` metric grows (`curl localhost:4900/metrics`; the gateway's HTTP port stays up).
 4. `docker compose start broker`: `gateway_buffer_messages` falls to 0 and `gateway_published_messages` rises. Resubscribing shows the retained current states; a subscriber started later can't see the replayed history.
-5. Make the washer silent: `curl -s -X POST localhost:4800/api/v1/faults/modbus -H 'content-type: application/json' -d '{"silent": true}'`. Subscribe to `orbis/gebze/_sys/edge-gateway/gw-01/incidents` and see `device-silent`. Then set it back to `false`: you get `device-recovered`, and no washer fact is lost, as long as the silence is short (a few seconds at 60×, so at most 64 facts happen meanwhile).
+5. Make the washer silent: `curl -s -H "Authorization: Bearer $SIM_CONTROL_TOKEN" -X POST localhost:4800/api/v1/faults/modbus -H 'content-type: application/json' -d '{"silent": true}'` (since #237 with the control token: `SIM_CONTROL_TOKEN` from your `.env`). Subscribe to `orbis/gebze/_sys/edge-gateway/gw-01/incidents` and see `device-silent`. Then set it back to `false`: you get `device-recovered`, and no washer fact is lost, as long as the silence is short (a few seconds at 60×, so at most 64 facts happen meanwhile).
 
 ## 5. Owner's answers and notes
 

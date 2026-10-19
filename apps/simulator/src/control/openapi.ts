@@ -13,6 +13,7 @@ export const OPENAPI_FILE = resolve(
 /** The OpenAPI description of the control API, as committed in docs/api. */
 export async function generateOpenApi(): Promise<string> {
   const app = await buildControlApp({
+    token: null,
     pacer: new LivePacer({ simulation: new Simulation<unknown>(0), handle: () => undefined }),
     hub: new EventHub(),
     ready: () => false,

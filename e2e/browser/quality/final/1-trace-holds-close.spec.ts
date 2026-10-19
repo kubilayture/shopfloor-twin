@@ -22,6 +22,8 @@ import { episodeIdentity, type TraceSectionJson } from '../../../src/trace-shape
  */
 const mesUrl = process.env.RECONCILE_MES_URL ?? '';
 const simUrl = process.env.RECONCILE_SIM_URL ?? '';
+/** The control API's token (#237): the run passes it with the address. */
+const simToken = process.env.RECONCILE_SIM_TOKEN ?? '';
 const results = process.env.RECONCILE_RESULTS;
 const traceCase = JSON.parse(process.env.RECONCILE_TRACE_CASE ?? 'null') as TraceSerialCase | null;
 /** The MES's id of the drift's first episode, and the serial of its triggering unit. */
@@ -174,7 +176,7 @@ test('a serial traces back with its crew; holds from an SPC episode and a lot; t
   // And the truth's ten newest episodes after the baseline (review LOW 2): none is acknowledged,
   // so the terminal's ten are the truth's by identity (newest first; among equal times the later
   // in the truth's list).
-  const truthTrace = (await new SimulatorClient(simUrl).groundTruthJson())
+  const truthTrace = (await new SimulatorClient(simUrl, simToken).groundTruthJson())
     .trace as TraceSectionJson;
   const truthNewest = truthTrace.spc.episodes
     .map((episode, index) => ({ episode, index }))

@@ -58,8 +58,8 @@ compose_without() {
   rm -f "$stripped"
   return $result
 }
-for key in DB_PASSWORD DB_APP_PASSWORD ERP_API_TOKEN MQTT_HEALTHCHECK_PASSWORD MQTT_DEV_PASSWORD \
-  MQTT_GATEWAY_PASSWORD MQTT_MES_PASSWORD; do
+for key in DB_PASSWORD DB_APP_PASSWORD ERP_API_TOKEN SIM_CONTROL_TOKEN MQTT_HEALTHCHECK_PASSWORD \
+  MQTT_DEV_PASSWORD MQTT_GATEWAY_PASSWORD MQTT_MES_PASSWORD; do
   if compose_without "$key"; then fail "Compose accepted a configuration without $key"; fi
 done
 compose_without MES_BOOTSTRAP_ADMIN_PASSWORD ||
@@ -196,7 +196,22 @@ if delivered gw-01 "$MQTT_GATEWAY_PASSWORD" "orbis/gebze/_sys/mes-server/main/st
 fi
 echo "ok: broker ACLs (gateway may publish machine data only; dev is read-only)"
 
-status=$(curl -sf "$sim_url/api/v1/status") || fail "simulator control API not reachable"
+# The control token (#237, control API 1.11): every route but /health/* and /metrics refuses a
+# request without it (reads too) or with another; the token goes to curl on stdin, not on its
+# command line.
+for path in /api/v1/status /api/v1/ground-truth /api/v1/lots /api/v1/no-such-route; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$sim_url$path")
+  [ "$code" = 401 ] || fail "control API answered $path without the token ($code)"
+  code=$(printf 'Authorization: Bearer %s\n' "not-the-token-$(openssl rand -hex 8)" |
+    curl -s -o /dev/null -w '%{http_code}' -H @- "$sim_url$path")
+  [ "$code" = 401 ] || fail "control API answered $path with a wrong token ($code)"
+done
+curl -sf -o /dev/null "$sim_url/health/ready" || fail "control API health check needs a token"
+sim_get() {
+  printf 'Authorization: Bearer %s\n' "$SIM_CONTROL_TOKEN" | curl -sf -H @- "$sim_url$1"
+}
+echo "ok: control API refuses requests without its token (401), health check open"
+status=$(sim_get /api/v1/status) || fail "simulator control API not reachable with its token"
 case "$status" in
   *'"state":"running"'*) echo "ok: simulator running ($status)" ;;
   *) fail "simulator not running: $status" ;;
@@ -309,3 +324,86 @@ if [ "${SMOKE_WRITES:-}" = 1 ]; then
   echo "ok: user:create made the quality user $SMOKE_QUALITY_USERNAME"
 fi
 node scripts/stack-smoke-web.mjs "$web" || fail "web checks failed"
+
+# The console's /sim/ proxy (#237): anonymous 401, routes outside the allowlist 404 (the ground
+# truth and the recorded run among them), a write from another origin 403; the token never comes
+# back to the browser. The Playwright console run covers the roles and every action.
+for path in /sim/api/v1/status /sim/api/v1/lots /sim/api/v1/scenarios; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$web$path")
+  [ "$code" = 401 ] || fail "/sim/ answered $path anonymously ($code)"
+done
+for path in /sim/api/v1/ground-truth /sim/api/v1/scenario/recorded /sim/health/ready /sim/metrics; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$web$path")
+  [ "$code" = 404 ] || fail "/sim/ proxied $path, outside its allowlist ($code)"
+done
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Origin: http://evil.test' "$web/sim/api/v1/pause")
+[ "$code" = 403 ] || fail "/sim/ took a cross-origin write ($code)"
+echo "ok: /sim/ allowlist (401 anonymous, 404 outside it, 403 cross-origin write)"
+
+# Edge trust (#237): every request through nginx reached the MES over the edge network as
+# mes-edge (trusted), none from anywhere else (untrusted), and the MES learned that network.
+mes_metrics=$(curl -sf "$mes_url/metrics") || fail "MES metrics not reachable"
+proxied_trusted=$(printf '%s\n' "$mes_metrics" |
+  sed -n 's/^mes_http_proxy_requests_total{trusted="true"} \([0-9][0-9]*\)$/\1/p')
+proxied_untrusted=$(printf '%s\n' "$mes_metrics" |
+  sed -n 's/^mes_http_proxy_requests_total{trusted="false"} \([0-9][0-9]*\)$/\1/p')
+[ -n "$proxied_trusted" ] && [ "$proxied_trusted" -gt 0 ] ||
+  fail "no request through nginx arrived trusted at the MES (${proxied_trusted:-none})"
+[ "$proxied_untrusted" = 0 ] ||
+  fail "requests through nginx arrived untrusted at the MES (${proxied_untrusted:-none})"
+docker compose logs mes 2>/dev/null | grep -q 'edge network learned' ||
+  fail "the MES did not log its learned edge network"
+
+# The edge network has no gateway (#237 review: inhibit_ipv4): no address in the trusted subnet
+# outside nginx and the MES, neither on the bridge nor in its IPAM configuration.
+mes_container=$(docker compose ps -q mes)
+edge_network=$(docker inspect "$mes_container" \
+  --format '{{range $name, $net := .NetworkSettings.Networks}}{{println $name}}{{end}}' | grep '_edge$' || true)
+[ -n "$edge_network" ] || fail "the MES is not on the edge network"
+# JSON forms: a plain template prints an unset address field as "invalid IP".
+edge_settings=$(docker network inspect "$edge_network" \
+  --format '{{json .IPAM.Config}}|{{index .Options "com.docker.network.bridge.inhibit_ipv4"}}|{{.Internal}}')
+case "$edge_settings" in
+  *'"Gateway"'*) fail "the edge network has an IPAM gateway ($edge_settings)" ;;
+  *'|true|true') ;;
+  *) fail "the edge network is not internal with inhibit_ipv4 ($edge_settings)" ;;
+esac
+for service in mes web; do
+  endpoint=$(docker inspect "$(docker compose ps -q "$service")" \
+    --format "{{json (index .NetworkSettings.Networks \"$edge_network\")}}")
+  case "$endpoint" in
+    *'"Gateway":""'*) ;;
+    *) fail "$service has a gateway on the edge network ($endpoint)" ;;
+  esac
+done
+echo "ok: edge network internal, without a gateway (IPAM and endpoints)"
+
+# A client's X-Original-Method never reaches the MES through /api/ (#237 review): nginx clears it,
+# so a GET of the permission check with `X-Original-Method: POST` doesn't count as session use.
+# The smoke operator's sessions are set five minutes back (as the superuser); the check (403 for
+# an operator, after the session lookup) must leave them there, and a plain read must move them.
+smoke_cookie=$(printf '{"username":"%s","password":"%s"}' "$SMOKE_USERNAME" "$SMOKE_PASSWORD" |
+  curl -s -o /dev/null -D - -H "Origin: $web" -H 'Content-Type: application/json' \
+    --data-binary @- "$web/api/v1/session" |
+  sed -n 's/^[Ss]et-[Cc]ookie: \(sft_session=[^;]*\).*/\1/p')
+[ -n "$smoke_cookie" ] || fail "could not log in as $SMOKE_USERNAME for the X-Original-Method check"
+as_super() {
+  docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -Atc "$1"
+}
+back_dated="update identity.session s set last_used_at = now() - interval '5 minutes'
+  from identity.user_account u where u.id = s.user_id and u.username = '$SMOKE_USERNAME'
+  and s.ended_at is null"
+latest_use="select max(s.last_used_at) > now() - interval '1 minute' from identity.session s
+  join identity.user_account u on u.id = s.user_id
+  where u.username = '$SMOKE_USERNAME' and s.ended_at is null"
+as_super "$back_dated" >/dev/null
+code=$(printf 'Cookie: %s\n' "$smoke_cookie" | curl -s -o /dev/null -w '%{http_code}' -H @- \
+  -H 'X-Original-Method: POST' "$web/api/v1/session/permission/sim:control")
+[ "$code" = 403 ] || fail "the permission check answered the operator $code, not 403"
+[ "$(as_super "$latest_use")" = f ] ||
+  fail "a client's X-Original-Method through /api/ counted as session use"
+printf 'Cookie: %s\n' "$smoke_cookie" | curl -sf -o /dev/null -H @- "$web/api/v1/session" ||
+  fail "the smoke operator's session read failed"
+[ "$(as_super "$latest_use")" = t ] || fail "a session read through /api/ did not count as use"
+echo "ok: a client's X-Original-Method through /api/ is dropped (no session use; a read is use)"
+echo "ok: edge trust ($proxied_trusted proxied requests trusted, 0 untrusted)"

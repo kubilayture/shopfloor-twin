@@ -128,13 +128,13 @@ The document becomes something CI checks, not just a description.
 
 Watch lossless delivery and the resync rule yourself.
 
-1. Start the plant: `SIM_AUTOSTART=false pnpm sim:serve` (or `pnpm stack:up`).
+1. Start the plant: `SIM_AUTOSTART=false pnpm sim:serve` (or `pnpm stack:up`). Since #237 the control API needs a token: `export SIM_CONTROL_TOKEN=$(openssl rand -hex 16)` before `sim:serve` (with the stack, the value from your `.env`); the `curl` calls below send it.
 2. Connect UaExpert to `opc.tcp://localhost:4841`.
    - Browse `Objects → Machines → CNC-01 → ShopFloor`.
    - Add an event view on the Server object, with the fields `Sequence`, `MachineId` and `ToState`. It also shows the Machinery TransitionEvents. Their `Sequence` and `MachineId` are empty, so ignore those rows, or filter on `ShopFloorStateChangeEventType`.
-3. `curl -s -X POST localhost:4800/api/v1/resume`, and watch the sequence numbers climb without gaps.
+3. `curl -s -H "Authorization: Bearer $SIM_CONTROL_TOKEN" -X POST localhost:4800/api/v1/resume`, and watch the sequence numbers climb without gaps.
 4. Disconnect UaExpert for a minute, then reconnect. Compare the last `Sequence` you saw with `ShopFloor.Sequence` now. The difference is exactly the number of events the gateway would report as a gap in Phase 3.
-5. `curl -s -X PUT localhost:4800/api/v1/speed -H 'content-type: application/json' -d '{"speed": 5}'`, and see the `SourceTimestamp` advance more slowly.
+5. `curl -s -H "Authorization: Bearer $SIM_CONTROL_TOKEN" -X PUT localhost:4800/api/v1/speed -H 'content-type: application/json' -d '{"speed": 5}'`, and see the `SourceTimestamp` advance more slowly.
 
 ## 5. Owner's answers and notes
 

@@ -60,6 +60,7 @@ async function setup(seed = SEED) {
     infrastructure: { opcuaOffline: () => true, modbusSilent: () => undefined },
   });
   app = await buildControlApp({
+    token: null,
     pacer: run.pacer,
     hub: new EventHub(),
     ready: () => true,
@@ -72,8 +73,8 @@ const post = (server: FastifyInstance, payload: object) =>
   server.inject({ method: 'POST', url: '/api/v1/scenario', payload });
 
 describe('scenario routes (1.9, #235)', () => {
-  it('is version 1.10 (#236)', () => {
-    expect(CONTROL_API_VERSION).toBe('1.10.0');
+  it('is version 1.11 (#237)', () => {
+    expect(CONTROL_API_VERSION).toBe('1.11.0');
   });
 
   it('lists the committed timelines', async () => {
@@ -251,6 +252,7 @@ describe('the recorded run (1.10, #236)', () => {
       production: 'orders',
     });
     app = await buildControlApp({
+      token: null,
       pacer: run.pacer,
       hub: new EventHub(),
       ready: () => true,
@@ -345,6 +347,7 @@ describe('the recorded run (1.10, #236)', () => {
 
   it('answers 413 for a run past the recording bound', async () => {
     app = await buildControlApp({
+      token: null,
       pacer: createLiveRun({ config, seed: SEED, start: T0, clock: new ManualClock() }).pacer,
       hub: new EventHub(),
       ready: () => true,

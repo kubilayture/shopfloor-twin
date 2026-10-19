@@ -400,8 +400,9 @@ export function Users() {
       ) : (
         <>
           <p className="mt-1 text-sm text-slate-700">
-            Admins manage users and nothing else; someone who also works in the plant gets a second
-            role. Disabling a user or resetting the password ends their sessions at once.
+            Admins manage users and drive the simulation console, nothing else; someone who also
+            works in the plant gets a second role. Disabling a user or resetting the password ends
+            their sessions at once.
           </p>
           <h2 className="mt-6 text-lg font-semibold">New user</h2>
           <CreateUser />

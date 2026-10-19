@@ -10,7 +10,15 @@ import type { InjectDriftRequest, InjectFailureRequest, PlantEvent } from '../pl
 import { loadDefaultConfig } from '../plant/testing.ts';
 import { scenarioOptions } from '../headless/golden.ts';
 import { EVENT_SCHEMA, isoTime, stableStringify } from '../headless/serialize.ts';
-import { EVENTS_PATH, buildControlApp, type GroundTruthReport } from './app.ts';
+import {
+  DEFAULT_EVENTS_LIFETIME_MS,
+  EVENTS_LIFETIME_CLOSE,
+  EVENTS_PATH,
+  OPEN_PATHS,
+  bearerMatches,
+  buildControlApp,
+  type GroundTruthReport,
+} from './app.ts';
 import { parseEnv } from './env.ts';
 import { EventHub } from './event-hub.ts';
 import { OPENAPI_FILE, generateOpenApi } from './openapi.ts';
@@ -44,6 +52,7 @@ async function setup(ready = true, withGroundTruth = false, withFailure = false,
     },
   });
   app = await buildControlApp({
+    token: null,
     pacer: run.pacer,
     hub,
     ready: () => ready,
@@ -256,6 +265,7 @@ describe('control API (#54)', () => {
     // Only that refusal is a 400: any other error of the ground truth (a RangeError included) is
     // a server error.
     const broken = await buildControlApp({
+      token: null,
       pacer: run.pacer,
       hub: new EventHub(),
       ready: () => true,
@@ -336,6 +346,7 @@ describe('control API (#54)', () => {
     const calls: boolean[] = [];
     const run = createLiveRun({ config, seed: 1, start: T0, clock: new ManualClock() });
     app = await buildControlApp({
+      token: null,
       pacer: run.pacer,
       hub: new EventHub(),
       ready: () => true,
@@ -678,9 +689,209 @@ describe('control API (#54)', () => {
   });
 });
 
+/** A valid control token (#237): every environment needs one. */
+const TOKEN_ENV = { SIM_CONTROL_TOKEN: 'a'.repeat(32) };
+
+describe('control token (#237, 1.11)', () => {
+  const TOKEN = 'b'.repeat(16) + 'c'.repeat(16);
+  const auth = { authorization: `Bearer ${TOKEN}` };
+
+  async function tokenApp(eventsLifetimeMs?: number) {
+    const hub = new EventHub();
+    const run = createLiveRun({
+      config,
+      seed: 3,
+      start: T0,
+      speed: 60,
+      clock: new ManualClock(),
+      onEvent: (event) => {
+        hub.record(event);
+      },
+    });
+    app = await buildControlApp({
+      ...(eventsLifetimeMs === undefined ? {} : { eventsLifetimeMs }),
+      token: TOKEN,
+      pacer: run.pacer,
+      hub,
+      ready: () => true,
+      groundTruth: (asOf?: number) => ({ epoch: 1, ...run.groundTruth(asOf) }),
+      console: {
+        act: (request) => run.act(request),
+        actions: () => run.actions(),
+        lots: () => run.lots(),
+        operators: () => run.operators(),
+      },
+    });
+    return { app, run };
+  }
+
+  it('compares the bearer token in constant time, the scheme in any case', () => {
+    expect(bearerMatches(`Bearer ${TOKEN}`, TOKEN)).toBe(true);
+    expect(bearerMatches(`bearer ${TOKEN}`, TOKEN)).toBe(true);
+    expect(bearerMatches(`Bearer  ${TOKEN} `, TOKEN)).toBe(true);
+    for (const header of [
+      undefined,
+      '',
+      TOKEN,
+      'Bearer',
+      `Basic ${TOKEN}`,
+      `Bearer ${TOKEN}x`,
+      `Bearer ${TOKEN.slice(1)}`,
+      `Bearer ${TOKEN} extra`,
+    ]) {
+      expect(bearerMatches(header, TOKEN), String(header)).toBe(false);
+    }
+  });
+
+  it('answers 401 without the token on every route, reads, writes and unknown ones included', async () => {
+    const { app: served, run } = await tokenApp();
+    const routes: [string, string][] = [
+      ['GET', '/api/v1/status'],
+      ['GET', '/api/v1/ground-truth'],
+      ['GET', '/api/v1/lots'],
+      ['GET', '/api/v1/operators'],
+      ['GET', '/api/v1/actions'],
+      ['POST', '/api/v1/pause'],
+      ['POST', '/api/v1/resume'],
+      ['POST', '/api/v1/step'],
+      ['PUT', '/api/v1/speed'],
+      ['POST', '/api/v1/lots/BL100-2610-01/block'],
+      ['GET', '/api/v1/no-such-route'],
+      ['GET', '/documentation/json'],
+    ];
+    for (const [method, url] of routes) {
+      for (const headers of [{}, { authorization: 'Bearer wrong-token-of-some-length' }]) {
+        const response = await served.inject({
+          method: method as 'GET',
+          url,
+          headers,
+          ...(method === 'PUT' ? { payload: { speed: 10 } } : {}),
+        });
+        expect(response.statusCode, `${method} ${url}`).toBe(401);
+        expect(response.headers['www-authenticate']).toBe('Bearer realm="simulator-control"');
+        expect(response.json()).toEqual({
+          error: 'Unauthorized',
+          message: 'the control token is needed (SIM_CONTROL_TOKEN)',
+        });
+      }
+    }
+    // Nothing moved: no request without the token reached a handler.
+    expect(run.pacer.state).toBe('idle');
+    expect(run.actions()).toEqual([]);
+    expect(run.pacer.speed).toBe(60);
+    // With it, the same routes answer.
+    expect(
+      (await served.inject({ method: 'GET', url: '/api/v1/status', headers: auth })).statusCode,
+    ).toBe(200);
+    expect(
+      (await served.inject({ method: 'GET', url: '/api/v1/no-such-route', headers: auth }))
+        .statusCode,
+    ).toBe(404);
+    const speed = await served.inject({
+      method: 'PUT',
+      url: '/api/v1/speed',
+      headers: auth,
+      payload: { speed: 10 },
+    });
+    expect(speed.statusCode).toBe(200);
+    expect(run.pacer.speed).toBe(10);
+  });
+
+  it('serves only the health checks and the metrics without it', async () => {
+    const { app: served } = await tokenApp();
+    expect([...OPEN_PATHS].sort()).toEqual(['/health/live', '/health/ready', '/metrics']);
+    for (const url of OPEN_PATHS) {
+      expect((await served.inject({ method: 'GET', url })).statusCode, url).toBe(200);
+    }
+    // Exact paths only: a variant of an open path is not open.
+    for (const url of ['/health/live/', '/health', '/metrics/x', '/health/../api/v1/status']) {
+      expect((await served.inject({ method: 'GET', url })).statusCode, url).toBe(401);
+    }
+  });
+
+  it('refuses the event stream upgrade without the token and opens it with it', async () => {
+    const { app: served } = await tokenApp();
+    const address = await served.listen({ host: '127.0.0.1', port: 0 });
+    const url = `${address.replace('http', 'ws')}${EVENTS_PATH}`;
+    const refused = await new Promise<string>((resolve) => {
+      const socket = new WebSocket(url);
+      socket.addEventListener('open', () => {
+        resolve('open');
+        socket.close();
+      });
+      socket.addEventListener('error', () => {
+        resolve('error');
+      });
+    });
+    expect(refused).toBe('error');
+    const plain = await fetch(`${address}${EVENTS_PATH}`);
+    expect(plain.status).toBe(401);
+    const opened = await new Promise<string>((resolve) => {
+      const socket = new WebSocket(url, { headers: auth });
+      socket.addEventListener('open', () => {
+        resolve('open');
+        socket.close();
+      });
+      socket.addEventListener('error', () => {
+        resolve('error');
+      });
+    });
+    expect(opened).toBe('open');
+  });
+});
+
+describe('event-stream lifetime (#237 review)', () => {
+  it('closes a stream after its lifetime with 4100, so the client reconnects through the check', async () => {
+    expect(DEFAULT_EVENTS_LIFETIME_MS).toBe(300_000);
+    const { app: served } = await (async () => {
+      const hub = new EventHub();
+      const run = createLiveRun({ config, seed: 3, start: T0, clock: new ManualClock() });
+      app = await buildControlApp({
+        token: null,
+        pacer: run.pacer,
+        hub,
+        ready: () => true,
+        eventsLifetimeMs: 300,
+      });
+      return { app };
+    })();
+    const address = await served.listen({ host: '127.0.0.1', port: 0 });
+    const url = `${address.replace('http', 'ws')}${EVENTS_PATH}`;
+    const opened = Date.now();
+    const closed = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+      const socket = new WebSocket(url);
+      socket.addEventListener('close', (event) => {
+        resolve({ code: event.code, reason: event.reason });
+      });
+      socket.addEventListener('error', () => {
+        reject(new Error('the stream did not open'));
+      });
+    });
+    const lived = Date.now() - opened;
+    expect(closed).toEqual({
+      code: EVENTS_LIFETIME_CLOSE,
+      reason: 'stream lifetime reached; reconnect',
+    });
+    expect(lived).toBeGreaterThanOrEqual(250);
+    expect(lived).toBeLessThan(5_000);
+    // A new connection is a new upgrade: it opens again (behind nginx, through auth_request).
+    const again = await new Promise<string>((resolve) => {
+      const socket = new WebSocket(url);
+      socket.addEventListener('open', () => {
+        resolve('open');
+        socket.close();
+      });
+      socket.addEventListener('error', () => {
+        resolve('error');
+      });
+    });
+    expect(again).toBe('open');
+  });
+});
+
 describe('environment configuration (#54)', () => {
   it('applies defaults and coerces values', () => {
-    const result = parseEnv({ SIM_SPEED: '30', CONTROL_PORT: '9000', SIM_SEED: '' });
+    const result = parseEnv({ ...TOKEN_ENV, SIM_SPEED: '30', CONTROL_PORT: '9000', SIM_SEED: '' });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.env).toMatchObject({
@@ -696,17 +907,21 @@ describe('environment configuration (#54)', () => {
       });
     }
     // The production mode (#172): orders only on request.
-    const orders = parseEnv({ SIM_PRODUCTION: 'orders' });
+    const orders = parseEnv({ ...TOKEN_ENV, SIM_PRODUCTION: 'orders' });
     expect(orders.ok && orders.env.SIM_PRODUCTION).toBe('orders');
     // A scenario's own stock file (#196): the configuration's stock.yaml unless set.
     expect(result.ok && result.env.SIM_STOCK).toBeUndefined();
-    const stock = parseEnv({ SIM_STOCK: 'apps/simulator/golden/quality-01/stock.yaml' });
+    const stock = parseEnv({
+      ...TOKEN_ENV,
+      SIM_STOCK: 'apps/simulator/golden/quality-01/stock.yaml',
+    });
     expect(stock.ok && stock.env.SIM_STOCK).toBe('apps/simulator/golden/quality-01/stock.yaml');
     // Timelines and the live event log (#235): neither unless set; the committed folder.
     expect(result.ok && result.env.SIM_TIMELINE).toBeUndefined();
     expect(result.ok && result.env.SIM_EVENT_LOG).toBeUndefined();
     expect(result.ok && result.env.SIM_SCENARIOS_DIR).toMatch(/config\/scenarios$/);
     const timeline = parseEnv({
+      ...TOKEN_ENV,
       SIM_TIMELINE: 'monday-breakdown-and-recovery',
       SIM_EVENT_LOG: '/var/log/sim/events.jsonl',
     });
@@ -728,8 +943,12 @@ describe('environment configuration (#54)', () => {
     ['SIM_CONFIG_DIR', '  '],
     ['SIM_PRODUCTION', 'campaigns'],
     ['SIM_STOCK', '   '],
+    ['SIM_CONTROL_TOKEN', 'short'],
+    ['SIM_CONTROL_TOKEN', 'with a space in it!'],
+    ['SIM_EVENTS_LIFETIME_MS', '999'],
+    ['SIM_EVENTS_LIFETIME_MS', '3600001'],
   ])('refuses %s=%j', (key, value) => {
-    const result = parseEnv({ [key]: value });
+    const result = parseEnv({ ...TOKEN_ENV, [key]: value });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues[0]).toMatch(new RegExp(`^${key}: `));
@@ -738,6 +957,7 @@ describe('environment configuration (#54)', () => {
 
   it('refuses invalid values and names every offending variable', () => {
     const result = parseEnv({
+      ...TOKEN_ENV,
       SIM_SPEED: '100',
       SIM_START: '2026-10-12T06:00:00',
       CONTROL_PORT: 'http',
@@ -754,6 +974,18 @@ describe('environment configuration (#54)', () => {
         'SIM_START',
       ]);
       expect(result.issues.join('\n')).toMatch(/SIM_START: expected ISO 8601 with an offset/);
+    }
+  });
+
+  it('requires the control token and never echoes it (#237)', () => {
+    const missing = parseEnv({});
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.issues.join('\n')).toMatch(/^SIM_CONTROL_TOKEN: /m);
+    const bad = parseEnv({ SIM_CONTROL_TOKEN: 'secret value' });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) {
+      expect(bad.issues.join('\n')).toContain('(hidden)');
+      expect(bad.issues.join('\n')).not.toContain('secret value');
     }
   });
 });
@@ -777,6 +1009,7 @@ describe('ground truth lineOee in orders mode through the HTTP schema (#251 revi
       run.line.handle(event, sim);
     });
     app = await buildControlApp({
+      token: null,
       pacer: run.pacer,
       hub: new EventHub(),
       ready: () => true,

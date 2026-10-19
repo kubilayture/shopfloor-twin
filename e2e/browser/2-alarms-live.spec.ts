@@ -46,6 +46,8 @@ const KPI_MIN_RATIO = 0.25;
 const MIN_AGREEMENT = 0.95;
 
 const simUrl = process.env.RECONCILE_SIM_URL;
+/** The control API's token (#237): the run passes it with the address. */
+const simToken = process.env.RECONCILE_SIM_TOKEN ?? '';
 const mesUrl = process.env.RECONCILE_MES_URL;
 const results = process.env.RECONCILE_RESULTS;
 /** Sampling ends when the paced clock passes this (the last shift A injection plus a margin). */
@@ -134,7 +136,7 @@ test('/alarms lists every raise within 2 s, shows the flood banner, and the KPI 
   test.skip(!simUrl || !mesUrl, 'runs inside pnpm test:reconcile, which starts the stack');
   if (Number.isNaN(sampleUntil)) throw new Error('RECONCILE_ALARMS_UNTIL is not a time');
   test.setTimeout(10 * 60_000);
-  const sim = new SimulatorClient(simUrl ?? '');
+  const sim = new SimulatorClient(simUrl ?? '', simToken);
   const mes = new MesClient(mesUrl ?? '', await logIn(page));
   const current = await mes.currentShift();
   if (current.shiftKey !== shiftKey || current.shift === null) {

@@ -57,6 +57,18 @@ export const envSchema = z.object({
   MODBUS_PORT: port.default(5020),
   CONTROL_HOST: text.default('127.0.0.1'),
   CONTROL_PORT: port.default(4800),
+  /**
+   * The control API's bearer token (#237, control API 1.11): required on every route but
+   * `/health/*` and `/metrics`. Random per stack, at least 16 characters, no whitespace.
+   */
+  /**
+   * How long an event-stream connection lives before it is closed with 4100 (#237 review): the
+   * console reconnects, and nginx checks the session again. 1 s to 1 h, default 5 min.
+   */
+  SIM_EVENTS_LIFETIME_MS: integer.pipe(z.number().min(1_000).max(3_600_000)).default(300_000),
+  SIM_CONTROL_TOKEN: z
+    .string()
+    .regex(/^\S{16,512}$/, 'expected 16–512 characters without whitespace'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 });
 
@@ -80,9 +92,11 @@ export function parseEnv(source: Readonly<Record<string, string | undefined>>): 
   }
   return {
     ok: false,
-    issues: result.error.issues.map(
-      (issue) =>
-        `${issue.path.join('.')}: ${issue.message} (got ${JSON.stringify(known[String(issue.path[0])] ?? null)})`,
-    ),
+    issues: result.error.issues.map((issue) => {
+      const key = String(issue.path[0]);
+      // A secret is never echoed (#237).
+      const shown = key.includes('TOKEN') ? '(hidden)' : JSON.stringify(known[key] ?? null);
+      return `${issue.path.join('.')}: ${issue.message} (got ${shown})`;
+    }),
   };
 }

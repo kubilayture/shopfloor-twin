@@ -48,6 +48,12 @@ export type Access = Permission | 'session' | 'public';
 /** A route's access, kept in its Fastify config for the `/api/v1` hook. */
 export interface RouteConfig {
   readonly access: Access;
+  /**
+   * Whether this request counts as use of its session (moves its idle expiry, ADR-0026); every
+   * request does unless the route says otherwise (#237: the console's permission check counts
+   * only a non-GET console action).
+   */
+  readonly touch?: (request: FastifyRequest) => boolean;
 }
 
 const ACCESS_TEXT: Readonly<Record<'session' | 'public', string>> = {
@@ -106,6 +112,10 @@ export interface RouteSpec<P extends z.ZodType, Q extends z.ZodType, R extends z
   readonly access?: Access;
   /** The route answers 304 to a matching `If-None-Match` (its handler sets `ETag`). */
   readonly etag?: boolean;
+  /** See `RouteConfig.touch`. */
+  readonly touch?: (request: FastifyRequest) => boolean;
+  /** The route answers 204 without a body (#237: a permission check); `response` is unused. */
+  readonly noContent?: boolean;
 }
 
 /**
@@ -237,7 +247,7 @@ export function getRoute<P extends z.ZodType, Q extends z.ZodType, R extends z.Z
   }) => z.input<R> | Promise<z.input<R>>,
 ): void {
   const access = spec.access ?? 'read';
-  const config: RouteConfig = { access };
+  const config: RouteConfig = { access, ...(spec.touch ? { touch: spec.touch } : {}) };
   app.route({
     method: 'GET',
     url: spec.url,
@@ -249,10 +259,14 @@ export function getRoute<P extends z.ZodType, Q extends z.ZodType, R extends z.Z
       ...(spec.params ? { params: jsonSchema(spec.params, 'input') } : {}),
       querystring: jsonSchema(spec.query, 'input'),
       response: {
-        200: {
-          description: 'OK',
-          content: { 'application/json': { schema: jsonSchema(spec.response, 'output') } },
-        },
+        ...(spec.noContent === true
+          ? { 204: { description: 'No Content' } }
+          : {
+              200: {
+                description: 'OK',
+                content: { 'application/json': { schema: jsonSchema(spec.response, 'output') } },
+              },
+            }),
         ...(spec.etag === true
           ? { 304: { description: 'Not modified: `If-None-Match` names the current `ETag`' } }
           : {}),

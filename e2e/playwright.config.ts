@@ -21,6 +21,8 @@ import { defineConfig, devices } from '@playwright/test';
  *   A1 terminal within 2 s, an operator signed on to Line A1 throughout;
  * - `quality-final`, after the drain: a serial's trace page with its crew, holds from the drift's
  *   episode and a lot, the terminal's banners, the close refused while held and allowed after.
+ * The console run (#237, `pnpm test:console`, src/console-pass.ts) has a project of its own,
+ * `console` (browser/console): every `/sim/` refusal and every console action as admin.
  * Every run holds the host-wide heavy-suite lock (#228, src/playwright-lock.ts).
  * Chromium only. On failure: a trace and a screenshot in e2e/results/<pass>/playwright/<project>.
  */
@@ -43,7 +45,7 @@ export default defineConfig({
   projects: [
     {
       name: 'live',
-      testIgnore: ['final/**', 'orders/**', 'quality/**'],
+      testIgnore: ['final/**', 'orders/**', 'quality/**', 'console/**'],
       outputDir: join(results, 'playwright', 'live'),
       use: { ...chromium },
     },
@@ -81,6 +83,12 @@ export default defineConfig({
       name: 'quality-final',
       testDir: './browser/quality/final',
       outputDir: join(results, 'playwright', 'quality-final'),
+      use: { ...chromium },
+    },
+    {
+      name: 'console',
+      testDir: './browser/console',
+      outputDir: join(results, 'playwright', 'console'),
       use: { ...chromium },
     },
   ],

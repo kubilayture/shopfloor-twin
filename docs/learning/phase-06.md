@@ -295,12 +295,13 @@ Raise a flood, acknowledge and shelve, and print a shift report, on a disposable
 
 1. Start a separate project: `COMPOSE_PROJECT_NAME=shopfloor-learn pnpm stack:up` (stop your normal stack first: the ports are the same). Open <http://localhost:8080/alarms> and, in a second tab, `/alarms/kpi`.
 2. See the reference cases drive the tests: in `docs/alarm-kpi-reference-cases.md`, change one digit of case 2's expected `Peak 10` and run `pnpm --filter @shopfloor/alarm-core test`. Exactly that case fails, because the tests parse the document. Revert the change.
-3. Inject 12 failures on Cell M1 within 10 minutes of plant time, which is 10 s of wall time at 60×, so use a loop (during a shift, while the machines run):
+3. Inject 12 failures on Cell M1 within 10 minutes of plant time, which is 10 s of wall time at 60×, so use a loop (during a shift, while the machines run; since #237 the control API needs its token: `export SIM_CONTROL_TOKEN=…`, the value from your `.env`):
 
    ```sh
    for i in 1 2 3 4; do
      for p in cnc-01:COOLANT-PRESSURE cnc-02:SPINDLE-OVERLOAD wsh-01:HEATER-FAULT; do
        curl -s -o /dev/null -X POST -H 'Content-Type: application/json' \
+         -H "Authorization: Bearer $SIM_CONTROL_TOKEN" \
          -d "{\"code\":\"${p#*:}\",\"repairMs\":3000}" \
          "http://127.0.0.1:4800/api/v1/faults/failure/${p%%:*}"
      done

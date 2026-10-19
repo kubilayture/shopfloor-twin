@@ -2,7 +2,7 @@
 // WebSocket within the MES's Host and Origin checks. Run by scripts/stack-smoke.sh on the host,
 // with Node.js 26 (built-in fetch and WebSocket, no dependencies), so the requests carry the
 // Host and Origin a browser on this machine would send.
-// Usage: node scripts/stack-smoke-web.mjs [web base URL, default http://127.0.0.1:8080]
+// Usage: node scripts/stack-smoke-web.mjs [web base URL, default https://127.0.0.1:8443]
 // Since #121 it checks the write refusals, and with SMOKE_WRITES=1 codes and clears one record.
 // Since #143 it checks the alarm write refusals too, and with SMOKE_WRITES=1 acknowledges one
 // alarm occurrence (skipped when the plant has raised none yet).
@@ -11,10 +11,18 @@
 // refusals of anonymous requests (401, WebSocket 4401) and of a permission the role lacks (403).
 // With SMOKE_WRITES=1 and MES_BOOTSTRAP_ADMIN_PASSWORD set, the bootstrap admin must change its
 // password before anything else (403, WebSocket 4403); the smoke never changes it.
+// Since P9-14 (ADR-0039) the web is HTTPS only: stack-smoke.sh runs this with NODE_EXTRA_CA_CERTS
+// (the stack's dev CA, which every request here then trusts) and SMOKE_WEB_CERT (the certificate
+// the pki step wrote for nginx). The TLS checks: the handshake presents exactly that certificate
+// over TLS 1.3, for the names localhost and 127.0.0.1; TLS 1.2 is refused; without the dev CA the
+// certificate is not trusted; the session cookie is `__Host-sft_session`, `Secure`.
 
-import { request as httpRequest } from 'node:http';
+import { X509Certificate } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { request as httpsRequest } from 'node:https';
+import { connect as tlsConnect, rootCertificates } from 'node:tls';
 
-const base = new URL(process.argv[2] ?? 'http://127.0.0.1:8080');
+const base = new URL(process.argv[2] ?? 'https://127.0.0.1:8443');
 const MACHINES = ['asm-01', 'cnc-01', 'cnc-02', 'lkt-01', 'pck-01', 'wsh-01'];
 const DEADLINE_MS = 60_000;
 
@@ -28,6 +36,59 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const username = process.env.SMOKE_USERNAME;
 const password = process.env.SMOKE_PASSWORD;
 if (!username || !password) fail('SMOKE_USERNAME and SMOKE_PASSWORD must be set (stack-smoke.sh)');
+if (base.protocol !== 'https:') fail(`the web must be HTTPS (P9-14): ${base}`);
+if (!process.env.SMOKE_WEB_CERT || !process.env.NODE_EXTRA_CA_CERTS) {
+  fail('SMOKE_WEB_CERT and NODE_EXTRA_CA_CERTS must be set (stack-smoke.sh)');
+}
+
+// The TLS handshake (P9-14): what the web presents to a client trusting the dev CA (`ca` unset:
+// Node's default store, NODE_EXTRA_CA_CERTS included) for `servername`, or the error.
+function handshake({ servername, ca, maxVersion } = {}) {
+  return new Promise((resolve) => {
+    const socket = tlsConnect({
+      host: base.hostname,
+      port: Number(base.port),
+      ...(servername ? { servername } : {}),
+      ...(ca ? { ca } : {}),
+      ...(maxVersion ? { maxVersion } : {}),
+    });
+    socket.setTimeout(10_000, () => socket.destroy(new Error('timeout')));
+    socket.once('secureConnect', () => {
+      const result = {
+        certificate: socket.getPeerX509Certificate(),
+        protocol: socket.getProtocol(),
+      };
+      socket.end();
+      resolve(result);
+    });
+    socket.once('error', (error) => resolve({ error: error.code ?? error.message }));
+  });
+}
+const expected = new X509Certificate(readFileSync(process.env.SMOKE_WEB_CERT));
+for (const servername of ['localhost', undefined]) {
+  const shake = await handshake({ servername });
+  const name = servername ?? base.hostname;
+  if (shake.error) fail(`TLS handshake as ${name} failed: ${shake.error}`);
+  if (shake.certificate.fingerprint256 !== expected.fingerprint256) {
+    fail(
+      `the web presented ${shake.certificate.fingerprint256} as ${name}, not the pki step's certificate`,
+    );
+  }
+  if (shake.protocol !== 'TLSv1.3') fail(`the web negotiated ${shake.protocol}`);
+}
+const old = await handshake({ servername: 'localhost', maxVersion: 'TLSv1.2' });
+if (!old.error) fail(`the web accepted ${old.protocol}`);
+const publicOnly = await handshake({ servername: 'localhost', ca: rootCertificates });
+if (publicOnly.error !== 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
+  fail(`the web's certificate without the dev CA: ${publicOnly.error ?? 'trusted'}`);
+}
+const otherName = await handshake({ servername: 'example.com' });
+if (otherName.error !== 'ERR_TLS_CERT_ALTNAME_INVALID') {
+  fail(`the web's certificate for another name: ${otherName.error ?? 'accepted'}`);
+}
+console.log(
+  `ok: TLS 1.3 with the pki step's certificate (${expected.fingerprint256.slice(0, 23)}…) as localhost and ${base.hostname}; TLS 1.2, another name and no dev CA refused`,
+);
 
 // The app shell, client-side routes and the headers nginx adds.
 const shell = await fetch(new URL('/', base));
@@ -37,6 +98,8 @@ const csp = shell.headers.get('content-security-policy') ?? '';
 if (!csp.includes("default-src 'self'")) fail(`no Content-Security-Policy on / (${csp})`);
 if (shell.headers.get('x-content-type-options') !== 'nosniff') fail('no X-Content-Type-Options');
 if (shell.headers.get('cache-control') !== 'no-cache') fail('index.html is cached');
+// No HSTS on localhost (ADR-0039): it would hold every port of the name to HTTPS.
+if (shell.headers.has('strict-transport-security')) fail('the web sends Strict-Transport-Security');
 const route = await fetch(new URL('/equipment/cnc-01?range=1h', base));
 if (!route.ok || !(await route.text()).includes('<div id="root">')) {
   fail(`client-side route not answered with index.html (${route.status})`);
@@ -59,7 +122,7 @@ console.log('ok: web serves the app (SPA fallback, CSP, caching, gzip)');
 function send(method, path, headers, body) {
   const length = body === undefined ? {} : { 'content-length': String(Buffer.byteLength(body)) };
   return new Promise((resolve, reject) => {
-    const req = httpRequest(
+    const req = httpsRequest(
       new URL(path, base),
       { method, headers: { ...headers, ...length } },
       (response) => {
@@ -90,10 +153,15 @@ async function login(name, secret) {
   const setCookie = String(answer.headers['set-cookie']);
   // A failure message never shows the token (#170 review L5).
   const redacted = setCookie.replace(/=[^;,]*/, '=(redacted)');
-  if (!cookie.startsWith('sft_session=')) fail(`login set no session cookie: ${redacted}`);
-  if (!/HttpOnly/i.test(setCookie) || !/SameSite=Strict/i.test(setCookie)) {
-    fail(`session cookie not HttpOnly and SameSite=Strict: ${redacted}`);
+  // `__Host-` and `Secure` behind the HTTPS front (MES_COOKIE_SECURE=on, the default; ADR-0039).
+  if (!cookie.startsWith('__Host-sft_session='))
+    fail(`login set no __Host- session cookie: ${redacted}`);
+  const attributes = setCookie.split(';').map((a) => a.trim().toLowerCase());
+  for (const wanted of ['httponly', 'samesite=strict', 'secure', 'path=/']) {
+    if (!attributes.includes(wanted)) fail(`session cookie without ${wanted}: ${redacted}`);
   }
+  if (attributes.some((a) => a.startsWith('domain=')))
+    fail(`session cookie with a Domain: ${redacted}`);
   return { status: 200, cookie, session: JSON.parse(answer.text) };
 }
 
@@ -113,7 +181,9 @@ const cookie = signedIn.cookie;
 if (signedIn.session.user.username !== username || signedIn.session.user.mustChangePassword) {
   fail(`unexpected session: ${JSON.stringify(signedIn.session.user)}`);
 }
-console.log(`ok: login through the web as ${username} (HttpOnly, SameSite=Strict cookie)`);
+console.log(
+  `ok: login through the web as ${username} (__Host-sft_session: Secure, HttpOnly, SameSite=Strict)`,
+);
 const authed = { cookie };
 const getJson = async (path) => {
   const response = await fetch(new URL(path, base), { headers: authed });
@@ -150,7 +220,7 @@ console.log(
 function snapshot(origin, session = cookie) {
   return new Promise((resolve, reject) => {
     const url = new URL('/api/v1/ws', base);
-    url.protocol = 'ws:';
+    url.protocol = 'wss:';
     const socket = new WebSocket(url, {
       headers: { origin, ...(session === null ? {} : { cookie: session }) },
     });

@@ -579,14 +579,19 @@ describe('identity module (#168)', () => {
 describe('environment and secrets (#168)', () => {
   const base = { DATABASE_URL: 'postgres://u@h/d', MQTT_PASSWORD: 'x' };
 
-  it('defaults MES_AUTH to on (#170) and MES_COOKIE_SECURE to off; the bootstrap password is optional and hidden', () => {
+  it('defaults MES_AUTH to on (#170) and MES_COOKIE_SECURE to on (#241); the bootstrap password is optional and hidden', () => {
     const parsed = parseEnv(base);
     expect(parsed.ok && parsed.env.MES_AUTH).toBe('on');
     expect(parseEnv({ ...base, MES_AUTH: 'off' })).toMatchObject({
       ok: true,
       env: { MES_AUTH: 'off' },
     });
-    expect(parsed.ok && parsed.env.MES_COOKIE_SECURE).toBe('off');
+    // Secure by default (P9-14, ADR-0039): plain HTTP straight to the MES sets it off explicitly.
+    expect(parsed.ok && parsed.env.MES_COOKIE_SECURE).toBe('on');
+    expect(parseEnv({ ...base, MES_COOKIE_SECURE: 'off' })).toMatchObject({
+      ok: true,
+      env: { MES_COOKIE_SECURE: 'off' },
+    });
     expect(parsed.ok && parsed.env.MES_BOOTSTRAP_ADMIN_PASSWORD).toBeUndefined();
     const short = 'too-short';
     const refused = parseEnv({ ...base, MES_BOOTSTRAP_ADMIN_PASSWORD: short, MES_AUTH: 'on' });

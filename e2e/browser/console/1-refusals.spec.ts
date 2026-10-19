@@ -1,4 +1,5 @@
 import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { expect, request, test, type APIRequestContext } from '@playwright/test';
 import { account } from '../login.ts';
 
@@ -37,10 +38,14 @@ async function contextOf(name?: string): Promise<APIRequestContext> {
   return context;
 }
 
-/** A raw WebSocket handshake (an API context may drop hop-by-hop headers): its HTTP status. */
+/**
+ * A raw WebSocket handshake (an API context may drop hop-by-hop headers): its HTTP status. Over
+ * HTTPS since P9-14, trusting the stack's dev CA through NODE_EXTRA_CA_CERTS.
+ */
 function upgradeStatus(path: string, headers: Record<string, string>): Promise<number> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest(new URL(path, web), {
+    const url = new URL(path, web);
+    const req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
       headers: {
         connection: 'Upgrade',
         upgrade: 'websocket',

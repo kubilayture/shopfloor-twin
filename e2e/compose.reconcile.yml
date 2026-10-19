@@ -4,14 +4,16 @@
 #
 # - Host ports are ephemeral (127.0.0.1, chosen by Docker; the test asks `docker compose port`), so
 #   the run never collides with a dev stack on the default ports. The database and the broker are
-#   not published at all: the test reads the database with `docker compose exec`.
+#   not published at all: the test reads the database with `docker compose exec`. The MES and the
+#   gateway, unpublished in the hardened docker-compose.yml (P9-14, ADR-0039), are published here
+#   for the run's own clients (the API as each user, the gateway's metrics), as the dev override
+#   (compose.dev-ports.yml) does on fixed ports; the browser goes through the web's HTTPS port.
 # - Nothing restarts: a crashed service must fail the run, not reappear as a new simulator epoch.
 # - The simulator starts idle (SIM_AUTOSTART=false in the env file); the test resumes it once the
 #   MES is ready and the gateway connected (Phase 4 plan, "Reconciliation").
 
 services:
   db:
-    ports: !reset []
     restart: 'no'
   broker:
     ports: !reset []
@@ -21,11 +23,11 @@ services:
       - '127.0.0.1::4800'
     restart: 'no'
   gateway:
-    ports: !override
+    ports:
       - '127.0.0.1::4900'
     restart: 'no'
   mes:
-    ports: !override
+    ports:
       - '127.0.0.1::4700'
     restart: 'no'
   erp:
@@ -34,5 +36,5 @@ services:
     restart: 'no'
   web:
     ports: !override
-      - '127.0.0.1::8080'
+      - '127.0.0.1::8443'
     restart: 'no'

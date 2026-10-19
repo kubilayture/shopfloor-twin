@@ -7,9 +7,12 @@
  * golden harness's loader (`apps/mes-server/src/trace-perf-load.e2e.test.ts`, a `mes-server` Vitest
  * entry run with `pnpm --filter`) replays `week-01` in order into that database as `mes_app`,
  * through the port the override publishes for this run only; then the project's ERP mock, MES and
- * web start on it, and the bootstrap admin makes the run's supervisor (generated passwords).
+ * web start on it (the web after the pki step, which issues its TLS certificate), and the bootstrap
+ * admin makes the run's supervisor (generated passwords).
  *
- * The measurement, from the host through nginx (`web`) to `/api/v1/trace/…` with the supervisor's
+ * The measurement, from the host through nginx's HTTPS front (`web`, P9-14: the stack's dev CA
+ * trusted in this process, the served certificate checked against the pki step's) to
+ * `/api/v1/trace/…` with the supervisor's
  * session, one request at a time, Node's `fetch` and `performance.now()` (each request timed to the
  * last byte of its body): 200 backward traces of serials drawn at random (seeded, the seed in the
  * report) from every serial the forward traces return, and 200 forward traces of the largest lot
@@ -163,8 +166,8 @@ async function main(): Promise<boolean> {
     await stack.prepare();
     await stack.compose(['down', '--volumes', '--remove-orphans']);
     if (!skipBuild) {
-      log(`building mes-server, erp-mock and web (${tag})`);
-      await stack.compose(['build', 'mes', 'erp', 'web'], 1_200_000);
+      log(`building mes-server, erp-mock, web and the simulator for the pki step (${tag})`);
+      await stack.compose(['build', 'mes', 'erp', 'web', 'pki'], 1_200_000);
       await pruneBuildCache(log);
     }
     log('starting db and the migrate step');
@@ -225,7 +228,11 @@ async function main(): Promise<boolean> {
     ]);
     const cookie = users.get(SUPERVISOR)?.cookie;
     if (cookie === undefined) throw new Error(`${SUPERVISOR} was not created`);
-    const web = await stack.url('web', 8080);
+    // HTTPS (P9-14): the dev CA trusted here, the certificate checked; the series below include no
+    // handshake (fetch keeps the connection), as a browser's reads don't.
+    const trust = await stack.webTrust();
+    const web = trust.url;
+    report.tls = { url: web, spki: trust.spki };
     const erp = new ErpClient(await stack.url('erp', 4600), stack.value('ERP_API_TOKEN'));
 
     // Every lot of the ERP's list, forward through nginx: the serials and the largest lot.
@@ -327,7 +334,7 @@ async function main(): Promise<boolean> {
     });
     // The images it built go too (#228), unless kept; images it didn't build are the caller's.
     if (!skipBuild && process.env.TRACE_PERF_KEEP_IMAGES !== '1') {
-      await removeImages(tag, ['mes-server', 'erp-mock', 'web']);
+      await removeImages(tag, ['mes-server', 'erp-mock', 'web', 'simulator']);
     }
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);

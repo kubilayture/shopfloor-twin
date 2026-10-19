@@ -11,6 +11,7 @@
     "./opcua-pki": "./src/opcua-pki.ts",
     "./ports": "./src/ports.ts",
     "./timing": "./src/timing.ts",
+    "./tls": "./src/tls.ts",
     "./heavy-lock": "./src/heavy-lock.ts"
   },
   "scripts": {

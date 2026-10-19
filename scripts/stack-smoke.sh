@@ -9,9 +9,10 @@ set -a
 . "$env_file"
 set +a
 # SMOKE_EPHEMERAL_PORTS=1 (the gate, #228): every published port on an ephemeral host port chosen
-# by Docker (e2e/compose.ephemeral-ports.yml; the database and the broker unpublished), so a dev
-# stack on the default ports can stay up. The smoke reads each address back with `docker compose
-# port` either way, so it never assumes a fixed host port.
+# by Docker (e2e/compose.ephemeral-ports.yml; the broker unpublished too), so a dev stack on the
+# default ports can stay up. The smoke reads each address back with `docker compose port` either
+# way, so it never assumes a fixed host port. Either way the MES, the gateway and the database are
+# not published (P9-14, ADR-0039): the smoke reaches them with `docker compose exec`.
 compose_files=
 if [ "${SMOKE_EPHEMERAL_PORTS:-}" = 1 ]; then
   compose_files="--file docker-compose.yml --file e2e/compose.ephemeral-ports.yml"
@@ -40,11 +41,23 @@ published() {
     *) echo "$address" ;;
   esac
 }
-# url <service> <container port>: http://<host address> the port is published on.
+# url <service> <container port> [scheme]: <scheme, default http>://<host address> the port is
+# published on.
 url() {
   address=$(published "$1" "$2")
   [ -n "$address" ] || fail "$1:$2 is not published"
-  echo "http://$address"
+  echo "${3:-http}://$address"
+}
+# in_container <service> <port> <path>: GET http://127.0.0.1:<port><path> inside the service's
+# container (the MES and the gateway are not published, P9-14), its body on stdout; fails on a
+# non-2xx answer.
+in_container() {
+  docker compose exec -T "$1" node -e "
+    fetch('http://127.0.0.1:$2$3').then(async (r) => {
+      process.stdout.write(await r.text());
+      process.exit(r.ok ? 0 : 1);
+    }, () => process.exit(1));
+  "
 }
 
 # Compose refuses to start without a required secret, but not without the optional bootstrap
@@ -71,24 +84,50 @@ echo "ok: Compose refuses to start without a required secret, not without the bo
 smoke_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 docker compose up -d --wait
 
-# Where the stack listens on the host (#228): read back, never assumed.
+# Where the stack listens on the host (#228): read back, never assumed. The web front is HTTPS
+# only (P9-14, ADR-0039).
 sim_url=$(url simulator 4800)
-gateway_url=$(url gateway 4900)
 erp=$(url erp 4600)
-mes_url=$(url mes 4700)
-web=$(url web 8080)
+web=$(url web 8443 https)
+web_address=${web#https://}
 if [ "${SMOKE_EPHEMERAL_PORTS:-}" = 1 ]; then
-  for address in "$sim_url" "$gateway_url" "$erp" "$mes_url" "$web"; do
+  for address in "$sim_url" "$erp" "$web"; do
     case "$address" in
-      *:4800 | *:4900 | *:4600 | *:4700 | *:8080) fail "a default host port is published: $address" ;;
+      *:4800 | *:4600 | *:8443) fail "a default host port is published: $address" ;;
     esac
   done
-  for pair in "db 5432" "broker 1883" "simulator 4841" "simulator 4845" "simulator 5020"; do
+  for pair in "broker 1883" "simulator 4841" "simulator 4845" "simulator 5020"; do
     # shellcheck disable=SC2086 # two words: service and port
     [ -z "$(published $pair)" ] || fail "published on the host: $pair"
   done
-  echo "ok: ephemeral host ports (web $web, MES $mes_url); database, broker, OPC UA and Modbus unpublished"
+  echo "ok: ephemeral host ports (web $web); broker, OPC UA and Modbus unpublished"
 fi
+# The hardened ports (P9-14, checklist S8): the MES, the gateway and the database are published on
+# no host port, the web on no HTTP port; every published container port is one of the S8 list
+# (8443, 1883, 4800, 4841-4845, 5020, 4600), on 127.0.0.1 only.
+for pair in "mes 4700" "gateway 4900" "db 5432" "web 8080"; do
+  # shellcheck disable=SC2086 # two words: service and port
+  [ -z "$(published $pair)" ] || fail "published on the host: $pair"
+done
+bindings=$(docker compose ps --format json | node -e '
+  let text = "";
+  process.stdin.on("data", (chunk) => (text += chunk)).on("end", () => {
+    const rows = text.trim().startsWith("[") ? JSON.parse(text) : text.trim().split("\n").map((l) => JSON.parse(l));
+    for (const row of rows) {
+      for (const p of row.Publishers ?? []) {
+        if (p.PublishedPort > 0) console.log(`${row.Service}:${p.TargetPort}@${p.URL}`);
+      }
+    }
+  });
+') || fail "could not list the published ports"
+for binding in $bindings; do
+  case "$binding" in
+    web:8443@127.0.0.1 | broker:1883@127.0.0.1 | simulator:4800@127.0.0.1 | simulator:484[1-5]@127.0.0.1 | \
+      simulator:5020@127.0.0.1 | erp:4600@127.0.0.1) ;;
+    *) fail "published outside the S8 list: $binding" ;;
+  esac
+done
+echo "ok: published ports within the S8 list ($(echo $bindings | wc -w | tr -d ' ') bindings); MES, gateway, database unpublished"
 
 timescale=$(docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -Atc \
   "select extversion from pg_extension where extname = 'timescaledb'")
@@ -156,12 +195,15 @@ echo "ok: retained message survives broker restart"
 
 # delivered <publisher> <publisher password> <topic>: does a message from this user reach `mes`?
 acl_out=$(mktemp)
+# The dev CA's and the web's certificates (P9-14), read from the web container below.
+tls_dir=$(mktemp -d)
 # On every exit (success, `fail`, a `set -e` stop, Ctrl-C): remove the temporary file and disable
 # the smoke user once it exists (#170; review of PR #186).
 smoke_users=
 cleanup() {
   status=$?
   rm -f "$acl_out"
+  rm -rf "$tls_dir"
   for smoke_user in $smoke_users; do
     if docker compose exec -T mes node apps/mes-server/src/user-cli.ts --disable \
       --username "$smoke_user" >/dev/null 2>&1; then
@@ -235,23 +277,27 @@ pki_state=$(docker inspect "$pki_container" --format '{{.State.Status}} {{.State
 pki_summary=$(docker compose logs --no-log-prefix pki 2>/dev/null | grep '^pki: ok' | head -n 1)
 [ -n "$pki_summary" ] || fail "the pki step logged no summary"
 echo "ok: pki step exited 0 (first run: ${pki_summary#pki: ok, })"
-# Each PKI volume is mounted by its own component only (the pki step mounts all three while it
-# runs; the tools volume by no long-running service).
+# Each PKI volume is mounted by its own component only (the pki step mounts all of them while it
+# runs; the tools volume and the dev CA's, pki-ca, by no long-running service; web-tls, nginx's
+# certificate and key, by the web alone, read-only).
 for service in $(docker compose ps --format '{{.Service}}'); do
   mounts=$(docker inspect "$(docker compose ps -q "$service")" \
-    --format '{{range .Mounts}}{{.Name}} {{end}}')
-  for volume in simulator-pki gateway-pki opcua-tools-pki; do
+    --format '{{range .Mounts}}{{.Name}}:{{.RW}} {{end}}')
+  for volume in simulator-pki gateway-pki opcua-tools-pki pki-ca web-tls; do
     case " $mounts" in
-      *"_$volume "*)
+      *"_$volume:"*)
         case "$service:$volume" in
           simulator:simulator-pki | gateway:gateway-pki) ;;
+          web:web-tls)
+            case " $mounts" in *"_web-tls:false "*) ;; *) fail "web mounts web-tls writable" ;; esac
+            ;;
           *) fail "$service mounts $volume" ;;
         esac
         ;;
     esac
   done
 done
-echo "ok: each PKI volume mounted by its own component only"
+echo "ok: each PKI volume mounted by its own component only (pki-ca by none, web-tls read-only)"
 # Checklist S1 as the tools client (opcua-reader, the tools certificate every server pins), inside
 # the Compose network: SignAndEncrypt only, LoadOrder and LoadProgram refused with
 # BadUserAccessDenied (a permission refusal on a trusted certificate), an unpinned client
@@ -259,7 +305,7 @@ echo "ok: each PKI volume mounted by its own component only"
 # (none with CurrentWrite, every Write refused, on all five machines; #239 review).
 docker compose run --rm --no-deps opcua-tools || fail "OPC UA security checks failed"
 
-ready=$(curl -sf "$gateway_url/health/ready") || fail "gateway not ready"
+ready=$(in_container gateway 4900 /health/ready) || fail "gateway not ready"
 echo "ok: gateway ready ($ready)"
 # Every machine's retained state reaches the UNS through the gateway (snapshot on connect).
 states=$(as_user dev "$MQTT_DEV_PASSWORD" mosquitto_sub -t 'orbis/gebze/+/+/+/state/current' -v -C 6 -W 30 | cut -d/ -f5 | sort -u | tr '\n' ' ')
@@ -317,9 +363,40 @@ esac
 
 # MES and web (#99). `up --wait` above already waited for the MES to be ready (migrated, database
 # answering, subscribed to the UNS) and for nginx.
-ready=$(curl -sf "$mes_url/health/ready") || fail "MES not ready"
+ready=$(in_container mes 4700 /health/ready) || fail "MES not ready"
 echo "ok: MES ready ($ready)"
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.test:${web##*:}" "$web/api/v1/equipment")
+
+# The HTTPS front (P9-14, ADR-0039, checklist S4). The dev CA's certificate (public) and the
+# certificate nginx should serve are read from the web container (the pki step's web-tls volume),
+# never taken from the handshake; every request to the web below trusts that CA alone (curl
+# --cacert; NODE_EXTRA_CA_CERTS for the web checks, which compare the handshake's certificate with
+# this one).
+docker compose exec -T web cat /etc/nginx/tls/ca.pem >"$tls_dir/ca.pem" ||
+  fail "no dev CA certificate in the web container"
+docker compose exec -T web cat /etc/nginx/tls/server.pem >"$tls_dir/server.pem" ||
+  fail "no server certificate in the web container"
+wcurl() {
+  curl --cacert "$tls_dir/ca.pem" "$@"
+}
+code=$(wcurl -s -o /dev/null -w '%{http_code}' "$web/healthz")
+[ "$code" = 200 ] || fail "the web did not answer over HTTPS with the dev CA ($code)"
+untrusted=0
+curl -s -o /dev/null "$web/healthz" || untrusted=$?
+[ "$untrusted" = 60 ] || fail "the web's certificate verified without the dev CA (curl exit $untrusted)"
+plain=$(curl -s -D - -o /dev/null "http://$web_address/") || fail "no answer to plain HTTP on the web port"
+case "$plain" in
+  'HTTP/1.1 400'*) ;;
+  *) fail "plain HTTP on the web port was not refused with 400: $(printf '%s' "$plain" | head -n 1)" ;;
+esac
+if printf '%s' "$plain" | grep -qi '^location:'; then fail "plain HTTP on the web port redirects"; fi
+headers=$(wcurl -s -D - -o /dev/null "$web/") || fail "GET / over HTTPS failed"
+if printf '%s' "$headers" | grep -qi '^strict-transport-security:'; then
+  fail "the web sends HSTS"
+fi
+docker compose logs --no-log-prefix pki 2>/dev/null | grep -q '^pki: dev CA sha256 ' ||
+  fail "the pki step logged no dev CA fingerprint"
+echo "ok: HTTPS only (dev CA trusted, untrusted without it; plain HTTP 400 without a redirect; no HSTS)"
+code=$(wcurl -s -o /dev/null -w '%{http_code}' -H "Host: evil.test:${web##*:}" "$web/api/v1/equipment")
 [ "$code" = 403 ] || fail "MES answered a foreign Host through the web ($code)"
 echo "ok: foreign Host refused through the web (DNS rebinding)"
 
@@ -358,26 +435,30 @@ if [ "${SMOKE_WRITES:-}" = 1 ]; then
   smoke_users="$smoke_users $SMOKE_QUALITY_USERNAME"
   echo "ok: user:create made the quality user $SMOKE_QUALITY_USERNAME"
 fi
-node scripts/stack-smoke-web.mjs "$web" || fail "web checks failed"
+NODE_EXTRA_CA_CERTS="$tls_dir/ca.pem" SMOKE_WEB_CERT="$tls_dir/server.pem" \
+  node scripts/stack-smoke-web.mjs "$web" || fail "web checks failed"
 
 # The console's /sim/ proxy (#237): anonymous 401, routes outside the allowlist 404 (the ground
 # truth and the recorded run among them), a write from another origin 403; the token never comes
 # back to the browser. The Playwright console run covers the roles and every action.
 for path in /sim/api/v1/status /sim/api/v1/lots /sim/api/v1/scenarios; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "$web$path")
+  code=$(wcurl -s -o /dev/null -w '%{http_code}' "$web$path")
   [ "$code" = 401 ] || fail "/sim/ answered $path anonymously ($code)"
 done
 for path in /sim/api/v1/ground-truth /sim/api/v1/scenario/recorded /sim/health/ready /sim/metrics; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "$web$path")
+  code=$(wcurl -s -o /dev/null -w '%{http_code}' "$web$path")
   [ "$code" = 404 ] || fail "/sim/ proxied $path, outside its allowlist ($code)"
 done
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Origin: http://evil.test' "$web/sim/api/v1/pause")
+code=$(wcurl -s -o /dev/null -w '%{http_code}' -X POST -H 'Origin: http://evil.test' "$web/sim/api/v1/pause")
 [ "$code" = 403 ] || fail "/sim/ took a cross-origin write ($code)"
+# The same host and port over http:// is another origin since P9-14 (nginx compares $scheme).
+code=$(wcurl -s -o /dev/null -w '%{http_code}' -X POST -H "Origin: http://$web_address" "$web/sim/api/v1/pause")
+[ "$code" = 403 ] || fail "/sim/ took a write from the http:// origin of the same host ($code)"
 echo "ok: /sim/ allowlist (401 anonymous, 404 outside it, 403 cross-origin write)"
 
 # Edge trust (#237): every request through nginx reached the MES over the edge network as
 # mes-edge (trusted), none from anywhere else (untrusted), and the MES learned that network.
-mes_metrics=$(curl -sf "$mes_url/metrics") || fail "MES metrics not reachable"
+mes_metrics=$(in_container mes 4700 /metrics) || fail "MES metrics not reachable"
 proxied_trusted=$(printf '%s\n' "$mes_metrics" |
   sed -n 's/^mes_http_proxy_requests_total{trusted="true"} \([0-9][0-9]*\)$/\1/p')
 proxied_untrusted=$(printf '%s\n' "$mes_metrics" |
@@ -418,9 +499,9 @@ echo "ok: edge network internal, without a gateway (IPAM and endpoints)"
 # The smoke operator's sessions are set five minutes back (as the superuser); the check (403 for
 # an operator, after the session lookup) must leave them there, and a plain read must move them.
 smoke_cookie=$(printf '{"username":"%s","password":"%s"}' "$SMOKE_USERNAME" "$SMOKE_PASSWORD" |
-  curl -s -o /dev/null -D - -H "Origin: $web" -H 'Content-Type: application/json' \
+  wcurl -s -o /dev/null -D - -H "Origin: $web" -H 'Content-Type: application/json' \
     --data-binary @- "$web/api/v1/session" |
-  sed -n 's/^[Ss]et-[Cc]ookie: \(sft_session=[^;]*\).*/\1/p')
+  sed -n 's/^[Ss]et-[Cc]ookie: \(__Host-sft_session=[^;]*\).*/\1/p')
 [ -n "$smoke_cookie" ] || fail "could not log in as $SMOKE_USERNAME for the X-Original-Method check"
 as_super() {
   docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -Atc "$1"
@@ -432,12 +513,12 @@ latest_use="select max(s.last_used_at) > now() - interval '1 minute' from identi
   join identity.user_account u on u.id = s.user_id
   where u.username = '$SMOKE_USERNAME' and s.ended_at is null"
 as_super "$back_dated" >/dev/null
-code=$(printf 'Cookie: %s\n' "$smoke_cookie" | curl -s -o /dev/null -w '%{http_code}' -H @- \
+code=$(printf 'Cookie: %s\n' "$smoke_cookie" | wcurl -s -o /dev/null -w '%{http_code}' -H @- \
   -H 'X-Original-Method: POST' "$web/api/v1/session/permission/sim:control")
 [ "$code" = 403 ] || fail "the permission check answered the operator $code, not 403"
 [ "$(as_super "$latest_use")" = f ] ||
   fail "a client's X-Original-Method through /api/ counted as session use"
-printf 'Cookie: %s\n' "$smoke_cookie" | curl -sf -o /dev/null -H @- "$web/api/v1/session" ||
+printf 'Cookie: %s\n' "$smoke_cookie" | wcurl -sf -o /dev/null -H @- "$web/api/v1/session" ||
   fail "the smoke operator's session read failed"
 [ "$(as_super "$latest_use")" = t ] || fail "a session read through /api/ did not count as use"
 echo "ok: a client's X-Original-Method through /api/ is dropped (no session use; a read is use)"

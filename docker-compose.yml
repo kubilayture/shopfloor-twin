@@ -10,8 +10,8 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env (copy .env.example)}
       TS_TUNE_MEMORY: ${DB_TUNE_MEMORY:-512MB}
       TS_TUNE_NUM_CPUS: ${DB_TUNE_CPUS:-2}
-    ports:
-      - '127.0.0.1:${DB_PORT:-5442}:5432'
+    # Not published (P9-14, ADR-0039): only the MES and the migrate step reach it, on the Compose
+    # network. `pnpm stack:up:dev` publishes it on 127.0.0.1:DB_PORT (compose.dev-ports.yml).
     volumes:
       - db-data:/var/lib/postgresql
     # Limits on every service (#228, security review S8): TimescaleDB tunes itself to
@@ -70,6 +70,11 @@ services:
   # every PKI volume; the simulator and the gateway start only after it succeeded and refuse to
   # start without their certificate. Rerun it to see the expiry dates or renew (runbook, "OPC UA
   # certificates"); PKI_RENEW names identities to renew at once (comma-separated).
+  # The HTTPS front (P9-14, ADR-0039): the same step makes (or keeps) the stack's dev CA, whose key
+  # stays in `pki-ca` (mounted by this step only), and issues nginx's certificate (SAN localhost,
+  # 127.0.0.1) into `web-tls` with the CA certificate (public) beside it; `dev-ca` and `web` are
+  # identities for PKI_RENEW too. The web key is 0640 with nginx's group (101 in the web image),
+  # which this step joins for that (group_add).
   pki:
     build:
       context: .
@@ -81,11 +86,17 @@ services:
       PKI_SIMULATOR_DIR: /var/lib/pki/simulator
       PKI_GATEWAY_DIR: /var/lib/pki/gateway
       PKI_TOOLS_DIR: /var/lib/pki/tools
+      PKI_CA_DIR: /var/lib/pki/ca
+      PKI_WEB_DIR: /var/lib/pki/web
+      PKI_WEB_KEY_GID: '101'
       PKI_RENEW: ${PKI_RENEW:-}
+    group_add: ['101']
     volumes:
       - simulator-pki:/var/lib/pki/simulator
       - gateway-pki:/var/lib/pki/gateway
       - opcua-tools-pki:/var/lib/pki/tools
+      - pki-ca:/var/lib/pki/ca
+      - web-tls:/var/lib/pki/web
     # A one-shot job: no health check of the image's own (that is the simulator's), no restart.
     healthcheck:
       disable: true
@@ -171,8 +182,8 @@ services:
       # Command path (#173, ADR-0029): deadline per OPC UA request, command session expiry.
       GATEWAY_CALL_DEADLINE_MS: ${GATEWAY_CALL_DEADLINE_MS:-5000}
       GATEWAY_CMD_SESSION_EXPIRY_S: ${GATEWAY_CMD_SESSION_EXPIRY_S:-3600}
-    ports:
-      - '127.0.0.1:${GATEWAY_HTTP_PORT:-4900}:4900'
+    # Health and metrics on 4900, not published (P9-14, ADR-0039); `pnpm stack:up:dev` publishes
+    # it on 127.0.0.1:GATEWAY_HTTP_PORT (compose.dev-ports.yml).
     volumes:
       # The store-and-forward buffer survives container recreation.
       - gateway-data:/var/lib/gateway
@@ -296,12 +307,16 @@ services:
       # to start when the alias doesn't resolve to a local interface.
       MES_EDGE_ALIAS: mes-edge
       MES_EDGE_REQUIRED: 'on'
+      # The session cookie (P9-14, ADR-0039): `__Host-sft_session` with `Secure`, as the browser
+      # reaches the MES only through nginx's HTTPS front. `off` only for a browser on plain HTTP
+      # straight to the MES (the Vite dev server against `pnpm stack:up:dev`; runbook).
+      MES_COOKIE_SECURE: ${MES_COOKIE_SECURE:-on}
     networks:
       default: {}
       edge:
         aliases: [mes-edge]
-    ports:
-      - '127.0.0.1:${MES_HTTP_PORT:-4700}:4700'
+    # Not published (P9-14, ADR-0039): nothing but nginx reaches the MES from outside the Compose
+    # network. `pnpm stack:up:dev` publishes it on 127.0.0.1:MES_HTTP_PORT (compose.dev-ports.yml).
     deploy:
       resources:
         limits:
@@ -347,6 +362,9 @@ services:
     depends_on:
       mes:
         condition: service_healthy
+      # Its TLS certificate and key (P9-14): made by the pki step.
+      pki:
+        condition: service_completed_successfully
     environment:
       # Added by nginx to the console's allowlisted /sim/ requests (#237); never sent to the browser.
       SIM_CONTROL_TOKEN: ${SIM_CONTROL_TOKEN:?Set SIM_CONTROL_TOKEN in .env (copy .env.example)}
@@ -354,8 +372,13 @@ services:
     networks:
       default: {}
       edge: {}
+    # HTTPS only (P9-14, ADR-0039): https://localhost:8443, no HTTP listener (a plain HTTP request
+    # to the port is answered 400), no redirect, no HSTS.
     ports:
-      - '127.0.0.1:${WEB_PORT:-8080}:8080'
+      - '127.0.0.1:${WEB_HTTPS_PORT:-8443}:8443'
+    volumes:
+      # nginx's certificate, key and the dev CA's certificate (the pki step's), read-only.
+      - web-tls:/etc/nginx/tls:ro
     deploy:
       resources:
         limits:
@@ -383,5 +406,9 @@ volumes:
   simulator-pki:
   gateway-pki:
   opcua-tools-pki:
+  # The dev CA's key and certificate (P9-14, ADR-0039): mounted by the pki step only.
+  pki-ca:
+  # nginx's TLS certificate and key and the CA certificate: written by the pki step, read by web.
+  web-tls:
   gateway-data:
   erp-data:

@@ -18,6 +18,8 @@
     "check:dockerfiles": "tsc -p . && node scripts/check-dockerfiles.ts",
     "prepare": "lefthook install",
     "stack:up": "docker compose up -d --wait",
+    "stack:up:dev": "docker compose --file docker-compose.yml --file compose.dev-ports.yml up -d --wait",
+    "stack:ca": "node scripts/dev-ca.ts",
     "stack:down": "docker compose down",
     "stack:reset": "docker compose down --volumes",
     "stack:smoke": "sh scripts/stack-smoke.sh",

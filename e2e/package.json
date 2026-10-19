@@ -23,11 +23,13 @@
   },
   "devDependencies": {
     "@shopfloor/eslint-config": "workspace:*",
+    "@shopfloor/pki": "workspace:*",
     "@shopfloor/test-kit": "workspace:*",
     "@shopfloor/tsconfig": "workspace:*",
     "@types/node": "catalog:",
     "eslint": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "yaml": "catalog:"
   }
 }

@@ -9,6 +9,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { establishWebTrust, type WebTrust } from '@shopfloor/test-kit/tls';
 
 const run = promisify(execFile);
 
@@ -125,11 +126,29 @@ export class Stack {
   }
 
   /** `http://127.0.0.1:<port>` of a service's published container port (ephemeral). */
-  async url(service: string, port: number): Promise<string> {
+  async url(service: string, port: number, scheme: 'http' | 'https' = 'http'): Promise<string> {
     const published = (await this.compose(['port', service, String(port)])).trim();
     const hostPort = /:(\d+)$/.exec(published)?.[1];
     if (hostPort === undefined) throw new Error(`${service}:${String(port)} is not published`);
-    return `http://127.0.0.1:${hostPort}`;
+    return `${scheme}://127.0.0.1:${hostPort}`;
+  }
+
+  /**
+   * The web front (P9-14, ADR-0039): `https://127.0.0.1:<port>` of nginx's 8443, after checking
+   * that it serves the certificate the pki step wrote and trusting the stack's dev CA in this
+   * process. The result's `env` makes a child trust it too (NODE_EXTRA_CA_CERTS) and gives
+   * Playwright's Chromium the SPKI pin of this certificate (never `ignoreHTTPSErrors`).
+   */
+  async webTrust(): Promise<WebTrust> {
+    if (this.#dir === undefined) throw new Error('prepare() first');
+    const read = (file: string) =>
+      this.compose(['exec', '-T', 'web', 'cat', `/etc/nginx/tls/${file}`]);
+    return establishWebTrust({
+      url: await this.url('web', 8443, 'https'),
+      caPem: await read('ca.pem'),
+      serverPem: await read('server.pem'),
+      dir: this.#dir,
+    });
   }
 
   /** Rows of a SQL query returning one JSON value, run in the `db` container. */

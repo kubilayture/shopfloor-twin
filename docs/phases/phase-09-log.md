@@ -251,3 +251,12 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed | 1,426 s   | `order-oee.e2e.test.ts` 12 tests, 693.1 s |
     | smoke     | passed | 91.6 s    |                                           |
     | reconcile | passed | 1,646.8 s | alarms OK, orders OK, quality OK          |
+
+  - **Review of PR #255** (changes requested), rebased onto `main` `520fcbc`:
+    - **(1, medium)** the line's final-through never passes the plant clock, and without a clock nothing is final. Before the fix an old epoch's progress ahead of the clock made an hour final with 1 pack of 3, and kept it; the reproduction is a unit test now. **Epoch rule:** per bucket and machine only the newest device epoch with data counts (PCK-01's packs, ASM-01's pieces), so a restarted run over the same plant time is never counted twice. A bucket with two epochs' data, or only an ended run's, is never final (unit-tested).
+    - **(2)** `lineOrders` tests: `unknownJob` from an open `unknown-job` incident (another kind ignored), `notBefore` on each unknown head (waiting, acceptance unknown), and an order with jobs on two CNCs starting at the earlier head time, in `lineOrders` and in its own line value.
+    - **(3, performance)** the order view takes its completion from the orders record and the blanks still in a CNC from `Execution.blanksInMachine`, only while open, with no WIP placement. It reads progress and gap incidents for all its machines in one read each (`Ingest.deviceProgresses`, `Ingest.gapIncidents`; the line buckets too). Re-measured over all twelve replays: order view p95 9.8–14.4 ms (was up to 104.6 ms), line reads 3.1–20.2 ms.
+    - **(4)** a job fact or a dispatch command while `MES_PRODUCTION_MODE=schedule` is logged once as a warning; the `orders` reconcile pass asserts `productionMode: 'orders'` on `GET /oee/line`.
+    - **(5)** unit-span gaps are looked up in each machine's current epoch and in the unit's run epoch when it differs; the line test stub honours epochs.
+    - **(6)** an order's gaps include ASM-01 over its whole in-progress time.
+    - **(7)** unit cases: PCK-01 scrap and rework cycles are not good packs; the revision is read through one ms past a span's end.

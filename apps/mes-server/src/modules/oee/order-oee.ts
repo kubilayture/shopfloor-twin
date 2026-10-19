@@ -84,9 +84,12 @@ import {
 /** What order OEE reads from the other modules (their `index.ts` interfaces). */
 export interface OrderOeeSources {
   readonly orders: Pick<Orders, 'order' | 'list' | 'commands' | 'incidents' | 'onChange'>;
-  readonly execution: Pick<Execution, 'units' | 'orderExecution' | 'processedThrough' | 'onChange'>;
+  readonly execution: Pick<
+    Execution,
+    'units' | 'blanksInMachine' | 'processedThrough' | 'onChange'
+  >;
   readonly equipment: Pick<Equipment, 'intervals' | 'revision' | 'onPiecesChanged' | 'watermarks'>;
-  readonly ingest: Pick<Ingest, 'deviceProgress' | 'settled'>;
+  readonly ingest: Pick<Ingest, 'deviceProgresses' | 'gapIncidents'>;
   readonly masterData: Pick<MasterData, 'equipment'>;
 }
 
@@ -403,8 +406,10 @@ export class OrderOee {
     const { orders, ingest } = this.#options;
     const all = (await orders.commands()).map(queueCommand);
     const cuts = new Map<string, DeviceCut>();
-    for (const machine of [...new Set(all.map((c) => c.equipment))].sort()) {
-      const progress = await ingest.deviceProgress(machine);
+    const progresses = await ingest.deviceProgresses(
+      [...new Set(all.map((c) => c.equipment))].sort(),
+    );
+    for (const [machine, progress] of progresses) {
       cuts.set(machine, {
         epoch: progress.epoch,
         finalThrough: progress.settledTime?.getTime() ?? null,
@@ -523,10 +528,13 @@ export class OrderOee {
   /** A cached view's cut-offs now: a queue of the CNC's current run moves with its final-through. */
   async #cutoffs(view: OrderOeeView): Promise<OrderOeeView['cutoffs']> {
     const result = [];
+    const progresses = await this.#options.ingest.deviceProgresses(
+      view.cutoffs.map((cut) => cut.machine),
+    );
     for (const cut of view.cutoffs) {
-      const progress = await this.#options.ingest.deviceProgress(cut.machine);
+      const progress = progresses.get(cut.machine);
       result.push(
-        progress.epoch === cut.epoch && progress.settledTime !== null
+        progress?.epoch === cut.epoch && progress.settledTime !== null
           ? { ...cut, at: progress.settledTime }
           : cut,
       );
@@ -543,8 +551,7 @@ export class OrderOee {
     const mine = all.filter((c) => c.orderId === order.id);
     const machines = [...new Set(mine.map((c) => c.equipment))].sort();
     const cuts = new Map<string, DeviceCut>();
-    for (const machine of machines) {
-      const progress = await ingest.deviceProgress(machine);
+    for (const [machine, progress] of await ingest.deviceProgresses(machines)) {
       cuts.set(machine, {
         epoch: progress.epoch,
         finalThrough: progress.settledTime?.getTime() ?? null,
@@ -725,10 +732,20 @@ export class OrderOee {
       !result.order.provisional &&
       !result.lost;
 
-    // First-pass yield across the routing, and the order's completion.
+    // First-pass yield across the routing, and the order's completion: the orders module's record
+    // of execution's ADR-0031 completion (execution sets it before it publishes its progress).
     const own = unitsOf.get(order.id) ?? [];
-    const executed = await execution.orderExecution(order.id);
-    const inMachine = Object.values(executed?.inMachine ?? {}).reduce((sum, n) => sum + n, 0);
+    const completedAt = order.completedAt;
+    // Blanks still in a CNC (none once the order is complete: every blank taken is a unit).
+    const inMachine =
+      completedAt !== null
+        ? 0
+        : Object.values(
+            await execution.blanksInMachine(
+              records.filter((c) => c.orderId === order.id),
+              own,
+            ),
+          ).reduce((sum, n) => sum + n, 0);
     // A blank a CNC held when its run ended belongs to a lost job: `inMachine` no longer counts it,
     // the orders module's count of the lost job's blanks (from these units, ADR-0031) does.
     let heldAtRunEnd = 0;
@@ -746,95 +763,25 @@ export class OrderOee {
       })),
       lastOperation: last,
     });
-    const completedAt = executed?.completedAt ?? null;
-
-    // Written-off gaps the inputs touch: the windows on the CNCs (in the queue's epoch), and on
-    // every machine the order's units visited, the span from their first record to the completion
-    // (or their last record), in that machine's own device epoch (#232: WSH-01's stream, followed
-    // by part id, has its own epoch; the unit's epoch is the CNC run's), else the unit's.
-    const spans = new Map<string, { machine: string; epoch: number; from: number; to: number }>();
-    const touch = (machine: string, epoch: number, from: number, to: number) => {
-      const key = `${machine}\u0000${String(epoch)}`;
-      const found = spans.get(key);
-      spans.set(key, {
-        machine,
-        epoch,
-        from: Math.min(found?.from ?? from, from),
-        to: Math.max(found?.to ?? to, to),
-      });
-    };
-    for (const { entry } of views) {
-      if (entry.window) {
-        touch(entry.queue.machine, entry.queue.epoch, entry.window.from, entry.window.to);
-      }
-    }
-    const times = own.flatMap((unit) => unit.records.map((r) => r.at.getTime()));
-    if (times.length > 0) {
-      const from = times.reduce((a, b) => Math.min(a, b));
-      const to = times.reduce((a, b) => Math.max(a, b), completedAt?.getTime() ?? 0);
-      const epochOf = new Map<string, number | null>();
-      for (const unit of own) {
-        for (const record of unit.records) {
-          if (!epochOf.has(record.equipment)) {
-            epochOf.set(
-              record.equipment,
-              cuts.get(record.equipment)?.epoch ??
-                (await ingest.deviceProgress(record.equipment)).epoch,
-            );
-          }
-          touch(record.equipment, epochOf.get(record.equipment) ?? unit.epoch, from, to);
-        }
-      }
-    }
-    const incidents: OrderGapIncident[] = [];
-    const ordered = [...spans.values()].sort((a, b) =>
-      a.machine < b.machine ? -1 : a.machine > b.machine ? 1 : a.epoch - b.epoch,
-    );
-    let revision = 0;
-    for (const span of ordered) {
-      const settled = await ingest.settled(span.machine, span.epoch);
-      for (const gap of settled.incidents) {
-        if (gapTouches(gap, span.from, span.to)) {
-          incidents.push({
-            machine: span.machine,
-            epoch: span.epoch,
-            id: gap.id,
-            seqFrom: gap.seqFrom,
-            seqTo: gap.seqTo,
-          });
-        }
-      }
-    }
-    if (incidents.length > 0) {
-      for (const span of ordered) {
-        revision = Math.max(
-          revision,
-          await equipment.revision(
-            span.machine,
-            span.epoch,
-            new Date(span.from),
-            new Date(span.to + 1),
-          ),
-        );
-      }
-    }
 
     // The order's line OEE (#232, ADR-0036): over its in-progress time, from the earliest head
     // time of its jobs at or before their CNC's cut-off (a head time after it starts nothing) to its
     // completion, or to the cut-off while open; its own good packed units (every one, as the truth
     // counts them); planned stops are the breaks and the bottleneck's Maintenance. Not additive.
+    const model = await this.lineModel();
     let line: OrderLineView | null = null;
+    let lineRange: Range | undefined;
     const heads = jobs.flatMap(({ head, queue }) =>
       head.kind === 'head' && head.at <= queue.until ? [head.at] : [],
     );
     if (heads.length > 0) {
-      const model = await this.lineModel();
       const from = Math.min(...heads);
       // Open: to the plant clock (the truth's snapshot), else the CNCs' cut-offs.
       const clock =
         equipment.watermarks()[0]?.watermark.getTime() ?? Math.max(...queues.map((q) => q.until));
       const until = Math.max(from, clock);
       const range = { from, to: completedAt?.getTime() ?? until };
+      lineRange = range;
       const { scheduled: planned, breaks } = calendar(this.#options.shiftPattern, range);
       const stops: Range[] = [...breaks];
       let stopsFinal = true;
@@ -869,6 +816,91 @@ export class OrderOee {
         open: completedAt === null,
         final: oeeFinal && completedAt !== null && stopsFinal,
       };
+    }
+
+    // Written-off gaps the inputs touch: the windows on the CNCs (in the queue's epoch); on every
+    // machine the order's units visited, the span from their first record to the completion (or
+    // their last record), in that machine's own device epoch (#232: WSH-01's stream, followed by
+    // part id, has its own epoch) and in the unit's run epoch when it differs (a unit of an earlier
+    // run); and on the bottleneck over the order's in-progress time (its Maintenance, a planned
+    // stop of the order's line OEE).
+    const spans = new Map<string, { machine: string; epoch: number; from: number; to: number }>();
+    const touch = (machine: string, epoch: number, from: number, to: number) => {
+      const key = `${machine}\u0000${String(epoch)}`;
+      const found = spans.get(key);
+      spans.set(key, {
+        machine,
+        epoch,
+        from: Math.min(found?.from ?? from, from),
+        to: Math.max(found?.to ?? to, to),
+      });
+    };
+    for (const { entry } of views) {
+      if (entry.window) {
+        touch(entry.queue.machine, entry.queue.epoch, entry.window.from, entry.window.to);
+      }
+    }
+    const visited = [...new Set(own.flatMap((unit) => unit.records.map((r) => r.equipment)))];
+    const others = await ingest.deviceProgresses([
+      ...visited.filter((m) => !cuts.has(m)),
+      ...(lineRange ? model.bottleneckMachines.filter((m) => !cuts.has(m)) : []),
+    ]);
+    const epochOf = (machine: string): number | null =>
+      cuts.get(machine)?.epoch ?? others.get(machine)?.epoch ?? null;
+    const times = own.flatMap((unit) => unit.records.map((r) => r.at.getTime()));
+    if (times.length > 0) {
+      const from = times.reduce((a, b) => Math.min(a, b));
+      const to = times.reduce((a, b) => Math.max(a, b), completedAt?.getTime() ?? 0);
+      for (const unit of own) {
+        for (const record of unit.records) {
+          const current = epochOf(record.equipment);
+          touch(record.equipment, current ?? unit.epoch, from, to);
+          if (current !== null && current !== unit.epoch) {
+            touch(record.equipment, unit.epoch, from, to);
+          }
+        }
+      }
+    }
+    if (lineRange) {
+      for (const machine of model.bottleneckMachines) {
+        const epoch = epochOf(machine);
+        if (epoch !== null) touch(machine, epoch, lineRange.from, lineRange.to);
+      }
+    }
+    const ordered = [...spans.values()].sort((a, b) =>
+      a.machine < b.machine ? -1 : a.machine > b.machine ? 1 : a.epoch - b.epoch,
+    );
+    const gaps = await ingest.gapIncidents(
+      ordered.map(({ machine, epoch }) => ({ equipment: machine, epoch })),
+    );
+    const incidents: OrderGapIncident[] = [];
+    for (const span of ordered) {
+      for (const gap of gaps) {
+        if (gap.equipment !== span.machine || gap.epoch !== span.epoch) continue;
+        if (gapTouches(gap, span.from, span.to)) {
+          incidents.push({
+            machine: span.machine,
+            epoch: span.epoch,
+            id: gap.id,
+            seqFrom: gap.seqFrom,
+            seqTo: gap.seqTo,
+          });
+        }
+      }
+    }
+    let revision = 0;
+    if (incidents.length > 0) {
+      for (const span of ordered) {
+        revision = Math.max(
+          revision,
+          await equipment.revision(
+            span.machine,
+            span.epoch,
+            new Date(span.from),
+            new Date(span.to + 1),
+          ),
+        );
+      }
     }
     return {
       orderId: order.id,

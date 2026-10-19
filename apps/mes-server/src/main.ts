@@ -408,6 +408,7 @@ try {
     execution: executionModule,
     shiftPattern: await masterData.shiftPattern(),
     productionMode: env.MES_PRODUCTION_MODE,
+    log,
   });
   lineOee = lineOeeModule;
   await lineOeeModule.start();

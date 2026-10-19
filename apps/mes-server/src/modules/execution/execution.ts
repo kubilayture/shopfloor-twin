@@ -548,6 +548,25 @@ export class Execution implements BlankCounter {
     };
   }
 
+  /**
+   * Blanks a CNC holds for the commands whose OP10 cycle has not completed, per CNC: the
+   * `inMachine` of `orderExecution`, from the order's commands and units the caller already holds,
+   * without the rest of the order's state (#232: order OEE's first-pass yield reads only this).
+   */
+  async blanksInMachine(
+    commands: readonly CommandRecord[],
+    units: readonly UnitRecord[],
+  ): Promise<Record<string, number>> {
+    const inMachine: Record<string, number> = {};
+    for (const command of commands) {
+      if (command.job !== 'started' && command.job !== 'accepted') continue;
+      if (await this.#heldBlank(command, units)) {
+        inMachine[command.equipment] = (inMachine[command.equipment] ?? 0) + 1;
+      }
+    }
+    return sortKeys(inMachine);
+  }
+
   /** Scrap records, newest first, of an order or all; `uncoded` only those not coded yet. */
   async scrapRecords(
     query: { readonly orderId?: string; readonly uncoded?: boolean; readonly limit?: number } = {},

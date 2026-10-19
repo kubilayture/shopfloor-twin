@@ -53,6 +53,8 @@ interface World {
   otherIncident: boolean;
   /** The highest revision of the hours under the view (`Equipment.revision`). */
   revision: number;
+  /** The ranges `Equipment.revision` was asked for. */
+  revisionReads: { machine: string; epoch: number; from: number; to: number }[];
   /** Pieces of ASM-01 (the bottleneck), by minutes. */
   bottleneck: World['pieces'];
 }
@@ -96,6 +98,7 @@ function world(): World {
     unknownJob: false,
     otherIncident: false,
     revision: 0,
+    revisionReads: [],
     bottleneck: [{ from: 0, to: 120, state: 'Running' }],
   };
 }
@@ -122,7 +125,7 @@ const commandRecord = (c: Partial<CommandRecord>): CommandRecord =>
     ...c,
   }) as CommandRecord;
 
-function sources(w: World, calls = { order: 0, commands: 0 }) {
+function sources(w: World, calls = { order: 0, commands: 0, blanks: 0 }) {
   const listeners = {
     orders: new Set<(change: OrderChange) => void>(),
     execution: new Set<(change: { type: 'order'; orderId: string }) => void>(),
@@ -163,7 +166,11 @@ function sources(w: World, calls = { order: 0, commands: 0 }) {
     orders: {
       order: (id: string) => {
         calls.order++;
-        return Promise.resolve(id === w.order.id ? (w.order as OrderRecord) : undefined);
+        return Promise.resolve(
+          id === w.order.id
+            ? ({ ...w.order, completedAt: w.completedAt } as OrderRecord)
+            : undefined,
+        );
       },
       commands: () => {
         calls.commands++;
@@ -191,8 +198,10 @@ function sources(w: World, calls = { order: 0, commands: 0 }) {
     execution: {
       units: ({ orderId }: { orderId?: string }) =>
         Promise.resolve({ units: units.filter((u) => u.orderId === orderId), truncated: false }),
-      orderExecution: () =>
-        Promise.resolve({ completedAt: w.completedAt, inMachine: { 'cnc-01': w.inMachine } }),
+      blanksInMachine: () => {
+        calls.blanks++;
+        return Promise.resolve({ 'cnc-01': w.inMachine });
+      },
       processedThrough: () =>
         new Map([
           [
@@ -211,7 +220,10 @@ function sources(w: World, calls = { order: 0, commands: 0 }) {
       },
     },
     equipment: {
-      revision: () => Promise.resolve(w.revision),
+      revision: (machine: string, epoch: number, from: Date, to: Date) => {
+        w.revisionReads.push({ machine, epoch, from: from.getTime(), to: to.getTime() });
+        return Promise.resolve(w.revision);
+      },
       watermarks: () => [],
       intervals: (
         machine: string,
@@ -243,27 +255,36 @@ function sources(w: World, calls = { order: 0, commands: 0 }) {
       },
     },
     ingest: {
-      deviceProgress: (equipment: string) =>
-        Promise.resolve({
-          equipment,
-          epoch: w.epochs[equipment] ?? w.deviceEpoch,
-          settledTime: w.finalThrough,
-          settledSeq: 1,
-        }),
-      settled: (machine: string, epoch: number) =>
-        Promise.resolve({
-          settledSeq: 1,
-          settledTime: w.finalThrough,
-          incidents: w.gaps
-            .filter((g) => g.machine === machine && (g.epoch ?? 1) === epoch)
-            .map((g, i) => ({
-              id: i + 1,
-              seqFrom: 10,
-              seqTo: 11,
-              after: at(g.after),
-              before: at(g.before),
-            })),
-        }),
+      deviceProgresses: (machines: readonly string[]) =>
+        Promise.resolve(
+          new Map(
+            machines.map((equipment) => [
+              equipment,
+              {
+                equipment,
+                epoch: w.epochs[equipment] ?? w.deviceEpoch,
+                settledTime: w.finalThrough,
+                settledSeq: 1,
+              },
+            ]),
+          ),
+        ),
+      gapIncidents: (streams: readonly { equipment: string; epoch: number }[]) =>
+        Promise.resolve(
+          streams.flatMap(({ equipment, epoch }) =>
+            w.gaps
+              .filter((g) => g.machine === equipment && (g.epoch ?? 1) === epoch)
+              .map((g, i) => ({
+                equipment,
+                epoch,
+                id: i + 1,
+                seqFrom: 10,
+                seqTo: 11,
+                after: at(g.after),
+                before: at(g.before),
+              })),
+          ),
+        ),
     },
     masterData: {
       equipment: () =>
@@ -430,7 +451,7 @@ describe('order OEE finality (#231)', () => {
   });
 
   it('keeps a final order in memory and follows the modules’ changes', async () => {
-    const calls = { order: 0, commands: 0 };
+    const calls = { order: 0, commands: 0, blanks: 0 };
     const w = world();
     const { options, listeners } = sources(w, calls);
     const oee = new OrderOee(options);
@@ -516,7 +537,7 @@ describe('order OEE finality (#231)', () => {
   });
 
   it('lists the written-off gaps the order’s inputs touch, and never keeps such a view', async () => {
-    const calls = { order: 0, commands: 0 };
+    const calls = { order: 0, commands: 0, blanks: 0 };
     const w = world();
     w.gaps = [
       { machine: 'cnc-01', after: 15, before: 16 }, // inside the window
@@ -552,18 +573,40 @@ describe('order OEE finality (#231)', () => {
     expect((await read(w)).incidents.map((incident) => incident.id)).toEqual([1, 2]);
   });
 
-  it('looks gaps up in each machine’s own device epoch, not the unit’s (#232)', async () => {
-    // The washer's stream (followed by part id) has an epoch of its own; the units carry the CNC
-    // run's epoch 1.
+  it('looks gaps up in each machine’s own device epoch, and in the unit’s run epoch when it differs (#232)', async () => {
+    // The washer's stream (followed by part id) has an epoch of its own (7); the units carry the
+    // CNC run's epoch 1, which a unit of an earlier run also needs.
     const w = world();
     w.epochs = { x: 7 };
     w.gaps = [
       { machine: 'x', after: 30, before: 31, epoch: 7 },
       { machine: 'x', after: 30, before: 31, epoch: 1 },
+      { machine: 'x', after: 30, before: 31, epoch: 5 }, // neither
     ];
     expect((await read(w)).incidents).toEqual([
+      { machine: 'x', epoch: 1, id: 1, seqFrom: 10, seqTo: 11 },
       { machine: 'x', epoch: 7, id: 1, seqFrom: 10, seqTo: 11 },
     ]);
+    // The same epoch: looked up once.
+    const same = world();
+    same.gaps = [{ machine: 'x', after: 30, before: 31 }];
+    expect((await read(same)).incidents).toEqual([
+      { machine: 'x', epoch: 1, id: 1, seqFrom: 10, seqTo: 11 },
+    ]);
+  });
+
+  it('looks gaps up on the bottleneck over the order’s whole in-progress time (#232)', async () => {
+    // ASM-01 is visited by no unit here; its Maintenance is a planned stop of the order's line OEE.
+    const w = world();
+    w.gaps = [
+      { machine: 'asm-01', after: 1, before: 2 }, // inside the in-progress time [0, 50]
+      { machine: 'asm-01', after: 51, before: 52 }, // after it
+    ];
+    const view = await read(w);
+    expect(view.incidents).toEqual([
+      { machine: 'asm-01', epoch: 1, id: 1, seqFrom: 10, seqTo: 11 },
+    ]);
+    expect([view.mayRevise, view.line?.final]).toEqual([true, true]);
   });
 
   it('marks a view with incidents as revisable, with the hours’ revision (#232)', async () => {
@@ -727,7 +770,7 @@ describe('order OEE finality (#231)', () => {
   });
 
   it('keeps a final order in memory only once its line OEE is final too (#232)', async () => {
-    const calls = { order: 0, commands: 0 };
+    const calls = { order: 0, commands: 0, blanks: 0 };
     const w = world();
     w.bottleneck = [{ from: 0, to: 120, state: 'Running', provisional: true }];
     const oee = new OrderOee(sources(w, calls).options);
@@ -741,5 +784,101 @@ describe('order OEE finality (#231)', () => {
     expect((await oee.order('A'))?.line?.final).toBe(true);
     await oee.order('A');
     expect(calls.commands).toBe(2);
+  });
+
+  it('reads the revision of every span through one ms past its end (#232)', async () => {
+    // A span ending at an hour boundary (CNC-01's window ends 03:30Z, its units' span 03:50Z):
+    // the hour starting at the end is read too, as a fact exactly at the end lies in it.
+    const w = world();
+    w.gaps = [{ machine: 'cnc-01', after: 15, before: 16 }];
+    await read(w);
+    expect(w.revisionReads.find((r) => r.machine === 'cnc-01')).toEqual({
+      machine: 'cnc-01',
+      epoch: 1,
+      from: T0,
+      to: T0 + 50 * MIN + 1,
+    });
+  });
+
+  it('takes the completion from the order record and reads the blanks in a CNC only while open (#232)', async () => {
+    const calls = { order: 0, commands: 0, blanks: 0 };
+    const done = await new OrderOee(sources(world(), calls).options).order('A');
+    expect([done?.completedAt?.getTime(), calls.blanks]).toEqual([T0 + 50 * MIN, 0]);
+    const open = world();
+    open.completedAt = null;
+    open.inMachine = 1;
+    const view = await new OrderOee(sources(open, calls).options).order('A');
+    expect([view?.completedAt, view?.firstPassYield.started, calls.blanks]).toEqual([null, 3n, 1]);
+  });
+
+  it('tells line OEE the unknown-job CNCs, each unknown head’s notBefore, and an order’s earliest head across CNCs (#232)', async () => {
+    const oee = (w: World) => new OrderOee(sources(w).options);
+    // An open unknown-job incident on CNC-01 is reported; another kind of incident is not.
+    const flagged = world();
+    flagged.unknownJob = true;
+    flagged.otherIncident = true;
+    expect([...(await oee(flagged).lineOrders()).unknownJob]).toEqual(['cnc-01']);
+    const other = world();
+    other.otherIncident = true;
+    expect([...(await oee(other).lineOrders()).unknownJob]).toEqual([]);
+    // Unknown heads carry their notBefore: an acceptance not known yet, and a job waiting behind.
+    const w = world();
+    w.commands[0] = { ...w.commands[0], completedAt: null };
+    w.completedAt = null;
+    w.commands.push(
+      {
+        commandId: 'B~OP10~1',
+        orderId: 'B',
+        notBefore: at(70),
+        startedAt: null,
+        completedAt: null,
+      },
+      {
+        commandId: 'C~OP10~1',
+        orderId: 'C',
+        equipment: 'cnc-02',
+        notBefore: at(80),
+        settled: false,
+        acceptedBy: null,
+        acceptedSeq: null,
+        acceptedAt: null,
+        job: null,
+      },
+    );
+    const lines = await oee(w).lineOrders();
+    expect(lines.orders.flatMap((o) => o.unknown)).toEqual([
+      {
+        orderId: 'B',
+        commandId: 'B~OP10~1',
+        machine: 'cnc-01',
+        notBefore: at(70).getTime(),
+        reason: 'waiting',
+        after: 'A',
+      },
+      {
+        orderId: 'C',
+        commandId: 'C~OP10~1',
+        machine: 'cnc-02',
+        notBefore: at(80).getTime(),
+        reason: 'accepted-unknown',
+        after: null,
+      },
+    ]);
+    // One order, two jobs on two CNCs with different head times: it starts at the earlier one,
+    // in `lineOrders` and in its own line value (the minimum, not the maximum).
+    const two = world();
+    two.order = { ...two.order, quantity: 4, dispatched: 4 };
+    two.commands[0] = { ...two.commands[0], acceptedAt: at(10) };
+    two.commands.push({
+      commandId: 'A~OP10~2',
+      orderId: 'A',
+      equipment: 'cnc-02',
+      acceptedAt: at(5),
+      startedAt: at(10),
+      completedAt: at(30),
+    });
+    const start = (await oee(two).lineOrders()).orders.find((o) => o.orderId === 'A')?.from;
+    expect(start).toBe(at(5).getTime());
+    expect((await read(two)).line?.value.from).toBe(at(5).getTime());
   });
 });

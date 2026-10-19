@@ -357,6 +357,21 @@ describe('ingest (#95)', () => {
         },
       ],
     });
+    // Several streams in one read each (#232): the same incidents and progress.
+    const settled = await ingest.settled(at.equipment, EPOCH);
+    expect(
+      await ingest.gapIncidents([
+        { equipment: at.equipment, epoch: EPOCH },
+        { equipment: at.equipment, epoch: EPOCH + 1 },
+        { equipment: 'nowhere', epoch: EPOCH },
+      ]),
+    ).toEqual(settled.incidents.map((i) => ({ equipment: at.equipment, epoch: EPOCH, ...i })));
+    expect(await ingest.gapIncidents([])).toEqual([]);
+    const many = await ingest.deviceProgresses([at.equipment, 'nowhere', at.equipment]);
+    expect([...many.keys()]).toEqual([at.equipment, 'nowhere']);
+    expect(many.get(at.equipment)).toEqual(await ingest.deviceProgress(at.equipment));
+    expect(many.get('nowhere')).toEqual(await ingest.deviceProgress('nowhere'));
+    expect((await ingest.deviceProgresses([])).size).toBe(0);
     // Only the facts above `afterSeq` are read for the time.
     expect((await ingest.settled(at.equipment, EPOCH, 6)).settledTime).toBeNull();
     expect(await ingest.settled(at.equipment, EPOCH + 1)).toMatchObject({ settledSeq: null });

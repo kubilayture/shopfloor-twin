@@ -48,11 +48,19 @@ interface World {
   /** Final-through per machine, minutes (default `through`). */
   through: number;
   finalThrough: Record<string, number | null>;
-  /** Good packs at PCK-01, minutes. */
-  packs: { at: number; product?: string; result?: string }[];
-  /** ASM-01's pieces, minutes. */
-  bottleneck: { from: number; to: number; state: string; provisional?: boolean }[];
-  gaps: { machine: string; after: number; before: number }[];
+  /** Cycles at PCK-01, minutes (good unless said, device epoch 1 unless said). */
+  packs: { at: number; product?: string; result?: string; epoch?: number }[];
+  /** ASM-01's pieces, minutes (epoch 1 unless said). */
+  bottleneck: {
+    from: number;
+    to: number;
+    state: string;
+    provisional?: boolean;
+    epoch?: number;
+  }[];
+  gaps: { machine: string; after: number; before: number; epoch?: number }[];
+  /** A machine's current device epoch, when not 1. */
+  epochs: Record<string, number>;
   revision: number;
   lineOrders: LineOrders;
   processed: number;
@@ -68,6 +76,7 @@ function world(): World {
     packs: [],
     bottleneck: [{ from: 0, to: 24 * 60, state: 'Running' }],
     gaps: [],
+    epochs: {},
     revision: 0,
     lineOrders: { orders: [], unknownJob: new Set(), cncThrough: new Map() },
     processed: 24 * 60,
@@ -101,22 +110,36 @@ function sources(w: World, mode: 'schedule' | 'orders' = 'schedule') {
       },
     },
     ingest: {
-      deviceProgress: (equipment: string) =>
-        Promise.resolve({ equipment, epoch: 1, settledTime: time(equipment), settledSeq: 1 }),
-      settled: (machine: string) =>
-        Promise.resolve({
-          settledSeq: 1,
-          settledTime: time(machine),
-          incidents: w.gaps
-            .filter((g) => g.machine === machine)
-            .map((g, i) => ({
-              id: i + 1,
-              seqFrom: 5,
-              seqTo: 6,
-              after: new Date(at(g.after)),
-              before: new Date(at(g.before)),
-            })),
-        }),
+      deviceProgresses: (machines: readonly string[]) =>
+        Promise.resolve(
+          new Map(
+            machines.map((equipment) => [
+              equipment,
+              {
+                equipment,
+                epoch: w.epochs[equipment] ?? 1,
+                settledTime: time(equipment),
+                settledSeq: 1,
+              },
+            ]),
+          ),
+        ),
+      gapIncidents: (streams: readonly { equipment: string; epoch: number }[]) =>
+        Promise.resolve(
+          streams.flatMap(({ equipment, epoch }) =>
+            w.gaps
+              .filter((g) => g.machine === equipment && (g.epoch ?? 1) === epoch)
+              .map((g, i) => ({
+                equipment,
+                epoch,
+                id: i + 1,
+                seqFrom: 5,
+                seqTo: 6,
+                after: new Date(at(g.after)),
+                before: new Date(at(g.before)),
+              })),
+          ),
+        ),
       cycleResults: (machine: string, from: Date, to: Date) => {
         calls.cycles++;
         return Promise.resolve(
@@ -125,7 +148,7 @@ function sources(w: World, mode: 'schedule' | 'orders' = 'schedule') {
             : w.packs
                 .filter((p) => at(p.at) >= from.getTime() && at(p.at) < to.getTime())
                 .map((p) => ({
-                  epoch: 1,
+                  epoch: p.epoch ?? 1,
                   at: new Date(at(p.at)),
                   product: p.product ?? 'VB-100',
                   result: p.result ?? 'good',
@@ -144,7 +167,7 @@ function sources(w: World, mode: 'schedule' | 'orders' = 'schedule') {
             .filter((p) => at(p.to) > from.getTime() && at(p.from) < to.getTime())
             .map((p) => ({
               equipment: machine,
-              epoch: 1,
+              epoch: p.epoch ?? 1,
               start: new Date(at(p.from)),
               end: new Date(at(p.to)),
               state: p.state,
@@ -641,6 +664,120 @@ describe('line OEE buckets (#232)', () => {
       expect(oee.productionMode).toBe(mode);
       oee.stop();
       expect(listeners.pieces.size + listeners.stored.size + listeners.orders.size).toBe(0);
+    }
+  });
+
+  it('is never final with its value counted short: the final-through never passes the plant clock', async () => {
+    // Every machine final far past the hour (an old epoch's progress, say), the clock at 03:20Z:
+    // 1 pack of 3 counted, so the hour is not final, and not kept.
+    const w = world();
+    w.packs = [{ at: 10 }, { at: 30 }, { at: 50 }];
+    w.watermark = 20;
+    const oee = new LineOee(sources(w).options);
+    const [early] = await hours(oee, 0, 60);
+    expect([early?.final, early?.value.good, early?.value.through]).toEqual([
+      false,
+      { 'VB-100': 1 },
+      at(20),
+    ]);
+    w.watermark = 24 * 60;
+    const [later] = await hours(oee, 0, 60);
+    expect([later?.final, later?.value.good]).toEqual([true, { 'VB-100': 3 }]);
+    // No clock at all: nothing counted, nothing final.
+    const v = world();
+    v.packs = [{ at: 10 }];
+    v.watermark = null;
+    const [none] = await hours(new LineOee(sources(v).options), 0, 60);
+    expect([none?.final, none?.value.plannedBusyMs, none?.value.good]).toEqual([false, 0, {}]);
+  });
+
+  it('counts only good packs: a scrap or rework cycle at PCK-01 is no good unit', async () => {
+    const w = world();
+    w.packs = [{ at: 10 }, { at: 20, result: 'scrap' }, { at: 30, result: 'rework' }];
+    const [first] = await hours(new LineOee(sources(w).options), 0, 60);
+    expect(first?.value.good).toEqual({ 'VB-100': 1 });
+  });
+
+  it('counts only the newest device epoch with data in a bucket, never final across epochs or for an ended run', async () => {
+    // A simulator restarted over the same plant time: PCK-01's epoch 2 and the old run's epoch 1
+    // both pack in 03:00Z; ASM-01's Maintenance of the old run isn't a planned stop of the new one.
+    const w = world();
+    w.epochs = { 'pck-01': 2, 'asm-01': 2 };
+    w.packs = [
+      { at: 10, epoch: 1 },
+      { at: 20, epoch: 1 },
+      { at: 30, epoch: 2 },
+    ];
+    w.bottleneck = [
+      { from: 0, to: 30, state: 'Maintenance', epoch: 1 },
+      { from: 0, to: 24 * 60, state: 'Running', epoch: 2 },
+    ];
+    const oee = new LineOee(sources(w).options);
+    const [mixed] = await hours(oee, 0, 60);
+    expect([mixed?.final, mixed?.value.good, mixed?.value.plannedBusyMs]).toEqual([
+      false,
+      { 'VB-100': 1 },
+      3_600_000,
+    ]);
+    // Only the old run's data in a bucket (the current epoch is 2): counted, not final.
+    const v = world();
+    v.epochs = { 'pck-01': 2 };
+    v.packs = [{ at: 10, epoch: 1 }];
+    const [old] = await hours(new LineOee(sources(v).options), 0, 60);
+    expect([old?.final, old?.value.good]).toEqual([false, { 'VB-100': 1 }]);
+    // The current epoch alone: final.
+    const u = world();
+    u.epochs = { 'pck-01': 2, 'asm-01': 2 };
+    u.packs = [{ at: 10, epoch: 2 }];
+    u.bottleneck = [{ from: 0, to: 24 * 60, state: 'Running', epoch: 2 }];
+    const [current] = await hours(new LineOee(sources(u).options), 0, 60);
+    expect([current?.final, current?.value.good]).toEqual([true, { 'VB-100': 1 }]);
+  });
+
+  it('looks gaps up in each contributing machine’s current epoch', async () => {
+    const w = world();
+    w.epochs = { 'pck-01': 3 };
+    w.gaps = [
+      { machine: 'pck-01', after: 30, before: 31, epoch: 3 },
+      { machine: 'pck-01', after: 30, before: 31, epoch: 1 }, // an ended run's
+    ];
+    const [first] = await hours(new LineOee(sources(w).options), 0, 60);
+    expect(first?.incidents).toEqual([
+      { machine: 'pck-01', epoch: 3, id: 1, seqFrom: 5, seqTo: 6 },
+    ]);
+  });
+
+  it('warns once when a job fact or a dispatch command shows up in schedule mode', async () => {
+    for (const mode of ['schedule', 'orders'] as const) {
+      for (const first of ['job', 'command'] as const) {
+        const { options, listeners } = sources(world(), mode);
+        const warnings: string[] = [];
+        const oee = new LineOee({
+          ...options,
+          log: { warn: (_o, message) => warnings.push(message) },
+        });
+        await oee.start();
+        const job = () => {
+          for (const l of listeners.stored) {
+            l({ type: 'job', fact: { equipment: 'cnc-01' } } as unknown as IngestNotice);
+          }
+        };
+        const command = () => {
+          for (const l of listeners.orders) l({ machine: 'cnc-01' });
+        };
+        // An order or execution change alone (no command) says nothing about the mode.
+        for (const l of listeners.orders) l({ orderId: 'A' });
+        expect(oee.mismatch).toBe(false);
+        if (first === 'job') job();
+        else command();
+        job();
+        command();
+        expect([mode, first, warnings.length, oee.mismatch]).toEqual(
+          mode === 'schedule' ? [mode, first, 1, true] : [mode, first, 0, false],
+        );
+        if (mode === 'schedule') expect(warnings[0]).toMatch(/MES_PRODUCTION_MODE=schedule/);
+        oee.stop();
+      }
     }
   });
 });

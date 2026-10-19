@@ -9,7 +9,8 @@
  *   rework pass; routing violations as incidents; WIP; quantities and backflushed material per
  *   order operation; completion only when no unit can come back (H1); confirmations and the order's
  *   completion through the orders module (`Orders.confirm`, `Orders.complete`).
- * - Reads: `units(query)`, `orderExecution(orderId)`, `scrapRecords(query)`, `scrapRecord(id)`,
+ * - Reads: `units(query)`, `orderExecution(orderId)`, `blanksInMachine(commands, units)` (#232),
+ *   `scrapRecords(query)`, `scrapRecord(id)`,
  *   `scrapAudit(id)`, `scrapReasons()`, `incidents(query)`.
  * - Writes: `codeScrap(id, { version, reason, comment }, context)` (`scrap:code`, audited).
  * - `blanksStarted(job)`: the orders module's `BlankCounter` (exact blank counts of a lost job).

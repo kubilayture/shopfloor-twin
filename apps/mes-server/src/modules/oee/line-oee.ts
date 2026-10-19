@@ -17,6 +17,10 @@
  *   contribute (schedule mode: the packing and bottleneck machines; orders mode: every machine of
  *   the line, whose facts decide completions, a CNC only as far as a job of it can still bring a
  *   fact: `LineOrders.cncThrough`);
+ *   it never passes the plant clock (without a clock nothing is final);
+ * - device epochs: per bucket and machine only the newest epoch with data in it counts (a restarted
+ *   simulator's run over the same plant time is never counted twice); a bucket with data of two
+ *   epochs, or of an epoch not the machine's current one, is never final;
  * - `aboveOne`, not capped; `null` when the planned busy time is 0.
  *
  * **Finality:** a bucket is final when every input is final through its end: every contributing
@@ -45,7 +49,7 @@ import {
 } from '@shopfloor/shift-calendar';
 import type { Equipment, StoredInterval } from '../equipment/index.ts';
 import type { Execution } from '../execution/index.ts';
-import type { DeviceProgress, Ingest, IngestNotice } from '../ingest/index.ts';
+import type { Ingest, IngestNotice } from '../ingest/index.ts';
 import {
   calendar,
   gapTouches,
@@ -70,7 +74,7 @@ export type LineBucketKind = 'hour' | 'shift';
 /** What line OEE reads from the other modules (their `index.ts` interfaces). */
 export interface LineOeeSources {
   readonly orderOee: Pick<OrderOee, 'lineOrders' | 'lineModel' | 'order' | 'onChange'>;
-  readonly ingest: Pick<Ingest, 'deviceProgress' | 'settled' | 'cycleResults' | 'onStored'>;
+  readonly ingest: Pick<Ingest, 'deviceProgresses' | 'gapIncidents' | 'cycleResults' | 'onStored'>;
   readonly equipment: Pick<Equipment, 'intervals' | 'revision' | 'onPiecesChanged' | 'watermarks'>;
   readonly execution: Pick<Execution, 'processedThrough'>;
 }
@@ -82,6 +86,8 @@ export interface LineOeeOptions extends LineOeeSources {
    * `orders` mode only in-progress time is planned (the line's counterpart of Idle `NO-ORDER`).
    */
   readonly productionMode: ProductionMode;
+  /** Where a production-mode mismatch is reported (a warning, once per process). */
+  readonly log?: { warn(object: object, message: string): void };
 }
 
 /** Line OEE of one hour or shift bucket (`GET /oee/line`, `oee:line`). */
@@ -125,6 +131,7 @@ export class LineOee {
   /** Final buckets without incidents never change (ADR-0018): kept so a read skips them. */
   readonly #finals = new Map<string, LineBucket>();
   #model: LineModel | undefined;
+  #warned = false;
   #detach: (() => void)[] = [];
 
   constructor(options: LineOeeOptions) {
@@ -161,6 +168,7 @@ export class LineOee {
         }
       }),
       ingest.onStored((notice: IngestNotice) => {
+        if (notice.type === 'job') this.#mismatch('a job fact', notice.fact.equipment);
         if (notice.type !== 'cycle' || !packing.has(notice.cycle.equipment)) return;
         const hour = hourStart(notice.cycle.sourceTime.getTime());
         this.#emit({
@@ -170,13 +178,31 @@ export class LineOee {
         });
       }),
     );
-    if (this.#options.productionMode === 'orders') {
-      this.#detach.push(
-        orderOee.onChange(() => {
-          this.#emit({ orders: true });
-        }),
-      );
-    }
+    this.#detach.push(
+      orderOee.onChange((change) => {
+        if (this.#options.productionMode === 'orders') this.#emit({ orders: true });
+        else if (change.machine !== undefined) this.#mismatch('a dispatch command', change.machine);
+      }),
+    );
+  }
+
+  /** Whether a production-mode mismatch was reported (it is, once). */
+  get mismatch(): boolean {
+    return this.#warned;
+  }
+
+  /**
+   * A job fact or a dispatch command while the MES plans line OEE in schedule mode: the plant runs
+   * orders and `MES_PRODUCTION_MODE` disagrees with the simulator's `SIM_PRODUCTION`, so every
+   * scheduled moment counts as planned. Reported once as a warning (#232 review).
+   */
+  #mismatch(what: string, equipment: string): void {
+    if (this.#options.productionMode !== 'schedule' || this.#warned) return;
+    this.#warned = true;
+    this.#options.log?.warn(
+      { equipment, productionMode: this.#options.productionMode },
+      `line OEE: ${what} while MES_PRODUCTION_MODE=schedule; set it to the simulator's SIM_PRODUCTION (orders)`,
+    );
   }
 
   stop(): void {
@@ -298,17 +324,17 @@ export class LineOee {
     // Execution's progress first: a completion before it is already recorded (module comment).
     const processed = execution.processedThrough();
     const contributing = this.#contributing(model);
-    const progress = new Map<string, DeviceProgress>();
-    for (const machine of contributing) progress.set(machine, await ingest.deviceProgress(machine));
+    const progress = await ingest.deviceProgresses(contributing);
     // Orders mode: the orders' in-progress time, and how far each CNC's facts are known.
     let lineOrders: LineOrders | undefined;
     if (orders) lineOrders = await orderOee.lineOrders();
     // The plant clock cuts what is counted; the line's final-through, the earliest of the
     // contributing machines' (a CNC's as far as its jobs can still bring a fact), decides finality.
+    // It never passes the clock: a bucket counted short is never final (without a clock, nothing is).
     const clock = equipment.watermarks()[0]?.watermark.getTime() ?? Number.NEGATIVE_INFINITY;
     const finalThrough = (machine: string): Millis =>
       progress.get(machine)?.settledTime?.getTime() ?? Number.NEGATIVE_INFINITY;
-    let cut = contributing.length === 0 ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+    let cut = contributing.length === 0 ? Number.NEGATIVE_INFINITY : clock;
     for (const machine of contributing) {
       const through =
         lineOrders && model.first.includes(machine)
@@ -316,8 +342,8 @@ export class LineOee {
           : finalThrough(machine);
       cut = Math.min(cut, through);
     }
-    // Good packed before the plant clock.
-    const packs: Pack[] = [];
+    // Good packed before the plant clock, with their device epoch.
+    const packs: (Pack & { machine: string; epoch: number })[] = [];
     const readTo = Math.min(span.to, clock);
     if (readTo > span.from) {
       for (const machine of model.packing) {
@@ -326,19 +352,25 @@ export class LineOee {
           new Date(span.from),
           new Date(readTo),
         )) {
-          if (cycle.result === 'good')
-            packs.push({ at: cycle.at.getTime(), product: cycle.product });
+          if (cycle.result === 'good') {
+            packs.push({
+              at: cycle.at.getTime(),
+              product: cycle.product,
+              machine,
+              epoch: cycle.epoch,
+            });
+          }
         }
       }
     }
-    // The calendar and the planned stops.
+    // The calendar and the bottleneck's pieces (its Maintenance is a planned stop).
     const { scheduled, breaks } = calendar(shiftPattern, span);
-    const stops: Range[] = [...breaks];
-    const bottleneckPieces: StoredInterval[][] = [];
+    const bottleneckPieces = new Map<string, StoredInterval[]>();
     for (const machine of model.bottleneckMachines) {
-      const pieces = await equipment.intervals(machine, new Date(span.from), new Date(span.to));
-      bottleneckPieces.push(pieces);
-      stops.push(...maintenance(pieces));
+      bottleneckPieces.set(
+        machine,
+        await equipment.intervals(machine, new Date(span.from), new Date(span.to)),
+      );
     }
     let inProgress: Range[] | undefined;
     if (lineOrders) {
@@ -347,45 +379,64 @@ export class LineOee {
       );
     }
     // Written-off gaps on the contributing machines, each in its own device epoch.
-    const gaps: (OrderGapIncident & { after: Date | null; before: Date | null })[] = [];
-    for (const machine of contributing) {
+    const streams = contributing.flatMap((machine) => {
       const epoch = progress.get(machine)?.epoch;
-      if (epoch === null || epoch === undefined) continue;
-      for (const gap of (await ingest.settled(machine, epoch)).incidents) {
-        gaps.push({
-          machine,
-          epoch,
-          id: gap.id,
-          seqFrom: gap.seqFrom,
-          seqTo: gap.seqTo,
-          after: gap.after,
-          before: gap.before,
-        });
-      }
-    }
+      return epoch === null || epoch === undefined ? [] : [{ equipment: machine, epoch }];
+    });
+    const gaps = await ingest.gapIncidents(streams);
     const result: LineBucket[] = [];
     for (const def of defs) {
       const bucket = { from: def.start, to: def.end };
+      // The epoch rule (ADR-0036 P9-05 amendment): per machine, only the newest device epoch with
+      // data in the bucket counts, so a simulator restarted over the same plant time is never
+      // counted twice; a bucket with data of two epochs, or of an epoch not the machine's current
+      // one, is never final.
+      let epochsOk = true;
+      const counted: Pack[] = [];
+      for (const machine of model.packing) {
+        const inBucket = packs.filter(
+          (p) => p.machine === machine && p.at >= bucket.from && p.at < bucket.to,
+        );
+        const epoch = newestEpoch(inBucket);
+        if (epoch === undefined) continue;
+        epochsOk &&= sameEpoch(inBucket, epoch, progress.get(machine)?.epoch);
+        counted.push(...inBucket.filter((p) => p.epoch === epoch));
+      }
+      const stops: Range[] = [...breaks];
+      let piecesOk = true;
+      for (const [machine, all] of bottleneckPieces) {
+        const inBucket = all.filter(
+          (p) => p.end.getTime() > bucket.from && p.start.getTime() < bucket.to,
+        );
+        const epoch = newestEpoch(inBucket);
+        const chosen = inBucket.filter((p) => p.epoch === epoch);
+        epochsOk &&=
+          epoch === undefined || sameEpoch(inBucket, epoch, progress.get(machine)?.epoch);
+        stops.push(...maintenance(chosen));
+        piecesOk &&= piecesFinal(chosen, bucket);
+      }
       const value = lineValue({
         bucket,
         cut: clock,
         scheduled,
         plannedStops: stops,
         inProgress,
-        packs,
+        packs: counted,
         effectiveCycleMs: model.effectiveCycleMs,
       });
-      const touching = gaps.filter((gap) => gapTouches(gap, bucket.from, bucket.to));
-      const incidents = touching.map(({ machine, epoch, id, seqFrom, seqTo }) => ({
-        machine,
-        epoch,
-        id,
-        seqFrom,
-        seqTo,
-      }));
+      const incidents = gaps
+        .filter((gap) => gapTouches(gap, bucket.from, bucket.to))
+        .map(({ equipment: machine, epoch, id, seqFrom, seqTo }) => ({
+          machine,
+          epoch,
+          id,
+          seqFrom,
+          seqTo,
+        }));
       const final =
         cut >= bucket.to &&
-        bottleneckPieces.every((pieces) => piecesFinal(pieces, bucket)) &&
+        epochsOk &&
+        piecesOk &&
         (!orders ||
           (lineOrders !== undefined &&
             ordersFinal(bucket, lineOrders, model, (machine) =>
@@ -417,6 +468,22 @@ export class LineOee {
     }
     return result;
   }
+}
+
+/** The newest device epoch among the items; undefined without items. */
+function newestEpoch(items: readonly { readonly epoch: number }[]): number | undefined {
+  let newest: number | undefined;
+  for (const { epoch } of items) if (newest === undefined || epoch > newest) newest = epoch;
+  return newest;
+}
+
+/** Every item of `epoch`, and that epoch the machine's current one. */
+function sameEpoch(
+  items: readonly { readonly epoch: number }[],
+  epoch: number,
+  current: number | null | undefined,
+): boolean {
+  return epoch === current && items.every((item) => item.epoch === epoch);
 }
 
 /** Whole UTC hours [from, to). */

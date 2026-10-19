@@ -24,6 +24,8 @@
  * - `cycle` notices (a stored cycle, with product and result) and `epoch` notices (the first fact
  *   of a device stream's new epoch, with its time).
  * - `Ingest.cycleHourly(from, to, { equipment?, epoch? })`: rows of `ingest.cycle_hourly`.
+ * - `Ingest.deviceProgresses(equipment[])`, `Ingest.gapIncidents(streams)`: several streams'
+ *   progress and sequence-gap incidents in one read each (#232, order and line OEE).
  * - `Ingest.cycleResults(equipment, from, to)`: one equipment's cycles (time, product, result) in a
  *   range, from the stored facts, every epoch (#232, line OEE's good packed).
  * - `Ingest.cyclesRefreshed(hour)` / `cycleAggregate()`: whether an hour of `cycle_hourly` is

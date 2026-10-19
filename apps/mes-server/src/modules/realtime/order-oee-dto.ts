@@ -67,5 +67,6 @@ export function orderOeeDto(view: OrderOeeView): OrderOeeDto {
       epoch: cut.epoch,
       at: cut.at === null ? null : iso(cut.at),
     })),
+    incidents: view.incidents.map((incident) => ({ ...incident })),
   };
 }

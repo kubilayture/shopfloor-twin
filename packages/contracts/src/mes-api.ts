@@ -597,6 +597,11 @@ export const orderOeeSchema = z
       .describe(
         "Each CNC queue's cut-off (its final-through, exclusive), where an open window ends",
       ),
+    incidents: z
+      .array(z.object({ machine: z.string(), epoch: int, id: int, seqFrom: int, seqTo: int }))
+      .describe(
+        'Sequence-gap incidents (written-off gaps, ADR-0018) overlapping the order’s windows or its units’ span on the machines they visited: a final value over them may still be revised',
+      ),
   })
   .describe('Order OEE over job windows, with the job breakdown and first-pass yield (#231)');
 

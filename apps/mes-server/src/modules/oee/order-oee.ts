@@ -20,8 +20,16 @@
  * closed with a known head time, every command dispatched earlier to the same CNC settled, the
  * CNC's pieces covering each window and none of them provisional, exactly `quantity` OP10 cycles
  * attributed to each job inside its window, and the execution module having processed the CNC
- * through the window's end. The first-pass yield is final once the order is complete. A final
- * result never changes, so it is kept in memory (derive and cache; nothing is stored, ADR-0022).
+ * through the window's end (in its own run, or the execution module already in a newer run), no
+ * interval overlapping a window still open, and no `unknown-job` incident open on the CNC. The
+ * first-pass yield is final once the order is complete.
+ *
+ * **Written-off gaps** (ADR-0018): the sequence-gap incidents overlapping the order's windows on its
+ * CNCs, or the span of its units on any machine they visited, are listed on the view (`incidents`):
+ * a value final over a written-off gap carries the marker, as the OEE buckets do, and may still be
+ * revised if the facts arrive after all. A final view without incidents never changes, so its
+ * immutable part is kept in memory (derive and cache; nothing is stored, ADR-0022); a view with
+ * incidents is never cached. A cached view's status and cut-offs are read again on every hit.
  */
 import {
   firstPassYield,
@@ -57,10 +65,10 @@ import {
 
 /** What order OEE reads from the other modules (their `index.ts` interfaces). */
 export interface OrderOeeSources {
-  readonly orders: Pick<Orders, 'order' | 'commands' | 'onChange'>;
+  readonly orders: Pick<Orders, 'order' | 'commands' | 'incidents' | 'onChange'>;
   readonly execution: Pick<Execution, 'units' | 'orderExecution' | 'processedThrough' | 'onChange'>;
   readonly equipment: Pick<Equipment, 'intervals' | 'onPiecesChanged'>;
-  readonly ingest: Pick<Ingest, 'deviceProgress'>;
+  readonly ingest: Pick<Ingest, 'deviceProgress' | 'settled'>;
   readonly masterData: Pick<MasterData, 'equipment'>;
 }
 
@@ -103,6 +111,30 @@ export interface OrderOeeView {
   readonly final: boolean;
   /** Each CNC queue's cut-off (final-through); null before the CNC has a settled fact. */
   readonly cutoffs: readonly { machine: string; epoch: number; at: Date | null }[];
+  /**
+   * Sequence-gap incidents (written-off gaps, ADR-0018) overlapping the order's windows on its
+   * CNCs or its units' span on the machines they visited: values over them may be revised.
+   */
+  readonly incidents: readonly OrderGapIncident[];
+}
+
+/** One sequence-gap incident an order's inputs touch. */
+export interface OrderGapIncident {
+  readonly machine: string;
+  readonly epoch: number;
+  readonly id: number;
+  readonly seqFrom: number;
+  readonly seqTo: number;
+}
+
+/**
+ * What changed for order OEE: one order (`orderId`), the orders with a job on one CNC (`machine`:
+ * its states, or a command to it; other orders on a CNC decide head times), or, with neither,
+ * any order.
+ */
+export interface OrderOeeChange {
+  readonly orderId?: string;
+  readonly machine?: string;
 }
 
 const queueCommand = (c: CommandRecord): QueueCommand => ({
@@ -171,7 +203,7 @@ export function piecesFinal(pieces: readonly StoredInterval[], window: Range): b
 
 export class OrderOee {
   readonly #options: OrderOeeOptions;
-  readonly #listeners = new Set<(orderId: string | null) => void>();
+  readonly #listeners = new Set<(change: OrderOeeChange) => void>();
   /** Final views never change (ADR-0018): kept so a final order costs nothing to read again. */
   readonly #finals = new Map<string, OrderOeeView>();
   #operations: Map<string, string> | undefined;
@@ -186,14 +218,16 @@ export class OrderOee {
     const { orders, execution, equipment } = this.#options;
     this.#detach.push(
       orders.onChange((change) => {
-        if (change.type === 'command') this.#emit(null);
-        else if (change.type === 'order') this.#emit(change.order.id);
+        if (change.type === 'command') {
+          this.#emit({ machine: change.command.equipment });
+          this.#emit({ orderId: change.command.orderId });
+        } else if (change.type === 'order') this.#emit({ orderId: change.order.id });
       }),
       execution.onChange((change) => {
-        if (change.type === 'order') this.#emit(change.orderId);
+        if (change.type === 'order') this.#emit({ orderId: change.orderId });
       }),
-      equipment.onPiecesChanged(() => {
-        this.#emit(null);
+      equipment.onPiecesChanged((change) => {
+        this.#emit({ machine: change.equipment });
       }),
     );
   }
@@ -203,19 +237,18 @@ export class OrderOee {
   }
 
   /**
-   * Listens for changes that may move an order's OEE: an order id, or null when any order may
-   * have moved (a command or a CNC's states: other orders on the CNC decide head times). The
-   * listener runs synchronously inside the modules' notices: it must only record what changed.
+   * Listens for changes that may move an order's OEE (`OrderOeeChange`). The listener runs
+   * synchronously inside the modules' notices: it must only record what changed.
    */
-  onChange(listener: (orderId: string | null) => void): () => void {
+  onChange(listener: (change: OrderOeeChange) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
 
-  #emit(orderId: string | null): void {
+  #emit(change: OrderOeeChange): void {
     for (const listener of this.#listeners) {
       try {
-        listener(orderId);
+        listener(change);
       } catch {
         // A listener's failure must not reach the notifying module.
       }
@@ -231,13 +264,29 @@ export class OrderOee {
 
   /** The order's OEE, jobs and first-pass yield; undefined when the order doesn't exist. */
   async order(orderId: string): Promise<OrderOeeView | undefined> {
-    const cached = this.#finals.get(orderId);
-    if (cached) return cached;
     const order = await this.#options.orders.order(orderId);
     if (!order) return undefined;
+    const cached = this.#finals.get(orderId);
+    if (cached) return { ...cached, status: order.status, cutoffs: await this.#cutoffs(cached) };
     const view = await this.#compute(order);
-    if (view.final && view.firstPassYield.final) this.#finals.set(orderId, view);
+    if (view.final && view.firstPassYield.final && view.incidents.length === 0) {
+      this.#finals.set(orderId, view);
+    }
     return view;
+  }
+
+  /** A cached view's cut-offs now: a queue of the CNC's current run moves with its final-through. */
+  async #cutoffs(view: OrderOeeView): Promise<OrderOeeView['cutoffs']> {
+    const result = [];
+    for (const cut of view.cutoffs) {
+      const progress = await this.#options.ingest.deviceProgress(cut.machine);
+      result.push(
+        progress.epoch === cut.epoch && progress.settledTime !== null
+          ? { ...cut, at: progress.settledTime }
+          : cut,
+      );
+    }
+    return result;
   }
 
   async #compute(order: OrderRecord): Promise<OrderOeeView> {
@@ -245,7 +294,8 @@ export class OrderOee {
     const first = this.#options.operations[0] ?? 'OP10';
     const last = this.#options.operations.at(-1) ?? 'OP50';
     // Every command (other orders' jobs on the same CNC decide head times), and the CNCs' cuts.
-    const all = (await orders.commands()).map(queueCommand);
+    const records = await orders.commands();
+    const all = records.map(queueCommand);
     const mine = all.filter((c) => c.orderId === order.id);
     const machines = [...new Set(mine.map((c) => c.equipment))].sort();
     const cuts = new Map<string, DeviceCut>();
@@ -386,7 +436,12 @@ export class OrderOee {
           c.queuePosition >= command.queuePosition ||
           c.settled,
       );
-    const jobViews: OrderJobView[] = views.map(({ entry, piecesFinal: covered }) => {
+    const unknownJob = new Set(
+      (await orders.incidents({ open: true }))
+        .filter((incident) => incident.type === 'unknown-job' && incident.equipment !== null)
+        .map((incident) => incident.equipment ?? ''),
+    );
+    const jobViews: OrderJobView[] = views.map(({ entry, piecesFinal: covered, intervals }) => {
       const { command, queue, window } = entry;
       const cycles = cyclesOf.get(command.commandId) ?? [];
       const jobResult = result.jobs[command.commandId] ?? null;
@@ -399,14 +454,16 @@ export class OrderOee {
         !window.headTimeUnknown &&
         !window.endLost &&
         !window.lost &&
+        // Defensive: an accepted command is settled (ADR-0029), and one without an acceptance has
+        // a lost or unknown head time already; kept so a reading defect can't make a job final.
         command.settled &&
         settledBefore(command, queue) &&
         covered &&
         cycles.length === command.quantity &&
         cycles.every((c) => c.at >= window.from && c.at <= window.to) &&
-        progress?.epoch === queue.epoch &&
-        progress.settledTime !== null &&
-        progress.settledTime.getTime() >= window.to;
+        processedThrough(progress, queue, window.to) &&
+        !intervals.some((i) => i.open === true && i.from < window.to && i.to > window.from) &&
+        !unknownJob.has(queue.machine);
       return {
         commandId: command.commandId,
         machine: queue.machine,
@@ -419,6 +476,16 @@ export class OrderOee {
         result: jobResult,
         final,
       };
+    });
+    // The order's jobs in acceptance order across its CNCs, as the truth lists them (the
+    // acceptance time; dispatch order on a tie or while unknown).
+    const position = new Map(jobs.map((j) => [j.command.commandId, j.command]));
+    jobViews.sort((a, b) => {
+      const ca = position.get(a.commandId);
+      const cb = position.get(b.commandId);
+      const ta = ca?.acceptedAt ?? Number.POSITIVE_INFINITY;
+      const tb = cb?.acceptedAt ?? Number.POSITIVE_INFINITY;
+      return ta !== tb ? (ta < tb ? -1 : 1) : (ca?.queuePosition ?? 0) - (cb?.queuePosition ?? 0);
     });
     const noMoreJobs =
       (order.dispatched >= order.quantity && order.inFlight === 0 && !order.dispatchFailed) ||
@@ -438,14 +505,71 @@ export class OrderOee {
     const own = unitsOf.get(order.id) ?? [];
     const executed = await execution.orderExecution(order.id);
     const inMachine = Object.values(executed?.inMachine ?? {}).reduce((sum, n) => sum + n, 0);
+    // A blank a CNC held when its run ended belongs to a lost job: `inMachine` no longer counts it,
+    // the orders module's count of the lost job's blanks (from these units, ADR-0031) does.
+    let heldAtRunEnd = 0;
+    for (const command of records) {
+      if (command.orderId !== order.id || command.job !== 'lost' || command.lostStarted === null) {
+        continue;
+      }
+      const machined = own.filter((unit) => unit.commandId === command.commandId).length;
+      heldAtRunEnd += Math.max(0, command.lostStarted - machined);
+    }
     const fpy = firstPassYield({
-      started: own.length + inMachine,
+      started: own.length + inMachine + heldAtRunEnd,
       units: own.map((unit) => ({
         records: unit.records.map((r) => ({ operation: r.operation, result: r.result })),
       })),
       lastOperation: last,
     });
     const completedAt = executed?.completedAt ?? null;
+
+    // Written-off gaps the inputs touch: the windows on the CNCs, and on every machine the order's
+    // units visited, the span from their first record to the completion (or their last record).
+    const spans = new Map<string, { machine: string; epoch: number; from: number; to: number }>();
+    const touch = (machine: string, epoch: number, from: number, to: number) => {
+      const key = `${machine}\u0000${String(epoch)}`;
+      const found = spans.get(key);
+      spans.set(key, {
+        machine,
+        epoch,
+        from: Math.min(found?.from ?? from, from),
+        to: Math.max(found?.to ?? to, to),
+      });
+    };
+    for (const { entry } of views) {
+      if (entry.window) {
+        touch(entry.queue.machine, entry.queue.epoch, entry.window.from, entry.window.to);
+      }
+    }
+    const times = own.flatMap((unit) => unit.records.map((r) => r.at.getTime()));
+    if (times.length > 0) {
+      const from = times.reduce((a, b) => Math.min(a, b));
+      const to = times.reduce((a, b) => Math.max(a, b), completedAt?.getTime() ?? 0);
+      for (const unit of own) {
+        for (const record of unit.records) touch(record.equipment, unit.epoch, from, to);
+      }
+    }
+    const incidents: OrderGapIncident[] = [];
+    const ordered = [...spans.values()].sort((a, b) =>
+      a.machine < b.machine ? -1 : a.machine > b.machine ? 1 : a.epoch - b.epoch,
+    );
+    for (const span of ordered) {
+      const settled = await ingest.settled(span.machine, span.epoch);
+      for (const gap of settled.incidents) {
+        const after = gap.after?.getTime() ?? Number.NEGATIVE_INFINITY;
+        const before = gap.before?.getTime() ?? Number.POSITIVE_INFINITY;
+        if (after <= span.to && before >= span.from) {
+          incidents.push({
+            machine: span.machine,
+            epoch: span.epoch,
+            id: gap.id,
+            seqFrom: gap.seqFrom,
+            seqTo: gap.seqTo,
+          });
+        }
+      }
+    }
     return {
       orderId: order.id,
       product: order.product,
@@ -464,6 +588,26 @@ export class OrderOee {
         .sort((a, b) =>
           a.machine < b.machine ? -1 : a.machine > b.machine ? 1 : a.epoch - b.epoch,
         ),
+      incidents,
     };
   }
+}
+
+/**
+ * Whether the execution module has processed the CNC through `to` for this queue's run: in the
+ * same run, its last round's final-through is at or past `to`; a queue of an earlier run counts as
+ * processed once execution is in a newer run (that run's facts all came before the newer one's).
+ */
+export function processedThrough(
+  progress: { readonly epoch: number | null; readonly settledTime: Date | null } | undefined,
+  queue: { readonly epoch: number },
+  to: number,
+): boolean {
+  if (progress?.epoch === undefined || progress.epoch === null) return false;
+  if (progress.epoch > queue.epoch) return true;
+  return (
+    progress.epoch === queue.epoch &&
+    progress.settledTime !== null &&
+    progress.settledTime.getTime() >= to
+  );
 }

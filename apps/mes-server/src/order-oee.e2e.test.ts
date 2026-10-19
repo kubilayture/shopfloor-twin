@@ -162,22 +162,29 @@ function suite(name: string, pins: Pins): void {
       await stack.stop();
     }, 900_000);
 
-    it('shuffled with 10 % duplicates, judged every 400 deliveries: equal to line-oee.json', async () => {
+    it('shuffled with 10 % duplicates, judged every 400 deliveries (every 25 over the last 1,000): equal to line-oee.json', async () => {
       run ??= await goldenRun(name, dirs);
       const { stack, after, end } = await prepared(run, `${label}_shuffled`);
       const judge = new Judge(run);
       const next = random(231);
       const mixed = shuffle([...after, ...after.filter(() => next() < 0.1)], next);
-      for (let i = 0; i < mixed.length; i += 400) {
-        await stack.send(mixed.slice(i, i + 400));
+      // Finals seen before the last delivery: the partial judging is not vacuous. Fully shuffled,
+      // an order's facts complete only near the end, so the last 1,000 are judged every 25.
+      let earlyFinals = 0;
+      for (let i = 0; i < mixed.length;) {
+        const step = mixed.length - i > 1_000 ? 400 : 25;
+        await stack.send(mixed.slice(i, i + step));
+        i += step;
         await stack.tick();
         await judge.check(stack);
+        if (i < mixed.length) earlyFinals = judge.finals;
       }
+      expect(earlyFinals).toBeGreaterThan(0);
       await stack.send([end, ...mixed.slice(0, 500)]);
       await stack.tick();
       expect(await judge.expectEnd(stack)).toEqual(pins);
       console.log(
-        `${name}: shuffled with 10 % duplicates, ${String(judge.ticks)} judgements (at most ${String(judge.finals)} orders final), equal to line-oee.json`,
+        `${name}: shuffled with 10 % duplicates, ${String(judge.ticks)} judgements, ${String(earlyFinals)} orders final before the last delivery; equal to line-oee.json`,
       );
       await stack.stop();
     }, 900_000);

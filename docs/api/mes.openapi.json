@@ -3170,6 +3170,46 @@
                         "additionalProperties": false
                       },
                       "description": "Each CNC queue's cut-off (its final-through, exclusive), where an open window ends"
+                    },
+                    "incidents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "machine": {
+                            "type": "string"
+                          },
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seqFrom": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seqTo": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "machine",
+                          "epoch",
+                          "id",
+                          "seqFrom",
+                          "seqTo"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Sequence-gap incidents (written-off gaps, ADR-0018) overlapping the order’s windows or its units’ span on the machines they visited: a final value over them may still be revised"
                     }
                   },
                   "required": [
@@ -3186,7 +3226,8 @@
                     "jobs",
                     "firstPassYield",
                     "completedAt",
-                    "cutoffs"
+                    "cutoffs",
+                    "incidents"
                   ],
                   "additionalProperties": false,
                   "description": "Order OEE over job windows, with the job breakdown and first-pass yield (#231)"

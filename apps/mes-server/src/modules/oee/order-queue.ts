@@ -11,6 +11,11 @@
  * - **Order:** acceptance order, per CNC and device epoch (one device run): dispatch order
  *   (`queuePosition`), with the commands whose acceptance sequence is known put in sequence order
  *   among their own places, so a command of unknown acceptance keeps its dispatch place.
+ * - **The publisher invariant** (orders module, ADR-0029): per CNC, only the first command not
+ *   settled is published, in `queue_position` order, and the next one waits until it is settled.
+ *   So per CNC and device epoch the device accepts in dispatch order, and acceptance order equals
+ *   dispatch order; sorting the known acceptance sequences among their places is a cross-check,
+ *   never a reordering, and a command of unknown acceptance sits where its acceptance must be.
  * - **Lost, not merely missing:** a fact is lost once the CNC's final-through (ADR-0018: a gap
  *   written off counts as closed) has passed a later fact of the same device, or once the job's run
  *   ended (a newer device epoch). Device sequence numbers and plant times rise together, so "a

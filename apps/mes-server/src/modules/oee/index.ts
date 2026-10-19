@@ -14,7 +14,7 @@
  * Order OEE (#231, ADR-0036 and its P9-04 amendment), per order and job, derived on read:
  * - `OrderOee.order(id)`: the order OEE over its job windows, every job (head time, window, OEE)
  *   and the first-pass yield, each with its finality; final results kept in memory.
- * - `OrderOee.onChange(listener)`: an order id, or null when any order may have moved (push).
+ * - `OrderOee.onChange(listener)`: an order, or a CNC whose orders may have moved (push).
  * - Pure (`order-queue.ts`): `commandQueues`, `queuedJob`, `acceptanceOrder`, `inQueue`,
  *   `orderSlice`: each CNC's queue from the orders module's command state, lost facts included.
  *
@@ -42,7 +42,14 @@ export type {
   ParetoMicroStop,
   ParetoReason,
 } from './downtime.ts';
-export { OrderOee, piecesFinal, wholeIntervals } from './order-oee.ts';
-export type { OrderJobView, OrderOeeOptions, OrderOeeSources, OrderOeeView } from './order-oee.ts';
+export { OrderOee, piecesFinal, processedThrough, wholeIntervals } from './order-oee.ts';
+export type {
+  OrderGapIncident,
+  OrderJobView,
+  OrderOeeChange,
+  OrderOeeOptions,
+  OrderOeeSources,
+  OrderOeeView,
+} from './order-oee.ts';
 export { acceptanceOrder, commandQueues, inQueue, orderSlice, queuedJob } from './order-queue.ts';
 export type { CommandQueue, DeviceCut, QueueCommand } from './order-queue.ts';

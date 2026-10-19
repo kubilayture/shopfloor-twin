@@ -578,6 +578,18 @@ describe('firstPassYield', () => {
     ).toThrow(/unknown cycle result/);
   });
 
+  it('does not count a unit with an operation repeated, even when the rework record is lost', () => {
+    const good = (operation: string) => ({ operation, result: 'good' as const });
+    const reworked = {
+      records: ['OP10', 'OP20', 'OP30', 'OP40', 'OP30', 'OP40', 'OP50'].map(good),
+    };
+    const straight = { records: ['OP10', 'OP20', 'OP30', 'OP40', 'OP50'].map(good) };
+    expect(
+      firstPassYield({ started: 2, units: [reworked, straight], lastOperation: 'OP50' })
+        .firstPassGood,
+    ).toBe(1n);
+  });
+
   it('does not count a unit still on its way', () => {
     const unit = { records: [{ operation: 'OP10', result: 'good' as const }] };
     expect(firstPassYield({ started: 1, units: [unit], lastOperation: 'OP50' }).firstPassGood).toBe(

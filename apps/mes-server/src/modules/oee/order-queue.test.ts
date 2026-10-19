@@ -77,6 +77,28 @@ describe('the CNC queue from the command state (#231, ADR-0036 queue contract)',
     ).toBe(true);
   });
 
+  it('relies on the publisher invariant: per CNC, acceptance order is dispatch order', () => {
+    // The orders module publishes, per CNC, only the first command not settled in queue order:
+    // B waits until A is settled, so the device accepts A before B, and C (not settled, its
+    // acceptance unknown) can only follow both; its predecessor in the queue is B.
+    const a = command('A~OP10~1', { acceptedSeq: 5, startedAt: at(1), completedAt: at(10) });
+    const b = command('B~OP10~1', { acceptedSeq: 9, startedAt: at(12), completedAt: at(20) });
+    const c = command('C~OP10~1', {
+      acceptedBy: null,
+      acceptedSeq: null,
+      acceptedAt: null,
+      settled: false,
+    });
+    const q = queueOf([c, b, a], cut(at(25)));
+    expect(q.commands.map((x) => x.commandId)).toEqual(['A~OP10~1', 'B~OP10~1', 'C~OP10~1']);
+    const jobs = q.commands.map((_, i) => queuedJob(q, i, cut(at(25))));
+    expect(jobWindows(jobs, at(25), 'cnc-01').map((w) => w.head)).toEqual([
+      { kind: 'head', at: at(0), source: 'accepted' },
+      { kind: 'head', at: at(10), source: 'previous-completed' },
+      { kind: 'unknown', reason: 'accepted-unknown' },
+    ]);
+  });
+
   it('orders by acceptance, keeping a command of unknown acceptance at its dispatch place', () => {
     const a = command('A~OP10~1', { acceptedSeq: 30 });
     const b = command('B~OP10~1', {

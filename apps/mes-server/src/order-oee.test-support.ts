@@ -454,7 +454,12 @@ export class Judge {
       const view = await stack.orderOee.order(id);
       if (!view) throw new Error(`no order ${id} in the MES`);
       if (truth.completedAt !== null) {
-        expect([id, view.final, view.firstPassYield.final]).toEqual([id, true, true]);
+        expect([id, view.final, view.firstPassYield.final, view.incidents]).toEqual([
+          id,
+          true,
+          true,
+          [],
+        ]);
         expect([id, oeeShape(view)]).toEqual([id, truthOeeShape(truth)]);
         expect([id, yieldShape(view)]).toEqual([
           id,

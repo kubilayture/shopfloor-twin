@@ -20,7 +20,13 @@ import { equipmentPaths } from '../hierarchy.ts';
 import { TopicSequences } from '../identity.ts';
 import { OpcuaCollector } from '../opcua/collector.ts';
 import type { CommandResultPublication, UnsPublication } from '../publisher.ts';
-import { opcuaProxies, startSimulator, type RunningSimulator, type TcpProxy } from '../testing.ts';
+import {
+  installGatewayPki,
+  opcuaProxies,
+  startSimulator,
+  type RunningSimulator,
+  type TcpProxy,
+} from '../testing.ts';
 import { CommandExecutor, type CommandExecutorOptions } from './executor.ts';
 import { CommandStore } from './store.ts';
 
@@ -162,9 +168,11 @@ beforeAll(async () => {
   simulator = await startSimulator(undefined, SIM_ENV);
   const block = await opcuaProxies(OPCUA_MACHINES, simulator.opcuaOffset);
   proxies = block.proxies;
+  // SignAndEncrypt as opcua-gateway with the test process's pinned certificates (#239).
+  const security = await installGatewayPki(join(dir, 'pki'));
   const certificateManager = new OPCUACertificateManager({
     rootFolder: join(dir, 'pki'),
-    automaticallyAcceptUnknownCertificate: true,
+    automaticallyAcceptUnknownCertificate: false,
   });
   await certificateManager.initialize();
   const sequences = new TopicSequences(1_800_000_000);
@@ -191,6 +199,7 @@ beforeAll(async () => {
         resyncGraceMs: 500,
         sessionTimeoutMs: 10_000,
         certificateManager,
+        security,
       }),
     );
   }

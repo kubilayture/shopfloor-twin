@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { OPCUA_MACHINES } from '@shopfloor/contracts';
+import { installGatewayPki, secureSimulatorEnv } from './opcua-pki.ts';
 import { freeOffset, freePort, freePorts } from './ports.ts';
 
 // The real simulator and edge gateway as child processes (apps may not import each other, plan
@@ -215,12 +216,17 @@ async function launchSimulator(
   // A certificate store of its own: a store left locked by a killed run would hang the start,
   // and one shared by name would be wiped by a parallel run.
   const pki = mkdtempSync(join(tmpdir(), 'shopfloor-twin-sim-pki-'));
+  // SignAndEncrypt (#239) with this process's PKI (`testOpcuaPki`), unless the caller asks for
+  // `OPCUA_SECURITY=none`.
+  const security =
+    extraEnv.OPCUA_SECURITY === 'none' ? { OPCUA_SECURITY: 'none' } : await secureSimulatorEnv(pki);
   const child = spawnChild(SIMULATOR_MAIN, {
     ...process.env,
     SIM_AUTOSTART: 'false',
     SIM_SPEED: '60',
     OPCUA_PORT_OFFSET: String(ports.opcuaOffset),
     OPCUA_PKI_DIR: pki,
+    ...security,
     MODBUS_PORT: String(ports.modbusPort),
     CONTROL_PORT: String(ports.controlPort),
     LOG_LEVEL: 'info',
@@ -312,7 +318,21 @@ export async function startGateway(env: Readonly<Record<string, string>>): Promi
 
 async function launchGateway(env: Readonly<Record<string, string>>): Promise<RunningGateway> {
   const port = env.HTTP_PORT ?? '4900';
-  const child = spawnChild(GATEWAY_MAIN, { ...process.env, LOG_LEVEL: 'info', ...env });
+  // SignAndEncrypt (#239): the gateway's certificate, key and pins from this process's PKI in its
+  // OPCUA_PKI_DIR, and the opcua-gateway password; `OPCUA_SECURITY=none` skips both.
+  let security: Record<string, string> = {};
+  if (env.OPCUA_SECURITY !== 'none') {
+    const pkiDir = env.OPCUA_PKI_DIR;
+    if (pkiDir === undefined) throw new Error('startGateway: OPCUA_PKI_DIR is required');
+    const installed = await installGatewayPki(pkiDir);
+    security = { OPCUA_SECURITY: 'sign-and-encrypt', OPCUA_GATEWAY_PASSWORD: installed.password };
+  }
+  const child = spawnChild(GATEWAY_MAIN, {
+    ...process.env,
+    LOG_LEVEL: 'info',
+    ...security,
+    ...env,
+  });
   const http = `http://127.0.0.1:${port}`;
   try {
     await awaitReady(

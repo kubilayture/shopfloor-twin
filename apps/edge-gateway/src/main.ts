@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import { FAILURE_ALARM_SEVERITY, OPCUA_MACHINES, modbusTables } from '@shopfloor/contracts';
 import { OPCUACertificateManager } from 'node-opcua';
 import { formatIssues, loadPlantConfig, plantAlarms } from '@shopfloor/plant-config';
+import { GATEWAY_APPLICATION_URI, OPCUA_USERS, requireOwnMaterial } from '@shopfloor/pki';
 import { parseEnv } from './env.ts';
 import { buildGatewayHttp } from './http.ts';
 import { TopicSequences, unixSeconds } from './identity.ts';
@@ -13,7 +14,7 @@ import { equipmentPaths } from './hierarchy.ts';
 import { UnsIncidentReporter } from './incidents.ts';
 import { MqttLink } from './mqtt-link.ts';
 import { ModbusPoller, connectModbus } from './modbus/poller.ts';
-import { OpcuaCollector } from './opcua/collector.ts';
+import { OpcuaCollector, type ClientSecurity } from './opcua/collector.ts';
 
 const VERSION = '0.1.0';
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -76,9 +77,28 @@ const incidents = new UnsIncidentReporter({
     log.warn({ incident }, 'data-quality incident');
   },
 });
+// OPC UA security (#239, ADR-0038): SignAndEncrypt as `opcua-gateway` with the certificate the pki
+// step made; without it the gateway refuses to start instead of making one. Server certificates
+// are trusted only when pinned in OPCUA_PKI_DIR/trusted/certs (no automatic acceptance).
+let security: ClientSecurity = { mode: 'none' };
+if (env.OPCUA_SECURITY === 'sign-and-encrypt') {
+  try {
+    const own = requireOwnMaterial(resolve(env.OPCUA_PKI_DIR), GATEWAY_APPLICATION_URI);
+    security = {
+      mode: 'sign-and-encrypt',
+      certificateFile: own.certificateFile,
+      privateKeyFile: own.privateKeyFile,
+      userName: OPCUA_USERS.gateway,
+      password: env.OPCUA_GATEWAY_PASSWORD ?? '',
+    };
+  } catch (error) {
+    console.error(`OPC UA: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(2);
+  }
+}
 const certificateManager = new OPCUACertificateManager({
   rootFolder: resolve(env.OPCUA_PKI_DIR),
-  automaticallyAcceptUnknownCertificate: true,
+  automaticallyAcceptUnknownCertificate: false,
 });
 const paths = equipmentPaths(loaded.config);
 const collectors = OPCUA_MACHINES.map((machine) => {
@@ -96,6 +116,7 @@ const collectors = OPCUA_MACHINES.map((machine) => {
     alarmCodes: alarmPoints.filter((p) => p.equipment === machine.id).map((p) => p.code),
     telemetrySamplingMs: env.TELEMETRY_SAMPLING_MS,
     certificateManager,
+    security,
     onError: (error) => {
       log.error({ err: error, machine: machine.id }, 'OPC UA collector error');
     },
@@ -253,8 +274,8 @@ link.start();
 executor.start();
 commandLink.start();
 poller.start();
-// The collectors share one client certificate: create it one collector at a time, then start
-// them all at once in the background. A machine that is down keeps retrying by itself and holds
+// The collectors share one client certificate (under `none`, created one collector at a time),
+// then start them all at once in the background. A machine that is down keeps retrying by itself and holds
 // up neither the others nor the gateway's readiness.
 async function startWithRetry(collector: OpcuaCollector): Promise<void> {
   for (;;) {

@@ -27,10 +27,14 @@ import {
   type StateCurrent,
   type Telemetry,
 } from '@shopfloor/contracts';
+import { GATEWAY_APPLICATION_URI } from '@shopfloor/pki';
 import {
   AttributeIds,
+  MessageSecurityMode,
   OPCUAClient,
+  SecurityPolicy,
   TimestampsToReturn,
+  UserTokenType,
   constructEventFilter,
   resolveNodeId,
   type CallMethodResult,
@@ -52,8 +56,24 @@ export interface OpcuaMachine {
   readonly kind: 'machine-tool' | 'station';
 }
 
+/**
+ * How the gateway connects (#239, ADR-0038): SignAndEncrypt (`Basic256Sha256`) with the
+ * certificate the `pki` step made and the user `opcua-gateway`, or `none` (an anonymous None
+ * session, for tests that don't test security).
+ */
+export type ClientSecurity =
+  | { readonly mode: 'none' }
+  | {
+      readonly mode: 'sign-and-encrypt';
+      readonly certificateFile: string;
+      readonly privateKeyFile: string;
+      readonly userName: string;
+      readonly password: string;
+    };
+
 export interface OpcuaCollectorOptions {
   readonly machine: OpcuaMachine;
+  readonly security: ClientSecurity;
   readonly path: EquipmentPath;
   readonly host: string;
   readonly portOffset?: number;
@@ -74,7 +94,8 @@ export interface OpcuaCollectorOptions {
   readonly sessionTimeoutMs?: number;
   readonly onError?: (error: unknown) => void;
   /**
-   * The gateway's own client certificate store, shared by all its collectors. Without it node-opcua
+   * The gateway's own client certificate store, shared by all its collectors: the server
+   * certificates it trusts (the pki step's pins, no automatic acceptance). Without it node-opcua
    * uses a store in the user's home folder, which a killed process can leave locked.
    */
   readonly certificateManager?: OPCUACertificateManager;
@@ -287,10 +308,20 @@ export class OpcuaCollector {
     this.machineId = options.machine.id;
     this.kind = options.machine.kind;
     this.endpoint = opcuaEndpoint(options.host, options.machine.port + (options.portOffset ?? 0));
+    const security = options.security;
     this.#client = OPCUAClient.create({
-      // One name for every machine's client: they share one client certificate, whose subject
-      // alternative name must match the application URI derived from it.
+      // One name and URI for every machine's client: they share one client certificate, whose SAN
+      // carries this URI (the server checks it, ADR-0038).
       applicationName: 'shopfloor-twin-edge-gateway',
+      applicationUri: GATEWAY_APPLICATION_URI,
+      ...(security.mode === 'sign-and-encrypt'
+        ? {
+            securityMode: MessageSecurityMode.SignAndEncrypt,
+            securityPolicy: SecurityPolicy.Basic256Sha256,
+            certificateFile: security.certificateFile,
+            privateKeyFile: security.privateKeyFile,
+          }
+        : {}),
       endpointMustExist: false,
       keepSessionAlive: true,
       requestedSessionTimeout: options.sessionTimeoutMs ?? 60_000,
@@ -396,15 +427,24 @@ export class OpcuaCollector {
     );
   }
 
-  /** Creates the client certificate if it doesn't exist yet. Call it for one collector at a time. */
+  /**
+   * Under `none`, creates the client certificate if it doesn't exist yet (call it for one collector
+   * at a time). Under `sign-and-encrypt` nothing: the certificate is the `pki` step's, never one
+   * node-opcua makes.
+   */
   async prepare(): Promise<void> {
-    await this.#client.createDefaultCertificate();
+    if (this.#options.security.mode === 'none') await this.#client.createDefaultCertificate();
   }
 
   /** Resolves once connected and subscribed; keeps retrying while the server is unreachable. */
   async start(): Promise<void> {
     await this.#client.connect(this.endpoint);
-    const session = await this.#client.createSession();
+    const security = this.#options.security;
+    const session = await this.#client.createSession(
+      security.mode === 'sign-and-encrypt'
+        ? { type: UserTokenType.UserName, userName: security.userName, password: security.password }
+        : undefined,
+    );
     this.#session = session;
     session.on('session_restored', () => {
       this.#requestResync();

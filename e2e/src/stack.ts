@@ -73,6 +73,9 @@ export class Stack {
       ERP_API_TOKEN: secret(),
       // The simulator's control token (#237): the run's clients send it; nginx injects it on /sim/.
       SIM_CONTROL_TOKEN: secret(),
+      // The OPC UA users' passwords (#239): opcua-gateway (gateway and simulator) and opcua-reader.
+      OPCUA_GATEWAY_PASSWORD: secret(),
+      OPCUA_READER_PASSWORD: secret(),
       // The MES's first admin (#170): it must change this password at its first login.
       MES_BOOTSTRAP_ADMIN_PASSWORD: secret(),
       ...this.#env,

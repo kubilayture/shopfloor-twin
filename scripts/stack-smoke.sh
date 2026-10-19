@@ -59,7 +59,8 @@ compose_without() {
   return $result
 }
 for key in DB_PASSWORD DB_APP_PASSWORD ERP_API_TOKEN SIM_CONTROL_TOKEN MQTT_HEALTHCHECK_PASSWORD \
-  MQTT_DEV_PASSWORD MQTT_GATEWAY_PASSWORD MQTT_MES_PASSWORD; do
+  MQTT_DEV_PASSWORD MQTT_GATEWAY_PASSWORD MQTT_MES_PASSWORD OPCUA_GATEWAY_PASSWORD \
+  OPCUA_READER_PASSWORD; do
   if compose_without "$key"; then fail "Compose accepted a configuration without $key"; fi
 done
 compose_without MES_BOOTSTRAP_ADMIN_PASSWORD ||
@@ -223,6 +224,38 @@ for port in 4841 4842 4843 4844 4845 5020; do
   " || fail "port $port not listening"
 done
 echo "ok: OPC UA servers listening on 4841-4845, Modbus on 5020"
+
+# The pki step (#239, ADR-0038): the one-shot service ran before the simulator and the gateway and
+# exited 0; its last line says how many certificates it made and how long that took.
+pki_container=$(docker compose ps --all --quiet pki)
+[ -n "$pki_container" ] || fail "no pki container"
+pki_state=$(docker inspect "$pki_container" --format '{{.State.Status}} {{.State.ExitCode}}')
+[ "$pki_state" = "exited 0" ] || fail "the pki step did not exit 0 ($pki_state)"
+pki_summary=$(docker compose logs --no-log-prefix pki 2>/dev/null | grep '^pki: ok' | tail -n 1)
+[ -n "$pki_summary" ] || fail "the pki step logged no summary"
+echo "ok: pki step exited 0 (${pki_summary#pki: ok, })"
+# Each PKI volume is mounted by its own component only (the pki step mounts all three while it
+# runs; the tools volume by no long-running service).
+for service in $(docker compose ps --format '{{.Service}}'); do
+  mounts=$(docker inspect "$(docker compose ps -q "$service")" \
+    --format '{{range .Mounts}}{{.Name}} {{end}}')
+  for volume in simulator-pki gateway-pki opcua-tools-pki; do
+    case " $mounts" in
+      *"_$volume "*)
+        case "$service:$volume" in
+          simulator:simulator-pki | gateway:gateway-pki) ;;
+          *) fail "$service mounts $volume" ;;
+        esac
+        ;;
+    esac
+  done
+done
+echo "ok: each PKI volume mounted by its own component only"
+# Checklist S1 as the tools client (opcua-reader, the tools certificate every server pins), inside
+# the Compose network: SignAndEncrypt only, LoadOrder and LoadProgram refused with
+# BadUserAccessDenied (a permission refusal on a trusted certificate), an unpinned client
+# certificate refused, anonymous sessions and a wrong password refused.
+docker compose run --rm --no-deps opcua-tools || fail "OPC UA security checks failed"
 
 ready=$(curl -sf "$gateway_url/health/ready") || fail "gateway not ready"
 echo "ok: gateway ready ($ready)"

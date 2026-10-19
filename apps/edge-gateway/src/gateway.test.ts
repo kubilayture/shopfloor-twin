@@ -69,15 +69,25 @@ afterAll(async () => {
 
 describe('environment configuration (#75)', () => {
   it('applies defaults and requires the broker password without ever echoing it', () => {
-    const ok = parseEnv({ MQTT_PASSWORD: 'secret' });
+    const ok = parseEnv({ MQTT_PASSWORD: 'secret', OPCUA_GATEWAY_PASSWORD: 'opcua secret' });
     expect(ok.ok && ok.env).toMatchObject({
       GATEWAY_ID: 'gw-01',
       MQTT_URL: 'mqtt://127.0.0.1:1883',
       MQTT_USERNAME: 'gw-01',
       HTTP_PORT: 4900,
+      OPCUA_SECURITY: 'sign-and-encrypt',
     });
+    // SignAndEncrypt (#239) needs the opcua-gateway password; `none` doesn't.
+    const noOpcuaPassword = parseEnv({ MQTT_PASSWORD: 'secret' });
+    expect(noOpcuaPassword.ok).toBe(false);
+    if (!noOpcuaPassword.ok) {
+      expect(noOpcuaPassword.issues.join('\n')).toMatch(/^OPCUA_GATEWAY_PASSWORD: .*\(hidden\)$/);
+    }
+    const none = parseEnv({ MQTT_PASSWORD: 'secret', OPCUA_SECURITY: 'none' });
+    expect(none.ok && none.env.OPCUA_SECURITY).toBe('none');
     const bad = parseEnv({
       MQTT_PASSWORD: ' kept as is ',
+      OPCUA_GATEWAY_PASSWORD: 'opcua secret',
       MQTT_URL: 'http://x',
       GATEWAY_ID: 'GW 1',
     });
@@ -85,7 +95,7 @@ describe('environment configuration (#75)', () => {
     if (!bad.ok) {
       expect(bad.issues.map((i) => i.split(':')[0]).sort()).toEqual(['GATEWAY_ID', 'MQTT_URL']);
     }
-    const spaced = parseEnv({ MQTT_PASSWORD: ' kept as is ' });
+    const spaced = parseEnv({ MQTT_PASSWORD: ' kept as is ', OPCUA_GATEWAY_PASSWORD: 'x' });
     expect(spaced.ok && spaced.env.MQTT_PASSWORD).toBe(' kept as is ');
     const missing = parseEnv({});
     expect(missing.ok).toBe(false);

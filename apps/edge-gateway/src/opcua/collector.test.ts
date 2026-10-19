@@ -30,7 +30,12 @@ import { equipmentPaths } from '../hierarchy.ts';
 import { TopicSequences } from '../identity.ts';
 import type { IncidentInput } from '../incidents.ts';
 import type { Publisher, UnsPublication } from '../publisher.ts';
-import { startSimulator, type RunningSimulator, type SimEvent } from '../testing.ts';
+import {
+  installGatewayPki,
+  startSimulator,
+  type RunningSimulator,
+  type SimEvent,
+} from '../testing.ts';
 import { OpcuaCollector, readAlarmSnapshot } from './collector.ts';
 
 // The simulator's ports are chosen at runtime by `startSimulator` (#212): clear of the Compose
@@ -155,9 +160,11 @@ beforeAll(async () => {
   simulator = await startSimulator();
   const paths = equipmentPaths(config);
   const sequences = new TopicSequences(1_800_000_000);
+  // SignAndEncrypt as opcua-gateway with the test process's pinned certificates (#239).
+  const security = await installGatewayPki(pki);
   const certificateManager = new OPCUACertificateManager({
     rootFolder: pki,
-    automaticallyAcceptUnknownCertificate: true,
+    automaticallyAcceptUnknownCertificate: false,
   });
   await certificateManager.initialize();
   for (const machine of OPCUA_MACHINES) {
@@ -179,6 +186,7 @@ beforeAll(async () => {
         resyncGraceMs: 1_500,
         sessionTimeoutMs: 5_000,
         certificateManager,
+        security,
       }),
     );
   }

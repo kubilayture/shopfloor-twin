@@ -16,3 +16,4 @@ export type {
   SimulatorPorts,
 } from '@shopfloor/test-kit/processes';
 export { timed } from '@shopfloor/test-kit/timing';
+export { installGatewayPki } from '@shopfloor/test-kit/opcua-pki';

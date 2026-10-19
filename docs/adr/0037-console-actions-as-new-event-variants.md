@@ -1,6 +1,6 @@
 # ADR-0037: Console actions as new event variants that keep every draw
 
-- Status: accepted (#234: the console actions and their read routes, control API 1.7, as decided in the Phase 9 plan, "Console actions"; amended by #235, scenario timelines and the order of an instant, control API 1.9; dispatch recording (P9-09) and the console's access path (P9-10) amend it further)
+- Status: accepted (#234: the console actions and their read routes, control API 1.7, as decided in the Phase 9 plan, "Console actions"; amended by #235, scenario timelines and the order of an instant, control API 1.9; amended by #236, dispatch recording and headless replay, control API 1.10; the console's access path (P9-10) amends it further)
 - Date: 2026-10-18
 - Deciders: Claude (#234), within the Phase 9 plan and its review (rounds 1–3 and the final check); recorded for the owner under the standing instruction of 2026-10-15
 
@@ -80,3 +80,35 @@ P9-08 plays timelines of these actions headless and live (Phase 9 plan, "Scenari
 - **Cues and wall time:** a cue fires when its timer does (set for it as for the next event), so up to the timer's lateness late in wall time, never in simulation time; a speed cue re-anchors where the paced clock is, a pause cue leaves the simulation time at its time. A step applies the cues its event reaches after the event.
 - **Not every `scenario.json` is a timeline:** a timeline is in time order, and the headless run gives every injection before every action; a golden whose injections are not in time order, or whose same-millisecond injection and action must keep that cross-group order, can't be rewritten as a timeline entry for entry (the four goldens can, tested).
 - **Dispatches stay in the model lane:** a `LoadOrder` job's wake-up is a model event, accepted while idle in the headless order; mid-run dispatches and their replay are P9-09's (its probe Q2 decides whether they need the external lane).
+
+## Amendment (#236): dispatch recording and headless replay
+
+P9-09 records the jobs a live orders run accepts and replays them headless (Phase 9 plan, "Dispatch recording and replay", probe Q2, exit criterion 3; `docs/simulation-model.md`, "Dispatch recording and replay"). It closes ADR-0030's limit ("jobs dispatched later change its future … replaying them is a Phase 9 scenario feature") and the last point of "Remaining differences from headless" above.
+
+### Probe Q2
+
+Run first, on the code path of the OPC UA method (`ProductionLine.loadOrder` with the device's guard) and then through the method itself: an `orders-01` live run with jobs given while idle and mid-run, its accepted jobs recorded, replayed headless three ways.
+
+| Replay of a dispatch accepted mid-run at T                                             | 60×, calls off event times | 1×, calls right after events of T | after a step, an event of T still due |
+| -------------------------------------------------------------------------------------- | -------------------------- | --------------------------------- | ------------------------------------- |
+| (A) T only, pre-scheduled in the `external` lane                                       | equal                      | **differs**                       | **differs**                           |
+| (B) T only, given once every event at or before T is processed                         | equal                      | equal                             | **differs**                           |
+| (C) T and the number of events processed before the call (`acceptedAt`, `afterEvents`) | equal                      | equal                             | equal                                 |
+
+- A `LoadOrder` call is not a queued event: it acts on the line between two steps (its `accepted` event, a wake-up in the model lane, a start when the CNC is idle), after every event the run had processed at T. The external lane puts it before every model event of T, including those already processed live; at 1× the pacer's timer fires at the next event's time, so calls land there routinely.
+- **Changed from the plan:** the plan named the recorded shape "the simulation time and the device sequence of its acceptance". The device sequence (`AcceptedSeq`) counts one machine's OPC UA facts, so it can't place a call among the other machines' events or the model's silent events (timers, wake-ups), and a headless run has no device sequence. The recorded shape is the time and `afterEvents` (`Simulation.processed`, new in `sim-core`), as the plan's probe rule provides ("or the recorded shape changes before the issue goes on").
+- **Dispatches stay in the model lane**, as #235 left them: (C) needs no lane, and the start-time order of ADR-0030 (dispatches after `line.start`, before the injections) is unchanged, so every golden keeps its bytes.
+
+### Decisions
+
+- **Recorded:** every job the line accepts, in acceptance order, with `acceptedAt` and `afterEvents`; a job accepted while the run was still idle at its start is written as a plain start-time dispatch. **Not recorded:** a duplicate, a `command-conflict`, `epoch-mismatch`, `expired`, an invalid argument, `queue-full`, `not-attached` or `not-running`. None of them changes the line, writes an event or takes a draw (a refused or duplicate call no longer even sets the line's clock), so the replay without them is the live run; `expired` and the epoch could not be judged headless anyway. Recording refusals for the record was not chosen: the gateway and the MES already log them, and a replay has nothing to do with them.
+- **The document** is a `scenario.json` (the golden keys), served by `GET /api/v1/scenario/recorded` (control API 1.10) and read by `headless --timeline <file>`: `dispatches` with the two recorded keys, the run's accepted `injections` and `actions` (so a run with a timeline or console actions replays too), and an optional `end` (new in the scenario schema, inside `days`, as the CLI's `--end`) one millisecond after the simulation time, or after the latest accepted input not due yet (the live log then a prefix of the replay's).
+- **The replay** steps the headless run to each recorded point (exactly `afterEvents` events, clock at `acceptedAt`) and gives the job there; a point the run can't reach is refused ("the recording does not fit this run"), never replayed differently. Recorded dispatches come after every start-time one, in acceptance order (schema and `runHeadless` checks).
+
+### Consequences of the amendment
+
+- Good: exit criterion 3's dispatch half holds: a live orders run with MES-like `LoadOrder` calls mid-run (accepted, retried, refused, two in one millisecond, one after a step), through the real OPC UA method, replays headless to its event log byte for byte (`opcua/live-dispatch-replay.test.ts`, `live/recording.test.ts`).
+- Good: every golden keeps `events.sha256`, `summary.json`, `trace.json` and `line-oee.json` (`pnpm test:golden`); a header lists the recorded keys only for a recorded dispatch.
+- Bad: an injection or action posted mid-run for the simulation time itself is still the #235 limit: the recording gives it as a start-time entry in the external lane. Recording its point too (the same two keys) would close it; left out to keep #236 to dispatches.
+- Bad: the recording names the run's configuration by path (`SIM_CONFIG_DIR` relative to the repository root, `SIM_STOCK` by file name); a recording replayed against another configuration is refused or differs. `configSha256` is named in its description, not checked.
+- Bad: control API 1.10 adds a read route the console's `/sim/` proxy must allow (P9-10, #237).

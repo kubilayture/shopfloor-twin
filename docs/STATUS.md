@@ -7,6 +7,7 @@
 ## Done since last update
 
 - #231 done (branch `feat/231-mes-order-oee`, wave B; ADR-0036 amendment P9-04; no migration): MES order OEE per order and job, derived on read from the command state (queue with `notBefore`, lost facts), units and CNC pieces; `GET /api/v1/oee/orders/{id}` (route matrix 91) and push `oee:order:<id>`; golden reconciliation of `orders-01` (7 final, 1 open) and `quality-01` (6, 1) equal to `line-oee.json` in order, in bounded disorder and shuffled with 10 % duplicates, judged on partial data. Line OEE is #232.
+- #235 merged (PR #250, `c9f8537`): scenario timelines (`config/scenarios/*.yaml`, one schema with the golden `scenario.json`), headless and live playback, the live event log `SIM_EVENT_LOG`, the `external` lane in `sim-core`'s queue, control API 1.9, ADR-0037 amendment; goldens byte-identical.
 - #230 merged (PR #251, `182e297`): the order and line OEE ground truth, `line-oee.json` beside the four goldens and `lineOee` in the live ground truth (cut by `?asOf`), control API 1.8, ADR-0036 amendment.
 - #234 merged (PR #249, `86592fb`): simulator console actions (`GET /lots`, `/operators`, `/actions`, lot block and release, forced absence, tool breakage), control API 1.7, ADR-0037; goldens byte-identical.
 - #228 merged (PR #248, `9a072cd`): the heavy-suite lock at `~/.cache/shopfloor-twin/heavy.lock` for every heavy command, the smoke on ephemeral host ports, host and Docker disk checks, images and build cache cleaned per run, limits on the database, the broker and `migrate`, the Phase 9 rerun rows.
@@ -133,11 +134,11 @@
 
 ## In progress
 
-- #235 (P9-08) scenario timelines (branch `feat/235-scenario-timelines`, wave A; full gate before the pull request): `config/scenarios/*.yaml` with one schema in `plant-config` for timelines and the golden `scenario.json` (mapped onto `HeadlessOptions` unchanged), `pnpm sim:headless --timeline`, live playback (`SIM_TIMELINE`, `POST /api/v1/scenario` while idle, `GET /scenario`, `GET /scenarios`; control API 1.9 after #230's 1.8), `dispatch` headless only, infrastructure entries as pacer cues, the live event log `SIM_EVENT_LOG`, an `external` lane in `sim-core`'s event queue so a mid-run post for a later time equals headless; the example `monday-breakdown-and-recovery.yaml` played live at 1× to 60× gives the headless event log byte for byte; ADR-0037 amendment; goldens byte-identical (log entry in `docs/phases/phase-09-log.md`).
+- #236 (P9-09) dispatch recording and headless replay (branch `feat/236-dispatch-replay`, wave A; full gate before the pull request): the live run records every job it accepts with its point of the run (`acceptedAt`, `afterEvents`), `GET /api/v1/scenario/recorded` (control API 1.10) serves the run as a `scenario.json` (dispatches, injections, actions, an `end` just after the simulation time) and the headless run replays it to the live event log byte for byte, MES `LoadOrder` calls mid-run through the OPC UA method included; duplicate and refused calls are not recorded; probe Q2 changed the recorded shape from the device sequence to the event count; ADR-0037 amendment; goldens byte-identical.
 
 ## Next up
 
-- Wave A: #236 (P9-09, dispatch recording on #235's timelines), and the wave A checkpoint in the phase log. P9-10 (#237) adds `GET /api/v1/actions` and the scenario routes to the `/sim/` allowlist.
+- Wave A checkpoint in the phase log after #236. P9-10 (#237) adds `GET /api/v1/actions`, the scenario routes and `GET /api/v1/scenario/recorded` (1.10, #236) to the `/sim/` allowlist.
 
 ## Blockers and open questions for the owner
 

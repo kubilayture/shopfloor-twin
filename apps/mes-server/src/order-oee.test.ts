@@ -1,13 +1,17 @@
 /**
- * Order OEE (#231) against a real database and the real modules: `orders-01` replayed in order up
+ * Order OEE (#231) and line OEE (#232) against a real database and the real modules: `orders-01` replayed in order up
  * to Monday 08:00Z (the end of its fifth order, shift A), with the command state seeded from the
  * run header's dispatches. The orders completed by then are final and equal `line-oee.json`; the
  * one still running is provisional with its window open at the CNC's final-through; the ones
  * behind it wait. Then the API (`GET /oee/orders/{id}`: 200, 404, 503) and the push topic
- * `oee:order:<id>` (snapshot, a paced delta once the order moves, null for an unknown order).
+ * `oee:order:<id>` (snapshot, a paced delta once the order moves, null for an unknown order); the
+ * line OEE's hours before the cut final and equal `line-oee.json`, the hour at the cut provisional,
+ * `GET /oee/line`, `GET /oee/line/orders` and the `oee:line` topic.
  */
 import { EventEmitter } from 'node:events';
 import {
+  lineOeeSchema,
+  lineOrdersSchema,
   orderOeeSchema,
   serverMessageSchema,
   type ServerMessage,
@@ -21,6 +25,8 @@ import { MasterData } from './modules/master-data/index.ts';
 import type { OrderOeeView } from './modules/oee/index.ts';
 import {
   PushHub,
+  lineBucketDto,
+  orderLineDto,
   orderOeeDto,
   type ApiSources,
   type PushSocket,
@@ -29,6 +35,7 @@ import {
   Judge,
   goldenFacts,
   goldenRun,
+  lineShape,
   oeeShape,
   orderOeeStack,
   removeAll,
@@ -259,6 +266,192 @@ describe('order OEE on orders-01 up to Monday 08:00Z (#231)', () => {
       false,
     );
     await until(() => sent.some((m) => m.type === 'unsubscribed'));
+    hub.close();
+  });
+
+  it('makes the line hours before the cut final and equal to line-oee.json, later ones counted to the clock (#232)', async () => {
+    const hours = await stack.lineOee.buckets({
+      bucket: 'hour',
+      from: new Date(run.start),
+      to: new Date(CUT + 3_600_000),
+    });
+    expect(hours.map((b) => b.key)).toEqual([
+      '2026-10-12T03:00:00.000Z',
+      '2026-10-12T04:00:00.000Z',
+      '2026-10-12T05:00:00.000Z',
+      '2026-10-12T06:00:00.000Z',
+      '2026-10-12T07:00:00.000Z',
+      '2026-10-12T08:00:00.000Z',
+    ]);
+    // The earlier tests delivered a little past 08:00Z: the hours before it are final and equal
+    // the truth (with every fact before them in); a final hour is the truth's whatever the cut.
+    for (const bucket of hours.slice(0, 5)) {
+      expect([bucket.key, bucket.final, bucket.incidents]).toEqual([bucket.key, true, []]);
+    }
+    for (const bucket of hours.filter((b) => b.final)) {
+      const truth = run.line.hours[bucket.key];
+      if (!truth) throw new Error(bucket.key);
+      expect(lineShape(lineBucketDto(bucket))).toEqual(lineShape(truth));
+    }
+    // A bucket not final yet is counted up to the plant clock.
+    const clock = stack.equipment.watermarks()[0]?.watermark.getTime() ?? 0;
+    expect(clock).toBeGreaterThan(CUT);
+    for (const bucket of hours.filter((b) => !b.final)) {
+      expect(bucket.value.through).toBe(Math.min(clock, bucket.value.to));
+    }
+    // The shift bucket A is still provisional, its planned time counted to the clock.
+    const [shift] = await stack.lineOee.buckets({
+      bucket: 'shift',
+      from: new Date(run.start),
+      to: new Date(run.start + 1),
+    });
+    expect([shift?.key, shift?.final, shift?.value.through]).toEqual([
+      '2026-10-12/A',
+      false,
+      clock,
+    ]);
+    // The completed orders' own line OEE is final and equal; the running one is open.
+    const done = await stack.orderOee.order('PO-2610-001');
+    const truth = run.orders['PO-2610-001']?.line;
+    if (!done?.line || !truth) throw new Error('PO-2610-001');
+    expect([done.line.final, lineShape(orderLineDto(done.line))]).toEqual([true, lineShape(truth)]);
+    const running = await stack.orderOee.order('PO-2610-005');
+    expect([running?.line?.open, running?.line?.final]).toEqual([true, false]);
+    // The designed bottleneck: ASM-01 for both products.
+    const model = await stack.lineOee.model();
+    expect(Object.values(model.bottlenecks).map((b) => [b.product, b.equipment])).toEqual([
+      ['VB-100', ['asm-01']],
+      ['VB-200', ['asm-01']],
+    ]);
+  });
+
+  it('serves GET /oee/line and GET /oee/line/orders (200, 400; 503 without the module) (#232)', async () => {
+    const none = () => () => undefined;
+    const sources = {
+      masterData: new MasterData(stack.db),
+      equipment: {
+        currentStates: () => [],
+        currentState: () => undefined,
+        onChange: none,
+        watermark: () => undefined,
+        watermarks: () => [],
+      },
+      ingest: { onStored: none, telemetryMetrics: () => Promise.resolve([]) },
+      oee: { workCenters: () => Promise.resolve([]), onChange: none },
+      coding: {},
+    };
+    const from = encodeURIComponent(new Date(run.start).toISOString());
+    const to = encodeURIComponent(new Date(CUT).toISOString());
+    for (const withModule of [true, false]) {
+      const http = await buildMesHttp({ ready: () => Promise.resolve(true) });
+      await http.realtime.attach({
+        ...sources,
+        ...(withModule ? { lineOee: stack.lineOee, orderOee: stack.orderOee } : {}),
+      } as unknown as ApiSources);
+      const get = (url: string) =>
+        http.app.inject({ method: 'GET', url, headers: { host: 'localhost:4700' } });
+      const hours = await get(`/api/v1/oee/line?bucket=hour&from=${from}&to=${to}`);
+      const orders = await get(`/api/v1/oee/line/orders?from=${from}&to=${to}`);
+      if (withModule) {
+        expect(hours.statusCode, hours.body).toBe(200);
+        const body = lineOeeSchema.parse(hours.json());
+        expect(body.productionMode).toBe('orders');
+        expect(body.bottlenecks.map((b) => [b.product, b.operation, b.effectiveCycleMs])).toEqual([
+          ['VB-100', 'OP30', '150000/1'],
+          ['VB-200', 'OP30', '210000/1'],
+        ]);
+        expect(body.buckets.map((b) => b.key)).toHaveLength(5);
+        expect(body.buckets[0]).toEqual(
+          lineBucketDto(
+            (
+              await stack.lineOee.buckets({
+                bucket: 'hour',
+                from: new Date(run.start),
+                to: new Date(run.start + 1),
+              })
+            )[0] ?? (undefined as never),
+          ),
+        );
+        expect(orders.statusCode, orders.body).toBe(200);
+        const list = lineOrdersSchema.parse(orders.json());
+        expect(list.orders.map((o) => o.orderId)).toEqual([
+          'PO-2610-001',
+          'PO-2610-002',
+          'PO-2610-004',
+          'PO-2610-003',
+          'PO-2610-005',
+          'PO-2610-006',
+        ]);
+        expect(list.orders[0]?.line.final).toBe(true);
+        expect((await get(`/api/v1/oee/line?bucket=day&from=${from}&to=${to}`)).statusCode).toBe(
+          400,
+        );
+        expect((await get(`/api/v1/oee/line?bucket=hour&from=${to}&to=${from}`)).statusCode).toBe(
+          400,
+        );
+      } else {
+        expect([hours.statusCode, orders.statusCode]).toEqual([503, 503]);
+      }
+      await http.app.close();
+    }
+  });
+
+  it('pushes oee:line: a snapshot with the bottleneck, a paced delta once the line moves (#232)', async () => {
+    const none = () => () => undefined;
+    const sent: ServerMessage[] = [];
+    const emitter = new EventEmitter();
+    const socket = Object.assign(emitter, {
+      bufferedAmount: 0,
+      send: (data: string) => {
+        sent.push(serverMessageSchema.parse(JSON.parse(data)));
+      },
+      ping: () => undefined,
+      close: () => undefined,
+      terminate: () => undefined,
+    }) as unknown as PushSocket;
+    const subscribe = (topic: string) => {
+      emitter.emit('message', Buffer.from(JSON.stringify({ type: 'subscribe', topic })), false);
+    };
+    const until = async (check: () => boolean) => {
+      for (let i = 0; i < 400 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
+      expect(check()).toBe(true);
+    };
+    const base = {
+      equipment: {
+        currentStates: () => [],
+        watermark: () => undefined,
+        watermarks: () => [],
+        onChange: none,
+      },
+      ingest: { onStored: none, telemetryMetrics: () => Promise.resolve([]) },
+      catalog: new Set<string>(),
+    };
+    const bare = new PushHub({ heartbeatMs: 3_600_000, clockMs: 3_600_000 });
+    bare.attach(base);
+    bare.connect(socket);
+    subscribe('oee:line');
+    await until(() => sent.some((m) => m.type === 'error'));
+    expect(sent.find((m) => m.type === 'error')).toMatchObject({ code: 'unknown-topic' });
+    bare.close();
+    sent.length = 0;
+
+    const hub = new PushHub({ heartbeatMs: 3_600_000, clockMs: 3_600_000, oeeMs: 20 });
+    hub.attach({ ...base, lineOee: stack.lineOee });
+    hub.connect(socket);
+    subscribe('oee:line');
+    await until(() => sent.some((m) => m.type === 'snapshot'));
+    type LineMessage = Extract<ServerMessage, { bottlenecks: unknown }>;
+    const isLine = (m: ServerMessage): m is LineMessage => 'bottlenecks' in m;
+    const snapshot = sent.filter(isLine).find((m) => m.type === 'snapshot');
+    const current = await stack.lineOee.current();
+    expect(snapshot?.hour).toEqual(current.hour && lineBucketDto(current.hour));
+    expect(snapshot?.shift?.key).toBe('2026-10-12/A');
+    expect(snapshot?.bottlenecks.map((b) => b.equipment)).toEqual([['asm-01'], ['asm-01']]);
+    await stack.send(rest.slice(200, 400));
+    await stack.tick();
+    await until(() => sent.some((m) => m.type === 'oee-line'));
+    const delta = sent.filter(isLine).find((m) => m.type === 'oee-line');
+    expect(delta?.shift).not.toEqual(snapshot?.shift);
     hub.close();
   });
 });

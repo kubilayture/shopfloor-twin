@@ -24,6 +24,8 @@
  * - `cycle` notices (a stored cycle, with product and result) and `epoch` notices (the first fact
  *   of a device stream's new epoch, with its time).
  * - `Ingest.cycleHourly(from, to, { equipment?, epoch? })`: rows of `ingest.cycle_hourly`.
+ * - `Ingest.cycleResults(equipment, from, to)`: one equipment's cycles (time, product, result) in a
+ *   range, from the stored facts, every epoch (#232, line OEE's good packed).
  * - `Ingest.cyclesRefreshed(hour)` / `cycleAggregate()`: whether an hour of `cycle_hourly` is
  *   materialised as it is now; an hour is final for OEE when it is and `Equipment.stateHourly`
  *   reports it `final`.

@@ -1,0 +1,470 @@
+/**
+ * Line throughput OEE in the MES (#232, P9-05; ADR-0036 and its amendments): per UTC hour and per
+ * shift bucket for Line A1, derived on read with `oee-core`'s `lineOee` and `linePlannedBusyMs`,
+ * the functions the simulator's ground truth (`line-oee.json`) uses, under the same conventions
+ * (`line-inputs.ts`):
+ *
+ * - good packed at the last operation's machines (PCK-01, from its stored cycle facts) × the
+ *   designed bottleneck's effective cycle per product (`deriveBottlenecks`) ÷ planned busy time;
+ * - planned busy time: the shift buckets minus the calendar's breaks and the bottleneck machines'
+ *   Maintenance intervals (their stored pieces); in orders mode only where an order is in progress,
+ *   from the earliest head time of its jobs (`OrderOee.lineOrders`, the order OEE's queues) to its
+ *   ADR-0031 completion, or the cut-off while open;
+ * - the cut-off is the plant clock (the newest epoch's watermark, as the truth cuts at its snapshot),
+ *   exclusive: a bucket reaching past it counts planned time and packs before it only (`through`);
+ *   with every fact in, a bucket's value is the truth's whether or not it can be final yet;
+ * - the line's final-through is the earliest final-through (ADR-0018) of the machines that
+ *   contribute (schedule mode: the packing and bottleneck machines; orders mode: every machine of
+ *   the line, whose facts decide completions, a CNC only as far as a job of it can still bring a
+ *   fact: `LineOrders.cncThrough`);
+ * - `aboveOne`, not capped; `null` when the planned busy time is 0.
+ *
+ * **Finality:** a bucket is final when every input is final through its end: every contributing
+ * machine final-through at or past it, the bottleneck's pieces covering it with none provisional,
+ * and in orders mode the execution module having processed every machine through it (completions,
+ * read after that snapshot), no `unknown-job` incident open on a CNC, and no job whose head time is
+ * still unknown able to start in-progress time inside it (an unknown head time from its
+ * `notBefore`; a waiting job only once its predecessor's order is complete). A lost head time never
+ * resolves, so the buckets it can touch are never final. Written-off gaps on the contributing
+ * machines (each in its own device epoch) overlapping the bucket are listed (`incidents`): a final
+ * bucket over them carries `mayRevise` and the hours' `revision`, as the OEE buckets do.
+ *
+ * A final bucket without incidents never changes, so it is kept in memory (derive and cache; no
+ * table, ADR-0022); a read computes only the buckets not kept.
+ */
+import type { Millis, Range } from '@shopfloor/oee-core';
+import {
+  HOUR,
+  NO_SHIFT,
+  hourEnd,
+  hourStart,
+  shiftBuckets,
+  shiftSegments,
+  type ShiftBucket,
+  type ShiftPattern,
+} from '@shopfloor/shift-calendar';
+import type { Equipment, StoredInterval } from '../equipment/index.ts';
+import type { Execution } from '../execution/index.ts';
+import type { DeviceProgress, Ingest, IngestNotice } from '../ingest/index.ts';
+import {
+  calendar,
+  gapTouches,
+  lineValue,
+  maintenance,
+  type LineModel,
+  type LineValue,
+  type Pack,
+} from './line-inputs.ts';
+import {
+  piecesFinal,
+  processedThrough,
+  type LineOrders,
+  type OrderGapIncident,
+  type OrderLineView,
+  type OrderOee,
+} from './order-oee.ts';
+
+export type ProductionMode = 'schedule' | 'orders';
+export type LineBucketKind = 'hour' | 'shift';
+
+/** What line OEE reads from the other modules (their `index.ts` interfaces). */
+export interface LineOeeSources {
+  readonly orderOee: Pick<OrderOee, 'lineOrders' | 'lineModel' | 'order' | 'onChange'>;
+  readonly ingest: Pick<Ingest, 'deviceProgress' | 'settled' | 'cycleResults' | 'onStored'>;
+  readonly equipment: Pick<Equipment, 'intervals' | 'revision' | 'onPiecesChanged' | 'watermarks'>;
+  readonly execution: Pick<Execution, 'processedThrough'>;
+}
+
+export interface LineOeeOptions extends LineOeeSources {
+  readonly shiftPattern: ShiftPattern;
+  /**
+   * The plant's production mode (`MES_PRODUCTION_MODE`, the simulator's `SIM_PRODUCTION`): in
+   * `orders` mode only in-progress time is planned (the line's counterpart of Idle `NO-ORDER`).
+   */
+  readonly productionMode: ProductionMode;
+}
+
+/** Line OEE of one hour or shift bucket (`GET /oee/line`, `oee:line`). */
+export interface LineBucket {
+  readonly bucket: LineBucketKind;
+  /** The hour start (ISO 8601) or the shift key. */
+  readonly key: string;
+  readonly value: LineValue;
+  /** Every input is final through the bucket's end (module comment). */
+  readonly final: boolean;
+  /** Written-off gaps on the contributing machines overlapping the bucket. */
+  readonly incidents: readonly OrderGapIncident[];
+  /** The bucket carries incidents: even final, it may still be revised. */
+  readonly mayRevise: boolean;
+  /** The highest revision of the incidents' machines' hours over the bucket; 0 without incidents. */
+  readonly revision: number;
+}
+
+/** An order's line OEE over its in-progress time (`GET /oee/line/orders`). */
+export interface LineOrderValue {
+  readonly orderId: string;
+  readonly product: string;
+  readonly status: string;
+  readonly line: OrderLineView;
+  /** The order's OEE carries incidents (written-off gaps under it). */
+  readonly incidents: readonly OrderGapIncident[];
+  readonly mayRevise: boolean;
+  readonly revision: number;
+}
+
+/** What may have moved a line bucket: a machine's hours, or (`orders`) the orders' state. */
+export type LineChange =
+  | { readonly equipment: string; readonly from: Date; readonly to: Date }
+  | { readonly orders: true };
+
+const cacheKey = (kind: LineBucketKind, key: string): string => `${kind}\u0000${key}`;
+
+export class LineOee {
+  readonly #options: LineOeeOptions;
+  readonly #listeners = new Set<(change: LineChange) => void>();
+  /** Final buckets without incidents never change (ADR-0018): kept so a read skips them. */
+  readonly #finals = new Map<string, LineBucket>();
+  #model: LineModel | undefined;
+  #detach: (() => void)[] = [];
+
+  constructor(options: LineOeeOptions) {
+    this.#options = options;
+  }
+
+  get productionMode(): ProductionMode {
+    return this.#options.productionMode;
+  }
+
+  /** The line's machines and its designed bottleneck per product. */
+  async model(): Promise<LineModel> {
+    this.#model ??= await this.#options.orderOee.lineModel();
+    return this.#model;
+  }
+
+  /** The machines whose facts a bucket reads (module comment). */
+  #contributing(model: LineModel): string[] {
+    return this.#options.productionMode === 'orders'
+      ? [...model.machines]
+      : [...new Set([...model.packing, ...model.bottleneckMachines])].sort();
+  }
+
+  /** Follows the changes line OEE is computed from (for push), filtered to what it reads. */
+  async start(): Promise<void> {
+    const model = await this.model();
+    const contributing = new Set(this.#contributing(model));
+    const packing = new Set(model.packing);
+    const { equipment, ingest, orderOee } = this.#options;
+    this.#detach.push(
+      equipment.onPiecesChanged((change) => {
+        if (contributing.has(change.equipment)) {
+          this.#emit({ equipment: change.equipment, from: change.from, to: change.to });
+        }
+      }),
+      ingest.onStored((notice: IngestNotice) => {
+        if (notice.type !== 'cycle' || !packing.has(notice.cycle.equipment)) return;
+        const hour = hourStart(notice.cycle.sourceTime.getTime());
+        this.#emit({
+          equipment: notice.cycle.equipment,
+          from: new Date(hour),
+          to: new Date(hour + HOUR),
+        });
+      }),
+    );
+    if (this.#options.productionMode === 'orders') {
+      this.#detach.push(
+        orderOee.onChange(() => {
+          this.#emit({ orders: true });
+        }),
+      );
+    }
+  }
+
+  stop(): void {
+    for (const detach of this.#detach.splice(0)) detach();
+  }
+
+  /**
+   * Listens for changes that may move a line bucket (synchronously, inside the modules' notices:
+   * the listener must only record what changed). Returns an unsubscribe.
+   */
+  onChange(listener: (change: LineChange) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #emit(change: LineChange): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener(change);
+      } catch {
+        // A listener's failure must not reach the notifying module.
+      }
+    }
+  }
+
+  /**
+   * Line OEE buckets over [from, to): every UTC hour overlapping it, or every shift bucket
+   * overlapping it (whole shifts, no `no-shift` stretch: it has no planned time), by start.
+   */
+  async buckets(query: {
+    readonly bucket: LineBucketKind;
+    readonly from: Date;
+    readonly to: Date;
+  }): Promise<LineBucket[]> {
+    const from = query.from.getTime();
+    const to = query.to.getTime();
+    const defs: ShiftBucket[] =
+      query.bucket === 'hour'
+        ? hours(hourStart(from), hourEnd(to))
+        : shiftBuckets(this.#options.shiftPattern, from, to).filter((b) => b.key !== NO_SHIFT);
+    return this.#compute(query.bucket, defs);
+  }
+
+  /** The hour and the shift bucket the plant clock (the newest epoch's watermark) is in. */
+  async current(): Promise<{ hour: LineBucket | null; shift: LineBucket | null }> {
+    const clock = this.#options.equipment.watermarks()[0];
+    if (!clock) return { hour: null, shift: null };
+    // The instant just before the watermark: at 07:00:00.000 the hour in progress is 06:00.
+    const at = clock.watermark.getTime() - 1;
+    const hour = {
+      key: new Date(hourStart(at)).toISOString(),
+      start: hourStart(at),
+      end: hourStart(at) + HOUR,
+    };
+    const segment = shiftSegments(this.#options.shiftPattern, at, at + 1)[0];
+    const shift =
+      segment === undefined || segment.key === NO_SHIFT
+        ? undefined
+        : shiftBuckets(this.#options.shiftPattern, at, at + 1).find((b) => b.key === segment.key);
+    const [hourBucket] = await this.#compute('hour', [hour]);
+    const [shiftBucket] = shift ? await this.#compute('shift', [shift]) : [];
+    return { hour: hourBucket ?? null, shift: shiftBucket ?? null };
+  }
+
+  /**
+   * The line OEE of every order whose in-progress time overlaps [from, to) (orders mode; empty in
+   * schedule mode), from its order OEE view (`OrderOee.order(id).line`), by in-progress start.
+   */
+  async orders(query: { readonly from: Date; readonly to: Date }): Promise<LineOrderValue[]> {
+    if (this.#options.productionMode !== 'orders') return [];
+    const from = query.from.getTime();
+    const to = query.to.getTime();
+    const { orders } = await this.#options.orderOee.lineOrders();
+    const result: LineOrderValue[] = [];
+    for (const entry of orders) {
+      if (entry.from === null || entry.from >= to) continue;
+      if (entry.completedAt !== null && entry.completedAt < from) continue;
+      const view = await this.#options.orderOee.order(entry.orderId);
+      if (!view?.line) continue;
+      result.push({
+        orderId: view.orderId,
+        product: view.product,
+        status: view.status,
+        line: view.line,
+        incidents: view.incidents,
+        mayRevise: view.mayRevise,
+        revision: view.revision,
+      });
+    }
+    return result.sort(
+      (a, b) => a.line.value.from - b.line.value.from || (a.orderId < b.orderId ? -1 : 1),
+    );
+  }
+
+  async #compute(kind: LineBucketKind, defs: readonly ShiftBucket[]): Promise<LineBucket[]> {
+    const done = new Map<string, LineBucket>();
+    const todo = defs.filter((def) => {
+      const cached = this.#finals.get(cacheKey(kind, def.key));
+      if (cached) done.set(def.key, cached);
+      return !cached;
+    });
+    if (todo.length > 0) {
+      for (const bucket of await this.#derive(kind, todo)) done.set(bucket.key, bucket);
+    }
+    return defs.flatMap((def) => {
+      const bucket = done.get(def.key);
+      return bucket ? [bucket] : [];
+    });
+  }
+
+  async #derive(kind: LineBucketKind, defs: readonly ShiftBucket[]): Promise<LineBucket[]> {
+    const { ingest, equipment, execution, orderOee, shiftPattern } = this.#options;
+    const orders = this.#options.productionMode === 'orders';
+    const model = await this.model();
+    const span: Range = {
+      from: Math.min(...defs.map((d) => d.start)),
+      to: Math.max(...defs.map((d) => d.end)),
+    };
+    // Execution's progress first: a completion before it is already recorded (module comment).
+    const processed = execution.processedThrough();
+    const contributing = this.#contributing(model);
+    const progress = new Map<string, DeviceProgress>();
+    for (const machine of contributing) progress.set(machine, await ingest.deviceProgress(machine));
+    // Orders mode: the orders' in-progress time, and how far each CNC's facts are known.
+    let lineOrders: LineOrders | undefined;
+    if (orders) lineOrders = await orderOee.lineOrders();
+    // The plant clock cuts what is counted; the line's final-through, the earliest of the
+    // contributing machines' (a CNC's as far as its jobs can still bring a fact), decides finality.
+    const clock = equipment.watermarks()[0]?.watermark.getTime() ?? Number.NEGATIVE_INFINITY;
+    const finalThrough = (machine: string): Millis =>
+      progress.get(machine)?.settledTime?.getTime() ?? Number.NEGATIVE_INFINITY;
+    let cut = contributing.length === 0 ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+    for (const machine of contributing) {
+      const through =
+        lineOrders && model.first.includes(machine)
+          ? (lineOrders.cncThrough.get(machine) ?? Number.POSITIVE_INFINITY)
+          : finalThrough(machine);
+      cut = Math.min(cut, through);
+    }
+    // Good packed before the plant clock.
+    const packs: Pack[] = [];
+    const readTo = Math.min(span.to, clock);
+    if (readTo > span.from) {
+      for (const machine of model.packing) {
+        for (const cycle of await ingest.cycleResults(
+          machine,
+          new Date(span.from),
+          new Date(readTo),
+        )) {
+          if (cycle.result === 'good')
+            packs.push({ at: cycle.at.getTime(), product: cycle.product });
+        }
+      }
+    }
+    // The calendar and the planned stops.
+    const { scheduled, breaks } = calendar(shiftPattern, span);
+    const stops: Range[] = [...breaks];
+    const bottleneckPieces: StoredInterval[][] = [];
+    for (const machine of model.bottleneckMachines) {
+      const pieces = await equipment.intervals(machine, new Date(span.from), new Date(span.to));
+      bottleneckPieces.push(pieces);
+      stops.push(...maintenance(pieces));
+    }
+    let inProgress: Range[] | undefined;
+    if (lineOrders) {
+      inProgress = lineOrders.orders.flatMap((o) =>
+        o.from === null ? [] : [{ from: o.from, to: o.completedAt ?? Math.max(o.from, clock) }],
+      );
+    }
+    // Written-off gaps on the contributing machines, each in its own device epoch.
+    const gaps: (OrderGapIncident & { after: Date | null; before: Date | null })[] = [];
+    for (const machine of contributing) {
+      const epoch = progress.get(machine)?.epoch;
+      if (epoch === null || epoch === undefined) continue;
+      for (const gap of (await ingest.settled(machine, epoch)).incidents) {
+        gaps.push({
+          machine,
+          epoch,
+          id: gap.id,
+          seqFrom: gap.seqFrom,
+          seqTo: gap.seqTo,
+          after: gap.after,
+          before: gap.before,
+        });
+      }
+    }
+    const result: LineBucket[] = [];
+    for (const def of defs) {
+      const bucket = { from: def.start, to: def.end };
+      const value = lineValue({
+        bucket,
+        cut: clock,
+        scheduled,
+        plannedStops: stops,
+        inProgress,
+        packs,
+        effectiveCycleMs: model.effectiveCycleMs,
+      });
+      const touching = gaps.filter((gap) => gapTouches(gap, bucket.from, bucket.to));
+      const incidents = touching.map(({ machine, epoch, id, seqFrom, seqTo }) => ({
+        machine,
+        epoch,
+        id,
+        seqFrom,
+        seqTo,
+      }));
+      const final =
+        cut >= bucket.to &&
+        bottleneckPieces.every((pieces) => piecesFinal(pieces, bucket)) &&
+        (!orders ||
+          (lineOrders !== undefined &&
+            ordersFinal(bucket, lineOrders, model, (machine) =>
+              // Through the bucket's end, or all of a quiet CNC's facts (up to its final-through).
+              processedThrough(
+                processed.get(machine),
+                { epoch: progress.get(machine)?.epoch ?? Number.NaN },
+                Math.min(bucket.to, finalThrough(machine)),
+              ),
+            )));
+      let revision = 0;
+      for (const { machine, epoch } of uniqueMachines(incidents)) {
+        revision = Math.max(
+          revision,
+          await equipment.revision(machine, epoch, new Date(bucket.from), new Date(bucket.to)),
+        );
+      }
+      const line: LineBucket = {
+        bucket: kind,
+        key: def.key,
+        value,
+        final,
+        incidents,
+        mayRevise: incidents.length > 0,
+        revision,
+      };
+      if (final && incidents.length === 0) this.#finals.set(cacheKey(kind, def.key), line);
+      result.push(line);
+    }
+    return result;
+  }
+}
+
+/** Whole UTC hours [from, to). */
+function hours(from: Millis, to: Millis): ShiftBucket[] {
+  const result: ShiftBucket[] = [];
+  for (let hour = from; hour < to; hour += HOUR) {
+    result.push({ key: new Date(hour).toISOString(), start: hour, end: hour + HOUR });
+  }
+  return result;
+}
+
+function uniqueMachines(
+  incidents: readonly OrderGapIncident[],
+): { machine: string; epoch: number }[] {
+  const seen = new Map<string, { machine: string; epoch: number }>();
+  for (const { machine, epoch } of incidents)
+    seen.set(`${machine}\u0000${String(epoch)}`, { machine, epoch });
+  return [...seen.values()];
+}
+
+/**
+ * The orders-mode part of a bucket's finality (module comment): every line machine processed by
+ * execution through the bucket's end, no `unknown-job` incident open on a CNC, and no job without
+ * a known head time able to start in-progress time inside the bucket.
+ */
+export function ordersFinal(
+  bucket: Range,
+  lineOrders: LineOrders,
+  model: Pick<LineModel, 'machines' | 'first'>,
+  processed: (machine: string) => boolean,
+): boolean {
+  if (!model.machines.every(processed)) return false;
+  if (model.first.some((cnc) => lineOrders.unknownJob.has(cnc))) return false;
+  const completion = new Map(lineOrders.orders.map((o) => [o.orderId, o.completedAt]));
+  for (const order of lineOrders.orders) {
+    // An order complete before the bucket can't reach into it, whatever its start.
+    if (order.completedAt !== null && order.completedAt <= bucket.from) continue;
+    for (const job of order.unknown) {
+      let earliest = job.notBefore;
+      if (job.reason === 'waiting') {
+        // While its predecessor's order is open, that order is in progress up to the cut-off and
+        // covers this job's time: only a complete predecessor order leaves a hole it may fill.
+        const before = job.after === null ? null : (completion.get(job.after) ?? null);
+        if (before === null) continue;
+        earliest = Math.max(earliest, before);
+      }
+      if (bucket.to > earliest) return false;
+    }
+  }
+  return true;
+}

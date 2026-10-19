@@ -42,6 +42,11 @@ export const MES_API_LIMITS = {
   downtimeRecords: 2_000,
   /** OEE topics (`oee:<id>`) one WebSocket client may follow. */
   oeeTopics: 16,
+  /**
+   * Order OEE topics (`oee:order:<id>`, #231) one client may follow: a budget of their own, so an
+   * order list can't starve the dashboard's OEE topics on a shared socket (#232).
+   */
+  oeeOrderTopics: 16,
   /** Writes (#121, ADR-0023): most bytes in a request body. */
   writeBodyBytes: 16 * 1024,
   /** Segments in one coding write. */
@@ -527,6 +532,55 @@ export const HEAD_UNKNOWN_REASONS = [
   'previous-completed-missing',
 ] as const;
 
+/** A sequence-gap incident (a written-off gap, ADR-0018) under a derived value. */
+const gapIncidentSchema = z.object({
+  machine: z.string(),
+  epoch: int.describe('The machine’s own device epoch'),
+  id: int,
+  seqFrom: int,
+  seqTo: int,
+});
+
+const mayReviseSchema = z
+  .boolean()
+  .describe('Carries incidents: even a final value may still be revised (#232)');
+
+const revisionSchema = int.describe(
+  'How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)',
+);
+
+/** One line OEE value (`lineOee` with its inputs), as `line-oee.json` has it, plus `through`. */
+const lineValueShape = {
+  from: time,
+  to: time,
+  through: time.describe(
+    'Planned time and packs are counted before this instant: the plant clock (exclusive) or `to`',
+  ),
+  plannedBusyMs: int.describe(
+    'Scheduled time minus breaks and the bottleneck’s Maintenance; in orders mode only while an order is in progress',
+  ),
+  good: z.record(z.string(), int).describe('Units packed good at the last operation, per product'),
+  idealMs: z.string().describe('Σ good × the bottleneck’s effective cycle, ms, exact `num/den`'),
+  oee: ratioSchema.nullable().describe('idealMs / plannedBusyMs, not capped; null when 0 planned'),
+  aboveOne: z
+    .boolean()
+    .describe('Above 1: an operator faster than ideal, or WIP drained from the buffers'),
+};
+
+export const orderLineSchema = z
+  .object({
+    ...lineValueShape,
+    open: z
+      .boolean()
+      .describe('The order is not complete: its in-progress time runs to the cut-off'),
+    final: z
+      .boolean()
+      .describe('The order OEE final, the order complete and the bottleneck’s pieces final'),
+  })
+  .describe(
+    'An order’s line OEE: from the earliest head time of its jobs to its completion, its own good units; not additive across orders',
+  );
+
 export const jobWindowSchema = z
   .object({
     from: time.describe('The head time, or the `started` fact when the head time is unknown'),
@@ -598,12 +652,92 @@ export const orderOeeSchema = z
         "Each CNC queue's cut-off (its final-through, exclusive), where an open window ends",
       ),
     incidents: z
-      .array(z.object({ machine: z.string(), epoch: int, id: int, seqFrom: int, seqTo: int }))
+      .array(gapIncidentSchema)
       .describe(
-        'Sequence-gap incidents (written-off gaps, ADR-0018) overlapping the order’s windows or its units’ span on the machines they visited: a final value over them may still be revised',
+        'Sequence-gap incidents (written-off gaps, ADR-0018) overlapping the order’s windows or its units’ span on the machines they visited (each in its own device epoch): a final value over them may still be revised',
+      ),
+    mayRevise: mayReviseSchema,
+    revision: revisionSchema,
+    line: orderLineSchema
+      .nullable()
+      .describe(
+        'The order’s line throughput OEE over its in-progress time (#232), not additive across orders; null before a job is head',
       ),
   })
   .describe('Order OEE over job windows, with the job breakdown and first-pass yield (#231)');
+
+// ---- Line throughput OEE (#232, ADR-0036 and its P9-05 amendment) ----
+
+export const PRODUCTION_MODES = ['schedule', 'orders'] as const;
+
+export const bottleneckSchema = z
+  .object({
+    product: z.string(),
+    operation: z.string().describe('The operation with the largest effective cycle'),
+    equipment: z.array(z.string()).describe('Its machines'),
+    idealCycleMs: int.describe('Its ideal cycle (products.yaml)'),
+    effectiveCycleMs: z
+      .string()
+      .describe(
+        'Ideal cycle ÷ machines on the operation, exact `num/den` (ms of line time per unit)',
+      ),
+  })
+  .describe('The designed bottleneck of a product (`deriveBottlenecks`, ADR-0036)');
+
+export const lineBucketSchema = z
+  .object({
+    bucket: z.enum(['hour', 'shift']),
+    key: z.string().describe('The hour start (ISO 8601) or the shift key (`2026-10-12/A`)'),
+    ...lineValueShape,
+    final: z
+      .boolean()
+      .describe(
+        'Every input is final through the bucket’s end: every contributing machine final-through, the bottleneck’s pieces final, and in orders mode every machine processed by execution and no unknown head time able to start in-progress time inside it',
+      ),
+    incidents: z
+      .array(gapIncidentSchema)
+      .describe('Written-off gaps on the contributing machines overlapping the bucket'),
+    mayRevise: mayReviseSchema,
+    revision: revisionSchema,
+  })
+  .describe('Line throughput OEE of one hour or shift bucket (#232)');
+
+export const lineOeeSchema = z
+  .object({
+    bucket: z.enum(['hour', 'shift']),
+    from: time,
+    to: time,
+    productionMode: z
+      .enum(PRODUCTION_MODES)
+      .describe('In orders mode only in-progress time is planned'),
+    bottlenecks: z.array(bottleneckSchema).describe('The designed bottleneck per product'),
+    buckets: z.array(lineBucketSchema).describe('Every hour, or every shift bucket, by start'),
+  })
+  .describe('Line throughput OEE per hour or shift bucket (#232, ADR-0036)');
+
+export const lineOrdersSchema = z
+  .object({
+    from: time,
+    to: time,
+    productionMode: z.enum(PRODUCTION_MODES),
+    bottlenecks: z.array(bottleneckSchema),
+    orders: z
+      .array(
+        z.object({
+          orderId: z.string(),
+          product: z.string(),
+          status: z.string(),
+          line: orderLineSchema,
+          incidents: z.array(gapIncidentSchema),
+          mayRevise: mayReviseSchema,
+          revision: revisionSchema,
+        }),
+      )
+      .describe(
+        'Every order whose in-progress time overlaps the range (orders mode; empty in schedule mode), by in-progress start; not additive: orders overlap',
+      ),
+  })
+  .describe('Line throughput OEE per order (#232, ADR-0036)');
 
 export const reasonCodesSchema = z.object({
   reasons: z
@@ -1510,6 +1644,11 @@ export type ShiftOee = z.infer<typeof shiftOeeSchema>;
 export type JobWindowDto = z.infer<typeof jobWindowSchema>;
 export type OrderJobOeeDto = z.infer<typeof orderJobOeeSchema>;
 export type OrderOeeDto = z.infer<typeof orderOeeSchema>;
+export type OrderLineDto = z.infer<typeof orderLineSchema>;
+export type BottleneckDto = z.infer<typeof bottleneckSchema>;
+export type LineBucketDto = z.infer<typeof lineBucketSchema>;
+export type LineOeeDto = z.infer<typeof lineOeeSchema>;
+export type LineOrdersDto = z.infer<typeof lineOrdersSchema>;
 export type ReasonCodes = z.infer<typeof reasonCodesSchema>;
 export type DowntimeRecordDto = z.infer<typeof downtimeRecordSchema>;
 export type DowntimeList = z.infer<typeof downtimeListSchema>;
@@ -1532,8 +1671,10 @@ const telemetryTopic = z
   .describe('telemetry:<equipment>');
 const oeeTopic = z
   .string()
-  .regex(/^oee:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)
+  .regex(/^oee:(?!line$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)
   .describe('oee:<equipment or work center>');
+/** Line throughput OEE (#232): the current hour and shift bucket. */
+export const LINE_OEE_TOPIC = 'oee:line';
 /** An order's OEE (#231): `oee:order:<order number>`. */
 const oeeOrderTopic = z
   .string()
@@ -1553,6 +1694,7 @@ const topic = z.union([
   telemetryTopic,
   oeeTopic,
   oeeOrderTopic,
+  z.literal(LINE_OEE_TOPIC),
   alarmKpiTopic,
   terminalTopicSchema,
 ]);
@@ -1620,6 +1762,18 @@ export const serverMessageSchema = z
     }),
     z.object({
       type: z.literal('snapshot'),
+      topic: z.literal(LINE_OEE_TOPIC),
+      productionMode: z.enum(PRODUCTION_MODES),
+      bottlenecks: z.array(bottleneckSchema),
+      hour: lineBucketSchema
+        .nullable()
+        .describe('The line OEE of the hour the plant clock is in; null without a clock'),
+      shift: lineBucketSchema
+        .nullable()
+        .describe('The line OEE of the shift bucket the plant clock is in; null outside a shift'),
+    }),
+    z.object({
+      type: z.literal('snapshot'),
       topic: alarmKpiTopic,
       hour: alarmKpiBucketSchema
         .nullable()
@@ -1640,6 +1794,14 @@ export const serverMessageSchema = z
       type: z.literal('oee-order'),
       topic: oeeOrderTopic,
       order: orderOeeSchema.nullable(),
+    }),
+    z.object({
+      type: z.literal('oee-line'),
+      topic: z.literal(LINE_OEE_TOPIC),
+      productionMode: z.enum(PRODUCTION_MODES),
+      bottlenecks: z.array(bottleneckSchema),
+      hour: lineBucketSchema.nullable(),
+      shift: lineBucketSchema.nullable(),
     }),
     z.object({
       type: z.literal('downtime'),

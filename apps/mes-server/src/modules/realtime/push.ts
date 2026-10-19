@@ -7,11 +7,15 @@ import type { ExecutionChange } from '../execution/index.ts';
 import type { IngestNotice, TelemetryMetric } from '../ingest/index.ts';
 import type {
   DowntimeChange,
+  LineBucket,
+  LineChange,
+  LineModel,
   OeeBucket,
   OeeChange,
   OeeScope,
   OrderOeeChange,
   OrderOeeView,
+  ProductionMode,
 } from '../oee/index.ts';
 import { alarmKpiDto, floodEpisodeDto, occurrenceDto, pointDto } from './alarm-dto.ts';
 import type { OrderChange } from '../orders/index.ts';
@@ -23,6 +27,7 @@ import { holdDto } from './hold-routes.ts';
 import { characteristicDto, signalDto } from './quality-dto.ts';
 import { bucketDto, recordDto } from './oee-dto.ts';
 import { orderOeeDto } from './order-oee-dto.ts';
+import { bottleneckDtos, lineBucketDto } from './line-oee-dto.ts';
 import { handoverNoteDto, shiftRecordDto } from './shift-dto.ts';
 import {
   ALARMS_TOPIC,
@@ -76,6 +81,17 @@ export interface PushSources {
   readonly orderOee?: {
     order(orderId: string): Promise<OrderOeeView | undefined>;
     onChange(listener: (change: OrderOeeChange) => void): () => void;
+  };
+  /**
+   * Line OEE (#232): `oee:line`, the hour and shift bucket the plant clock is in, paced like the
+   * buckets; a change names a machine's hours (only the topic's own hours turn it dirty) or the
+   * orders (orders mode).
+   */
+  readonly lineOee?: {
+    readonly productionMode: ProductionMode;
+    current(): Promise<{ hour: LineBucket | null; shift: LineBucket | null }>;
+    model(): Promise<LineModel>;
+    onChange(listener: (change: LineChange) => void): () => void;
   };
   /** The ids `oee:<id>` may name, each with its scope and machines. */
   readonly oeeTopics?: ReadonlyMap<
@@ -152,8 +168,13 @@ export interface PushOptions {
   readonly oeeMs?: number;
   /** At most one terminal view per topic this often (500 ms; plan: counts within 2 s, #177). */
   readonly terminalMs?: number;
-  /** OEE topics per client (16); alarm KPI topics count separately against the same limit. */
+  /**
+   * OEE topics per client (16); alarm KPI, terminal and the line topic count separately against
+   * the same limit.
+   */
   readonly maxOeeTopics?: number;
+  /** Order OEE topics (`oee:order:<id>`) per client (16), a budget of their own (#232). */
+  readonly maxOrderOeeTopics?: number;
   readonly maxClients?: number;
   /** Telemetry subscriptions per client, counted per metric (a whole equipment counts one). */
   readonly maxSubscriptions?: number;
@@ -204,8 +225,27 @@ const MAX_HOLDS = 4;
 
 /** The order OEE topics (#231): `oee:order:<order number>`. */
 const ORDER_OEE_PREFIX = 'oee:order:';
+/** The line OEE topic (#232). */
+const LINE_OEE_TOPIC = 'oee:line';
 
-const PACED_NAMES = { oee: 'OEE', 'alarm-kpi': 'alarm KPI', terminal: 'terminal' } as const;
+const PACED_NAMES = {
+  oee: 'OEE',
+  'oee-order': 'order OEE',
+  'oee-line': 'line OEE',
+  'alarm-kpi': 'alarm KPI',
+  terminal: 'terminal',
+} as const;
+
+type PacedKind = keyof typeof PACED_NAMES;
+
+/** The budget a paced topic counts against, from its name. */
+function pacedKind(name: string): PacedKind {
+  if (name.startsWith(ORDER_OEE_PREFIX)) return 'oee-order';
+  if (name === LINE_OEE_TOPIC) return 'oee-line';
+  if (name.startsWith('alarm-kpi:')) return 'alarm-kpi';
+  if (name.startsWith('terminal:')) return 'terminal';
+  return 'oee';
+}
 
 /**
  * One paced topic with subscribers (`oee:<id>`, `alarm-kpi:<scope>`): what it last pushed and
@@ -214,7 +254,7 @@ const PACED_NAMES = { oee: 'OEE', 'alarm-kpi': 'alarm KPI', terminal: 'terminal'
 interface PacedTopic {
   /** The topic's name, e.g. `oee:cnc-01` or `alarm-kpi:plant`. */
   readonly name: string;
-  readonly kind: 'oee' | 'alarm-kpi' | 'terminal';
+  readonly kind: PacedKind;
   readonly members: ReadonlySet<string>;
   /** The snapshot and the delta message, and their content as JSON (compared for deltas). */
   readonly compute: () => Promise<{ snapshot: ServerMessage; delta: ServerMessage; json: string }>;
@@ -279,6 +319,8 @@ export class PushHub {
   readonly #paced = new Map<string, PacedTopic>();
   /** Per `oee:order:<id>` topic, the CNCs its order had jobs on when last computed. */
   readonly #orderMachines = new Map<string, ReadonlySet<string>>();
+  /** The hours `oee:line` covered when last computed (its hour and shift bucket). */
+  #lineSpan: { from: number; to: number } | undefined;
 
   constructor(options: PushOptions = {}) {
     this.#options = {
@@ -290,6 +332,7 @@ export class PushHub {
       oeeMs: options.oeeMs ?? 1_000,
       terminalMs: options.terminalMs ?? 500,
       maxOeeTopics: options.maxOeeTopics ?? LIMITS.oeeTopics,
+      maxOrderOeeTopics: options.maxOrderOeeTopics ?? LIMITS.oeeOrderTopics,
       maxClients: options.maxClients ?? 64,
       maxSubscriptions: options.maxSubscriptions ?? 64,
       requestsPerSecond: options.requestsPerSecond ?? 10,
@@ -338,6 +381,23 @@ export class PushHub {
           Math.max(10, Math.floor(this.#options.oeeMs / 4)),
         ).unref(),
       );
+    }
+    if (sources.lineOee) {
+      this.#detach.push(
+        sources.lineOee.onChange((change) => {
+          this.#onLineOeeChange(change);
+        }),
+      );
+      if (!sources.oee && !sources.orderOee) {
+        this.#timers.push(
+          setInterval(
+            () => {
+              this.#oeeTick();
+            },
+            Math.max(10, Math.floor(this.#options.oeeMs / 4)),
+          ).unref(),
+        );
+      }
     }
     if (sources.orderOee) {
       this.#detach.push(
@@ -618,6 +678,10 @@ export class PushHub {
       this.#orderOeeRequest(client, sources, request);
       return;
     }
+    if (request.topic === LINE_OEE_TOPIC) {
+      this.#lineOeeRequest(client, sources, request);
+      return;
+    }
     const id = request.topic.slice('oee:'.length);
     const known = sources.oeeTopics?.get(id);
     const oee = sources.oee;
@@ -659,7 +723,7 @@ export class PushHub {
     }
     const name = request.topic as `oee:order:${string}`;
     const orderId = name.slice(ORDER_OEE_PREFIX.length);
-    this.#pacedRequest(client, request, 'oee', [], async () => {
+    this.#pacedRequest(client, request, 'oee-order', [], async () => {
       const view = await source.order(orderId);
       // The CNCs the order has jobs on: their states and commands turn the topic dirty.
       this.#orderMachines.set(name, new Set(view?.jobs.map((job) => job.machine) ?? []));
@@ -668,6 +732,45 @@ export class PushHub {
         snapshot: { type: 'snapshot', topic: name, order },
         delta: { type: 'oee-order', topic: name, order },
         json: JSON.stringify(order),
+      };
+    });
+  }
+
+  /**
+   * `oee:line` (#232): the line OEE of the hour and shift bucket the plant clock is in, with the
+   * designed bottleneck per product, as `GET /oee/line` answers them; a snapshot, then `oee-line`
+   * deltas paced like the buckets (at most one per `oeeMs`, only when the body changed).
+   */
+  #lineOeeRequest(client: Client, sources: PushSources, request: ClientMessage): void {
+    const source = sources.lineOee;
+    if (!source) {
+      this.#send(client, {
+        type: 'error',
+        code: 'unknown-topic',
+        detail: 'line OEE push is not available',
+      });
+      return;
+    }
+    this.#pacedRequest(client, request, 'oee-line', [], async () => {
+      const [model, current] = await Promise.all([source.model(), source.current()]);
+      const spans = [current.hour, current.shift].flatMap((b) => (b ? [b.value] : []));
+      this.#lineSpan =
+        spans.length === 0
+          ? undefined
+          : {
+              from: Math.min(...spans.map((v) => v.from)),
+              to: Math.max(...spans.map((v) => v.to)),
+            };
+      const body = {
+        productionMode: source.productionMode,
+        bottlenecks: bottleneckDtos(model.bottlenecks),
+        hour: current.hour && lineBucketDto(current.hour),
+        shift: current.shift && lineBucketDto(current.shift),
+      };
+      return {
+        snapshot: { type: 'snapshot', topic: LINE_OEE_TOPIC, ...body },
+        delta: { type: 'oee-line', topic: LINE_OEE_TOPIC, ...body },
+        json: JSON.stringify(body),
       };
     });
   }
@@ -924,12 +1027,14 @@ export class PushHub {
       this.#send(client, { type: 'unsubscribed', topic: name, metric: null });
       return;
     }
-    const followed = [...client.paced].filter((topic) => topic.startsWith(`${kind}:`)).length;
-    if (!client.paced.has(name) && followed >= this.#options.maxOeeTopics) {
+    const followed = [...client.paced].filter((topic) => pacedKind(topic) === kind).length;
+    const budget =
+      kind === 'oee-order' ? this.#options.maxOrderOeeTopics : this.#options.maxOeeTopics;
+    if (!client.paced.has(name) && followed >= budget) {
       this.#send(client, {
         type: 'error',
         code: 'too-many-subscriptions',
-        detail: `at most ${String(this.#options.maxOeeTopics)} ${PACED_NAMES[kind]} topics`,
+        detail: `at most ${String(budget)} ${PACED_NAMES[kind]} topics`,
       });
       return;
     }
@@ -964,7 +1069,7 @@ export class PushHub {
    */
   #onOrderOeeChange(change: OrderOeeChange): void {
     for (const topic of this.#paced.values()) {
-      if (topic.kind !== 'oee' || !topic.name.startsWith(ORDER_OEE_PREFIX)) continue;
+      if (topic.kind !== 'oee-order') continue;
       const machines = this.#orderMachines.get(topic.name);
       const touched =
         change.orderId !== undefined
@@ -973,6 +1078,20 @@ export class PushHub {
             ? machines === undefined || machines.has(change.machine)
             : true;
       if (touched) topic.dirty = true;
+    }
+  }
+
+  /**
+   * The line topic turns dirty when a contributing machine's hours reach into or past the hours it
+   * covered last (its hour and shift bucket: a later hour means the clock moved on; any while it
+   * has none), or the orders changed (orders mode). A late fact of an earlier hour leaves it alone.
+   */
+  #onLineOeeChange(change: LineChange): void {
+    const topic = this.#paced.get(LINE_OEE_TOPIC);
+    if (!topic) return;
+    const span = this.#lineSpan;
+    if ('orders' in change || span === undefined || change.to.getTime() > span.from) {
+      topic.dirty = true;
     }
   }
 

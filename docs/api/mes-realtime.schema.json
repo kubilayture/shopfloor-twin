@@ -45,13 +45,17 @@
                 },
                 {
                   "type": "string",
-                  "pattern": "^oee:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+                  "pattern": "^oee:(?!line$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
                   "description": "oee:<equipment or work center>"
                 },
                 {
                   "type": "string",
                   "pattern": "^oee:order:[A-Za-z0-9][A-Za-z0-9._-]{0,39}$",
                   "description": "oee:order:<order number>"
+                },
+                {
+                  "type": "string",
+                  "const": "oee:line"
                 },
                 {
                   "type": "string",
@@ -117,13 +121,17 @@
                 },
                 {
                   "type": "string",
-                  "pattern": "^oee:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+                  "pattern": "^oee:(?!line$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
                   "description": "oee:<equipment or work center>"
                 },
                 {
                   "type": "string",
                   "pattern": "^oee:order:[A-Za-z0-9][A-Za-z0-9._-]{0,39}$",
                   "description": "oee:order:<order number>"
+                },
+                {
+                  "type": "string",
+                  "const": "oee:line"
                 },
                 {
                   "type": "string",
@@ -406,7 +414,7 @@
             },
             "topic": {
               "type": "string",
-              "pattern": "^oee:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "pattern": "^oee:(?!line$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
               "description": "oee:<equipment or work center>"
             },
             "hour": {
@@ -2651,7 +2659,8 @@
                           "epoch": {
                             "type": "integer",
                             "minimum": -9007199254740991,
-                            "maximum": 9007199254740991
+                            "maximum": 9007199254740991,
+                            "description": "The machine’s own device epoch"
                           },
                           "id": {
                             "type": "integer",
@@ -2678,7 +2687,121 @@
                         ],
                         "additionalProperties": false
                       },
-                      "description": "Sequence-gap incidents (written-off gaps, ADR-0018) overlapping the order’s windows or its units’ span on the machines they visited: a final value over them may still be revised"
+                      "description": "Sequence-gap incidents (written-off gaps, ADR-0018) overlapping the order’s windows or its units’ span on the machines they visited (each in its own device epoch): a final value over them may still be revised"
+                    },
+                    "mayRevise": {
+                      "type": "boolean",
+                      "description": "Carries incidents: even a final value may still be revised (#232)"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                    },
+                    "line": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "from": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            "to": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            "through": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                              "description": "Planned time and packs are counted before this instant: the plant clock (exclusive) or `to`"
+                            },
+                            "plannedBusyMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Scheduled time minus breaks and the bottleneck’s Maintenance; in orders mode only while an order is in progress"
+                            },
+                            "good": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "description": "Units packed good at the last operation, per product"
+                            },
+                            "idealMs": {
+                              "type": "string",
+                              "description": "Σ good × the bottleneck’s effective cycle, ms, exact `num/den`"
+                            },
+                            "oee": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "fraction": {
+                                      "type": "string",
+                                      "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                    },
+                                    "decimal": {
+                                      "type": "string",
+                                      "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                    }
+                                  },
+                                  "required": [
+                                    "fraction",
+                                    "decimal"
+                                  ],
+                                  "additionalProperties": false,
+                                  "description": "An exact ratio"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "idealMs / plannedBusyMs, not capped; null when 0 planned"
+                            },
+                            "aboveOne": {
+                              "type": "boolean",
+                              "description": "Above 1: an operator faster than ideal, or WIP drained from the buffers"
+                            },
+                            "open": {
+                              "type": "boolean",
+                              "description": "The order is not complete: its in-progress time runs to the cut-off"
+                            },
+                            "final": {
+                              "type": "boolean",
+                              "description": "The order OEE final, the order complete and the bottleneck’s pieces final"
+                            }
+                          },
+                          "required": [
+                            "from",
+                            "to",
+                            "through",
+                            "plannedBusyMs",
+                            "good",
+                            "idealMs",
+                            "oee",
+                            "aboveOne",
+                            "open",
+                            "final"
+                          ],
+                          "additionalProperties": false,
+                          "description": "An order’s line OEE: from the earliest head time of its jobs to its completion, its own good units; not additive across orders"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The order’s line throughput OEE over its in-progress time (#232), not additive across orders; null before a job is head"
                     }
                   },
                   "required": [
@@ -2696,7 +2819,10 @@
                     "firstPassYield",
                     "completedAt",
                     "cutoffs",
-                    "incidents"
+                    "incidents",
+                    "mayRevise",
+                    "revision",
+                    "line"
                   ],
                   "additionalProperties": false,
                   "description": "Order OEE over job windows, with the job breakdown and first-pass yield (#231)"
@@ -2712,6 +2838,408 @@
             "type",
             "topic",
             "order"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "snapshot"
+            },
+            "topic": {
+              "type": "string",
+              "const": "oee:line"
+            },
+            "productionMode": {
+              "type": "string",
+              "enum": [
+                "schedule",
+                "orders"
+              ]
+            },
+            "bottlenecks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "product": {
+                    "type": "string"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "description": "The operation with the largest effective cycle"
+                  },
+                  "equipment": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Its machines"
+                  },
+                  "idealCycleMs": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991,
+                    "description": "Its ideal cycle (products.yaml)"
+                  },
+                  "effectiveCycleMs": {
+                    "type": "string",
+                    "description": "Ideal cycle ÷ machines on the operation, exact `num/den` (ms of line time per unit)"
+                  }
+                },
+                "required": [
+                  "product",
+                  "operation",
+                  "equipment",
+                  "idealCycleMs",
+                  "effectiveCycleMs"
+                ],
+                "additionalProperties": false,
+                "description": "The designed bottleneck of a product (`deriveBottlenecks`, ADR-0036)"
+              }
+            },
+            "hour": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "bucket": {
+                      "type": "string",
+                      "enum": [
+                        "hour",
+                        "shift"
+                      ]
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "The hour start (ISO 8601) or the shift key (`2026-10-12/A`)"
+                    },
+                    "from": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "to": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "through": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "Planned time and packs are counted before this instant: the plant clock (exclusive) or `to`"
+                    },
+                    "plannedBusyMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Scheduled time minus breaks and the bottleneck’s Maintenance; in orders mode only while an order is in progress"
+                    },
+                    "good": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "description": "Units packed good at the last operation, per product"
+                    },
+                    "idealMs": {
+                      "type": "string",
+                      "description": "Σ good × the bottleneck’s effective cycle, ms, exact `num/den`"
+                    },
+                    "oee": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "fraction": {
+                              "type": "string",
+                              "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                            },
+                            "decimal": {
+                              "type": "string",
+                              "description": "Rounded half-up to four decimals, integer arithmetic only"
+                            }
+                          },
+                          "required": [
+                            "fraction",
+                            "decimal"
+                          ],
+                          "additionalProperties": false,
+                          "description": "An exact ratio"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "idealMs / plannedBusyMs, not capped; null when 0 planned"
+                    },
+                    "aboveOne": {
+                      "type": "boolean",
+                      "description": "Above 1: an operator faster than ideal, or WIP drained from the buffers"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Every input is final through the bucket’s end: every contributing machine final-through, the bottleneck’s pieces final, and in orders mode every machine processed by execution and no unknown head time able to start in-progress time inside it"
+                    },
+                    "incidents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "machine": {
+                            "type": "string"
+                          },
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The machine’s own device epoch"
+                          },
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seqFrom": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seqTo": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "machine",
+                          "epoch",
+                          "id",
+                          "seqFrom",
+                          "seqTo"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Written-off gaps on the contributing machines overlapping the bucket"
+                    },
+                    "mayRevise": {
+                      "type": "boolean",
+                      "description": "Carries incidents: even a final value may still be revised (#232)"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                    }
+                  },
+                  "required": [
+                    "bucket",
+                    "key",
+                    "from",
+                    "to",
+                    "through",
+                    "plannedBusyMs",
+                    "good",
+                    "idealMs",
+                    "oee",
+                    "aboveOne",
+                    "final",
+                    "incidents",
+                    "mayRevise",
+                    "revision"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Line throughput OEE of one hour or shift bucket (#232)"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The line OEE of the hour the plant clock is in; null without a clock"
+            },
+            "shift": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "bucket": {
+                      "type": "string",
+                      "enum": [
+                        "hour",
+                        "shift"
+                      ]
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "The hour start (ISO 8601) or the shift key (`2026-10-12/A`)"
+                    },
+                    "from": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "to": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "through": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "Planned time and packs are counted before this instant: the plant clock (exclusive) or `to`"
+                    },
+                    "plannedBusyMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Scheduled time minus breaks and the bottleneck’s Maintenance; in orders mode only while an order is in progress"
+                    },
+                    "good": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "description": "Units packed good at the last operation, per product"
+                    },
+                    "idealMs": {
+                      "type": "string",
+                      "description": "Σ good × the bottleneck’s effective cycle, ms, exact `num/den`"
+                    },
+                    "oee": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "fraction": {
+                              "type": "string",
+                              "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                            },
+                            "decimal": {
+                              "type": "string",
+                              "description": "Rounded half-up to four decimals, integer arithmetic only"
+                            }
+                          },
+                          "required": [
+                            "fraction",
+                            "decimal"
+                          ],
+                          "additionalProperties": false,
+                          "description": "An exact ratio"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "idealMs / plannedBusyMs, not capped; null when 0 planned"
+                    },
+                    "aboveOne": {
+                      "type": "boolean",
+                      "description": "Above 1: an operator faster than ideal, or WIP drained from the buffers"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Every input is final through the bucket’s end: every contributing machine final-through, the bottleneck’s pieces final, and in orders mode every machine processed by execution and no unknown head time able to start in-progress time inside it"
+                    },
+                    "incidents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "machine": {
+                            "type": "string"
+                          },
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The machine’s own device epoch"
+                          },
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seqFrom": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seqTo": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "machine",
+                          "epoch",
+                          "id",
+                          "seqFrom",
+                          "seqTo"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Written-off gaps on the contributing machines overlapping the bucket"
+                    },
+                    "mayRevise": {
+                      "type": "boolean",
+                      "description": "Carries incidents: even a final value may still be revised (#232)"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                    }
+                  },
+                  "required": [
+                    "bucket",
+                    "key",
+                    "from",
+                    "to",
+                    "through",
+                    "plannedBusyMs",
+                    "good",
+                    "idealMs",
+                    "oee",
+                    "aboveOne",
+                    "final",
+                    "incidents",
+                    "mayRevise",
+                    "revision"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Line throughput OEE of one hour or shift bucket (#232)"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The line OEE of the shift bucket the plant clock is in; null outside a shift"
+            }
+          },
+          "required": [
+            "type",
+            "topic",
+            "productionMode",
+            "bottlenecks",
+            "hour",
+            "shift"
           ],
           "additionalProperties": false
         },
@@ -3526,7 +4054,7 @@
             },
             "topic": {
               "type": "string",
-              "pattern": "^oee:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "pattern": "^oee:(?!line$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
               "description": "oee:<equipment or work center>"
             },
             "hour": {
@@ -5769,7 +6297,8 @@
                           "epoch": {
                             "type": "integer",
                             "minimum": -9007199254740991,
-                            "maximum": 9007199254740991
+                            "maximum": 9007199254740991,
+                            "description": "The machine’s own device epoch"
                           },
                           "id": {
                             "type": "integer",
@@ -5796,7 +6325,121 @@
                         ],
                         "additionalProperties": false
                       },
-                      "description": "Sequence-gap incidents (written-off gaps, ADR-0018) overlapping the order’s windows or its units’ span on the machines they visited: a final value over them may still be revised"
+                      "description": "Sequence-gap incidents (written-off gaps, ADR-0018) overlapping the order’s windows or its units’ span on the machines they visited (each in its own device epoch): a final value over them may still be revised"
+                    },
+                    "mayRevise": {
+                      "type": "boolean",
+                      "description": "Carries incidents: even a final value may still be revised (#232)"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                    },
+                    "line": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "from": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            "to": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            "through": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                              "description": "Planned time and packs are counted before this instant: the plant clock (exclusive) or `to`"
+                            },
+                            "plannedBusyMs": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991,
+                              "description": "Scheduled time minus breaks and the bottleneck’s Maintenance; in orders mode only while an order is in progress"
+                            },
+                            "good": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string"
+                              },
+                              "additionalProperties": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "description": "Units packed good at the last operation, per product"
+                            },
+                            "idealMs": {
+                              "type": "string",
+                              "description": "Σ good × the bottleneck’s effective cycle, ms, exact `num/den`"
+                            },
+                            "oee": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "fraction": {
+                                      "type": "string",
+                                      "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                                    },
+                                    "decimal": {
+                                      "type": "string",
+                                      "description": "Rounded half-up to four decimals, integer arithmetic only"
+                                    }
+                                  },
+                                  "required": [
+                                    "fraction",
+                                    "decimal"
+                                  ],
+                                  "additionalProperties": false,
+                                  "description": "An exact ratio"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "idealMs / plannedBusyMs, not capped; null when 0 planned"
+                            },
+                            "aboveOne": {
+                              "type": "boolean",
+                              "description": "Above 1: an operator faster than ideal, or WIP drained from the buffers"
+                            },
+                            "open": {
+                              "type": "boolean",
+                              "description": "The order is not complete: its in-progress time runs to the cut-off"
+                            },
+                            "final": {
+                              "type": "boolean",
+                              "description": "The order OEE final, the order complete and the bottleneck’s pieces final"
+                            }
+                          },
+                          "required": [
+                            "from",
+                            "to",
+                            "through",
+                            "plannedBusyMs",
+                            "good",
+                            "idealMs",
+                            "oee",
+                            "aboveOne",
+                            "open",
+                            "final"
+                          ],
+                          "additionalProperties": false,
+                          "description": "An order’s line OEE: from the earliest head time of its jobs to its completion, its own good units; not additive across orders"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The order’s line throughput OEE over its in-progress time (#232), not additive across orders; null before a job is head"
                     }
                   },
                   "required": [
@@ -5814,7 +6457,10 @@
                     "firstPassYield",
                     "completedAt",
                     "cutoffs",
-                    "incidents"
+                    "incidents",
+                    "mayRevise",
+                    "revision",
+                    "line"
                   ],
                   "additionalProperties": false,
                   "description": "Order OEE over job windows, with the job breakdown and first-pass yield (#231)"
@@ -5829,6 +6475,406 @@
             "type",
             "topic",
             "order"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "oee-line"
+            },
+            "topic": {
+              "type": "string",
+              "const": "oee:line"
+            },
+            "productionMode": {
+              "type": "string",
+              "enum": [
+                "schedule",
+                "orders"
+              ]
+            },
+            "bottlenecks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "product": {
+                    "type": "string"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "description": "The operation with the largest effective cycle"
+                  },
+                  "equipment": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Its machines"
+                  },
+                  "idealCycleMs": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991,
+                    "description": "Its ideal cycle (products.yaml)"
+                  },
+                  "effectiveCycleMs": {
+                    "type": "string",
+                    "description": "Ideal cycle ÷ machines on the operation, exact `num/den` (ms of line time per unit)"
+                  }
+                },
+                "required": [
+                  "product",
+                  "operation",
+                  "equipment",
+                  "idealCycleMs",
+                  "effectiveCycleMs"
+                ],
+                "additionalProperties": false,
+                "description": "The designed bottleneck of a product (`deriveBottlenecks`, ADR-0036)"
+              }
+            },
+            "hour": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "bucket": {
+                      "type": "string",
+                      "enum": [
+                        "hour",
+                        "shift"
+                      ]
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "The hour start (ISO 8601) or the shift key (`2026-10-12/A`)"
+                    },
+                    "from": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "to": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "through": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "Planned time and packs are counted before this instant: the plant clock (exclusive) or `to`"
+                    },
+                    "plannedBusyMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Scheduled time minus breaks and the bottleneck’s Maintenance; in orders mode only while an order is in progress"
+                    },
+                    "good": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "description": "Units packed good at the last operation, per product"
+                    },
+                    "idealMs": {
+                      "type": "string",
+                      "description": "Σ good × the bottleneck’s effective cycle, ms, exact `num/den`"
+                    },
+                    "oee": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "fraction": {
+                              "type": "string",
+                              "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                            },
+                            "decimal": {
+                              "type": "string",
+                              "description": "Rounded half-up to four decimals, integer arithmetic only"
+                            }
+                          },
+                          "required": [
+                            "fraction",
+                            "decimal"
+                          ],
+                          "additionalProperties": false,
+                          "description": "An exact ratio"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "idealMs / plannedBusyMs, not capped; null when 0 planned"
+                    },
+                    "aboveOne": {
+                      "type": "boolean",
+                      "description": "Above 1: an operator faster than ideal, or WIP drained from the buffers"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Every input is final through the bucket’s end: every contributing machine final-through, the bottleneck’s pieces final, and in orders mode every machine processed by execution and no unknown head time able to start in-progress time inside it"
+                    },
+                    "incidents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "machine": {
+                            "type": "string"
+                          },
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The machine’s own device epoch"
+                          },
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seqFrom": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seqTo": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "machine",
+                          "epoch",
+                          "id",
+                          "seqFrom",
+                          "seqTo"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Written-off gaps on the contributing machines overlapping the bucket"
+                    },
+                    "mayRevise": {
+                      "type": "boolean",
+                      "description": "Carries incidents: even a final value may still be revised (#232)"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                    }
+                  },
+                  "required": [
+                    "bucket",
+                    "key",
+                    "from",
+                    "to",
+                    "through",
+                    "plannedBusyMs",
+                    "good",
+                    "idealMs",
+                    "oee",
+                    "aboveOne",
+                    "final",
+                    "incidents",
+                    "mayRevise",
+                    "revision"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Line throughput OEE of one hour or shift bucket (#232)"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "shift": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "bucket": {
+                      "type": "string",
+                      "enum": [
+                        "hour",
+                        "shift"
+                      ]
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "The hour start (ISO 8601) or the shift key (`2026-10-12/A`)"
+                    },
+                    "from": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "to": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "through": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "Planned time and packs are counted before this instant: the plant clock (exclusive) or `to`"
+                    },
+                    "plannedBusyMs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Scheduled time minus breaks and the bottleneck’s Maintenance; in orders mode only while an order is in progress"
+                    },
+                    "good": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "description": "Units packed good at the last operation, per product"
+                    },
+                    "idealMs": {
+                      "type": "string",
+                      "description": "Σ good × the bottleneck’s effective cycle, ms, exact `num/den`"
+                    },
+                    "oee": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "fraction": {
+                              "type": "string",
+                              "description": "Exact reduced fraction `num/den` (BigInt digits)"
+                            },
+                            "decimal": {
+                              "type": "string",
+                              "description": "Rounded half-up to four decimals, integer arithmetic only"
+                            }
+                          },
+                          "required": [
+                            "fraction",
+                            "decimal"
+                          ],
+                          "additionalProperties": false,
+                          "description": "An exact ratio"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "idealMs / plannedBusyMs, not capped; null when 0 planned"
+                    },
+                    "aboveOne": {
+                      "type": "boolean",
+                      "description": "Above 1: an operator faster than ideal, or WIP drained from the buffers"
+                    },
+                    "final": {
+                      "type": "boolean",
+                      "description": "Every input is final through the bucket’s end: every contributing machine final-through, the bottleneck’s pieces final, and in orders mode every machine processed by execution and no unknown head time able to start in-progress time inside it"
+                    },
+                    "incidents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "machine": {
+                            "type": "string"
+                          },
+                          "epoch": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The machine’s own device epoch"
+                          },
+                          "id": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seqFrom": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "seqTo": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "machine",
+                          "epoch",
+                          "id",
+                          "seqFrom",
+                          "seqTo"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Written-off gaps on the contributing machines overlapping the bucket"
+                    },
+                    "mayRevise": {
+                      "type": "boolean",
+                      "description": "Carries incidents: even a final value may still be revised (#232)"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                    }
+                  },
+                  "required": [
+                    "bucket",
+                    "key",
+                    "from",
+                    "to",
+                    "through",
+                    "plannedBusyMs",
+                    "good",
+                    "idealMs",
+                    "oee",
+                    "aboveOne",
+                    "final",
+                    "incidents",
+                    "mayRevise",
+                    "revision"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Line throughput OEE of one hour or shift bucket (#232)"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "topic",
+            "productionMode",
+            "bottlenecks",
+            "hour",
+            "shift"
           ],
           "additionalProperties": false
         },

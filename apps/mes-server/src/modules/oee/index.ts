@@ -18,6 +18,15 @@
  * - Pure (`order-queue.ts`): `commandQueues`, `queuedJob`, `acceptanceOrder`, `inQueue`,
  *   `orderSlice`: each CNC's queue from the orders module's command state, lost facts included.
  *
+ * Line throughput OEE (#232, ADR-0036 and its P9-05 amendment), per hour, shift bucket and order:
+ * - `LineOee.buckets({ bucket, from, to })`: good packed × the bottleneck's effective cycle ÷ planned
+ *   busy time, each bucket with `final`, `incidents`, `mayRevise` and `revision`; final buckets
+ *   kept in memory. `LineOee.current()` (push), `LineOee.orders(...)` (per order, not additive),
+ *   `LineOee.model()` (the designed bottleneck per product), `LineOee.onChange(listener)`.
+ * - `OrderOee.lineOrders()`: every order's in-progress start and completion; `OrderOee.order(id)`
+ *   carries the order's own line OEE (`line`).
+ * - Pure (`line-inputs.ts`): `lineModel`, `calendar`, `maintenance`, `lineValue`, `gapTouches`.
+ *
  * Scheduled shifts and shift buckets (`shiftInstances`, `shiftBuckets`, …) come from the pure
  * `@shopfloor/shift-calendar` (#144), which the `shifts` module uses too.
  */
@@ -42,9 +51,18 @@ export type {
   ParetoMicroStop,
   ParetoReason,
 } from './downtime.ts';
-export { OrderOee, piecesFinal, processedThrough, wholeIntervals } from './order-oee.ts';
+export {
+  OrderOee,
+  acceptanceCompare,
+  piecesFinal,
+  processedThrough,
+  wholeIntervals,
+} from './order-oee.ts';
 export type {
+  LineOrders,
   OrderGapIncident,
+  OrderLineView,
+  UnknownHead,
   OrderJobView,
   OrderOeeChange,
   OrderOeeOptions,
@@ -53,3 +71,15 @@ export type {
 } from './order-oee.ts';
 export { acceptanceOrder, commandQueues, inQueue, orderSlice, queuedJob } from './order-queue.ts';
 export type { CommandQueue, DeviceCut, QueueCommand } from './order-queue.ts';
+export { LineOee, ordersFinal } from './line-oee.ts';
+export type {
+  LineBucket,
+  LineBucketKind,
+  LineChange,
+  LineOeeOptions,
+  LineOeeSources,
+  LineOrderValue,
+  ProductionMode,
+} from './line-oee.ts';
+export { calendar, gapTouches, lineModel, lineValue, maintenance } from './line-inputs.ts';
+export type { LineModel, LineValue, LineValueInput, Pack } from './line-inputs.ts';

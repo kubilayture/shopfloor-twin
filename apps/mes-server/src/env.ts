@@ -67,6 +67,9 @@ export const envSchema = z.object({
   COMMAND_RESEND_MS: integer.pipe(z.number().min(100)).default(15_000),
   COMMAND_ATTEMPTS: integer.pipe(z.number().min(1).max(20)).default(5),
   COMMAND_FAIL_MARGIN_MS: integer.pipe(z.number().min(0)).default(30_000),
+  // The plant's production mode (#232, ADR-0036): in `orders` mode line OEE plans only the time an
+  // order is in progress. Set it as the simulator's SIM_PRODUCTION (Compose passes that value).
+  MES_PRODUCTION_MODE: z.enum(['schedule', 'orders']).default('schedule'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 });
 

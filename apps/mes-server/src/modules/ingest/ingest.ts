@@ -594,6 +594,41 @@ export class Ingest {
   }
 
   /**
+   * Completed cycles of one equipment with plant time in [from, to), every device epoch, by time
+   * (#232, line OEE): each one's time, product and result, read from the stored facts (never from
+   * `cycle_hourly`, which may lag a refresh), so a caller buckets them exactly.
+   */
+  async cycleResults(
+    equipment: string,
+    from: Date,
+    to: Date,
+  ): Promise<{ epoch: number; at: Date; product: string; result: string }[]> {
+    if (to.getTime() <= from.getTime()) return [];
+    const rows = await (this.#options.readDb ?? this.#options.db)
+      .selectFrom('ingest.equipment_event')
+      .select([
+        'epoch',
+        'source_time',
+        sql<string>`payload -> 'value' ->> 'product'`.as('product'),
+        sql<string>`payload -> 'value' ->> 'result'`.as('result'),
+      ])
+      .where('equipment', '=', equipment)
+      .where('event_type', '=', 'cycle')
+      .where('source_time', '>=', from)
+      .where('source_time', '<', to)
+      .orderBy('source_time')
+      .orderBy('epoch')
+      .orderBy('seq')
+      .execute();
+    return rows.map((row) => ({
+      epoch: row.epoch,
+      at: row.source_time,
+      product: row.product,
+      result: row.result,
+    }));
+  }
+
+  /**
    * Completed cycles per UTC hour of one (equipment, epoch) in [from, to), counted from the stored
    * facts (not the aggregate, which may lag a second): the count an hour has when it becomes final.
    */

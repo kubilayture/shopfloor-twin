@@ -18,6 +18,7 @@ export type { ApiSources, IdentityApi, Realtime, RealtimeOptions } from './realt
 export type { Access } from './routes.ts';
 export { bucketDto, recordDto, resultDto, shiftInstanceDto } from './oee-dto.ts';
 export { orderOeeDto } from './order-oee-dto.ts';
+export { bottleneckDtos, lineBucketDto, lineValueDto, orderLineDto } from './line-oee-dto.ts';
 export {
   alarmKpiDto,
   badActorDto,

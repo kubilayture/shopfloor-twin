@@ -1,5 +1,6 @@
 # Simulator in live mode: five OPC UA servers (4841–4845), the WSH-01 Modbus TCP server (5020)
-# and the control API (4800).
+# and the control API (4800). The same image runs Compose's one-shot `pki` step and the
+# `opcua-tools` client (#239).
 # Build from the repository root: docker build -f apps/simulator/Dockerfile .
 # Node.js runs the TypeScript sources directly (ADR-0003), so there is no build step.
 
@@ -14,6 +15,7 @@ COPY apps/simulator/package.json apps/simulator/
 COPY packages/alarm-core/package.json packages/alarm-core/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/oee-core/package.json packages/oee-core/
+COPY packages/pki/package.json packages/pki/
 COPY packages/plant-config/package.json packages/plant-config/
 COPY packages/shift-calendar/package.json packages/shift-calendar/
 COPY packages/sim-core/package.json packages/sim-core/
@@ -34,13 +36,18 @@ COPY config/scenarios config/scenarios
 COPY packages/alarm-core/src packages/alarm-core/src
 COPY packages/contracts/src packages/contracts/src
 COPY packages/oee-core/src packages/oee-core/src
+COPY packages/pki/src packages/pki/src
 COPY packages/plant-config/src packages/plant-config/src
 COPY packages/shift-calendar/src packages/shift-calendar/src
 COPY packages/sim-core/src packages/sim-core/src
 COPY packages/spc-core/src packages/spc-core/src
 COPY packages/trace-core/src packages/trace-core/src
 COPY apps/simulator/src apps/simulator/src
-RUN mkdir -p /var/lib/simulator/pki && chown node:node /var/lib/simulator/pki
+# The simulator's PKI volume, and the mount points of the one-shot `pki` service and the
+# `opcua-tools` client (#239, ADR-0038), which run this image: a new named volume takes the
+# ownership of its mount point, so all of them belong to `node`.
+RUN mkdir -p /var/lib/simulator/pki /var/lib/pki/simulator /var/lib/pki/gateway /var/lib/pki/tools \
+  && chown node:node /var/lib/simulator/pki /var/lib/pki/simulator /var/lib/pki/gateway /var/lib/pki/tools
 USER node
 EXPOSE 4800 4841 4842 4843 4844 4845 5020
 HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=12 \

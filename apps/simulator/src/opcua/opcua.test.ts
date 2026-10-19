@@ -55,6 +55,7 @@ beforeAll(async () => {
       start: T0,
       portOffset,
       pkiFolder: pki.folder,
+      security: { mode: 'none' },
     });
     run = createLiveRun({
       config,

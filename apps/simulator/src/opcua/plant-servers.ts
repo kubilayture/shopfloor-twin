@@ -13,6 +13,7 @@ import type {
 } from '../plant/line.ts';
 import type { ProcessValues } from '../plant/process-values.ts';
 import { MachineServer } from './machine-server.ts';
+import type { ServerSecurity } from './security.ts';
 
 export interface PlantServersOptions {
   readonly config: PlantConfig;
@@ -20,6 +21,11 @@ export interface PlantServersOptions {
   readonly host?: string;
   readonly portOffset?: number;
   readonly pkiFolder?: string;
+  /**
+   * Every server's security (ADR-0038): no default, so that each caller says whether it runs the
+   * secure stack (Compose, the security tests) or `none` (tests that don't test security).
+   */
+  readonly security: ServerSecurity;
   /** Start of this run, Unix seconds: the epoch of every device sequence (ADR-0015). */
   readonly epoch?: number;
   /**
@@ -64,6 +70,7 @@ export class PlantServers {
     epoch = Math.floor(Date.now() / 1000),
     production = 'schedule',
     wallClock,
+    security,
   }: PlantServersOptions) {
     this.epoch = epoch;
     this.#production = production;
@@ -81,6 +88,7 @@ export class PlantServers {
         kind: machine.kind,
         port: machine.port + portOffset,
         pkiFolder: join(pkiFolder, machine.id),
+        security,
         alarmCodes: alarmCodes(config, machine.id),
         loadProgram: (product: string, quantity: number) => {
           const sources = this.#sources;

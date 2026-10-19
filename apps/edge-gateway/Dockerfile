@@ -12,6 +12,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/edge-gateway/package.json apps/edge-gateway/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/oee-core/package.json packages/oee-core/
+COPY packages/pki/package.json packages/pki/
 COPY packages/plant-config/package.json packages/plant-config/
 COPY packages/shift-calendar/package.json packages/shift-calendar/
 # Production dependencies of the gateway and its workspace packages only; no lifecycle scripts.
@@ -28,6 +29,7 @@ COPY --from=deps /app ./
 COPY config/plant config/plant
 COPY packages/contracts/src packages/contracts/src
 COPY packages/oee-core/src packages/oee-core/src
+COPY packages/pki/src packages/pki/src
 COPY packages/plant-config/src packages/plant-config/src
 COPY packages/shift-calendar/src packages/shift-calendar/src
 COPY apps/edge-gateway/src apps/edge-gateway/src

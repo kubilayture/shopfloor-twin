@@ -13,6 +13,7 @@ import {
 } from '@shopfloor/contracts';
 import type { PlantConfig } from '@shopfloor/plant-config';
 import { HOUR, SECOND } from '@shopfloor/sim-core';
+import { GATEWAY_APPLICATION_URI, OPCUA_USERS, TOOLS_APPLICATION_URI } from '@shopfloor/pki';
 import { attachConsumption } from '@shopfloor/trace-core';
 import {
   AttributeIds,
@@ -22,13 +23,14 @@ import {
   constructEventFilter,
   resolveNodeId,
   type ClientSession,
+  type NodeId,
 } from 'node-opcua';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLiveRun, type LiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import type { PlantEvent } from '../plant/line.ts';
 import { loadDefaultConfig } from '../plant/testing.ts';
-import { onFreeOpcuaPorts, temporaryPki } from '../testing.ts';
+import { onFreeOpcuaPorts, securePki, type SecurePki } from '../testing.ts';
 import { PlantServers, alarmCodes } from './plant-servers.ts';
 import {
   connect,
@@ -36,7 +38,16 @@ import {
   documentedVariables,
   wait,
   type DocumentedVariable,
+  type TestClient,
 } from './testing.ts';
+
+/** The plant event type each project event type projects (ADR-0009). */
+const PLANT_EVENT_TYPE = new Map<string, string>([
+  [OPCUA_EVENT_TYPES.stateChange, 'state'],
+  [OPCUA_EVENT_TYPES.cycleComplete, 'cycle-complete'],
+  [OPCUA_EVENT_TYPES.alarm, 'alarm'],
+  [OPCUA_EVENT_TYPES.job, 'job'],
+]);
 
 // Monday 06:00 Istanbul: the scripted shift is the first morning shift of the week.
 const T0 = Date.UTC(2026, 9, 12, 3);
@@ -49,6 +60,14 @@ let clock: ManualClock;
 /** Set once the servers have started, so that `afterAll` stops only what `beforeAll` started. */
 let started: { readonly servers: PlantServers; readonly run: LiveRun } | undefined;
 let removePki: (() => Promise<void>) | undefined;
+let pki: SecurePki;
+/**
+ * The servers run SignAndEncrypt with the pki step's pinned certificates (#239, ADR-0038): the
+ * tools client as `opcua-reader` reads and subscribes, and the gateway's client as
+ * `opcua-gateway` is the second subscriber of every server, as in Compose.
+ */
+let reader: TestClient;
+let gateway: TestClient;
 const plantEvents: PlantEvent[] = [];
 
 const port = (machineId: string): number =>
@@ -66,8 +85,20 @@ async function play(wallMs: number): Promise<void> {
 
 beforeAll(async () => {
   config = await loadDefaultConfig();
-  const pki = await temporaryPki('integration');
+  pki = await securePki('integration');
   removePki = pki.remove;
+  reader = {
+    mode: 'sign-and-encrypt',
+    pkiFolder: pki.tools,
+    applicationUri: TOOLS_APPLICATION_URI,
+    user: { userName: OPCUA_USERS.reader, password: pki.passwords.reader },
+  };
+  gateway = {
+    mode: 'sign-and-encrypt',
+    pkiFolder: pki.gateway,
+    applicationUri: GATEWAY_APPLICATION_URI,
+    user: { userName: OPCUA_USERS.gateway, password: pki.passwords.gateway },
+  };
   ({ portOffset: offset } = await onFreeOpcuaPorts((portOffset) => {
     clock = new ManualClock();
     plantEvents.length = 0;
@@ -76,6 +107,7 @@ beforeAll(async () => {
       start: T0,
       portOffset,
       pkiFolder: pki.folder,
+      security: pki.security,
     });
     run = createLiveRun({
       config,
@@ -140,7 +172,7 @@ describe('OPC UA contract against the live servers (#56, plan section 9)', () =>
   it('serves every documented variable with its data type on exactly the documented machines', async () => {
     const documented = await documentedVariables();
     for (const machine of OPCUA_MACHINES) {
-      const { session, close } = await connect(port(machine.id));
+      const { session, close } = await connect(port(machine.id), reader);
       try {
         const rows = documented.flatMap((v) =>
           v.path === opcuaAlarmPath('<CODE>')
@@ -190,7 +222,7 @@ describe('OPC UA contract against the live servers (#56, plan section 9)', () =>
   it('declares each project event type with the documented fields', async () => {
     const documented = await documentedEventFields();
     expect([...documented.keys()].sort()).toEqual(Object.values(OPCUA_EVENT_TYPES).sort());
-    const { session, close } = await connect(port('cnc-01'));
+    const { session, close } = await connect(port('cnc-01'), reader);
     try {
       for (const [kind, name] of Object.entries(OPCUA_EVENT_TYPES) as [
         keyof typeof OPCUA_EVENT_TYPES,
@@ -214,10 +246,10 @@ describe('OPC UA contract against the live servers (#56, plan section 9)', () =>
   });
 });
 
-describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteria)', () => {
+describe('OPC UA integration at 60× under SignAndEncrypt (#56, #239, plan section 11, Phase 2 exit criteria)', () => {
   it('lets a generic client find every machine under Machinery/Machines; values follow the chosen speed', async () => {
     for (const machine of OPCUA_MACHINES) {
-      const { session, close } = await connect(port(machine.id));
+      const { session, close } = await connect(port(machine.id), reader);
       try {
         const namespaces = await session.readNamespaceArray();
         const machinery = namespaces.indexOf('http://opcfoundation.org/UA/Machinery/');
@@ -234,7 +266,7 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
       }
     }
 
-    const { session, close } = await connect(port('cnc-01'));
+    const { session, close } = await connect(port('cnc-01'), reader);
     try {
       const load = await nodeId(session, opcuaNodeId('cnc-01', OPCUA_VARIABLES.spindleLoad));
       const read = async () =>
@@ -260,11 +292,12 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
       constructEventFilter([
         ...OPCUA_EVENT_FIELDS.common.map((f) => `${String(nsIndex)}:${f}`),
         'Time',
+        'EventType',
       ]);
     const clients = await Promise.all(
       OPCUA_MACHINES.flatMap((machine) =>
         [1, 2].map(async (client) => {
-          const connection = await connect(port(machine.id));
+          const connection = await connect(port(machine.id), client === 1 ? gateway : reader);
           const namespaces = await connection.session.readNamespaceArray();
           const subscription = await connection.session.createSubscription2({
             requestedPublishingInterval: 100,
@@ -276,6 +309,7 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
           });
           const sequences: number[] = [];
           const times: number[] = [];
+          const types: string[] = [];
           const item = await subscription.monitor(
             { nodeId: resolveNodeId('i=2253'), attributeId: AttributeIds.EventNotifier },
             {
@@ -287,15 +321,24 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
             TimestampsToReturn.Both,
           );
           item.on('changed', (values: unknown) => {
-            const [sequence, machineId, time] = (values as { value: unknown }[]).map(
+            const [sequence, machineId, time, eventType] = (values as { value: unknown }[]).map(
               (v) => v.value,
             );
             if (machineId === machine.id) {
               sequences.push(Number(sequence));
               times.push((time as Date).getTime());
+              types.push(PLANT_EVENT_TYPE.get(String((eventType as NodeId).value)) ?? 'other');
             }
           });
-          return { machine: machine.id, client, connection, subscription, sequences, times };
+          return {
+            machine: machine.id,
+            client,
+            connection,
+            subscription,
+            sequences,
+            times,
+            types,
+          };
         }),
       ),
     );
@@ -332,6 +375,9 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
       // Content, not just numbering: event N carries the simulation time of the model's N-th event.
       for (const c of clients.filter((client) => client.machine === machine.id)) {
         expect(c.times, machine.id).toEqual(emitted.map((e) => e.at));
+        // And its type (exit criterion 9: every event keeps its (machine, seq, type) under
+        // SignAndEncrypt, #239).
+        expect(c.types, machine.id).toEqual(emitted.map((e) => e.type));
       }
     }
     await Promise.all(
@@ -354,7 +400,7 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
     }
     const clients = await Promise.all(
       machines.map(async (machine) => {
-        const connection = await connect(port(machine));
+        const connection = await connect(port(machine), reader);
         const namespaces = await connection.session.readNamespaceArray();
         const ns = String(namespaces.indexOf(SHOPFLOOR_NAMESPACE_URI));
         const subscription = await connection.session.createSubscription2({
@@ -449,7 +495,7 @@ describe('OPC UA integration at 60× (#56, plan section 11, Phase 2 exit criteri
   }, 120_000);
 
   it('makes queue overflow visible: a deliberately small queue loses events, and Sequence shows the gap', async () => {
-    const { session, close } = await connect(port('cnc-01'));
+    const { session, close } = await connect(port('cnc-01'), reader);
     try {
       const namespaces = await session.readNamespaceArray();
       const nsIndex = namespaces.indexOf(SHOPFLOOR_NAMESPACE_URI);

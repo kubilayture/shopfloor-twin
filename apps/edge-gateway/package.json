@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@shopfloor/contracts": "workspace:*",
+    "@shopfloor/pki": "workspace:*",
     "@shopfloor/plant-config": "workspace:*",
     "fastify": "catalog:",
     "modbus-serial": "catalog:",

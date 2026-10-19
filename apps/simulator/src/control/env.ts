@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { z } from 'zod';
+import { OPCUA_SECURITY_MODES } from '@shopfloor/pki';
 import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { PRODUCTION_MODES } from '../plant/line.ts';
 
@@ -12,65 +13,95 @@ const integer = z
   .transform(Number);
 const port = integer.pipe(z.number().min(1).max(65_535));
 const text = z.string().trim().min(1);
+const secret = z.string().regex(/^\S{16,512}$/, 'expected 16–512 characters without whitespace');
 
-export const envSchema = z.object({
-  SIM_SEED: integer.pipe(z.number().max(2 ** 32 - 1)).default(1),
-  SIM_SPEED: z
-    .string()
-    .regex(/^\d+(\.\d+)?$/, 'expected a decimal number')
-    .transform(Number)
-    .pipe(z.number().min(MIN_SPEED).max(MAX_SPEED))
-    .default(60),
-  SIM_START: z
-    .string()
-    .default('2026-10-12T06:00:00+03:00')
-    .transform((value, context) => {
-      try {
-        return Temporal.Instant.from(value).epochMilliseconds;
-      } catch {
-        context.addIssue({ code: 'custom', message: 'expected ISO 8601 with an offset' });
-        return z.NEVER;
+export const envSchema = z
+  .object({
+    SIM_SEED: integer.pipe(z.number().max(2 ** 32 - 1)).default(1),
+    SIM_SPEED: z
+      .string()
+      .regex(/^\d+(\.\d+)?$/, 'expected a decimal number')
+      .transform(Number)
+      .pipe(z.number().min(MIN_SPEED).max(MAX_SPEED))
+      .default(60),
+    SIM_START: z
+      .string()
+      .default('2026-10-12T06:00:00+03:00')
+      .transform((value, context) => {
+        try {
+          return Temporal.Instant.from(value).epochMilliseconds;
+        } catch {
+          context.addIssue({ code: 'custom', message: 'expected ISO 8601 with an offset' });
+          return z.NEVER;
+        }
+      }),
+    SIM_CONFIG_DIR: text.default(DEFAULT_CONFIG),
+    /**
+     * A stock file in place of `SIM_CONFIG_DIR/stock.yaml` (#196, ADR-0033), e.g. a golden
+     * scenario's own `stock.yaml` for a live run of that scenario. Left out, the configuration's.
+     */
+    SIM_STOCK: text.optional(),
+    SIM_AUTOSTART: z.enum(['true', 'false']).default('true'),
+    /** `schedule` (default, Phases 1–6) or `orders` (#172): CNCs run only `LoadOrder` jobs. */
+    SIM_PRODUCTION: z.enum(PRODUCTION_MODES).default('schedule'),
+    /**
+     * A timeline loaded before the run starts (#235): a name of `SIM_SCENARIOS_DIR` or a file path.
+     * Its seed, start and production mode must be the run's; a `dispatch` entry is refused.
+     */
+    SIM_TIMELINE: text.optional(),
+    /** The committed timelines (`POST /scenario` by name, `GET /scenarios`). */
+    SIM_SCENARIOS_DIR: text.default(DEFAULT_SCENARIOS),
+    /** A file the live event log is written to (#235): the headless `events.jsonl` without header. */
+    SIM_EVENT_LOG: text.optional(),
+    OPCUA_HOST: text.default('localhost'),
+    OPCUA_PORT_OFFSET: integer.pipe(z.number().max(9_999)).default(0),
+    OPCUA_PKI_DIR: text.optional(),
+    /**
+     * OPC UA security (#239, ADR-0038): `sign-and-encrypt` (the default, and Compose's) needs the
+     * certificates the `pki` step made under OPCUA_PKI_DIR and both user passwords; `none` (tests
+     * that don't test security) serves an anonymous None endpoint.
+     */
+    OPCUA_SECURITY: z.enum(OPCUA_SECURITY_MODES).default('sign-and-encrypt'),
+    /** The password of the OPC UA user `opcua-gateway` (the only one that may call methods). */
+    OPCUA_GATEWAY_PASSWORD: secret.optional(),
+    /** The password of the read-only OPC UA user `opcua-reader`. */
+    OPCUA_READER_PASSWORD: secret.optional(),
+    MODBUS_HOST: text.default('127.0.0.1'),
+    MODBUS_PORT: port.default(5020),
+    CONTROL_HOST: text.default('127.0.0.1'),
+    CONTROL_PORT: port.default(4800),
+    /**
+     * The control API's bearer token (#237, control API 1.11): required on every route but
+     * `/health/*` and `/metrics`. Random per stack, at least 16 characters, no whitespace.
+     */
+    /**
+     * How long an event-stream connection lives before it is closed with 4100 (#237 review): the
+     * console reconnects, and nginx checks the session again. 1 s to 1 h, default 5 min.
+     */
+    SIM_EVENTS_LIFETIME_MS: integer.pipe(z.number().min(1_000).max(3_600_000)).default(300_000),
+    SIM_CONTROL_TOKEN: z
+      .string()
+      .regex(/^\S{16,512}$/, 'expected 16–512 characters without whitespace'),
+    LOG_LEVEL: z
+      .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+      .default('info'),
+  })
+  .superRefine((env, context) => {
+    if (env.OPCUA_SECURITY !== 'sign-and-encrypt') return;
+    for (const key of [
+      'OPCUA_GATEWAY_PASSWORD',
+      'OPCUA_READER_PASSWORD',
+      'OPCUA_PKI_DIR',
+    ] as const) {
+      if (env[key] === undefined) {
+        context.addIssue({
+          code: 'custom',
+          path: [key],
+          message: 'required with OPCUA_SECURITY=sign-and-encrypt',
+        });
       }
-    }),
-  SIM_CONFIG_DIR: text.default(DEFAULT_CONFIG),
-  /**
-   * A stock file in place of `SIM_CONFIG_DIR/stock.yaml` (#196, ADR-0033), e.g. a golden
-   * scenario's own `stock.yaml` for a live run of that scenario. Left out, the configuration's.
-   */
-  SIM_STOCK: text.optional(),
-  SIM_AUTOSTART: z.enum(['true', 'false']).default('true'),
-  /** `schedule` (default, Phases 1–6) or `orders` (#172): CNCs run only `LoadOrder` jobs. */
-  SIM_PRODUCTION: z.enum(PRODUCTION_MODES).default('schedule'),
-  /**
-   * A timeline loaded before the run starts (#235): a name of `SIM_SCENARIOS_DIR` or a file path.
-   * Its seed, start and production mode must be the run's; a `dispatch` entry is refused.
-   */
-  SIM_TIMELINE: text.optional(),
-  /** The committed timelines (`POST /scenario` by name, `GET /scenarios`). */
-  SIM_SCENARIOS_DIR: text.default(DEFAULT_SCENARIOS),
-  /** A file the live event log is written to (#235): the headless `events.jsonl` without header. */
-  SIM_EVENT_LOG: text.optional(),
-  OPCUA_HOST: text.default('localhost'),
-  OPCUA_PORT_OFFSET: integer.pipe(z.number().max(9_999)).default(0),
-  OPCUA_PKI_DIR: text.optional(),
-  MODBUS_HOST: text.default('127.0.0.1'),
-  MODBUS_PORT: port.default(5020),
-  CONTROL_HOST: text.default('127.0.0.1'),
-  CONTROL_PORT: port.default(4800),
-  /**
-   * The control API's bearer token (#237, control API 1.11): required on every route but
-   * `/health/*` and `/metrics`. Random per stack, at least 16 characters, no whitespace.
-   */
-  /**
-   * How long an event-stream connection lives before it is closed with 4100 (#237 review): the
-   * console reconnects, and nginx checks the session again. 1 s to 1 h, default 5 min.
-   */
-  SIM_EVENTS_LIFETIME_MS: integer.pipe(z.number().min(1_000).max(3_600_000)).default(300_000),
-  SIM_CONTROL_TOKEN: z
-    .string()
-    .regex(/^\S{16,512}$/, 'expected 16–512 characters without whitespace'),
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
-});
+    }
+  });
 
 export type SimulatorEnv = z.output<typeof envSchema>;
 
@@ -95,7 +126,7 @@ export function parseEnv(source: Readonly<Record<string, string | undefined>>): 
     issues: result.error.issues.map((issue) => {
       const key = String(issue.path[0]);
       // A secret is never echoed (#237).
-      const shown = key.includes('TOKEN') ? '(hidden)' : JSON.stringify(known[key] ?? null);
+      const shown = /TOKEN|PASSWORD/.test(key) ? '(hidden)' : JSON.stringify(known[key] ?? null);
       return `${issue.path.join('.')}: ${issue.message} (got ${shown})`;
     }),
   };

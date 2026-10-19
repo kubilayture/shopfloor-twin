@@ -1,8 +1,11 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPCUA_MACHINES } from '@shopfloor/contracts';
+import { ensureOpcuaPki } from '@shopfloor/pki';
 import { freeOffset, freePort } from '@shopfloor/test-kit/ports';
+import type { ServerSecurity } from './opcua/security.ts';
 
 // Ports and certificate folders for the simulator's server tests (#216, after #212): several
 // suites, worktrees or agents run at once on one machine, so no test binds a fixed port or shares
@@ -78,5 +81,43 @@ export async function temporaryPki(
   return {
     folder,
     remove: () => rm(folder, { recursive: true, force: true }),
+  };
+}
+
+/** A secure PKI for one suite (#239): the `pki` step's own code, run into a temporary folder. */
+export interface SecurePki {
+  /** The simulator's PKI root: `PlantServers`' `pkiFolder`. */
+  readonly folder: string;
+  /** The gateway's and the tools client's PKI folders. */
+  readonly gateway: string;
+  readonly tools: string;
+  /** The two users' passwords, random per suite. */
+  readonly passwords: { readonly gateway: string; readonly reader: string };
+  /** `PlantServers`' `security`. */
+  readonly security: ServerSecurity;
+  readonly remove: () => Promise<void>;
+}
+
+/**
+ * The exchange step for tests outside Compose (ADR-0038): `ensureOpcuaPki`, the code of the `pki`
+ * service, makes and pins every certificate before the servers and clients start.
+ */
+export async function securePki(name: string): Promise<SecurePki> {
+  const root = await mkdtemp(join(tmpdir(), `shopfloor-twin-${name}-secure-pki-`));
+  const folder = join(root, 'simulator');
+  const gateway = join(root, 'gateway');
+  const tools = join(root, 'tools');
+  await ensureOpcuaPki({ simulator: folder, gateway, tools });
+  const passwords = {
+    gateway: randomBytes(16).toString('hex'),
+    reader: randomBytes(16).toString('hex'),
+  };
+  return {
+    folder,
+    gateway,
+    tools,
+    passwords,
+    security: { mode: 'sign-and-encrypt', passwords },
+    remove: () => rm(root, { recursive: true, force: true }),
   };
 }

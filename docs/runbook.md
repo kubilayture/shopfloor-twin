@@ -62,8 +62,16 @@ Runs the plant live and exposes the five OPC UA machines (contract: `docs/contra
 
 ```bash
 export SIM_CONTROL_TOKEN=$(openssl rand -hex 16)   # required since #237 (control API 1.11)
+# OPC UA SignAndEncrypt (#239, ADR-0038): run the pki step once into ./.pki (ignored by Git), then
+# give the simulator its folder and the two users' passwords.
+PKI_SIMULATOR_DIR=$PWD/.pki/simulator PKI_GATEWAY_DIR=$PWD/.pki/gateway PKI_TOOLS_DIR=$PWD/.pki/tools \
+  pnpm --filter @shopfloor/pki pki
+export OPCUA_PKI_DIR=$PWD/.pki/simulator
+export OPCUA_GATEWAY_PASSWORD=$(openssl rand -hex 16) OPCUA_READER_PASSWORD=$(openssl rand -hex 16)
 pnpm sim:serve
 ```
+
+Without the pki step's certificates the simulator refuses to start (`own/certs/certificate.pem is missing: run the pki step first`). `OPCUA_SECURITY=none` serves the old anonymous None endpoints instead (no certificate, no users, methods open), for a quick local look only; Compose never runs that way.
 
 Configuration comes from environment variables, validated at start-up. Examples: `SIM_SPEED=30`, `SIM_SEED=7`, `SIM_AUTOSTART=false`, `SIM_PRODUCTION=orders` (#172: the CNCs run only the jobs OPC UA `LoadOrder` gives them; `schedule` is the default), `SIM_STOCK=apps/simulator/golden/<scenario>/stock.yaml` (#196: a scenario's own stock in place of `config/plant/stock.yaml`), `SIM_TIMELINE=monday-breakdown-and-recovery` (#235: a timeline of `config/scenarios/` loaded before the run starts; its seed and start must be the run's, so here with `SIM_SEED=20261012`; `POST /api/v1/scenario` loads one into an idle run instead), `SIM_EVENT_LOG=runs/live.jsonl` (#235: the live event log, the headless `events.jsonl` without its header), `OPCUA_PORT_OFFSET=100`, `CONTROL_PORT=4800`. The full list is in the contract.
 
@@ -79,9 +87,9 @@ printf 'Authorization: Bearer %s\n' "$SIM_CONTROL_TOKEN" | curl -s -H @- -X POST
 
 The examples below pass it with `-H` for brevity (it then shows in the process list; the stdin form above doesn't). The other commands are `POST /api/v1/pause`, `POST /api/v1/step`, `PUT /api/v1/speed` with a JSON body `{"speed": 10}`, and `GET /api/v1/status`. Plant events stream over a WebSocket at `ws://localhost:4800/api/v1/events`; health is at `/health/live` and `/health/ready`, and metrics at `/metrics`.
 
-- Connect any OPC UA client, for example UaExpert, with security mode None. Read the washer with any Modbus TCP client, unit id 1, holding registers (function 3).
+- Connect an OPC UA client with SignAndEncrypt (`Basic256Sha256` or `Aes128_Sha256_RsaOaep`) as `opcua-reader` (`OPCUA_READER_PASSWORD`), presenting a certificate the servers pin: the tools certificate and key in `.pki/tools/own/` (its URI is `urn:orbis-components:shopfloor-twin:tools`), (the pki step owns every `trusted/certs` and removes a certificate added there by hand on its next run). The client must trust the servers' certificates (`.pki/tools/trusted/certs`). `opcua-reader` reads, browses and subscribes; no variable is writable (`BadNotWritable`, address space 1.3), and `LoadOrder` and `LoadProgram` answer it `BadUserAccessDenied` (only `opcua-gateway` may call them, address space 1.3). Read the washer with any Modbus TCP client, unit id 1, holding registers (function 3).
 - `curl -s -H "Authorization: Bearer $SIM_CONTROL_TOKEN" -X POST localhost:4800/api/v1/faults/modbus -H 'content-type: application/json' -d '{"silent": true}'` makes the washer stop answering, to exercise a poller.
-- Each server creates its own certificate on first start in `./.pki/<machine>` (git-ignored).
+- Each server uses the certificate the pki step made in `$OPCUA_PKI_DIR/<machine>` and never makes one (with `OPCUA_SECURITY=none`, node-opcua makes one there on first start, as before #239).
 - Logs are JSON lines (pino). `LOG_LEVEL=warn` keeps only warnings and errors.
 - Ctrl+C or SIGTERM stops the run, closes the API and shuts the servers down. An invalid environment exits with status 2.
 - After changing a route, regenerate the OpenAPI description with `pnpm --filter @shopfloor/simulator openapi`. A test fails while it is out of date.
@@ -91,10 +99,13 @@ The examples below pass it with `-H` for brevity (it then shows in the process l
 The gateway publishes to the broker of the stack (`pnpm stack:up` first). It subscribes to the five OPC UA machines (the simulator of the stack, or `pnpm sim:serve`) and polls the WSH-01 washer over Modbus TCP, and publishes their state, cycles, alarms and telemetry to the UNS. From Phase 7 (#173, ADR-0029) it also executes the MES's `cmd/load-order` commands on the CNCs (OPC UA `LoadOrder`) and answers them on `cmd-res/load-order`; it publishes the CNCs' job facts on `events/job` (orders mode).
 
 ```bash
-MQTT_PASSWORD=<MQTT_GATEWAY_PASSWORD from .env> pnpm --filter @shopfloor/edge-gateway start
+MQTT_PASSWORD=<MQTT_GATEWAY_PASSWORD from .env> OPCUA_PKI_DIR=$PWD/.pki/gateway \
+  OPCUA_GATEWAY_PASSWORD=<the simulator's OPCUA_GATEWAY_PASSWORD> pnpm --filter @shopfloor/edge-gateway start
 ```
 
-- Environment: `GATEWAY_ID` (default `gw-01`), `MQTT_URL` (`mqtt://127.0.0.1:1883`), `MQTT_USERNAME` (`gw-01`), `MQTT_PASSWORD` (required), `OPCUA_HOST` (`localhost`), `OPCUA_PORT_OFFSET` (0), `OPCUA_PKI_DIR` (`.pki-gateway`, its own client certificate), `TELEMETRY_SAMPLING_MS` (1000), `MODBUS_HOST` (`127.0.0.1`), `MODBUS_PORT` (5020), `MODBUS_POLL_MS` (250), `BUFFER_PATH` (`.buffer/gateway.db`, the store-and-forward file), `BUFFER_MAX_MESSAGES` (200000), `GATEWAY_CALL_DEADLINE_MS` (5000, the deadline of each OPC UA request of a command), `GATEWAY_CMD_SESSION_EXPIRY_S` (3600, the command session's expiry at the broker), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4900`), `PLANT_CONFIG_DIR`, `LOG_LEVEL`. An invalid environment exits with status 2, and secrets are never echoed.
+The gateway connects with SignAndEncrypt as `opcua-gateway` (#239, ADR-0038), presenting the certificate the pki step made in `OPCUA_PKI_DIR` (see "Serve the plant" for the step) and trusting only the server certificates pinned there; without its certificate it refuses to start. `OPCUA_SECURITY=none` connects anonymously over None, to a simulator started the same way.
+
+- Environment: `GATEWAY_ID` (default `gw-01`), `MQTT_URL` (`mqtt://127.0.0.1:1883`), `MQTT_USERNAME` (`gw-01`), `MQTT_PASSWORD` (required), `OPCUA_HOST` (`localhost`), `OPCUA_PORT_OFFSET` (0), `OPCUA_PKI_DIR` (`.pki-gateway`, the pki step's gateway folder: its certificate and key and the pinned server certificates), `OPCUA_SECURITY` (`sign-and-encrypt`; `none` for a None simulator), `OPCUA_GATEWAY_PASSWORD` (required with `sign-and-encrypt`), `TELEMETRY_SAMPLING_MS` (1000), `MODBUS_HOST` (`127.0.0.1`), `MODBUS_PORT` (5020), `MODBUS_POLL_MS` (250), `BUFFER_PATH` (`.buffer/gateway.db`, the store-and-forward file), `BUFFER_MAX_MESSAGES` (200000), `GATEWAY_CALL_DEADLINE_MS` (5000, the deadline of each OPC UA request of a command), `GATEWAY_CMD_SESSION_EXPIRY_S` (3600, the command session's expiry at the broker), `HTTP_HOST` and `HTTP_PORT` (`127.0.0.1:4900`), `PLANT_CONFIG_DIR`, `LOG_LEVEL`. An invalid environment exits with status 2, and secrets are never echoed.
 - `GET /health/live`, `/health/ready` (ready while both broker sessions are up and the command subscriptions are granted) and `/metrics` (`gateway_device_connected{machine}`, `gateway_device_facts{machine}`, `gateway_cycle_trace_dropped_total{machine}` (OPC UA cycles published without `lots` or `operator` the UNS contract can't carry, #197), `gateway_published_messages`, `gateway_buffer_messages`, `gateway_buffer_dropped_messages`, and for commands `gateway_command_deliveries`, `gateway_command_calls`, `gateway_command_results{result}`, `gateway_command_pending{stage}` with `queued` and `settling`, `gateway_command_call_timeouts` (calls whose deadline passed without an answer, #178), and `gateway_command_settle_acceptances`, which should stay 0: above it, the gateway's and the simulator's clocks disagree).
 - Commands: the gateway's second broker connection has client id `gw-01-cmd` and a persistent session, so commands published while it is down wait at the broker for up to `GATEWAY_CMD_SESSION_EXPIRY_S`. Each delivery is recorded in `BUFFER_PATH` (table `command_inbox`) before the broker gets its acknowledgement, and definitive answers are kept in `command_result`: `sqlite3 .buffer/gateway.db 'SELECT command_id, expires_at, json_extract(value, "$.result") FROM command_result'`. A command whose outcome the gateway can't learn is answered `unknown` (log level `warn`) and settled again every 5 s; `gateway_command_pending{stage="settling"}` counts them. A finished simulator run answers every call as "not running", so such a command stays `unknown` until the simulator restarts. Deleting `.buffer/` loses the inbox too: commands acknowledged and not yet answered are then never answered (the MES's `failed` margin reports them).
 - While the broker is down, `gateway_buffer_messages` grows; it drains after the broker returns. Deleting `.buffer/` throws away whatever wasn't delivered yet.
@@ -308,23 +319,23 @@ It ends with one record for the pull request's "Gate" section, also written to `
 
 A commit after the gate reruns the jobs its files touch, with `GATE_STEPS` (a comma list of `verify`, `golden`, `e2e`, `smoke`, `reconcile`), and the pull request names them:
 
-| Files changed                                                                                         | Rerun                                                   |
-| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| Documentation only (`docs/`, `*.md`)                                                                  | `verify` (formatting)                                   |
-| `apps/simulator`, `packages/sim-core`, `config/plant`                                                 | `verify,golden,e2e,smoke,reconcile`                     |
-| `packages/spc-core`, `packages/trace-core` (shape `trace.json`)                                       | `verify,golden,e2e,smoke,reconcile`                     |
-| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`                                           | `verify,e2e,smoke,reconcile`                            |
-| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*`                                         | `verify,smoke,reconcile`                                |
-| `e2e/` (reconciliation, Playwright)                                                                   | `verify,reconcile`                                      |
-| `scripts/stack-smoke*`                                                                                | `verify,smoke`                                          |
-| `e2e/src/quality-pass.ts`, `e2e/browser/quality/` only                                                | `verify,reconcile` with `RECONCILE_PASSES=quality`      |
-| `e2e/src/trace-perf.ts`, `apps/mes-server/src/trace-perf-load*`                                       | `verify,e2e` and `pnpm test:trace-perf`                 |
-| `apps/web/src/screens/console*`, `apps/web/nginx/`, `e2e/browser/console/`, `e2e/src/console-pass.ts` | `verify,smoke` and `pnpm test:console`                  |
-| `packages/oee-core` (shapes `line-oee.json`, Phase 9)                                                 | `verify,golden,e2e,smoke,reconcile`                     |
-| `config/scenarios/`                                                                                   | `verify,golden,e2e`                                     |
-| `config/mosquitto/`, nginx (`apps/web/nginx/`), the `pki` step, `compose.dev-ports.yml`               | `verify,e2e,smoke,reconcile` and `pnpm test:resilience` |
-| `e2e/src/resilience*`                                                                                 | `verify` and `pnpm test:resilience`                     |
-| `e2e/src/perf*`, `apps/mes-server/src/perf-replay*`, `compose.observability.yml`                      | `verify` and `pnpm test:perf`                           |
+| Files changed                                                                                            | Rerun                                                   |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Documentation only (`docs/`, `*.md`)                                                                     | `verify` (formatting)                                   |
+| `apps/simulator`, `packages/sim-core`, `config/plant`                                                    | `verify,golden,e2e,smoke,reconcile`                     |
+| `packages/spc-core`, `packages/trace-core` (shape `trace.json`)                                          | `verify,golden,e2e,smoke,reconcile`                     |
+| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`                                              | `verify,e2e,smoke,reconcile`                            |
+| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*`                                            | `verify,smoke,reconcile`                                |
+| `e2e/` (reconciliation, Playwright)                                                                      | `verify,reconcile`                                      |
+| `scripts/stack-smoke*`                                                                                   | `verify,smoke`                                          |
+| `e2e/src/quality-pass.ts`, `e2e/browser/quality/` only                                                   | `verify,reconcile` with `RECONCILE_PASSES=quality`      |
+| `e2e/src/trace-perf.ts`, `apps/mes-server/src/trace-perf-load*`                                          | `verify,e2e` and `pnpm test:trace-perf`                 |
+| `apps/web/src/screens/console*`, `apps/web/nginx/`, `e2e/browser/console/`, `e2e/src/console-pass.ts`    | `verify,smoke` and `pnpm test:console`                  |
+| `packages/oee-core` (shapes `line-oee.json`, Phase 9)                                                    | `verify,golden,e2e,smoke,reconcile`                     |
+| `config/scenarios/`                                                                                      | `verify,golden,e2e`                                     |
+| `config/mosquitto/`, nginx (`apps/web/nginx/`), the `pki` step (`packages/pki`), `compose.dev-ports.yml` | `verify,e2e,smoke,reconcile` and `pnpm test:resilience` |
+| `e2e/src/resilience*`                                                                                    | `verify` and `pnpm test:resilience`                     |
+| `e2e/src/perf*`, `apps/mes-server/src/perf-replay*`, `compose.observability.yml`                         | `verify` and `pnpm test:perf`                           |
 
 ## Full stack (Compose)
 
@@ -333,6 +344,8 @@ Database, broker, simulator, edge gateway, MES server, ERP mock and web app (`do
 First time only: create your local secrets file. It is git-ignored; never commit it.
 
 **Upgrading an existing `.env` (#237):** it must gain `SIM_CONTROL_TOKEN`, or `pnpm stack:up` stops with `Set SIM_CONTROL_TOKEN in .env`: `printf 'SIM_CONTROL_TOKEN=%s\n' "$(openssl rand -hex 16)" >> .env`.
+
+**Upgrading an existing `.env` (#239):** it must gain the two OPC UA users' passwords, or `pnpm stack:up` stops with `Set OPCUA_GATEWAY_PASSWORD in .env` (or `OPCUA_READER_PASSWORD`): `printf 'OPCUA_GATEWAY_PASSWORD=%s\nOPCUA_READER_PASSWORD=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" >> .env`. The first `pnpm stack:up` after #239 runs the new `pki` step, which replaces the certificates node-opcua made in `simulator-pki` (they carry both extended key usages) and makes the gateway's in the new `gateway-pki` volume; the old client certificate in `gateway-data` is no longer used. It also removes every certificate node-opcua pinned by itself in `simulator-pki` before #239 (it accepted every client then) and empties the CRL and issuer folders; the pki log lists each removal.
 
 ```bash
 cp .env.example .env
@@ -394,7 +407,7 @@ MES and web notes:
 Simulator notes:
 
 - The OPC UA servers advertise `localhost` in their endpoint URLs (`SIM_OPCUA_HOST` changes it), so clients on the host, such as UaExpert, connect as with `pnpm sim:serve`. Containers that join in Phase 3 connect to `opc.tcp://simulator:4841` and must use that URL as given (in node-opcua, `endpointMustExist: false`).
-- Certificates persist in the `simulator-pki` volume; `pnpm stack:reset` deletes them. The container's host name is fixed to `simulator`, so the certificate's SAN stays valid when the container is recreated.
+- Certificates persist in the `simulator-pki`, `gateway-pki` and `opcua-tools-pki` volumes, made by the `pki` step (see "OPC UA certificates" below); `pnpm stack:reset` deletes them. The container's host name is fixed to `simulator`, which every server certificate carries in its SAN.
 - `pnpm stack:smoke` expects the simulator to be running, so it fails with `SIM_AUTOSTART=false`.
 - Health probes and metric scrapes are logged only at `warn` and above.
 - `docker compose stop simulator` sends SIGTERM; the simulator shuts down in well under a second.
@@ -404,6 +417,16 @@ Simulator notes:
   - image 388 MB, mostly `node-opcua` and its nodesets;
   - healthy about 6 s after start;
   - about 170–225 MiB memory and about 1% CPU, under a limit of 512 MB and one CPU.
+
+### OPC UA certificates (#239, ADR-0038)
+
+The one-shot `pki` service runs on every `docker compose up` (and `pnpm stack:up`) before the simulator and the gateway, so certificates within 30 days of their end are renewed there automatically. It makes a key and a self-signed certificate (RSA 2048, valid 365 days) for each machine server, the gateway and the tools client, keeps existing ones that are valid for more than 30 days, pins the peers (each server: the gateway's and the tools certificates; the gateway and the tools client: the five servers'), makes each `trusted/certs` exactly those pins (any other file there is removed) and empties `trusted/crl`, `issuers/certs` and `issuers/crl`, prints one line per certificate and exits 0. The simulator and the gateway start only after it succeeded, and refuse to start without their certificate. No CA is involved: trust is the pinned certificates in each component's `trusted/certs`.
+
+- **See the expiry dates:** `docker compose run --rm pki` (or `docker compose logs pki` after an `up`) prints each certificate's `until` date and SHA-1 thumbprint, and whether it was kept or made.
+- **Renew:** rerun the step: `docker compose run --rm pki` replaces every certificate within 30 days of its end (and any that doesn't say what the step would write), removes the superseded certificate from every `trusted/certs` and pins the new one. `PKI_RENEW=edge-gateway,tools docker compose run --rm pki` renews named ones now (`cnc-01` … `pck-01`, `edge-gateway`, `tools`; a key thought compromised); an unknown name stops the step with exit 2 and changes nothing. **Whenever the step renewed a certificate or changed a trust folder it prints `pki: !!! RENEWED … RESTART THE SIMULATOR AND THE GATEWAY … !!!`:** run `docker compose restart simulator gateway`, since node-opcua reads its certificate and pins only when it starts. This also holds after an automatic renewal at `pnpm stack:up` (check `docker compose logs pki`): `up` reruns the step but doesn't recreate an unchanged simulator or gateway.
+- **Reset all PKI volumes:** `docker compose stop simulator gateway`, `docker compose rm -f simulator gateway pki`, `docker volume rm shopfloor-twin_simulator-pki shopfloor-twin_gateway-pki shopfloor-twin_opcua-tools-pki` (the prefix is the Compose project), then `pnpm stack:up`. `pnpm stack:reset` deletes them with everything else.
+- **A tool of your own (UaExpert):** use the tools certificate, which every server pins, and the user `opcua-reader`: `docker compose run --rm --no-deps opcua-tools cat /var/lib/pki/tools/own/certs/certificate.pem > tools-cert.pem` and the same for `own/private/private_key.pem` (keep the key private, delete it after use), and trust the servers' certificates in `/var/lib/pki/tools/trusted/certs`. `docker compose run --rm opcua-tools` runs the security checks of checklist S1 against the stack.
+- **The gateway logs `BadSecurityChecksFailed`, or the simulator `BadCertificateUntrusted`:** a pin is missing or stale (a volume reset on one side only); rerun the step and restart the simulator and the gateway. **`own/certs/certificate.pem is missing: run the pki step first`** (exit 2): the step didn't run or failed (`docker compose logs pki`). **`BadUserAccessDenied` when a session opens:** a wrong `OPCUA_GATEWAY_PASSWORD` or `OPCUA_READER_PASSWORD` (the simulator and the gateway read the same `.env`; recreate both after changing it).
 
 ### Troubleshooting
 

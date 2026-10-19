@@ -58,6 +58,7 @@ beforeAll(async () => {
       production: 'orders',
       wallClock: () => WALL,
       pkiFolder: pki.folder,
+      security: { mode: 'none' },
     });
     run = createLiveRun({
       config,

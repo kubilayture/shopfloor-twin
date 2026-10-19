@@ -690,7 +690,14 @@ describe('control API (#54)', () => {
 });
 
 /** A valid control token (#237): every environment needs one. */
-const TOKEN_ENV = { SIM_CONTROL_TOKEN: 'a'.repeat(32) };
+// The required secrets: the control token (#237) and, for the default OPC UA security (#239), the
+// PKI folder and both users' passwords.
+const TOKEN_ENV = {
+  SIM_CONTROL_TOKEN: 'a'.repeat(32),
+  OPCUA_PKI_DIR: '/var/lib/simulator/pki',
+  OPCUA_GATEWAY_PASSWORD: 'g'.repeat(32),
+  OPCUA_READER_PASSWORD: 'r'.repeat(32),
+};
 
 describe('control token (#237, 1.11)', () => {
   const TOKEN = 'b'.repeat(16) + 'c'.repeat(16);
@@ -977,11 +984,37 @@ describe('environment configuration (#54)', () => {
     }
   });
 
+  it('defaults to SignAndEncrypt, which needs the PKI folder and both passwords, never echoed (#239)', () => {
+    const secure = parseEnv(TOKEN_ENV);
+    expect(secure.ok && secure.env.OPCUA_SECURITY).toBe('sign-and-encrypt');
+    const missing = parseEnv({ SIM_CONTROL_TOKEN: TOKEN_ENV.SIM_CONTROL_TOKEN });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) {
+      expect(missing.issues.map((issue) => issue.split(':')[0]).sort()).toEqual([
+        'OPCUA_GATEWAY_PASSWORD',
+        'OPCUA_PKI_DIR',
+        'OPCUA_READER_PASSWORD',
+      ]);
+    }
+    const short = parseEnv({ ...TOKEN_ENV, OPCUA_READER_PASSWORD: 'short secret' });
+    expect(short.ok).toBe(false);
+    if (!short.ok) {
+      expect(short.issues.join('\n')).toMatch(/^OPCUA_READER_PASSWORD: .*\(hidden\)/);
+      expect(short.issues.join('\n')).not.toContain('short secret');
+    }
+    const none = parseEnv({
+      SIM_CONTROL_TOKEN: TOKEN_ENV.SIM_CONTROL_TOKEN,
+      OPCUA_SECURITY: 'none',
+    });
+    expect(none.ok && none.env.OPCUA_SECURITY).toBe('none');
+    expect(parseEnv({ ...TOKEN_ENV, OPCUA_SECURITY: 'sign' }).ok).toBe(false);
+  });
+
   it('requires the control token and never echoes it (#237)', () => {
     const missing = parseEnv({});
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.issues.join('\n')).toMatch(/^SIM_CONTROL_TOKEN: /m);
-    const bad = parseEnv({ SIM_CONTROL_TOKEN: 'secret value' });
+    const bad = parseEnv({ ...TOKEN_ENV, SIM_CONTROL_TOKEN: 'secret value' });
     expect(bad.ok).toBe(false);
     if (!bad.ok) {
       expect(bad.issues.join('\n')).toContain('(hidden)');

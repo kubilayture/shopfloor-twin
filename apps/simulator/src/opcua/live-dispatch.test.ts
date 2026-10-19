@@ -53,6 +53,7 @@ describe('live orders-01 dispatched over OPC UA (#172, B3)', () => {
         production: 'orders',
         wallClock: () => WALL,
         pkiFolder: pki.folder,
+        security: { mode: 'none' },
       });
       const attemptEvents: PlantEvent[] = [];
       live = createLiveRun({

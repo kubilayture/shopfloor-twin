@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { equipmentPaths } from '../hierarchy.ts';
 import { TopicSequences } from '../identity.ts';
 import type { UnsPublication } from '../publisher.ts';
-import { startSimulator, type RunningSimulator } from '../testing.ts';
+import { installGatewayPki, startSimulator, type RunningSimulator } from '../testing.ts';
 import { OpcuaCollector } from './collector.ts';
 
 /**
@@ -39,9 +39,11 @@ beforeAll(async () => {
   const path = equipmentPaths(loaded.config).get(ASM.id);
   if (!path) throw new Error('no path for asm-01');
   simulator = await startSimulator(undefined, { SIM_START: START });
+  // SignAndEncrypt as opcua-gateway with the test process's pinned certificates (#239).
+  const security = await installGatewayPki(pki);
   const certificateManager = new OPCUACertificateManager({
     rootFolder: pki,
-    automaticallyAcceptUnknownCertificate: true,
+    automaticallyAcceptUnknownCertificate: false,
   });
   await certificateManager.initialize();
   collector = new OpcuaCollector({
@@ -58,6 +60,7 @@ beforeAll(async () => {
     sequences: new TopicSequences(1_800_000_000),
     incidents: { report: () => undefined },
     certificateManager,
+    security,
   });
   await collector.prepare();
   await collector.start();

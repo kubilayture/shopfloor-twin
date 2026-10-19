@@ -467,3 +467,10 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed | 1,469.4 s |                                                                                                                                 |
     | smoke     | passed | 67.5 s    | hardened ports (3 bindings, all S8); HTTPS only, TLS 1.3 with the step's certificate, plain HTTP 400, no HSTS, `__Host-` cookie |
     | reconcile | failed | 1,663.1 s | alarms FAILED (`final`: `rawRequest` refused `https:`), orders OK, quality OK                                                   |
+
+  - **Gate, rerun** on `57af847` (the fix and the log above; `GATE_STEPS=verify,reconcile` per the rerun table for `e2e/`, `GATE_PROJECT=gate241b`, `GATE_TAG=pr241b`, `TURBO_FORCE=1`, under the heavy lock after waiting for another agent's gate), `GATE-OK`; free at the start: host 29.6 GiB, Docker 70.0 GiB. Golden, e2e and smoke stand from the first run (no file they cover changed since).
+
+    | Step      | Result | Time    | Notes                                                                                                          |
+    | --------- | ------ | ------- | -------------------------------------------------------------------------------------------------------------- |
+    | verify    | passed | 509 s   | `pnpm verify --concurrency=1`, uncached                                                                        |
+    | reconcile | passed | 1,696 s | alarms OK (the `final` project over HTTPS), orders OK, quality OK; the TLS spec in both `orders-dispatch` runs |

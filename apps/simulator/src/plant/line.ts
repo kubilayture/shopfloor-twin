@@ -327,6 +327,9 @@ interface Job {
   completedAt: SimTime | undefined;
 }
 
+/** An external input's kind (#236 review): a failure or drift injection, or a console action. */
+export type InputKind = 'injection' | 'action';
+
 /**
  * An accepted job as the live recording keeps it (#236, `GET /scenario/recorded`): the dispatch
  * itself and where in the run it was accepted, the simulation time and the number of events
@@ -667,6 +670,12 @@ export class ProductionLine {
   readonly #jobs: Job[] = [];
   /** Console actions (#234), in acceptance order, numbered on their own from 1. */
   readonly #actions: ActionRecord[] = [];
+  /**
+   * The order the line accepted its external inputs in (#236 review): an injection or drift
+   * (`injection`, one numbering) or a console action (`action`). Their external events share the
+   * queue's lane in acceptance order, so a replay must accept them in this order too.
+   */
+  readonly #inputOrder: InputKind[] = [];
   #crewNow: CrewNow | undefined;
   /** Orders mode: every job this run accepted, by command id, line-wide (the dedup table). */
   readonly #acceptedCommands = new Map<string, Job>();
@@ -1148,6 +1157,7 @@ export class ProductionLine {
       appliedAt: undefined,
     };
     this.#injections.push(injection);
+    this.#inputOrder.push('injection');
     // External (#235): at `at`, before the model's own events, wherever in the run it is accepted.
     simulation.schedule(
       at,
@@ -1229,6 +1239,7 @@ export class ProductionLine {
       endedBy: undefined,
     };
     this.#drifts.push(drift);
+    this.#inputOrder.push('injection');
     simulation.schedule(
       at,
       { type: 'drift-start', station: request.machine, injection: drift.id },
@@ -1771,6 +1782,14 @@ export class ProductionLine {
     }));
   }
 
+  /**
+   * The kinds of the external inputs accepted so far, in acceptance order (#236 review): with the
+   * injections (failures and drifts by id) and the actions (by id), the exact acceptance order.
+   */
+  inputOrder(): InputKind[] {
+    return [...this.#inputOrder];
+  }
+
   /** Every job accepted so far (orders mode), in acceptance order, with its progress. */
   jobs(): JobView[] {
     return this.#jobs.map((job) => this.#jobView(job));
@@ -1940,6 +1959,7 @@ export class ProductionLine {
       simulation.schedule(at, { type: 'lot-action', action: id }, 'external');
     }
     this.#actions.push(action);
+    this.#inputOrder.push('action');
     return { ok: true, action: this.#actionView(action) };
   }
 
@@ -1969,6 +1989,7 @@ export class ProductionLine {
       appliedAt: undefined,
     };
     this.#actions.push(action);
+    this.#inputOrder.push('action');
     return { ok: true, action: this.#actionView(action) };
   }
 

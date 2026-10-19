@@ -14,7 +14,7 @@ import {
   type Scenario,
   type ScenarioPlan,
 } from '@shopfloor/plant-config';
-import type { HeadlessOptions } from './run.ts';
+import { configHash, type HeadlessOptions } from './run.ts';
 
 export const REPO = resolve(import.meta.dirname, '../../../..');
 /** The committed timelines. */
@@ -52,6 +52,13 @@ export function planOptions(
   label: string,
 ): HeadlessOptions {
   const issues = checkScenarioPlan(config, plan);
+  // A recording (#236 review) names the configuration it was made with; another one can't replay it.
+  if (plan.configSha256 !== undefined && plan.configSha256 !== configHash(config)) {
+    issues.push({
+      path: 'configSha256',
+      message: `the recording was made with configuration ${plan.configSha256}, this configuration is ${configHash(config)}`,
+    });
+  }
   if (issues.length > 0) {
     throw new Error(`${label}: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`);
   }
@@ -64,6 +71,8 @@ export function planOptions(
     ...(plan.production === 'schedule' ? {} : { production: plan.production }),
     ...(plan.dispatches.length === 0 ? {} : { dispatches: plan.dispatches }),
     ...(plan.actions.length === 0 ? {} : { actions: plan.actions }),
+    ...(plan.inputOrder === undefined ? {} : { inputOrder: plan.inputOrder }),
+    ...(plan.endAfterEvents === undefined ? {} : { endAfterEvents: plan.endAfterEvents }),
   };
 }
 

@@ -135,7 +135,8 @@ if (options.timeline !== undefined) {
     if (options.scenarioEnd <= run.start || options.scenarioEnd > run.end) {
       usage(`--end must be after the timeline's start and not after its end`);
     }
-    run = { ...run, end: options.scenarioEnd };
+    // An earlier end replaces a recording's own stop (#236 review).
+    run = { ...run, end: options.scenarioEnd, endAfterEvents: undefined };
   }
 } else if (options.scenario === undefined) {
   const loaded = await loadPlantConfig(resolve(options.config));

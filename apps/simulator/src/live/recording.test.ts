@@ -13,6 +13,7 @@
  * case.
  */
 import {
+  MAX_RECORDED_ENTRIES,
   parseScenario,
   scenarioPlan,
   type InjectionSpec,
@@ -37,7 +38,7 @@ import {
   type PlantEvent,
 } from '../plant/line.ts';
 import { createLiveRun, type LiveRun } from './run.ts';
-import type { RecordedScenario } from './recording.ts';
+import { RecordingTooLargeError, recordScenario, type RecordedScenario } from './recording.ts';
 import { ManualClock } from './testing.ts';
 
 const EPOCH = 1_791_000_000;
@@ -206,6 +207,12 @@ const ofDispatch = (index: number): DispatchSpec => {
   return dispatch;
 };
 
+/** A copy of a recording without one key (a test of what that key does). */
+const without = (recorded: RecordedScenario, key: keyof RecordedScenario): RecordedScenario =>
+  Object.fromEntries(
+    Object.entries(recorded).filter(([k]) => k !== key),
+  ) as unknown as RecordedScenario;
+
 /** The first line where two logs differ, or -1. */
 const firstDifference = (a: readonly string[], b: readonly string[]): number => {
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -294,7 +301,7 @@ describe('dispatch recording and headless replay (#236)', () => {
     expect(replay(run.run.recorded({ config: 'config/plant' }))).toEqual(run.lines);
   });
 
-  it('ends the recording after a not yet due input, the live log a prefix of the replay', () => {
+  it('ends the recording after a not yet due input, and the replay still stops where the run stood', () => {
     const run = live();
     expect(run.call(ofDispatch(0)).ok).toBe(true);
     run.run.pacer.start();
@@ -308,9 +315,172 @@ describe('dispatch recording and headless replay (#236)', () => {
     const recorded = run.run.recorded({ config: 'config/plant' });
     expect(recorded.end).toBe(isoTime(later + 1));
     expect(recorded.actions).toEqual([{ kind: 'lot-block', at: isoTime(later), lot }]);
-    const replayed = replay(recorded);
-    expect(replayed.length).toBeGreaterThan(run.lines.length);
-    expect(replayed.slice(0, run.lines.length)).toEqual(run.lines);
+    expect(recorded.endAfterEvents).toBe(run.run.simulation.processed);
+    expect(replay(recorded)).toEqual(run.lines);
+    // Without the stop the replay runs on to `end`: the live log is only its prefix.
+    const longer = replay(without(recorded, 'endAfterEvents'));
+    expect(longer.length).toBeGreaterThan(run.lines.length);
+    expect(longer.slice(0, run.lines.length)).toEqual(run.lines);
+  });
+
+  it('stops exactly where a stepped run stood, an event of that millisecond still due', () => {
+    const run = live();
+    expect(run.call(ofDispatch(0)).ok).toBe(true);
+    run.run.pacer.start();
+    run.advance(25 * MINUTE);
+    run.run.pacer.pause();
+    let steps = 0;
+    do {
+      run.run.pacer.step();
+      steps++;
+    } while (run.run.simulation.nextEventTime !== run.run.simulation.now && steps < 5_000);
+    expect(run.run.simulation.nextEventTime).toBe(run.run.simulation.now);
+    expect(replay(run.run.recorded({ config: 'config/plant' }))).toEqual(run.lines);
+  });
+
+  describe('injections and actions in acceptance order (#236 review)', () => {
+    /** The replay of a recording without its `inputOrder`: every injection before every action. */
+    const groupOrder = (recorded: RecordedScenario): string[] => {
+      return replay(without(recorded, 'inputOrder'));
+    };
+
+    it('replays a tool breakage then a failure posted at the paused time, in that order', () => {
+      const run = live();
+      expect(run.call(ofDispatch(0)).ok).toBe(true);
+      run.run.pacer.start();
+      run.advance(47 * MINUTE);
+      run.run.pacer.pause();
+      const now = run.run.simulation.now;
+      // No event of this millisecond was processed (#235's limit for a post at "now").
+      expect(run.lines.some((l) => l.includes(`"at":"${isoTime(now)}"`))).toBe(false);
+      expect(run.run.act({ kind: 'tool-breakage', machine: 'cnc-01' }).ok).toBe(true);
+      expect(run.run.injectFailure({ machine: 'cnc-01', code: 'SPINDLE-OVERLOAD' }).ok).toBe(true);
+      // And two more actions later, one after the other (each list keeps its own order).
+      const lot = config.stock.lots[0]?.id ?? '';
+      expect(run.run.act({ kind: 'lot-block', lot, at: now + 20 * MINUTE + 3 }).ok).toBe(true);
+      expect(run.run.act({ kind: 'lot-release', lot, at: now + 50 * MINUTE + 3 }).ok).toBe(true);
+      run.run.pacer.resume();
+      run.advance(90 * MINUTE);
+      run.run.pacer.pause();
+      const recorded = run.run.recorded({ config: 'config/plant' });
+      expect(recorded.inputOrder).toEqual(['action', 'injection', 'action', 'action']);
+      expect(recorded.actions?.map((a) => a.kind)).toEqual([
+        'tool-breakage',
+        'lot-block',
+        'lot-release',
+      ]);
+      expect(replay(recorded)).toEqual(run.lines);
+      // The order matters here: injections first gives another log.
+      expect(firstDifference(groupOrder(recorded), run.lines)).toBeGreaterThanOrEqual(0);
+    });
+
+    it("replays a lot block accepted before a drift whose until is the block's time", () => {
+      const run = live();
+      expect(run.call(ofDispatch(0)).ok).toBe(true);
+      run.run.pacer.start();
+      run.advance(10 * MINUTE);
+      run.run.pacer.pause();
+      const now = run.run.simulation.now;
+      const at = now + 30 * MINUTE + 11;
+      const lot = config.stock.lots[0]?.id ?? '';
+      expect(run.run.act({ kind: 'lot-block', lot, at }).ok).toBe(true);
+      const drift = run.run.injectLeakDrift({
+        machine: 'lkt-01',
+        shift: 0.5,
+        at: now + 5 * MINUTE + 1,
+        until: at,
+      });
+      expect(drift.ok).toBe(true);
+      run.run.pacer.resume();
+      run.advance(60 * MINUTE);
+      run.run.pacer.pause();
+      const recorded = run.run.recorded({ config: 'config/plant' });
+      expect(recorded.inputOrder).toEqual(['action', 'injection']);
+      expect(replay(recorded)).toEqual(run.lines);
+      expect(firstDifference(groupOrder(recorded), run.lines)).toBeGreaterThanOrEqual(0);
+    });
+
+    it('keeps failures and drifts in their one numbering when accepted interleaved', () => {
+      const run = live();
+      expect(run.call(ofDispatch(0)).ok).toBe(true);
+      expect(run.call(ofDispatch(1)).ok).toBe(true);
+      const t = (minutes: number) => orders.start + minutes * MINUTE + 7;
+      expect(
+        run.run.injectFailure({
+          machine: 'cnc-01',
+          code: 'COOLANT-PRESSURE',
+          at: t(50),
+          repairMs: 4_000,
+        }).ok,
+      ).toBe(true);
+      expect(
+        run.run.injectLeakDrift({ machine: 'lkt-01', shift: 0.25, at: t(20), until: t(80) }).ok,
+      ).toBe(true);
+      expect(
+        run.run.injectFailure({ machine: 'cnc-02', code: 'SPINDLE-OVERLOAD', at: t(30) }).ok,
+      ).toBe(true);
+      run.run.pacer.start();
+      run.advance(120 * MINUTE);
+      run.run.pacer.pause();
+      const recorded = run.run.recorded({ config: 'config/plant' });
+      expect(recorded.injections).toEqual([
+        { at: isoTime(t(50)), machine: 'cnc-01', code: 'COOLANT-PRESSURE', repairMs: 4_000 },
+        {
+          kind: 'leak-drift',
+          at: isoTime(t(20)),
+          until: isoTime(t(80)),
+          machine: 'lkt-01',
+          shift: 0.25,
+        },
+        { at: isoTime(t(30)), machine: 'cnc-02', code: 'SPINDLE-OVERLOAD' },
+      ]);
+      expect(recorded.inputOrder).toBeUndefined();
+      expect(replay(recorded)).toEqual(run.lines);
+    });
+  });
+
+  it('refuses to record a list past MAX_RECORDED_ENTRIES (the route answers 413)', () => {
+    const dispatch = {
+      ...ofDispatch(0),
+      acceptedAt: orders.start,
+      afterEvents: 0,
+    };
+    const input = {
+      seed: 1,
+      start: orders.start,
+      simNow: orders.start,
+      production: 'orders' as const,
+      configSha256: 'a'.repeat(64),
+      config: 'config/plant',
+      processed: 0,
+      inputOrder: [],
+      injections: [],
+      drifts: [],
+      actions: [],
+    };
+    expect(() =>
+      recordScenario({
+        ...input,
+        dispatches: Array.from({ length: MAX_RECORDED_ENTRIES }, () => dispatch),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      recordScenario({
+        ...input,
+        dispatches: Array.from({ length: MAX_RECORDED_ENTRIES + 1 }, () => dispatch),
+      }),
+    ).toThrow(RecordingTooLargeError);
+  });
+
+  it('refuses a recording made with another configuration', () => {
+    const run = live();
+    run.run.pacer.start();
+    run.advance(5 * MINUTE);
+    run.run.pacer.pause();
+    const recorded = run.run.recorded({ config: 'config/plant' });
+    expect(() => replay({ ...recorded, configSha256: '0'.repeat(64) })).toThrow(
+      /configSha256: the recording was made with configuration 0{64}, this configuration is [0-9a-f]{64}/,
+    );
   });
 
   describe('probe Q2: which recorded shape replays a mid-run dispatch', () => {

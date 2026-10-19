@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { formatIssues, loadPlantConfig } from './load.ts';
 import {
+  MAX_RECORDED_ENTRIES,
   MAX_TIMELINE_ENTRIES,
   TIMELINE_ACTIONS,
   checkScenarioPlan,
@@ -554,6 +555,74 @@ describe('recorded runs (#236)', () => {
       'dispatches[4]',
     ]);
     expect(checkScenarioPlan(config, plan)[3]?.message).toMatch(/outside the run/);
+  });
+});
+
+describe('recorded runs, review of #236', () => {
+  const SHA = 'a'.repeat(64);
+  const lots = (n: number) =>
+    Array.from({ length: n }, () => ({ kind: 'lot-block', at: '2026-10-12T04:00:00Z', lot: 'L' }));
+  const failure = { at: '2026-10-12T04:00:00Z', machine: 'cnc-01', code: 'SPINDLE-OVERLOAD' };
+
+  it('takes up to MAX_RECORDED_ENTRIES per list in a recording, MAX_TIMELINE_ENTRIES otherwise', () => {
+    expect(issuesOf({ ...HEAD, actions: lots(MAX_TIMELINE_ENTRIES + 1) })).toEqual([
+      {
+        path: 'actions',
+        message: `at most ${String(MAX_TIMELINE_ENTRIES)} entries (a recorded run, with configSha256, takes ${String(MAX_RECORDED_ENTRIES)})`,
+      },
+    ]);
+    expect(
+      issuesOf({ ...HEAD, configSha256: SHA, actions: lots(MAX_TIMELINE_ENTRIES + 1) }),
+    ).toEqual([]);
+    expect(
+      issuesOf({ ...HEAD, configSha256: SHA, actions: lots(MAX_RECORDED_ENTRIES + 1) }).map(
+        (i) => i.path,
+      ),
+    ).toEqual(['actions']);
+    expect(issuesOf({ ...HEAD, configSha256: 'ABC' }).map((i) => i.path)).toEqual(['configSha256']);
+  });
+
+  it('maps inputOrder, endAfterEvents and configSha256 onto the plan', () => {
+    const plan = scenarioPlan(
+      parsed({
+        ...HEAD,
+        configSha256: SHA,
+        endAfterEvents: 12,
+        injections: [failure],
+        actions: lots(2),
+        inputOrder: ['action', 'injection', 'action'],
+      }),
+    );
+    expect([plan.configSha256, plan.endAfterEvents, plan.inputOrder]).toEqual([
+      SHA,
+      12,
+      ['action', 'injection', 'action'],
+    ]);
+    const plain = scenarioPlan(parsed({ ...HEAD, injections: [failure] }));
+    expect(plain).not.toHaveProperty('inputOrder');
+    expect(plain).not.toHaveProperty('endAfterEvents');
+    expect(plain).not.toHaveProperty('configSha256');
+  });
+
+  it('refuses an inputOrder that does not name each entry once, or beside a timeline', () => {
+    const message = 'inputOrder must name each injection and each action once';
+    expect(
+      issuesOf({ ...HEAD, injections: [failure], actions: lots(1), inputOrder: ['action'] }),
+    ).toEqual([{ path: 'inputOrder', message }]);
+    expect(
+      issuesOf({
+        ...HEAD,
+        injections: [failure],
+        actions: lots(1),
+        inputOrder: ['injection', 'injection'],
+      }),
+    ).toEqual([{ path: 'inputOrder', message }]);
+    expect(issuesOf({ ...HEAD, timeline: [], inputOrder: [] }).map((i) => i.path)).toEqual([
+      'inputOrder',
+    ]);
+    expect(issuesOf({ ...HEAD, endAfterEvents: -1 }).map((i) => i.path)).toEqual([
+      'endAfterEvents',
+    ]);
   });
 });
 

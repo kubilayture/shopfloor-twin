@@ -7891,7 +7891,7 @@
         "tags": [
           "scenario"
         ],
-        "description": "A `scenario.json` document (#236): every job the line accepted (a `LoadOrder` call or a start-time dispatch), in acceptance order, with the simulation time and the number of events processed when it was accepted (`acceptedAt`, `afterEvents`; neither for a job accepted while the run was idle at its start), and the injections and console actions the run accepted. Duplicate and refused `LoadOrder` calls change nothing and are not listed. `headless --timeline <file>` replays it: its event log equals the live one up to the run's simulation time (`end` is one millisecond after it, or after the latest accepted input not due yet).",
+        "description": "A `scenario.json` document (#236): every job the line accepted (a `LoadOrder` call or a start-time dispatch), in acceptance order, with the simulation time and the number of events processed when it was accepted (`acceptedAt`, `afterEvents`; neither for a job accepted while the run was idle at its start), and the injections and console actions the run accepted. Duplicate and refused `LoadOrder` calls change nothing and are not listed. `headless --timeline <file>` replays it: it stops at `endAfterEvents`, where the run stood, so its event log equals the live one line for line (`end` is one millisecond after the run's simulation time, or after the latest accepted input not due yet). `inputOrder` interleaves the injections and actions in acceptance order; `configSha256` is checked by the replay. 413: a list longer than 100000 entries.",
         "responses": {
           "200": {
             "description": "Default Response",
@@ -7921,6 +7921,16 @@
                     "end": {
                       "type": "string",
                       "description": "One millisecond after the run's simulation time, or after the latest accepted input not due yet"
+                    },
+                    "endAfterEvents": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991,
+                      "description": "Events the run had processed: the replay stops exactly there, so the logs are equal line for line"
+                    },
+                    "configSha256": {
+                      "type": "string",
+                      "description": "The run's configuration hash: the replay refuses another configuration"
                     },
                     "config": {
                       "type": "string",
@@ -8130,6 +8140,17 @@
                           }
                         ]
                       }
+                    },
+                    "inputOrder": {
+                      "description": "The order the injections and actions were accepted in, interleaved (only when both are there)",
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "injection",
+                          "action"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -8138,7 +8159,32 @@
                     "start",
                     "days",
                     "end",
+                    "endAfterEvents",
+                    "configSha256",
                     "config"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
                   ],
                   "additionalProperties": false
                 }

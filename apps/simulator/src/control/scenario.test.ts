@@ -7,6 +7,7 @@ import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  MAX_RECORDED_ENTRIES,
   MAX_TIMELINE_ENTRIES,
   parseScenario,
   scenarioPlan,
@@ -15,6 +16,7 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { SCENARIOS } from '../headless/timeline.ts';
+import { RecordingTooLargeError } from '../live/recording.ts';
 import { createLiveRun } from '../live/run.ts';
 import { ManualClock } from '../live/testing.ts';
 import { scenarioControl } from '../live/timeline.ts';
@@ -252,7 +254,7 @@ describe('the recorded run (1.10, #236)', () => {
       pacer: run.pacer,
       hub: new EventHub(),
       ready: () => true,
-      recorded: () => run.recorded({ config: 'config/plant' }),
+      recorded: () => run.recorded({ config: 'config/plant', stock: 'stock-01.yaml' }),
     });
     const job = (commandId: string, product: string) => ({
       commandId,
@@ -263,7 +265,22 @@ describe('the recorded run (1.10, #236)', () => {
     });
     expect(run.line.loadOrder('cnc-01', job('C-1', 'VB-100'), run.simulation).ok).toBe(true);
     expect(
-      run.injectFailure({ machine: 'cnc-01', code: 'COOLANT-PRESSURE', at: T0 + 7_200_123 }).ok,
+      run.injectFailure({
+        machine: 'cnc-01',
+        code: 'COOLANT-PRESSURE',
+        at: T0 + 7_200_123,
+        repairMs: 4_000,
+      }).ok,
+    ).toBe(true);
+    // An action accepted between two injections, and a drift: `inputOrder` keeps the order.
+    expect(run.act({ kind: 'tool-breakage', machine: 'cnc-02', at: T0 + 3_600_007 }).ok).toBe(true);
+    expect(
+      run.injectLeakDrift({
+        machine: 'lkt-01',
+        shift: 0.5,
+        at: T0 + 1_800_009,
+        until: T0 + 5_400_009,
+      }).ok,
     ).toBe(true);
     run.pacer.start();
     clock.advance(60_000);
@@ -279,13 +296,18 @@ describe('the recorded run (1.10, #236)', () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/scenario/recorded' });
     expect(res.statusCode).toBe(200);
     const body = res.json<Record<string, unknown>>();
-    expect(body).toEqual(JSON.parse(JSON.stringify(run.recorded({ config: 'config/plant' }))));
+    expect(body).toEqual(
+      JSON.parse(JSON.stringify(run.recorded({ config: 'config/plant', stock: 'stock-01.yaml' }))),
+    );
     expect(body).toMatchObject({
       seed: SEED,
       start: '2026-10-12T03:00:00.000Z',
       days: 1,
       end: new Date(T0 + 7_200_124).toISOString(),
+      endAfterEvents: run.simulation.processed,
+      configSha256: expect.stringMatching(/^[0-9a-f]{64}$/) as unknown,
       config: 'config/plant',
+      stock: 'stock-01.yaml',
       production: 'orders',
       dispatches: [
         { commandId: 'C-1', machine: 'cnc-01', notBefore: '2026-10-12T03:00:00.000Z' },
@@ -296,15 +318,61 @@ describe('the recorded run (1.10, #236)', () => {
           afterEvents: run.simulation.processed,
         },
       ],
-      injections: [{ at: '2026-10-12T05:00:00.123Z', machine: 'cnc-01', code: 'COOLANT-PRESSURE' }],
+      injections: [
+        {
+          at: '2026-10-12T05:00:00.123Z',
+          machine: 'cnc-01',
+          code: 'COOLANT-PRESSURE',
+          repairMs: 4_000,
+        },
+        {
+          kind: 'leak-drift',
+          at: '2026-10-12T03:30:00.009Z',
+          until: '2026-10-12T04:30:00.009Z',
+          machine: 'lkt-01',
+          shift: 0.5,
+        },
+      ],
+      actions: [{ kind: 'tool-breakage', at: '2026-10-12T04:00:00.007Z', machine: 'cnc-02' }],
+      inputOrder: ['injection', 'action', 'injection'],
     });
-    expect(body).not.toHaveProperty('actions');
-    expect(body).not.toHaveProperty('stock');
     expect((body.dispatches as object[])[0]).not.toHaveProperty('acceptedAt');
     // The schema a headless run reads takes it as it is.
     const parsed = parseScenario(body);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(scenarioPlan(parsed.scenario).end).toBe(T0 + 7_200_124);
+  });
+
+  it('answers 413 for a run past the recording bound', async () => {
+    app = await buildControlApp({
+      pacer: createLiveRun({ config, seed: SEED, start: T0, clock: new ManualClock() }).pacer,
+      hub: new EventHub(),
+      ready: () => true,
+      recorded: () => {
+        throw new RecordingTooLargeError('dispatches', MAX_RECORDED_ENTRIES + 1);
+      },
+    });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/scenario/recorded' });
+    expect(res.statusCode).toBe(413);
+    expect(res.json<{ message: string }>().message).toBe(
+      `the run has ${String(MAX_RECORDED_ENTRIES + 1)} dispatches, more than a recording takes (${String(MAX_RECORDED_ENTRIES)})`,
+    );
+  });
+
+  it('refuses to load a recording live: it is replayed headless', async () => {
+    const { app } = await setup();
+    const res = await post(app, {
+      timeline: {
+        seed: SEED,
+        start: '2026-10-12T03:00:00.000Z',
+        days: 1,
+        config: 'config/plant',
+        configSha256: 'a'.repeat(64),
+        endAfterEvents: 0,
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ message: string }>().message).toMatch(/replayed headless/);
   });
 
   it('exists only when the run gives its recording', async () => {

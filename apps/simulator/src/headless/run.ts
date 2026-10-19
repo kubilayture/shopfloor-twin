@@ -10,7 +10,12 @@ import {
   type PlantConfig,
 } from '@shopfloor/plant-config';
 import { RandomSource, Simulation, type SimTime } from '@shopfloor/sim-core';
-import { ProductionLine, type LineEvent, type ProductionMode } from '../plant/line.ts';
+import {
+  ProductionLine,
+  type InputKind,
+  type LineEvent,
+  type ProductionMode,
+} from '../plant/line.ts';
 import { RUN_SCHEMA, EVENT_SCHEMA, SUMMARY_SCHEMA, isoTime, stableStringify } from './serialize.ts';
 import { InvariantChecker } from './invariants.ts';
 import { GroundTruth, type GroundTruthSummary } from './summary.ts';
@@ -44,6 +49,18 @@ export interface HeadlessOptions {
    * control API accepts them. Their own numbering, from 1.
    */
   readonly actions?: readonly ActionSpec[];
+  /**
+   * A recorded run (#236 review): the order the live run accepted its injections and actions in,
+   * one kind per entry, each list taken in order. Without it every injection comes before every
+   * action. Their external events share one lane in acceptance order, so this order decides an
+   * injection and an action of one millisecond, or a drift's end and an action at its `until`.
+   */
+  readonly inputOrder?: readonly InputKind[];
+  /**
+   * A recorded run (#236 review): stop once exactly this many events are processed (where the live
+   * run stood), before `end`; the event log is then the live one line for line.
+   */
+  readonly endAfterEvents?: number | undefined;
 }
 
 /**
@@ -124,6 +141,10 @@ export interface RunHeader {
   readonly dispatches?: readonly HeaderDispatch[];
   /** Only when the run has any (#234), so every existing header and `events.sha256` stay. */
   readonly actions?: readonly HeaderAction[];
+  /** Only for a recorded run that interleaves them (#236 review). */
+  readonly inputOrder?: readonly InputKind[];
+  /** Only for a recorded run (#236 review). */
+  readonly endAfterEvents?: number;
 }
 
 export interface HeadlessResult {
@@ -168,6 +189,8 @@ export function runHeadless(
     production = 'schedule',
     dispatches = [],
     actions = [],
+    inputOrder,
+    endAfterEvents,
   }: HeadlessOptions,
   writeLine: (line: string) => void,
 ): HeadlessResult {
@@ -264,6 +287,8 @@ export function runHeadless(
           })),
         }),
     ...(actions.length === 0 ? {} : { actions: actions.map(headerAction) }),
+    ...(inputOrder === undefined ? {} : { inputOrder: [...inputOrder] }),
+    ...(endAfterEvents === undefined ? {} : { endAfterEvents }),
   };
   writeLine(stableStringify(header));
 
@@ -309,18 +334,9 @@ export function runHeadless(
     simulation,
     dispatches.filter((dispatch) => !isRecorded(dispatch)),
   );
-  // After line.start and in list order, exactly as the control API schedules them (#140, #196).
-  for (const injection of injections) {
-    const accepted =
-      injection.kind === 'leak-drift'
-        ? line.injectLeakDrift(injection, simulation, end)
-        : line.injectFailure(injection, simulation);
-    if (!accepted.ok) {
-      throw new RangeError(`injection at ${isoTime(injection.at)}: ${accepted.reason}`);
-    }
-  }
-  // Console actions last (#234), in list order, as a live run's control API accepts them.
-  applyActions(line, simulation, actions);
+  // After line.start, in list order, exactly as the control API schedules them (#140, #196); the
+  // console actions after the injections (#234), or interleaved as a recorded run took them.
+  applyInputs(line, simulation, injections, actions, inputOrder, end);
   checker?.check(start);
   const handle = (event: LineEvent, sim: Simulation<LineEvent>): void => {
     line.handle(event, sim);
@@ -328,7 +344,20 @@ export function runHeadless(
   };
   // Recorded dispatches (#236) at their points of the run, then the rest of it.
   replayDispatches(line, simulation, dispatches.filter(isRecorded), handle);
-  simulation.runUntil(end - 1, handle);
+  if (endAfterEvents === undefined) {
+    simulation.runUntil(end - 1, handle);
+  } else {
+    // A recorded run (#236 review): exactly as far as the live run had processed.
+    while (simulation.processed < endAfterEvents) {
+      const next = simulation.nextEventTime;
+      if (next === undefined || next >= end) {
+        throw new RangeError(
+          `endAfterEvents ${String(endAfterEvents)}: only ${String(simulation.processed)} events are processed before ${isoTime(end)}; the recording does not fit this run`,
+        );
+      }
+      simulation.step(handle);
+    }
+  }
 
   const summary = truth.finish(
     end,
@@ -358,18 +387,49 @@ const headerAction = (action: ActionSpec): HeaderAction => {
   }
 };
 
-/** Gives each console action to the line through `act`, in order; throws on any refusal. */
-export function applyActions(
+/**
+ * Gives the injections and console actions to the line (#236 review): in `order` when given (one
+ * kind per entry, each list taken in order, as a recorded run accepted them), otherwise every
+ * injection, then every action. Throws on any refusal.
+ */
+export function applyInputs(
   line: ProductionLine,
   simulation: Simulation<LineEvent>,
+  injections: readonly InjectionSpec[],
   actions: readonly ActionSpec[],
+  order: readonly InputKind[] | undefined,
+  end: SimTime,
 ): void {
-  actions.forEach((action, index) => {
-    const result = line.act(action, simulation);
-    if (!result.ok) {
-      throw new RangeError(`actions[${String(index)}] (${action.kind}): ${result.reason}`);
+  const kinds: readonly InputKind[] = order ?? [
+    ...injections.map((): InputKind => 'injection'),
+    ...actions.map((): InputKind => 'action'),
+  ];
+  let i = 0;
+  let a = 0;
+  for (const kind of kinds) {
+    if (kind === 'injection') {
+      const injection = injections[i++];
+      if (!injection) throw new RangeError('inputOrder names more injections than the run has');
+      const accepted =
+        injection.kind === 'leak-drift'
+          ? line.injectLeakDrift(injection, simulation, end)
+          : line.injectFailure(injection, simulation);
+      if (!accepted.ok) {
+        throw new RangeError(`injection at ${isoTime(injection.at)}: ${accepted.reason}`);
+      }
+    } else {
+      const action = actions[a];
+      if (!action) throw new RangeError('inputOrder names more actions than the run has');
+      const result = line.act(action, simulation);
+      if (!result.ok) {
+        throw new RangeError(`actions[${String(a)}] (${action.kind}): ${result.reason}`);
+      }
+      a++;
     }
-  });
+  }
+  if (i !== injections.length || a !== actions.length) {
+    throw new RangeError('inputOrder must name each injection and each action once');
+  }
 }
 
 /**
@@ -426,6 +486,8 @@ export function replayDispatches(
       }
       simulation.step(handle);
     }
+    // Unreachable after `runHeadless`'s checks (acceptance order, inside the run); kept for a
+    // direct caller with an unchecked list.
     if (simulation.processed > dispatch.afterEvents || simulation.now > dispatch.acceptedAt) {
       throw misfit(
         `the run is past that point (${String(simulation.processed)} events at ${isoTime(simulation.now)})`,

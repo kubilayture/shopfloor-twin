@@ -28,6 +28,16 @@ export const TIMELINE_SPEED = { min: 0.5, max: 60 } as const;
  */
 export const MAX_TIMELINE_ENTRIES = 1_000;
 
+/**
+ * The most entries each list of a recorded run may have (#236 review): a recording (a document
+ * with `configSha256`) is written by a live run, not by hand, and a long run with the MES
+ * dispatching every order passes 1,000 jobs. `GET /scenario/recorded` refuses a run past it (413).
+ */
+export const MAX_RECORDED_ENTRIES = 100_000;
+
+/** The kinds `inputOrder` interleaves (#236 review): an injection (failure or drift) or an action. */
+export const INPUT_KINDS = ['injection', 'action'] as const;
+
 export const SCENARIO_PRODUCTION_MODES = ['schedule', 'orders'] as const;
 
 /** ISO 8601 with an offset or Z, as integer ms; undefined when it is not one. */
@@ -185,6 +195,19 @@ export const scenarioSchema = z
      * run ends just after the time the run had reached.
      */
     end: instant.optional(),
+    /**
+     * A recorded run (#236 review): the replay stops once it has processed exactly this many events,
+     * where the live run stood, so the two logs are equal line for line.
+     */
+    endAfterEvents: z.number().int().min(0).optional(),
+    /**
+     * The `configSha256` of the run a recording was made from (#236 review): checked against the
+     * configuration the replay loads. Its presence marks a recorded document (`MAX_RECORDED_ENTRIES`).
+     */
+    configSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/, 'expected a SHA-256 in lowercase hex')
+      .optional(),
     /** The configuration folder, relative to the repository root. */
     config: text,
     /** A stock file in the scenario's folder, in place of the configuration's `stock.yaml`. */
@@ -194,13 +217,50 @@ export const scenarioSchema = z
     erp: z.strictObject({ dataset: text, release: z.array(text) }).optional(),
     injections: z
       .array(z.union([failureInjection, driftInjection]))
-      .max(MAX_TIMELINE_ENTRIES)
+      .max(MAX_RECORDED_ENTRIES)
       .optional(),
-    dispatches: z.array(z.strictObject(dispatchFields)).max(MAX_TIMELINE_ENTRIES).optional(),
-    actions: z.array(actionItem).max(MAX_TIMELINE_ENTRIES).optional(),
+    dispatches: z.array(z.strictObject(dispatchFields)).max(MAX_RECORDED_ENTRIES).optional(),
+    actions: z.array(actionItem).max(MAX_RECORDED_ENTRIES).optional(),
+    /**
+     * The order the injections and actions were accepted in, interleaved (#236 review): one kind
+     * per entry, each list's entries taken in list order. Without it, every injection comes before
+     * every action. Their external events share one lane in acceptance order, so an injection and
+     * an action of one millisecond, or a drift's end and an action, depend on it.
+     */
+    inputOrder: z
+      .array(z.enum(INPUT_KINDS))
+      .max(2 * MAX_RECORDED_ENTRIES)
+      .optional(),
     timeline: z.array(timelineEntrySchema).max(MAX_TIMELINE_ENTRIES).optional(),
   })
   .superRefine((scenario, context) => {
+    // A hand-written golden list keeps the timeline's bound; a recording has its own (above).
+    if (scenario.configSha256 === undefined) {
+      for (const key of ['injections', 'dispatches', 'actions', 'inputOrder'] as const) {
+        const length = scenario[key]?.length ?? 0;
+        if (length > MAX_TIMELINE_ENTRIES) {
+          context.addIssue({
+            code: 'custom',
+            path: [key],
+            message: `at most ${String(MAX_TIMELINE_ENTRIES)} entries (a recorded run, with configSha256, takes ${String(MAX_RECORDED_ENTRIES)})`,
+          });
+        }
+      }
+    }
+    if (scenario.inputOrder !== undefined) {
+      const count = (kind: (typeof INPUT_KINDS)[number]) =>
+        scenario.inputOrder?.filter((k) => k === kind).length ?? 0;
+      if (
+        count('injection') !== (scenario.injections?.length ?? 0) ||
+        count('action') !== (scenario.actions?.length ?? 0)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['inputOrder'],
+          message: 'inputOrder must name each injection and each action once',
+        });
+      }
+    }
     if (scenario.end !== undefined) {
       const start = instantMs(scenario.start);
       const end = instantMs(scenario.end);
@@ -235,7 +295,7 @@ export const scenarioSchema = z
       if (entry.action === 'dispatch') timed([entry], () => ['timeline', index]);
     });
     if (scenario.timeline !== undefined) {
-      for (const key of ['injections', 'dispatches', 'actions'] as const) {
+      for (const key of ['injections', 'dispatches', 'actions', 'inputOrder'] as const) {
         if (scenario[key] !== undefined) {
           context.addIssue({
             code: 'custom',
@@ -306,6 +366,12 @@ export interface ScenarioPlan {
   readonly injections: readonly InjectionSpec[];
   readonly dispatches: readonly DispatchEntrySpec[];
   readonly actions: readonly ActionSpec[];
+  /** Recorded (#236 review): the injections and actions interleaved in acceptance order. */
+  readonly inputOrder?: readonly (typeof INPUT_KINDS)[number][];
+  /** Recorded (#236 review): stop after exactly this many events. */
+  readonly endAfterEvents?: number;
+  /** Recorded (#236 review): the configuration hash the replay must match. */
+  readonly configSha256?: string;
   readonly infrastructure: readonly InfrastructureSpec[];
   readonly origins: ScenarioOrigins;
 }
@@ -486,6 +552,9 @@ export function scenarioPlan(scenario: Scenario): ScenarioPlan {
     injections,
     dispatches,
     actions,
+    ...(scenario.inputOrder === undefined ? {} : { inputOrder: scenario.inputOrder }),
+    ...(scenario.endAfterEvents === undefined ? {} : { endAfterEvents: scenario.endAfterEvents }),
+    ...(scenario.configSha256 === undefined ? {} : { configSha256: scenario.configSha256 }),
     infrastructure,
     origins,
   };

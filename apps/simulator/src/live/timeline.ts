@@ -174,6 +174,14 @@ export class LiveTimeline {
       };
     }
     const plan = scenarioPlan(scenario);
+    // A recording (#236 review) carries the live run's own acceptance order and stop: headless only.
+    if (plan.configSha256 !== undefined) {
+      return {
+        ok: false,
+        code: 'invalid',
+        reason: 'configSha256: a recorded run is replayed headless (pnpm sim:headless --timeline)',
+      };
+    }
     if (plan.dispatches.length > 0) {
       return {
         ok: false,

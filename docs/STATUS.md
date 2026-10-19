@@ -134,11 +134,11 @@
 
 ## In progress
 
-- #236 (P9-09) dispatch recording and headless replay (branch `feat/236-dispatch-replay`, wave A; full gate before the pull request): the live run records every job it accepts with its point of the run (`acceptedAt`, `afterEvents`), `GET /api/v1/scenario/recorded` (control API 1.10) serves the run as a `scenario.json` (dispatches, injections, actions, an `end` just after the simulation time) and the headless run replays it to the live event log byte for byte, MES `LoadOrder` calls mid-run through the OPC UA method included; duplicate and refused calls are not recorded; probe Q2 changed the recorded shape from the device sequence to the event count; ADR-0037 amendment; goldens byte-identical.
+- #236 (P9-09) dispatch recording and headless replay (branch `feat/236-dispatch-replay`, wave A; full gate before the pull request): the live run records every job it accepts with its point of the run (`acceptedAt`, `afterEvents`), `GET /api/v1/scenario/recorded` (control API 1.10) serves the run as a `scenario.json` (dispatches, injections, actions, an `end` just after the simulation time) and the headless run replays it to the live event log byte for byte, MES `LoadOrder` calls mid-run through the OPC UA method included; duplicate and refused calls are not recorded; injections and actions replayed in their acceptance order (`inputOrder`), the replay stopped at the run's own event count (`endAfterEvents`), `configSha256` checked (review of PR #253); probe Q2 changed the recorded shape from the device sequence to the event count; ADR-0037 amendment; goldens byte-identical.
 
 ## Next up
 
-- Wave A checkpoint in the phase log after #236. P9-10 (#237) adds `GET /api/v1/actions`, the scenario routes and `GET /api/v1/scenario/recorded` (1.10, #236) to the `/sim/` allowlist.
+- Wave A checkpoint in the phase log after #236. P9-10 (#237) adds `GET /api/v1/actions` and the scenario routes to the `/sim/` allowlist as exact routes, not prefixes; `GET /api/v1/scenario/recorded` (1.10, #236) stays off it (it reveals the seed and `configSha256`, like `/ground-truth`) and is reached directly with the control token.
 
 ## Blockers and open questions for the owner
 

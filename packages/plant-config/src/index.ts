@@ -52,6 +52,8 @@ export type {
   ToolBreakageSpec,
 } from './actions.ts';
 export {
+  INPUT_KINDS,
+  MAX_RECORDED_ENTRIES,
   MAX_TIMELINE_ENTRIES,
   SCENARIO_PRODUCTION_MODES,
   TIMELINE_ACTIONS,

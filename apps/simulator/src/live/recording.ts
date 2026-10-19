@@ -10,20 +10,28 @@
  *   written as a plain start-time dispatch, as the goldens list theirs. A duplicate or refused call
  *   (`Duplicate`, `expired`, `epoch-mismatch`, an invalid argument, a full queue, `not-attached`,
  *   `not-running`) changes nothing in the line and is not recorded.
- * - The failure and drift injections (one numbering) and the console actions the line accepted, as
- *   the run took them: the headless run accepts them at the start, which equals the live run for
- *   every one accepted before the start or mid-run for a later time (#235's external lane); one
+ * - The failure and drift injections (one numbering) and the console actions the line accepted,
+ *   each list in its own order, and `inputOrder`, the order the two kinds were accepted in
+ *   (#236 review): their external events share one lane in acceptance order, so an injection and
+ *   an action of one millisecond, or a drift's end and an action at its `until`, keep the live
+ *   order. The headless run accepts them all at the start in that order, which equals the live run
+ *   for every one accepted before the start or mid-run for a later time (#235's external lane); one
  *   posted mid-run for the simulation time itself is the limit #235 recorded.
+ * - `configSha256`, which the replay checks against the configuration it loads, and
+ *   `endAfterEvents`, the number of events the run had processed: the replay stops exactly there,
+ *   so its event log equals the live log line for line, also after a single step.
  *
- * The document ends (`end`) one millisecond after the simulation time the run had processed, so
- * the replay's event log equals the live log line for line, or later when an accepted injection or
- * action is due after that (the live log is then a prefix of the replay's).
+ * `end` is one millisecond after the simulation time, or after the latest accepted injection or
+ * action not due yet (an entry outside `[start, end)` is refused, and dropping one would renumber
+ * the later ones); the replay stops at `endAfterEvents` before it either way.
  */
+import { MAX_RECORDED_ENTRIES } from '@shopfloor/plant-config';
 import type { SimTime } from '@shopfloor/sim-core';
 import { isoTime } from '../headless/serialize.ts';
 import type {
   ConsoleAction,
   FailureInjection,
+  InputKind,
   LeakDrift,
   ProductionMode,
   RecordedDispatch,
@@ -37,8 +45,12 @@ export interface RecordingInput {
   /** How far the run has processed events (`simulation.now`). */
   readonly simNow: SimTime;
   readonly production: ProductionMode;
-  /** The run's `configSha256`, named in the description. */
+  /** The run's `configSha256`: the replay refuses another configuration. */
   readonly configSha256: string;
+  /** Events the run had processed (`simulation.processed`): the replay stops there. */
+  readonly processed: number;
+  /** The kinds of the accepted injections and actions in acceptance order (`line.inputOrder()`). */
+  readonly inputOrder: readonly InputKind[];
   /** The configuration folder, relative to the repository root (`config/plant`). */
   readonly config: string;
   /** The stock file's name when the run used one (`SIM_STOCK`); it must sit beside the document. */
@@ -87,12 +99,25 @@ export interface RecordedScenario {
   readonly start: string;
   readonly days: number;
   readonly end: string;
+  readonly endAfterEvents: number;
+  readonly configSha256: string;
   readonly config: string;
   readonly stock?: string;
   readonly production?: 'orders';
   readonly dispatches?: readonly RecordedDispatchJson[];
   readonly injections?: readonly RecordedInjectionJson[];
   readonly actions?: readonly RecordedActionJson[];
+  readonly inputOrder?: readonly InputKind[];
+}
+
+/** A recording with a list past `MAX_RECORDED_ENTRIES` (`GET /scenario/recorded` answers 413). */
+export class RecordingTooLargeError extends Error {
+  constructor(list: string, length: number) {
+    super(
+      `the run has ${String(length)} ${list}, more than a recording takes (${String(MAX_RECORDED_ENTRIES)})`,
+    );
+    this.name = 'RecordingTooLargeError';
+  }
 }
 
 /** The time an accepted injection or action first touches the run. */
@@ -101,6 +126,14 @@ const dueAt = (item: { at: SimTime } | { start: SimTime }): SimTime =>
 
 export function recordScenario(input: RecordingInput): RecordedScenario {
   const { start, simNow } = input;
+  const lists = {
+    dispatches: input.dispatches.length,
+    injections: input.injections.length + input.drifts.length,
+    actions: input.actions.length,
+  };
+  for (const [list, length] of Object.entries(lists)) {
+    if (length > MAX_RECORDED_ENTRIES) throw new RecordingTooLargeError(list, length);
+  }
   const end = Math.max(
     simNow + 1,
     ...input.injections.map((i) => i.at + 1),
@@ -160,19 +193,25 @@ export function recordScenario(input: RecordingInput): RecordedScenario {
     });
   return {
     description:
-      `Recorded from a live ${input.production} run (seed ${String(input.seed)}, configSha256 ` +
-      `${input.configSha256}) at simulation time ${isoTime(simNow)}: ${String(dispatches.length)} ` +
-      `accepted dispatches at their points of the run, ${String(injections.length)} injections ` +
-      `and ${String(actions.length)} console actions (#236).`,
+      `Recorded from a live ${input.production} run at simulation time ${isoTime(simNow)} ` +
+      `after ${String(input.processed)} events: ${String(dispatches.length)} accepted dispatches ` +
+      `at their points of the run, ${String(injections.length)} injections and ` +
+      `${String(actions.length)} console actions (#236).`,
     seed: input.seed,
     start: isoTime(start),
     days: Math.max(1, Math.ceil((end - start) / DAY)),
     end: isoTime(end),
+    endAfterEvents: input.processed,
+    configSha256: input.configSha256,
     config: input.config,
     ...(input.stock === undefined ? {} : { stock: input.stock }),
     ...(input.production === 'orders' ? { production: 'orders' as const } : {}),
     ...(dispatches.length === 0 ? {} : { dispatches }),
     ...(injections.length === 0 ? {} : { injections }),
     ...(actions.length === 0 ? {} : { actions }),
+    // Only when both kinds are there: one kind alone has one order.
+    ...(injections.length === 0 || actions.length === 0
+      ? {}
+      : { inputOrder: [...input.inputOrder] }),
   };
 }

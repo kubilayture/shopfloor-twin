@@ -4,7 +4,11 @@ import { STATUS_CODES } from 'node:http';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyReply } from 'fastify';
 import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
 import { z } from 'zod';
-import { MAX_TIMELINE_ENTRIES, TIMELINE_ACTIONS } from '@shopfloor/plant-config';
+import {
+  MAX_RECORDED_ENTRIES,
+  MAX_TIMELINE_ENTRIES,
+  TIMELINE_ACTIONS,
+} from '@shopfloor/plant-config';
 import type { PacerState, PacerStatus } from '../live/pacer.ts';
 import { MAX_SPEED, MIN_SPEED } from '../live/pacer.ts';
 import { isoTime } from '../headless/serialize.ts';
@@ -25,7 +29,7 @@ import type {
 } from '../plant/line.ts';
 import { PRODUCTION_MODES } from '../plant/line.ts';
 import { MACHINE_STATES, type MachineState } from '../plant/machine-state.ts';
-import type { RecordedScenario } from '../live/recording.ts';
+import { RecordingTooLargeError, type RecordedScenario } from '../live/recording.ts';
 import type { ScenarioControl } from '../live/timeline.ts';
 import type { EventHub } from './event-hub.ts';
 
@@ -781,6 +785,12 @@ export const recordedScenarioSchema = z.object({
   end: isoSchema.describe(
     "One millisecond after the run's simulation time, or after the latest accepted input not due yet",
   ),
+  endAfterEvents: count.describe(
+    'Events the run had processed: the replay stops exactly there, so the logs are equal line for line',
+  ),
+  configSha256: z
+    .string()
+    .describe("The run's configuration hash: the replay refuses another configuration"),
   config: z.string().describe('The configuration folder, relative to the repository root'),
   stock: z
     .string()
@@ -840,6 +850,12 @@ export const recordedScenarioSchema = z.object({
       ]),
     )
     .optional(),
+  inputOrder: z
+    .array(z.enum(['injection', 'action']))
+    .optional()
+    .describe(
+      'The order the injections and actions were accepted in, interleaved (only when both are there)',
+    ),
 });
 
 export const scenarioBodySchema = z.union([
@@ -1413,13 +1429,25 @@ export async function buildControlApp({
             'number of events processed when it was accepted (`acceptedAt`, `afterEvents`; ' +
             'neither for a job accepted while the run was idle at its start), and the injections ' +
             'and console actions the run accepted. Duplicate and refused `LoadOrder` calls change ' +
-            'nothing and are not listed. `headless --timeline <file>` replays it: its event log ' +
-            "equals the live one up to the run's simulation time (`end` is one millisecond after " +
-            'it, or after the latest accepted input not due yet).',
-          response: { 200: json(recordedScenarioSchema) },
+            'nothing and are not listed. `headless --timeline <file>` replays it: it stops at ' +
+            '`endAfterEvents`, where the run stood, so its event log equals the live one line for ' +
+            "line (`end` is one millisecond after the run's simulation time, or after the latest " +
+            'accepted input not due yet). `inputOrder` interleaves the injections and actions in acceptance ' +
+            'order; `configSha256` is checked by the replay. 413: a list longer than ' +
+            `${String(MAX_RECORDED_ENTRIES)} entries.`,
+          response: { 200: json(recordedScenarioSchema), 413: json(errorSchema) },
         },
       },
-      () => recorded(),
+      (_request, reply) => {
+        try {
+          return recorded();
+        } catch (error) {
+          if (error instanceof RecordingTooLargeError) {
+            return reply.code(413).send({ error: 'Content Too Large', message: error.message });
+          }
+          throw error;
+        }
+      },
     );
   }
 

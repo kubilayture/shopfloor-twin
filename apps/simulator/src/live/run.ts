@@ -284,6 +284,8 @@ export function createLiveRun(options: LiveOptions): LiveRun {
         simNow: simulation.now,
         production: line.production,
         configSha256: configHash(options.config),
+        processed: simulation.processed,
+        inputOrder: line.inputOrder(),
         config: where.config,
         stock: where.stock,
         dispatches: line.recordedDispatches(),

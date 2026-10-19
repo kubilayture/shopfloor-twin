@@ -2,10 +2,11 @@
 
 ## Current phase: 09 – Simulation console, scenarios and hardening (in progress; plan accepted in #226; Phase 8 closed 2026-10-18)
 
-## Exit criteria progress: Phase 8 closed with 7 / 7 met by local runs (GitHub Actions could not run; deviations and gate exceptions in `docs/phases/phase-08-report.md`); Phase 9: 2 / 9 met (3, scenario playback; 2, live order and line OEE, on `feat/233-web-oee`), 2 partly met (1, golden order and line OEE; 9, no regression: the SignAndEncrypt check and the closing `verify` runs remain), 6 not started (wave A checkpoint in `docs/phases/phase-09-log.md`)
+## Exit criteria progress: Phase 8 closed with 7 / 7 met by local runs (GitHub Actions could not run; deviations and gate exceptions in `docs/phases/phase-08-report.md`); Phase 9: 3 / 9 met (3, scenario playback; 2, live order and line OEE, on `feat/233-web-oee`; 8, derived work, on `feat/238-derived-work`), 2 partly met (1, golden order and line OEE; 9, no regression: the SignAndEncrypt check and the closing `verify` runs remain), 5 not started (wave A checkpoint in `docs/phases/phase-09-log.md`)
 
 ## Done since last update
 
+- #238 done (branch `feat/238-derived-work`, wave B; ADR-0032 and ADR-0035 amendments; no migration): incremental SPC derivation in `spc-core` (`SpcDerivation`, property test against `spcChart`), the `quality` module charting through it, hold scopes rebuilt on genealogy changes and hold transitions instead of every second, the histograms `mes_quality_spc_derive_seconds{kind}`, `mes_quality_chart_read_seconds`, `mes_quality_hold_scope_seconds` and `mes_genealogy_round_seconds`; budgets met on `week-01`, a synthetic month and 200 open holds (exit criterion 8; figures in `docs/phases/phase-09-log.md`); goldens byte-identical; full gate passed.
 - #237 done (branch `feat/237-sim-console`, wave B; control API 1.11; ADR-0037 and ADR-0026 amendments; no migration): the web `/console` (admin, `sim:control`) behind nginx's exact-route `/sim/` allowlist with the Origin check, `auth_request` to `GET /api/v1/session/permission/sim:control` (route matrix 94) and the injected `SIM_CONTROL_TOKEN` (required on every control route but health and metrics, compared in constant time); the internal `edge` network with the MES learning its CIDR from `mes-edge`, `X-Original-Method` trusted only from there (only console actions count as session use), `mes_http_proxy_requests_total{trusted}` in the smoke; `pnpm test:console` (7 Playwright tests) and the full gate passed.
 - #233 done (branch `feat/233-web-oee`, wave B; no migration): the order detail shows order OEE (A, P, Q, OEE), the jobs, first-pass yield and the order's line OEE with final, provisional, incidents and may-be-revised states, live on `oee:order:<id>`; the OEE dashboard a line card per shift with its hours, above 1 explained, and the MES's bottleneck per product, live on `oee:line` (`DESIGNED_BOTTLENECK` removed); the `orders` reconcile pass asserts exactly 5 orders completed in shift A and compares their order OEE, first-pass yield and line OEE, and shift A's line OEE and hours, with the live truth at `?asOf`, final, through the API and read from the page by Playwright. Orders list column cut (cut line). `GATE-OK` on `04cf615`.
 - #232 done (branch `feat/232-mes-line-oee`, wave B; ADR-0036 amendment P9-05; no migration): MES line throughput OEE per UTC hour, shift bucket and order, derived on read (good packed at PCK-01 × ASM-01's effective cycle ÷ planned busy time; in orders mode only in-progress time), final buckets kept in memory; `GET /api/v1/oee/line`, `GET /api/v1/oee/line/orders` (route matrix 93), the order OEE body's `line`, `mayRevise`, `revision`; push `oee:line`, order topics on their own budget; `MES_PRODUCTION_MODE`; golden reconciliation of all four goldens equal to `line-oee.json` in order, in bounded disorder and shuffled with 10 % duplicates; P9-04's follow-ups folded in.
@@ -159,8 +160,7 @@
 
 ## Next up
 
-- Wave B:
-  - P9-11 (#238).
+- Wave B: complete once #233 and #238 merge.
 - Wave C, as dependencies and the two-PR limit allow:
   - P9-12 (#239) opens with probe Q1.
   - P9-13 (#240) and P9-17 (#244) need only P9-01.

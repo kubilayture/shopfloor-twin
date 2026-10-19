@@ -7,8 +7,9 @@ import {
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import type { HoldReason } from '@shopfloor/plant-config';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
-import { Counter, type Registry } from 'prom-client';
+import { Counter, Histogram, type Registry } from 'prom-client';
 import type { Database } from '../../db/database.ts';
+import { DERIVED_WORK_BUCKETS } from '../../metrics.ts';
 import { Identity, auditActor, isAuthenticated, nameOf } from '../identity/index.ts';
 import { QualityError, type QualityWriteContext, type SignalWindow } from './quality.ts';
 import type {
@@ -42,26 +43,35 @@ export interface HoldSubject {
   readonly id: string;
 }
 
+/** A consumption of a lot by a unit's cycle, as the genealogy answers it. */
+export interface LotConsumptionRef {
+  readonly epoch: number;
+  readonly partId: number;
+  readonly equipment: string;
+  readonly seq: number;
+  readonly operation: string;
+  readonly pass: number;
+  readonly at: Date;
+}
+
 /** What the holds read of the genealogy module (#199): scope, consumptions and its watermark. */
 export interface HoldsGenealogy {
   scope(
     subject: HoldSubject,
     options?: { readonly orderId?: string; readonly db?: Kysely<Database> },
   ): Promise<HoldScopeUnit[]>;
-  lotConsumptions(
-    lot: string,
+  /** Many subjects' scopes at once, one list per subject in their order (#238). */
+  scopes(
+    subjects: readonly HoldSubject[],
     db?: Kysely<Database>,
-  ): Promise<
-    readonly {
-      readonly epoch: number;
-      readonly partId: number;
-      readonly equipment: string;
-      readonly seq: number;
-      readonly operation: string;
-      readonly pass: number;
-      readonly at: Date;
-    }[]
-  >;
+  ): Promise<readonly (readonly HoldScopeUnit[])[]>;
+  /** Many lots' consumptions at once, by lot, each in plant-time order (#238). */
+  lotsConsumptions(
+    lots: readonly string[],
+    db?: Kysely<Database>,
+  ): Promise<ReadonlyMap<string, readonly LotConsumptionRef[]>>;
+  /** Called after a genealogy round that changed units or cartons (#238: the scopes follow it). */
+  onChange(listener: () => void): () => void;
   units(keys: readonly { epoch: number; partId: number }[]): Promise<HoldScopeUnit[]>;
   covers(
     facts: readonly { readonly equipment: string; readonly epoch: number; readonly seq: number }[],
@@ -182,10 +192,23 @@ export interface HoldsOptions {
   readonly epoch?: () => number | undefined;
   /** Wall clock, ms (tests move it). */
   readonly now?: () => number;
-  /** How often the scopes are derived again (1 s); 0: only `tick()`. */
-  readonly tickMs?: number;
+  /**
+   * Whether the scopes are rebuilt on change (#238; default true): after a genealogy round that
+   * changed units or cartons (`HoldsGenealogy.onChange`) and after a hold opens or is decided.
+   * False: only `tick()` (tests that drive the rounds by hand).
+   */
+  readonly follow?: boolean;
   readonly registry?: Registry;
   readonly log?: HoldsLog;
+  /**
+   * Called with the raw timing of every scope rebuild (`mes_quality_hold_scope_seconds`, #238:
+   * the budget tests compute their percentiles from these), with the holds it covered.
+   */
+  readonly onTiming?: (timing: {
+    readonly metric: 'hold-scope';
+    readonly seconds: number;
+    readonly holds: number;
+  }) => void;
   /** Test seam: runs last in an opening's transaction, before its COMMIT (the lock race tests). */
   readonly beforeCommit?: (trx: Transaction<Database>, holdId: string) => Promise<void>;
 }
@@ -282,6 +305,48 @@ const silent: HoldsLog = { info: () => undefined, warn: () => undefined, error: 
 const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const unitKey = (u: { epoch: number; partId: number }) => `${String(u.epoch)}/${String(u.partId)}`;
 
+/** What brings a hold's scope copy in line with its scope. */
+/** A unit of a hold's stored scope copy, as the rebuild compares it. */
+type CopyUnit = Pick<
+  Selectable<HoldUnitTable>,
+  'epoch' | 'part_id' | 'serial' | 'order_id' | 'carton_id'
+>;
+
+interface UnitPlan {
+  readonly gone: readonly CopyUnit[];
+  readonly added: readonly HoldScopeUnit[];
+  /** Units whose serial, order or carton changed. */
+  readonly moved: readonly HoldScopeUnit[];
+}
+
+const copyOf = (u: HoldScopeUnit): CopyUnit => ({
+  epoch: u.epoch,
+  part_id: u.partId,
+  serial: u.serial,
+  order_id: u.orderId,
+  carton_id: u.carton,
+});
+
+function planUnits(stored: readonly CopyUnit[], scope: readonly HoldScopeUnit[]): UnitPlan {
+  const was = new Map(stored.map((u) => [unitKey({ epoch: u.epoch, partId: u.part_id }), u]));
+  const now = new Map(scope.map((u) => [unitKey(u), u]));
+  const gone = stored.filter((u) => !now.has(unitKey({ epoch: u.epoch, partId: u.part_id })));
+  const added: HoldScopeUnit[] = [];
+  const moved: HoldScopeUnit[] = [];
+  for (const [key, unit] of now) {
+    const before = was.get(key);
+    if (!before) added.push(unit);
+    else if (
+      before.serial !== unit.serial ||
+      before.order_id !== unit.orderId ||
+      before.carton_id !== unit.carton
+    ) {
+      moved.push(unit);
+    }
+  }
+  return { gone, added, moved };
+}
+
 /**
  * Quality holds (#201, Phase 8 plan "Quality holds", ADR-0035): a hold on a lot, a serial, a carton
  * or an order, whose scope is derived through the genealogy and grows with facts; opened (and
@@ -299,8 +364,15 @@ export class Holds {
   readonly #listeners = new Set<(change: HoldChange) => void>();
   readonly #transitions: Counter<'kind'> | undefined;
   readonly #consumed: Counter | undefined;
+  readonly #scopeSeconds: Histogram | undefined;
   #queue: Promise<unknown> = Promise.resolve();
-  #timer: NodeJS.Timeout | undefined;
+  /** A rebuild is scheduled (a change was heard of). */
+  #kick: NodeJS.Timeout | undefined;
+  /** A change was heard of since the last rebuild started. */
+  #due = false;
+  #unsubscribe: (() => void) | undefined;
+  /** The scope copies (`hold_unit`) as last read or written, by hold. */
+  readonly #copies = new Map<string, Map<string, CopyUnit>>();
   #started = false;
   #stopping = false;
 
@@ -322,22 +394,27 @@ export class Holds {
         help: 'held-material-consumed incidents raised (a held lot consumed after its hold opened)',
         registers,
       });
+      this.#scopeSeconds = new Histogram({
+        name: 'mes_quality_hold_scope_seconds',
+        help: 'One rebuild of every hold scope (hold_unit) and held-material-consumed check, on a genealogy change or a hold transition',
+        buckets: [...DERIVED_WORK_BUCKETS],
+        registers,
+      });
     }
   }
 
-  /** Derives every open or rejected hold's scope once, then on the timer. */
+  /**
+   * Derives every open or rejected hold's scope once, then follows the genealogy's changes and
+   * the holds' own transitions (#238: no timer).
+   */
   async start(): Promise<void> {
     this.#started = true;
-    await this.tick();
-    const period = this.#options.tickMs ?? 1_000;
-    if (period > 0) {
-      this.#timer = setInterval(() => {
-        this.tick().catch((error: unknown) => {
-          this.#log.error({ err: error }, 'holds: tick failed');
-        });
-      }, period);
-      this.#timer.unref();
+    if (this.#options.follow !== false) {
+      this.#unsubscribe = this.#options.genealogy.onChange(() => {
+        this.#soon();
+      });
     }
+    await this.tick();
   }
 
   get started(): boolean {
@@ -346,7 +423,8 @@ export class Holds {
 
   async stop(): Promise<void> {
     this.#stopping = true;
-    clearInterval(this.#timer);
+    clearTimeout(this.#kick);
+    this.#unsubscribe?.();
     await this.#queue.catch(() => undefined);
   }
 
@@ -922,6 +1000,7 @@ export class Holds {
     this.#transitions?.inc({ kind: 'opened' });
     this.#log.info({ hold: id, subject: request.subject, reason: request.reason }, 'hold opened');
     this.#emit({ type: 'hold', event: 'opened', hold });
+    this.#soon();
     return hold;
   }
 
@@ -1049,43 +1128,170 @@ export class Holds {
     this.#transitions?.inc({ kind });
     this.#log.info({ hold: id, decision, reason: request.reason }, `hold ${kind}`);
     this.#emit({ type: 'hold', event: kind, hold });
+    this.#soon();
     return hold;
   }
 
   // ---- the scope copy and incidents ----
 
   /**
-   * One round: every open or rejected hold's scope derived from the genealogy again (units that
-   * joined are added with the time they joined; a unit no longer covered, after a rebuild, is
+   * One rebuild now: every open or rejected hold's scope derived from the genealogy again (units
+   * that joined are added with the time they joined; a unit no longer covered, after a rebuild, is
    * removed), and `held-material-consumed` for every consumption of a held lot after its hold
-   * opened (and before its release, for a released one: a late fact may still show one).
+   * opened (and before its release, for a released one: a late fact may still show one). The MES
+   * runs it on change (#238); tests call it after driving the genealogy by hand.
    */
   async tick(): Promise<void> {
     if (!this.#started || this.#stopping) return;
-    await this.#serial(async () => {
-      const holds = await this.#db
-        .selectFrom('quality.hold')
-        .selectAll()
-        .orderBy('opened_at')
-        .execute();
-      for (const hold of holds) {
-        let changed = false;
-        if (hold.state !== 'released') changed = await this.#refreshUnits(hold);
-        if (hold.subject_kind === 'lot') changed = (await this.#consumptions(hold)) || changed;
-        if (changed) {
-          const record = await this.hold(hold.id);
-          if (record) this.#emit({ type: 'hold', event: 'scope', hold: record });
-        }
-      }
-    });
+    await this.#serial(() => this.#rebuild());
   }
 
-  async #refreshUnits(hold: Selectable<HoldTable>): Promise<boolean> {
-    const scope = await this.#options.genealogy.scope({
-      kind: hold.subject_kind,
-      id: hold.subject_id,
-    });
-    return this.#db.transaction().execute(async (trx) => this.#replaceUnits(trx, hold.id, scope));
+  /** A rebuild soon, coalesced: one for any number of changes heard of meanwhile. */
+  #soon(delayMs = 0): void {
+    this.#due = true;
+    if (
+      this.#kick !== undefined ||
+      !this.#started ||
+      this.#stopping ||
+      this.#options.follow === false
+    ) {
+      return;
+    }
+    this.#kick = setTimeout(() => {
+      this.#kick = undefined;
+      this.#serial(async () => {
+        if (!this.#due || this.#stopping) return;
+        await this.#rebuild();
+      }).catch((error: unknown) => {
+        // Retried every second until a rebuild succeeds (a lost connection): the scopes stay as
+        // they were meanwhile.
+        this.#log.error({ err: error }, 'holds: rebuilding the scopes failed');
+        this.#soon(1_000);
+      });
+    }, delayMs);
+    this.#kick.unref();
+  }
+
+  /**
+   * Every hold's scope and incidents in a few queries whatever the number of holds (#238): the
+   * scopes of every open and rejected hold's subject by kind, their stored copies, every held
+   * lot's consumptions and known incidents; then one transaction for the changed copies.
+   */
+  async #rebuild(): Promise<void> {
+    try {
+      await this.#rebuildScopes();
+    } catch (error) {
+      // A failed rebuild may have committed or not (a connection lost at COMMIT): the copies in
+      // memory are read again from the database by the next one.
+      this.#copies.clear();
+      throw error;
+    }
+  }
+
+  async #rebuildScopes(): Promise<void> {
+    this.#due = false;
+    const started = performance.now();
+    const holds = await this.#db
+      .selectFrom('quality.hold')
+      .selectAll()
+      .orderBy('opened_at')
+      .execute();
+    const live = holds.filter((h) => h.state !== 'released');
+    const lots = holds.filter((h) => h.subject_kind === 'lot');
+    const genealogy = this.#options.genealogy;
+    const [scopes, consumptions, stored, known] = await Promise.all([
+      live.length === 0
+        ? []
+        : genealogy.scopes(live.map((h) => ({ kind: h.subject_kind, id: h.subject_id }))),
+      lots.length === 0
+        ? new Map<string, readonly LotConsumptionRef[]>()
+        : genealogy.lotsConsumptions(
+            lots.map((h) => h.subject_id),
+            this.#db,
+          ),
+      this.#loadCopies(live.map((h) => h.id)),
+      this.#knownIncidents(lots.map((h) => h.id)),
+    ]);
+    for (const id of this.#copies.keys()) {
+      if (!live.some((h) => h.id === id)) this.#copies.delete(id);
+    }
+    const changed = new Set<string>();
+    const plans: { readonly id: string; readonly plan: UnitPlan }[] = [];
+    for (const [index, hold] of live.entries()) {
+      const plan = planUnits([...(stored.get(hold.id)?.values() ?? [])], scopes[index] ?? []);
+      if (plan.gone.length + plan.added.length + plan.moved.length > 0) {
+        plans.push({ id: hold.id, plan });
+        changed.add(hold.id);
+      }
+    }
+    if (plans.length > 0) {
+      await this.#db.transaction().execute(async (trx) => {
+        for (const { id, plan } of plans) await this.#applyUnits(trx, id, plan);
+      });
+      // Committed: the copies in memory follow.
+      for (const { id, plan } of plans) {
+        const copy = this.#copies.get(id);
+        if (!copy) continue;
+        for (const unit of plan.gone)
+          copy.delete(unitKey({ epoch: unit.epoch, partId: unit.part_id }));
+        for (const unit of [...plan.added, ...plan.moved]) copy.set(unitKey(unit), copyOf(unit));
+      }
+    }
+    for (const hold of lots) {
+      const raised = await this.#consumptions(
+        hold,
+        consumptions.get(hold.subject_id) ?? [],
+        known.get(hold.id) ?? new Set(),
+      );
+      if (raised) changed.add(hold.id);
+    }
+    for (const hold of holds) {
+      if (!changed.has(hold.id)) continue;
+      const record = await this.hold(hold.id);
+      if (record) this.#emit({ type: 'hold', event: 'scope', hold: record });
+    }
+    const seconds = (performance.now() - started) / 1_000;
+    this.#scopeSeconds?.observe(seconds);
+    this.#options.onTiming?.({ metric: 'hold-scope', seconds, holds: holds.length });
+  }
+
+  /**
+   * The stored scope copies of these holds, by hold: kept in memory once read (#238: the holds
+   * module is the copy's only writer, and every write goes through its queue), so a rebuild reads
+   * only the copies of holds it has not seen yet.
+   */
+  async #loadCopies(ids: readonly string[]): Promise<Map<string, Map<string, CopyUnit>>> {
+    const missing = ids.filter((id) => !this.#copies.has(id));
+    for (const id of missing) this.#copies.set(id, new Map());
+    for (let i = 0; i < missing.length; i += CHUNK) {
+      const rows = await this.#db
+        .selectFrom('quality.hold_unit')
+        .select(['hold_id', 'epoch', 'part_id', 'serial', 'order_id', 'carton_id'])
+        .where('hold_id', 'in', missing.slice(i, i + CHUNK))
+        .execute();
+      for (const { hold_id: hold, ...unit } of rows) {
+        this.#copies.get(hold)?.set(unitKey({ epoch: unit.epoch, partId: unit.part_id }), unit);
+      }
+    }
+    return this.#copies;
+  }
+
+  /** The facts of the `held-material-consumed` incidents of these holds, by hold. */
+  async #knownIncidents(ids: readonly string[]): Promise<Map<string, Set<string>>> {
+    const byHold = new Map<string, Set<string>>();
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const rows = await this.#db
+        .selectFrom('quality.hold_incident')
+        .select(['hold_id', 'equipment', 'epoch', 'seq'])
+        .where('hold_id', 'in', ids.slice(i, i + CHUNK))
+        .execute();
+      for (const row of rows) {
+        const set = byHold.get(row.hold_id) ?? new Set<string>();
+        set.add(`${row.equipment}/${String(row.epoch)}/${String(row.seq)}`);
+        byHold.set(row.hold_id, set);
+      }
+    }
+    return byHold;
   }
 
   /** Brings the scope copy in line with `scope`; whether anything changed. */
@@ -1099,22 +1305,16 @@ export class Holds {
       .selectAll()
       .where('hold_id', '=', id)
       .execute();
-    const was = new Map(stored.map((u) => [unitKey({ epoch: u.epoch, partId: u.part_id }), u]));
-    const now = new Map(scope.map((u) => [unitKey(u), u]));
-    const gone = stored.filter((u) => !now.has(unitKey({ epoch: u.epoch, partId: u.part_id })));
-    const added: HoldScopeUnit[] = [];
-    const moved: HoldScopeUnit[] = [];
-    for (const [key, unit] of now) {
-      const before = was.get(key);
-      if (!before) added.push(unit);
-      else if (
-        before.serial !== unit.serial ||
-        before.order_id !== unit.orderId ||
-        before.carton_id !== unit.carton
-      ) {
-        moved.push(unit);
-      }
-    }
+    const plan = planUnits(stored, scope);
+    await this.#applyUnits(trx, id, plan);
+    // Read again by the next rebuild (this transaction may still roll back).
+    this.#copies.delete(id);
+    return plan.gone.length + plan.added.length + plan.moved.length > 0;
+  }
+
+  /** Writes a hold's scope copy changes (`planUnits`). */
+  async #applyUnits(trx: Transaction<Database>, id: string, plan: UnitPlan): Promise<void> {
+    const { gone, added, moved } = plan;
     for (const unit of gone) {
       await trx
         .deleteFrom('quality.hold_unit')
@@ -1147,12 +1347,17 @@ export class Holds {
         .where('part_id', '=', unit.partId)
         .execute();
     }
-    return gone.length + added.length + moved.length > 0;
   }
 
-  /** Raises `held-material-consumed` for a lot hold's consumptions after its opening. */
-  async #consumptions(hold: Selectable<HoldTable>): Promise<boolean> {
-    const consumptions = await this.#options.genealogy.lotConsumptions(hold.subject_id, this.#db);
+  /**
+   * Raises `held-material-consumed` for a lot hold's consumptions after its opening, given the
+   * lot's consumptions and the facts its incidents already name.
+   */
+  async #consumptions(
+    hold: Selectable<HoldTable>,
+    consumptions: readonly LotConsumptionRef[],
+    known: ReadonlySet<string>,
+  ): Promise<boolean> {
     // Positions (epoch, plant time): within the hold's epoch by time, a newer epoch is later and an
     // older one earlier (review of PR #222, L1); without an epoch, by time alone.
     const position = (epoch: number | null, at: Date | null, fallback: number) => ({
@@ -1178,15 +1383,6 @@ export class Holds {
       than.epoch === null || c.epoch === than.epoch
         ? c.at.getTime() < than.at
         : c.epoch < than.epoch;
-    const known = new Set(
-      (
-        await this.#db
-          .selectFrom('quality.hold_incident')
-          .select(['equipment', 'epoch', 'seq'])
-          .where('hold_id', '=', hold.id)
-          .execute()
-      ).map((i) => `${i.equipment}/${String(i.epoch)}/${String(i.seq)}`),
-    );
     const late = consumptions.filter(
       (c) =>
         later(c, opened) &&

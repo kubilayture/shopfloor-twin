@@ -9,6 +9,7 @@ import {
   firstPass,
   firstVersion,
   spcChart,
+  SpcDerivation,
   type Capability,
   type ChartName,
   type LimitVersion,
@@ -20,6 +21,7 @@ import {
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import { Counter, Histogram, type Registry } from 'prom-client';
 import type { Database } from '../../db/database.ts';
+import { DERIVED_WORK_BUCKETS } from '../../metrics.ts';
 import { Identity, auditActor, isAuthenticated, nameOf, type WriteBy } from '../identity/index.ts';
 import type { CycleFact, DeviceProgress, IngestNotice } from '../ingest/index.ts';
 import {
@@ -115,7 +117,26 @@ export interface QualityOptions {
   readonly tickMs?: number;
   readonly registry?: Registry;
   readonly log?: QualityLog;
+  /**
+   * Called with every raw timing the module observes in its histograms (#238: the budget tests
+   * compute their percentiles from these, not from the buckets).
+   */
+  readonly onTiming?: (timing: QualityTiming) => void;
 }
+
+/**
+ * A raw timing: one derivation of a characteristic (`mes_quality_spc_derive_seconds`, `kind`
+ * `new` when it only appended readings at the end of the chart, `late` when it resumed inside the
+ * chart or derived it whole), or one chart read (`mes_quality_chart_read_seconds`).
+ */
+export type QualityTiming =
+  | {
+      readonly metric: 'spc-derive';
+      readonly kind: 'new' | 'late';
+      readonly characteristic: string;
+      readonly seconds: number;
+    }
+  | { readonly metric: 'chart-read'; readonly characteristic: string; readonly seconds: number };
 
 export type QualityErrorKind = 'not-found' | 'conflict' | 'invalid';
 
@@ -334,6 +355,13 @@ interface State {
   readonly config: CharacteristicConfig;
   readonly readings: Map<string, Reading>;
   versions: VersionRecord[];
+  /** The chart, derived incrementally (#238): resumed from the earliest changed reading. */
+  derivation: SpcDerivation;
+  /** Readings changed since the last derivation, applied to `derivation` when it runs (timed). */
+  readonly upserts: Map<string, Reading>;
+  readonly removals: Set<string>;
+  /** The limit versions changed since the last derivation: the chart is derived whole. */
+  versionsChanged: boolean;
   /** Something changed since the last derivation (readings, versions). */
   dirty: boolean;
   /** Readings changed since the last derivation (a push of `readings`). */
@@ -374,7 +402,8 @@ export class Quality {
   readonly #states = new Map<string, State>();
   /** Cycle facts heard of, by `equipment␀epoch`. */
   readonly #pending = new Map<string, Set<number>>();
-  readonly #derived: Histogram | undefined;
+  readonly #derived: Histogram<'kind'> | undefined;
+  readonly #chartReads: Histogram | undefined;
   readonly #signals: Counter | undefined;
   #timer: NodeJS.Timeout | undefined;
   #kick: NodeJS.Timeout | undefined;
@@ -398,6 +427,10 @@ export class Quality {
         config,
         readings: new Map(),
         versions: [],
+        derivation: new SpcDerivation({ rules: config.rules, subgroupSize: config.subgroupSize }),
+        upserts: new Map(),
+        removals: new Set(),
+        versionsChanged: false,
         dirty: true,
         readingsChanged: false,
         earliest: null,
@@ -413,8 +446,15 @@ export class Quality {
     if (registers.length > 0) {
       this.#derived = new Histogram({
         name: 'mes_quality_spc_derive_seconds',
-        help: 'One derivation of a characteristic’s charts and episodes, the database rewrite included',
-        buckets: [0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 1],
+        help: 'One derivation of a characteristic’s charts and episodes after a reading or limit change, the database rewrite included; kind new (only appended at the end of the chart, or a retest) or late (resumed inside it, or derived whole); derivations on progress alone are not observed',
+        labelNames: ['kind'] as const,
+        buckets: [...DERIVED_WORK_BUCKETS],
+        registers,
+      });
+      this.#chartReads = new Histogram({
+        name: 'mes_quality_chart_read_seconds',
+        help: 'One chart read (GET /quality/characteristics/{id}/chart), the body built from the derivation in memory',
+        buckets: [...DERIVED_WORK_BUCKETS],
         registers,
       });
       this.#signals = new Counter({
@@ -602,6 +642,15 @@ export class Quality {
       signals: signals.signals,
       tag: null,
     };
+  }
+
+  /**
+   * Records one chart read (the route's body built from the derivation in memory) in
+   * `mes_quality_chart_read_seconds` (#238).
+   */
+  observeChartRead(id: string, seconds: number): void {
+    this.#chartReads?.observe(seconds);
+    this.#options.onTiming?.({ metric: 'chart-read', characteristic: id, seconds });
   }
 
   /**
@@ -1062,6 +1111,12 @@ export class Quality {
       state.readings.clear();
       state.rows.clear();
       state.signals = null;
+      state.derivation = new SpcDerivation({
+        rules: state.config.rules,
+        subgroupSize: state.config.subgroupSize,
+      });
+      state.upserts.clear();
+      state.removals.clear();
       for (const count of counts.filter((c) => c.equipment === state.config.equipment)) {
         const facts = await this.#ingest.cycleFacts({
           epoch: count.epoch,
@@ -1075,6 +1130,11 @@ export class Quality {
         state.readings.set(key, toReading(row));
         state.rows.set(key, row);
       }
+      // The first derivation after a start takes every reading, against the versions: whole.
+      state.removals.clear();
+      state.upserts.clear();
+      for (const [key, reading] of state.readings) state.upserts.set(key, reading);
+      state.versionsChanged = true;
       state.dirty = true;
     }
   }
@@ -1172,11 +1232,18 @@ export class Quality {
     for (const reading of before) {
       state.readings.delete(reading.key);
       state.rows.delete(reading.key);
+      state.upserts.delete(reading.key);
+      state.removals.add(reading.key);
     }
     for (const row of rows) {
       const key = readingKey(row.epoch, row.part_id, row.pass);
-      state.readings.set(key, toReading(row));
+      const reading = toReading(row);
+      state.readings.set(key, reading);
       state.rows.set(key, row);
+      // A reading of the part that is still there is an upsert, not a removal: the derivation
+      // skips an unchanged one, so a retest does not resume the chart at the part's first test.
+      state.removals.delete(key);
+      state.upserts.set(key, reading);
     }
     if (before.length === 0 && after.length === 0) return;
     state.dirty = true;
@@ -1199,24 +1266,30 @@ export class Quality {
     const started = performance.now();
     const config = state.config;
     const final = (p: Position): boolean => isFinal(p, progress);
-    const readings = [...state.readings.values()];
+    const finalReadings = (): Reading[] => [...state.readings.values()].filter(final);
     if (state.versions.length === 0) {
-      const v1 = firstVersion(readings.filter(final), config);
+      const v1 = firstVersion(finalReadings(), config);
       if (v1) await this.#createFirst(state, v1);
     } else if (state.earliest !== null) {
       const v1 = state.versions.find((v) => v.version === 1);
       if (v1 && comparePositions(state.earliest, v1.limits.window.to) <= 0) {
-        await this.#checkBaseline(state, v1, readings.filter(final));
+        await this.#checkBaseline(state, v1, finalReadings());
       }
     }
-    const chart = spcChart({
-      readings,
-      versions: state.versions,
-      rules: config.rules,
-      subgroupSize: config.subgroupSize,
+    // The chart resumed from the earliest changed reading (#238), whole after a version change.
+    // A derivation with no reading or version to apply (the tester's progress moved, a retry) is
+    // not a derivation of a reading: it is not observed.
+    const observed = state.upserts.size > 0 || state.removals.size > 0 || state.versionsChanged;
+    const update = state.derivation.update({
+      remove: [...state.removals],
+      upsert: [...state.upserts.values()],
+      ...(state.versionsChanged ? { versions: state.versions } : {}),
     });
-    const positions = new Map(chart.firstPass.map((r) => [r.key, positionOf(r)]));
-    const derived = derivedSignals(chart.episodes, positions, progress);
+    state.removals.clear();
+    state.upserts.clear();
+    state.versionsChanged = false;
+    const chart = state.derivation.chart();
+    const derived = derivedSignals(chart.episodes, state.derivation, progress);
     await this.#writeSignals(state, derived, cause ?? 'reading');
     // The chart as derived now serves reads (#200 review M5), tagged by a revision that rises
     // with every derivation, write and acknowledgement.
@@ -1227,7 +1300,16 @@ export class Quality {
     state.readingsChanged = false;
     state.earliest = null;
     state.progress = signature;
-    this.#derived?.observe((performance.now() - started) / 1_000);
+    if (observed) {
+      const seconds = (performance.now() - started) / 1_000;
+      this.#derived?.observe({ kind: update.kind }, seconds);
+      this.#options.onTiming?.({
+        metric: 'spc-derive',
+        kind: update.kind,
+        characteristic: config.id,
+        seconds,
+      });
+    }
     if (readingsChanged) this.#summarySoon(state);
   }
 
@@ -1405,26 +1487,49 @@ export class Quality {
           .executeTakeFirstOrThrow();
         changes.push({ type: 'signal', event: 'withdrawn', signal: toSignal(row) });
       }
-      for (const u of plan.updates) {
-        const s = u.signal;
-        const row = await trx
-          .updateTable('quality.spc_signal')
-          .set((eb) => ({
-            ...extent(s),
+      // Every update in one statement (#238: a late reading changes several rows at once). A
+      // status change raises the row version, clears a withdrawal and stamps `final_at` when the
+      // row becomes final; growth alone changes the extent only.
+      for (let i = 0; i < plan.updates.length; i += 500) {
+        const batch = plan.updates.slice(i, i + 500);
+        const values = batch.map((u) => {
+          const e = extent(u.signal);
+          return {
+            ...e,
+            id: String(u.id),
+            first_at: e.first_at.toISOString(),
+            last_at: e.last_at.toISOString(),
+            closed_at: e.closed_at?.toISOString() ?? null,
             status: u.status,
-            ...(u.statusChanged
-              ? {
-                  row_version: eb('row_version', '+', 1),
-                  withdrawn_at: null,
-                  withdrawn_reason: null,
-                  ...(u.status === 'final' ? { final_at: now } : {}),
-                }
-              : {}),
-          }))
-          .where('id', '=', u.id)
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        changes.push({ type: 'signal', event: u.event, signal: toSignal(row) });
+            changed: u.statusChanged,
+          };
+        });
+        const { rows } = await sql<Selectable<SpcSignalTable>>`
+          UPDATE quality.spc_signal AS s SET
+            first_at = v.first_at, first_seq = v.first_seq,
+            last_epoch = v.last_epoch, last_part_id = v.last_part_id, last_pass = v.last_pass,
+            last_at = v.last_at, last_seq = v.last_seq, points = v.points,
+            closed_epoch = v.closed_epoch, closed_part_id = v.closed_part_id,
+            closed_pass = v.closed_pass, closed_at = v.closed_at, closed_seq = v.closed_seq,
+            baseline = v.baseline, extent_final = v.extent_final, status = v.status,
+            row_version = CASE WHEN v.changed THEN s.row_version + 1 ELSE s.row_version END,
+            withdrawn_at = CASE WHEN v.changed THEN NULL ELSE s.withdrawn_at END,
+            withdrawn_reason = CASE WHEN v.changed THEN NULL ELSE s.withdrawn_reason END,
+            final_at = CASE WHEN v.changed AND v.status = 'final' THEN ${now} ELSE s.final_at END
+          FROM jsonb_to_recordset(${JSON.stringify(values)}::jsonb) AS v(
+            id BIGINT, first_at TIMESTAMPTZ, first_seq BIGINT, last_epoch BIGINT,
+            last_part_id BIGINT, last_pass INTEGER, last_at TIMESTAMPTZ, last_seq BIGINT,
+            points INTEGER, closed_epoch BIGINT, closed_part_id BIGINT, closed_pass INTEGER,
+            closed_at TIMESTAMPTZ, closed_seq BIGINT, baseline BOOLEAN, extent_final BOOLEAN,
+            status TEXT, changed BOOLEAN)
+          WHERE s.id = v.id
+          RETURNING s.*`.execute(trx);
+        const byId = new Map(rows.map((row) => [String(row.id), row]));
+        for (const u of batch) {
+          const row = byId.get(String(u.id));
+          if (!row) throw new Error(`spc_signal ${String(u.id)} vanished during an update`);
+          changes.push({ type: 'signal', event: u.event, signal: toSignal(row) });
+        }
       }
       for (let i = 0; i < plan.inserts.length; i += 500) {
         const rows = await trx
@@ -1533,6 +1638,7 @@ export class Quality {
 
   async #reloadVersions(state: State): Promise<void> {
     state.versions = await this.#versions(state.config.id, this.#db);
+    state.versionsChanged = true;
     state.dirty = true;
   }
 

@@ -344,3 +344,49 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed  | 1,226.4 s |                                         |
     | smoke     | passed  | 89.1 s    |                                         |
     | reconcile | passed  | 1,652.4 s | alarms OK, orders OK, quality OK        |
+- #238 (P9-11, branch `feat/238-derived-work`, wave B; ADR-0032 and ADR-0035 amendments; no migration): MES derived work.
+  - **Incremental SPC:** `SpcDerivation` in `spc-core` resumes from the earliest changed reading (moving ranges, subgroups from the start of the affected one, rule windows, episodes from the first that reaches the point before), keeps the unchanged tail's judgments, and derives whole after a limit version change; `chart()` equals `spcChart` exactly. `spcChart` stays the definition, so `trace.json` is byte-identical (`pnpm test:golden`).
+  - **Property test** (`incremental.test.ts`, 500 runs, 8,000 once by hand): random universes (epochs rare or every few readings, retests, equal positions, outliers) fed by random scripts (batches in random order with readings held back, duplicates, removals, in-place changes of value, position and pass, version 1, a later version from a window, a version ended); after every operation `chart()` equals `spcChart`, and `kind` is `new` exactly on appends. Six mutants killed (one by a deterministic rule 2 case).
+  - **MES:** the `quality` module charts through the derivation; episodes, `planSignals`, finality and withdrawal unchanged; the golden SPC reconciliation also checks incremental equals whole on every partial tick. Hold scopes are rebuilt for every hold at once on `Genealogy.onChange` (now also after a carton rewrite) and on an opening or decision, deferred out of the round; no 1 s timer; `genealogy-pending` and the close guard unchanged. Copies kept in memory by the holds module.
+  - **Histograms** (edges 1, 2.5, 5, 10, 20, 25, 50, 100, 250 ms, 0.5 s, 1 s; `apps/mes-server/src/metrics.ts`): `mes_quality_spc_derive_seconds{kind=new|late}`, `mes_quality_chart_read_seconds`, `mes_quality_hold_scope_seconds`, `mes_genealogy_round_seconds`; each module's `onTiming` gives the raw timings the budget tests use.
+  - **Budgets** (gate run after the review, on `7f6c453`; raw timings, asserted; the same figures as the ADR-0032 and ADR-0035 amendments):
+
+    | Measurement                                   | Target              | `week-01`                    | Synthetic month (8,756 readings) |
+    | --------------------------------------------- | ------------------- | ---------------------------- | -------------------------------- |
+    | new reading, `mes_quality_spc_derive_seconds` | p95 ≤ 10 ms         | 1.8 ms                       | 2.6 ms                           |
+    | late reading (30 held back)                   | p95 ≤ 20 ms         | 4.2 ms                       | 10.0 ms                          |
+    | default chart read (last 500)                 | p50 ≤ 10 ms (month) | 4.0 ms                       | 6.9 ms                           |
+    | 200 open holds: round p95 + scope p95 − base  | ≤ 50 ms             | 33.8 ms (21.3 + 30.7 − 18.2) | —                                |
+
+  - **Decisions:** the synthetic month is `week-01`'s leak tests four times over in one epoch (parts and serials renumbered), not cut (about 50 s); a version write and the first derivation after a start count as `late` (whole derivations); the holds budget rebuilds after every round of the measured half (an upper bound: the MES rebuilds only on a change); the hold budget's holds are inserted directly, since opening 200 through the API measures nothing of the budget; they are mostly static: 7 lot holds (nearly all of the 6,771 units held, growing while the lots are used) and 193 serial holds of one unit each.
+  - **Deviations:** the first gate (`b8e0a2e`) failed on the month's late p95 (21.9 ms); fixed by one batched `UPDATE … FROM jsonb_to_recordset` per derivation's episode updates, a subgroup mean reduced once (same fraction), binary insertion of a few changed readings; the hold copies kept in memory took the hold budget from 43.8 to 31.6 ms (second gate, `b942995`). `HoldsOptions.tickMs` became `follow` (tests set `follow: false`).
+  - **Gate** before the review on `b942995` (`GATE_PROJECT=gate238`, `GATE_TAG=pr238`, `TURBO_FORCE=1`), `GATE-OK`; free at the start: host 37.8 GiB, Docker 73.4 GiB.
+
+    | Step      | Result | Time      | Notes                                   |
+    | --------- | ------ | --------- | --------------------------------------- |
+    | verify    | passed | 495.1 s   | `pnpm verify --concurrency=1`, uncached |
+    | golden    | passed | 1.5 s     | all four goldens                        |
+    | e2e       | passed | 1,457.2 s | the three budget tests included         |
+    | smoke     | passed | 88.5 s    |                                         |
+    | reconcile | passed | 1,650.9 s | alarms OK, orders OK, quality OK        |
+
+  - **Review of PR #259** (changes requested). The reviewer's independent fuzzer ran 48,000 cases with no difference between incremental and whole. The subgroup mean and the batched `UPDATE` were confirmed equivalent, and holds cannot miss a change. Fixes:
+    1. A retest resumed the chart at its part's first test and counted as `late`. Cause: `#store` queued every reading of a rebuilt part as both a removal and an upsert, so the unchanged-reading shortcut never applied. Now a reading that is still there is only an upsert. `SpcDerivation` also treats a key that is both removed and upserted in one change as replaced. A unit test asserts that a retest is `new`; it fails only when both fixes are removed.
+    2. Derivations driven by the tester's progress alone are no longer observed in `mes_quality_spc_derive_seconds`. The help text and the ADR say so.
+    3. A deterministic case for the run-start condition: removing a run's first point shortens the run, and the `run <= realigned` mutant fails it. The property test now varies the subgroup size (2–5), removes and upserts one key in one change, and checks `kind` on removals and changes.
+    4. A failed hold rebuild drops the copies held in memory, because a failure at COMMIT is ambiguous. The rebuild is retried every second until one succeeds.
+    5. A route test: the chart route observes one chart read per body it builds, and none for a 304.
+    6. Documents:
+       - the budget figures now come from one gate run everywhere;
+       - the retry wording is corrected;
+       - ADR-0035's old "every round (1 s)" is updated;
+       - the queueing attribution in ADR-0032 is fixed;
+       - the composition of the 200 holds is stated.
+  - **Gate after the review:** the branch was rebased on `79ce261`, then gated on `7f6c453` (`GATE_STEPS=verify,e2e,smoke,reconcile`, `GATE_PROJECT=gate238b`, `GATE_TAG=pr238b`): `GATE-OK`. Free at the start: host 36.4 GiB, Docker 73.4 GiB. `pnpm test:golden` was run separately and passed.
+
+    | Step      | Result | Time      | Notes                            |
+    | --------- | ------ | --------- | -------------------------------- |
+    | verify    | passed | 303.9 s   | `pnpm verify --concurrency=1`    |
+    | e2e       | passed | 1,447.7 s | the three budget tests included  |
+    | smoke     | passed | 101.4 s   |                                  |
+    | reconcile | passed | 1,653.5 s | alarms OK, orders OK, quality OK |

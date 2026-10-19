@@ -1,8 +1,9 @@
 import { BLANK_OPERATION } from '@shopfloor/contracts/mes-api';
 import type { LotList } from '@shopfloor/contracts/erp-api';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
-import { Counter, type Registry } from 'prom-client';
+import { Counter, Histogram, type Registry } from 'prom-client';
 import type { Database } from '../../db/database.ts';
+import { DERIVED_WORK_BUCKETS } from '../../metrics.ts';
 import type { UnitRecord } from '../execution/index.ts';
 import type { CycleFact, DeviceProgress } from '../ingest/index.ts';
 import type { EquipmentInfo, Routing } from '../master-data/index.ts';
@@ -110,6 +111,11 @@ export interface GenealogyOptions {
   readonly tickMs?: number;
   readonly registry?: Registry;
   readonly log?: GenealogyLog;
+  /**
+   * Called with the raw timing of every round (`mes_genealogy_round_seconds`, #238: the budget
+   * tests compute their percentiles from these).
+   */
+  readonly onTiming?: (timing: { readonly metric: 'round'; readonly seconds: number }) => void;
 }
 
 /** A unit as a trace answers it. */
@@ -220,7 +226,10 @@ const PART_BATCH = 300;
 /** Units a forward trace or a carton answers at most. */
 export const TRACE_UNIT_LIMIT = 5_000;
 
-/** A round of genealogy rebuilt units (#203). */
+/**
+ * A round of genealogy rebuilt units (#203) or rewrote an order's cartons (#238: hold scopes are
+ * rebuilt on it, and a carton's members are part of a scope).
+ */
 export interface GenealogyChange {
   readonly type: 'units';
 }
@@ -244,6 +253,15 @@ const silent: GenealogyLog = {
 };
 
 const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** A subject's key while {@link Genealogy.scopes} groups its rows. */
+const scopeKey = (subject: ScopeSubject): string => `${subject.kind}\u0000${subject.id}`;
+
+function chunks<T>(items: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let i = 0; i < items.length; i += size) result.push(items.slice(i, i + size));
+  return result;
+}
 
 /**
  * The `genealogy` module (#199, Phase 8 plan "Genealogy", ADR-0034): lots imported from the ERP's
@@ -295,6 +313,7 @@ export class Genealogy {
   >();
   readonly #rebuilt: Counter | undefined;
   readonly #incidents: Counter | undefined;
+  readonly #rounds: Histogram | undefined;
   /** Every machine's progress as the execution round genealogy last caught up with read it. */
   #processed: ReadonlyMap<string, DeviceProgress> = new Map();
   #machines: string[] = [];
@@ -331,6 +350,12 @@ export class Genealogy {
         name: 'mes_genealogy_incidents_total',
         help: 'Genealogy incidents raised, by type',
         labelNames: ['type'] as const,
+        registers,
+      });
+      this.#rounds = new Histogram({
+        name: 'mes_genealogy_round_seconds',
+        help: 'One genealogy round (units rebuilt, cartons placed), without the work its listeners defer',
+        buckets: [...DERIVED_WORK_BUCKETS],
         registers,
       });
     }
@@ -418,6 +443,7 @@ export class Genealogy {
   async tick(): Promise<void> {
     if (!this.#started || this.#stopping) return;
     await this.#serial(async () => {
+      const started = performance.now();
       // Read before the units are taken: every unit the execution round changed up to this
       // progress was announced before it completed, so it is in the set taken below (#199).
       const watermark = this.#options.execution.processedThrough();
@@ -443,9 +469,15 @@ export class Genealogy {
         // and a later unit take its place in a carton that closes.
         const processed = await this.#capped(watermark);
         const cutoff = this.#placementCutoff(processed);
-        for (const id of orders) await this.#placeOrder(id, processed, cutoff);
+        let cartons = false;
+        for (const id of orders)
+          cartons = (await this.#placeOrder(id, processed, cutoff)) || cartons;
         this.#processed = processed;
-        if (dirty.length > 0) this.#emit({ type: 'units' });
+        const seconds = (performance.now() - started) / 1_000;
+        this.#rounds?.observe(seconds);
+        this.#options.onTiming?.({ metric: 'round', seconds });
+        // Listeners are told after the round is timed: what they do is theirs (#238).
+        if (dirty.length > 0 || cartons) this.#emit({ type: 'units' });
       } catch (error) {
         // What this round took is put back, so a failed round (a lost connection, a deadlock)
         // loses no unit or order it heard of.
@@ -634,6 +666,136 @@ export class Genealogy {
       carton: r.carton_id,
       status: r.status,
     }));
+  }
+
+  /**
+   * The scopes of many subjects at once (#238: every open hold's scope rebuilt on a change, in a
+   * query per subject kind rather than one per hold): one list per subject, in their order, each
+   * as {@link scope} answers it, in (epoch, partId) order.
+   */
+  async scopes(
+    subjects: readonly ScopeSubject[],
+    db: Kysely<Database> = this.#readDb,
+  ): Promise<UnitRef[][]> {
+    const result = new Map<string, UnitRef[]>(subjects.map((s) => [scopeKey(s), []]));
+    const ids = (kind: ScopeSubject['kind']): string[] => [
+      ...new Set(subjects.filter((s) => s.kind === kind).map((s) => s.id)),
+    ];
+    const add = (
+      kind: ScopeSubject['kind'],
+      rows: readonly {
+        readonly subject: string | null;
+        readonly epoch: number;
+        readonly part_id: number;
+        readonly serial: string | null;
+        readonly order_id: string | null;
+        readonly carton_id: string | null;
+        readonly status: UnitRef['status'];
+      }[],
+    ): void => {
+      for (const r of rows) {
+        if (r.subject === null) continue;
+        result.get(scopeKey({ kind, id: r.subject }))?.push({
+          epoch: r.epoch,
+          partId: r.part_id,
+          serial: r.serial,
+          orderId: r.order_id,
+          carton: r.carton_id,
+          status: r.status,
+        });
+      }
+    };
+    const columns = [
+      'u.epoch',
+      'u.part_id',
+      'u.serial',
+      'u.order_id',
+      'u.carton_id',
+      'u.status',
+    ] as const;
+    for (const chunk of chunks(ids('lot'), 5_000)) {
+      add(
+        'lot',
+        await db
+          .selectFrom('genealogy.serial_unit as u')
+          .innerJoin(
+            (eb) =>
+              eb
+                .selectFrom('genealogy.genealogy_link')
+                .select(['lot', 'epoch', 'part_id'])
+                .distinct()
+                .where('kind', '=', 'lot-unit')
+                .where('lot', 'in', chunk)
+                .as('l'),
+            (j) => j.onRef('l.epoch', '=', 'u.epoch').onRef('l.part_id', '=', 'u.part_id'),
+          )
+          .select(['l.lot as subject', ...columns])
+          .execute(),
+      );
+    }
+    for (const [kind, column] of [
+      ['serial', 'u.serial'],
+      ['carton', 'u.carton_id'],
+      ['order', 'u.order_id'],
+    ] as const) {
+      for (const chunk of chunks(ids(kind), 5_000)) {
+        add(
+          kind,
+          await db
+            .selectFrom('genealogy.serial_unit as u')
+            .select([`${column} as subject`, ...columns])
+            .where(column, 'in', chunk)
+            .execute(),
+        );
+      }
+    }
+    for (const units of result.values()) {
+      units.sort((a, b) => a.epoch - b.epoch || a.partId - b.partId);
+    }
+    // A subject listed twice gets the same list (they are the same scope).
+    return subjects.map((subject) => result.get(scopeKey(subject)) ?? []);
+  }
+
+  /** {@link lotConsumptions} of many lots at once (#238), by lot, each in plant-time order. */
+  async lotsConsumptions(
+    lots: readonly string[],
+    db: Kysely<Database> = this.#readDb,
+  ): Promise<Map<string, LotConsumption[]>> {
+    const result = new Map<string, LotConsumption[]>(lots.map((lot) => [lot, []]));
+    for (const chunk of chunks([...new Set(lots)], 5_000)) {
+      const rows = await db
+        .selectFrom('genealogy.genealogy_link')
+        .select(['lot', 'epoch', 'part_id', 'equipment', 'seq', 'operation', 'pass', 'at'])
+        .where('kind', '=', 'lot-unit')
+        .where('lot', 'in', chunk)
+        .orderBy('lot')
+        .orderBy('at')
+        .orderBy('epoch')
+        .orderBy('equipment')
+        .orderBy('seq')
+        .execute();
+      for (const r of rows) {
+        if (
+          r.lot === null ||
+          r.equipment === null ||
+          r.seq === null ||
+          r.operation === null ||
+          r.pass === null
+        ) {
+          continue;
+        }
+        result.get(r.lot)?.push({
+          epoch: r.epoch,
+          partId: r.part_id,
+          equipment: r.equipment,
+          seq: r.seq,
+          operation: r.operation,
+          pass: r.pass,
+          at: r.at,
+        });
+      }
+    }
+    return result;
   }
 
   /**
@@ -898,8 +1060,9 @@ export class Genealogy {
   }
 
   /**
-   * Called after a round that rebuilt units (#203: the terminal's lots in use follow it). Returns
-   * the unsubscribe.
+   * Called after a round that rebuilt units or rewrote an order's cartons (#203: the terminal's
+   * lots in use follow it; #238: the hold scopes are rebuilt on it), after the round is timed and
+   * inside its queue: a listener that has work to do defers it. Returns the unsubscribe.
    */
   onChange(listener: (change: GenealogyChange) => void): () => void {
     this.#listeners.add(listener);
@@ -1675,17 +1838,17 @@ export class Genealogy {
    * order, review H2), so a closed carton's members never change but for a fact of a written-off
    * gap. Rewrites the order's cartons and `unit-carton` links only when they differ from the
    * stored ones (review M5); keeps the order for the next round while a pack is not placed or a
-   * carton is open.
+   * carton is open. Returns whether it wrote them (#238: a change for the hold scopes).
    */
   async #placeOrder(
     orderId: string,
     watermark: ReadonlyMap<string, DeviceProgress>,
     cutoff: { epoch: number; at: number; seq: number; partId: number } | null = null,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const order = await this.#options.orders.order(orderId);
     if (!order) {
       this.#unsettled.delete(orderId);
-      return;
+      return false;
     }
     const operation = this.#options.packing.operation;
     const packs = await this.#db
@@ -1745,13 +1908,13 @@ export class Genealogy {
     } catch (error) {
       this.#log.error({ err: error, order: orderId }, 'genealogy: cartons of an order failed');
       this.#unsettled.delete(orderId);
-      return;
+      return false;
     }
     const { cartons } = placed;
     const pending = !placed.complete || cartons.some((c) => c.status === 'open');
     if (pending) this.#unsettled.add(orderId);
     else this.#unsettled.delete(orderId);
-    if (await this.#sameCartons(orderId, cartons)) return;
+    if (await this.#sameCartons(orderId, cartons)) return false;
     await this.#db.transaction().execute(async (trx) => {
       const old = (
         await trx
@@ -1831,6 +1994,7 @@ export class Genealogy {
         }
       }
     });
+    return true;
   }
 
   /** Whether an order's stored cartons and members are these (nothing to write, review M5). */

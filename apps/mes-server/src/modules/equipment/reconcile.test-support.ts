@@ -1325,7 +1325,7 @@ async function ordersStack(
     reasons: plant.quality.holdReasons,
     clock,
     epoch: () => EPOCH,
-    tickMs: 0,
+    follow: false,
   });
   await holds.start();
   orders.useCloseGuard(holds.closeGuard());

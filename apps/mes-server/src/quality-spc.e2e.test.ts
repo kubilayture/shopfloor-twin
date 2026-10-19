@@ -11,9 +11,12 @@
  * open within 20 first-pass readings of the injection's start, and the counterfactual readings
  * (same limits, baseline judged retroactively) must open no episode in the 60-reading window.
  *
- * Probe P3 (plan "Probes"): the cost of one tick per new reading on a week of readings, the
- * database rewrite of the episodes included, and of a late reading that moves every later
- * subgroup; recorded in the phase log and ADR-0032.
+ * Every tick on partial data also checks that the chart the module derives incrementally equals
+ * the whole derivation over the stored measurements (#238).
+ *
+ * The derived-work budgets (#238, after #200's probe P3): the incremental derivation's cost per
+ * new reading and per late reading that moves every later subgroup, the database rewrite of the
+ * episodes included, on `week-01` and a synthetic month; recorded in the phase log and ADR-0032.
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -47,7 +50,14 @@ import {
 import { Ingest } from './modules/ingest/index.ts';
 import { MasterData } from './modules/master-data/index.ts';
 import { spcChartDto } from './modules/realtime/index.ts';
-import { Quality, characteristicsOf, keyParts } from './modules/quality/index.ts';
+import {
+  Quality,
+  characteristicsOf,
+  keyParts,
+  readingKey,
+  type QualityOptions,
+  type QualityTiming,
+} from './modules/quality/index.ts';
 
 const REPO = resolve(import.meta.dirname, '../../..');
 const HEADLESS = join(REPO, 'apps/simulator/src/headless/cli.ts');
@@ -176,9 +186,11 @@ async function headless(name: string): Promise<Run> {
 /**
  * The leak tester's UNS messages: its snapshot at connect (Off), then each of its device facts
  * with its own sequence (state, cycle, alarm), cycles with their measurement and the lots and
- * operator of `attachConsumption` (the machine server's rule), all in one epoch.
+ * operator of `attachConsumption` (the machine server's rule), all in one epoch. With `copies`
+ * above 1 (#238's synthetic month), the run's facts again and again, each copy later by the run's
+ * span, its parts and serials renumbered, the sequence going on: one epoch of `copies` weeks.
  */
-function testerMessages(run: Run): { anchor: Delivery; facts: Delivery[] } {
+function testerMessages(run: Run, copies = 1): { anchor: Delivery; facts: Delivery[] } {
   const paths = new Map<string, EquipmentPath>();
   for (const area of plant.plant.areas) {
     for (const wc of area.workCenters) {
@@ -191,41 +203,55 @@ function testerMessages(run: Run): { anchor: Delivery; facts: Delivery[] } {
   const attached = attachConsumption(run.events);
   const facts: Delivery[] = [];
   let seq = 0;
-  for (const [index, event] of run.events.entries()) {
-    if (event.machineId !== TESTER || !DEVICE_FACTS.has(event.type)) continue;
-    seq += 1;
-    const at = Date.parse(event.at);
-    if (event.type === 'state') {
-      facts.push(feed.state(TESTER, EPOCH, seq, at, event.to ?? 'Idle', event.cause ?? null));
-    } else if (event.type === 'cycle-complete') {
-      const attachment = attached[index];
-      facts.push(
-        feed.cycle(TESTER, EPOCH, seq, at, {
-          product: event.product ?? '',
-          partId: event.partId ?? 0,
-          serial: event.serial ?? '',
-          result: event.result ?? 'good',
-          reason: event.reason ?? null,
-          measurement: event.measurement ?? null,
-          ...(attachment ? { lots: attachment.lots, operator: attachment.operator } : {}),
-        }),
-      );
-    } else if (event.type === 'alarm') {
-      facts.push(
-        feed.alarm(
-          TESTER,
-          EPOCH,
-          seq,
-          at,
-          event.code ?? '',
-          event.transition === 'cleared' ? 'cleared' : 'active',
-          event.severity ?? 1,
-        ),
-      );
-    } else {
-      throw new Error(`a ${event.type} fact on the leak tester`);
+  const span = Date.parse(run.events.at(-1)?.at ?? '') - run.start + 60_000;
+  for (let copy = 0; copy < copies; copy++)
+    for (const [index, original] of run.events.entries()) {
+      if (original.machineId !== TESTER || !DEVICE_FACTS.has(original.type)) continue;
+      const event =
+        copy === 0
+          ? original
+          : {
+              ...original,
+              ...(original.partId === undefined
+                ? {}
+                : { partId: original.partId + copy * 1_000_000 }),
+              ...(original.serial === undefined
+                ? {}
+                : { serial: `${original.serial}-${String(copy)}` }),
+            };
+      seq += 1;
+      const at = Date.parse(event.at) + copy * span;
+      if (event.type === 'state') {
+        facts.push(feed.state(TESTER, EPOCH, seq, at, event.to ?? 'Idle', event.cause ?? null));
+      } else if (event.type === 'cycle-complete') {
+        const attachment = attached[index];
+        facts.push(
+          feed.cycle(TESTER, EPOCH, seq, at, {
+            product: event.product ?? '',
+            partId: event.partId ?? 0,
+            serial: event.serial ?? '',
+            result: event.result ?? 'good',
+            reason: event.reason ?? null,
+            measurement: event.measurement ?? null,
+            ...(attachment ? { lots: attachment.lots, operator: attachment.operator } : {}),
+          }),
+        );
+      } else if (event.type === 'alarm') {
+        facts.push(
+          feed.alarm(
+            TESTER,
+            EPOCH,
+            seq,
+            at,
+            event.code ?? '',
+            event.transition === 'cleared' ? 'cleared' : 'active',
+            event.severity ?? 1,
+          ),
+        );
+      } else {
+        throw new Error(`a ${event.type} fact on the leak tester`);
+      }
     }
-  }
   return { anchor: feed.snapshot(TESTER, EPOCH, run.start, 'Off'), facts };
 }
 
@@ -238,7 +264,7 @@ interface Mes {
 }
 
 /** A fresh database with master data, ingest (no broker) and the quality module (tick by hand). */
-async function mes(name: string): Promise<Mes> {
+async function mes(name: string, onTiming?: QualityOptions['onTiming']): Promise<Mes> {
   const db = await freshDatabase(serverUrl, name);
   await new MasterData(db).seed(plant);
   const ingest = new Ingest({
@@ -255,6 +281,7 @@ async function mes(name: string): Promise<Mes> {
     ingest,
     characteristics: characteristicsOf(plant),
     tickMs: 0,
+    ...(onTiming ? { onTiming } : {}),
   });
   await quality.start();
   return {
@@ -364,6 +391,7 @@ async function expectPartial(
 }> {
   const view = await m.quality.chart(CHARACTERISTIC);
   if (!view) throw new Error('no characteristic');
+  await expectWhole(m, view);
   const dto = spcChartDto(view, { all: true });
   const truth = new Set(run.spc.episodes.map(identity));
   expect(dto.limits.map(versionShape)).toEqual(run.spc.limits.slice(0, dto.limits.length));
@@ -378,6 +406,36 @@ async function expectPartial(
     provisional: dto.signals.filter((s) => s.status === 'provisional').length,
     signals: dto.signals,
   };
+}
+
+/**
+ * #238: the chart the module serves, derived incrementally tick by tick, equals the whole
+ * derivation (`spcChart`) over the measurements stored and the limit versions in force.
+ */
+async function expectWhole(
+  m: Mes,
+  view: NonNullable<Awaited<ReturnType<Quality['chart']>>>,
+): Promise<void> {
+  const rows = await m.db
+    .selectFrom('quality.measurement')
+    .select(['epoch', 'part_id', 'pass', 'measured_at', 'seq', 'steps'])
+    .where('characteristic', '=', CHARACTERISTIC)
+    .execute();
+  const readings: Reading[] = rows.map((r) => ({
+    key: readingKey(r.epoch, r.part_id, r.pass),
+    epoch: r.epoch,
+    at: r.measured_at.getTime(),
+    seq: r.seq,
+    pass: r.pass,
+    value: r.steps,
+  }));
+  const whole = spcChart({
+    readings,
+    versions: view.limits,
+    rules: view.characteristic.rules,
+    subgroupSize: view.characteristic.subgroupSize,
+  });
+  expect(view.chart).toEqual(whole);
 }
 
 /** The first-pass readings of the chart with their positions, in chart order. */
@@ -678,53 +736,97 @@ spcSuite('quality-01', { points: 830 + 829 + 166 + 166, episodes: 24 });
 spcSuite('orders-01', { points: 400 + 399 + 80 + 80, episodes: 5 });
 spcSuite('week-01', { points: 2189 + 2188 + 437 + 437, episodes: 36 });
 
-describe('probe P3: SPC rebuild cost on a week of readings (#200)', () => {
-  it('derives a week of readings and writes the episodes per new reading within the budget', async () => {
+/**
+ * The derived-work budgets of the SPC derivation (#238, Phase 9 plan "Derived-work costs", exit
+ * criterion 8; probe P3 of #200 before it): `mes_quality_spc_derive_seconds` p95 ≤ 10 ms for a new
+ * reading and ≤ 20 ms for a late one, from the raw timings of the module's timing hook, on
+ * `week-01` and on a synthetic month (`week-01`'s leak tests four times over in one epoch, about
+ * 8,800 first-pass readings), where the default chart read (the last 500 readings) has p50 ≤ 10 ms.
+ *
+ * Late readings: 30 first-pass cycles after the baseline, spread over the run, are held back; the
+ * rest arrives (the last 400 facts one at a time with a tick each: the new readings), then each
+ * held-back one alone with a tick. Until it comes every later reading is provisional, and when it
+ * does every later moving range, subgroup and run moves: the derivation resumes at it, and the
+ * episodes after it are written again (their X̄ and R points are other subgroups now).
+ */
+const BUDGET = { newMs: 10, lateMs: 20, chartReadMs: 10 } as const;
+const LATE_READINGS = 30;
+
+function budgetSuite(name: string, copies: number): void {
+  it(`${name}: a new reading p95 ≤ ${String(BUDGET.newMs)} ms, a late one p95 ≤ ${String(BUDGET.lateMs)} ms${copies > 1 ? `, the default chart read p50 ≤ ${String(BUDGET.chartReadMs)} ms` : ''}`, async () => {
     const run = await headless('week-01');
-    const { anchor, facts } = testerMessages(run);
+    const { anchor, facts } = testerMessages(run, copies);
+    // First tests only (a part's first cycle at the tester): a held-back retest is no late
+    // first-pass reading.
+    const seen = new Set<number>();
     const cycles = facts
       .map((d, index) => ({ d, index }))
-      .filter(({ d }) => d.topic.endsWith('/events/cycle-complete'));
-    // A first-pass reading after the baseline (the 150th cycle) arrives last: until then every
-    // later reading is provisional; when it comes, every later moving range and subgroup moves.
-    const late = cycles[150]?.index ?? -1;
-    const m = await mes('spc_p3');
-    await m.send([anchor]);
-    const body = facts.filter((_, i) => i !== late);
+      .filter(({ d }) => d.topic.endsWith('/events/cycle-complete'))
+      .filter(({ d }) => {
+        const partId = (JSON.parse(d.payload) as { value: { partId: number } }).value.partId;
+        if (seen.has(partId)) return false;
+        seen.add(partId);
+        return true;
+      });
     const tail = 400;
+    // Spread over the cycles after the baseline (the 150th) and before the tail.
+    const lastLate = cycles.length - tail;
+    const step = Math.floor((lastLate - 150) / LATE_READINGS);
+    const late = new Set(
+      Array.from({ length: LATE_READINGS }, (_, k) => cycles[150 + k * step]?.index ?? -1),
+    );
+    expect(late.size).toBe(LATE_READINGS);
+    let current: QualityTiming[] = [];
+    const m = await mes(`spc_budget_${String(copies)}`, (timing) => {
+      current.push(timing);
+    });
+    await m.send([anchor]);
+    const body = facts.filter((_, i) => !late.has(i));
     const head = body.slice(0, body.length - tail);
     for (let i = 0; i < head.length; i += 500) {
       await m.send(head.slice(i, i + 500));
       await m.quality.tick();
     }
-    const perReading: number[] = [];
+    const derive = (t: QualityTiming[]) =>
+      t.filter(
+        (x): x is Extract<QualityTiming, { metric: 'spc-derive' }> => x.metric === 'spc-derive',
+      );
+    const newMs: number[] = [];
     for (const delivery of body.slice(body.length - tail)) {
       await m.send([delivery]);
-      const started = performance.now();
+      current = [];
       await m.quality.tick();
-      const took = performance.now() - started;
-      if (delivery.topic.endsWith('/events/cycle-complete')) perReading.push(took);
+      if (!delivery.topic.endsWith('/events/cycle-complete')) continue;
+      const timings = derive(current);
+      expect(timings.map((t) => t.kind)).toEqual(['new']);
+      newMs.push((timings[0]?.seconds ?? 0) * 1_000);
     }
-    const before = (await m.quality.signals({ characteristic: CHARACTERISTIC, limit: 10_000 }))
-      .signals;
-    const lateFact = facts[late];
-    if (!lateFact) throw new Error('no late fact');
-    await m.send([lateFact]);
-    const started = performance.now();
-    await m.quality.tick();
-    const lateMs = performance.now() - started;
-    const after = (await m.quality.signals({ characteristic: CHARACTERISTIC, limit: 10_000 }))
-      .signals;
-    // The very charts and episodes as delivered in order.
-    expect(await expectSpc(m, run)).toEqual({ points: 2189 + 2188 + 437 + 437, episodes: 36 });
-    // The read path (#200 review M5): the chart route's body from the derivation in memory, the
-    // whole week and the default recent window, and ten reads at once.
+    const lateMs: number[] = [];
+    for (const index of [...late].sort((a, b) => a - b)) {
+      const fact = facts[index];
+      if (!fact) throw new Error('no late fact');
+      await m.send([fact]);
+      current = [];
+      await m.quality.tick();
+      const timings = derive(current);
+      expect(timings.map((t) => t.kind)).toEqual(['late']);
+      lateMs.push((timings[0]?.seconds ?? 0) * 1_000);
+    }
+    const view = await m.quality.chart(CHARACTERISTIC);
+    if (!view) throw new Error('no chart');
+    // Incremental equals whole on the delivered run; on the week also the truth itself.
+    await expectWhole(m, view);
+    if (copies === 1) {
+      expect(await expectSpc(m, run)).toEqual({ points: 2189 + 2188 + 437 + 437, episodes: 36 });
+    }
+    // The read path: the chart route's body from the derivation in memory, the default recent
+    // window (what the SPC page asks for) and the whole run, and ten default reads at once.
     const read = async (all: boolean): Promise<{ ms: number; bytes: number }> => {
       const t0 = performance.now();
-      const view = await m.quality.chart(CHARACTERISTIC);
-      if (!view) throw new Error('no chart');
-      const body = JSON.stringify(spcChartDto(view, { all }));
-      return { ms: performance.now() - t0, bytes: body.length };
+      const v = await m.quality.chart(CHARACTERISTIC);
+      if (!v) throw new Error('no chart');
+      const json = JSON.stringify(spcChartDto(v, { all }));
+      return { ms: performance.now() - t0, bytes: json.length };
     };
     const reads = { all: [] as number[], recent: [] as number[], bytesAll: 0, bytesRecent: 0 };
     for (let i = 0; i < 20; i++) {
@@ -740,22 +842,25 @@ describe('probe P3: SPC rebuild cost on a week of readings (#200)', () => {
     const parallel0 = performance.now();
     await Promise.all(Array.from({ length: 10 }, () => read(false)));
     const parallel = performance.now() - parallel0;
+    newMs.sort((a, b) => a - b);
+    lateMs.sort((a, b) => a - b);
+    const summary = (xs: readonly number[]) =>
+      `p50 ${ms(quantile(xs, 0.5))} ms, p95 ${ms(quantile(xs, 0.95))} ms, max ${ms(xs.at(-1) ?? 0)} ms`;
     console.log(
-      `P3 read path: chart body (whole week, ${String(reads.bytesAll)} bytes) p50 ${ms(quantile(reads.all, 0.5))} ms, max ${ms(reads.all.at(-1) ?? 0)} ms; ` +
-        `default recent window (${String(reads.bytesRecent)} bytes) p50 ${ms(quantile(reads.recent, 0.5))} ms, max ${ms(reads.recent.at(-1) ?? 0)} ms; 10 concurrent ${ms(parallel)} ms`,
+      `#238 ${name} (${String(view.chart.firstPass.length)} first-pass readings, ${String(view.signals.length)} episodes): ` +
+        `mes_quality_spc_derive_seconds new (${String(newMs.length)}) ${summary(newMs)}; late (${String(lateMs.length)}) ${summary(lateMs)}; ` +
+        `chart read default (${String(reads.bytesRecent)} bytes) p50 ${ms(quantile(reads.recent, 0.5))} ms, whole (${String(reads.bytesAll)} bytes) p50 ${ms(quantile(reads.all, 0.5))} ms, 10 concurrent ${ms(parallel)} ms`,
     );
-    perReading.sort((a, b) => a - b);
-    const p50 = quantile(perReading, 0.5);
-    const p95 = quantile(perReading, 0.95);
-    const max = perReading.at(-1) ?? 0;
-    console.log(
-      `P3: ${String(perReading.length)} new readings on a week (2,189 first-pass readings): tick p50 ${ms(p50)} ms, p95 ${ms(p95)} ms, max ${ms(max)} ms; ` +
-        `a late reading before ${String(cycles.length - 150)} later ones: ${ms(lateMs)} ms (episodes ${String(before.length)} provisional and final before, ${String(after.length)} final after)`,
-    );
-    // The probe's 20 ms budget holds on an idle machine (ADR-0032: p95 about 14 ms); the gate may
-    // share the machine, which slowed every suite here up to threefold, so the test guards against
-    // a regression of that order rather than the budget itself, and the log line records it.
-    expect(p95).toBeLessThan(60);
+    expect(newMs.length).toBeGreaterThan(100);
+    expect(lateMs).toHaveLength(LATE_READINGS);
+    expect(quantile(newMs, 0.95)).toBeLessThanOrEqual(BUDGET.newMs);
+    expect(quantile(lateMs, 0.95)).toBeLessThanOrEqual(BUDGET.lateMs);
+    if (copies > 1) expect(quantile(reads.recent, 0.5)).toBeLessThanOrEqual(BUDGET.chartReadMs);
     await m.stop();
-  }, 600_000);
+  }, 900_000);
+}
+
+describe('derived-work budgets: incremental SPC derivation (#238)', () => {
+  budgetSuite('week-01', 1);
+  budgetSuite('synthetic month', 4);
 });

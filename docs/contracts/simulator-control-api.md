@@ -1,12 +1,14 @@
 # Simulator control API
 
-Version 1.10 (Phase 9; 1.0 in Phase 2, 1.1 adds `GET /api/v1/ground-truth`, #100; 1.2 adds its `oee` section, #117; 1.3 adds failure injection and the `alarms` section, #140; 1.4 adds the production mode, `productionMode` and the `orders` section, #172; 1.5 adds the leak-test drift injection, #196; 1.6 adds the ground truth's `trace` section and `?asOf`, #208; 1.7 adds the console actions and the lot and operator reads, #234; 1.8 adds the ground truth's `lineOee` section, cut by `?asOf` too, #230; 1.9 adds the scenario timelines, #235; 1.10 adds the run's recording, `GET /api/v1/scenario/recorded`, #236). The OpenAPI document's `info.version` is `1.10.0`. Source of truth in code: `apps/simulator/src/control/`. The OpenAPI description is generated into `docs/api/simulator-control.openapi.json`; a test fails when it drifts from the routes (`pnpm --filter @shopfloor/simulator openapi` rewrites it). Any change bumps the version here and needs a changelog entry.
+Version 1.11 (Phase 9; 1.0 in Phase 2, 1.1 adds `GET /api/v1/ground-truth`, #100; 1.2 adds its `oee` section, #117; 1.3 adds failure injection and the `alarms` section, #140; 1.4 adds the production mode, `productionMode` and the `orders` section, #172; 1.5 adds the leak-test drift injection, #196; 1.6 adds the ground truth's `trace` section and `?asOf`, #208; 1.7 adds the console actions and the lot and operator reads, #234; 1.8 adds the ground truth's `lineOee` section, cut by `?asOf` too, #230; 1.9 adds the scenario timelines, #235; 1.10 adds the run's recording, `GET /api/v1/scenario/recorded`, #236; 1.11 requires the bearer token `SIM_CONTROL_TOKEN` on every route but `/health/*` and `/metrics`, #237). The OpenAPI document's `info.version` is `1.11.0`. Source of truth in code: `apps/simulator/src/control/`. The OpenAPI description is generated into `docs/api/simulator-control.openapi.json`; a test fails when it drifts from the routes (`pnpm --filter @shopfloor/simulator openapi` rewrites it). Any change bumps the version here and needs a changelog entry.
 
-The simulation console (Phase 9) is the client. The MES never uses this API: it sees the plant only through OPC UA and MQTT (plan section 5).
+The simulation console (Phase 9, the web's `/console`) is the client, through nginx's allowlisting `/sim/` proxy (ADR-0037 amendment #237): the browser never holds the token, and only the console's routes are proxied (not `/ground-truth`, not `/scenario/recorded`). The MES never uses this API: it sees the plant only through OPC UA and MQTT (plan section 5); it only answers nginx's permission check for `/sim/`.
 
 ## Endpoint
 
-`http://<CONTROL_HOST>:<CONTROL_PORT>`, by default `http://127.0.0.1:4800`. There is no authentication in Phase 2, so the default binds to loopback only. Access control comes with security in Phase 9.
+`http://<CONTROL_HOST>:<CONTROL_PORT>`, by default `http://127.0.0.1:4800` (loopback only).
+
+**Authentication (1.11, #237).** Every route but `/health/live`, `/health/ready` and `/metrics` needs `Authorization: Bearer <SIM_CONTROL_TOKEN>` (the scheme in any case): reads, writes, the event-stream upgrade and unknown routes alike. Without it, or with another token, the answer is 401 `{ "error": "Unauthorized", "message": "the control token is needed (SIM_CONTROL_TOKEN)" }` with `WWW-Authenticate: Bearer realm="simulator-control"`, before any other check (so a 404 never tells an anonymous caller which routes exist). The token is compared in constant time (both sides hashed with SHA-256, the digests compared with `timingSafeEqual`). Only exact paths are open: `/health/live/` or `/metrics/x` need the token. The OpenAPI document declares the scheme (`controlToken`, `http` `bearer`) and `security: []` on the open routes.
 
 ## REST (`/api/v1`)
 
@@ -119,6 +121,8 @@ Timelines of `config/scenarios/` (Phase 9 plan, "Scenario playback", ADR-0037; f
 
 ## Operations
 
+Served without the token (1.11), for the container's health check and Prometheus.
+
 | Path            | Meaning                                                                                                            |
 | --------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `/health/live`  | 200 `{ "status": "ok" }` while the process is up                                                                   |
@@ -161,6 +165,7 @@ The simulator validates its environment at start-up. With any invalid value it n
 | `MODBUS_PORT`       | 5020                                 | Port of the WSH-01 Modbus TCP server (docs/contracts/modbus-register-map.md)                                                                                                                                                                                                                                                                                                                                                |
 | `CONTROL_HOST`      | `127.0.0.1`                          | Bind address of the control API                                                                                                                                                                                                                                                                                                                                                                                             |
 | `CONTROL_PORT`      | 4800                                 | Port of the control API                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `SIM_CONTROL_TOKEN` | none (required)                      | The bearer token of every route but `/health/*` and `/metrics` (1.11, #237): 16–512 characters without whitespace, random per stack (`openssl rand -hex 16`); never echoed in an error                                                                                                                                                                                                                                      |
 | `LOG_LEVEL`         | `info`                               | pino level: `fatal` … `trace`, or `silent`                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ## Shutdown

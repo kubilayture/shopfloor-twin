@@ -141,6 +141,7 @@ const app = await buildControlApp({
     }),
   ...(eventLog === undefined ? {} : { eventLogFailed: () => eventLog.failed }),
   logger: { level: env.LOG_LEVEL },
+  token: env.SIM_CONTROL_TOKEN,
 });
 const log = app.log;
 

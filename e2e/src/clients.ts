@@ -226,30 +226,47 @@ async function request<T>(
 
 export class SimulatorClient {
   readonly base: string;
+  /** The control API's token (`SIM_CONTROL_TOKEN`, #237, control API 1.11): every request sends it. */
+  readonly #token: string;
 
-  constructor(base: string) {
+  constructor(base: string, token: string) {
     this.base = base;
+    this.#token = token;
+  }
+
+  /** `Authorization` for a request of one's own (#237). */
+  get auth(): { readonly authorization: string } {
+    return { authorization: `Bearer ${this.#token}` };
+  }
+
+  #request<T>(url: string, schema: z.ZodType<T>, init: RequestInit = {}, timeoutMs?: number) {
+    return request(
+      url,
+      schema,
+      { ...init, headers: { ...(init.headers as Record<string, string>), ...this.auth } },
+      timeoutMs,
+    );
   }
 
   status(): Promise<Status> {
-    return request(`${this.base}/api/v1/status`, statusSchema);
+    return this.#request(`${this.base}/api/v1/status`, statusSchema);
   }
 
   groundTruth(): Promise<GroundTruth> {
-    return request(`${this.base}/api/v1/ground-truth`, groundTruthSchema);
+    return this.#request(`${this.base}/api/v1/ground-truth`, groundTruthSchema);
   }
 
   resume(): Promise<Status> {
-    return request(`${this.base}/api/v1/resume`, statusSchema, { method: 'POST' });
+    return this.#request(`${this.base}/api/v1/resume`, statusSchema, { method: 'POST' });
   }
 
   pause(): Promise<Status> {
-    return request(`${this.base}/api/v1/pause`, statusSchema, { method: 'POST' });
+    return this.#request(`${this.base}/api/v1/pause`, statusSchema, { method: 'POST' });
   }
 
   /** Schedules a failure injection at simulation time `at` (control API 1.3, #140). */
   inject({ machine, code, at, repairMs }: ScenarioInjection): Promise<Injection> {
-    return request(
+    return this.#request(
       `${this.base}/api/v1/faults/failure/${encodeURIComponent(machine)}`,
       z.object({ injection: injectionSchema }),
       {
@@ -266,7 +283,7 @@ export class SimulatorClient {
    */
   groundTruthJson(asOf?: string): Promise<Record<string, unknown>> {
     const query = asOf === undefined ? '' : `?asOf=${encodeURIComponent(asOf)}`;
-    return request(
+    return this.#request(
       `${this.base}/api/v1/ground-truth${query}`,
       z.record(z.string(), z.unknown()),
       {},
@@ -276,7 +293,7 @@ export class SimulatorClient {
 
   /** Schedules a leak-test drift (control API 1.5, #196): `shift` Pa/min from `at` until `until`. */
   drift({ machine, shift, at, until }: ScenarioDrift): Promise<Drift> {
-    return request(
+    return this.#request(
       `${this.base}/api/v1/faults/drift/${encodeURIComponent(machine)}`,
       z.object({ drift: driftSchema }),
       {
@@ -288,7 +305,7 @@ export class SimulatorClient {
   }
 
   async drifts(): Promise<Drift[]> {
-    const { drifts } = await request(
+    const { drifts } = await this.#request(
       `${this.base}/api/v1/faults/drifts`,
       z.object({ drifts: z.array(driftSchema) }),
     );
@@ -297,7 +314,7 @@ export class SimulatorClient {
 
   /** Processes exactly one simulation event while paused (control API 1.1); false at the end. */
   async step(): Promise<boolean> {
-    const { stepped } = await request(
+    const { stepped } = await this.#request(
       `${this.base}/api/v1/step`,
       z.object({ stepped: z.boolean() }),
       { method: 'POST' },
@@ -306,7 +323,7 @@ export class SimulatorClient {
   }
 
   async injections(): Promise<Injection[]> {
-    const { injections } = await request(
+    const { injections } = await this.#request(
       `${this.base}/api/v1/faults/injections`,
       z.object({ injections: z.array(injectionSchema) }),
     );

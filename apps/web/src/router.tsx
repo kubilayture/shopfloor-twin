@@ -1,5 +1,6 @@
 import { createRouter, type RouterHistory } from '@tanstack/react-router';
 import { alarmRoutes } from './routes/alarms.ts';
+import { consoleRoutes } from './routes/console.ts';
 import { identityRoutes } from './routes/identity.ts';
 import { oeeRoutes } from './routes/oee.ts';
 import { orderRoutes } from './routes/orders.ts';
@@ -21,7 +22,7 @@ export type { SerialSearch, TraceSearchParams } from './routes/trace.ts';
 
 // Code-based routes (ADR-0020), one file per area under routes/ since #170: thirteen routes with
 // the orders (#176), fifteen with the terminal (past the "revisit past a dozen"), nineteen with the
-// trace pages (#202); a generated tree isn't needed.
+// trace pages (#202), and the simulation console (#237); a generated tree isn't needed.
 const routeTree = rootRoute.addChildren([
   ...plantRoutes,
   ...oeeRoutes,
@@ -32,6 +33,7 @@ const routeTree = rootRoute.addChildren([
   ...terminalRoutes,
   ...traceRoutes,
   ...qualityRoutes,
+  ...consoleRoutes,
 ]);
 
 export function createAppRouter(history?: RouterHistory) {

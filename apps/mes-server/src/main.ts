@@ -4,6 +4,7 @@ import { sql } from 'kysely';
 import { Gauge } from 'prom-client';
 import { createDatabase, poolStats } from './db/database.ts';
 import { migrationStatus, type MigrationStatus } from './db/migrate.ts';
+import { EdgeTrust, learnEdgeCidr } from './edge.ts';
 import { parseEnv } from './env.ts';
 import { buildMesHttp } from './http.ts';
 import { Alarms } from './modules/alarms/index.ts';
@@ -34,6 +35,16 @@ if (!parsed.ok) {
   process.exit(2);
 }
 const env = parsed.env;
+// The `edge` network (#237): its CIDR from the MES's own alias there; in Compose a must.
+const edgeCidr = await learnEdgeCidr(env.MES_EDGE_ALIAS);
+if (edgeCidr === undefined && env.MES_EDGE_REQUIRED === 'on') {
+  console.error(
+    `MES_EDGE_ALIAS ${env.MES_EDGE_ALIAS} does not resolve to a local interface; the MES is not ` +
+      'on the edge network (MES_EDGE_REQUIRED=on)',
+  );
+  process.exit(2);
+}
+const edge = new EdgeTrust(edgeCidr);
 const plant = await loadPlantConfig(resolve(env.PLANT_CONFIG_DIR));
 if (!plant.ok) {
   console.error(formatIssues(plant.issues));
@@ -99,8 +110,15 @@ const { app, registry, realtime } = await buildMesHttp({
   identity,
   auth: env.MES_AUTH === 'on',
   cookieSecure: env.MES_COOKIE_SECURE === 'on',
+  edge,
 });
 const log = app.log;
+log.info(
+  { alias: env.MES_EDGE_ALIAS, cidr: edge.cidr ?? null },
+  edge.cidr === undefined
+    ? 'no edge network: proxy headers are trusted from nowhere'
+    : 'edge network learned: proxy headers trusted from it only',
+);
 // Connections of each pool, and queries waiting for one (#147: the API's 4 connections serve the
 // REST reads and every paced push computation).
 const pools = [

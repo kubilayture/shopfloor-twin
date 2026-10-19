@@ -80,6 +80,9 @@ services:
       SIM_PRODUCTION: ${SIM_PRODUCTION:-schedule}
       # A timeline of config/scenarios loaded before the run starts (#235); empty for none.
       SIM_TIMELINE: ${SIM_TIMELINE:-}
+      # The control API's bearer token (#237, control API 1.11): every route but /health/* and
+      # /metrics needs it. nginx adds it to the console's /sim/ requests; the browser never has it.
+      SIM_CONTROL_TOKEN: ${SIM_CONTROL_TOKEN:?Set SIM_CONTROL_TOKEN in .env (copy .env.example)}
       OPCUA_HOST: ${SIM_OPCUA_HOST:-localhost}
       LOG_LEVEL: ${SIM_LOG_LEVEL:-info}
     ports:
@@ -208,6 +211,15 @@ services:
       # planned line time.
       MES_PRODUCTION_MODE: ${SIM_PRODUCTION:-schedule}
       LOG_LEVEL: ${MES_LOG_LEVEL:-info}
+      # The edge network (#237): the MES resolves its alias there to its own interface and trusts
+      # proxy headers (X-Original-Method; X-Real-IP from P9-15) only from that subnet; it refuses
+      # to start when the alias doesn't resolve to a local interface.
+      MES_EDGE_ALIAS: mes-edge
+      MES_EDGE_REQUIRED: 'on'
+    networks:
+      default: {}
+      edge:
+        aliases: [mes-edge]
     ports:
       - '127.0.0.1:${MES_HTTP_PORT:-4700}:4700'
     deploy:
@@ -255,6 +267,13 @@ services:
     depends_on:
       mes:
         condition: service_healthy
+    environment:
+      # Added by nginx to the console's allowlisted /sim/ requests (#237); never sent to the browser.
+      SIM_CONTROL_TOKEN: ${SIM_CONTROL_TOKEN:?Set SIM_CONTROL_TOKEN in .env (copy .env.example)}
+    # The default network (the simulator's control API) and edge (the MES as mes-edge, #237).
+    networks:
+      default: {}
+      edge: {}
     ports:
       - '127.0.0.1:${WEB_PORT:-8080}:8080'
     deploy:
@@ -264,6 +283,14 @@ services:
           memory: 64M
     stop_grace_period: 10s
     restart: unless-stopped
+
+networks:
+  # nginx and the MES only (#237, ADR-0026 amendment): the MES trusts proxy headers only from this
+  # network's subnet, which it learns at start (MES_EDGE_ALIAS), so the subnet is not pinned (a
+  # fixed one would collide between parallel Compose projects). `internal: true`: no gateway, so
+  # nothing in the VM or on the host routes into it; only its two containers reach each other here.
+  edge:
+    internal: true
 
 volumes:
   db-data:

@@ -1,4 +1,4 @@
-import { randomBytes, scrypt } from 'node:crypto';
+import { createHash, randomBytes, scrypt } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -19,6 +19,7 @@ import type { StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Database } from './db/database.ts';
 import { parseEnv } from './env.ts';
+import { EdgeTrust } from './edge.ts';
 import { buildMesHttp } from './http.ts';
 import { freshDatabase, ownerOf } from './modules/equipment/test-support.ts';
 import {
@@ -802,6 +803,8 @@ const ROUTES: Readonly<Record<string, Permission | 'session' | 'public'>> = {
   'POST /api/v1/quality/holds/{id}/comments': 'quality:hold',
   'POST /api/v1/quality/holds/{id}/release': 'quality:release',
   'POST /api/v1/quality/holds/{id}/reject': 'quality:release',
+  // The console's permission check (#237): nginx's auth_request.
+  'GET /api/v1/session/permission/{permission}': 'sim:control',
 };
 
 /** Path parameters filled in so the route matches (the handler may still answer 400 or 404). */
@@ -819,6 +822,7 @@ const PARAMS: Readonly<Record<string, string>> = {
   lot: 'BL100-2610-01',
   carton: 'PO-2610-101-C01',
   version: '1',
+  permission: 'sim:control',
 };
 
 describe('authentication on every route (MES_AUTH=on, #168)', () => {
@@ -901,7 +905,7 @@ describe('authentication on every route (MES_AUTH=on, #168)', () => {
     );
     const api = routes.filter((route) => route.includes(' /api/v1/'));
     expect(api.sort()).toEqual(Object.keys(ROUTES).sort());
-    expect(api).toHaveLength(93);
+    expect(api).toHaveLength(94);
     expect(routes.filter((r) => !r.includes(' /api/v1/')).sort()).toEqual([
       'GET /health/live',
       'GET /health/ready',
@@ -1525,5 +1529,150 @@ describe('MES_AUTH=off (diagnosis only, #170)', () => {
         .statusCode,
     ).toBe(503);
     await http.app.close();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The console's permission check (#237): sim:control, and the session-use rule.
+
+describe('console permission check and session use (#237)', () => {
+  /** nginx's address on the `edge` network of this test, and one outside it. */
+  const EDGE = '10.89.3.0/24';
+  const NGINX = '::ffff:10.89.3.7';
+  const OUTSIDE = '172.18.0.9';
+  let app: FastifyInstance;
+  let registry: { metrics(): Promise<string> };
+  const host = 'localhost:8080';
+  const origin = `http://${host}`;
+  const passwords = new Map<string, string>();
+
+  beforeAll(async () => {
+    await identity.start();
+    const http = await buildMesHttp({
+      ready: () => Promise.resolve(true),
+      identity,
+      auth: true,
+      allowedHosts: ['localhost'],
+      edge: new EdgeTrust(EDGE),
+      loginRate: { perSecond: 1e6, burst: 1e6 },
+      userLoginRate: { perSecond: 1e6, burst: 1e6 },
+    });
+    app = http.app;
+    registry = http.registry;
+    for (const role of ROLES) passwords.set(`c-${role}`, await user(`c-${role}`, [role]));
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  const login = async (username: string): Promise<string> => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/session',
+      headers: { host, origin, 'content-type': 'application/json' },
+      payload: JSON.stringify({ username, password: passwords.get(username) }),
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    const header = String(response.headers['set-cookie']);
+    return `sft_session=${cookieValue(header.split(';')[0], 'sft_session') ?? ''}`;
+  };
+
+  /** nginx's subrequest: a GET with the console request's method in X-Original-Method. */
+  const check = (
+    cookie: string | undefined,
+    options: { method?: string; from?: string; permission?: string } = {},
+  ) =>
+    app.inject({
+      method: 'GET',
+      url: `/api/v1/session/permission/${options.permission ?? 'sim:control'}`,
+      remoteAddress: options.from ?? NGINX,
+      headers: {
+        host,
+        'x-real-ip': '127.0.0.1',
+        ...(options.method === undefined ? {} : { 'x-original-method': options.method }),
+        ...(cookie === undefined ? {} : { cookie }),
+      },
+    });
+
+  const lastUsed = async (cookie: string): Promise<number> => {
+    const token = tokenOf(cookie.split('=')[1] ?? '');
+    const row = await db
+      .selectFrom('identity.session')
+      .select('last_used_at')
+      .where('token_hash', '=', createHash('sha256').update(token).digest())
+      .executeTakeFirstOrThrow();
+    return row.last_used_at.getTime();
+  };
+
+  it('answers 204 for admin, 403 for every other role, 401 anonymous', async () => {
+    expect((await check(undefined)).statusCode).toBe(401);
+    for (const role of ROLES) {
+      const response = await check(await login(`c-${role}`));
+      if (role === 'admin') expect(response.statusCode, role).toBe(204);
+      else {
+        expect(response.statusCode, role).toBe(403);
+        expect(response.json<{ type: string }>().type).toBe(PROBLEM_TYPES.forbidden);
+      }
+    }
+    // Only sim:control is a permission this route checks.
+    const admin = await login('c-admin');
+    expect((await check(admin, { permission: 'user:admin' })).statusCode).toBe(400);
+    expect((await check(admin, { permission: 'read' })).statusCode).toBe(400);
+  });
+
+  it('counts only a non-GET console action from the edge network as session use', async () => {
+    const cookie = await login('c-admin');
+    let used = await lastUsed(cookie);
+    const step = async (
+      options: { method?: string; from?: string },
+      expected: 'touched' | 'untouched',
+    ) => {
+      clock += 2 * MINUTE;
+      expect((await check(cookie, options)).statusCode).toBe(204);
+      const after = await lastUsed(cookie);
+      if (expected === 'touched') expect(after, JSON.stringify(options)).toBe(clock);
+      else expect(after, JSON.stringify(options)).toBe(used);
+      used = after;
+    };
+    // The 1 s status poll: a GET (or no method at all) never moves the idle expiry.
+    await step({ method: 'GET' }, 'untouched');
+    await step({ method: 'HEAD' }, 'untouched');
+    await step({}, 'untouched');
+    // A console action from nginx over edge does, also with an IPv4-mapped source.
+    await step({ method: 'POST' }, 'touched');
+    await step({ method: 'put' }, 'touched');
+    await step({ method: 'POST', from: '10.89.3.7' }, 'touched');
+    // The same header from outside the edge network is not believed.
+    await step({ method: 'POST', from: OUTSIDE }, 'untouched');
+    await step({ method: 'POST', from: '127.0.0.1' }, 'untouched');
+    // Any other route keeps counting every request as use.
+    clock += 2 * MINUTE;
+    const read = await app.inject({
+      method: 'GET',
+      url: '/api/v1/session',
+      remoteAddress: OUTSIDE,
+      headers: { host, cookie },
+    });
+    expect(read.statusCode).toBe(200);
+    expect(await lastUsed(cookie)).toBe(clock);
+  });
+
+  it('counts proxied requests by whether they came over the edge network', async () => {
+    const before = await registry.metrics();
+    const value = (text: string, trusted: string): number =>
+      Number(
+        new RegExp(`^mes_http_proxy_requests_total\\{trusted="${trusted}"\\} (\\d+)$`, 'm').exec(
+          text,
+        )?.[1] ?? 'NaN',
+      );
+    const cookie = await login('c-admin');
+    await check(cookie, { method: 'GET' });
+    await check(cookie, { method: 'GET', from: OUTSIDE });
+    // Without X-Real-IP a request is not a proxied one, from wherever it comes.
+    await app.inject({ method: 'GET', url: '/health/live', remoteAddress: OUTSIDE });
+    const after = await registry.metrics();
+    expect(value(after, 'true') - value(before, 'true')).toBe(1);
+    expect(value(after, 'false') - value(before, 'false')).toBe(1);
   });
 });

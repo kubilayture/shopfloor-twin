@@ -14,6 +14,8 @@ const SAMPLE_MS = Number(process.env.OVERVIEW_SAMPLE_MS ?? 90_000);
 const POLL_MS = 200;
 
 const simUrl = process.env.RECONCILE_SIM_URL;
+/** The control API's token (#237): the run passes it with the address. */
+const simToken = process.env.RECONCILE_SIM_TOKEN ?? '';
 const results = process.env.RECONCILE_RESULTS;
 
 declare global {
@@ -26,7 +28,7 @@ declare global {
 test('the overview shows every machine’s latest state within 2 s at 60×', async ({ page }) => {
   test.skip(!simUrl, 'runs inside pnpm test:reconcile, which starts the stack');
   test.setTimeout(SAMPLE_MS + 90_000);
-  const sim = new SimulatorClient(simUrl ?? '');
+  const sim = new SimulatorClient(simUrl ?? '', simToken);
 
   await logIn(page);
   await page.goto('/');

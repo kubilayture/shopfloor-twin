@@ -1,5 +1,6 @@
 import swagger from '@fastify/swagger';
 import websocket from '@fastify/websocket';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { STATUS_CODES } from 'node:http';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyReply } from 'fastify';
 import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
@@ -39,9 +40,10 @@ import type { EventHub } from './event-hub.ts';
  * ground truth (#172), 1.5 the leak-test drift injection (#196), 1.6 the trace ground truth with
  * `?asOf` (#208), 1.7 the console actions and the lot and operator reads (#234), 1.8 the order
  * and line OEE ground truth `lineOee`, cut by `?asOf` too (#230), 1.9 the scenario timelines
- * (#235), 1.10 the recording of the run's dispatches and inputs, `GET /scenario/recorded` (#236).
+ * (#235), 1.10 the recording of the run's dispatches and inputs, `GET /scenario/recorded` (#236),
+ * 1.11 the bearer token `SIM_CONTROL_TOKEN` on every route but `/health/*` and `/metrics` (#237).
  */
-export const CONTROL_API_VERSION = '1.10.0';
+export const CONTROL_API_VERSION = '1.11.0';
 export const API_PREFIX = '/api/v1';
 /** The largest `POST /scenario` body (#235 review): far above MAX_TIMELINE_ENTRIES entries. */
 export const SCENARIO_BODY_LIMIT = 512 * 1024;
@@ -940,6 +942,34 @@ export interface ControlAppOptions {
   readonly eventLogFailed?: () => boolean;
   readonly logger?: boolean | { level: string } | FastifyBaseLogger;
   readonly version?: string;
+  /**
+   * The bearer token every route but `/health/*` and `/metrics` needs (#237, 1.11; 401 without
+   * it), compared in constant time. `null` serves without one: only for tests of other behaviour,
+   * never `main.ts` (its environment requires `SIM_CONTROL_TOKEN`).
+   */
+  readonly token: string | null;
+}
+
+/** The routes served without the token: the container's health check and Prometheus (#237). */
+export const OPEN_PATHS: ReadonlySet<string> = new Set([
+  '/health/live',
+  '/health/ready',
+  '/metrics',
+]);
+
+const digest = (value: string): Buffer => createHash('sha256').update(value, 'utf8').digest();
+
+/**
+ * Whether an `Authorization` header carries the token (`Bearer <token>`, the scheme in any case).
+ * Both sides are hashed first, so the comparison takes the same time whatever the length or the
+ * first differing byte of the guess (#237: constant time).
+ */
+export function bearerMatches(header: string | undefined, token: string): boolean {
+  const match = /^Bearer[ ]+(\S+)[ ]*$/i.exec(header ?? '');
+  const presented = match?.[1] ?? '';
+  // Always compares, also without a header, so a missing token takes as long as a wrong one.
+  const equal = timingSafeEqual(digest(presented), digest(token));
+  return equal && match !== null;
 }
 
 export async function buildControlApp({
@@ -954,6 +984,7 @@ export async function buildControlApp({
   eventLogFailed,
   logger = false,
   version = CONTROL_API_VERSION,
+  token,
 }: ControlAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger,
@@ -1002,6 +1033,17 @@ export async function buildControlApp({
             'Scenario timelines of config/scenarios, played live (1.9), and the recording of the run (1.10)',
         },
       ],
+      components: {
+        securitySchemes: {
+          controlToken: {
+            type: 'http',
+            scheme: 'bearer',
+            description:
+              'SIM_CONTROL_TOKEN (1.11, #237): every route but /health/* and /metrics; 401 without it',
+          },
+        },
+      },
+      security: [{ controlToken: [] }],
     },
   });
   await app.register(websocket, {
@@ -1016,6 +1058,19 @@ export async function buildControlApp({
   });
 
   const metrics = createMetrics(pacer, hub, eventLogFailed);
+
+  // The control token (#237, 1.11): first, before any other hook, also for unknown routes (a 404
+  // would tell an anonymous caller which routes exist) and for the WebSocket upgrade.
+  if (token !== null) {
+    app.addHook('onRequest', async (request, reply) => {
+      if (OPEN_PATHS.has(request.url.split('?', 1)[0] ?? '')) return;
+      if (bearerMatches(request.headers.authorization, token)) return;
+      await reply.code(401).header('www-authenticate', 'Bearer realm="simulator-control"').send({
+        error: 'Unauthorized',
+        message: 'the control token is needed (SIM_CONTROL_TOKEN)',
+      });
+    });
+  }
 
   const status = () => {
     const current = pacer.status();
@@ -1480,6 +1535,7 @@ export async function buildControlApp({
       logLevel: 'warn',
       schema: {
         tags: ['operations'],
+        security: [],
         summary: 'The process is up',
         response: { 200: json(healthSchema) },
       },
@@ -1494,6 +1550,7 @@ export async function buildControlApp({
       logLevel: 'warn',
       schema: {
         tags: ['operations'],
+        security: [],
         summary: 'Every OPC UA server is listening and the run has not finished',
         response: { 200: json(healthSchema), 503: json(healthSchema) },
       },
@@ -1508,7 +1565,11 @@ export async function buildControlApp({
     '/metrics',
     {
       logLevel: 'warn',
-      schema: { tags: ['operations'], summary: 'Prometheus metrics (text format)' },
+      schema: {
+        tags: ['operations'],
+        security: [],
+        summary: 'Prometheus metrics (text format)',
+      },
     },
     async (_request, reply) => {
       reply.header('content-type', metrics.registry.contentType);

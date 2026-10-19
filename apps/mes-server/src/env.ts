@@ -29,6 +29,12 @@ export const envSchema = z.object({
   // the login, and on the WebSocket. `off` is for one-off diagnosis only: reads and the WebSocket
   // are served without a session (writes still need one) and the MES logs a warning.
   MES_AUTH: z.enum(['on', 'off']).default('on'),
+  // The `edge` network (#237): the MES's alias there. At start it resolves the alias to a local
+  // interface and trusts proxy headers (`X-Original-Method`; `X-Real-IP` from P9-15) only from
+  // that interface's CIDR. With MES_EDGE_REQUIRED=on (Compose) it refuses to start when the alias
+  // doesn't resolve to a local interface; off (the default, outside Compose) it then trusts none.
+  MES_EDGE_ALIAS: text.default('mes-edge'),
+  MES_EDGE_REQUIRED: z.enum(['on', 'off']).default('off'),
   // `on` marks the session cookie `Secure` and names it `__Host-sft_session` (behind TLS only).
   MES_COOKIE_SECURE: z.enum(['on', 'off']).default('off'),
   // Optional: creates the user `admin` (must change its password) when no enabled admin exists.

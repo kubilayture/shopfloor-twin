@@ -118,7 +118,9 @@ async function startTheGateway(): Promise<void> {
 }
 
 async function deviceEpoch(): Promise<number> {
-  const response = await fetch(`${simulator.control}/api/v1/ground-truth`);
+  const response = await fetch(`${simulator.control}/api/v1/ground-truth`, {
+    headers: simulator.auth,
+  });
   return ((await response.json()) as { epoch: number }).epoch;
 }
 

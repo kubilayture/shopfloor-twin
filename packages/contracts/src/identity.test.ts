@@ -37,6 +37,8 @@ const PLAN: Record<Permission, string> = {
   'quality:hold': '··✓✓·',
   'quality:release': '··✓··',
   'user:admin': '····✓',
+  // Phase 9 (#237): the simulation console, admin only.
+  'sim:control': '····✓',
 };
 
 describe('permission matrix (#168, ADR-0026)', () => {
@@ -54,8 +56,8 @@ describe('permission matrix (#168, ADR-0026)', () => {
     }
   });
 
-  it('keeps admin to user administration (separation of duties)', () => {
-    expect(permissionsOf(['admin'])).toEqual(['read', 'user:admin']);
+  it('keeps admin to user administration and the console (separation of duties)', () => {
+    expect(permissionsOf(['admin'])).toEqual(['read', 'user:admin', 'sim:control']);
     expect(can(['admin'], 'downtime:code')).toBe(false);
     expect(can(['admin', 'supervisor'], 'order:release')).toBe(true);
     expect(permissionsOf(['operator', 'quality'])).toEqual(

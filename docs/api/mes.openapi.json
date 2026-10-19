@@ -37648,7 +37648,8 @@
                               "spc:ack",
                               "quality:hold",
                               "quality:release",
-                              "user:admin"
+                              "user:admin",
+                              "sim:control"
                             ]
                           }
                         },
@@ -37837,7 +37838,8 @@
                               "spc:ack",
                               "quality:hold",
                               "quality:release",
-                              "user:admin"
+                              "user:admin",
+                              "sim:control"
                             ]
                           }
                         },
@@ -38007,6 +38009,80 @@
           },
           "415": {
             "description": "Content-Type is not application/json; type urn:shopfloor:write-not-json",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The MES is starting",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/session/permission/{permission}": {
+      "get": {
+        "summary": "Whether the caller's session holds a permission nginx checks (204)",
+        "tags": [
+          "identity"
+        ],
+        "description": "nginx's `auth_request` for the simulation console's `/sim/` proxy (#237): 204 when the session holds the permission, 401 without a live session, 403 without the permission. Only `sim:control` is checked here. Counts as use of the session only when `X-Original-Method` names a non-GET method and the request came from nginx over the `edge` network (`mes_http_proxy_requests_total{trusted}`); any other source, or a GET, leaves the idle expiry where it is. Access: permission `sim:control` (MES_AUTH=on; ADR-0026).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "sim:control"
+              ]
+            },
+            "in": "path",
+            "name": "permission",
+            "required": true
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "No Content"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path, query parameters or body",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or it ended or expired (MES_AUTH=on), or a failed login; type urn:shopfloor:unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin or Sec-Fetch-Site not allowed (a write needs a same-origin or allowlisted Origin; type urn:shopfloor:host-not-allowed or, for a write, urn:shopfloor:write-origin); or the session lacks the permission (urn:shopfloor:forbidden) or must change its password first (urn:shopfloor:password-change-required)",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -46,6 +46,7 @@ async function setup(end?: number) {
     },
   });
   app = await buildControlApp({
+    token: null,
     pacer: run.pacer,
     hub,
     ready: () => true,

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, connect, type AddressInfo, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -158,6 +159,10 @@ export async function freeSimulatorPorts(): Promise<SimulatorPorts> {
 
 export interface RunningSimulator {
   readonly control: string;
+  /** Its control token (`SIM_CONTROL_TOKEN`, #237), generated per start. */
+  readonly token: string;
+  /** `Authorization` for a request of one's own to the control API. */
+  readonly auth: { readonly authorization: string };
   /** The ports it runs on, to restart it where its clients left it. */
   readonly ports: SimulatorPorts;
   readonly opcuaOffset: number;
@@ -204,6 +209,9 @@ async function launchSimulator(
   extraEnv: Readonly<Record<string, string>>,
 ): Promise<RunningSimulator> {
   const control = `http://127.0.0.1:${String(ports.controlPort)}`;
+  // The control API's token (#237): random per start, unless the caller pins one (a restart).
+  const token = extraEnv.SIM_CONTROL_TOKEN ?? randomBytes(16).toString('hex');
+  const auth = { authorization: `Bearer ${token}` };
   // A certificate store of its own: a store left locked by a killed run would hang the start,
   // and one shared by name would be wiped by a parallel run.
   const pki = mkdtempSync(join(tmpdir(), 'shopfloor-twin-sim-pki-'));
@@ -217,6 +225,7 @@ async function launchSimulator(
     CONTROL_PORT: String(ports.controlPort),
     LOG_LEVEL: 'info',
     ...extraEnv,
+    SIM_CONTROL_TOKEN: token,
   });
   const removePki = () => {
     rmSync(pki, { recursive: true, force: true });
@@ -231,7 +240,10 @@ async function launchSimulator(
       SIMULATOR_READY_MS,
     );
     const events: SimEvent[] = [];
-    const ws = new WebSocket(`${control.replace('http', 'ws')}/api/v1/events`);
+    // Node's WebSocket (undici) takes request headers in its options: the token (#237).
+    const ws = new WebSocket(`${control.replace('http', 'ws')}/api/v1/events`, {
+      headers: auth,
+    });
     socket = ws;
     ws.addEventListener('message', (message: MessageEvent) => {
       events.push(JSON.parse(String(message.data)) as SimEvent);
@@ -242,6 +254,8 @@ async function launchSimulator(
     });
     return {
       control,
+      token,
+      auth,
       ports,
       opcuaOffset: ports.opcuaOffset,
       modbusPort: ports.modbusPort,
@@ -249,7 +263,10 @@ async function launchSimulator(
       post: async (path, body) => {
         const response = await fetch(`${control}${path}`, {
           method: path.endsWith('/speed') ? 'PUT' : 'POST',
-          headers: body === undefined ? {} : { 'content-type': 'application/json' },
+          headers: {
+            ...auth,
+            ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           signal: AbortSignal.timeout(30_000),
         });

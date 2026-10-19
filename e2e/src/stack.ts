@@ -71,6 +71,8 @@ export class Stack {
       MQTT_GATEWAY_PASSWORD: secret(),
       MQTT_MES_PASSWORD: secret(),
       ERP_API_TOKEN: secret(),
+      // The simulator's control token (#237): the run's clients send it; nginx injects it on /sim/.
+      SIM_CONTROL_TOKEN: secret(),
       // The MES's first admin (#170): it must change this password at its first login.
       MES_BOOTSTRAP_ADMIN_PASSWORD: secret(),
       ...this.#env,

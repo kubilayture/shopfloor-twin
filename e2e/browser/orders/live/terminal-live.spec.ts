@@ -40,6 +40,8 @@ const MIN_CHANGES = 20;
 const WORK_CENTER = 'line-a1';
 
 const simUrl = process.env.RECONCILE_SIM_URL ?? '';
+/** The control API's token (#237): the run passes it with the address. */
+const simToken = process.env.RECONCILE_SIM_TOKEN ?? '';
 const mesUrl = process.env.RECONCILE_MES_URL ?? '';
 const results = process.env.RECONCILE_RESULTS;
 /** The order in progress at Line A1 while this runs (orders-01: PO-2610-005, 150 VB-100). */
@@ -60,7 +62,7 @@ test('the terminal shows the order counts within 2 s of the cycles; an operator 
   test.skip(simUrl === '' || mesUrl === '', 'runs inside pnpm test:reconcile');
   test.setTimeout(SAMPLE_MS + 120_000);
   const operator = account('operator');
-  const sim = new SimulatorClient(simUrl);
+  const sim = new SimulatorClient(simUrl, simToken);
 
   // Sign on through the UI: a terminal session and the crew row (shift A runs).
   const cookie = await signOnAtTerminal(page, WORK_CENTER, operator);

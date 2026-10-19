@@ -81,7 +81,9 @@ describe('environment configuration (#75)', () => {
     const noOpcuaPassword = parseEnv({ MQTT_PASSWORD: 'secret' });
     expect(noOpcuaPassword.ok).toBe(false);
     if (!noOpcuaPassword.ok) {
-      expect(noOpcuaPassword.issues.join('\n')).toMatch(/^OPCUA_GATEWAY_PASSWORD: .*\(hidden\)$/);
+      expect(noOpcuaPassword.issues.join('\n')).toMatch(
+        /^OPCUA_GATEWAY_PASSWORD: .*\(got \(hidden\)\)$/,
+      );
     }
     const none = parseEnv({ MQTT_PASSWORD: 'secret', OPCUA_SECURITY: 'none' });
     expect(none.ok && none.env.OPCUA_SECURITY).toBe('none');

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   checkActions,
   checkInjections,
+  recordedDispatchIssues,
   shiftStart,
   simulationSections,
   type ActionSpec,
@@ -31,7 +32,10 @@ export interface HeadlessOptions {
   readonly production?: ProductionMode;
   /**
    * Orders mode (#172, B3): jobs given to the CNCs after `line.start` and before the injections,
-   * in list order, at the start time, as a live run's dispatch through `LoadOrder` does.
+   * in list order, at the start time, as a live run's dispatch through `LoadOrder` does. A
+   * recorded dispatch (#236, with `acceptedAt` and `afterEvents`) is given instead at its point
+   * of the run: after exactly `afterEvents` events, with the clock at `acceptedAt`, where the live
+   * run accepted it. Recorded dispatches come after every start-time one, in acceptance order.
    */
   readonly dispatches?: readonly DispatchSpec[];
   /**
@@ -42,7 +46,10 @@ export interface HeadlessOptions {
   readonly actions?: readonly ActionSpec[];
 }
 
-/** A scenario dispatch (#172): one `LoadOrder` at the start time, without epoch or expiry. */
+/**
+ * A scenario dispatch (#172): one `LoadOrder` at the start time, without epoch or expiry; or a
+ * recorded one (#236): at the point of the run where a live run accepted it.
+ */
 export interface DispatchSpec {
   readonly commandId: string;
   readonly machine: string;
@@ -50,9 +57,13 @@ export interface DispatchSpec {
   readonly product: string;
   readonly quantity: number;
   readonly notBefore: SimTime;
+  /** Recorded (#236): the simulation time of the acceptance, with `afterEvents`. */
+  readonly acceptedAt?: SimTime | undefined;
+  /** Recorded (#236): the events processed before the acceptance, with `acceptedAt`. */
+  readonly afterEvents?: number | undefined;
 }
 
-/** A dispatch as the run header records it. */
+/** A dispatch as the run header records it; the recorded keys only for a recorded one (#236). */
 export interface HeaderDispatch {
   readonly commandId: string;
   readonly machine: string;
@@ -60,7 +71,15 @@ export interface HeaderDispatch {
   readonly product: string;
   readonly quantity: number;
   readonly notBefore: string;
+  readonly acceptedAt?: string;
+  readonly afterEvents?: number;
 }
+
+/** Whether a dispatch was recorded live (#236) rather than given at the start. */
+export const isRecorded = (
+  dispatch: DispatchSpec,
+): dispatch is DispatchSpec & { acceptedAt: SimTime; afterEvents: number } =>
+  dispatch.acceptedAt !== undefined && dispatch.afterEvents !== undefined;
 
 /**
  * An injection as the run header records it: a failure without `kind` (as before #196, so
@@ -190,6 +209,15 @@ export function runHeadless(
   if (production === 'schedule' && dispatches.length > 0) {
     issues.push({ path: 'dispatches', message: 'dispatches need production mode "orders"' });
   }
+  dispatches.forEach((dispatch, index) => {
+    if ((dispatch.acceptedAt === undefined) !== (dispatch.afterEvents === undefined)) {
+      issues.push({
+        path: `dispatches[${String(index)}]`,
+        message: 'a recorded dispatch has both acceptedAt and afterEvents, or neither',
+      });
+    }
+  });
+  issues.push(...recordedDispatchIssues(dispatches, start, end));
   if (issues.length > 0) {
     throw new RangeError(issues.map((issue) => `${issue.path}: ${issue.message}`).join('; '));
   }
@@ -230,6 +258,9 @@ export function runHeadless(
             product: dispatch.product,
             quantity: dispatch.quantity,
             notBefore: isoTime(dispatch.notBefore),
+            ...(isRecorded(dispatch)
+              ? { acceptedAt: isoTime(dispatch.acceptedAt), afterEvents: dispatch.afterEvents }
+              : {}),
           })),
         }),
     ...(actions.length === 0 ? {} : { actions: actions.map(headerAction) }),
@@ -273,7 +304,11 @@ export function runHeadless(
   line.start(simulation);
   // Dispatches after line.start and before the injections (#172, B3): a live run is attached and
   // idle at the start time when the test dispatches, waits for every acceptance, then injects.
-  applyDispatches(line, simulation, dispatches);
+  applyDispatches(
+    line,
+    simulation,
+    dispatches.filter((dispatch) => !isRecorded(dispatch)),
+  );
   // After line.start and in list order, exactly as the control API schedules them (#140, #196).
   for (const injection of injections) {
     const accepted =
@@ -287,10 +322,13 @@ export function runHeadless(
   // Console actions last (#234), in list order, as a live run's control API accepts them.
   applyActions(line, simulation, actions);
   checker?.check(start);
-  simulation.runUntil(end - 1, (event, sim) => {
+  const handle = (event: LineEvent, sim: Simulation<LineEvent>): void => {
     line.handle(event, sim);
     checker?.check(sim.now);
-  });
+  };
+  // Recorded dispatches (#236) at their points of the run, then the rest of it.
+  replayDispatches(line, simulation, dispatches.filter(isRecorded), handle);
+  simulation.runUntil(end - 1, handle);
 
   const summary = truth.finish(
     end,
@@ -334,13 +372,21 @@ export function applyActions(
   });
 }
 
-/** Gives each dispatch to its CNC through `loadOrder`, in order; throws on any refusal. */
+/**
+ * Gives each dispatch to its CNC through `loadOrder` now, in order; throws on any refusal. Only
+ * dispatches given at the start: a recorded one (#236) goes through `replayDispatches`.
+ */
 export function applyDispatches(
   line: ProductionLine,
   simulation: Simulation<LineEvent>,
   dispatches: readonly DispatchSpec[],
 ): void {
   dispatches.forEach((dispatch, index) => {
+    if (isRecorded(dispatch)) {
+      throw new RangeError(
+        `dispatches[${String(index)}] (${dispatch.commandId}): a recorded dispatch is replayed at its point of a headless run, not given at the start`,
+      );
+    }
     const result = line.loadOrder(dispatch.machine, dispatch, simulation);
     if (!result.ok) {
       throw new RangeError(
@@ -351,6 +397,56 @@ export function applyDispatches(
       throw new RangeError(`dispatches[${String(index)}]: ${dispatch.commandId} is listed twice`);
     }
   });
+}
+
+/**
+ * Replays recorded dispatches (#236, probe Q2) at the points a live run accepted them: for each,
+ * in acceptance order, the run processes events until exactly `afterEvents` have been processed,
+ * moves its clock to `acceptedAt` without processing anything more, and gives the dispatch to the
+ * line, just as the live `LoadOrder` call found the run between two events. Throws when the run
+ * can't reach that point (the recording is of another configuration, seed or input): an event
+ * due after `acceptedAt` before the count is reached, or one due at or before it after.
+ */
+export function replayDispatches(
+  line: ProductionLine,
+  simulation: Simulation<LineEvent>,
+  dispatches: readonly (DispatchSpec & { acceptedAt: SimTime; afterEvents: number })[],
+  handle: (event: LineEvent, simulation: Simulation<LineEvent>) => void,
+): void {
+  for (const dispatch of dispatches) {
+    const label = `recorded dispatch ${dispatch.commandId} (after ${String(dispatch.afterEvents)} events at ${isoTime(dispatch.acceptedAt)})`;
+    const misfit = (why: string) =>
+      new RangeError(`${label}: ${why}; the recording does not fit this run`);
+    while (simulation.processed < dispatch.afterEvents) {
+      const next = simulation.nextEventTime;
+      if (next === undefined || next > dispatch.acceptedAt) {
+        throw misfit(
+          `only ${String(simulation.processed)} events are processed by ${isoTime(dispatch.acceptedAt)}`,
+        );
+      }
+      simulation.step(handle);
+    }
+    if (simulation.processed > dispatch.afterEvents || simulation.now > dispatch.acceptedAt) {
+      throw misfit(
+        `the run is past that point (${String(simulation.processed)} events at ${isoTime(simulation.now)})`,
+      );
+    }
+    if (simulation.now < dispatch.acceptedAt) {
+      const next = simulation.nextEventTime;
+      if (next !== undefined && next <= dispatch.acceptedAt) {
+        throw misfit(`an event is still due at ${isoTime(next)}`);
+      }
+      // Nothing is due by then: only the clock moves.
+      simulation.runUntil(dispatch.acceptedAt, handle);
+    }
+    const result = line.loadOrder(dispatch.machine, dispatch, simulation);
+    if (!result.ok) {
+      throw new RangeError(`${label}: ${result.reason}`);
+    }
+    if (result.duplicate) {
+      throw new RangeError(`${label}: ${dispatch.commandId} is listed twice`);
+    }
+  }
 }
 
 export const summaryDocument = (result: HeadlessResult): string =>

@@ -320,9 +320,27 @@ interface Job {
   readonly notBefore: SimTime;
   readonly position: number;
   readonly acceptedAt: SimTime;
+  /** Events the simulation had processed when the job was accepted (#236, the recording). */
+  readonly afterEvents: number;
   taken: number;
   startedAt: SimTime | undefined;
   completedAt: SimTime | undefined;
+}
+
+/**
+ * An accepted job as the live recording keeps it (#236, `GET /scenario/recorded`): the dispatch
+ * itself and where in the run it was accepted, the simulation time and the number of events
+ * processed by then, which together name the exact point between two events.
+ */
+export interface RecordedDispatch {
+  readonly commandId: string;
+  readonly machine: string;
+  readonly orderId: string;
+  readonly product: string;
+  readonly quantity: number;
+  readonly notBefore: SimTime;
+  readonly acceptedAt: SimTime;
+  readonly afterEvents: number;
 }
 
 /** Longest command and order id `LoadOrder` takes. */
@@ -1589,7 +1607,6 @@ export class ProductionLine {
         reason: `LoadOrder needs production mode "orders"; the simulator runs "${this.production}"`,
       };
     }
-    this.#now = simulation.now;
     const known = this.#acceptedCommands.get(request.commandId);
     if (known) {
       const same =
@@ -1637,6 +1654,9 @@ export class ProductionLine {
         reason: `${machineId} already has ${String(MAX_QUEUED_JOBS)} jobs queued`,
       };
     }
+    // Only an accepted call touches the line (#236): a duplicate or refused one changes nothing,
+    // so the recording leaves it out and a headless replay needs nothing for it.
+    this.#now = simulation.now;
     const job: Job = {
       commandId: request.commandId,
       orderId: request.orderId,
@@ -1646,6 +1666,7 @@ export class ProductionLine {
       notBefore: request.notBefore,
       position: station.jobs.length + 1,
       acceptedAt: this.#now,
+      afterEvents: simulation.processed,
       taken: 0,
       startedAt: undefined,
       completedAt: undefined,
@@ -1731,6 +1752,23 @@ export class ProductionLine {
   /** The `notBefore` of an accepted job (#230: the line OEE truth's head time), or undefined. */
   jobNotBefore(commandId: string): SimTime | undefined {
     return this.#acceptedCommands.get(commandId)?.notBefore;
+  }
+
+  /**
+   * Every job accepted so far (orders mode), in acceptance order, with where in the run it was
+   * accepted (#236): what a headless run needs to give it at the same point.
+   */
+  recordedDispatches(): RecordedDispatch[] {
+    return this.#jobs.map((job) => ({
+      commandId: job.commandId,
+      machine: job.machine,
+      orderId: job.orderId,
+      product: job.product,
+      quantity: job.quantity,
+      notBefore: job.notBefore,
+      acceptedAt: job.acceptedAt,
+      afterEvents: job.afterEvents,
+    }));
   }
 
   /** Every job accepted so far (orders mode), in acceptance order, with its progress. */

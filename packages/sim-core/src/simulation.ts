@@ -6,6 +6,7 @@ export type EventHandler<E> = (event: E, simulation: Simulation<E>) => void;
 export class Simulation<E> {
   readonly #queue = new EventQueue<E>();
   #now: SimTime;
+  #processed = 0;
 
   constructor(startTime: SimTime) {
     assertSimTime(startTime, 'startTime');
@@ -14,6 +15,15 @@ export class Simulation<E> {
 
   get now(): SimTime {
     return this.#now;
+  }
+
+  /**
+   * How many events have been processed (handled by `step`, `run` or `runUntil`; cancelled events
+   * don't count). With the time, it names the exact point between two events where something was
+   * given from outside the model (#236, a dispatch recorded live and replayed headless).
+   */
+  get processed(): number {
+    return this.#processed;
   }
 
   get pending(): number {
@@ -56,6 +66,7 @@ export class Simulation<E> {
       return false;
     }
     this.#now = next.time;
+    this.#processed++;
     handler(next.event, this);
     return true;
   }

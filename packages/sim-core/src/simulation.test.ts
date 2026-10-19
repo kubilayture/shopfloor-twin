@@ -138,6 +138,26 @@ describe('Simulation', () => {
     expect(seen).toEqual(['kept']);
   });
 
+  it('counts the events processed, by step and runUntil, never cancelled ones (#236)', () => {
+    const simulation = new Simulation<string>(START);
+    const cancelled = simulation.scheduleIn(SECOND, 'cancelled');
+    simulation.scheduleIn(SECOND, 'a');
+    simulation.scheduleIn(SECOND, 'b');
+    simulation.scheduleIn(MINUTE, 'c');
+    simulation.cancel(cancelled);
+    expect(simulation.processed).toBe(0);
+    simulation.step(() => undefined);
+    expect(simulation.processed).toBe(1);
+    // Up to a time with nothing due: the clock moves, the count doesn't.
+    simulation.runUntil(START + SECOND, () => undefined);
+    expect(simulation.processed).toBe(2);
+    simulation.runUntil(START + 2 * SECOND, () => undefined);
+    expect(simulation.processed).toBe(2);
+    expect(simulation.now).toBe(START + 2 * SECOND);
+    simulation.run(() => undefined);
+    expect(simulation.processed).toBe(3);
+  });
+
   it.each([
     ['a time in the past', (s: Simulation<string>) => s.schedule(START - 1, 'x')],
     ['a fractional time', (s: Simulation<string>) => s.schedule(START + 0.5, 'x')],

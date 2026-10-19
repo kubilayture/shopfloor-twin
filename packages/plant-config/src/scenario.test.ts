@@ -461,6 +461,102 @@ describe('checkScenarioPlan edges (#235 review)', () => {
   });
 });
 
+describe('recorded runs (#236)', () => {
+  const T0 = Date.UTC(2026, 9, 12, 3);
+  const job = (commandId: string, extra: object = {}) => ({
+    commandId,
+    machine: 'cnc-01',
+    orderId: commandId,
+    product: 'VB-100',
+    quantity: 2,
+    notBefore: '2026-10-12T03:00:00.000Z',
+    ...extra,
+  });
+
+  it('takes an earlier end inside the span, and dispatches recorded at their points', () => {
+    const plan = scenarioPlan(
+      parsed({
+        ...HEAD,
+        end: '2026-10-12T05:00:00.001Z',
+        production: 'orders',
+        dispatches: [
+          job('C0'),
+          job('C1', { acceptedAt: '2026-10-12T04:00:00.000Z', afterEvents: 40 }),
+          job('C2', { acceptedAt: '2026-10-12T04:00:00.000Z', afterEvents: 40 }),
+        ],
+      }),
+    );
+    expect(plan.end).toBe(T0 + 2 * 3_600_000 + 1);
+    expect(plan.dispatches.map((d) => [d.acceptedAt, d.afterEvents])).toEqual([
+      [undefined, undefined],
+      [T0 + 3_600_000, 40],
+      [T0 + 3_600_000, 40],
+    ]);
+    expect(plan.dispatches[0]).not.toHaveProperty('acceptedAt');
+    expect(checkScenarioPlan(config, plan)).toEqual([]);
+    // A timeline's dispatch entry takes them too.
+    const timeline = scenarioPlan(
+      parsed({
+        ...HEAD,
+        production: 'orders',
+        timeline: [
+          {
+            action: 'dispatch',
+            ...job('C1', { acceptedAt: '2026-10-12T04:00:00Z', afterEvents: 3 }),
+          },
+        ],
+      }),
+    );
+    expect(timeline.dispatches[0]?.afterEvents).toBe(3);
+  });
+
+  it('refuses an end outside the span, and half a recorded point', () => {
+    expect(issuesOf({ ...HEAD, end: '2026-10-12T03:00:00Z' })).toEqual([
+      { path: 'end', message: 'end must be after start and not after start + days' },
+    ]);
+    expect(issuesOf({ ...HEAD, end: '2026-10-13T03:00:00.001Z' })).toHaveLength(1);
+    expect(parseScenario({ ...HEAD, end: '2026-10-13T03:00:00Z' }).ok).toBe(true);
+    expect(
+      issuesOf({
+        ...HEAD,
+        production: 'orders',
+        dispatches: [job('C1', { afterEvents: 3 })],
+        timeline: undefined,
+      }),
+    ).toEqual([
+      {
+        path: 'dispatches[0]',
+        message: 'a recorded dispatch has both acceptedAt and afterEvents, or neither',
+      },
+    ]);
+    expect(issuesOf({ ...HEAD, dispatches: [job('C1', { afterEvents: -1 })] })).not.toEqual([]);
+  });
+
+  it('names recorded dispatches out of acceptance order, outside the run, or before a start-time one', () => {
+    const plan = scenarioPlan(
+      parsed({
+        ...HEAD,
+        end: '2026-10-12T05:00:00Z',
+        production: 'orders',
+        dispatches: [
+          job('C1', { acceptedAt: '2026-10-12T04:00:00Z', afterEvents: 40 }),
+          job('C2', { acceptedAt: '2026-10-12T03:59:00Z', afterEvents: 41 }),
+          job('C3', { acceptedAt: '2026-10-12T04:30:00Z', afterEvents: 39 }),
+          job('C4'),
+          job('C5', { acceptedAt: '2026-10-12T05:00:00Z', afterEvents: 50 }),
+        ],
+      }),
+    );
+    expect(checkScenarioPlan(config, plan).map((i) => i.path)).toEqual([
+      'dispatches[1]',
+      'dispatches[2]',
+      'dispatches[3]',
+      'dispatches[4]',
+    ]);
+    expect(checkScenarioPlan(config, plan)[3]?.message).toMatch(/outside the run/);
+  });
+});
+
 describe('readScenarioFile (#235)', () => {
   it('reads YAML and JSON, and takes a stock file only from the scenario folder', async () => {
     const yaml = join(folder, 'x.yaml');

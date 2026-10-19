@@ -57,6 +57,7 @@ export {
   TIMELINE_ACTIONS,
   TIMELINE_SPEED,
   checkScenarioPlan,
+  recordedDispatchIssues,
   instantMs,
   parseScenario,
   readScenarioFile,

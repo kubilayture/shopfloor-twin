@@ -1,0 +1,35 @@
+# Prometheus of the observability profile (P9-17, ADR-0012 amendment): compose.observability.yml.
+#
+# Every component's /metrics, scraped inside the Compose project's default network by service name,
+# never through a host port: the MES (4700) and the gateway (4900) are not published (P9-14,
+# ADR-0039), and the simulator's and the ERP mock's published ports may be ephemeral (the gate).
+# Every /metrics here is open by design: the control API needs its token on every route but
+# /health/* and /metrics (#237), the ERP mock's token guards /api/v1 only (#171), and the MES and
+# the gateway serve /metrics outside their API (the MES's Host and Origin checks cover /api only).
+#
+# Not scraped: the broker and the database (no exporter: each would be one more container with a
+# credential of its own) and nginx. Container CPU and memory come from the cgroups in the
+# performance suite (P9-18), not from cAdvisor (it needs the Docker socket or the host's /sys and
+# /var/lib/docker, which checklist S8 rules out); the Node services' own process_* metrics are here.
+global:
+  # 5 s: a simulated hour is one wall minute at 60x, so one scrape spans 5 simulated minutes.
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+  - job_name: mes
+    static_configs:
+      - targets: ['mes:4700']
+  - job_name: gateway
+    static_configs:
+      - targets: ['gateway:4900']
+  - job_name: simulator
+    static_configs:
+      - targets: ['simulator:4800']
+  - job_name: erp
+    static_configs:
+      - targets: ['erp:4600']

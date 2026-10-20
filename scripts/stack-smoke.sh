@@ -71,6 +71,22 @@ compose_without() {
   rm -f "$stripped"
   return $result
 }
+# The same with the observability file (P9-17, compose.observability.yml) on the hardened files and
+# the profiles given after the key (`observability`: Prometheus; `grafana`: Grafana).
+observability_without() {
+  stripped=$(mktemp)
+  grep -v "^$1=" "$env_file" >"$stripped" || true
+  shift
+  profiles=
+  for profile in "$@"; do profiles="$profiles --profile $profile"; done
+  # shellcheck disable=SC2086 # profiles is a list of words
+  env -i PATH="$PATH" HOME="$HOME" docker compose --env-file "$stripped" \
+    --file docker-compose.yml --file compose.observability.yml $profiles \
+    config -q >/dev/null 2>&1
+  result=$?
+  rm -f "$stripped"
+  return $result
+}
 for key in DB_PASSWORD DB_APP_PASSWORD ERP_API_TOKEN SIM_CONTROL_TOKEN MQTT_HEALTHCHECK_PASSWORD \
   MQTT_DEV_PASSWORD MQTT_GATEWAY_PASSWORD MQTT_MES_PASSWORD OPCUA_GATEWAY_PASSWORD \
   OPCUA_READER_PASSWORD; do
@@ -79,6 +95,21 @@ done
 compose_without MES_BOOTSTRAP_ADMIN_PASSWORD ||
   fail "Compose refused a configuration without the optional MES_BOOTSTRAP_ADMIN_PASSWORD"
 echo "ok: Compose refuses to start without a required secret, not without the bootstrap admin password"
+# The observability profile (P9-17) is opt-in: the default stack doesn't need its Grafana password;
+# with the profile Compose refuses to start without it. Checked when the env file sets it (the
+# gate's does: every *_PASSWORD of .env.example is generated), so a .env without the profile passes.
+compose_without GRAFANA_ADMIN_PASSWORD ||
+  fail "the default stack requires GRAFANA_ADMIN_PASSWORD (the observability profile's)"
+if [ -n "${GRAFANA_ADMIN_PASSWORD:-}" ]; then
+  observability_without NONE observability grafana ||
+    fail "Compose refused the observability profiles with every secret set"
+  if observability_without GRAFANA_ADMIN_PASSWORD observability grafana; then
+    fail "Compose accepted Grafana's profile without GRAFANA_ADMIN_PASSWORD"
+  fi
+  echo "ok: the observability profiles are opt-in and refuse to start without GRAFANA_ADMIN_PASSWORD"
+else
+  echo "ok: the default stack needs no GRAFANA_ADMIN_PASSWORD (not set here: profile not checked)"
+fi
 
 # Rows the MES records from here on belong to this run (rejected cycles below).
 smoke_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)

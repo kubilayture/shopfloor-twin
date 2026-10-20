@@ -12,6 +12,12 @@ import { REPO } from './stack.ts';
  */
 
 interface Service {
+  readonly image?: string;
+  readonly profiles?: readonly string[];
+  readonly command?: readonly string[];
+  readonly tmpfs?: readonly string[];
+  readonly networks?: Readonly<Record<string, unknown>>;
+  readonly deploy?: { readonly resources?: { readonly limits?: Record<string, string> } };
   readonly ports?: readonly string[];
   readonly environment?: Readonly<Record<string, string>>;
   readonly volumes?: readonly string[];
@@ -109,6 +115,132 @@ describe('the hardened Compose (P9-14, checklist S8)', () => {
       .filter(([, s]) => (s.volumes ?? []).some((v) => v.startsWith('pki-ca:')))
       .map(([name]) => name);
     expect(mounting).toEqual(['pki']);
+  });
+});
+
+describe('the observability profile (P9-17, compose.observability.yml)', () => {
+  it('is opt-in: the default stack has neither service nor a variable of it; Grafana has a profile of its own', async () => {
+    const all = await services('docker-compose.yml');
+    expect(Object.keys(all)).not.toContain('prometheus');
+    expect(Object.keys(all)).not.toContain('grafana');
+    const text = await readFile(join(REPO, 'docker-compose.yml'), 'utf8');
+    expect(text).not.toMatch(/GRAFANA|PROMETHEUS/);
+    const observability = await services('compose.observability.yml');
+    expect(Object.keys(observability).sort()).toEqual(['grafana', 'prometheus']);
+    // Prometheus alone for the performance suite (P9-18): Grafana's memory stays out of T5.
+    expect(observability.prometheus?.profiles).toEqual(['observability']);
+    expect(observability.grafana?.profiles).toEqual(['grafana']);
+    const scripts = (
+      JSON.parse(await readFile(join(REPO, 'package.json'), 'utf8')) as {
+        scripts: Record<string, string>;
+      }
+    ).scripts;
+    const files =
+      'docker compose --file docker-compose.yml --file compose.observability.yml --profile observability --profile grafana';
+    expect(scripts['stack:up:observability']).toBe(`${files} up -d --wait`);
+    expect(scripts['stack:down:observability']).toBe(`${files} down`);
+    expect(scripts['stack:reset:observability']).toBe(`${files} down --volumes`);
+  });
+
+  it('pins both images, limits both and publishes them on 127.0.0.1 only', async () => {
+    const observability = await services('compose.observability.yml');
+    for (const [name, service] of Object.entries(observability)) {
+      expect(service.image, name).toMatch(/:v?\d+\.\d+\.\d+(-[a-z]+)?$/);
+      expect(service.deploy?.resources?.limits, name).toEqual({
+        cpus: expect.any(String) as string,
+        memory: expect.any(String) as string,
+      });
+    }
+    expect(
+      Object.fromEntries(
+        Object.entries(observability).map(([name, s]) => [name, published(s.ports)]),
+      ),
+    ).toEqual({
+      prometheus: [{ ip: '127.0.0.1', host: '${PROMETHEUS_PORT:-9090}', port: 9090 }],
+      grafana: [{ ip: '127.0.0.1', host: '${GRAFANA_PORT:-3000}', port: 3000 }],
+    });
+  });
+
+  it('has no default credentials: the Grafana admin password is required, no anonymous access', async () => {
+    const grafana = (await services('compose.observability.yml')).grafana;
+    expect(grafana?.environment?.GF_SECURITY_ADMIN_PASSWORD).toMatch(
+      /^\$\{GRAFANA_ADMIN_PASSWORD:\?[^}]+\}$/,
+    );
+    expect(grafana?.environment).toMatchObject({
+      GF_AUTH_ANONYMOUS_ENABLED: 'false',
+      GF_USERS_ALLOW_SIGN_UP: 'false',
+    });
+    const example = await readFile(join(REPO, '.env.example'), 'utf8');
+    expect(example).toMatch(/^GRAFANA_ADMIN_PASSWORD=$/m);
+  });
+
+  it('hardens Grafana (#244 review): no plugin installs, nothing published or sent out, its proxy to Prometheus only, state on a tmpfs', async () => {
+    const grafana = (await services('compose.observability.yml')).grafana;
+    expect(grafana?.environment).toMatchObject({
+      GF_PLUGINS_PREINSTALL_DISABLED: 'true',
+      GF_PLUGINS_PLUGIN_ADMIN_ENABLED: 'false',
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: 'true',
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: 'false',
+      GF_PUBLIC_DASHBOARDS_ENABLED: 'false',
+      GF_SECURITY_DATA_SOURCE_PROXY_WHITELIST: 'prometheus:9090',
+      GF_UNIFIED_ALERTING_ENABLED: 'false',
+      GF_METRICS_ENABLED: 'false',
+      GF_ANALYTICS_REPORTING_ENABLED: 'false',
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false',
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false',
+    });
+    expect(grafana?.tmpfs).toEqual([expect.stringMatching(/^\/var\/lib\/grafana:uid=472,/)]);
+    expect(grafana?.volumes).toEqual([
+      './config/grafana/provisioning:/etc/grafana/provisioning:ro',
+    ]);
+  });
+
+  it('gives Prometheus no CORS origin: its regex matches no character', async () => {
+    const command = (await services('compose.observability.yml')).prometheus?.command ?? [];
+    const cors = command.filter((flag) => flag.startsWith('--web.cors.origin='));
+    expect(cors).toHaveLength(1);
+    const pattern = new RegExp(`^(?:${cors[0]?.slice('--web.cors.origin='.length) ?? '.*'})$`);
+    for (const origin of ['', 'null', 'http://localhost:9090', 'https://attacker.example']) {
+      expect(pattern.test(origin), origin).toBe(false);
+    }
+    expect(command.some((flag) => /enable-(admin-api|lifecycle)/.test(flag))).toBe(false);
+  });
+
+  it('keeps Grafana off the plant networks and Prometheus off edge (the MES trusts edge only)', async () => {
+    const observability = await services('compose.observability.yml');
+    expect(Object.keys(observability.grafana?.networks ?? {})).toEqual(['observability']);
+    expect(Object.keys(observability.prometheus?.networks ?? {}).sort()).toEqual([
+      'default',
+      'observability',
+    ]);
+  });
+
+  it('scrapes every component by service name inside the network, never a host port', async () => {
+    const config = parse(
+      await readFile(join(REPO, 'config/prometheus/prometheus.yml'), 'utf8'),
+    ) as {
+      scrape_configs: { job_name: string; static_configs: { targets: string[] }[] }[];
+    };
+    const targets = Object.fromEntries(
+      config.scrape_configs.map((job) => [
+        job.job_name,
+        job.static_configs.flatMap((c) => c.targets),
+      ]),
+    );
+    expect(targets).toEqual({
+      prometheus: ['localhost:9090'],
+      mes: ['mes:4700'],
+      gateway: ['gateway:4900'],
+      simulator: ['simulator:4800'],
+      erp: ['erp:4600'],
+    });
+    // Each a service of the default network in docker-compose.yml.
+    const all = await services('docker-compose.yml');
+    for (const name of ['mes', 'gateway', 'simulator', 'erp']) {
+      expect(all[name], name).toBeDefined();
+      const networks = Object.keys(all[name]?.networks ?? { default: {} });
+      expect(networks, name).toContain('default');
+    }
   });
 });
 

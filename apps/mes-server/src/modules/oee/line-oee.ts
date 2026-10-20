@@ -16,11 +16,14 @@
  * - the line's final-through is the earliest final-through (ADR-0018) of the machines that
  *   contribute (schedule mode: the packing and bottleneck machines; orders mode: every machine of
  *   the line, whose facts decide completions, a CNC only as far as a job of it can still bring a
- *   fact: `LineOrders.cncThrough`);
+ *   fact: `LineOrders.cncThrough`), each other machine in the plant's newest epoch only (#257);
  *   it never passes the plant clock (without a clock nothing is final);
  * - device epochs: per bucket and machine only the newest epoch with data in it counts (a restarted
  *   simulator's run over the same plant time is never counted twice); a bucket with data of two
- *   epochs, or of an epoch not the machine's current one, is never final;
+ *   epochs is never final; one with data of an ended run only (an epoch older than the machine's
+ *   current one) may be final like any other (#257): the old epoch is closed at its watermark
+ *   (ADR-0018), and the line's final-through counts a machine only once it is settled in the
+ *   plant's newest epoch, so no newer run can still bring data into a bucket before it;
  * - `aboveOne`, not capped; `null` when the planned busy time is 0.
  *
  * **Finality:** a bucket is final when every input is final through its end: every contributing
@@ -34,7 +37,9 @@
  * bucket over them carries `mayRevise` and the hours' `revision`, as the OEE buckets do.
  *
  * A final bucket without incidents never changes, so it is kept in memory (derive and cache; no
- * table, ADR-0022); a read computes only the buckets not kept.
+ * table, ADR-0022); a read computes only the buckets not kept. A new device epoch (the plant
+ * clock's) drops them all (#257): a simulator restarted over the same plant time counts its own
+ * run there, and a recomputation after an MES restart must give what the cache gives.
  */
 import type { Millis, Range } from '@shopfloor/oee-core';
 import {
@@ -130,6 +135,8 @@ export class LineOee {
   readonly #listeners = new Set<(change: LineChange) => void>();
   /** Final buckets without incidents never change (ADR-0018): kept so a read skips them. */
   readonly #finals = new Map<string, LineBucket>();
+  /** The plant clock's device epoch the kept finals were derived under (#257). */
+  #finalsEpoch: number | undefined;
   #model: LineModel | undefined;
   #warned = false;
   #detach: (() => void)[] = [];
@@ -298,6 +305,12 @@ export class LineOee {
   }
 
   async #compute(kind: LineBucketKind, defs: readonly ShiftBucket[]): Promise<LineBucket[]> {
+    // The plant clock, read once: a new device epoch drops the kept finals (module comment).
+    const clock = this.#options.equipment.watermarks()[0];
+    if (clock?.epoch !== this.#finalsEpoch) {
+      this.#finals.clear();
+      this.#finalsEpoch = clock?.epoch;
+    }
     const done = new Map<string, LineBucket>();
     const todo = defs.filter((def) => {
       const cached = this.#finals.get(cacheKey(kind, def.key));
@@ -305,7 +318,7 @@ export class LineOee {
       return !cached;
     });
     if (todo.length > 0) {
-      for (const bucket of await this.#derive(kind, todo)) done.set(bucket.key, bucket);
+      for (const bucket of await this.#derive(kind, todo, clock)) done.set(bucket.key, bucket);
     }
     return defs.flatMap((def) => {
       const bucket = done.get(def.key);
@@ -313,7 +326,11 @@ export class LineOee {
     });
   }
 
-  async #derive(kind: LineBucketKind, defs: readonly ShiftBucket[]): Promise<LineBucket[]> {
+  async #derive(
+    kind: LineBucketKind,
+    defs: readonly ShiftBucket[],
+    plantClock: { readonly epoch: number; readonly watermark: Date } | undefined,
+  ): Promise<LineBucket[]> {
     const { ingest, equipment, execution, orderOee, shiftPattern } = this.#options;
     const orders = this.#options.productionMode === 'orders';
     const model = await this.model();
@@ -331,15 +348,20 @@ export class LineOee {
     // The plant clock cuts what is counted; the line's final-through, the earliest of the
     // contributing machines' (a CNC's as far as its jobs can still bring a fact), decides finality.
     // It never passes the clock: a bucket counted short is never final (without a clock, nothing is).
-    const clock = equipment.watermarks()[0]?.watermark.getTime() ?? Number.NEGATIVE_INFINITY;
+    const clock = plantClock?.watermark.getTime() ?? Number.NEGATIVE_INFINITY;
+    const newest = plantClock?.epoch;
     const finalThrough = (machine: string): Millis =>
       progress.get(machine)?.settledTime?.getTime() ?? Number.NEGATIVE_INFINITY;
     let cut = contributing.length === 0 ? Number.NEGATIVE_INFINITY : clock;
     for (const machine of contributing) {
+      // A machine counts only once it is settled in the plant's newest epoch (#257): until then
+      // that run may still bring its data anywhere after its start, before the bucket's end too.
       const through =
         lineOrders && model.first.includes(machine)
           ? (lineOrders.cncThrough.get(machine) ?? Number.POSITIVE_INFINITY)
-          : finalThrough(machine);
+          : progress.get(machine)?.epoch === newest
+            ? finalThrough(machine)
+            : Number.NEGATIVE_INFINITY;
       cut = Math.min(cut, through);
     }
     // Good packed before the plant clock, with their device epoch.
@@ -378,28 +400,38 @@ export class LineOee {
         o.from === null ? [] : [{ from: o.from, to: o.completedAt ?? Math.max(o.from, clock) }],
       );
     }
-    // Written-off gaps on the contributing machines, each in its own device epoch.
+    // Written-off gaps on the contributing machines, each in its own device epoch, and in every
+    // ended run whose data a bucket counts (#257: its closed epoch's gaps lie under that data).
+    const current = (machine: string): number | undefined =>
+      progress.get(machine)?.epoch ?? undefined;
+    const runs = new Set<number>([
+      ...packs.map((p) => p.epoch),
+      ...[...bottleneckPieces.values()].flatMap((all) => all.map((p) => p.epoch)),
+    ]);
     const streams = contributing.flatMap((machine) => {
-      const epoch = progress.get(machine)?.epoch;
-      return epoch === null || epoch === undefined ? [] : [{ equipment: machine, epoch }];
+      const own = current(machine);
+      const epochs = new Set([...(own === undefined ? [] : [own]), ...runs]);
+      return [...epochs].sort((a, b) => a - b).map((epoch) => ({ equipment: machine, epoch }));
     });
     const gaps = await ingest.gapIncidents(streams);
     const result: LineBucket[] = [];
     for (const def of defs) {
       const bucket = { from: def.start, to: def.end };
-      // The epoch rule (ADR-0036 P9-05 amendment): per machine, only the newest device epoch with
-      // data in the bucket counts, so a simulator restarted over the same plant time is never
-      // counted twice; a bucket with data of two epochs, or of an epoch not the machine's current
-      // one, is never final.
+      // The epoch rule (ADR-0036 P9-05 amendment, #257): per machine, only the newest device epoch
+      // with data in the bucket counts, so a simulator restarted over the same plant time is never
+      // counted twice; a bucket with data of two epochs is never final, one with an ended run's
+      // data alone may be (the line's final-through then guards against a newer run).
       let epochsOk = true;
       const counted: Pack[] = [];
+      const bucketRuns = new Set<number>();
       for (const machine of model.packing) {
         const inBucket = packs.filter(
           (p) => p.machine === machine && p.at >= bucket.from && p.at < bucket.to,
         );
         const epoch = newestEpoch(inBucket);
         if (epoch === undefined) continue;
-        epochsOk &&= sameEpoch(inBucket, epoch, progress.get(machine)?.epoch);
+        epochsOk &&= oneRun(inBucket, epoch, current(machine));
+        bucketRuns.add(epoch);
         counted.push(...inBucket.filter((p) => p.epoch === epoch));
       }
       const stops: Range[] = [...breaks];
@@ -410,8 +442,8 @@ export class LineOee {
         );
         const epoch = newestEpoch(inBucket);
         const chosen = inBucket.filter((p) => p.epoch === epoch);
-        epochsOk &&=
-          epoch === undefined || sameEpoch(inBucket, epoch, progress.get(machine)?.epoch);
+        epochsOk &&= epoch === undefined || oneRun(inBucket, epoch, current(machine));
+        if (epoch !== undefined) bucketRuns.add(epoch);
         stops.push(...maintenance(chosen));
         piecesOk &&= piecesFinal(chosen, bucket);
       }
@@ -425,7 +457,11 @@ export class LineOee {
         effectiveCycleMs: model.effectiveCycleMs,
       });
       const incidents = gaps
-        .filter((gap) => gapTouches(gap, bucket.from, bucket.to))
+        .filter(
+          (gap) =>
+            (gap.epoch === current(gap.equipment) || bucketRuns.has(gap.epoch)) &&
+            gapTouches(gap, bucket.from, bucket.to),
+        )
         .map(({ equipment: machine, epoch, id, seqFrom, seqTo }) => ({
           machine,
           epoch,
@@ -463,7 +499,10 @@ export class LineOee {
         mayRevise: incidents.length > 0,
         revision,
       };
-      if (final && incidents.length === 0) this.#finals.set(cacheKey(kind, def.key), line);
+      // Kept only under the epoch it was derived in (a newer one may have dropped the cache since).
+      if (final && incidents.length === 0 && this.#finalsEpoch === newest) {
+        this.#finals.set(cacheKey(kind, def.key), line);
+      }
       result.push(line);
     }
     return result;
@@ -477,13 +516,21 @@ function newestEpoch(items: readonly { readonly epoch: number }[]): number | und
   return newest;
 }
 
-/** Every item of `epoch`, and that epoch the machine's current one. */
-function sameEpoch(
+/**
+ * Every item of `epoch` (no newer run has data beside it), and that epoch the machine's current
+ * one or an ended run before it (#257).
+ */
+function oneRun(
   items: readonly { readonly epoch: number }[],
   epoch: number,
   current: number | null | undefined,
 ): boolean {
-  return epoch === current && items.every((item) => item.epoch === epoch);
+  return (
+    current !== null &&
+    current !== undefined &&
+    epoch <= current &&
+    items.every((item) => item.epoch === epoch)
+  );
 }
 
 /** Whole UTC hours [from, to). */

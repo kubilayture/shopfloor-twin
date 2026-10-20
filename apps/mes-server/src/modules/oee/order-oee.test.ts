@@ -678,6 +678,34 @@ describe('order OEE finality (#231)', () => {
     const atEnd = world();
     atEnd.completedAt = at(35);
     expect((await read(atEnd)).line?.value.good).toEqual({ 'VB-100': 2 });
+    // Only the order's own good records at the last operation are packs (#257): a scrap or a
+    // rework at OP50 is none, nor is a good record at another operation (OP10 included).
+    const mixed = world();
+    mixed.units = [
+      {
+        commandId: 'A~OP10~1',
+        op10: 20,
+        records: [
+          ['OP20', 'good'],
+          ['OP50', 'scrap'],
+        ],
+      },
+      {
+        commandId: 'A~OP10~1',
+        op10: 30,
+        records: [
+          ['OP50', 'rework'],
+          ['OP50', 'good'],
+        ],
+      },
+    ];
+    expect((await read(mixed)).line?.value.good).toEqual({ 'VB-100': 1 });
+    const none = world();
+    none.units = [
+      { commandId: 'A~OP10~1', op10: 20, records: [['OP40', 'good']] },
+      { commandId: 'A~OP10~1', op10: 30, records: [['OP50', 'scrap']] },
+    ];
+    expect((await read(none)).line?.value.good).toEqual({});
     // Maintenance on the bottleneck is a planned stop: 2 400 000 ms, 1/8.
     const maintained = world();
     maintained.bottleneck = [

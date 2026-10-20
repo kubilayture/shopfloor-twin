@@ -750,3 +750,12 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     - **5, 6:** results file and ADR corrected (the live rate, the final run's digests, Q3's table and summary consistent, percentiles labelled interpolated); T1 requires no duplicate and records rejections; T4 requires every read 200 and judges every kind's p95.
   - **`pnpm test:perf`** on `b540ece`, `PERF-OK` (36.4 min): T1 lag p95 46.1 ms (interpolated), p99 49.3 ms, max 58 ms, oldest pending ≤ 0.039 s at every hour, no duplicate or replay; T2 median 987.7 msg/s over a 11.3 s drain, final after 11.6 s; T3 overview 233 ms, OEE dashboard 1,083 ms, SPC 231 ms, terminal 585 ms; T4 reads 17.9 ms, backward traces 7.7 ms, every kind ≤ 55.5 ms, 3,938 reads all 200; T5 MES 0.149 core, 0.38 % throttled, highest memory the ERP mock's 52.2 %, 10 containers as expected; T6 52.8 msg/s offered (3.95 × live), at most 57 ms late, lag p95 21.0 ms, final after 0.2 s, 24 OEE buckets equal. Figures in `docs/phases/phase-09-perf-results.md`.
   - **`pnpm test:trace-perf`** on `b540ece` over HTTPS (`TRACE_PERF_PROJECT=shopfloor-trace-perf245`, `TRACE_PERF_TAG=tp245`), `TRACE-PERF-OK`: backward p95 2.70 ms (max 5.72), forward of the largest lot (1,493 units) p95 24.82 ms (max 55.13).
+  - **Gate** on `1f0e600` after the rebase onto `6c850ae` (`GATE_PROJECT=gate245b`, `GATE_TAG=pr245b`, `TURBO_FORCE=1`, under the heavy lock), `GATE-OK`; free at the start: host 29.3 GiB, Docker 75.2 GiB. This entry is documentation only.
+
+    | Step      | Result | Time      | Notes                                       |
+    | --------- | ------ | --------- | ------------------------------------------- |
+    | verify    | passed | 571.6 s   | `pnpm verify --concurrency=1`, uncached     |
+    | golden    | passed | 1.5 s     | all four goldens byte-identical             |
+    | e2e       | passed | 1,435.8 s | the replay entry skipped without its broker |
+    | smoke     | passed | 203.0 s   |                                             |
+    | reconcile | passed | 1,665.2 s | alarms, orders, quality                     |

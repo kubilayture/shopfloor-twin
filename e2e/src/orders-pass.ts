@@ -41,6 +41,18 @@ export interface PassContext {
   readonly fail: (message: string) => void;
 }
 
+/**
+ * Every order of `GET /api/v1/orders`: it answers at most 500 and says so (`truncated`), and a
+ * partial list would make every check over it partial, so a truncated answer fails (#257).
+ */
+export async function listOrders(ctx: Pick<PassContext, 'mes' | 'fail'>) {
+  const list = await ctx.mes.orders();
+  if (list.truncated) {
+    ctx.fail(`GET /orders is truncated (${String(list.orders.length)} listed): the set is partial`);
+  }
+  return list.orders;
+}
+
 /** Polls `check` until it returns true; rejects with `what` after `timeoutMs`. */
 export async function until(what: string, check: () => Promise<boolean>, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs;
@@ -92,7 +104,7 @@ export async function checkImport(ctx: PassContext) {
   await until(
     'the MES imported every order of the ERP feed',
     async () => {
-      mesOrders = (await ctx.mes.orders()).orders.map((o) => ({
+      mesOrders = (await listOrders(ctx)).map((o) => ({
         id: o.id,
         status: o.status,
         revision: o.revision,
@@ -464,7 +476,7 @@ export async function checkOrdersAfterDrain(
   }
   // The others: in progress, dispatched with no unit yet, never released.
   const statuses: Record<string, string> = {};
-  for (const o of (await ctx.mes.orders()).orders) statuses[o.id] = o.status;
+  for (const o of await listOrders(ctx)) statuses[o.id] = o.status;
   return { acceptedFacts: facts, incidents: incidents.length, completed: report, statuses };
 }
 
@@ -1160,14 +1172,8 @@ export async function checkOrderOee(
     );
   }
   // The MES's own set: its orders completed before the cut are the same (#233 review), from a
-  // whole list (`GET /orders` answers at most 500 and says so: #257).
-  const mesList = await ctx.mes.orders();
-  if (mesList.truncated) {
-    ctx.fail(
-      `GET /orders is truncated (${String(mesList.orders.length)} listed): the set is partial`,
-    );
-  }
-  const mesCompleted = mesList.orders
+  // whole list (#257).
+  const mesCompleted = (await listOrders(ctx))
     .filter((o) => o.completedAt !== null && Date.parse(o.completedAt) < cut.to)
     .map((o) => o.id)
     .sort();

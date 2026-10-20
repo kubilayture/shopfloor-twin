@@ -623,3 +623,11 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     5. **(low)** `orderFollow`'s comment: `lost` can resolve (a late fact, a filled gap), which arrives as a command change of the order and reclassifies the topic; dropping an open `lost` order's clock-following is on purpose.
     6. **(low)** The restart claim qualified in the amendment and above: equal once both see the new run's clock; while it is known from telemetry only, the running instance errs on the safe side.
     7. **(info)** ADR-0036 states that the CNC exemption rests on the bottleneck not being a CNC; a CNC that is a bottleneck machine is now also held by its final-through in the newest epoch (tested with a model whose bottleneck is CNC-01). Every `GET /orders` caller of the reconcile passes goes through `listOrders`, which fails on `truncated`.
+  - **Gate after the review** on `3c23940` (`GATE_STEPS=verify,e2e,smoke,reconcile`, `GATE_PROJECT=gate257b`, `GATE_TAG=pr257b`; `main` unmoved at `4425021`, no rebase): `GATE-FAILED` in the smoke on "ERP mock not ready" (the ERP mock is untouched by this branch; the first gate's smoke passed). Rerun of `smoke,reconcile` on the same commit, project and tag: `GATE-OK`. Free at the start: host 57.5 GiB, Docker 88.4 GiB (rerun: 51.5 GiB, 85.1 GiB). The gate table came after it (documentation only).
+
+    | Step      | Result | Time      | Notes                                                                     |
+    | --------- | ------ | --------- | ------------------------------------------------------------------------- |
+    | verify    | passed | 506.4 s   | `pnpm verify --concurrency=1`                                             |
+    | e2e       | passed | 1,434.4 s | `order-oee.e2e.test.ts` (12 tests, all four goldens) with the same counts |
+    | smoke     | passed | 95.0 s    | rerun; the first run failed on the ERP mock's readiness (140.4 s)         |
+    | reconcile | passed | 1,663.2 s | alarms OK, orders OK, quality OK                                          |

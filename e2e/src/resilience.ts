@@ -242,12 +242,13 @@ const RUNS = {
 type RunName = keyof typeof RUNS;
 
 /**
- * R3 with faults that do lose facts (`RESILIENCE_R3_SCHEDULE=lossy`, a diagnostic run, not the
- * plan's): the plan's CNC-01 outage (30 s of wall time) is shorter than the gateway's OPC UA session
- * timeout (60 s), so the session and its subscription survive and republish every event, and its
- * gateway kill at 10:00–10:05 lies in shift A's break (10:00–10:30), when no machine raises a fact.
- * Here CNC-01 is offline for 90 s of wall time, past the session's end, and the gateway is killed
- * while the line runs, so the detected-loss assertions judge real gaps.
+ * R3 with a fault that does lose facts (`RESILIENCE_R3_SCHEDULE=lossy`, a diagnostic run, not the
+ * plan's). The plan's schedule loses nothing (#243): an OPC UA server offline keeps the gateway's
+ * session and subscription, which republish every queued event on the reconnect (30 s of wall
+ * time lost nothing, and 90 s here neither), and its gateway kill at 10:00–10:05 lies in shift A's
+ * break (10:00–10:30), when no machine raises a fact. Here the gateway is killed at 10:45 while the
+ * line runs, so its new sessions start past the facts raised meanwhile and the detected-loss
+ * assertions judge real gaps (WSH-01 recovers its own from the Modbus ring).
  */
 const R3_LOSSY: RunPlan = {
   title: 'detected loss (lossy diagnostic schedule)',

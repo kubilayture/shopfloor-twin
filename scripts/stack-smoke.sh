@@ -453,7 +453,38 @@ echo "ok: stored cycle facts carry lots and operator (contract 1.4; lot $asm_lot
 
 # ERP mock (#171): ready, refuses the API without the bearer token, serves the order feed with it.
 # The token goes to curl on stdin, not on its command line.
-curl -sf "$erp/health/ready" >/dev/null || fail "ERP mock not ready"
+# Its address is read again here, and readiness polled for up to 30 s (#243 comment): the check
+# failed twice with no code cause, minutes after `up` had found the ERP healthy, which a container
+# that restarted on a new ephemeral host port or a slow port forward would explain. A failure now
+# prints the container's state and its last log lines, so the next one carries its evidence.
+erp_first=$erp
+erp_ready=
+erp_attempts=0
+while [ "$erp_attempts" -lt 30 ]; do
+  erp_attempts=$((erp_attempts + 1))
+  # `published` never fails (no address while the container is down), so `set -e` can't end the
+  # smoke before the diagnostic below.
+  erp_address=$(published erp 4600 || true)
+  if [ -n "$erp_address" ]; then
+    erp="http://$erp_address"
+    if curl -sf --max-time 2 "$erp/health/ready" >/dev/null; then
+      erp_ready=1
+      break
+    fi
+  fi
+  sleep 1
+done
+erp_id=$(docker compose ps --all --quiet erp || true)
+erp_restarts=$(docker inspect --format '{{.RestartCount}}' "$erp_id" 2>/dev/null || echo unknown)
+if [ -z "$erp_ready" ]; then
+  docker inspect --format 'erp: {{.State.Status}}, restarts {{.RestartCount}}, OOM killed {{.State.OOMKilled}}, exit {{.State.ExitCode}}, health {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$erp_id" >&2 || true
+  docker compose logs --no-color --tail 30 erp >&2 || true
+  fail "ERP mock not ready within 30 attempts (last address ${erp_address:-none})"
+fi
+# A crash and restart must not hide behind the retry.
+[ "$erp_restarts" = 0 ] || fail "the ERP mock restarted ($erp_restarts restarts): see docker compose logs erp"
+if [ "$erp" = "$erp_first" ]; then erp_moved="same address"; else erp_moved="address changed from $erp_first"; fi
+echo "ok: ERP mock ready after $erp_attempts attempt(s), $erp_moved, no restart"
 code=$(curl -s -o /dev/null -w '%{http_code}' "$erp/api/v1/orders")
 [ "$code" = 401 ] || fail "ERP mock answered without a token ($code)"
 feed=$(printf 'Authorization: Bearer %s\n' "$ERP_API_TOKEN" | curl -sf -H @- "$erp/api/v1/orders?limit=1") ||

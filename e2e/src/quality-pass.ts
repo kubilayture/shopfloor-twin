@@ -293,6 +293,25 @@ export async function checkTraceAsOf(
     readonly live: TraceSectionJson;
     readonly mes: MesTrace;
     readonly characteristic: string;
+    /**
+     * Whether the scenario has a leak drift whose first episode is judged (quality-01, the
+     * default); a scenario without one (orders-01 in the resilience suite, #243) skips that step.
+     */
+    readonly drift?: boolean;
+    /**
+     * Orders the MES lists that the scenario never released, so no unit can name them (orders-01's
+     * PO-2610-008 in the resilience suite): left out of step 2a's "every order is the MES's".
+     */
+    readonly unreleased?: readonly string[];
+    /**
+     * The floors that keep the comparison from being vacuous, by default quality-01's: completed
+     * orders, first-pass readings and SPC episodes at T.
+     */
+    readonly minimum?: {
+      readonly orders: number;
+      readonly firstPass: number;
+      readonly episodes: number;
+    };
   },
 ): Promise<TraceAsOfReport> {
   const { cut, reference, live, mes } = input;
@@ -316,7 +335,10 @@ export async function checkTraceAsOf(
   // 2a. Every order the truth names is the MES's, and no other (review LOW 5).
   note(
     'MES orders ≠ truth',
-    jsonDifferences([...truth.orders.map((o) => o.orderId)].sort(), [...mes.orders]),
+    jsonDifferences(
+      [...truth.orders.map((o) => o.orderId)].sort(),
+      mes.orders.filter((id) => !(input.unreleased ?? []).includes(id)),
+    ),
   );
 
   // 2b. The MES's own forward traces (review HIGH 1), not only the serials they lead to: every lot
@@ -585,6 +607,7 @@ export async function checkTraceAsOf(
   note('MES cartons ≠ cut', cartonDiffs);
 
   // 5. The drift: the MES's first episode after its start is the truth's (point, chart, rule).
+  const withDrift = input.drift ?? true;
   const drift = truth.drifts?.[0];
   const start = drift?.start ?? null;
   const truthFirst = drift?.firstEpisode ? episodeIdentity(drift.firstEpisode) : null;
@@ -595,14 +618,18 @@ export async function checkTraceAsOf(
           .map(signalShape)
           .filter((e) => !e.baseline && Date.parse(e.at) >= Date.parse(start.at))
           .map(episodeIdentity)[0] ?? null);
-  if (drift === undefined) differences.push('the reference has no drift');
-  if (truthFirst === null || mesFirst !== truthFirst) {
-    differences.push(
-      `the drift's first episode: MES ${String(mesFirst)}, truth ${String(truthFirst)}`,
-    );
-  }
-  if (drift?.counterfactual.clean !== true) {
-    differences.push("the reference's counterfactual window is not clean");
+  if (!withDrift) {
+    if (drift !== undefined) differences.push('the reference has a drift, none was expected');
+  } else {
+    if (drift === undefined) differences.push('the reference has no drift');
+    if (truthFirst === null || mesFirst !== truthFirst) {
+      differences.push(
+        `the drift's first episode: MES ${String(mesFirst)}, truth ${String(truthFirst)}`,
+      );
+    }
+    if (drift?.counterfactual.clean !== true) {
+      differences.push("the reference's counterfactual window is not clean");
+    }
   }
 
   // 6. Final for shift A: every backward trace whose records all lie before T, every point and
@@ -630,14 +657,15 @@ export async function checkTraceAsOf(
     lotsListed: mes.lots.listed,
   };
   // Not vacuous: shift A of quality-01 has units, lots, closed cartons, completed orders, the
-  // baseline and the drift's episodes.
+  // baseline and the drift's episodes (other scenarios pass their own floors).
+  const minimum = input.minimum ?? { orders: 2, firstPass: 140, episodes: 1 };
   if (
     counts.units === 0 ||
     counts.lots === 0 ||
     counts.closedCartons === 0 ||
-    counts.orders < 2 ||
-    counts.firstPass < 140 ||
-    counts.episodes === 0 ||
+    counts.orders < minimum.orders ||
+    counts.firstPass < minimum.firstPass ||
+    counts.episodes < minimum.episodes ||
     beforeCut.length === 0 ||
     lotsFinalChecked === 0 ||
     cartonsCompared === 0

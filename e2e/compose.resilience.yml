@@ -1,0 +1,15 @@
+# Override for the resilience suite (#243), after docker-compose.yml, e2e/compose.reconcile.yml
+# (ephemeral host ports, nothing restarts by itself: every fault is the test's) and
+# e2e/compose.reconcile-orders.yml (the ERP serves orders-01's dataset), used only by
+# e2e/src/resilience.ts on its own disposable projects.
+#
+# The simulator writes its live event log (SIM_EVENT_LOG, control API "Configuration"): every
+# plant event, from which the suite numbers each machine's device facts as the machine servers do
+# (state, cycle, alarm and job facts take the next number) to compare what the simulator raised
+# with what the MES stored, and to judge each fault's settling and each lost fact's time. It lives
+# in the container's /tmp and goes with the project.
+
+services:
+  simulator:
+    environment:
+      SIM_EVENT_LOG: /tmp/resilience-events.jsonl

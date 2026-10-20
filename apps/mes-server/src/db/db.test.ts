@@ -9,7 +9,7 @@ import { buildMesHttp } from '../http.ts';
 import { startDatabase } from '../testing.ts';
 import { DECLARED_COLUMNS, actualColumns, actualTables } from './columns.ts';
 import { DATA_MODEL_FILE, generateDataModel } from './data-model.ts';
-import { createDatabase, type Database } from './database.ts';
+import { createDatabase, onConnectionError, poolStats, type Database } from './database.ts';
 import { migrate, readMigrations } from './migrate.ts';
 
 const MIGRATIONS = resolve(import.meta.dirname, '../../../../db/migrations');
@@ -260,6 +260,32 @@ describe('migrations (ADR-0016)', () => {
     expect(generated).not.toMatch(/_materialized_hypertable/);
     await sql`CREATE VIEW equipment.undescribed AS SELECT 1 AS one`.execute(db);
     await expect(generateDataModel(db)).rejects.toThrow(/describe equipment\.undescribed/);
+  });
+});
+
+describe('connections the server ends (#243)', () => {
+  it('survives the server ending a connection a caller holds between queries', async () => {
+    const reported: string[] = [];
+    onConnectionError((_error, place) => {
+      reported.push(place);
+    });
+    const db = database();
+    const other = database();
+    await db.connection().execute(async (held) => {
+      const pid = (await sql<{ pid: number }>`SELECT pg_backend_pid() AS pid`.execute(held)).rows[0]
+        ?.pid;
+      await sql`SELECT pg_terminate_backend(${pid})`.execute(other);
+      // The server's FATAL and the closed socket arrive while no query runs on `held`: before
+      // #243 the client emitted 'error' with no listener, an uncaught exception.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await expect(sql`SELECT 1`.execute(held)).rejects.toThrow();
+    });
+    expect((await sql<{ one: number }>`SELECT 1 AS one`.execute(db)).rows).toEqual([{ one: 1 }]);
+    // Reported and counted once (#243 review), as held.
+    // One connection ended, counted and reported once (pg's second error on the socket's end
+    // is not a second connection).
+    expect(reported).toEqual(['held']);
+    expect(poolStats(db)?.ended).toBe(1);
   });
 });
 

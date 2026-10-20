@@ -102,11 +102,6 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import {
-  alarmKpiListSchema,
-  shiftReportSchema,
-  type AlarmKpiBucketDto,
-} from '@shopfloor/contracts/mes-api';
 import { formatIssues, loadPlantConfig } from '@shopfloor/plant-config';
 import { shiftSegments } from '@shopfloor/shift-calendar';
 import {
@@ -128,7 +123,6 @@ import {
   differences,
   formatDifferences,
   jsonDifferences,
-  mesTotals,
   percentile,
   pieceViolations,
   type Piece,
@@ -158,6 +152,16 @@ import {
   checkCrew,
   type CrewWindow,
 } from './quality-pass.ts';
+import {
+  checkAlarmKpis,
+  checkShiftOee,
+  checkShiftReport,
+  checkShiftStates,
+  type AlarmKpiReport,
+  type MachineStatesReport,
+  type ShiftOeeReport,
+  type ShiftReportCheck,
+} from './shift-checks.ts';
 import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
 import { REPO, Stack, removeImages } from './stack.ts';
 import { episodeIdentity, traceConfigOf, type TraceSectionJson } from './trace-shapes.ts';
@@ -245,9 +249,6 @@ const SILENT_WAIT_MS = Number(process.env.RECONCILE_SILENT_WAIT_MS ?? 2 * 3_600_
 
 /** Wall time without the simulation clock moving after which the run fails at once. */
 const STALL_MS = 30_000;
-
-/** How long the MES may take to report shift A's OEE final after the drain (refresh debounce). */
-const OEE_FINAL_MS = 30_000;
 
 /** Overall limit of a run, below the CI job's timeout (30 minutes). */
 const DEADLINE_MS = Number(process.env.RECONCILE_DEADLINE_MS ?? 25 * 60_000);
@@ -347,17 +348,7 @@ interface Report {
     firstFactAfterEndMs: Record<string, number>;
   };
   drain?: { wallMs: number; watermark: string; simTime: string };
-  machines?: Record<
-    string,
-    {
-      truthMs: StateMs;
-      equal: boolean;
-      provisionalMs: number;
-      revision: number;
-      incidents: number;
-      totalMs: number;
-    }
-  >;
+  machines?: MachineStatesReport;
   goldenShiftEqual?: boolean;
   /** Shift A's OEE in the live ground truth equals alarms-01's golden summary (#147). */
   goldenOeeEqual?: boolean;
@@ -372,72 +363,11 @@ interface Report {
     >[];
   };
   /** Shift A's alarm KPIs from the MES against the live ground truth (#142, #147). */
-  alarms?: {
-    waitedMs: number;
-    /** Shift buckets compared: the plant and both positions. */
-    compared: number;
-    /** Hour buckets of shift A compared, over the plant and both positions. */
-    hoursCompared: number;
-    goldenEqual: boolean;
-    /** Raises of shift A per scope, and the flood, chattering and fleeting counts asserted. */
-    raises: Record<string, number>;
-    scopes: Record<
-      string,
-      {
-        equal: boolean;
-        final: boolean;
-        revision: number;
-        incidents: number;
-        raises: number;
-        differences: string[];
-      }
-    >;
-  };
+  alarms?: AlarmKpiReport;
   /** Shift A's OEE from the MES against the live ground truth (#120). */
-  oee?: {
-    waitedMs: number;
-    /** Buckets compared with the ground truth: six machines and two work centers. */
-    compared: number;
-    machines: Record<
-      string,
-      {
-        equal: boolean;
-        final: boolean;
-        provisionalMs: number;
-        revision: number;
-        incidents: number;
-        oee: string | null;
-        differences: string[];
-      }
-    >;
-    workCenters: Record<
-      string,
-      {
-        equal: boolean;
-        final: boolean;
-        provisionalMs: number;
-        revision: number;
-        incidents: number;
-        oee: string | null;
-        differences: string[];
-      }
-    >;
-  };
+  oee?: ShiftOeeReport;
   /** Shift A's report (#144) against OEE, `/alarms/kpi` and the ground truth (#147). */
-  shiftReport?: {
-    waitedMs: number;
-    final: boolean;
-    revision: { inputs: number; content: number; contentAtFinal: number | null };
-    incidents: number;
-    oeeSectionIdentical: boolean;
-    alarmScopesCompared: number;
-    productionCompared: number;
-    finished: { equipment: string | null; good: number };
-    paretoMs: number;
-    availabilityLossMs: number;
-    instance: { start: string; end: string; breaks: number; calendarEqual: boolean };
-    failures: string[];
-  };
+  shiftReport?: ShiftReportCheck;
   pieces?: { count: number; violations: string[] };
   /** The orders pass (#178): import, dispatch, orders after the drain, refusals, terminal, ERP. */
   orders?: Record<string, unknown>;
@@ -991,158 +921,12 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
 
         // 5. Compare.
         if (truth.buckets[shiftKey]?.complete !== true) fail(`${shiftKey} is not complete`);
-        const expected = Object.fromEntries(
-          machines.map((id) => [id, truth.machines[id]?.byShift[shiftKey] ?? {}]),
-        );
-        const recorded = mesTotals(totals.totals, truth.epoch, machines);
-        const diffs = differences(expected, recorded.byMachine);
-        report.machines = Object.fromEntries(
-          machines.map((id) => {
-            const truthMs = expected[id] ?? {};
-            return [
-              id,
-              {
-                truthMs,
-                equal: diffs.every((d) => d.machine !== id),
-                provisionalMs: recorded.provisionalMs[id] ?? 0,
-                revision: recorded.revision[id] ?? 0,
-                incidents: recorded.incidents[id] ?? 0,
-                totalMs: Object.values(truthMs).reduce((a, b) => a + b, 0),
-              },
-            ];
-          }),
-        );
-        if (diffs.length > 0) {
-          fail(
-            `time per state in ${shiftKey} differs from the ground truth:\n${formatDifferences(diffs)}`,
-          );
-        }
-        if (recorded.unexpected.length > 0) {
-          fail(
-            `unexpected MES totals (other epochs or unknown machines): ${JSON.stringify(recorded.unexpected)}`,
-          );
-        }
-        for (const [id, machine] of Object.entries(report.machines)) {
-          if (machine.totalMs !== shift.to - shift.from)
-            fail(`${id}: ground truth covers ${String(machine.totalMs)} ms`);
-          // #113: the completed shift is final, unchanged since, and had no gap.
-          if (machine.provisionalMs !== 0 || machine.revision !== 0 || machine.incidents !== 0) {
-            fail(
-              `${id}: ${shiftKey} not final (provisionalMs ${String(machine.provisionalMs)}, revision ${String(machine.revision)}, incidents ${String(machine.incidents)})`,
-            );
-          }
-        }
+        const states = checkShiftStates(totals.totals, truth, machines, shift, fail);
+        report.machines = states.machines;
+        const expected = states.expected;
 
         // OEE (#120, exit criterion 3): shift A final for every machine, equal to the live truth.
-        const oeeFrom = Date.now();
-        let shiftOee = await mes.shiftOee(shiftKey);
-        const allFinal = () =>
-          machines.every((id) => shiftOee.equipment.find((b) => b.id === id)?.final === true);
-        await until(
-          `${shiftKey} OEE final for every machine`,
-          async () => {
-            shiftOee = await mes.shiftOee(shiftKey);
-            return allFinal();
-          },
-          OEE_FINAL_MS,
-        ).catch((error: unknown) => {
-          fail(error instanceof Error ? error.message : String(error));
-        });
-        report.oee = {
-          waitedMs: Date.now() - oeeFrom,
-          compared: 0,
-          machines: {},
-          workCenters: {},
-        };
-        // Exactly the plant's machines and work centers, on both sides.
-        const ids = (list: readonly { id: string }[]) =>
-          list
-            .map((b) => b.id)
-            .sort()
-            .join(', ');
-        for (const [what, actual, expected] of [
-          ['MES machines', ids(shiftOee.equipment), machines.join(', ')],
-          ['MES work centers', ids(shiftOee.workCenters), workCenterIds.join(', ')],
-          [
-            'ground-truth work centers',
-            Object.keys(truth.oee.workCenters).sort().join(', '),
-            workCenterIds.join(', '),
-          ],
-        ] as const) {
-          if (actual !== expected) fail(`${shiftKey} OEE: ${what} are ${actual}, not ${expected}`);
-        }
-        for (const id of machines) {
-          const bucket = shiftOee.equipment.find((b) => b.id === id);
-          const expectedOee = truth.oee.machines[id]?.shifts[shiftKey];
-          const diffs = jsonDifferences(
-            expectedOee ?? null,
-            bucket
-              ? {
-                  inputs: { stateMs: bucket.inputs.stateMs, cycles: bucket.inputs.cycles },
-                  result: bucket.result,
-                }
-              : null,
-          );
-          if (expectedOee && bucket) report.oee.compared++;
-          report.oee.machines[id] = {
-            equal: diffs.length === 0,
-            final: bucket?.final ?? false,
-            provisionalMs: bucket?.provisionalMs ?? -1,
-            revision: bucket?.revision ?? -1,
-            incidents: bucket?.incidents ?? -1,
-            oee: bucket?.result.oee?.decimal ?? null,
-            differences: diffs,
-          };
-          if (diffs.length > 0) {
-            fail(`${id}: ${shiftKey} OEE differs from the ground truth:\n  ${diffs.join('\n  ')}`);
-          }
-          if (
-            !bucket?.final ||
-            bucket.provisionalMs !== 0 ||
-            bucket.revision !== 0 ||
-            bucket.incidents !== 0
-          ) {
-            fail(
-              `${id}: ${shiftKey} OEE not final (final ${String(bucket?.final)}, provisionalMs ${String(bucket?.provisionalMs)}, revision ${String(bucket?.revision)}, incidents ${String(bucket?.incidents)})`,
-            );
-          }
-        }
-        for (const id of workCenterIds) {
-          const bucket = shiftOee.workCenters.find((b) => b.id === id);
-          const expectedOee = truth.oee.workCenters[id]?.shifts[shiftKey];
-          // A work center's inputs are its machines' sums, compared above; here its result.
-          const diffs = jsonDifferences(expectedOee ?? null, bucket?.result ?? null);
-          if (expectedOee && bucket) report.oee.compared++;
-          report.oee.workCenters[id] = {
-            equal: diffs.length === 0,
-            final: bucket?.final ?? false,
-            provisionalMs: bucket?.provisionalMs ?? -1,
-            revision: bucket?.revision ?? -1,
-            incidents: bucket?.incidents ?? -1,
-            oee: bucket?.result.oee?.decimal ?? null,
-            differences: diffs,
-          };
-          if (diffs.length > 0) {
-            fail(`${id}: ${shiftKey} OEE differs from the ground truth:\n  ${diffs.join('\n  ')}`);
-          }
-          if (
-            !bucket?.final ||
-            bucket.provisionalMs !== 0 ||
-            bucket.revision !== 0 ||
-            bucket.incidents !== 0
-          ) {
-            fail(
-              `${id}: ${shiftKey} OEE not final (final ${String(bucket?.final)}, provisionalMs ${String(bucket?.provisionalMs)}, revision ${String(bucket?.revision)}, incidents ${String(bucket?.incidents)})`,
-            );
-          }
-        }
-        // Every bucket compared: six machines and two work centers in the golden plant.
-        const comparisons = plantMachines.length + workCenterIds.length;
-        if (report.oee.compared !== comparisons || comparisons !== 8) {
-          fail(
-            `${shiftKey} OEE: ${String(report.oee.compared)} buckets compared, not ${String(comparisons)} (6 machines and 2 work centers)`,
-          );
-        }
+        report.oee = await checkShiftOee(mes, truth, machines, workCenterIds, shiftKey, fail);
 
         // The live run reproduces the headless scenario's shift A: pacing never changes the run.
         const golden = JSON.parse(await readFile(join(GOLDEN, 'summary.json'), 'utf8')) as {
@@ -1215,125 +999,20 @@ async function runPass(pass: PassName, build: boolean): Promise<boolean> {
 
         // Alarm KPIs (#142, #147): shift A of the plant and of each position, per shift and per
         // hour, final and equal to the live ground truth and to the scenario's golden summary.
-        const alarmFrom = Date.now();
         const alarmScopes = Object.keys(truth.alarms.scopes).sort();
-        const readAlarms = () =>
-          Promise.all(
-            alarmScopes.map(async (id) => {
-              const scope = id === 'plant' ? 'plant' : 'position';
-              const [shifts, hours] = await Promise.all([
-                mes.alarmShifts(scope, id, shift.from, shift.to),
-                mes
-                  .alarmKpiText(scope, id, 'hour', shift.from, shift.to)
-                  .then((text) => alarmKpiListSchema.parse(JSON.parse(text))),
-              ]);
-              return {
-                id,
-                bucket: shifts.buckets.find((b) => b.key === shiftKey),
-                hours: hours.buckets.filter(
-                  (b) => Date.parse(b.from) >= shift.from && Date.parse(b.to) <= shift.to,
-                ),
-              };
-            }),
-          );
-        let alarmBuckets = await readAlarms();
-        await until(
-          `${shiftKey} alarm KPIs final for the plant and every position, per shift and hour`,
-          async () => {
-            alarmBuckets = await readAlarms();
-            return alarmBuckets.every(
-              ({ bucket, hours }) => bucket?.final === true && hours.every((h) => h.final),
-            );
-          },
-          OEE_FINAL_MS,
-        ).catch((error: unknown) => {
-          fail(error instanceof Error ? error.message : String(error));
-        });
-        report.alarms = {
-          waitedMs: Date.now() - alarmFrom,
-          compared: 0,
-          hoursCompared: 0,
-          goldenEqual: true,
-          raises: {},
-          scopes: {},
-        };
-        const notFinal = (b: AlarmKpiBucketDto | undefined) =>
-          !b?.final || b.provisional || b.revision !== 0 || b.incidents !== 0;
-        for (const { id, bucket, hours } of alarmBuckets) {
-          const scopeTruth = truth.alarms.scopes[id];
-          const scopeGolden = golden.alarms.scopes[id];
-          const expected = scopeTruth?.shifts[shiftKey];
-          const diffs = jsonDifferences(expected ?? null, bucket ? alarmTruthShape(bucket) : null);
-          const goldenDiffs = jsonDifferences(
-            scopeGolden?.shifts[shiftKey] ?? null,
-            expected ?? null,
-          );
-          if (expected && bucket) report.alarms.compared++;
-          // Hours of the shift: the same hours listed (where something happened), each equal.
-          const truthHours = Object.keys(scopeTruth?.hours ?? {})
-            .filter((h) => Date.parse(h) >= shift.from && Date.parse(h) < shift.to)
-            .sort();
-          const mesHours = hours.map((h) => h.key).sort();
-          if (JSON.stringify(truthHours) !== JSON.stringify(mesHours)) {
-            diffs.push(`hours: MES ${mesHours.join(', ')}, truth ${truthHours.join(', ')}`);
-          }
-          const goldenHours = Object.keys(scopeGolden?.hours ?? {})
-            .filter((h) => Date.parse(h) >= shift.from && Date.parse(h) < shift.to)
-            .sort();
-          if (JSON.stringify(goldenHours) !== JSON.stringify(mesHours)) {
-            goldenDiffs.push(`hours: golden ${goldenHours.join(', ')}, MES ${mesHours.join(', ')}`);
-          }
-          for (const hour of hours) {
-            const truthHour = scopeTruth?.hours[hour.key];
-            if (truthHour === undefined) continue;
-            report.alarms.hoursCompared++;
-            for (const d of jsonDifferences(truthHour, alarmTruthShape(hour))) {
-              diffs.push(`${hour.key}: ${d}`);
-            }
-            for (const d of jsonDifferences(scopeGolden?.hours[hour.key] ?? null, truthHour)) {
-              goldenDiffs.push(`${hour.key}: ${d}`);
-            }
-            if (notFinal(hour)) {
-              diffs.push(
-                `${hour.key} not final (final ${String(hour.final)}, provisional ${String(hour.provisional)}, revision ${String(hour.revision)}, incidents ${String(hour.incidents)})`,
-              );
-            }
-          }
-          if (goldenDiffs.length > 0) report.alarms.goldenEqual = false;
-          report.alarms.raises[id] = bucket?.raises ?? -1;
-          report.alarms.scopes[id] = {
-            equal: diffs.length === 0,
-            final: bucket?.final ?? false,
-            revision: bucket?.revision ?? -1,
-            incidents: bucket?.incidents ?? -1,
-            raises: bucket?.raises ?? -1,
-            differences: diffs,
-          };
-          if (diffs.length > 0) {
-            fail(
-              `${id}: ${shiftKey} alarm KPIs differ from the ground truth:\n  ${diffs.join('\n  ')}`,
-            );
-          }
-          if (goldenDiffs.length > 0) {
-            fail(
-              `${id}: the live ground truth's ${shiftKey} alarm KPIs differ from ${goldenName}'s:\n  ${goldenDiffs.join('\n  ')}`,
-            );
-          }
-          if (notFinal(bucket)) {
-            fail(
-              `${id}: ${shiftKey} alarm KPIs not final (final ${String(bucket?.final)}, provisional ${String(bucket?.provisional)}, revision ${String(bucket?.revision)}, incidents ${String(bucket?.incidents)})`,
-            );
-          }
-        }
-        if (report.alarms.compared !== 3 || alarmScopes.length !== 3) {
-          fail(
-            `${shiftKey} alarm KPIs: ${String(report.alarms.compared)} buckets compared, not 3 (the plant and 2 positions)`,
-          );
-        }
+        const alarmCheck = await checkAlarmKpis(
+          mes,
+          truth,
+          golden.alarms.scopes,
+          goldenName,
+          shift,
+          fail,
+        );
+        report.alarms = alarmCheck.report;
         // Not vacuous: the injected flood, chattering and fleeting alarms are in the buckets, and
         // the hours were compared too.
-        const cell = alarmBuckets.find((b) => b.id === 'cell-m1')?.bucket;
-        const line = alarmBuckets.find((b) => b.id === 'line-a1')?.bucket;
+        const cell = alarmCheck.buckets['cell-m1'];
+        const line = alarmCheck.buckets['line-a1'];
         const injected = {
           raises: ['plant', 'cell-m1', 'line-a1'].map((id) => report.alarms?.raises[id]),
           floods: cell?.floods.length ?? 0,
@@ -1839,200 +1518,6 @@ async function qualityAudit(
   if (bad.length > 0)
     input.fail(`quality audit rows without user, role or request: ${JSON.stringify(bad)}`);
   return { ...found, rows: rows.length };
-}
-
-/** An alarm KPI bucket of the MES in the ground truth's shape (`AlarmKpisJson`, sim-summary/3). */
-function alarmTruthShape(bucket: AlarmKpiBucketDto): Record<string, unknown> {
-  return {
-    from: bucket.from,
-    to: bucket.to,
-    raises: bucket.raises,
-    byPriority: bucket.byPriority,
-    averageRate: bucket.averageRate,
-    windows: bucket.windows,
-    peak10: bucket.peak10,
-    floodWindows: bucket.floodWindows,
-    floods: bucket.floods,
-    floodMs: bucket.floodMs,
-    activeAtEnd: bucket.activeAtEnd,
-    standing: bucket.standing.map(({ equipment, code, raisedAt }) => ({
-      equipment,
-      code,
-      raisedAt,
-    })),
-    chatteringRaises: bucket.chatteringRaises,
-    chatteringPoints: bucket.chatteringPoints,
-    fleeting: bucket.fleeting,
-    fleetingUndecided: bucket.fleetingUndecided,
-    activeMs: bucket.activeMs,
-    provisional: bucket.provisional,
-  };
-}
-
-/**
- * Shift A's report (#144; exit criterion 4, #147): waits until it is final, then checks it is
- * `final` with `revision.inputs = 0` and no incident; its OEE section is `GET /shifts/{date}/{shift}/oee`
- * byte for byte; each alarm scope's KPIs are `GET /alarms/kpi`'s shift bucket and the ground
- * truth's; production per machine equals the OEE inputs and the ground truth's cycles, finished
- * parts PCK-01's good cycles; the downtime Pareto sums to the availability loss; and its instance
- * has the calendar's start, end and breaks. Returns what it found, with the failures.
- */
-async function checkShiftReport(
-  mes: MesClient,
-  truth: GroundTruth,
-  shiftKey: string,
-  shift: { from: number; to: number },
-  machines: readonly string[],
-): Promise<NonNullable<Report['shiftReport']>> {
-  const failures: string[] = [];
-  const from = Date.now();
-  let text = await mes.shiftReportText(shiftKey);
-  await until(
-    `${shiftKey} report final`,
-    async () => {
-      text = await mes.shiftReportText(shiftKey);
-      return shiftReportSchema.parse(JSON.parse(text)).final;
-    },
-    OEE_FINAL_MS,
-  ).catch((error: unknown) => {
-    failures.push(error instanceof Error ? error.message : String(error));
-  });
-  const waitedMs = Date.now() - from;
-  const raw = JSON.parse(text) as { oee: unknown; alarms: { scopes: { kpis: unknown }[] } };
-  const parsed = shiftReportSchema.parse(raw);
-  if (!parsed.final || parsed.status !== 'final') {
-    failures.push(`not final (status ${parsed.status})`);
-  }
-  if (parsed.revision.inputs !== 0 || parsed.incidents !== 0) {
-    failures.push(
-      `revision.inputs ${String(parsed.revision.inputs)}, incidents ${String(parsed.incidents)}`,
-    );
-  }
-  if (parsed.revision.contentAtFinal === null) failures.push('no contentAtFinal');
-
-  // OEE: the body of GET /shifts/{date}/{shift}/oee, byte for byte.
-  const oeeText = await mes.shiftOeeText(shiftKey);
-  const oeeSectionIdentical = JSON.stringify(raw.oee) === oeeText;
-  if (!oeeSectionIdentical) failures.push('the OEE section is not GET …/oee byte for byte');
-
-  // Alarms: per scope the shift bucket of GET /alarms/kpi (byte for byte) and the ground truth.
-  let alarmScopesCompared = 0;
-  for (const [n, scope] of parsed.alarms.scopes.entries()) {
-    const kind = scope.scope === 'plant' ? 'plant' : 'position';
-    const list = JSON.parse(
-      await mes.alarmKpiText(kind, scope.id, 'shift', shift.from, shift.to),
-    ) as { buckets: { key: string }[] };
-    const served = list.buckets.find((b) => b.key === shiftKey);
-    if (JSON.stringify(raw.alarms.scopes[n]?.kpis) !== JSON.stringify(served)) {
-      failures.push(`${scope.id}: the alarm section is not GET /alarms/kpi's shift bucket`);
-    }
-    const diffs = jsonDifferences(
-      truth.alarms.scopes[scope.id]?.shifts[shiftKey] ?? null,
-      scope.kpis ? alarmTruthShape(scope.kpis) : null,
-    );
-    if (diffs.length > 0) {
-      failures.push(
-        `${scope.id}: the alarm section differs from the ground truth: ${diffs.join('; ')}`,
-      );
-    }
-    if (scope.kpis) alarmScopesCompared++;
-  }
-  if (alarmScopesCompared !== 3) {
-    failures.push(`${String(alarmScopesCompared)} alarm scopes compared, not 3`);
-  }
-
-  // Production: per machine the OEE inputs and the ground truth's cycles.
-  const count = (cycles: readonly { result: string; count: number }[], result?: string) =>
-    cycles
-      .filter((c) => result === undefined || c.result === result)
-      .reduce((a, c) => a + c.count, 0);
-  let productionCompared = 0;
-  for (const id of machines) {
-    const row = parsed.production.machines.find((m) => m.equipment === id);
-    const inputs = parsed.oee.equipment.find((b) => b.id === id)?.inputs.cycles;
-    const truthCycles = truth.oee.machines[id]?.shifts[shiftKey]?.inputs.cycles;
-    if (!row || !inputs || !truthCycles) {
-      failures.push(`${id}: no production row, OEE inputs or truth cycles`);
-      continue;
-    }
-    const actual = [row.produced, row.good, row.scrap, row.rework];
-    for (const [what, cycles] of [
-      ['OEE inputs', inputs],
-      ['ground truth', truthCycles],
-    ] as const) {
-      const expected = [
-        count(cycles),
-        count(cycles, 'good'),
-        count(cycles, 'scrap'),
-        count(cycles, 'rework'),
-      ];
-      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-        failures.push(
-          `${id}: produced/good/scrap/rework ${actual.join('/')}, ${what} ${expected.join('/')}`,
-        );
-      }
-    }
-    productionCompared++;
-  }
-  if (productionCompared !== machines.length) {
-    failures.push(`${String(productionCompared)} machines' production compared`);
-  }
-  const finished = parsed.production.finished;
-  const pckGood = parsed.production.machines.find((m) => m.equipment === 'pck-01')?.good;
-  if (finished.equipment !== 'pck-01' || finished.good !== pckGood) {
-    failures.push(`finished parts ${JSON.stringify(finished)}, PCK-01 good ${String(pckGood)}`);
-  }
-  const scrap = parsed.production.machines.reduce((a, m) => a + m.scrap, 0);
-  if (parsed.production.scrap !== scrap) {
-    failures.push(`total scrap ${String(parsed.production.scrap)}, rows ${String(scrap)}`);
-  }
-
-  // Downtime: the Pareto by reason sums to the own plus external availability loss.
-  const paretoMs = parsed.downtime.reasons.reduce((a, r) => a + r.ms, 0);
-  const availabilityLossMs =
-    parsed.downtime.availability.own + parsed.downtime.availability.external;
-  if (paretoMs <= 0) failures.push('the Pareto is empty: nothing to compare');
-  if (paretoMs !== availabilityLossMs) {
-    failures.push(
-      `Pareto ${String(paretoMs)} ms, availability loss ${String(availabilityLossMs)} ms`,
-    );
-  }
-
-  // The instance: the calendar's start, end and breaks.
-  const record = await mes.shiftRecord(shiftKey);
-  const calendar = (await mes.shifts(shift.from, shift.to)).shifts.find((s) => s.key === shiftKey);
-  const calendarEqual =
-    calendar !== undefined &&
-    JSON.stringify([record.start, record.end, record.breaks]) ===
-      JSON.stringify([calendar.start, calendar.end, calendar.breaks]) &&
-    Date.parse(record.start) === shift.from &&
-    Date.parse(record.end) === shift.to &&
-    record.epoch === truth.epoch;
-  if (!calendarEqual) {
-    failures.push(
-      `instance ${JSON.stringify(record)} is not the calendar's ${JSON.stringify(calendar)}`,
-    );
-  }
-
-  return {
-    waitedMs,
-    final: parsed.final,
-    revision: parsed.revision,
-    incidents: parsed.incidents,
-    oeeSectionIdentical,
-    alarmScopesCompared,
-    productionCompared,
-    finished,
-    paretoMs,
-    availabilityLossMs,
-    instance: {
-      start: record.start,
-      end: record.end,
-      breaks: record.breaks.length,
-      calendarEqual,
-    },
-    failures,
-  };
 }
 
 /** The append-only triggers' message (migrations 0013, 0016). */

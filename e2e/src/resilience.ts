@@ -301,8 +301,10 @@ if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(imageTag) || imageTag === 'dev') {
 }
 
 const started = Date.now();
-/** Set once this process built the images, so a signal removes them too. */
+/** Set once this process starts building the images, so a signal removes them too. */
 let imagesBuilt = false;
+/** True while a run's own signal handler (stack, env file, images) is installed. */
+let runSignals = false;
 const log = (message: string) => {
   console.log(`[resilience +${((Date.now() - started) / 1000).toFixed(1)}s] ${message}`);
 };
@@ -430,8 +432,9 @@ interface Signals {
   /**
    * Deliveries ingest dropped as duplicates (`mes_ingest_messages_total{outcome="duplicate"}`)
    * before the fault and at most while it lasted; the counter restarts with the MES. Recorded, not
-   * asserted: no fault here forces a redelivery (the MES acknowledges after its commit, the
-   * gateway forgets a message once the broker acknowledged it), so 0 is as right as more.
+   * asserted: the count may be 0 or more. A redelivery happens when the MES is killed between its
+   * commit and its acknowledgement, or the broker restarts with QoS 1 messages in flight, and no
+   * fault here forces either.
    */
   duplicatesBefore: number | null;
   duplicatesMax: number | null;
@@ -590,6 +593,7 @@ async function runOne(
   };
   const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
   for (const signal of SIGNALS) process.once(signal, stop);
+  runSignals = true;
   /** A Compose call of the run, refused once a signal began the removal. */
   const compose = (args: readonly string[], timeoutMs?: number) =>
     aborted
@@ -617,8 +621,9 @@ async function runOne(
         await compose(['down', '--volumes', '--remove-orphans']);
         if (build) {
           log('building the images');
-          await compose(['build'], 1_200_000);
+          // Before the build (#268 re-review): a signal during it removes what it made so far.
           imagesBuilt = true;
+          await compose(['build'], 1_200_000);
           await pruneBuildCache(log);
         }
         phase('build');
@@ -1756,6 +1761,7 @@ async function runOne(
       console.error('could not remove the stack', error);
     });
     for (const signal of SIGNALS) process.off(signal, stop);
+    runSignals = false;
   }
 
   // R3: the golden harness on the stored facts, once the stack is gone.
@@ -1861,6 +1867,21 @@ async function environment(): Promise<Record<string, unknown>> {
       loadAverage: loadavg().map((l) => Math.round(l * 100) / 100),
     },
   };
+}
+
+/**
+ * Signals outside a run's own handler (#268 re-review): between runs, or during R3's replay (its
+ * vitest child is in the same process group and gets the signal too), the images this process
+ * built are removed before the exit; during a run its handler does that after the stack.
+ */
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.on(signal, () => {
+    if (runSignals) return;
+    console.error(`${signal}: removing the images this run built`);
+    void (imagesBuilt && !keepImages ? removeImages(imageTag) : Promise.resolve()).finally(() => {
+      process.exit({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal]);
+    });
+  });
 }
 
 async function main(): Promise<boolean> {

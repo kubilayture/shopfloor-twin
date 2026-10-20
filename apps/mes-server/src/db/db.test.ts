@@ -282,8 +282,10 @@ describe('connections the server ends (#243)', () => {
     });
     expect((await sql<{ one: number }>`SELECT 1 AS one`.execute(db)).rows).toEqual([{ one: 1 }]);
     // Reported and counted once (#243 review), as held.
-    expect(reported).toContain('held');
-    expect(poolStats(db)?.ended).toBeGreaterThanOrEqual(1);
+    // One connection ended, counted and reported once (pg's second error on the socket's end
+    // is not a second connection).
+    expect(reported).toEqual(['held']);
+    expect(poolStats(db)?.ended).toBe(1);
   });
 });
 

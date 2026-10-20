@@ -61,7 +61,7 @@ export interface PoolLimits {
 
 /** The pg pool behind each database handle, for the pool gauges (#147). */
 const pools = new WeakMap<Kysely<Database>, pg.Pool>();
-/** Connections the server ended under each handle, idle or held (#243). */
+/** Connections the server ended under each handle, idle or held, each counted once (#243). */
 const endedConnections = new WeakMap<pg.Pool, number>();
 
 /** Where a connection the server ended was: in the pool, or held by a caller between queries. */
@@ -114,12 +114,17 @@ export function createDatabase(
   });
   // An idle connection that the server closes (a database restart) is dropped from the pool; the
   // next query reconnects or fails where it is handled. Unhandled, the event would end the process.
-  const ended = (error: Error, place: ConnectionErrorPlace) => {
+  // Each ended connection once, at its first error (#268 re-review): pg emits a second error on
+  // the socket's end after the server's FATAL, held or idle by then.
+  const counted = new WeakSet<pg.PoolClient>();
+  const ended = (client: pg.PoolClient, error: Error, place: ConnectionErrorPlace) => {
+    if (counted.has(client)) return;
+    counted.add(client);
     endedConnections.set(pool, (endedConnections.get(pool) ?? 0) + 1);
     reportConnectionError(error, place);
   };
-  pool.on('error', (error) => {
-    ended(error, 'idle');
+  pool.on('error', (error, client) => {
+    ended(client, error, 'idle');
   });
   // The same for a connection a caller holds between queries (a transaction, Kysely's
   // `connection()`): pg-pool listens only to idle clients, so a server that ends such a connection
@@ -127,7 +132,7 @@ export function createDatabase(
   // ended the MES (#243, resilience run R1). The holder's next query fails and the broken client
   // is dropped when it is released.
   // pg-pool's own idle listener reports an idle client's error to the pool (above); this one
-  // reports only while the client is held, so no error is counted twice.
+  // reports only while the client is held.
   const held = new WeakSet<pg.PoolClient>();
   pool.on('acquire', (client) => {
     held.add(client);
@@ -137,7 +142,7 @@ export function createDatabase(
   });
   pool.on('connect', (client) => {
     client.on('error', (error) => {
-      if (held.has(client)) ended(error, 'held');
+      if (held.has(client)) ended(client, error, 'held');
     });
   });
   const db = new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });

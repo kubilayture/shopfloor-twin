@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { formatIssues, idealCycleMs, loadPlantConfig } from '@shopfloor/plant-config';
 import { sql } from 'kysely';
-import { Gauge } from 'prom-client';
+import { Counter, Gauge } from 'prom-client';
 import { createDatabase, onConnectionError, poolStats } from './db/database.ts';
 import { migrationStatus, type MigrationStatus } from './db/migrate.ts';
 import { EdgeTrust, learnEdgeCidr } from './edge.ts';
@@ -144,13 +144,14 @@ const pools = [
 onConnectionError((error, place) => {
   log.warn({ err: error, place }, 'database connection ended; the pool reconnects');
 });
-new Gauge({
-  name: 'mes_db_connections_ended',
-  help: 'Database connections the server ended since start (idle or held by a caller), by pool',
+new Counter({
+  name: 'mes_db_connections_ended_total',
+  help: 'Database connections the server ended since start (idle or held by a caller), each once, by pool',
   labelNames: ['pool'] as const,
   registers: [registry],
   collect() {
-    for (const [name, pool] of pools) this.set({ pool: name }, poolStats(pool)?.ended ?? 0);
+    this.reset();
+    for (const [name, pool] of pools) this.inc({ pool: name }, poolStats(pool)?.ended ?? 0);
   },
 });
 for (const field of ['total', 'idle', 'waiting'] as const) {

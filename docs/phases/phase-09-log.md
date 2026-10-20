@@ -638,3 +638,9 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     3. A test for the two-run order: job 1 on CNC-01 in run 1, job 2 in run 2; the order OEE and yield final, the line value not; it fails with both `run !== undefined` conditions dropped. ADR-0036 states that such an order's topic stays `open`.
     4. A race-guard test for `OrderOee.order` (a read parked under epoch 1 keeps nothing after epoch 2 dropped the cache); dropping the guard fails it.
     5. `epoch` stays required: the web and the MES ship together (noted in ADR-0036).
+    - **Gate** on `6a4083e` (`GATE_STEPS=verify,e2e`, `GATE_PROJECT=gate257c`, `GATE_TAG=pr257c`; MES and web unit and e2e changes only), `GATE-OK`; free at the start: host 49.5 GiB, Docker 85.0 GiB. The table came after it (documentation only).
+
+      | Step   | Result | Time      | Notes                                                                     |
+      | ------ | ------ | --------- | ------------------------------------------------------------------------- |
+      | verify | passed | 507.9 s   | `pnpm verify --concurrency=1`                                             |
+      | e2e    | passed | 1,428.5 s | `order-oee.e2e.test.ts` (12 tests, all four goldens) with the same counts |

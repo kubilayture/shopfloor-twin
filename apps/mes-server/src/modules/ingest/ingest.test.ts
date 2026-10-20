@@ -915,3 +915,127 @@ describe('ingest (#95)', () => {
     expect(await db.selectFrom('ingest.rejected_message').selectAll().execute()).toEqual([]);
   });
 });
+
+describe('ingest lag and pending deliveries (#245)', () => {
+  /** One sample of the registry's text: the line with exactly these labels (any order). */
+  function sample(text: string, name: string, labels: Record<string, string> = {}): number {
+    for (const line of text.split('\n')) {
+      const match = /^([a-z_]+)(?:\{(.*)\})? (\S+)$/.exec(line);
+      if (match?.[1] !== name) continue;
+      const found: Record<string, string> = {};
+      for (const m of (match[2] ?? '').matchAll(/(\w+)="([^"]*)"/g)) {
+        found[m[1] ?? ''] = m[2] ?? '';
+      }
+      const wanted = Object.entries(labels);
+      if (wanted.length === Object.keys(found).length && wanted.every(([k, v]) => found[k] === v)) {
+        return Number(match[3]);
+      }
+    }
+    return Number.NaN;
+  }
+
+  it('observes live device facts stored for the first time, after the commit; counts the rest', async () => {
+    const { equipment, start, clock } = await setup();
+    const at = equipment('lag');
+    const id = at.equipment;
+    // Retained before the MES subscribes, so they arrive as retained deliveries: a state is the
+    // anchor (excluded as `anchor`), a telemetry sample a current value (`retained`).
+    // (A retained publish reaches a subscriber already there as a plain delivery.)
+    const coolant = telemetryTopic(at, 'coolant');
+    await publish(stateTopic(at), stateEvent(id, EPOCH, 9, 'Idle'), true);
+    await publish(
+      coolant,
+      {
+        schema: 'uns.telemetry/1',
+        scope: 'topic',
+        unit: 'bar',
+        ...identity(id, GW_EPOCH, 1),
+        value: 3,
+      },
+      true,
+    );
+    cleanup.push(() => publish(stateTopic(at), '', true));
+    cleanup.push(() => publish(coolant, '', true));
+    const registry = new Registry();
+    const ingest = await start({ registry });
+    // Every fact was read by the gateway at 10:00:00.000; the MES commits at 10:00:00.300.
+    clock.now = Date.parse('2026-10-15T10:00:00.300Z');
+    await publish(stateTopic(at), snapshot(id, 1, 'Idle', EPOCH)); // a snapshot: excluded
+    await publish(stateTopic(at), stateEvent(id, EPOCH, 1));
+    await publish(stateTopic(at), stateEvent(id, EPOCH, 1)); // a duplicate: excluded
+    // A cycle the gateway read 6 s before the commit: past the 5 s edge.
+    await publish(cycleTopic(at), {
+      schema: 'uns.events.cycle-complete/1',
+      scope: 'device',
+      ...identity(id, EPOCH, 3),
+      receivedAt: '2026-10-15T09:59:54.300Z',
+      value: {
+        product: 'VB-100',
+        partId: 1,
+        serial: 'S1',
+        result: 'good',
+        reason: null,
+        measurement: null,
+      },
+    });
+    await publish(telemetryTopic(at, 'spindle-load'), {
+      schema: 'uns.telemetry/1',
+      scope: 'topic',
+      unit: '%',
+      ...identity(id, GW_EPOCH, 1),
+      value: 40,
+    });
+    await waitFor(() => handled(ingest) === 7, 'seven deliveries');
+    const text = await registry.metrics();
+    const bucket = (cls: string, le: string) =>
+      sample(text, 'mes_ingest_lag_seconds_bucket', { le, class: cls });
+    // 0.3 s: above the 0.25 s edge, within 0.5 s; one observation per class.
+    expect([bucket('state', '0.25'), bucket('state', '0.5'), bucket('state', '+Inf')]).toEqual([
+      0, 1, 1,
+    ]);
+    expect([bucket('cycle', '5'), bucket('cycle', '10')]).toEqual([0, 1]);
+    expect(bucket('telemetry', '0.5')).toBe(1);
+    expect(sample(text, 'mes_ingest_lag_seconds_count', { class: 'state' })).toBe(1);
+    const excluded = (reason: string) =>
+      sample(text, 'mes_ingest_lag_excluded_total', { reason }) || 0;
+    expect(['snapshot', 'duplicate', 'anchor', 'retained'].map(excluded)).toEqual([1, 1, 1, 1]);
+    expect(sample(text, 'mes_ingest_lag_max_seconds')).toBeCloseTo(6, 6);
+    expect(sample(text, 'mes_ingest_pending_messages')).toBe(0);
+
+    // `deliver()` (replays, tests) stores without a session: no lag observed.
+    await ingest.deliver(stateTopic(at), JSON.stringify(stateEvent(id, EPOCH, 4, 'Down')));
+    expect(
+      sample(await registry.metrics(), 'mes_ingest_lag_seconds_count', { class: 'state' }),
+    ).toBe(1);
+  });
+
+  it('counts deliveries received and not yet committed, and the age of the oldest', async () => {
+    const { equipment, start, clock } = await setup();
+    const registry = new Registry();
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The first fact's transaction waits, so every later delivery stays pending.
+    const ingest = await start({ registry, beforeCommit: () => held });
+    const at = equipment('pending');
+    const id = at.equipment;
+    for (let seq = 1; seq <= 150; seq++) {
+      await publish(stateTopic(at), stateEvent(id, EPOCH, seq, seq % 2 ? 'Running' : 'Idle'));
+    }
+    // More than the one delivery in the MES's hands, never more than the session's receive
+    // maximum (100) the broker sends unacknowledged; how many of them the socket has read depends
+    // on its buffering (MQTT.js stops reading while its parser waits).
+    await waitFor(() => ingest.pending > 1, 'pending deliveries');
+    const pending = sample(await registry.metrics(), 'mes_ingest_pending_messages');
+    expect(pending).toBeGreaterThan(1);
+    expect(pending).toBeLessThanOrEqual(100);
+    // The held delivery was read by the gateway at 10:00:00.000; the MES's clock is 2.5 s later.
+    clock.now = Date.parse('2026-10-15T10:00:02.500Z');
+    expect(sample(await registry.metrics(), 'mes_ingest_oldest_pending_age_seconds')).toBe(2.5);
+    release?.();
+    await waitFor(() => ingest.count('stored') === 150, 'every fact stored');
+    await waitFor(() => ingest.pending === 0, 'nothing pending');
+    expect(ingest.oldestPendingAgeSeconds).toBe(0);
+  });
+});

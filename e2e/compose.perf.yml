@@ -1,0 +1,15 @@
+# Override for the performance suite's live runs P1 and P2 (#245, ADR-0040), after
+# docker-compose.yml, e2e/compose.reconcile.yml (ephemeral host ports, nothing restarts by itself)
+# and e2e/compose.reconcile-orders.yml (the ERP serves orders-01's dataset), used only by
+# e2e/src/perf.ts on its own disposable projects, with compose.observability.yml and the
+# `observability` profile (Prometheus only, never Grafana).
+#
+# The simulator writes its live event log (SIM_EVENT_LOG, control API "Configuration"): run P2
+# numbers each machine's device facts from it, as the machine servers do, to know when every
+# machine is final again after the MES's restart. It lives in the container's /tmp and goes with
+# the project.
+
+services:
+  simulator:
+    environment:
+      SIM_EVENT_LOG: /tmp/perf-events.jsonl

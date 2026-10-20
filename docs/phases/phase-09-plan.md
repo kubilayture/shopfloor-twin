@@ -367,6 +367,8 @@ The owner asked for decisions, not questions. Each is recorded in the ADR named 
 
 **P9-16 implementation:** R3 schedule moved; see ADR-0009 amendment.
 
+**P9-18 implementation** (coordinator's decisions on the review of PR #269; ADR-0040 "Coordinator decisions"): P2 stop lengthened to 15 min for a measurable drain, its rate the median slope of a 100 ms `/metrics` sampler; P3 offers at least three times P1's measured live message rate (telemetry added at three times the gateway's cadence) and fails when its publisher falls behind; T1's pending check becomes `mes_ingest_oldest_pending_age_seconds` ≤ 1 s at each hour boundary (`mes_ingest_pending_messages`, bounded by the receive maximum, is diagnostic only); T1's "gateway buffer 0" is judged as the broker session up, the outbox within one live window and nothing dropped.
+
 **Final check: approved** (coordinator, after round 3), with two minor edits applied: the trust mechanism (the `edge` CIDR learning, the `mes-edge` proxy target and `mes_http_proxy_requests_total{trusted}`) moves into P9-10, because the console's session-use rule depends on a trusted `X-Original-Method`, and P9-15 reuses it for `X-Real-IP`; the CIDR match normalises IPv4-mapped IPv6 addresses first, and the counter counts only requests carrying `X-Real-IP`.
 
 ## Deviations from the master plan

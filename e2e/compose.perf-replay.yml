@@ -1,0 +1,11 @@
+# Override for the performance suite's run P3 (#245, ADR-0040, T6), after docker-compose.yml and
+# e2e/compose.reconcile.yml, used only by e2e/src/perf.ts on its own disposable project: no
+# simulator and no gateway run; the golden feed of week-01's Monday is published to the broker from
+# the host by the gated mes-server Vitest entry (apps/mes-server/src/perf-replay.e2e.test.ts) as
+# the gateway's MQTT user. So the broker's port is published on 127.0.0.1 (ephemeral, chosen by
+# Docker) for this run only; every other run keeps it unpublished.
+
+services:
+  broker:
+    ports: !override
+      - '127.0.0.1::1883'

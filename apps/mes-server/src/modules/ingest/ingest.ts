@@ -9,7 +9,7 @@ import {
 } from '@shopfloor/contracts';
 import { sql, type Kysely } from 'kysely';
 import mqtt, { type IClientOptions, type IPublishPacket, type MqttClient } from 'mqtt';
-import { Counter, Gauge, type Registry } from 'prom-client';
+import { Counter, Gauge, Histogram, type Registry } from 'prom-client';
 import {
   AggregateRefresher,
   type AggregateStatus,
@@ -37,6 +37,7 @@ import {
   type StateAnchor,
   type StateFact,
 } from './store.ts';
+import { PublishCounter } from './wire.ts';
 import {
   telemetryMetrics,
   telemetrySeries,
@@ -255,6 +256,38 @@ export function baselineState(
 
 export type IngestOutcome = 'stored' | 'duplicate' | 'rejected' | 'anchor' | 'status' | 'retained';
 
+/**
+ * Bucket edges of `mes_ingest_lag_seconds` (#245): 0.25, 1 and 5 s are edges, so the performance
+ * targets T1 (p95 ≤ 250 ms, p99 ≤ 1 s, max ≤ 5 s) and T6 (p95 ≤ 1 s) are judged exactly from the
+ * share of observations at or below each (ADR-0040).
+ */
+export const LAG_BUCKETS: readonly number[] = [
+  0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60,
+];
+
+/** Why a delivery's lag is not observed (`mes_ingest_lag_excluded_total{reason}`, #245). */
+export type LagExclusion = 'retained' | 'anchor' | 'snapshot' | 'duplicate';
+
+/** What a delivery says about the ingest lag: observe it (a live fact stored now), or why not. */
+type LagNote =
+  | { readonly observe: string; readonly receivedAt: string }
+  | { readonly exclude: LagExclusion }
+  | undefined;
+
+/**
+ * The `receivedAt` of a UNS payload, without parsing all of it (the head of the queue, #245);
+ * undefined when it has none (a status or an unparsable delivery).
+ */
+function receivedAtOf(payload: string | Buffer): number | undefined {
+  const text = typeof payload === 'string' ? payload : payload.toString('utf8');
+  const match = /"receivedAt"\s*:\s*"([^"]{1,40})"/.exec(text);
+  const at = match?.[1] === undefined ? Number.NaN : Date.parse(match[1]);
+  return Number.isNaN(at) ? undefined : at;
+}
+
+/** `mes_ingest_lag_max_seconds` covers the current and the previous window of this length. */
+const LAG_MAX_WINDOW_MS = 5_000;
+
 const RETRY_MAX_MS = 10_000;
 const STOP_WAIT_MS = 2_000;
 const RESUME_MAX_MS = 60_000;
@@ -279,6 +312,21 @@ export class Ingest {
   readonly #traceDropped: Counter<'equipment'> | undefined;
   readonly #suspensions: Counter | undefined;
   readonly #history: Counter | undefined;
+  readonly #lag: Histogram<'class'> | undefined;
+  readonly #lagExcluded: Counter<'reason'> | undefined;
+  /** The largest lag of the current window (`#lagWindow`) and of the one before it. */
+  #lagWindow = 0;
+  #lagMax = 0;
+  #lagMaxBefore = 0;
+  /** PUBLISH packets arrived on the current connection, and those the MES finished (#245). */
+  #arrived = 0;
+  #finished = 0;
+  #connection = 0;
+  /**
+   * The gateway's read time (`receivedAt`, wall ms) of the delivery MQTT.js handed to the MES and
+   * the MES has not finished: MQTT.js hands over the next only after it (#245).
+   */
+  #head: number | undefined;
   #client: MqttClient | undefined;
   #subscribed = false;
   #stopping = false;
@@ -339,8 +387,45 @@ export class Ingest {
         help: 'Times the UNS session was dropped because the database stayed unreachable',
         registers,
       });
+      this.#lag = new Histogram({
+        name: 'mes_ingest_lag_seconds',
+        help: 'Gateway receivedAt to the commit of a live device fact stored for the first time, by message class (state, cycle, alarm, job, telemetry); retained, anchor, snapshot and duplicate deliveries are counted by mes_ingest_lag_excluded_total instead',
+        labelNames: ['class'],
+        buckets: [...LAG_BUCKETS],
+        registers,
+      });
+      this.#lagExcluded = new Counter({
+        name: 'mes_ingest_lag_excluded_total',
+        help: 'Session deliveries whose lag is not observed, by reason: retained, anchor (a state or alarm anchor), snapshot, duplicate',
+        labelNames: ['reason'],
+        registers,
+      });
       // eslint-disable-next-line @typescript-eslint/no-this-alias -- read by the collect callback
       const self = this;
+      new Gauge({
+        name: 'mes_ingest_lag_max_seconds',
+        help: 'The largest mes_ingest_lag_seconds observation of the last 5 to 10 s (a histogram has no max)',
+        registers,
+        collect() {
+          this.set(self.#recentLagMax());
+        },
+      });
+      new Gauge({
+        name: 'mes_ingest_pending_messages',
+        help: 'UNS deliveries received from the broker on the current session and not yet committed (at most the session receive maximum, 100)',
+        registers,
+        collect() {
+          this.set(self.pending);
+        },
+      });
+      new Gauge({
+        name: 'mes_ingest_oldest_pending_age_seconds',
+        help: 'Now minus the gateway receivedAt of the delivery the MES is handling and has not committed; 0 when none. Behind a backlog it is the backlog head: the delay the oldest waiting message has accumulated',
+        registers,
+        collect() {
+          this.set(self.oldestPendingAgeSeconds);
+        },
+      });
       new Gauge({
         name: 'mes_ingest_subscribed',
         help: '1 while the persistent UNS session is connected and subscribed',
@@ -355,6 +440,23 @@ export class Ingest {
   /** Connected and every subscription granted with QoS 1: part of readiness. */
   get subscribed(): boolean {
     return this.#subscribed && this.#client?.connected === true;
+  }
+
+  /**
+   * Deliveries received from the broker on the current connection and not yet committed (#245):
+   * the PUBLISH packets that arrived on its socket minus those the MES finished.
+   */
+  get pending(): number {
+    return Math.max(0, this.#arrived - this.#finished);
+  }
+
+  /**
+   * How long the delivery at the head of the session's queue has waited since the gateway read it
+   * (seconds; 0 when the MES holds none). MQTT.js gives the MES one delivery at a time, so behind a
+   * backlog this is its oldest message's age, whether the rest wait on the socket or in the broker.
+   */
+  get oldestPendingAgeSeconds(): number {
+    return this.#head === undefined ? 0 : Math.max(0, this.#now() - this.#head) / 1000;
   }
 
   /** Deliveries handled since start, by outcome. */
@@ -416,15 +518,37 @@ export class Ingest {
     };
     const client = mqtt.connect(options.url, clientOptions);
     this.#client = client;
+    // Pending deliveries (#245): MQTT.js opens a new socket on every connect and reconnect, by
+    // calling `connect()`; each one's PUBLISH packets are counted as they arrive.
+    const open = client.connect.bind(client);
+    client.connect = () => {
+      const result = open();
+      const connection = ++this.#connection;
+      this.#arrived = 0;
+      this.#finished = 0;
+      const counter = new PublishCounter();
+      client.stream.on('data', (chunk: Buffer) => {
+        if (this.#connection === connection) this.#arrived += counter.push(chunk);
+      });
+      return result;
+    };
     // MQTT.js sends the PUBACK only once this callback runs, and handles the next packet only
     // after that: so storing here gives ack-after-commit and arrival order.
     client.handleMessage = (packet, callback) => {
+      const connection = this.#connection;
+      this.#head = receivedAtOf(packet.payload) ?? this.#now();
+      const finished = () => {
+        this.#head = undefined;
+        if (this.#connection === connection) this.#finished++;
+      };
       this.#enqueue(() => this.#handle(client, packet)).then(
         () => {
+          finished();
           callback();
         },
         () => {
           // Stopping or suspended: unacknowledged, so the broker delivers it again.
+          finished();
         },
       );
     };
@@ -692,7 +816,7 @@ export class Ingest {
         await this.#store.load();
         this.#loaded = true;
       }
-      const notices = await this.#process(topic, payload, retained);
+      const { notices } = await this.#process(topic, payload, retained);
       await this.#announce(notices);
     });
   }
@@ -1379,7 +1503,9 @@ export class Ingest {
       // A delivery of a session that was dropped arrives again in the next one.
       if (this.#isStopping() || this.#client !== client || this.#suspended) throw new Suspended();
       try {
-        const notices = await this.#process(packet.topic, packet.payload, packet.retain);
+        const { notices, lag } = await this.#process(packet.topic, packet.payload, packet.retain);
+        // After the commit (#245): a session delivery only, never `deliver()`'s replays.
+        this.#noteLag(lag);
         await this.#announce(notices);
         await this.#options.beforeAck?.(packet.topic);
         this.#failedResumes = 0;
@@ -1435,11 +1561,16 @@ export class Ingest {
     });
   }
 
+  /**
+   * Stores one delivery; resolves once its transaction committed, with its notices and what it
+   * says about the ingest lag (#245): only a live device fact stored for the first time is
+   * observed (a retained delivery never is: it is classified `retained` or an anchor).
+   */
   async #process(
     topic: string,
     payload: string | Buffer,
     retained: boolean,
-  ): Promise<readonly IngestNotice[]> {
+  ): Promise<{ readonly notices: readonly IngestNotice[]; readonly lag: LagNote }> {
     const text = typeof payload === 'string' ? payload : payload.toString('utf8');
     // A NUL in the raw text can't even be stored as the rejected payload.
     const item = text.includes('\u0000')
@@ -1460,14 +1591,14 @@ export class Ingest {
         );
         this.#log.warn({ topic, reason: item.reason, detail: item.detail }, 'UNS message rejected');
         this.#counted('rejected');
-        return [];
+        return { notices: [], lag: undefined };
       case 'retained':
         this.#counted('retained');
-        return [];
+        return { notices: [], lag: { exclude: 'retained' } };
       case 'status':
         await this.#store.status(item.component, item.instance, item.message);
         this.#counted('status');
-        return [];
+        return { notices: [], lag: undefined };
       case 'anchor': {
         const { anchor, notices } = await this.#store.anchor(
           item.equipment,
@@ -1475,19 +1606,23 @@ export class Ingest {
           retained,
         );
         this.#counted('anchor');
-        return anchor && anchor.deviceEpoch !== null
-          ? [...notices, { type: 'anchor', anchor }]
-          : notices;
+        return {
+          notices:
+            anchor && anchor.deviceEpoch !== null
+              ? [...notices, { type: 'anchor', anchor }]
+              : notices,
+          lag: { exclude: item.message.kind === 'snapshot' ? 'snapshot' : 'anchor' },
+        };
       }
       case 'alarm-anchor': {
         const notices = await this.#store.alarmAnchor(item.equipment, item.message);
         this.#counted('anchor');
-        return notices;
+        return { notices, lag: { exclude: 'anchor' } };
       }
       case 'alarm-snapshot': {
         const notices = await this.#store.alarmSnapshot(item.equipment, item.message);
         this.#counted('anchor');
-        return notices;
+        return { notices, lag: { exclude: 'snapshot' } };
       }
       case 'event':
       case 'telemetry':
@@ -1508,13 +1643,19 @@ export class Ingest {
             'stale UNS message refused',
           );
           this.#counted('rejected');
-          return [];
+          return { notices: [], lag: undefined };
         }
+        // Device deliveries (#245): a machine's facts and telemetry, not the gateway's own
+        // incidents and command results.
+        const device = item.kind === 'event' || item.kind === 'telemetry';
         if (outcome.status === 'duplicate') {
           this.#counted('duplicate');
           // Non-empty only for a row the table had but the cursor didn't (a commit that failed on
           // the way back): its listeners never heard of it, so it is announced now.
-          return outcome.notices ?? [];
+          return {
+            notices: outcome.notices ?? [],
+            lag: device ? { exclude: 'duplicate' } : undefined,
+          };
         }
         this.#counted('stored');
         if (item.kind === 'event' && item.traceDropped) {
@@ -1528,9 +1669,46 @@ export class Ingest {
           this.#incidents?.inc({ origin: 'gateway' });
           this.#log.warn({ incident: item.message.value }, 'gateway incident');
         }
-        return outcome.notices;
+        return {
+          notices: outcome.notices,
+          lag: device
+            ? {
+                observe: item.kind === 'event' ? item.eventType : 'telemetry',
+                receivedAt: item.message.receivedAt,
+              }
+            : undefined,
+        };
       }
     }
+  }
+
+  /** Observes a committed delivery's lag, or counts why it isn't (#245). */
+  #noteLag(lag: LagNote): void {
+    if (lag === undefined || !this.#lag) return;
+    if ('exclude' in lag) {
+      this.#lagExcluded?.inc({ reason: lag.exclude });
+      return;
+    }
+    const now = this.#now();
+    // A gateway clock ahead of the MES's would give a negative lag: none is recorded as such.
+    const seconds = Math.max(0, now - Date.parse(lag.receivedAt)) / 1000;
+    this.#lag.observe({ class: lag.observe }, seconds);
+    this.#rollLagWindow(now);
+    this.#lagMax = Math.max(this.#lagMax, seconds);
+  }
+
+  #rollLagWindow(now: number): void {
+    const window = Math.floor(now / LAG_MAX_WINDOW_MS);
+    if (window === this.#lagWindow) return;
+    this.#lagMaxBefore = window === this.#lagWindow + 1 ? this.#lagMax : 0;
+    this.#lagMax = 0;
+    this.#lagWindow = window;
+  }
+
+  /** The largest lag observed in the current and the previous 5 s window. */
+  #recentLagMax(): number {
+    this.#rollLagWindow(this.#now());
+    return Math.max(this.#lagMax, this.#lagMaxBefore);
   }
 
   /** A method, so that the check is repeated after every await. */

@@ -66,19 +66,26 @@ export interface StackOptions {
   readonly env: Readonly<Record<string, string>>;
   /** More Compose files after e2e/compose.reconcile.yml, relative to the repository (#178). */
   readonly files?: readonly string[];
+  /**
+   * Compose profiles to enable on every command of the project (P9-18: `observability` for
+   * Prometheus), so `down` also removes their containers and volumes.
+   */
+  readonly profiles?: readonly string[];
 }
 
 export class Stack {
   readonly project: string;
   readonly #env: Readonly<Record<string, string>>;
   readonly #files: readonly string[];
+  readonly #profiles: readonly string[];
   #dir: string | undefined;
   #values: Readonly<Record<string, string>> | undefined;
 
-  constructor({ project, env, files = [] }: StackOptions) {
+  constructor({ project, env, files = [], profiles = [] }: StackOptions) {
     this.project = project;
     this.#env = env;
     this.#files = files;
+    this.#profiles = profiles;
   }
 
   /** Writes the env file (mode 600, in a fresh temporary directory). */
@@ -139,6 +146,7 @@ export class Stack {
         '--file',
         join(REPO, 'e2e/compose.reconcile.yml'),
         ...this.#files.flatMap((file) => ['--file', join(REPO, file)]),
+        ...this.#profiles.flatMap((profile) => ['--profile', profile]),
         ...args,
       ],
       { cwd: REPO, maxBuffer: 256 * 1024 * 1024, timeout: timeoutMs },

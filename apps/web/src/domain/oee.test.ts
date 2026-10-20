@@ -142,6 +142,10 @@ describe('bucket status', () => {
     expect(pickBucket(final, pushed)).toBe(final);
     const revised = bucket('cell-m1', { revision: 1 });
     expect(pickBucket(revised, pushed)).toBe(revised);
+    // A push of a higher revision wins whole, over a final REST bucket of a lower one (#257 A1).
+    const newer = bucket('cell-m1', { provisionalMs: 1, revision: 2 });
+    expect(pickBucket(final, newer)).toBe(newer);
+    expect(pickBucket(bucket('cell-m1', { final: true, revision: 1 }), newer)).toBe(newer);
   });
 });
 
@@ -232,6 +236,16 @@ describe('order and line OEE (#233)', () => {
     const revised = orderOee('PO-1', { revision: 1 });
     expect(pickOrderOee(revised, rest)).toBe(revised);
     expect(pickOrderOee(rest, revised)).toBe(revised);
+    // A push of a higher revision wins whole, even over REST parts final where its own are not
+    // (#257 A1): a final REST part of a lower revision is older.
+    const newer = orderOee('PO-1', {
+      final: false,
+      revision: 2,
+      line: { ...ORDER_LINE, final: false, open: true },
+      firstPassYield: { ...rest.firstPassYield, final: false },
+    });
+    expect(pickOrderOee(rest, newer)).toBe(newer);
+    expect(pickOrderOee(revised, newer)).toBe(newer);
   });
 
   it('keeps each final part of the REST answer: a push final for the order but not its line', () => {

@@ -266,9 +266,13 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
  * - `open`: a part not final yet: every machine's change and the plant clock (`#orderOpen`);
  * - `revisable`: final in every part but with incidents (`mayRevise`): every machine's change, a
  *   revision of an hour under it may come from any (A3), not the clock;
- * - `none`: final without incidents (it never changes), or never final whatever comes (A2): a
- *   `lost` body, or a terminal status without a job. Those still follow their own order's
- *   changes and their jobs' CNCs, so they are not recomputed every second while subscribed.
+ * - `none`: final without incidents (it never changes), a terminal status without a job (no job
+ *   can come, A2), or a `lost` body (A2). `lost` is not for good: a late fact or a filled gap can
+ *   resolve it, and that arrives as a command or order change of its own order, which recomputes
+ *   the topic and classifies it again. Until then it follows only its own order's changes and its
+ *   jobs' CNCs, so it is not recomputed every second while subscribed. On purpose, an open `lost`
+ *   order's line value then no longer follows the plant clock between those changes (its `to`
+ *   moves on with the next one); a running order's own CNCs change often enough.
  */
 export function orderFollow(
   order: Pick<OrderOeeDto, 'final' | 'lost' | 'status' | 'jobs' | 'mayRevise'> & {

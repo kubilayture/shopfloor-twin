@@ -107,6 +107,15 @@ export class LoginThrottle {
     return at !== undefined && now - at < this.#options.exemptMs;
   }
 
+  /**
+   * Whether `address` logged in as `name` within the window (#264 round 3, R1): such an attempt
+   * spends no token of the shared ceiling for all logins.
+   */
+  recentSuccess(name: string, address: string, now: number): boolean {
+    const state = this.#names.get(name);
+    return state !== undefined && this.#exempt(state, address, now);
+  }
+
   /** Seconds to wait as the last decisions say, or undefined: ask the database. */
   refusal(name: string, address: string, now: number): number | undefined {
     const state = this.#names.get(name);

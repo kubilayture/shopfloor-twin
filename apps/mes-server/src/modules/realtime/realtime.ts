@@ -721,10 +721,17 @@ export async function registerRealtime(
     options.loginCeiling?.perSecond ?? LIMITS.loginCeilingPerSecond,
     options.loginCeiling?.burst ?? LIMITS.loginCeilingBurst,
   );
-  const loginRefusal = (username: string, address: string): number | undefined =>
+  // An address that logged in as this user within the window (the identity module knows) spends
+  // no token of the shared ceiling (#264 round 3, R1): attackers who fill the ceiling can't keep
+  // a recently used browser out. Its own buckets still apply.
+  const loginRefusal = (
+    username: string,
+    address: string,
+    recentSuccess: boolean,
+  ): number | undefined =>
     nameLimiters.take(`${username.trim().toLowerCase()}\n${address}`) ??
     addressLimiters.take(address) ??
-    loginCeiling.take();
+    (recentSuccess ? undefined : loginCeiling.take());
 
   // Identity (#168, ADR-0026).
   const identity = options.identity;
@@ -2488,7 +2495,8 @@ export async function registerRealtime(
               requestId,
               replaces: tokenOf(request),
               address: clientAddress(request),
-              admit: () => loginRefusal(body.username, clientAddress(request)),
+              admit: ({ recentSuccess }) =>
+                loginRefusal(body.username, clientAddress(request), recentSuccess),
             })
             .catch((error: unknown) => {
               throw identityProblem(error, reply);

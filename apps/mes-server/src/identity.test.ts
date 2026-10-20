@@ -2468,6 +2468,72 @@ describe('login throttling over HTTP (#242, S5)', () => {
     expect((await attempt('h-jon', password, { client: '192.168.96.2' })).statusCode).toBe(401);
   });
 
+  it('lets a home address with a recent login in on every try while 2 and 4 attacker addresses fill the ceiling (#264 round 3, R1)', async () => {
+    const password = await user('h-moe', ['operator']);
+    const slotted = new Identity({ db, now, sweepMs: 0 });
+    await slotted.start();
+    const real = await buildMesHttp({
+      ready: () => Promise.resolve(true),
+      identity: slotted,
+      auth: true,
+      allowedHosts: ['localhost'],
+      edge: new EdgeTrust(EDGE),
+    });
+    const send = (username: string, pw: string, client: string) =>
+      real.app.inject({
+        method: 'POST',
+        url: '/api/v1/session',
+        remoteAddress: NGINX,
+        headers: {
+          host,
+          origin,
+          'content-type': 'application/json',
+          'x-forwarded-proto': 'https',
+          'x-real-ip': client,
+        },
+        payload: JSON.stringify({ username, password: pw }),
+      });
+    const home = '192.168.97.1';
+    try {
+      expect((await send('h-moe', password, home)).statusCode).toBe(200);
+      for (const attackers of [2, 4]) {
+        const attack: Promise<number>[] = [];
+        let n = 0;
+        // Each attacker address sends 10 a second, never waiting: its own bucket admits 5 a
+        // second after a burst of 10, so together they fill the 10/s ceiling (bursts of 20).
+        const timer = setInterval(() => {
+          for (let a = 0; a < attackers; a++) {
+            n++;
+            attack.push(
+              send(`raider-${String(n)}`, 'wrong-password-x', `198.51.100.${String(150 + a)}`).then(
+                (r) => r.statusCode,
+              ),
+            );
+          }
+        }, 100);
+        const statuses: number[] = [];
+        try {
+          for (let i = 0; i < 6; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            statuses.push((await send('h-moe', password, home)).statusCode);
+          }
+        } finally {
+          clearInterval(timer);
+        }
+        const answers = await Promise.all(attack);
+        // The attackers did fill the ceiling: some of their attempts were refused with 429.
+        expect(
+          answers.filter((s) => s === 429).length,
+          `${String(attackers)} attackers`,
+        ).toBeGreaterThan(0);
+        expect(statuses, `${String(attackers)} attackers`).toEqual(Array<number>(6).fill(200));
+      }
+    } finally {
+      await real.app.close();
+      slotted.stop();
+    }
+  }, 60_000);
+
   it('asks the login buckets only for an attempt the global delay let through', async () => {
     const password = await user('h-cem', ['operator']);
     const tight = await buildMesHttp({

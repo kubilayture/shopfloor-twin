@@ -300,6 +300,13 @@ type Reservation =
  * A login's decision before any hash (#264 review, F1): a reservation, a wait known from memory
  * (429, the user's delay), or the login buckets or a full queue (429).
  */
+/**
+ * The caller's login buckets (#168 review, M2; #264 review F2): seconds to wait, or undefined to
+ * go on. `recentSuccess`: the address logged in as this user within the window, so the shared
+ * ceiling is not asked (#264 round 3, R1).
+ */
+export type Admit = (attempt: { readonly recentSuccess: boolean }) => number | undefined;
+
 /** A decision that will be hashed holds a hash slot until `release` (#264 re-review, N1). */
 type Held = Decision & { readonly release?: () => void };
 
@@ -819,13 +826,17 @@ export class Identity {
     name: string,
     address: string,
     where: { readonly username: string } | { readonly id: number },
-    admit: (() => number | undefined) | undefined,
+    admit: Admit | undefined,
   ): Promise<Held> {
     const busy: Held = { kind: 'rate-limited', retryAfterS: 1 };
     const decided = await this.#throttle.serial(name, async (): Promise<Held> => {
       const known = this.#throttle.refusal(name, address, this.#now().getTime());
       if (known !== undefined) return { kind: 'throttled', retryAfterS: known };
-      const wait = admit?.();
+      // An address that logged in as this user within the window spends no token of the shared
+      // ceiling (#264 round 3, R1); its own buckets and the hash slots still apply.
+      const wait = admit?.({
+        recentSuccess: this.#throttle.recentSuccess(name, address, this.#now().getTime()),
+      });
       if (wait !== undefined) return { kind: 'rate-limited', retryAfterS: wait };
       // A hash slot before the database (#264 re-review, N1): with none free the attempt is a
       // 429 that is neither counted nor hashed.
@@ -937,7 +948,7 @@ export class Identity {
      * seconds to wait, or undefined to go on. Asked after a wait known from the last decision of
      * this name, so an attempt inside it spends no token, and before the database.
      */
-    readonly admit?: (() => number | undefined) | undefined;
+    readonly admit?: Admit | undefined;
   }): Promise<{ readonly token: string; readonly principal: Principal }> {
     const name = input.username.trim().toLowerCase();
     const now = this.#now();

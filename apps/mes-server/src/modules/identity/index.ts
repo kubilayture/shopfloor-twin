@@ -1,7 +1,8 @@
 /**
  * The `identity` module (#168, ADR-0026): users with roles, scrypt password hashes, sessions whose
- * tokens live in the `sft_session` cookie (only their SHA-256 is stored), failed-login lockout with
- * a delay instead of a lock for admins, the optional bootstrap admin and the append-only audit log.
+ * tokens live in the `sft_session` cookie (only their SHA-256 is stored), failed-login lockout per
+ * (account, address) with a delay instead of a lock for admins, the global per-account delay (429,
+ * #242), the optional bootstrap admin and the append-only audit log.
  * The permission matrix is `ROLE_PERMISSIONS` in `@shopfloor/contracts/identity`. Other modules use
  * only what is exported here.
  *
@@ -20,11 +21,15 @@ export {
   Identity,
   IdentityError,
   LOGIN_FAILED,
+  LOGIN_RATE,
+  LOGIN_THROTTLED,
+  UNKNOWN_ADDRESS,
   auditActor,
   isAuthenticated,
   nameOf,
   parseToken,
   passwordProblem,
+  throttleWaitMs,
 } from './identity.ts';
 export type {
   Actor,
@@ -49,6 +54,7 @@ export {
   Semaphore,
   hashPassword,
   hashesRunning,
+  hashesStarted,
   needsRehash,
   parseHash,
   verifyPassword,

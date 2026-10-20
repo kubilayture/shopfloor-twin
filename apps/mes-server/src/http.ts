@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 import swagger from '@fastify/swagger';
 import Fastify, {
   type FastifyBaseLogger,
@@ -6,7 +7,7 @@ import Fastify, {
   type FastifyRequest,
 } from 'fastify';
 import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
-import { NO_EDGE, type EdgeTrust } from './edge.ts';
+import { NO_EDGE, normaliseAddress, type EdgeTrust } from './edge.ts';
 import {
   WS_PATH,
   registerRealtime,
@@ -39,9 +40,10 @@ export interface MesHttpOptions {
   readonly userWriteRate?: { readonly perSecond: number; readonly burst: number };
   /** How often open sockets' sessions are checked (default 15 s). */
   readonly sessionCheckMs?: number;
-  /** Login buckets: all together (default 5/s, bursts of 10) and per user name (1/s, 5). */
+  /** Login buckets: per address (default 5/s, bursts of 10), per (name, address) (1/s, 5), all (100/s, 200). */
   readonly loginRate?: { readonly perSecond: number; readonly burst: number };
   readonly userLoginRate?: { readonly perSecond: number; readonly burst: number };
+  readonly loginCeiling?: { readonly perSecond: number; readonly burst: number };
   /**
    * The learned `edge` network (#237): only requests from it may carry trusted proxy headers
    * (`X-Original-Method`, and `X-Real-IP` from P9-15). Default: nothing trusted.
@@ -72,6 +74,7 @@ export async function buildMesHttp({
   sessionCheckMs,
   loginRate,
   userLoginRate,
+  loginCeiling,
   edge = NO_EDGE,
 }: MesHttpOptions): Promise<MesHttp> {
   // A request id per request (UUID): logged, returned as X-Request-Id on writes and audited.
@@ -105,6 +108,17 @@ export async function buildMesHttp({
       trusted.set(request.raw, known);
     }
     return known;
+  };
+  // The client's address a login is keyed by (#242, ADR-0039): nginx overwrites `X-Real-IP` with
+  // `$remote_addr`, and only over the `edge` network is it believed; from anywhere else (a
+  // container on the default network sending its own header to `mes:4700`) the socket's address
+  // counts, so a spoofed header can neither pick another client's pair nor dodge its own.
+  const clientAddress = (request: FastifyRequest): string => {
+    const header = request.headers['x-real-ip'];
+    if (trustsProxy(request) && typeof header === 'string' && isIP(header.trim()) !== 0) {
+      return normaliseAddress(header.trim());
+    }
+    return normaliseAddress(request.raw.socket.remoteAddress ?? 'unknown');
   };
   app.addHook('onRequest', (request, _reply, done) => {
     if (request.headers['x-real-ip'] !== undefined) {
@@ -193,7 +207,9 @@ export async function buildMesHttp({
     ...(sessionCheckMs === undefined ? {} : { sessionCheckMs }),
     ...(loginRate === undefined ? {} : { loginRate }),
     ...(userLoginRate === undefined ? {} : { userLoginRate }),
+    ...(loginCeiling === undefined ? {} : { loginCeiling }),
     trustsProxy,
+    clientAddress,
   });
   return { app, registry, realtime };
 }

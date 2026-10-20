@@ -307,15 +307,22 @@ export interface RealtimeOptions {
   readonly userWriteRate?: { readonly perSecond: number; readonly burst: number };
   /** How often open sockets' sessions are checked for expiry (default 15 s). */
   readonly sessionCheckMs?: number;
-  /** All logins together (default `LIMITS`: 5 per second, bursts of 10). */
+  /** Logins per client address (default `LIMITS`: 5 per second, bursts of 10; #264 review F2). */
   readonly loginRate?: { readonly perSecond: number; readonly burst: number };
-  /** Logins per user name (default `LIMITS`: 1 per second, bursts of 5). */
+  /** Logins per (user name, client address) (default `LIMITS`: 1 per second, bursts of 5). */
   readonly userLoginRate?: { readonly perSecond: number; readonly burst: number };
+  /** All logins together, a ceiling for the server only (default `LIMITS`: 100/s, 200). */
+  readonly loginCeiling?: { readonly perSecond: number; readonly burst: number };
   /**
    * Whether a request came from nginx over the `edge` network (#237, `EdgeTrust`): only then are
    * its proxy headers (`X-Original-Method`; `X-Real-IP` from P9-15) believed. Default: never.
    */
   readonly trustsProxy?: (request: FastifyRequest) => boolean;
+  /**
+   * The client's address a login is keyed by (#242): nginx's `X-Real-IP` when `trustsProxy`, else
+   * the socket's. Default: the socket's.
+   */
+  readonly clientAddress?: (request: FastifyRequest) => string;
 }
 
 /**
@@ -423,6 +430,7 @@ const IDENTITY_STATUS = {
   'not-found': 404,
   conflict: 409,
   invalid: 422,
+  throttled: 429,
 } as const;
 
 /** The value of one cookie of a `Cookie` header. */
@@ -698,8 +706,10 @@ export async function registerRealtime(
   };
 
   // Logins have buckets of their own (#168 review, M2), so anonymous login attempts never spend
-  // the write bucket that plant writes need: one for all logins together and one per user name.
-  const loginLimiter = new WriteLimiter(
+  // the write bucket that plant writes need. They are keyed by the client's address (#264 review,
+  // F2: an unkeyed bucket let one address keep a user, or everyone, out): one per address, one per
+  // (user name, address), and only a high ceiling for all logins together, for the server's sake.
+  const addressLimiters = new KeyedLimiter(
     options.loginRate?.perSecond ?? LIMITS.loginsPerSecond,
     options.loginRate?.burst ?? LIMITS.loginBurst,
   );
@@ -707,8 +717,21 @@ export async function registerRealtime(
     options.userLoginRate?.perSecond ?? LIMITS.userLoginsPerSecond,
     options.userLoginRate?.burst ?? LIMITS.userLoginBurst,
   );
-  const loginRefusal = (username: string): number | undefined =>
-    nameLimiters.take(username.trim().toLowerCase()) ?? loginLimiter.take();
+  const loginCeiling = new WriteLimiter(
+    options.loginCeiling?.perSecond ?? LIMITS.loginCeilingPerSecond,
+    options.loginCeiling?.burst ?? LIMITS.loginCeilingBurst,
+  );
+  // An address that logged in as this user within the window (the identity module knows) spends
+  // no token of the shared ceiling (#264 round 3, R1): attackers who fill the ceiling can't keep
+  // a recently used browser out. Its own buckets still apply.
+  const loginRefusal = (
+    username: string,
+    address: string,
+    recentSuccess: boolean,
+  ): number | undefined =>
+    nameLimiters.take(`${username.trim().toLowerCase()}\n${address}`) ??
+    addressLimiters.take(address) ??
+    (recentSuccess ? undefined : loginCeiling.take());
 
   // Identity (#168, ADR-0026).
   const identity = options.identity;
@@ -748,6 +771,9 @@ export async function registerRealtime(
   const touchOf = (request: FastifyRequest): boolean =>
     (request.routeOptions.config as Partial<RouteConfig> | undefined)?.touch?.(request) ?? true;
   const trustsProxy = options.trustsProxy ?? (() => false);
+  const clientAddress =
+    options.clientAddress ??
+    ((request: FastifyRequest): string => request.raw.socket.remoteAddress ?? 'unknown');
   /**
    * The Origin's scheme behind the HTTPS front (#241 review, ADR-0039): a request nginx proxied
    * over the `edge` network carries the scheme the browser used in `X-Forwarded-Proto` (always
@@ -2415,10 +2441,14 @@ export async function registerRealtime(
       );
 
       // Identity (#168, ADR-0026): the session and user administration.
-      const identityProblem = (error: unknown): unknown =>
-        error instanceof IdentityError
-          ? new HttpProblem(IDENTITY_STATUS[error.kind], error.message, error.type)
-          : error;
+      const identityProblem = (error: unknown, reply?: FastifyReply): unknown => {
+        if (!(error instanceof IdentityError)) return error;
+        // A 429 (#242: the global delay, or the login buckets) says when to come back.
+        if (error.retryAfterS !== undefined) {
+          reply?.header('retry-after', String(error.retryAfterS));
+        }
+        return new HttpProblem(IDENTITY_STATUS[error.kind], error.message, error.type);
+      };
       const setCookie = (reply: FastifyReply, token: string, maxAgeS: number): void => {
         reply.header(
           'set-cookie',
@@ -2436,9 +2466,17 @@ export async function registerRealtime(
           description:
             `Sets \`${cookieName}\` (HttpOnly, SameSite=Strict, Path=/) to a new random token; ` +
             'a session the request carried ends. Every failure (unknown or disabled user, wrong ' +
-            'password, a locked account, an admin within its delay) is the same 401. Five ' +
-            'failures in a row lock a normal account for 15 minutes; an admin is delayed instead ' +
-            '(1 s doubling, at most 5 min). Passes the write guards (login CSRF).',
+            'password, a user locked for this address) is the same 401. Five failures in a row ' +
+            'from one client address lock the user for that address for 15 minutes (the address ' +
+            "is X-Real-IP from nginx over the edge network, else the connection's). Once a user " +
+            'has 10 or more failed attempts in 15 minutes from all addresses together (n), an ' +
+            'attempt within min(2^(n-10) s, 30 s) of the last failure is answered 429 with ' +
+            'Retry-After, the remaining wait rounded up, without checking the password, except ' +
+            'from an address that logged in to that user within those 15 minutes; a 429 is not ' +
+            'counted. An admin is never locked: from its fifth failure an attempt within its ' +
+            'delay (1 s doubling, at most 5 min) is 429 with Retry-After too. Login buckets per ' +
+            'client address and per (user name, address) answer 429 as well. Passes the write ' +
+            'guards (login CSRF).',
           tags: ['identity'],
           params: z.strictObject({}),
           body: loginRequestSchema,
@@ -2447,11 +2485,8 @@ export async function registerRealtime(
         },
         LIMITS.writeBodyBytes,
         async ({ body, requestId, request, reply }) => {
-          const wait = loginRefusal(body.username);
-          if (wait !== undefined) {
-            reply.header('retry-after', String(wait));
-            throw new HttpProblem(429, 'too many logins; try again', PROBLEM_TYPES.loginRate);
-          }
+          // The login buckets are asked under the user's row lock, after the global delay (#242):
+          // an attempt the delay refuses answers its own Retry-After and spends no token.
           const { token, principal } = await needIdentity()
             .login({
               username: body.username,
@@ -2459,9 +2494,12 @@ export async function registerRealtime(
               kind: body.kind,
               requestId,
               replaces: tokenOf(request),
+              address: clientAddress(request),
+              admit: ({ recentSuccess }) =>
+                loginRefusal(body.username, clientAddress(request), recentSuccess),
             })
             .catch((error: unknown) => {
-              throw identityProblem(error);
+              throw identityProblem(error, reply);
             });
           const { createdAt, expiresAt } = principal.session;
           setCookie(reply, token, Math.ceil((expiresAt.getTime() - createdAt.getTime()) / 1000));
@@ -2563,11 +2601,17 @@ export async function registerRealtime(
           errors: [400, 405, 413, 415, 422, 429, 503],
         },
         LIMITS.writeBodyBytes,
-        async ({ body, requestId, request }) => {
+        async ({ body, requestId, request, reply }) => {
           const { endedSessions } = await needIdentity()
-            .changePassword(principalOf(request), body.currentPassword, body.newPassword, requestId)
+            .changePassword(
+              principalOf(request),
+              body.currentPassword,
+              body.newPassword,
+              requestId,
+              clientAddress(request),
+            )
             .catch((error: unknown) => {
-              throw identityProblem(error);
+              throw identityProblem(error, reply);
             });
           return { changed: true as const, endedSessions };
         },

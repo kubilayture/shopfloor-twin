@@ -80,7 +80,7 @@ const ERROR_TEXT: Readonly<Record<number, string>> = {
   413: 'Body larger than 16 KiB',
   415: 'Content-Type is not application/json; type urn:shopfloor:write-not-json',
   422: 'Well-formed, but not applicable (a coding outside its record, overlapping or with an unknown reason; a shelf longer than maxShelveMs, without a plant clock,, an unshelve of a point not shelved; a note beyond 200 per shift, type urn:shopfloor:note-limit; a password outside 12–128 characters, equal to the current one, or a wrong current password, type urn:shopfloor:password-rejected; a dispatch to equipment that is not a CNC or has no known device run, or a re-dispatch beyond the remaining blanks; a limit window without final first-pass readings, a moving range or a complete subgroup)',
-  429: "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+  429: "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (per client address, per user name and address, all together, or within a user's delay: the global one after 10 failed logins in 15 minutes, or an admin's; type urn:shopfloor:login-rate): retry after Retry-After seconds",
   503: 'The MES is starting',
 };
 

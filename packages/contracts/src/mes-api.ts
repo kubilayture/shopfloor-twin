@@ -59,11 +59,20 @@ export const MES_API_LIMITS = {
   /** Identity (#168, ADR-0026): each user's own write bucket, beside the global one. */
   userWritesPerSecond: 5,
   userWriteBurst: 10,
-  /** Logins (#168 review): all together, and per user name; apart from the write buckets. */
+  /**
+   * Logins (#168 review; keyed by the client's address since #264 review F2): per address, and
+   * per (user name, address); apart from the write buckets.
+   */
   loginsPerSecond: 5,
   loginBurst: 10,
   userLoginsPerSecond: 1,
   userLoginBurst: 5,
+  /**
+   * All logins together: a ceiling for the server, about what the login hashes can do (two at a
+   * time, about 140 ms each; #264 re-review, N1); the per-address buckets share it out.
+   */
+  loginCeilingPerSecond: 10,
+  loginCeilingBurst: 20,
   /** Alarm list (#142): occurrences per page, by default and at most. */
   alarmPage: 100,
   alarmPageMax: 500,

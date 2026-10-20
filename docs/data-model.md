@@ -58,6 +58,8 @@ Each schema belongs to exactly one module of `mes-server` (ADR-0016), and so do 
   - `shifts.shift_instance`
 - [`identity`](#schema-identity)
   - `identity.audit_log`
+  - `identity.login_address`
+  - `identity.login_failure`
   - `identity.role`
   - `identity.session`
   - `identity.user_account`
@@ -151,6 +153,8 @@ Migrations run as the bootstrap superuser under `SET ROLE mes_owner`, so `mes_ow
 | `genealogy.unit_record` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `identity` | `mes_owner` | USAGE |  |
 | `identity.audit_log` | `mes_owner` | INSERT, SELECT |  |
+| `identity.login_address` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
+| `identity.login_failure` | `mes_owner` | DELETE, INSERT, SELECT |  |
 | `identity.role` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `identity.session` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
 | `identity.user_account` | `mes_owner` | DELETE, INSERT, SELECT, UPDATE |  |
@@ -331,6 +335,14 @@ erDiagram
     bigint id PK
     bigint user_id FK
   }
+  login_address {
+    bigint user_id PK, FK
+    text address PK
+  }
+  login_failure {
+    bigint id PK
+    bigint user_id FK
+  }
   role {
     text id PK
   }
@@ -346,6 +358,8 @@ erDiagram
     text role_id PK, FK
   }
   user_account |o--o{ audit_log : "user_id"
+  user_account ||--o{ login_address : "user_id"
+  user_account ||--o{ login_failure : "user_id"
   user_account ||--o{ session : "user_id"
   role ||--o{ user_role : "role_id"
   user_account ||--o{ user_role : "user_id"
@@ -1535,6 +1549,46 @@ The one audit log: every identity action (logins, failures, locks, logouts, user
 | Index | `audit_log_entity` | `identity.audit_log USING btree (entity_type, entity_id, id)` |
 | Index | `audit_log_user` | `identity.audit_log USING btree (user_id, id)` |
 
+### identity.login_address
+
+One account at one client address (nginx’s `X-Real-IP` over the `edge` network, else the connection’s): consecutive failed logins since the last success there, the 15-minute lock the fifth sets (never an admin’s), and the last success, which exempts the address from the global delay for 15 minutes; a success resets the count, an admin’s reset deletes the account’s rows, the sweep those a day after their last failure or success once unlocked (#242, ADR-0039).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `user_id` | `bigint` | not null |  |
+| `address` | `text` | not null |  |
+| `failed_logins` | `integer` | not null |  |
+| `locked_until` | `timestamp with time zone` | null |  |
+| `last_failure_at` | `timestamp with time zone` | null |  |
+| `last_success_at` | `timestamp with time zone` | null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `login_address_pkey` | `PRIMARY KEY (user_id, address)` |
+| Foreign key | `login_address_user_id_fkey` | `FOREIGN KEY (user_id) REFERENCES identity.user_account(id)` |
+| Check | `login_address_address_check` | `CHECK (((length(address) >= 1) AND (length(address) <= 64)))` |
+| Check | `login_address_check` | `CHECK (((last_failure_at IS NOT NULL) OR (last_success_at IS NOT NULL)))` |
+| Check | `login_address_failed_logins_check` | `CHECK ((failed_logins >= 0))` |
+
+### identity.login_failure
+
+Every judged failed login of an account, from any address, kept 15 minutes: n for the global delay (from 10, an attempt within min(2^(n−10) s, 30 s) of the last is refused with 429 before any hash); a success deletes the account’s rows, the sweep those past the window (#242, ADR-0039).
+
+| Column | Type | Null | Default |
+| --- | --- | --- | --- |
+| `id` | `bigint` | not null | `generated always as identity` |
+| `user_id` | `bigint` | not null |  |
+| `address` | `text` | not null |  |
+| `at` | `timestamp with time zone` | not null |  |
+
+| Kind | Name | Definition |
+| --- | --- | --- |
+| Primary key | `login_failure_pkey` | `PRIMARY KEY (id)` |
+| Foreign key | `login_failure_user_id_fkey` | `FOREIGN KEY (user_id) REFERENCES identity.user_account(id)` |
+| Check | `login_failure_address_check` | `CHECK (((length(address) >= 1) AND (length(address) <= 64)))` |
+| Index | `login_failure_by_time` | `identity.login_failure USING btree (at)` |
+| Index | `login_failure_by_user` | `identity.login_failure USING btree (user_id, at)` |
+
 ### identity.role
 
 The five roles (operator, maintenance, quality, supervisor, admin), as `ROLES` in contracts; what each may do is `ROLE_PERMISSIONS` there (#168).
@@ -1579,7 +1633,7 @@ Login sessions by the SHA-256 of their cookie token: user, kind (desk or termina
 
 ### identity.user_account
 
-Users: name, scrypt hash with its parameters, enabled, must-change-password, and the failed-login state (count, lock for normal accounts, next attempt for admins) (#168).
+Users: name, scrypt hash with its parameters, enabled, must-change-password, and an admin’s failed-login state (consecutive failures and the next attempt, counted for admins only since #242); a normal account’s lock is per address (`identity.login_address`) (#168).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |
@@ -1589,7 +1643,6 @@ Users: name, scrypt hash with its parameters, enabled, must-change-password, and
 | `enabled` | `boolean` | not null | `true` |
 | `must_change_password` | `boolean` | not null | `false` |
 | `failed_logins` | `integer` | not null | `0` |
-| `locked_until` | `timestamp with time zone` | null |  |
 | `next_attempt_at` | `timestamp with time zone` | null |  |
 | `password_changed_at` | `timestamp with time zone` | not null | `clock_timestamp()` |
 | `created_at` | `timestamp with time zone` | not null | `clock_timestamp()` |

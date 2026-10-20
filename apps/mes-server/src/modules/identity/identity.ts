@@ -22,6 +22,13 @@ import {
   type ScryptParams,
 } from './password.ts';
 import type { SessionEndReason } from './tables.ts';
+import { BUSY, HashSlots, LoginThrottle } from './throttle.ts';
+
+/**
+ * Login hashes held at once, running or waiting (#264 re-review, N1): two run at a time, so ten
+ * is about 0.7 s of queue at 140 ms a hash; at most three of them from one client address.
+ */
+export const LOGIN_HASH_SLOTS = { total: 10, perAddress: 3 } as const;
 
 const MINUTE = 60_000;
 
@@ -33,9 +40,22 @@ export const IDENTITY_LIMITS = {
   absoluteMs: SESSION_ABSOLUTE_MS,
   /** A session's last use is written at most this often (its idle expiry moves with it). */
   touchMs: MINUTE,
-  /** Consecutive failures that lock a normal account, and for how long. */
+  /**
+   * Consecutive failures from one address that lock a normal account for that address (#242: the
+   * pair (account, address), no longer the account), and for how long.
+   */
   lockAfter: 5,
   lockMs: 15 * MINUTE,
+  /**
+   * The global delay (#242, ADR-0039): once an account has `throttleAfter` or more judged failures
+   * within `throttleWindowMs` from all addresses together (n), an attempt within
+   * `min(throttleBaseMs * 2^(n - throttleAfter), throttleMaxMs)` of its last failure is refused
+   * with 429 before any hash. Never a lock.
+   */
+  throttleAfter: 10,
+  throttleWindowMs: 15 * MINUTE,
+  throttleBaseMs: 1_000,
+  throttleMaxMs: 30_000,
   /** An admin is delayed instead: 1 s after the fifth failure, doubling, at most 5 min. */
   adminDelayBaseMs: 1_000,
   adminDelayMaxMs: 5 * MINUTE,
@@ -43,19 +63,52 @@ export const IDENTITY_LIMITS = {
   keepEndedMs: 24 * 60 * MINUTE,
 } as const;
 
-export type IdentityErrorKind = 'unauthenticated' | 'not-found' | 'conflict' | 'invalid';
+export type IdentityErrorKind =
+  'unauthenticated' | 'not-found' | 'conflict' | 'invalid' | 'throttled';
 
-/** A refused identity operation; `realtime` maps the kind to 401, 404, 409 or 422. */
+/**
+ * A refused identity operation; `realtime` maps the kind to 401, 404, 409, 422 or 429 (`throttled`,
+ * with `retryAfterS` as `Retry-After`).
+ */
 export class IdentityError extends Error {
   readonly kind: IdentityErrorKind;
   readonly type: ProblemType | undefined;
+  /** For `throttled`: whole seconds until an attempt is judged again (rounded up, at least 1). */
+  readonly retryAfterS: number | undefined;
 
-  constructor(kind: IdentityErrorKind, message: string, type?: ProblemType) {
+  constructor(kind: IdentityErrorKind, message: string, type?: ProblemType, retryAfterS?: number) {
     super(message);
     this.kind = kind;
     this.type = type;
+    this.retryAfterS = retryAfterS;
   }
 }
+
+/** The 429 of the global delay (#242): the account had too many failures just now. */
+export const LOGIN_THROTTLED = 'too many failed logins for this user; try again later';
+/** The 429 of the in-memory login buckets (#168 review, M2), decided under the row lock (#242). */
+export const LOGIN_RATE = 'too many logins; try again';
+
+/** The address a login is keyed by when the caller has none (module tests, the CLI). */
+export const UNKNOWN_ADDRESS = 'unknown';
+
+/**
+ * The global delay after an account's last failure with n judged failures in the window (#242):
+ * none below `throttleAfter`, then `min(2^(n - 10) s, 30 s)`.
+ */
+export function throttleWaitMs(n: number): number {
+  if (n < IDENTITY_LIMITS.throttleAfter) return 0;
+  return Math.min(
+    IDENTITY_LIMITS.throttleBaseMs * 2 ** (n - IDENTITY_LIMITS.throttleAfter),
+    IDENTITY_LIMITS.throttleMaxMs,
+  );
+}
+
+/** A login address as stored: trimmed, at most 64 characters, `unknown` when empty. */
+const addressKey = (address: string | undefined): string => {
+  const trimmed = (address ?? '').trim().slice(0, 64);
+  return trimmed === '' ? UNKNOWN_ADDRESS : trimmed;
+};
 
 /** The one answer to every failed login, whatever failed (no user, wrong password, locked). */
 export const LOGIN_FAILED = 'invalid user name or password';
@@ -186,6 +239,15 @@ export interface IdentityOptions {
   readonly hashParams?: ScryptParams;
   /** How often ended and long-expired sessions are deleted; 0 turns the sweep off. */
   readonly sweepMs?: number;
+  /**
+   * The pool logins and password checks run on (#264 review, F1), apart from `db`, which serves
+   * the session lookup of every request: a flood of logins never starves it. Default: `db`.
+   */
+  readonly loginDb?: Kysely<Database>;
+  /** `loginDb`'s connections: reservations at once (default 2); more wait, at most 16. */
+  readonly loginPoolSize?: number;
+  /** Login hashes held at once, in all and per address (default `LOGIN_HASH_SLOTS`). */
+  readonly hashSlots?: { readonly total: number; readonly perAddress: number };
 }
 
 /** What ended sessions: their ids and why. */
@@ -205,6 +267,53 @@ interface AccountRow {
   readonly mustChangePassword: boolean;
   readonly roles: Role[];
 }
+
+/** What the reserve-before-hash transaction decided (#242). */
+type Reservation =
+  | { readonly kind: 'unknown' }
+  | {
+      readonly kind: 'throttled';
+      readonly user: AccountRow;
+      /** The wait's end (epoch ms). */
+      readonly until: number;
+      readonly retryAfterS: number;
+      /** An admin's own delay, not the global one. */
+      readonly admin: boolean;
+    }
+  | {
+      readonly kind: 'refused';
+      readonly user: AccountRow;
+      readonly reason: 'disabled' | 'locked';
+      readonly until?: Date;
+    }
+  | {
+      readonly kind: 'reserved';
+      readonly user: AccountRow;
+      readonly failures: number;
+      readonly lockedUntil?: Date;
+      readonly nextAttemptAt?: Date;
+      /** The global delay this failure starts, when n reached the threshold (epoch ms). */
+      readonly globalUntil?: number;
+    };
+
+/**
+ * A login's decision before any hash (#264 review, F1): a reservation, a wait known from memory
+ * (429, the user's delay), or the login buckets or a full queue (429).
+ */
+/**
+ * The caller's login buckets (#168 review, M2; #264 review F2): seconds to wait, or undefined to
+ * go on. `recentSuccess`: the address logged in as this user within the window, so the shared
+ * ceiling is not asked (#264 round 3, R1).
+ */
+export type Admit = (attempt: { readonly recentSuccess: boolean }) => number | undefined;
+
+/** A decision that will be hashed holds a hash slot until `release` (#264 re-review, N1). */
+type Held = Decision & { readonly release?: () => void };
+
+type Decision =
+  | Reservation
+  | { readonly kind: 'throttled'; readonly retryAfterS: number; readonly user?: undefined }
+  | { readonly kind: 'rate-limited'; readonly retryAfterS: number };
 
 const silent: IdentityLog = {
   info: () => undefined,
@@ -242,6 +351,9 @@ const isRole = (value: string): value is Role => (ROLES as readonly string[]).in
  */
 export class Identity {
   readonly #db: Kysely<Database>;
+  readonly #loginDb: Kysely<Database>;
+  readonly #throttle: LoginThrottle;
+  readonly #hashes: HashSlots;
   readonly #log: IdentityLog;
   readonly #now: () => Date;
   readonly #params: ScryptParams;
@@ -253,6 +365,15 @@ export class Identity {
 
   constructor(options: IdentityOptions) {
     this.#db = options.db;
+    this.#loginDb = options.loginDb ?? options.db;
+    this.#throttle = new LoginThrottle({
+      reservations: options.loginPoolSize ?? 2,
+      reservationQueue: 16,
+      perNameQueue: 32,
+      exemptMs: IDENTITY_LIMITS.throttleWindowMs,
+    });
+    const slots = options.hashSlots ?? LOGIN_HASH_SLOTS;
+    this.#hashes = new HashSlots(slots.total, slots.perAddress);
     this.#log = options.log ?? silent;
     this.#now = options.now ?? (() => new Date());
     this.#params = options.hashParams ?? SCRYPT_PARAMS;
@@ -280,6 +401,21 @@ export class Identity {
     }
     // The dummy hash an unknown name is checked against, made now rather than at the first one.
     await this.#dummyHash();
+    // The logins of the last 15 minutes exempt their addresses from the global delay (#264
+    // re-review, N2): remembered across a restart, or memory would refuse what the database
+    // exempts once an attack has set the delay again.
+    const since = new Date(this.#now().getTime() - IDENTITY_LIMITS.throttleWindowMs);
+    const successes = await this.#db
+      .selectFrom('identity.login_address as a')
+      .innerJoin('identity.user_account as u', 'u.id', 'a.user_id')
+      .select(['u.username', 'a.address', 'a.last_success_at'])
+      .where('a.last_success_at', '>', since)
+      .execute();
+    for (const row of successes) {
+      if (row.last_success_at !== null) {
+        this.#throttle.noteSuccess(row.username, row.address, row.last_success_at.getTime());
+      }
+    }
     let admin: 'exists' | 'created' | 'missing' = (await this.#enabledAdmins(this.#db))
       ? 'exists'
       : 'missing';
@@ -330,6 +466,19 @@ export class Identity {
         eb.or([eb('ended_at', '<', before), eb('idle_expires_at', '<', before)]),
       )
       .executeTakeFirst();
+    // Login throttling (#242): failures past the 15-minute window, and pairs a day after their
+    // last failure once unlocked.
+    const now = this.#now();
+    await this.#db
+      .deleteFrom('identity.login_failure')
+      .where('at', '<=', new Date(now.getTime() - IDENTITY_LIMITS.throttleWindowMs))
+      .execute();
+    await this.#db
+      .deleteFrom('identity.login_address')
+      .where(sql<boolean>`greatest(last_failure_at, last_success_at) < ${before}`)
+      .where((eb) => eb.or([eb('locked_until', 'is', null), eb('locked_until', '<=', now)]))
+      .execute();
+    this.#throttle.prune(now.getTime());
     return Number(result.numDeletedRows);
   }
 
@@ -494,33 +643,29 @@ export class Identity {
   }
 
   /**
-   * Reserves one attempt before any hash (#168 review, H1): in one transaction it locks the user's
-   * row, refuses a disabled, locked or delayed user, and otherwise counts the attempt as a failure
-   * in advance, setting the lock (normal account) or the next delay (admin) as soon as the count
-   * reaches `lockAfter`. So however many attempts run at once, at most `lockAfter` of a normal
-   * account's are evaluated before it locks, and at most one per delay for an admin; a success
-   * clears the count afterwards. An unknown user name runs the same transaction and finds no row.
+   * Reserves one attempt before any hash (#168 review, H1; #242): in one transaction on the login
+   * pool it locks the user's row (`SELECT … FOR UPDATE`), reads the time once it holds the lock, and
+   * then, in this order:
+   *
+   * 1. the global delay (#242): with n ≥ 10 judged failures in the last 15 minutes from all
+   *    addresses together, an attempt within `throttleWaitMs(n)` of the last one is `throttled`
+   *    (429 with the remaining wait rounded up), never hashed, never counted, unless this address
+   *    logged in to the account within those 15 minutes (#264 review, F3);
+   * 2. an admin within its own delay: `throttled` too (429, F3), never hashed;
+   * 3. a disabled user or a locked (account, address) pair is `refused` (one dummy hash, the
+   *    same 401, not counted);
+   * 4. otherwise the attempt is counted as a failure in advance: one `login_failure` row (n + 1),
+   *    the pair's count (the fifth locks the pair for 15 minutes; never an admin's) and, for an
+   *    admin, the account's count (its next delay). A success clears them afterwards.
+   *
+   * An unknown user name runs a transaction of the same shape that touches no row (#264 review,
+   * F9), so its answer takes as long as a known user's wrong password.
    */
   async #reserve(
     where: { readonly username: string } | { readonly id: number },
-    now: Date,
-  ): Promise<
-    | { readonly kind: 'unknown' }
-    | {
-        readonly kind: 'refused';
-        readonly user: AccountRow;
-        readonly reason: 'disabled' | 'locked' | 'delayed';
-        readonly until?: Date;
-      }
-    | {
-        readonly kind: 'reserved';
-        readonly user: AccountRow;
-        readonly failures: number;
-        readonly lockedUntil?: Date;
-        readonly nextAttemptAt?: Date;
-      }
-  > {
-    return this.#db.transaction().execute(async (trx) => {
+    address: string,
+  ): Promise<Reservation> {
+    return this.#loginDb.transaction().execute(async (trx) => {
       let query = trx
         .selectFrom('identity.user_account as u')
         .select([
@@ -530,7 +675,6 @@ export class Identity {
           'u.enabled',
           'u.must_change_password',
           'u.failed_logins',
-          'u.locked_until',
           'u.next_attempt_at',
           sql<string[]>`array(SELECT r.role_id FROM identity.user_role r
             WHERE r.user_id = u.id)`.as('roles'),
@@ -541,7 +685,39 @@ export class Identity {
           ? query.where('u.id', '=', where.id)
           : query.where('u.username', '=', where.username);
       const row = await query.executeTakeFirst();
-      if (!row) return { kind: 'unknown' as const };
+      // The time of the decision is read once the row lock is held (#242 gate): an attempt that
+      // waited for the lock behind a judged one must not measure its wait from before that one.
+      const now = this.#now();
+      const windowStart = new Date(now.getTime() - IDENTITY_LIMITS.throttleWindowMs);
+      const userId = row?.id ?? 0;
+      const recent = await trx
+        .selectFrom('identity.login_failure')
+        .select([sql<number>`count(*)::int`.as('n'), sql<Date | null>`max(at)`.as('last')])
+        .where('user_id', '=', userId)
+        .where('at', '>', windowStart)
+        .executeTakeFirstOrThrow();
+      const pair = await trx
+        .selectFrom('identity.login_address')
+        .select(['failed_logins', 'locked_until', 'last_success_at'])
+        .where('user_id', '=', userId)
+        .where('address', '=', address)
+        .executeTakeFirst();
+      if (!row) {
+        // The same statements as a counted failure, touching nothing (#264 review, F9).
+        await trx
+          .updateTable('identity.login_address')
+          .set({ last_failure_at: now })
+          .where('user_id', '=', 0)
+          .execute();
+        await trx
+          .updateTable('identity.user_account')
+          .set({ next_attempt_at: null })
+          .where('id', '=', 0)
+          .execute();
+        await sql`INSERT INTO identity.login_failure (user_id, address, at)
+          SELECT 0, ${address}, ${now} WHERE false`.execute(trx);
+        return { kind: 'unknown' as const };
+      }
       const roles = ROLES.filter((role) => row.roles.includes(role));
       const user: AccountRow = {
         id: row.id,
@@ -551,89 +727,213 @@ export class Identity {
         roles,
       };
       const admin = roles.includes('admin');
+      const tooSoon = (until: number) => ({
+        kind: 'throttled' as const,
+        user,
+        until,
+        // Never more than the wait itself (the remaining time, rounded up).
+        retryAfterS: Math.max(1, Math.ceil((until - now.getTime()) / 1000)),
+        admin: false,
+      });
+      if (row.enabled) {
+        // 1. The global delay, unless this address logged in within the window.
+        const lastSuccess = pair?.last_success_at ?? null;
+        const exempt = lastSuccess !== null && lastSuccess > windowStart;
+        const wait = throttleWaitMs(recent.n);
+        if (!exempt && wait > 0 && recent.last !== null) {
+          // From the last failure, or from now if the clock stepped back past it (F8).
+          const until = Math.min(recent.last.getTime(), now.getTime()) + wait;
+          if (until > now.getTime()) return tooSoon(until);
+        }
+        // 2. An admin's own delay: a 429 with its remaining time (F3).
+        if (admin && row.next_attempt_at !== null && row.next_attempt_at > now) {
+          return { ...tooSoon(row.next_attempt_at.getTime()), admin: true };
+        }
+      }
+      // 3. Refusals: one dummy hash each, not counted.
       if (!row.enabled) return { kind: 'refused' as const, user, reason: 'disabled' as const };
-      if (!admin && row.locked_until !== null && row.locked_until > now) {
-        return {
-          kind: 'refused' as const,
-          user,
-          reason: 'locked' as const,
-          until: row.locked_until,
-        };
+      const pairLock = admin ? null : (pair?.locked_until ?? null);
+      if (pairLock !== null && pairLock > now) {
+        return { kind: 'refused' as const, user, reason: 'locked' as const, until: pairLock };
       }
-      if (admin && row.next_attempt_at !== null && row.next_attempt_at > now) {
-        return {
-          kind: 'refused' as const,
-          user,
-          reason: 'delayed' as const,
-          until: row.next_attempt_at,
-        };
-      }
-      // A lock that has run out starts the count anew.
-      const ranOut = row.locked_until !== null && row.locked_until <= now;
-      const failures = (ranOut ? 0 : row.failed_logins) + 1;
+      // 4. Counted in advance. A pair lock that has run out starts its count anew.
+      const ranOut = pairLock !== null && pairLock <= now;
+      const failures = (pair === undefined || ranOut ? 0 : pair.failed_logins) + 1;
       let lockedUntil: Date | undefined;
       let nextAttemptAt: Date | undefined;
-      if (failures >= IDENTITY_LIMITS.lockAfter) {
-        if (admin) {
+      if (admin) {
+        // The account's count is an admin's only (F7).
+        const accountFailures = row.failed_logins + 1;
+        if (accountFailures >= IDENTITY_LIMITS.lockAfter) {
           nextAttemptAt = new Date(
             now.getTime() +
               Math.min(
-                IDENTITY_LIMITS.adminDelayBaseMs * 2 ** (failures - IDENTITY_LIMITS.lockAfter),
+                IDENTITY_LIMITS.adminDelayBaseMs *
+                  2 ** (accountFailures - IDENTITY_LIMITS.lockAfter),
                 IDENTITY_LIMITS.adminDelayMaxMs,
               ),
           );
-        } else {
-          lockedUntil = new Date(now.getTime() + IDENTITY_LIMITS.lockMs);
         }
+        await trx
+          .updateTable('identity.user_account')
+          .set({ failed_logins: accountFailures, next_attempt_at: nextAttemptAt ?? null })
+          .where('id', '=', row.id)
+          .execute();
+      } else if (failures >= IDENTITY_LIMITS.lockAfter) {
+        lockedUntil = new Date(now.getTime() + IDENTITY_LIMITS.lockMs);
       }
       await trx
-        .updateTable('identity.user_account')
-        .set({
+        .insertInto('identity.login_address')
+        .values({
+          user_id: row.id,
+          address,
           failed_logins: failures,
           locked_until: lockedUntil ?? null,
-          next_attempt_at: nextAttemptAt ?? null,
+          last_failure_at: now,
         })
-        .where('id', '=', row.id)
+        .onConflict((oc) =>
+          oc.columns(['user_id', 'address']).doUpdateSet({
+            failed_logins: failures,
+            locked_until: lockedUntil ?? null,
+            last_failure_at: now,
+          }),
+        )
         .execute();
+      await trx
+        .insertInto('identity.login_failure')
+        .values({ user_id: row.id, address, at: now })
+        .execute();
+      const after = recent.n + 1;
+      const globalWait = throttleWaitMs(after);
       return {
         kind: 'reserved' as const,
         user,
         failures,
         ...(lockedUntil === undefined ? {} : { lockedUntil }),
         ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }),
+        ...(globalWait > 0 ? { globalUntil: now.getTime() + globalWait } : {}),
       };
     });
+  }
+
+  /**
+   * A reservation as a login or a password check asks for it (#264 review, F1): first what the
+   * last decisions of this name say (a known wait is a 429 without the database), then `admit`
+   * (the login buckets), then the database, one decision per name at a time and a bounded number
+   * at once on the login pool; what the database decided is remembered.
+   */
+  async #decide(
+    name: string,
+    address: string,
+    where: { readonly username: string } | { readonly id: number },
+    admit: Admit | undefined,
+  ): Promise<Held> {
+    const busy: Held = { kind: 'rate-limited', retryAfterS: 1 };
+    const decided = await this.#throttle.serial(name, async (): Promise<Held> => {
+      const known = this.#throttle.refusal(name, address, this.#now().getTime());
+      if (known !== undefined) return { kind: 'throttled', retryAfterS: known };
+      // An address that logged in as this user within the window spends no token of the shared
+      // ceiling (#264 round 3, R1); its own buckets and the hash slots still apply.
+      const wait = admit?.({
+        recentSuccess: this.#throttle.recentSuccess(name, address, this.#now().getTime()),
+      });
+      if (wait !== undefined) return { kind: 'rate-limited', retryAfterS: wait };
+      // A hash slot before the database (#264 re-review, N1): with none free the attempt is a
+      // 429 that is neither counted nor hashed.
+      const release = this.#hashes.take(address);
+      if (release === undefined) return busy;
+      const reserved = await this.#throttle
+        .reservation(() => this.#reserve(where, address))
+        .catch((error: unknown) => {
+          release();
+          throw error;
+        });
+      if (reserved === BUSY || reserved.kind === 'throttled') release();
+      if (reserved === BUSY) return busy;
+      if (reserved.kind === 'throttled') {
+        if (reserved.admin) this.#throttle.noteAdmin(name, reserved.until);
+        else this.#throttle.noteGlobal(name, reserved.until);
+      } else if (reserved.kind === 'reserved') {
+        if (reserved.globalUntil !== undefined) {
+          this.#throttle.noteGlobal(name, reserved.globalUntil);
+        }
+        if (reserved.nextAttemptAt !== undefined) {
+          this.#throttle.noteAdmin(name, reserved.nextAttemptAt.getTime());
+        }
+      }
+      return reserved.kind === 'throttled' ? reserved : { ...reserved, release };
+    });
+    return decided === BUSY ? busy : decided;
+  }
+
+  /**
+   * After a success (#242): the account's judged failures go (n resets), and its count (an admin's
+   * delay); this address's pair keeps only its success, which exempts it from the global delay for
+   * the window (#264 review, F3). Locks of other addresses stay until they run out.
+   */
+  async #clearFailures(trx: Transaction<Database>, userId: number, address: string): Promise<void> {
+    const now = this.#now();
+    await trx.deleteFrom('identity.login_failure').where('user_id', '=', userId).execute();
+    await trx
+      .insertInto('identity.login_address')
+      .values({
+        user_id: userId,
+        address,
+        failed_logins: 0,
+        locked_until: null,
+        last_success_at: now,
+      })
+      .onConflict((oc) =>
+        oc.columns(['user_id', 'address']).doUpdateSet({
+          failed_logins: 0,
+          locked_until: null,
+          last_success_at: now,
+        }),
+      )
+      .execute();
+  }
+
+  /** An admin's reset or the bootstrap: every failure and every pair of the account go. */
+  async #clearAllFailures(trx: Transaction<Database>, userId: number): Promise<void> {
+    await trx.deleteFrom('identity.login_failure').where('user_id', '=', userId).execute();
+    await trx.deleteFrom('identity.login_address').where('user_id', '=', userId).execute();
   }
 
   /** After a failed reserved attempt: audits the lock this attempt set, if it set one. */
   async #lockedBy(
     user: AccountRow,
     reserved: { readonly failures: number; readonly lockedUntil?: Date },
+    address: string,
     requestId: string | undefined,
   ): Promise<Record<string, unknown>> {
     const extra: Record<string, unknown> = { failures: reserved.failures };
     if (reserved.lockedUntil !== undefined) {
       const until = reserved.lockedUntil.toISOString();
       extra.lockedUntil = until;
-      await this.audit(this.#db, {
+      // The lock is the pair's (#242): the account stays open from every other address.
+      await this.audit(this.#loginDb, {
         actor: { system: 'identity' },
         authenticated: false,
         action: 'user.locked',
         entityType: 'user',
         entityId: user.username,
-        after: { failures: reserved.failures, lockedUntil: until },
+        after: { failures: reserved.failures, lockedUntil: until, address },
         requestId,
       });
-      this.#log.warn({ user: user.username, until }, 'account locked');
+      this.#log.warn({ user: user.username, until, address }, 'account locked for an address');
     }
     return extra;
   }
 
   /**
-   * A login. Every failure (unknown or disabled user, wrong password, a lock or an admin's delay)
-   * throws the same `IdentityError` after one password hash, and is audited; an unknown or
-   * malformed name is neither logged nor audited as typed (it may be a mistyped password). A
-   * presented session (`replaces`) ends: a login always gets a new token.
+   * A login. Every failure (unknown or disabled user, wrong password, a lock of this address or an
+   * admin's delay) throws the same `IdentityError` after one password hash, and is audited with the
+   * address; an unknown or malformed name is neither logged nor audited as typed (it may be a
+   * mistyped password). Refusals before any hash are neither audited nor counted (#242, #264
+   * review): the user's global delay and an admin's own delay (`throttled`, 429 with
+   * `retryAfterS`), `admit` (the caller's login buckets) and a full queue (429 too). A presented
+   * session (`replaces`) ends: a login always gets a new token. Everything a login writes runs on
+   * the login pool.
    */
   async login(input: {
     readonly username: string;
@@ -641,15 +941,27 @@ export class Identity {
     readonly kind: SessionKind;
     readonly requestId?: string | undefined;
     readonly replaces?: Buffer | undefined;
+    /** The client's address (#242): the pair (account, address) a lock is keyed by. */
+    readonly address?: string | undefined;
+    /**
+     * The in-memory login buckets (#168 review, M2; keyed by address since #264 review F2):
+     * seconds to wait, or undefined to go on. Asked after a wait known from the last decision of
+     * this name, so an attempt inside it spends no token, and before the database.
+     */
+    readonly admit?: Admit | undefined;
   }): Promise<{ readonly token: string; readonly principal: Principal }> {
     const name = input.username.trim().toLowerCase();
     const now = this.#now();
+    const address = addressKey(input.address);
+    const tooSoon = (retryAfterS: number, message: string): never => {
+      throw new IdentityError('throttled', message, PROBLEM_TYPES.loginRate, retryAfterS);
+    };
     const failed = async (
       reason: string,
       user?: AccountRow,
       extra: Record<string, unknown> = {},
     ): Promise<never> => {
-      await this.audit(this.#db, {
+      await this.audit(this.#loginDb, {
         actor: user
           ? { userId: user.id, username: user.username, roles: user.roles }
           : { system: UNKNOWN_USER },
@@ -657,38 +969,47 @@ export class Identity {
         action: 'session.login-failed',
         entityType: 'user',
         entityId: user ? user.username : UNKNOWN_USER,
-        after: { reason, ...extra },
+        after: { reason, address, ...extra },
         requestId: input.requestId,
       });
       this.#log.warn(
-        { ...(user ? { user: user.username } : {}), reason, ...extra },
+        { ...(user ? { user: user.username } : {}), reason, address, ...extra },
         'login failed',
       );
       throw new IdentityError('unauthenticated', LOGIN_FAILED, PROBLEM_TYPES.unauthenticated);
     };
-    const reserved = USERNAME_PATTERN.test(name)
-      ? await this.#reserve({ username: name }, now)
-      : ({ kind: 'unknown' } as const);
+    // A malformed name runs the same decision as an unknown one (its query finds no row).
+    const reserved = await this.#decide(
+      name,
+      address,
+      { username: USERNAME_PATTERN.test(name) ? name : '' },
+      input.admit,
+    );
+    if (reserved.kind === 'throttled') return tooSoon(reserved.retryAfterS, LOGIN_THROTTLED);
+    if (reserved.kind === 'rate-limited') return tooSoon(reserved.retryAfterS, LOGIN_RATE);
+    /** The one hash of this attempt; its slot is free again once it is done (N1). */
+    const hashed = async (password: string, stored: string): Promise<boolean> => {
+      try {
+        return await verifyPassword(password, stored);
+      } finally {
+        reserved.release?.();
+      }
+    };
     if (reserved.kind === 'unknown') {
-      await verifyPassword(input.password, await this.#dummyHash());
+      await hashed(input.password, await this.#dummyHash());
       return failed('unknown-user');
     }
     const user = reserved.user;
     if (reserved.kind === 'refused') {
-      await verifyPassword(input.password, await this.#dummyHash());
+      await hashed(input.password, await this.#dummyHash());
       return failed(
         reserved.reason,
         user,
-        reserved.until === undefined
-          ? {}
-          : {
-              [reserved.reason === 'locked' ? 'lockedUntil' : 'nextAttemptAt']:
-                reserved.until.toISOString(),
-            },
+        reserved.until === undefined ? {} : { lockedUntil: reserved.until.toISOString() },
       );
     }
-    if (!(await verifyPassword(input.password, user.passwordHash))) {
-      const extra = await this.#lockedBy(user, reserved, input.requestId);
+    if (!(await hashed(input.password, user.passwordHash))) {
+      const extra = await this.#lockedBy(user, reserved, address, input.requestId);
       if (reserved.nextAttemptAt !== undefined) {
         extra.nextAttemptAt = reserved.nextAttemptAt.toISOString();
       }
@@ -707,17 +1028,17 @@ export class Identity {
     const rehash = needsRehash(user.passwordHash, this.#params)
       ? await hashPassword(input.password, this.#params)
       : undefined;
-    const replaced = await this.#db.transaction().execute(async (trx) => {
+    const replaced = await this.#loginDb.transaction().execute(async (trx) => {
       await trx
         .updateTable('identity.user_account')
         .set({
           failed_logins: 0,
-          locked_until: null,
           next_attempt_at: null,
           ...(rehash === undefined ? {} : { password_hash: rehash }),
         })
         .where('id', '=', user.id)
         .execute();
+      await this.#clearFailures(trx, user.id, address);
       const ended =
         input.replaces === undefined
           ? []
@@ -745,6 +1066,7 @@ export class Identity {
       });
       return ended;
     });
+    this.#throttle.noteSuccess(name, address, this.#now().getTime());
     this.#emit({ ids: replaced, reason: 'replaced' });
     this.#log.info({ user: user.username, kind: session.kind }, 'login');
     return {
@@ -857,7 +1179,9 @@ export class Identity {
     current: string,
     next: string,
     requestId?: string,
+    address?: string,
   ): Promise<{ readonly endedSessions: number }> {
+    const from = addressKey(address);
     // The new password's rules first: they reveal nothing about the current one.
     const problem =
       passwordProblem(next) ??
@@ -867,7 +1191,20 @@ export class Identity {
     }
     // The current password is checked like a login (#168 review, M1): the attempt is reserved
     // first, so a mismatch counts towards the same lock or admin delay.
-    const reserved = await this.#reserve({ id: principal.userId }, this.#now());
+    const reserved = await this.#decide(
+      principal.username,
+      from,
+      { id: principal.userId },
+      undefined,
+    );
+    if (reserved.kind === 'throttled' || reserved.kind === 'rate-limited') {
+      throw new IdentityError(
+        'throttled',
+        LOGIN_THROTTLED,
+        PROBLEM_TYPES.loginRate,
+        reserved.retryAfterS,
+      );
+    }
     const refusedOrWrong = async (
       reason: string,
       extra: Record<string, unknown>,
@@ -890,10 +1227,17 @@ export class Identity {
       );
     };
     if (reserved.kind !== 'reserved') {
+      reserved.release?.();
       return refusedOrWrong(reserved.kind === 'refused' ? reserved.reason : 'unknown-user', {});
     }
-    if (!(await verifyPassword(current, reserved.user.passwordHash))) {
-      const extra = await this.#lockedBy(reserved.user, reserved, requestId);
+    let matches: boolean;
+    try {
+      matches = await verifyPassword(current, reserved.user.passwordHash);
+    } finally {
+      reserved.release?.();
+    }
+    if (!matches) {
+      const extra = await this.#lockedBy(reserved.user, reserved, from, requestId);
       if (reserved.nextAttemptAt !== undefined) {
         extra.nextAttemptAt = reserved.nextAttemptAt.toISOString();
       }
@@ -908,13 +1252,13 @@ export class Identity {
           password_hash: hash,
           must_change_password: false,
           failed_logins: 0,
-          locked_until: null,
           next_attempt_at: null,
           password_changed_at: this.#now(),
           updated_at: this.#now(),
         })
         .where('id', '=', principal.userId)
         .execute();
+      await this.#clearFailures(trx, principal.userId, from);
       const ended = await this.#endSessions(trx, 'password-changed', {
         userId: principal.userId,
         except: self,
@@ -930,6 +1274,7 @@ export class Identity {
       });
       return ended;
     });
+    this.#throttle.noteSuccess(principal.username, from, this.#now().getTime());
     this.#emit({ ids, reason: 'password-changed' });
     return { endedSessions: ids.length };
   }
@@ -942,6 +1287,16 @@ export class Identity {
       .execute();
     const roles = await this.#db.selectFrom('identity.user_role').selectAll().execute();
     const now = this.#now();
+    // Locked: from at least one address (#242); the account itself is never locked.
+    const locked = new Set(
+      (
+        await this.#db
+          .selectFrom('identity.login_address')
+          .select('user_id')
+          .where('locked_until', '>', now)
+          .execute()
+      ).map((row) => row.user_id),
+    );
     return rows.map((row) => {
       const held = roles.filter((r) => r.user_id === row.id).map((r) => r.role_id);
       return {
@@ -950,7 +1305,7 @@ export class Identity {
         roles: ROLES.filter((role) => held.includes(role)),
         enabled: row.enabled,
         mustChangePassword: row.must_change_password,
-        locked: row.locked_until !== null && row.locked_until > now,
+        locked: locked.has(row.id),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
@@ -1052,9 +1407,16 @@ export class Identity {
           .values(after.roles.map((role) => ({ user_id: row.id, role_id: role })))
           .execute();
       }
+      // A role change resets the account's count (an admin's delay; #264 review, F7), so a
+      // normal account's failures never become an admin's delay, nor the other way round.
+      const rolesChanged = before.roles.join() !== after.roles.join();
       await trx
         .updateTable('identity.user_account')
-        .set({ enabled: after.enabled, updated_at: this.#now() })
+        .set({
+          enabled: after.enabled,
+          updated_at: this.#now(),
+          ...(rolesChanged ? { failed_logins: 0, next_attempt_at: null } : {}),
+        })
         .where('id', '=', row.id)
         .execute();
       if ((await this.#enabledAdmins(trx)) === 0) {
@@ -1075,6 +1437,9 @@ export class Identity {
       });
       return ended;
     });
+    // A role change or an enable or disable changes which delay applies (#264 re-review, N3):
+    // what memory holds of this name is forgotten, and the next attempt asks the database.
+    if (change.roles !== undefined || change.enabled !== undefined) this.#throttle.forget(username);
     this.#emit({ ids, reason: 'user-disabled' });
     return this.user(username);
   }
@@ -1101,7 +1466,6 @@ export class Identity {
           password_hash: hash,
           must_change_password: true,
           failed_logins: 0,
-          locked_until: null,
           next_attempt_at: null,
           password_changed_at: this.#now(),
           updated_at: this.#now(),
@@ -1110,6 +1474,8 @@ export class Identity {
         .returning('id')
         .executeTakeFirst();
       if (!row) throw new IdentityError('not-found', `no user ${username}`);
+      await this.#clearAllFailures(trx, row.id);
+      this.#throttle.forget(username);
       const ended = await this.#endSessions(trx, 'password-reset', { userId: row.id });
       await this.audit(trx, {
         actor,
@@ -1145,13 +1511,14 @@ export class Identity {
             must_change_password: true,
             enabled: true,
             failed_logins: 0,
-            locked_until: null,
             next_attempt_at: null,
             updated_at: this.#now(),
           }),
         )
         .returning('id')
         .executeTakeFirstOrThrow();
+      await this.#clearAllFailures(trx, row.id);
+      this.#throttle.forget('admin');
       await trx
         .insertInto('identity.user_role')
         .values({ user_id: row.id, role_id: 'admin' })

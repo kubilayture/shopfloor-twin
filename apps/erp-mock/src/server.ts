@@ -89,7 +89,30 @@ const POST_OUTCOMES = [
 ] as const;
 type PostOutcome = (typeof POST_OUTCOMES)[number];
 
-const digest = (value: string): Buffer => createHash('sha256').update(value, 'utf8').digest();
+/** SHA-256 of a token: what the bearer check compares, 32 bytes whatever the token's length. */
+export const tokenDigest = (value: string): Buffer =>
+  createHash('sha256').update(value, 'utf8').digest();
+
+/**
+ * Whether an `Authorization` header carries the token whose digest is `expected` (#242, checklist
+ * S7): `Bearer` (any case), one token, nothing else. The presented token is hashed first, so
+ * `timingSafeEqual` always compares 32 bytes with 32 bytes: the time depends neither on where a
+ * guess first differs nor on its length (a plain `===`, or `timingSafeEqual` on the raw values,
+ * which throws on a length mismatch, would leak one or the other).
+ */
+export function bearerMatches(header: string | undefined, expected: Buffer): boolean {
+  const match = /^Bearer[ ]+(\S+)\s*$/i.exec(header ?? '');
+  return match?.[1] !== undefined && timingSafeEqual(tokenDigest(match[1]), expected);
+}
+
+/** The API's routes, for the test that every one of them needs the token (#242). */
+export interface ErpApiRoute {
+  readonly pattern: RegExp;
+  readonly methods: readonly string[];
+}
+
+/** The ERP mock's server, with its `/api/v1` route table. */
+export type ErpServer = Server & { readonly apiRoutes: readonly ErpApiRoute[] };
 
 const issuesText = (error: z.ZodError): string =>
   error.issues
@@ -160,10 +183,10 @@ function orderNumberParam(url: URL): string | undefined {
  * lot, and the dev-only order post.
  * Every `/api/v1` route needs the bearer token; `/health/*` and `/metrics` are open (loopback).
  */
-export function createErpServer(options: ErpServerOptions): Server {
+export function createErpServer(options: ErpServerOptions): ErpServer {
   const { erp, store, log } = options;
   const now = options.now ?? (() => new Date());
-  const tokenDigest = digest(options.token);
+  const expectedDigest = tokenDigest(options.token);
   const posts = new Map<string, number>();
   let unauthorized = 0;
 
@@ -172,10 +195,8 @@ export function createErpServer(options: ErpServerOptions): Server {
     posts.set(key, (posts.get(key) ?? 0) + 1);
   };
 
-  const authorized = (request: IncomingMessage): boolean => {
-    const match = /^Bearer[ ]+(\S+)\s*$/i.exec(request.headers.authorization ?? '');
-    return match?.[1] !== undefined && timingSafeEqual(digest(match[1]), tokenDigest);
-  };
+  const authorized = (request: IncomingMessage): boolean =>
+    bearerMatches(request.headers.authorization, expectedDigest);
 
   /** The `Idempotency-Key` header, or 400. */
   const readKey = (kind: MessageKind, request: IncomingMessage): string => {
@@ -534,7 +555,7 @@ export function createErpServer(options: ErpServerOptions): Server {
     response.end(text);
   };
 
-  return createServer((request, response) => {
+  const server = createServer((request, response) => {
     const started = performance.now();
     const url = new URL(request.url ?? '/', 'http://erp-mock');
     response.on('finish', () => {
@@ -584,5 +605,8 @@ export function createErpServer(options: ErpServerOptions): Server {
         }
       },
     );
+  });
+  return Object.assign(server, {
+    apiRoutes: routes.map((r) => ({ pattern: r.pattern, methods: Object.keys(r.methods) })),
   });
 }

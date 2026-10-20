@@ -98,6 +98,10 @@ export const DECLARED_GRANTS: {
       'identity.user_role': ALL,
       'identity.session': ALL,
       'identity.audit_log': APPEND,
+      // Login throttling (#242): pairs change in place and go on a success; failures leave the
+      // 15-minute window and are deleted, never changed.
+      'identity.login_address': ALL,
+      'identity.login_failure': ['SELECT', 'INSERT', 'DELETE'],
       // Orders, commands, messages and incidents are kept, never deleted (#174).
       'orders.erp_cursor': KEEP,
       'orders.production_order': KEEP,

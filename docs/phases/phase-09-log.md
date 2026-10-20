@@ -681,3 +681,19 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed | 1,440.2 s |                                                                                                       |
     | smoke     | passed | 186.2 s   | burst: 1 judged, 19 × 429 (`Retry-After` 30 s, 215 ms); 16 secrets searched; 7 services, none as root |
     | reconcile | passed | 1,665.0 s | alarms, orders, quality; none of the 12 generated secrets in its output                               |
+
+  - **Re-review of PR #264** (F1 and F5–F10 hold under re-test, F2/F3 as documented; four new items), fixed after rebasing onto `main` `593bed8` (#266, #267):
+    - **N1** (every admitted attempt costs a hash, two at a time at about 140 ms, behind an unbounded queue; 4 attacker addresses at 5/s pushed a victim's login to 36.9 s, 8 never finished): a login takes a hash slot before the database, at most 10 held (running or waiting) and 3 per client address; with none free, 429 (`Retry-After: 1`), neither counted nor hashed. The ceiling for all logins is now 10/s (bursts of 20). Test: open-loop attacks from 4 and 8 addresses at 5/s each, real scrypt, the victim's answer p95 ≤ 1 s and every refusal a 429. Accepted: enough addresses fill the shared ceiling and slots, and then every login is a quick 429.
+    - **N2:** at start the logins of the last 15 minutes are read from `identity.login_address` into memory. Test: a simulated restart, an attacker sets the delay first, the address that logged in before the restart still logs in.
+    - **N3:** `updateUser` forgets the user's memory on a role change and on an enable or disable. Test: an admin's remembered delay gone with the role; a disabled admin answered 401, not a remembered 429.
+    - **N4:** `docs/security-review.md` records the pki pin race as fixed in #267 (unchanged pins no longer rewritten, writes staged outside the watched folders, the smoke checking the rerun and the pin race), with the remaining limits (a renewal and removing a hand-copied duplicate need a restart of the simulator and the gateway).
+    - Unit and Testcontainers tests through the heavy lock: `identity.test.ts`, `roles.test.ts`, `db.test.ts`, `throttle.test.ts`, `limits.test.ts`: 5 files, 95 tests passed.
+  - **Gate** on `b706b3e` (`GATE_PROJECT=gate242c`, `GATE_TAG=pr242c`, `TURBO_FORCE=1`, under the heavy lock), `GATE-OK`; free at the start: host 45.2 GiB, Docker 82.0 GiB.
+
+    | Step      | Result | Time      | Notes                                                                                                 |
+    | --------- | ------ | --------- | ----------------------------------------------------------------------------------------------------- |
+    | verify    | passed | 560.2 s   | `pnpm verify --concurrency=1`, uncached                                                               |
+    | golden    | passed | 1.6 s     | all four goldens byte-identical                                                                       |
+    | e2e       | passed | 1,463.0 s |                                                                                                       |
+    | smoke     | passed | 202.8 s   | burst: 1 judged, 19 × 429 (`Retry-After` 30 s, 204 ms); 16 secrets searched; 7 services, none as root |
+    | reconcile | passed | 1,666.6 s | alarms, orders, quality; none of the 12 generated secrets in its output                               |

@@ -453,7 +453,26 @@ echo "ok: stored cycle facts carry lots and operator (contract 1.4; lot $asm_lot
 
 # ERP mock (#171): ready, refuses the API without the bearer token, serves the order feed with it.
 # The token goes to curl on stdin, not on its command line.
-curl -sf "$erp/health/ready" >/dev/null || fail "ERP mock not ready"
+# Its address is read again here, and readiness polled for up to 30 s (#243 comment): the check
+# failed twice with no code cause, minutes after `up` had found the ERP healthy, which a container
+# that restarted on a new ephemeral host port or a slow port forward would explain. A failure now
+# prints the container's state and its last log lines, so the next one carries its evidence.
+erp=$(url erp 4600)
+erp_ready=
+for _ in $(seq 1 30); do
+  if curl -sf --max-time 2 "$erp/health/ready" >/dev/null; then
+    erp_ready=1
+    break
+  fi
+  sleep 1
+  erp=$(url erp 4600)
+done
+if [ -z "$erp_ready" ]; then
+  erp_id=$(docker compose ps --all --quiet erp)
+  docker inspect --format 'erp: {{.State.Status}}, restarts {{.RestartCount}}, OOM killed {{.State.OOMKilled}}, exit {{.State.ExitCode}}, health {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$erp_id" >&2 || true
+  docker compose logs --no-color --tail 30 erp >&2 || true
+  fail "ERP mock not ready at $erp within 30 s"
+fi
 code=$(curl -s -o /dev/null -w '%{http_code}' "$erp/api/v1/orders")
 [ "$code" = 401 ] || fail "ERP mock answered without a token ($code)"
 feed=$(printf 'Authorization: Bearer %s\n' "$ERP_API_TOKEN" | curl -sf -H @- "$erp/api/v1/orders?limit=1") ||

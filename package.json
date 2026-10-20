@@ -35,6 +35,7 @@
     "test:reconcile": "pnpm --filter @shopfloor/e2e test:reconcile",
     "test:trace-perf": "pnpm --filter @shopfloor/e2e test:trace-perf",
     "test:console": "pnpm --filter @shopfloor/e2e test:console",
+    "test:resilience": "pnpm --filter @shopfloor/e2e test:resilience",
     "gate": "node scripts/gate.ts",
     "playwright:install": "pnpm --filter @shopfloor/e2e playwright:install"
   },

@@ -10,6 +10,7 @@
     "test:reconcile": "node ../scripts/heavy.ts node src/reconcile.ts",
     "test:trace-perf": "node ../scripts/heavy.ts node src/trace-perf.ts",
     "test:console": "node ../scripts/heavy.ts node src/console-pass.ts",
+    "test:resilience": "node ../scripts/heavy.ts node src/resilience.ts",
     "playwright:install": "playwright install --only-shell chromium"
   },
   "dependencies": {

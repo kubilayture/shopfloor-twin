@@ -324,6 +324,37 @@ export class SimulatorClient {
     return stepped;
   }
 
+  /**
+   * Takes a machine's OPC UA server offline (it drops its sessions and refuses new ones) or back
+   * online (control API "Infrastructure faults", #243's resilience runs).
+   */
+  async opcuaOffline(machine: string, offline: boolean): Promise<boolean> {
+    const answer = await this.#request(
+      `${this.base}/api/v1/faults/opcua/${encodeURIComponent(machine)}`,
+      z.object({ offline: z.boolean() }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ offline }),
+      },
+    );
+    return answer.offline;
+  }
+
+  /** Makes WSH-01's Modbus device silent (it stops answering) or answer again. */
+  async modbusSilent(silent: boolean): Promise<boolean> {
+    const answer = await this.#request(
+      `${this.base}/api/v1/faults/modbus`,
+      z.object({ silent: z.boolean() }),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ silent }),
+      },
+    );
+    return answer.silent;
+  }
+
   async injections(): Promise<Injection[]> {
     const { injections } = await this.#request(
       `${this.base}/api/v1/faults/injections`,

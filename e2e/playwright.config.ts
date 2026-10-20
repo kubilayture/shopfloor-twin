@@ -26,6 +26,9 @@ import { WEB_SPKI_ENV, chromiumSpkiArgument } from '@shopfloor/test-kit/tls';
  *   episode and a lot, the terminal's banners, the close refused while held and allowed after.
  * The console run (#237, `pnpm test:console`, src/console-pass.ts) has a project of its own,
  * `console` (browser/console): every `/sim/` refusal and every console action as admin.
+ * The resilience suite (#243, `pnpm test:resilience`, src/resilience.ts) has `resilience`
+ * (browser/resilience): the overview open through a whole run, reconnecting and current after
+ * every fault.
  * The HTTPS front (P9-14, ADR-0039, checklist S4; browser/tls) runs in `orders-dispatch` (the gate's
  * reconciliation, while the simulator waits) and in `console`.
  * Every run holds the host-wide heavy-suite lock (#228, src/playwright-lock.ts).
@@ -61,7 +64,7 @@ export default defineConfig({
   projects: [
     {
       name: 'live',
-      testIgnore: ['final/**', 'orders/**', 'quality/**', 'console/**', 'tls/**'],
+      testIgnore: ['final/**', 'orders/**', 'quality/**', 'console/**', 'tls/**', 'resilience/**'],
       outputDir: join(results, 'playwright', 'live'),
       use: { ...chromium },
     },
@@ -105,6 +108,12 @@ export default defineConfig({
       name: 'quality-final',
       testDir: './browser/quality/final',
       outputDir: join(results, 'playwright', 'quality-final'),
+      use: { ...chromium },
+    },
+    {
+      name: 'resilience',
+      testDir: './browser/resilience',
+      outputDir: join(results, 'playwright', 'resilience'),
       use: { ...chromium },
     },
     {

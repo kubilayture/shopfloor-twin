@@ -1,8 +1,8 @@
 /**
  * Runs a heavy command under the host-wide heavy-suite lock (#228, Phase 9 plan "Local gate";
  * `@shopfloor/test-kit/heavy-lock`): `pnpm verify`, `pnpm test`, `pnpm test:e2e`,
- * `pnpm test:reconcile` and `pnpm test:trace-perf` start through it, and `pnpm gate` takes the
- * same lock itself.
+ * `pnpm test:reconcile`, `pnpm test:trace-perf`, `pnpm test:console` and `pnpm test:resilience`
+ * start through it, and `pnpm gate` takes the same lock itself.
  *
  * - Takes `~/.cache/shopfloor-twin/heavy.lock`, waiting (and saying for whom) while another live
  *   process holds it, up to `HEAVY_LOCK_TIMEOUT_MS` (default 3 hours); a lock whose holder is gone

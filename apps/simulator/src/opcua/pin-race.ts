@@ -17,7 +17,11 @@ import { OPCUACertificateManager } from 'node-opcua';
  * - `reruns` unchanged reruns, each holding every staged file back for one of `delaysMs` before
  *   its rename (the old code staged and renamed every pin on every run);
  * - `renewals` reruns that renew one identity (tools, a server, the gateway in turn) with the same
- *   delays: the renewed certificate's new pins must be trusted by the running managers.
+ *   delays: the renewed certificate's new pins must be trusted by the running managers. This runs
+ *   the step in this process, beside the managers; it does NOT show that a renewal made by another
+ *   process (Compose's `pki` container) is picked up: in the review of PR #267, 9 cross-process
+ *   renewals on Linux lost 15 pin checks and left 3 superseded certificates trusted. A renewal is
+ *   guaranteed only after restarting the simulator and the gateway (runbook, ADR-0038).
  *
  * After each run it waits `settleMs` (chokidar's `atomic` holds an unlink back 100 ms) and asks
  * every manager whether it trusts each current pin.

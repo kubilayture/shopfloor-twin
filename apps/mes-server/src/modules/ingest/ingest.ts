@@ -274,6 +274,17 @@ type LagNote =
   | { readonly exclude: LagExclusion }
   | undefined;
 
+/**
+ * The `receivedAt` of a UNS payload, without parsing all of it (the head of the queue, #245);
+ * undefined when it has none (a status or an unparsable delivery).
+ */
+function receivedAtOf(payload: string | Buffer): number | undefined {
+  const text = typeof payload === 'string' ? payload : payload.toString('utf8');
+  const match = /"receivedAt"\s*:\s*"([^"]{1,40})"/.exec(text);
+  const at = match?.[1] === undefined ? Number.NaN : Date.parse(match[1]);
+  return Number.isNaN(at) ? undefined : at;
+}
+
 /** `mes_ingest_lag_max_seconds` covers the current and the previous window of this length. */
 const LAG_MAX_WINDOW_MS = 5_000;
 
@@ -311,6 +322,11 @@ export class Ingest {
   #arrived = 0;
   #finished = 0;
   #connection = 0;
+  /**
+   * The gateway's read time (`receivedAt`, wall ms) of the delivery MQTT.js handed to the MES and
+   * the MES has not finished: MQTT.js hands over the next only after it (#245).
+   */
+  #head: number | undefined;
   #client: MqttClient | undefined;
   #subscribed = false;
   #stopping = false;
@@ -403,6 +419,14 @@ export class Ingest {
         },
       });
       new Gauge({
+        name: 'mes_ingest_oldest_pending_age_seconds',
+        help: 'Now minus the gateway receivedAt of the delivery the MES is handling and has not committed; 0 when none. Behind a backlog it is the backlog head: the delay the oldest waiting message has accumulated',
+        registers,
+        collect() {
+          this.set(self.oldestPendingAgeSeconds);
+        },
+      });
+      new Gauge({
         name: 'mes_ingest_subscribed',
         help: '1 while the persistent UNS session is connected and subscribed',
         registers,
@@ -424,6 +448,15 @@ export class Ingest {
    */
   get pending(): number {
     return Math.max(0, this.#arrived - this.#finished);
+  }
+
+  /**
+   * How long the delivery at the head of the session's queue has waited since the gateway read it
+   * (seconds; 0 when the MES holds none). MQTT.js gives the MES one delivery at a time, so behind a
+   * backlog this is its oldest message's age, whether the rest wait on the socket or in the broker.
+   */
+  get oldestPendingAgeSeconds(): number {
+    return this.#head === undefined ? 0 : Math.max(0, this.#now() - this.#head) / 1000;
   }
 
   /** Deliveries handled since start, by outcome. */
@@ -503,7 +536,9 @@ export class Ingest {
     // after that: so storing here gives ack-after-commit and arrival order.
     client.handleMessage = (packet, callback) => {
       const connection = this.#connection;
+      this.#head = receivedAtOf(packet.payload) ?? this.#now();
       const finished = () => {
+        this.#head = undefined;
         if (this.#connection === connection) this.#finished++;
       };
       this.#enqueue(() => this.#handle(client, packet)).then(

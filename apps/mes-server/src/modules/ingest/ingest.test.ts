@@ -1009,8 +1009,8 @@ describe('ingest lag and pending deliveries (#245)', () => {
     ).toBe(1);
   });
 
-  it('counts deliveries received and not yet committed, up to the receive maximum', async () => {
-    const { equipment, start } = await setup();
+  it('counts deliveries received and not yet committed, and the age of the oldest', async () => {
+    const { equipment, start, clock } = await setup();
     const registry = new Registry();
     let release: (() => void) | undefined;
     const held = new Promise<void>((resolve) => {
@@ -1030,8 +1030,12 @@ describe('ingest lag and pending deliveries (#245)', () => {
     const pending = sample(await registry.metrics(), 'mes_ingest_pending_messages');
     expect(pending).toBeGreaterThan(1);
     expect(pending).toBeLessThanOrEqual(100);
+    // The held delivery was read by the gateway at 10:00:00.000; the MES's clock is 2.5 s later.
+    clock.now = Date.parse('2026-10-15T10:00:02.500Z');
+    expect(sample(await registry.metrics(), 'mes_ingest_oldest_pending_age_seconds')).toBe(2.5);
     release?.();
     await waitFor(() => ingest.count('stored') === 150, 'every fact stored');
     await waitFor(() => ingest.pending === 0, 'nothing pending');
+    expect(ingest.oldestPendingAgeSeconds).toBe(0);
   });
 });

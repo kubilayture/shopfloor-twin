@@ -1,5 +1,10 @@
 import type { FloodEpisode } from '@shopfloor/alarm-core';
-import { ORDERS_TOPIC, QUALITY_TOPIC, type TerminalViewDto } from '@shopfloor/contracts/mes-api';
+import {
+  ORDERS_TOPIC,
+  QUALITY_TOPIC,
+  type OrderOeeDto,
+  type TerminalViewDto,
+} from '@shopfloor/contracts/mes-api';
 import { Counter, Gauge, Histogram, type Registry } from 'prom-client';
 import type { AlarmEvent, AlarmKpiBucket, AlarmScope } from '../alarms/index.ts';
 import type { CurrentState, EquipmentChange } from '../equipment/index.ts';
@@ -247,6 +252,38 @@ function pacedKind(name: string): PacedKind {
   return 'oee';
 }
 
+/** Order statuses after which no job comes (an order with none never gets an OEE). */
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+  'completed',
+  'closed',
+  'cancelled',
+  'rejected',
+]);
+
+/**
+ * What an `oee:order:<id>` topic follows beyond its own order and the CNCs of its jobs (#233
+ * review, #257):
+ * - `open`: a part not final yet: every machine's change and the plant clock (`#orderOpen`);
+ * - `revisable`: final in every part but with incidents (`mayRevise`): every machine's change, a
+ *   revision of an hour under it may come from any (A3), not the clock;
+ * - `none`: final without incidents (it never changes), or never final whatever comes (A2): a
+ *   `lost` body, or a terminal status without a job. Those still follow their own order's
+ *   changes and their jobs' CNCs, so they are not recomputed every second while subscribed.
+ */
+export function orderFollow(
+  order: Pick<OrderOeeDto, 'final' | 'lost' | 'status' | 'jobs' | 'mayRevise'> & {
+    readonly firstPassYield: Pick<OrderOeeDto['firstPassYield'], 'final'>;
+    readonly line: Pick<NonNullable<OrderOeeDto['line']>, 'final'> | null;
+  },
+): 'open' | 'revisable' | 'none' {
+  if (order.final && order.firstPassYield.final && order.line?.final === true) {
+    return order.mayRevise ? 'revisable' : 'none';
+  }
+  if (order.lost) return 'none';
+  if (order.jobs.length === 0 && TERMINAL_STATUSES.has(order.status)) return 'none';
+  return 'open';
+}
+
 /**
  * One paced topic with subscribers (`oee:<id>`, `alarm-kpi:<scope>`): what it last pushed and
  * whether it must be computed. At most one delta per `oeeMs`.
@@ -324,9 +361,16 @@ export class PushHub {
    * first-pass yield or its own line OEE, #233 review): the line value and the yield read machines
    * beyond the order's CNCs (ASM-01's pieces, PCK-01's cycles, the units at every station) and the
    * line value's `to` follows the plant clock while open, so any machine's change and the clock
-   * moving turn them dirty.
+   * moving turn them dirty. Not a body that can never be final (`orderFollow`, #257 A2).
    */
   readonly #orderOpen = new Set<string>();
+  /**
+   * The `oee:order:<id>` topics whose last body was final in every part but carries incidents
+   * (`mayRevise`, #257 A3): a later revision of the hours under it (on any machine its spans
+   * read, the bottleneck's included) changes its `revision`, so any machine's change turns them
+   * dirty; the clock doesn't (the order is complete, its line value no longer follows it).
+   */
+  readonly #orderRevisable = new Set<string>();
   /** The hours `oee:line` covered when last computed (its hour and shift bucket). */
   #lineSpan: { from: number; to: number } | undefined;
 
@@ -736,11 +780,11 @@ export class PushHub {
       // The CNCs the order has jobs on: their states and commands turn the topic dirty.
       this.#orderMachines.set(name, new Set(view?.jobs.map((job) => job.machine) ?? []));
       const order = view === undefined ? null : orderOeeDto(view);
-      if (order && !(order.final && order.firstPassYield.final && order.line?.final === true)) {
-        this.#orderOpen.add(name);
-      } else {
-        this.#orderOpen.delete(name);
-      }
+      const follow = order === null ? 'none' : orderFollow(order);
+      if (follow === 'open') this.#orderOpen.add(name);
+      else this.#orderOpen.delete(name);
+      if (follow === 'revisable') this.#orderRevisable.add(name);
+      else this.#orderRevisable.delete(name);
       return {
         snapshot: { type: 'snapshot', topic: name, order },
         delta: { type: 'oee-order', topic: name, order },
@@ -1092,7 +1136,8 @@ export class PushHub {
           : change.machine !== undefined
             ? machines === undefined ||
               machines.has(change.machine) ||
-              this.#orderOpen.has(topic.name)
+              this.#orderOpen.has(topic.name) ||
+              this.#orderRevisable.has(topic.name)
             : true;
       if (touched) topic.dirty = true;
     }
@@ -1252,6 +1297,7 @@ export class PushHub {
         this.#paced.delete(name);
         this.#orderMachines.delete(name);
         this.#orderOpen.delete(name);
+        this.#orderRevisable.delete(name);
       }
     }
   }

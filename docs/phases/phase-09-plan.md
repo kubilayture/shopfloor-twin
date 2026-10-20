@@ -365,6 +365,8 @@ The owner asked for decisions, not questions. Each is recorded in the ADR named 
 - **6, P9-12 PKI details:** confirmed: node-opcua 2.187 defaults a server's certificate to `own/certs/certificate.pem` with the key at `own/private/private_key.pem`, the simulator's servers use `pkiFolder/<machineId>`, and the gateway sets only `applicationName`. **Changed:** default paths or explicit `certificateFile`/`privateKeyFile`, key usage and EKU, SAN with the URI and DNS `simulator` and `localhost`, the gateway's `applicationUri` explicit, stale pins removed on renewal, a trusted tools client certificate so S1 tests the permission, and an exchange step or `OPCUA_SECURITY=none` for tests outside Compose.
 - **7, per-project PKI cost:** **changed:** P9-12 measures and records the time to make the 7 OPC UA keys plus the CA's and nginx's; the smoke asserts the `pki` service exited 0 and that a server refuses an unpinned client certificate.
 
+**P9-16 implementation:** R3 schedule moved; see ADR-0009 amendment.
+
 **Final check: approved** (coordinator, after round 3), with two minor edits applied: the trust mechanism (the `edge` CIDR learning, the `mes-edge` proxy target and `mes_http_proxy_requests_total{trusted}`) moves into P9-10, because the console's session-use rule depends on a trusted `X-Original-Method`, and P9-15 reuses it for `X-Real-IP`; the CIDR match normalises IPv4-mapped IPv6 addresses first, and the counter counts only requests carrying `X-Real-IP`.
 
 ## Deviations from the master plan

@@ -15,8 +15,9 @@
  * - R1, no loss, infrastructure: broker restart at 07:00, database restart at 08:30, ERP mock
  *   stopped 09:45–10:45, WSH-01's Modbus device silent 11:45–12:00;
  * - R2, no loss, MES: SIGTERM at 07:00 and started at 08:00, SIGKILL at 10:00 and started at 11:00;
- * - R3, detected loss: CNC-01's OPC UA server offline 07:00–07:30, the gateway killed (SIGKILL) at
- *   10:00 and started at 10:05.
+ * - R3, detected loss: CNC-01's OPC UA server offline 07:00–08:30, the gateway killed (SIGKILL) at
+ *   10:45 and started at 10:50 (moved from the plan's 07:00–07:30 and 10:00–10:05, which lose
+ *   nothing; ADR-0009 amendment; `RESILIENCE_R3_SCHEDULE=plan` runs that variant).
  * Infrastructure faults go through the control API, process faults through Docker on the
  * project's own containers (`docker restart`, `stop`, `kill` and `start` by container id, so no
  * dependency is started again and the `pki` step never reruns mid-run, #265). The simulated time
@@ -227,13 +228,13 @@ const RUNS = {
       {
         name: 'CNC-01 OPC UA offline',
         at: istanbul('07:00'),
-        until: istanbul('07:30'),
+        until: istanbul('08:30'),
         spec: { kind: 'opcua-offline', machine: 'cnc-01' },
       },
       {
         name: 'gateway SIGKILL',
-        at: istanbul('10:00'),
-        until: istanbul('10:05'),
+        at: istanbul('10:45'),
+        until: istanbul('10:50'),
         spec: { kind: 'kill', service: 'gateway', signal: 'SIGKILL' },
       },
     ],
@@ -242,39 +243,40 @@ const RUNS = {
 type RunName = keyof typeof RUNS;
 
 /**
- * R3 with a fault that does lose facts (`RESILIENCE_R3_SCHEDULE=lossy`, a diagnostic run, not the
- * plan's). The plan's schedule loses nothing (#243): an OPC UA server offline keeps the gateway's
- * session and subscription, which republish every queued event on the reconnect (30 s of wall
- * time lost nothing, and 90 s here neither), and its gateway kill at 10:00–10:05 lies in shift A's
- * break (10:00–10:30), when no machine raises a fact. Here the gateway is killed at 10:45 while the
- * line runs, so its new sessions start past the facts raised meanwhile and the detected-loss
- * assertions judge real gaps (WSH-01 recovers its own from the Modbus ring).
+ * R3 as the Phase 9 plan first scheduled it (`RESILIENCE_R3_SCHEDULE=plan`), a variant that loses
+ * nothing: an OPC UA server offline keeps the gateway's session and subscription, which republish
+ * every queued event on the reconnect (neither 30 s nor 90 s of wall time lost an event), and its
+ * gateway kill at 10:00–10:05 lies in shift A's break (10:00–10:30), when no machine raises a fact.
+ * The default R3 (the coordinator's decision on #243, ADR-0009 amendment) kills the gateway at
+ * 10:45 while the line runs, so its new sessions start past the facts raised meanwhile and the
+ * detected-loss assertions judge real gaps; it must lose at least one fact. This variant is
+ * reported with `exercised: false` and is not a pass of exit criterion 5.
  */
-const R3_LOSSY: RunPlan = {
-  title: 'detected loss (lossy diagnostic schedule)',
+const R3_PLAN: RunPlan = {
+  title: 'detected loss (the plan’s first schedule, loses nothing)',
   loss: 'detected',
   faults: [
     {
       name: 'CNC-01 OPC UA offline',
       at: istanbul('07:00'),
-      until: istanbul('08:30'),
+      until: istanbul('07:30'),
       spec: { kind: 'opcua-offline', machine: 'cnc-01' },
     },
     {
       name: 'gateway SIGKILL',
-      at: istanbul('10:45'),
-      until: istanbul('10:50'),
+      at: istanbul('10:00'),
+      until: istanbul('10:05'),
       spec: { kind: 'kill', service: 'gateway', signal: 'SIGKILL' },
     },
   ],
 };
-const r3Schedule = process.env.RESILIENCE_R3_SCHEDULE ?? 'plan';
-if (r3Schedule !== 'plan' && r3Schedule !== 'lossy') {
-  console.error(`RESILIENCE_R3_SCHEDULE must be plan or lossy, not "${r3Schedule}"`);
+const r3Schedule = process.env.RESILIENCE_R3_SCHEDULE ?? 'default';
+if (r3Schedule !== 'default' && r3Schedule !== 'plan') {
+  console.error(`RESILIENCE_R3_SCHEDULE must be default or plan, not "${r3Schedule}"`);
   process.exit(2);
 }
 const planOf = (name: RunName): RunPlan =>
-  name === 'r3' && r3Schedule === 'lossy' ? R3_LOSSY : RUNS[name];
+  name === 'r3' && r3Schedule === 'plan' ? R3_PLAN : RUNS[name];
 const RUN_NAMES = Object.keys(RUNS) as RunName[];
 
 const projectPrefix = process.env.RESILIENCE_PROJECT ?? 'shopfloor-resilience';
@@ -1551,11 +1553,11 @@ async function runOne(
             perMachine,
             windows,
           };
-          // The plan's schedule may lose nothing (R3_LOSSY says why): then both sets are empty,
-          // which the assertions above accept, and the report says the class was not exercised.
+          // The class is exercised only when facts were lost: the default R3 must lose at least
+          // one (R3_PLAN, the non-loss variant, is reported and not held to it).
           (report.detectedLoss as Record<string, unknown>).exercised = lostTotal > 0;
-          if (lostTotal === 0 && plan === R3_LOSSY) {
-            fail('the lossy schedule lost nothing: the detected-loss class was not exercised');
+          if (lostTotal === 0 && plan !== R3_PLAN) {
+            fail('R3 lost no fact on any machine: the detected-loss class was not exercised');
           }
           // Every machine final once the gaps are written off (the refresh may take a moment).
           let shiftOee = await clients.mes.shiftOee(shiftKey);

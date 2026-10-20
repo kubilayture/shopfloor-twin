@@ -14,6 +14,10 @@
  * 5. `reconcile`: `pnpm test:reconcile` (all three passes, #204) with the smoke's images
  *    (`RECONCILE_SKIP_BUILD=1`, the same tag).
  *
+ * The output of the smoke and the reconciliation, the two jobs that run the stack with the
+ * generated secrets, is also kept in the gate's temporary directory and searched for every one of
+ * them afterwards; a hit fails the job (checklist S7, #242).
+ *
  * Before the first job it takes the host-wide heavy-suite lock (#228,
  * `~/.cache/shopfloor-twin/heavy.lock`, `@shopfloor/test-kit/heavy-lock`), waiting up to
  * `HEAVY_LOCK_TIMEOUT_MS` (default 3 hours) for another heavy run to end; its jobs inherit the
@@ -39,7 +43,14 @@
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  createWriteStream,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -104,20 +115,51 @@ const output = (command: string, args: readonly string[]): string => {
 /** The job running now, so a signal can wait for it (and pass a SIGTERM on). */
 let current: { child: ChildProcess; exited: Promise<number> } | undefined;
 
-/** Runs a command with inherited output; resolves with its exit code. */
+/**
+ * Runs a command with inherited output; resolves with its exit code. With `capture`, its output
+ * is also written to that file (checklist S7: the jobs that see the generated secrets are searched
+ * for them afterwards).
+ */
 function run(
   command: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv = {},
+  capture?: string,
 ): Promise<number> {
   // Its own process group, so a signal reaches the whole job (pnpm, turbo and every test
   // runner), never pnpm alone with orphans left running.
   const child = spawn(command, args, {
     cwd: REPO,
-    stdio: 'inherit',
+    stdio: capture === undefined ? 'inherit' : ['inherit', 'pipe', 'pipe'],
     detached: true,
     env: { ...process.env, ...env },
   });
+  /** The captured output on disk: both pipes ended (or 10 s after the exit), the file closed. */
+  let flushed: (() => Promise<void>) | undefined;
+  if (capture !== undefined) {
+    const file = createWriteStream(capture, { mode: 0o600 });
+    const closed = new Promise<void>((done) => file.on('close', done));
+    let open = 2;
+    const tee = (from: NodeJS.ReadableStream | null, to: NodeJS.WritableStream) => {
+      from?.on('data', (chunk: Buffer) => {
+        to.write(chunk);
+        if (!file.writableEnded) file.write(chunk);
+      });
+      from?.on('end', () => {
+        if (--open === 0 && !file.writableEnded) file.end();
+      });
+    };
+    tee(child.stdout, process.stdout);
+    tee(child.stderr, process.stderr);
+    // A process the job left behind may hold a pipe open: the file is closed anyway.
+    flushed = () =>
+      Promise.race([closed, new Promise<void>((done) => setTimeout(done, 10_000).unref())]).then(
+        () => {
+          if (!file.writableEnded) file.end();
+          return closed;
+        },
+      );
+  }
   const exited = new Promise<number>((done) => {
     child.on('error', () => {
       done(1);
@@ -131,14 +173,26 @@ function run(
   // Each job's process group keeps the heavy-suite lock alive (#228), also if the gate itself is
   // killed while the job runs.
   if (child.pid !== undefined) lock.recordGroup(child.pid);
-  return exited.finally(() => {
-    if (current === running) current = undefined;
-  });
+  return exited
+    .then(async (code) => {
+      await flushed?.();
+      return code;
+    })
+    .finally(() => {
+      if (current === running) current = undefined;
+    });
 }
+
+/** Every secret the gate generated for the env file (checklist S7: searched for in the output). */
+const generated: string[] = [];
 
 /** The throw-away env file: `.env.example` with generated secrets, mode 600, in a temp dir. */
 function envFile(dir: string): string {
-  const secret = () => randomBytes(18).toString('hex');
+  const secret = () => {
+    const value = randomBytes(18).toString('hex');
+    generated.push(value);
+    return value;
+  };
   const seen = new Set<string>();
   const lines = readFileSync(join(REPO, '.env.example'), 'utf8')
     .split('\n')
@@ -303,7 +357,22 @@ try {
     }
     console.log(`\n=== gate: ${job} (${text}) ===`);
     const started = Date.now();
-    const code = await run(command, args, extra);
+    // The smoke and the reconciliation run the stack with the generated secrets: their output is
+    // kept and searched for every one of them (checklist S7, #242); a hit fails the job.
+    const capture = job === 'smoke' || job === 'reconcile' ? join(dir, `${job}.log`) : undefined;
+    let code = await run(command, args, extra, capture);
+    if (capture !== undefined) {
+      const logged = readFileSync(capture, 'utf8');
+      const leaked = generated.filter((value) => logged.includes(value)).length;
+      if (leaked > 0) {
+        console.error(`gate: ${String(leaked)} generated secret(s) appeared in the ${job} output`);
+        code = code === 0 ? 1 : code;
+      } else {
+        console.log(
+          `gate: none of the ${String(generated.length)} generated secrets in the ${job} output`,
+        );
+      }
+    }
     if (signals.stopping) await new Promise(() => undefined); // the signal handler owns the rest
     if (job === 'smoke') {
       images = digests();

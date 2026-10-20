@@ -6783,7 +6783,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9346,7 +9346,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9974,7 +9974,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -10602,7 +10602,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11236,7 +11236,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11866,7 +11866,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12489,7 +12489,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14622,7 +14622,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14880,7 +14880,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15291,7 +15291,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15719,7 +15719,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -16130,7 +16130,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -16534,7 +16534,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -20647,7 +20647,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -21695,7 +21695,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -22174,7 +22174,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -22997,7 +22997,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -24595,7 +24595,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -25005,7 +25005,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -25415,7 +25415,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -26750,7 +26750,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -31784,7 +31784,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -32220,7 +32220,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -35370,7 +35370,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -35737,7 +35737,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -36160,7 +36160,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -36787,7 +36787,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -37127,7 +37127,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -37568,7 +37568,7 @@
         "tags": [
           "identity"
         ],
-        "description": "Sets `sft_session` (HttpOnly, SameSite=Strict, Path=/) to a new random token; a session the request carried ends. Every failure (unknown or disabled user, wrong password, a locked account, an admin within its delay) is the same 401. Five failures in a row lock a normal account for 15 minutes; an admin is delayed instead (1 s doubling, at most 5 min). Passes the write guards (login CSRF). Access: anyone (no session needed).",
+        "description": "Sets `sft_session` (HttpOnly, SameSite=Strict, Path=/) to a new random token; a session the request carried ends. Every failure (unknown or disabled user, wrong password, a user locked for this address, an admin within its delay) is the same 401. Five failures in a row from one client address lock the user for that address for 15 minutes (the address is X-Real-IP from nginx over the edge network, else the connection's); an admin is delayed instead (1 s doubling, at most 5 min). Once a user has 10 or more failed attempts in 15 minutes from all addresses together (n), an attempt within min(2^(n-10) s, 30 s) of the last failure is answered 429 with Retry-After, the remaining wait rounded up, without checking the password; a 429 is not counted, and the user is never locked from every address. Passes the write guards (login CSRF). Access: anyone (no session needed).",
         "requestBody": {
           "required": true,
           "content": {
@@ -37770,7 +37770,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -38256,7 +38256,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -38602,7 +38602,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -38832,7 +38832,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -39041,7 +39041,7 @@
             }
           },
           "429": {
-            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name; type urn:shopfloor:login-rate): retry after Retry-After seconds",
+            "description": "Too many writes (the global limit, or the user's own; type urn:shopfloor:write-rate) or logins (all together, or per user name, or within the user's global delay after 10 failed logins in 15 minutes; type urn:shopfloor:login-rate): retry after Retry-After seconds",
             "content": {
               "application/problem+json": {
                 "schema": {

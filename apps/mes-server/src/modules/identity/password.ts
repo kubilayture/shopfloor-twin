@@ -53,7 +53,12 @@ const hashing = new Semaphore(2);
 /** How many hashes run now (tests). */
 export const hashesRunning = (): number => hashing.active;
 
+let started = 0;
+/** How many hashes were asked for since the process started (tests: a 429 costs none, #242). */
+export const hashesStarted = (): number => started;
+
 function derive(password: string, salt: Buffer, params: ScryptParams): Promise<Buffer> {
+  started++;
   return hashing.run(
     () =>
       new Promise<Buffer>((resolve, reject) => {

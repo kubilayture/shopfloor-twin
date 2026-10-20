@@ -27,13 +27,18 @@ import {
   Identity,
   IdentityError,
   LOGIN_FAILED,
+  LOGIN_RATE,
+  LOGIN_THROTTLED,
+  UNKNOWN_ADDRESS,
   SCRYPT_MAXMEM,
   SCRYPT_PARAMS,
   Semaphore,
   hashPassword,
+  hashesStarted,
   needsRehash,
   parseHash,
   parseToken,
+  throttleWaitMs,
   verifyPassword,
 } from './modules/identity/index.ts';
 import { WS_PATH, cookieValue } from './modules/realtime/index.ts';
@@ -105,7 +110,7 @@ async function user(name: string, roles: Role[], password = secret()) {
 const account = (username: string) =>
   db
     .selectFrom('identity.user_account')
-    .select(['failed_logins', 'locked_until', 'next_attempt_at'])
+    .select(['failed_logins', 'next_attempt_at'])
     .where('username', '=', username)
     .executeTakeFirstOrThrow();
 
@@ -152,8 +157,12 @@ function rawRequest(
   });
 }
 
-async function failedLogin(username: string, password: string): Promise<IdentityError> {
-  const error = await identity.login({ username, password, kind: 'desk' }).then(
+async function failedLogin(
+  username: string,
+  password: string,
+  address?: string,
+): Promise<IdentityError> {
+  const error = await identity.login({ username, password, kind: 'desk', address }).then(
     () => undefined,
     (e: unknown) => e,
   );
@@ -161,6 +170,27 @@ async function failedLogin(username: string, password: string): Promise<Identity
   expect((error as IdentityError).message).toBe(LOGIN_FAILED);
   expect((error as IdentityError).type).toBe(PROBLEM_TYPES.unauthenticated);
   return error as IdentityError;
+}
+
+/** A login refused by the global delay (#242): 429's error, no hash; its Retry-After. */
+async function throttledLogin(
+  username: string,
+  password: string,
+  address?: string,
+): Promise<number> {
+  const hashes = hashesStarted();
+  const error = await identity.login({ username, password, kind: 'desk', address }).then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(error).toBeInstanceOf(IdentityError);
+  expect(error).toMatchObject({
+    kind: 'throttled',
+    message: LOGIN_THROTTLED,
+    type: PROBLEM_TYPES.loginRate,
+  });
+  expect(hashesStarted()).toBe(hashes);
+  return (error as IdentityError).retryAfterS ?? Number.NaN;
 }
 
 describe('passwords (scrypt, ADR-0026)', () => {
@@ -325,17 +355,22 @@ describe('identity module (#168)', () => {
       await failedLogin('root', 'wrong-password-x');
       const row = await db
         .selectFrom('identity.user_account')
-        .select(['next_attempt_at', 'locked_until'])
+        .select(['next_attempt_at'])
         .where('username', '=', 'root')
         .executeTakeFirstOrThrow();
-      expect(row.locked_until).toBeNull();
       delays.push(row.next_attempt_at ? row.next_attempt_at.getTime() - clock : 0);
-      // Within the delay even the right password is refused.
+      // Within the delay even the right password is refused: the same 401 below ten failures;
+      // from the tenth the global delay (#242) answers first, with 429 and no hash.
       if (row.next_attempt_at) {
-        await failedLogin('root', password);
+        if (i < IDENTITY_LIMITS.throttleAfter) await failedLogin('root', password);
+        else await throttledLogin('root', password);
         clock = row.next_attempt_at.getTime();
       }
     }
+    // An admin has no pair lock either.
+    expect(await db.selectFrom('identity.login_address').selectAll().execute()).not.toContainEqual(
+      expect.objectContaining({ user_id: (await identity.user('root')).id }),
+    );
     expect(delays).toEqual([
       0, 0, 0, 0, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000, 128_000, 256_000, 300_000,
     ]);
@@ -516,6 +551,147 @@ describe('identity module (#168)', () => {
     ).toHaveLength(1);
     clock += IDENTITY_LIMITS.lockMs + 1_000;
     await identity.login({ username: 'lea', password, kind: 'desk' });
+  });
+
+  // Login throttling (#242, P9-15, checklist S5, ADR-0039 amendment).
+
+  /** The pairs (account, address) of a user, with their counts and locks. */
+  const pairs = async (username: string) =>
+    db
+      .selectFrom('identity.login_address as a')
+      .innerJoin('identity.user_account as u', 'u.id', 'a.user_id')
+      .select(['a.address', 'a.failed_logins', 'a.locked_until'])
+      .where('u.username', '=', username)
+      .orderBy('a.address')
+      .execute();
+  /** n: the user's judged failures in the 15-minute window. */
+  const judged = async (username: string): Promise<number> =>
+    (
+      await db
+        .selectFrom('identity.login_failure as f')
+        .innerJoin('identity.user_account as u', 'u.id', 'f.user_id')
+        .select(sql<number>`count(*)::int`.as('n'))
+        .where('u.username', '=', username)
+        .where('f.at', '>', new Date(clock - IDENTITY_LIMITS.throttleWindowMs))
+        .executeTakeFirstOrThrow()
+    ).n;
+
+  it('locks a user per (account, address): five failures from one address leave every other address open (#242, S5)', async () => {
+    const password = await user('pia', ['operator']);
+    const a = '10.20.0.1';
+    const b = '10.20.0.2';
+    for (let i = 0; i < 5; i++) await failedLogin('pia', 'wrong-password-x', a);
+    expect((await identity.user('pia')).locked).toBe(true);
+    // From the locked address even the right password is refused, with the same answer.
+    await failedLogin('pia', password, a);
+    // From another address the user logs in; that success clears n and b's pair, not a's lock.
+    await identity.login({ username: 'pia', password, kind: 'desk', address: b });
+    await failedLogin('pia', password, a);
+    expect(await pairs('pia')).toEqual([
+      { address: a, failed_logins: 5, locked_until: new Date(clock + IDENTITY_LIMITS.lockMs) },
+    ]);
+    expect(await judged('pia')).toBe(0);
+    const audit = await identity.auditOf('user', 'pia');
+    expect(audit.filter((r) => r.action === 'user.locked').map((r) => r.after)).toEqual([
+      {
+        failures: 5,
+        lockedUntil: new Date(clock + IDENTITY_LIMITS.lockMs).toISOString(),
+        address: a,
+      },
+    ]);
+    expect(await failureReasons('pia')).toEqual([
+      ...Array<string>(5).fill('wrong-password'),
+      'locked',
+      'locked',
+    ]);
+    // Every failure names its address; a call without one is keyed `unknown`.
+    expect(
+      audit
+        .filter((r) => r.action === 'session.login-failed')
+        .every((r) => (r.after as { address: string }).address === a),
+    ).toBe(true);
+    await failedLogin('pia', 'wrong-password-x');
+    expect((await pairs('pia')).map((p) => p.address)).toEqual([a, UNKNOWN_ADDRESS]);
+    // The lock runs out after 15 minutes.
+    clock += IDENTITY_LIMITS.lockMs + 1_000;
+    expect((await identity.user('pia')).locked).toBe(false);
+    await identity.login({ username: 'pia', password, kind: 'desk', address: a });
+    expect((await pairs('pia')).map((p) => p.address)).toEqual([UNKNOWN_ADDRESS]);
+  });
+
+  it('delays a user globally from 10 failures in 15 minutes: min(2^(n-10) s, 30 s) after the last, 429 without a hash, never counted, never a lock (#242, S5)', async () => {
+    expect([0, 9, 10, 11, 12, 13, 14, 15, 16, 40].map(throttleWaitMs)).toEqual([
+      0, 0, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000,
+    ]);
+    const password = await user('quinn', ['operator']);
+    // Every failure from an address of its own: no pair ever locks, only the global delay acts.
+    let next = 0;
+    const fresh = (): string => `10.30.0.${String(++next)}`;
+    for (let i = 1; i <= 9; i++) {
+      await failedLogin('quinn', 'wrong-password-x', fresh());
+      clock += 100;
+    }
+    // Nine: no delay yet.
+    await failedLogin('quinn', 'wrong-password-x', fresh());
+    expect(await judged('quinn')).toBe(10);
+    // n = 10: 1 s after the last failure, whoever asks, the right password included.
+    expect(await throttledLogin('quinn', password, fresh())).toBe(1);
+    clock += 400;
+    expect(await throttledLogin('quinn', password, fresh())).toBe(1);
+    expect(await judged('quinn')).toBe(10);
+    // Once the wait is over the next attempt is judged: n = 11, a 2 s wait, and so on.
+    const waits: number[] = [];
+    for (let n = 11; n <= 16; n++) {
+      clock += throttleWaitMs(n - 1);
+      await failedLogin('quinn', 'wrong-password-x', fresh());
+      expect(await judged('quinn')).toBe(n);
+      waits.push(await throttledLogin('quinn', password, fresh()));
+    }
+    expect(waits).toEqual([2, 4, 8, 16, 30, 30]);
+    // The remaining wait, rounded up.
+    clock += 10_500;
+    expect(await throttledLogin('quinn', password, fresh())).toBe(20);
+    clock += 19_499;
+    expect(await throttledLogin('quinn', password, fresh())).toBe(1);
+    // None of the 429s counted.
+    expect(await judged('quinn')).toBe(16);
+    expect((await identity.user('quinn')).locked).toBe(false);
+    // Never a lock: once the wait has passed the right password gets in, and n resets.
+    clock += 1;
+    await identity.login({ username: 'quinn', password, kind: 'desk', address: fresh() });
+    expect(await judged('quinn')).toBe(0);
+    // n falls as failures leave the window: ten, then 15 minutes later one more is judged.
+    for (let i = 0; i < 10; i++) await failedLogin('quinn', 'wrong-password-x', fresh());
+    expect(await throttledLogin('quinn', password, fresh())).toBe(1);
+    clock += IDENTITY_LIMITS.throttleWindowMs;
+    await failedLogin('quinn', 'wrong-password-x', fresh());
+    expect(await judged('quinn')).toBe(1);
+    // The sweep deletes failures past the window.
+    clock += IDENTITY_LIMITS.throttleWindowMs;
+    await identity.sweep();
+    const left = await db
+      .selectFrom('identity.login_failure')
+      .select(sql<number>`count(*)::int`.as('n'))
+      .where('at', '<=', new Date(clock - IDENTITY_LIMITS.throttleWindowMs))
+      .executeTakeFirstOrThrow();
+    expect(left.n).toBe(0);
+  });
+
+  it('applies the global delay to a password change too: 429 before the hash (#242)', async () => {
+    const password = await user('ria', ['quality']);
+    const { principal } = await identity.login({ username: 'ria', password, kind: 'desk' });
+    for (let i = 0; i < 10; i++) {
+      await failedLogin('ria', 'wrong-password-x', `10.40.0.${String(i)}`);
+    }
+    const hashes = hashesStarted();
+    await expect(identity.changePassword(principal, password, secret())).rejects.toMatchObject({
+      kind: 'throttled',
+      retryAfterS: 1,
+    });
+    expect(hashesStarted()).toBe(hashes);
+    clock += 1_000;
+    await identity.changePassword(principal, password, secret(), undefined, '10.40.0.99');
+    expect(await judged('ria')).toBe(0);
   });
 
   it('refuses one of two concurrent demotions of the last two admins (L7)', async () => {
@@ -1703,6 +1879,44 @@ describe('console permission check and session use (#237)', () => {
     expect((await write(OUTSIDE, { origin, 'x-forwarded-proto': 'https' })).statusCode).toBe(200);
   });
 
+  it('refuses a WebSocket upgrade from the edge network with an http:// Origin or without X-Forwarded-Proto (403, #241 review, #242)', async () => {
+    // A listening MES (an upgrade can't be injected) whose edge network holds the loopback
+    // address the test connects from, so the upgrade comes "from nginx".
+    const http = await buildMesHttp({
+      ready: () => Promise.resolve(true),
+      identity,
+      auth: true,
+      edge: new EdgeTrust('127.0.0.0/8'),
+    });
+    await http.app.listen({ host: '127.0.0.1', port: 0 });
+    try {
+      const address = http.app.server.address();
+      if (address === null || typeof address === 'string') throw new Error('no port');
+      const port = address.port;
+      const wsHost = `127.0.0.1:${String(port)}`;
+      const upgrade = {
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        'sec-websocket-version': '13',
+        host: wsHost,
+        'x-real-ip': '127.0.0.1',
+      };
+      const status = async (headers: Record<string, string>) =>
+        (await rawRequest(port, 'GET', WS_PATH, { ...upgrade, ...headers })).status;
+      // The page's own https origin with nginx's X-Forwarded-Proto upgrades (and is then closed
+      // with 4401: no session).
+      expect(await status({ origin: `https://${wsHost}`, 'x-forwarded-proto': 'https' })).toBe(101);
+      // An http:// origin of the same host and port, or no X-Forwarded-Proto at all: 403 before
+      // any upgrade (`schemeRefusedUpgrades`).
+      expect(await status({ origin: `http://${wsHost}`, 'x-forwarded-proto': 'https' })).toBe(403);
+      expect(await status({ origin: `https://${wsHost}` })).toBe(403);
+      expect(await status({ origin: `http://${wsHost}` })).toBe(403);
+    } finally {
+      await http.app.close();
+    }
+  });
+
   it('counts proxied requests by whether they came over the edge network', async () => {
     const before = await registry.metrics();
     const value = (text: string, trusted: string): number =>
@@ -1719,5 +1933,227 @@ describe('console permission check and session use (#237)', () => {
     const after = await registry.metrics();
     expect(value(after, 'true') - value(before, 'true')).toBe(1);
     expect(value(after, 'false') - value(before, 'false')).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Login throttling over HTTP (#242, P9-15, checklist S5): the address from X-Real-IP only over
+// the edge network, the pair lock, and the deterministic burst under the row lock.
+
+describe('login throttling over HTTP (#242, S5)', () => {
+  /** The edge network of this test, nginx's address on it, and a client outside it. */
+  const EDGE = '10.89.5.0/24';
+  const NGINX = '10.89.5.2';
+  const OUTSIDE = '172.18.0.9';
+  const host = 'localhost:8443';
+  const origin = `https://${host}`;
+  let app: FastifyInstance;
+  let registry: { metrics(): Promise<string> };
+
+  beforeAll(async () => {
+    await identity.start();
+    const http = await buildMesHttp({
+      ready: () => Promise.resolve(true),
+      identity,
+      auth: true,
+      allowedHosts: ['localhost'],
+      edge: new EdgeTrust(EDGE),
+      // The login buckets run on real time; the throttling under test runs on the test's clock.
+      loginRate: { perSecond: 1e6, burst: 1e6 },
+      userLoginRate: { perSecond: 1e6, burst: 1e6 },
+    });
+    app = http.app;
+    registry = http.registry;
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  /**
+   * A login: through nginx (from its address on edge, the client in X-Real-IP, the scheme in
+   * X-Forwarded-Proto) by default, or straight from `from` with whatever headers it sends.
+   */
+  const attempt = (
+    username: string,
+    password: string,
+    options: { readonly client?: string; readonly from?: string } = {},
+  ) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/v1/session',
+      remoteAddress: options.from ?? NGINX,
+      headers: {
+        host,
+        origin,
+        'content-type': 'application/json',
+        'x-forwarded-proto': 'https',
+        ...(options.client === undefined ? {} : { 'x-real-ip': options.client }),
+      },
+      payload: JSON.stringify({ username, password }),
+    });
+
+  const pairsOf = async (username: string) =>
+    db
+      .selectFrom('identity.login_address as a')
+      .innerJoin('identity.user_account as u', 'u.id', 'a.user_id')
+      .select(['a.address', 'a.failed_logins', 'a.locked_until'])
+      .where('u.username', '=', username)
+      .orderBy('a.address')
+      .execute();
+  const nOf = async (username: string): Promise<number> =>
+    (
+      await db
+        .selectFrom('identity.login_failure as f')
+        .innerJoin('identity.user_account as u', 'u.id', 'f.user_id')
+        .select(sql<number>`count(*)::int`.as('n'))
+        .where('u.username', '=', username)
+        .where('f.at', '>', new Date(clock - IDENTITY_LIMITS.throttleWindowMs))
+        .executeTakeFirstOrThrow()
+    ).n;
+  const untrusted = async (): Promise<number> =>
+    Number(
+      /^mes_http_proxy_requests_total\{trusted="false"\} (\d+)$/m.exec(
+        await registry.metrics(),
+      )?.[1] ?? 'NaN',
+    );
+
+  it('keys a login by X-Real-IP only over the edge network: a lock from one client leaves another open; a spoofed header from elsewhere is ignored', async () => {
+    const password = await user('h-ana', ['operator']);
+    const a = '192.168.65.11';
+    const b = '192.168.65.12';
+    // Client a, through nginx: five failures lock (h-ana, a).
+    for (let i = 0; i < 5; i++) {
+      expect((await attempt('h-ana', 'wrong-password-x', { client: a })).statusCode).toBe(401);
+    }
+    expect((await attempt('h-ana', password, { client: a })).statusCode).toBe(401);
+    // Client b, through nginx: in.
+    expect((await attempt('h-ana', password, { client: b })).statusCode).toBe(200);
+    expect((await pairsOf('h-ana')).map((p) => p.address)).toEqual([a]);
+    // A container on the default network sends its own X-Real-IP straight to mes:4700: not
+    // believed. Its failures land on its own address, never on b's, and b stays open.
+    const spoofedBefore = await untrusted();
+    for (let i = 0; i < 5; i++) {
+      const spoofed = await attempt('h-ana', 'wrong-password-x', { client: b, from: OUTSIDE });
+      expect(spoofed.statusCode).toBe(401);
+    }
+    expect(await untrusted()).toBe(spoofedBefore + 5);
+    expect((await pairsOf('h-ana')).map((p) => p.address)).toEqual([OUTSIDE, a]);
+    expect((await attempt('h-ana', password, { client: b })).statusCode).toBe(200);
+    // Nor can a spoofed header dodge the sender's own lock.
+    const dodge = await attempt('h-ana', password, { client: '203.0.113.7', from: OUTSIDE });
+    expect(dodge.statusCode).toBe(401);
+    // Through nginx with a value that isn't an address (nginx always sets one), the connection's
+    // address counts: nginx's own.
+    const garbage = await attempt('h-ana', 'wrong-password-x', { client: 'not-an-ip' });
+    expect(garbage.statusCode).toBe(401);
+    expect((await pairsOf('h-ana')).map((p) => p.address)).toContain(NGINX);
+    // An IPv4-mapped source and client are stored as IPv4.
+    const mapped = await attempt('h-ana', 'wrong-password-x', {
+      client: '::ffff:192.168.65.13',
+      from: `::ffff:${NGINX}`,
+    });
+    expect(mapped.statusCode).toBe(401);
+    expect((await pairsOf('h-ana')).map((p) => p.address)).toContain('192.168.65.13');
+  });
+
+  it('judges exactly one of a burst of 20 from a fresh third address once the wait of n >= 15 expires; 19 get 429 with the remaining wait rounded up, uncounted (deterministic burst)', async () => {
+    const password = await user('h-ben', ['operator']);
+    const [a, b, c, d] = ['192.168.70.1', '192.168.70.2', '192.168.70.3', '192.168.70.4'];
+    // n to 10 from a and b (five each: both pairs lock), then to 15 from c, each judged attempt
+    // once the previous wait is over: n = 15, a 30 s wait.
+    for (const client of [a, b]) {
+      for (let i = 0; i < 5; i++) {
+        expect((await attempt('h-ben', 'wrong-password-x', { client })).statusCode).toBe(401);
+      }
+    }
+    for (let n = 11; n <= 15; n++) {
+      // Inside the wait: 429 with the remaining time, not counted.
+      const early = await attempt('h-ben', 'wrong-password-x', { client: c });
+      expect(early.statusCode).toBe(429);
+      expect(early.headers['retry-after']).toBe(String(throttleWaitMs(n - 1) / 1000));
+      clock += throttleWaitMs(n - 1);
+      expect((await attempt('h-ben', 'wrong-password-x', { client: c })).statusCode).toBe(401);
+    }
+    expect(await nOf('h-ben')).toBe(15);
+    expect(throttleWaitMs(15)).toBe(30_000);
+    // Let the 30 s wait expire.
+    clock += 30_000;
+    // The burst: 20 at once from d, a fresh address (no pair lock applies). The user's row lock
+    // serializes them: the first is judged (n = 16, a new 30 s wait), the 19 others find that wait.
+    const hashes = hashesStarted();
+    const burst = await Promise.all(
+      Array.from({ length: 20 }, () => attempt('h-ben', 'wrong-password-x', { client: d })),
+    );
+    expect(burst.map((r) => r.statusCode).sort()).toEqual([401, ...Array<number>(19).fill(429)]);
+    for (const refused of burst.filter((r) => r.statusCode === 429)) {
+      expect(refused.headers['retry-after']).toBe('30');
+      expect(refused.json<{ type: string; detail: string }>()).toMatchObject({
+        type: PROBLEM_TYPES.loginRate,
+        detail: LOGIN_THROTTLED,
+      });
+    }
+    // Exactly one judged: one hash, n = 16, d's pair counts one failure.
+    expect(hashesStarted() - hashes).toBe(1);
+    expect(await nOf('h-ben')).toBe(16);
+    expect((await pairsOf('h-ben')).find((p) => p.address === d)?.failed_logins).toBe(1);
+    // Retry-After is the remaining wait rounded up: 19.5 s left answers 20.
+    clock += 10_500;
+    const later = await attempt('h-ben', password, { client: d });
+    expect(later.statusCode).toBe(429);
+    expect(later.headers['retry-after']).toBe('20');
+    // Never a lock: once the wait is over, the right password from d gets in, and n resets.
+    clock += 19_500;
+    expect((await attempt('h-ben', password, { client: d })).statusCode).toBe(200);
+    expect(await nOf('h-ben')).toBe(0);
+    // a, b and c stay locked for themselves.
+    expect((await attempt('h-ben', password, { client: a })).statusCode).toBe(401);
+  });
+
+  it('asks the login buckets only for an attempt the global delay let through', async () => {
+    const password = await user('h-cem', ['operator']);
+    const tight = await buildMesHttp({
+      ready: () => Promise.resolve(true),
+      identity,
+      auth: true,
+      allowedHosts: ['localhost'],
+      edge: new EdgeTrust(EDGE),
+      loginRate: { perSecond: 1e6, burst: 1e6 },
+      // One token for the name, refilled after about 17 minutes of real time.
+      userLoginRate: { perSecond: 0.001, burst: 1 },
+    });
+    try {
+      for (let i = 0; i < 10; i++) {
+        await failedLogin('h-cem', 'wrong-password-x', `192.168.80.${String(i)}`);
+      }
+      const send = () =>
+        tight.app.inject({
+          method: 'POST',
+          url: '/api/v1/session',
+          remoteAddress: NGINX,
+          headers: {
+            host,
+            origin,
+            'content-type': 'application/json',
+            'x-forwarded-proto': 'https',
+            'x-real-ip': '192.168.80.99',
+          },
+          payload: JSON.stringify({ username: 'h-cem', password }),
+        });
+      // Within the global delay: its own 429, and the bucket's one token is still there...
+      const delayed = await send();
+      expect(delayed.statusCode).toBe(429);
+      expect(delayed.json<{ detail: string }>().detail).toBe(LOGIN_THROTTLED);
+      expect(delayed.headers['retry-after']).toBe('1');
+      // ...so the first attempt after the wait passes the bucket and is judged (here: in).
+      clock += 1_000;
+      expect((await send()).statusCode).toBe(200);
+      // The bucket is empty now: the next attempt is the bucket's 429.
+      const bucket = await send();
+      expect(bucket.statusCode).toBe(429);
+      expect(bucket.json<{ detail: string }>().detail).toBe(LOGIN_RATE);
+    } finally {
+      await tight.app.close();
+    }
   });
 });

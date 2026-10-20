@@ -25,7 +25,6 @@ export interface UserAccountTable {
   enabled: ColumnType<boolean, boolean | undefined, boolean>;
   must_change_password: ColumnType<boolean, boolean | undefined, boolean>;
   failed_logins: ColumnType<number, number | undefined, number>;
-  locked_until: NullableTimestamp;
   next_attempt_at: NullableTimestamp;
   password_changed_at: DefaultTimestamp;
   created_at: DefaultTimestamp;
@@ -35,6 +34,26 @@ export interface UserAccountTable {
 export interface UserRoleTable {
   user_id: number;
   role_id: string;
+}
+
+/**
+ * Consecutive failures of one account from one address and the lock the fifth sets (#242,
+ * migration 0033); never an admin's.
+ */
+export interface LoginAddressTable {
+  user_id: number;
+  address: string;
+  failed_logins: number;
+  locked_until: NullableTimestamp;
+  last_failure_at: Timestamp;
+}
+
+/** One judged failed login of an account, kept 15 minutes for the global delay (#242). */
+export interface LoginFailureTable {
+  id: Generated<number>;
+  user_id: number;
+  address: string;
+  at: Timestamp;
 }
 
 export type SessionEndReason =
@@ -80,6 +99,8 @@ export interface IdentityTables {
   'identity.user_role': UserRoleTable;
   'identity.session': SessionTable;
   'identity.audit_log': AuditLogTable;
+  'identity.login_address': LoginAddressTable;
+  'identity.login_failure': LoginFailureTable;
 }
 
 export const IDENTITY_COLUMNS = {
@@ -91,7 +112,6 @@ export const IDENTITY_COLUMNS = {
     'enabled',
     'must_change_password',
     'failed_logins',
-    'locked_until',
     'next_attempt_at',
     'password_changed_at',
     'created_at',
@@ -125,4 +145,12 @@ export const IDENTITY_COLUMNS = {
     'request_id',
     'legacy',
   ],
+  'identity.login_address': [
+    'user_id',
+    'address',
+    'failed_logins',
+    'locked_until',
+    'last_failure_at',
+  ],
+  'identity.login_failure': ['id', 'user_id', 'address', 'at'],
 } as const;

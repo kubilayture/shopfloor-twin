@@ -116,6 +116,32 @@ describe('the hardened Compose (P9-14, checklist S8)', () => {
       .map(([name]) => name);
     expect(mounting).toEqual(['pki']);
   });
+
+  it('limits every service, mounts no Docker socket and runs the images of the repository as node (#242)', async () => {
+    const all = await services('docker-compose.yml');
+    for (const [name, service] of Object.entries(all)) {
+      // Resource limits on every service, the database and the broker included (P9-01).
+      const limits = (
+        service as { deploy?: { resources?: { limits?: { cpus?: string; memory?: string } } } }
+      ).deploy?.resources?.limits;
+      expect(limits?.cpus, name).toMatch(/^\d+(\.\d+)?$/);
+      expect(limits?.memory, name).toMatch(/^\d+[MG]$/);
+      // No Docker socket, no privileged mode, no host network or PID namespace.
+      expect(JSON.stringify(service.volumes ?? []), name).not.toMatch(/docker\.sock/);
+      const raw = service as { privileged?: boolean; network_mode?: string; pid?: string };
+      expect(raw.privileged, name).toBeUndefined();
+      expect(raw.network_mode, name).toBeUndefined();
+      expect(raw.pid, name).toBeUndefined();
+    }
+    // The four Node images switch to `node` before their command; the web is nginx-unprivileged.
+    for (const app of ['simulator', 'edge-gateway', 'mes-server', 'erp-mock']) {
+      const dockerfile = await readFile(join(REPO, `apps/${app}/Dockerfile`), 'utf8');
+      const users = [...dockerfile.matchAll(/^USER\s+(\S+)/gm)].map((m) => m[1]);
+      expect(users.at(-1), app).toBe('node');
+    }
+    const web = await readFile(join(REPO, 'apps/web/Dockerfile'), 'utf8');
+    expect(web).toMatch(/^FROM\s+\S*nginx-unprivileged\S*/m);
+  });
 });
 
 describe('the observability profile (P9-17, compose.observability.yml)', () => {

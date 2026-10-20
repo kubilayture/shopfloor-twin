@@ -277,10 +277,15 @@ tls_dir=$(mktemp -d)
 # On every exit (success, `fail`, a `set -e` stop, Ctrl-C): remove the temporary file and disable
 # the smoke user once it exists (#170; review of PR #186).
 smoke_users=
+# The login probes (#242): containers on the Compose network, removed by name.
+login_probes=
 cleanup() {
   status=$?
   rm -f "$acl_out"
   rm -rf "$tls_dir"
+  for probe in $login_probes; do
+    command docker rm -f "$probe" >/dev/null 2>&1 || true
+  done
   for smoke_user in $smoke_users; do
     if docker compose exec -T mes node apps/mes-server/src/user-cli.ts --disable \
       --username "$smoke_user" >/dev/null 2>&1; then
@@ -621,3 +626,199 @@ printf 'Cookie: %s\n' "$smoke_cookie" | wcurl -sf -o /dev/null -H @- "$web/api/v
 [ "$(as_super "$latest_use")" = t ] || fail "a session read through /api/ did not count as use"
 echo "ok: a client's X-Original-Method through /api/ is dropped (no session use; a read is use)"
 echo "ok: edge trust ($proxied_trusted proxied requests trusted, 0 untrusted)"
+
+# Login throttling (#242, P9-15, checklist S5; ADR-0039 amendment). Probe containers on the Compose
+# network are clients with addresses of their own, so nginx's `X-Real-IP` tells them apart (on the
+# host, Colima's port forwarding makes every client one address). Each runs the MES image's node
+# with scripts/stack-smoke-login.mjs on stdin; the password goes in the environment, never in argv.
+# Two users made for this run (disabled again by the exit trap, like the smoke operator).
+default_network=$(docker inspect "$mes_container" \
+  --format '{{range $name, $net := .NetworkSettings.Networks}}{{println $name}}{{end}}' | grep '_default$' || true)
+[ -n "$default_network" ] || fail "the MES is not on the default network"
+mes_image=$(docker inspect --format '{{.Config.Image}}' "$mes_container")
+SMOKE_LOGIN_CA=$(cat "$tls_dir/ca.pem")
+export SMOKE_LOGIN_CA
+probe_prefix="smoke-login-$(openssl rand -hex 3)"
+for name in a b c d; do
+  probe="$probe_prefix-$name"
+  login_probes="$login_probes $probe"
+  docker run -d --rm --name "$probe" --network "$default_network" --memory 128m --cpus 0.5 \
+    --read-only --cap-drop ALL --security-opt no-new-privileges -e SMOKE_LOGIN_CA \
+    --entrypoint node "$mes_image" -e 'setInterval(() => {}, 1 << 30)' >/dev/null ||
+    fail "could not start the login probe $probe"
+done
+# probe_run <probe> <target web|mes> <mode> [count] [pace]: the probe script's lines.
+probe_run() {
+  docker exec -i -e SMOKE_LOGIN_CA -e SMOKE_LOGIN_TARGET="$2" -e SMOKE_LOGIN_USERNAME \
+    -e SMOKE_LOGIN_PASSWORD -e SMOKE_LOGIN_SPOOF "$probe_prefix-$1" node - "$3" "${4:-1}" "${5:-1100}" \
+    <scripts/stack-smoke-login.mjs
+}
+address_a=$(probe_run a web address)
+address_b=$(probe_run b web address)
+address_c=$(probe_run c web address)
+address_d=$(probe_run d web address)
+[ -n "$address_a" ] && [ "$address_a" != "$address_b" ] && [ "$address_b" != "$address_c" ] &&
+  [ "$address_c" != "$address_d" ] || fail "the login probes have no distinct addresses"
+# login_user <prefix>: a new operator for this run, as SMOKE_LOGIN_USERNAME, its password in
+# login_password; the exit trap disables it.
+login_user() {
+  SMOKE_LOGIN_USERNAME="$1-$(openssl rand -hex 4)"
+  login_password=$(openssl rand -hex 16)
+  export SMOKE_LOGIN_USERNAME
+  printf '%s' "$login_password" | docker compose exec -T mes \
+    node apps/mes-server/src/user-cli.ts --username "$SMOKE_LOGIN_USERNAME" --role operator \
+    >/dev/null || fail "user:create could not create $SMOKE_LOGIN_USERNAME"
+  smoke_users="$smoke_users $SMOKE_LOGIN_USERNAME"
+}
+# pairs_of <user>: "<address>:<failures>:<locked>" per (account, address) pair, by address.
+pairs_of() {
+  as_super "select a.address || ':' || a.failed_logins || ':' ||
+      coalesce(a.locked_until > now(), false)::text
+    from identity.login_address a join identity.user_account u on u.id = a.user_id
+    where u.username = '$1' order by a.address"
+}
+# judged_of <user>: n, the user's judged failures in the 15-minute window.
+judged_of() {
+  as_super "select count(*) from identity.login_failure f join identity.user_account u
+    on u.id = f.user_id where u.username = '$1' and f.at > now() - interval '15 minutes'"
+}
+# all_status <status> <count> <lines>: exactly <count> answers, each with that status.
+all_status() {
+  [ "$(printf '%s\n' "$3" | grep -c "^$1 ")" = "$2" ] && [ "$(printf '%s\n' "$3" | wc -l | tr -d ' ')" = "$2" ]
+}
+untrusted_before=$(in_container mes 4700 /metrics |
+  sed -n 's/^mes_http_proxy_requests_total{trusted="false"} \([0-9][0-9]*\)$/\1/p')
+
+# 1. Two containers through nginx: five failures lock the user for a, not for b.
+login_user smoke-thr
+thr_password=$login_password
+SMOKE_LOGIN_PASSWORD=wrong-password-x
+export SMOKE_LOGIN_PASSWORD
+answers=$(probe_run a web sequence 5) || fail "probe a failed"
+all_status 401 5 "$answers" || fail "five wrong passwords from a: $answers"
+SMOKE_LOGIN_PASSWORD=$thr_password
+answers=$(probe_run a web sequence 1) || fail "probe a failed"
+all_status 401 1 "$answers" || fail "the right password from the locked address a was not refused: $answers"
+answers=$(probe_run b web sequence 1) || fail "probe b failed"
+all_status 200 1 "$answers" || fail "a lock from a locked the user out from b: $answers"
+[ "$(pairs_of "$SMOKE_LOGIN_USERNAME")" = "$address_a:5:true" ] ||
+  fail "the lock is not keyed by a's address $address_a: $(pairs_of "$SMOKE_LOGIN_USERNAME")"
+echo "ok: login lock per (user, address): locked from probe a ($address_a), b ($address_b) logged in"
+
+# 2. A spoofed X-Real-IP from outside the edge network (c straight to mes:4700, naming b) is not
+# believed: the failures land on c's own address, b stays open, and the MES counts them untrusted.
+SMOKE_LOGIN_PASSWORD=wrong-password-x
+SMOKE_LOGIN_SPOOF=$address_b
+export SMOKE_LOGIN_SPOOF
+answers=$(probe_run c mes sequence 5) || fail "probe c failed"
+all_status 401 5 "$answers" || fail "five wrong passwords from c to the MES: $answers"
+unset SMOKE_LOGIN_SPOOF
+SMOKE_LOGIN_PASSWORD=$thr_password
+answers=$(probe_run b web sequence 1) || fail "probe b failed"
+all_status 200 1 "$answers" || fail "a spoofed X-Real-IP locked b: $answers"
+pairs=$(pairs_of "$SMOKE_LOGIN_USERNAME" | tr '\n' ' ')
+case "$pairs" in
+  *"$address_c:5:true"*) ;;
+  *) fail "the spoofed failures are not keyed by c's address $address_c: $pairs" ;;
+esac
+case "$pairs" in
+  *"$address_b:"*) fail "a spoofed X-Real-IP was believed: $pairs" ;;
+esac
+untrusted_after=$(in_container mes 4700 /metrics |
+  sed -n 's/^mes_http_proxy_requests_total{trusted="false"} \([0-9][0-9]*\)$/\1/p')
+[ "$untrusted_after" = $((untrusted_before + 5)) ] ||
+  fail "the MES counted ${untrusted_after:-none} untrusted proxied requests, not $((untrusted_before + 5))"
+echo "ok: a spoofed X-Real-IP from outside the edge network is ignored (keyed by c, $address_c; 5 untrusted)"
+
+# 3. The deterministic burst: n to 15 from a, b and c through nginx (five each, each pair locks;
+# from n = 10 every judged attempt waits out the 429's Retry-After: 1, 2, 4, 8 s), so the wait is
+# 30 s after the fifteenth; let it expire, then 20 at once from d, a fresh address: exactly one is
+# judged, 19 get 429 with the remaining wait rounded up, and none of them counts.
+login_user smoke-burst
+SMOKE_LOGIN_PASSWORD=wrong-password-x
+for probe in a b c; do
+  answers=$(probe_run "$probe" web drive 5) || fail "probe $probe failed"
+  all_status 401 5 "$answers" || fail "driving n from $probe: $answers"
+done
+[ "$(judged_of "$SMOKE_LOGIN_USERNAME")" = 15 ] ||
+  fail "n is $(judged_of "$SMOKE_LOGIN_USERNAME") after 15 judged failures, not 15"
+last_wait=$(as_super "select ceil(extract(epoch from (max(f.at) + interval '30 seconds' - now())))::int
+  from identity.login_failure f join identity.user_account u on u.id = f.user_id
+  where u.username = '$SMOKE_LOGIN_USERNAME'")
+[ "$last_wait" -gt 0 ] && [ "$last_wait" -le 30 ] || fail "the wait after n = 15 is not 30 s ($last_wait s left)"
+sleep $((last_wait + 1))
+answers=$(probe_run d web burst 20) || fail "probe d failed"
+elapsed=$(printf '%s\n' "$answers" | sed -n 's/^elapsed \([0-9]*\)$/\1/p')
+results=$(printf '%s\n' "$answers" | grep -v '^elapsed ')
+[ "$(printf '%s\n' "$results" | grep -c '^401 ')" = 1 ] ||
+  fail "the burst had $(printf '%s\n' "$results" | grep -c '^401 ') judged attempts, not 1: $(echo $results)"
+[ "$(printf '%s\n' "$results" | grep -c '^429 ')" = 19 ] ||
+  fail "the burst had $(printf '%s\n' "$results" | grep -c '^429 ') 429s, not 19: $(echo $results)"
+# Each Retry-After is the remaining 30 s wait rounded up: 30 unless the burst took a second or more.
+floor=$((30 - (elapsed + 999) / 1000))
+for retry in $(printf '%s\n' "$results" | sed -n 's/^429 \([0-9]*\)$/\1/p'); do
+  [ "$retry" -le 30 ] && [ "$retry" -ge "$floor" ] ||
+    fail "a 429 of the burst said Retry-After $retry, not the remaining wait ($floor..30)"
+done
+[ "$(judged_of "$SMOKE_LOGIN_USERNAME")" = 16 ] ||
+  fail "n is $(judged_of "$SMOKE_LOGIN_USERNAME") after the burst, not 16: a 429 counted"
+case " $(pairs_of "$SMOKE_LOGIN_USERNAME" | tr '\n' ' ')" in
+  *" $address_d:1:false "*) ;;
+  *) fail "d's pair is not one unlocked failure: $(pairs_of "$SMOKE_LOGIN_USERNAME" | tr '\n' ' ')" ;;
+esac
+echo "ok: burst of 20 from a fresh address after n = 15: 1 judged, 19 x 429 (Retry-After $(printf '%s\n' "$results" | sed -n 's/^429 \([0-9]*\)$/\1/p' | sort -u | tr '\n' ' ')s, ${elapsed} ms), n = 16"
+for probe in $login_probes; do
+  command docker rm -f "$probe" >/dev/null 2>&1 || true
+done
+login_probes=
+unset SMOKE_LOGIN_USERNAME SMOKE_LOGIN_PASSWORD SMOKE_LOGIN_CA
+
+# Secrets (checklist S7, #242): no value of the env file's passwords and tokens, nor the passwords
+# of this run's users, in any container's log (one-shot steps included), in the images' metadata
+# and build history, or in the repository's files (tracked and untracked). The gate searches its own
+# output of this run for the same values. Values shorter than 12 characters are skipped (a dev
+# `.env` placeholder would match ordinary text); the gate's are 36 hex characters.
+secrets_file=$(mktemp)
+grep -E '^[A-Z0-9_]+_(PASSWORD|TOKEN)=' "$env_file" | cut -d= -f2- >"$secrets_file"
+printf '%s\n' "$SMOKE_PASSWORD" "$thr_password" >>"$secrets_file"
+if [ "${SMOKE_WRITES:-}" = 1 ]; then
+  printf '%s\n' "$SMOKE_SUPERVISOR_PASSWORD" "$SMOKE_QUALITY_PASSWORD" >>"$secrets_file"
+fi
+haystack=$(mktemp)
+docker compose logs --no-color --no-log-prefix >"$haystack" 2>&1 ||
+  fail "could not read the containers' logs"
+for image in $(docker compose ps -a --format "{{.Image}}" | sort -u); do
+  docker image inspect "$image" >>"$haystack" 2>/dev/null || true
+  docker history --no-trunc --format '{{.CreatedBy}}' "$image" >>"$haystack" 2>/dev/null || true
+done
+checked=0
+while IFS= read -r value; do
+  [ "${#value}" -ge 12 ] || continue
+  checked=$((checked + 1))
+  if grep -qF -- "$value" "$haystack"; then
+    rm -f "$secrets_file" "$haystack"
+    fail "a secret appears in a container's log or an image"
+  fi
+  if git grep -qF --untracked -e "$value" 2>/dev/null; then
+    rm -f "$secrets_file" "$haystack"
+    fail "a secret appears in the repository's files"
+  fi
+done <"$secrets_file"
+rm -f "$secrets_file" "$haystack"
+[ "$checked" -gt 0 ] || fail "no secret long enough to search for"
+echo "ok: none of $checked secrets in the containers' logs, the images or the repository"
+
+# Containers (checklist S8, #242): every running service's main process runs as a user other than
+# root (the four Node images as node, the web as nginx; the database and the broker drop to
+# postgres and mosquitto). `docker top` lists the processes as the VM sees them; State.Pid is the
+# main one.
+for container in $(docker compose ps -q); do
+  name=$(docker inspect --format '{{.Name}}' "$container")
+  pid=$(docker inspect --format '{{.State.Pid}}' "$container")
+  owner=$(docker top "$container" -o pid,user | awk -v pid="$pid" '$1 == pid { print $2 }')
+  [ -n "$owner" ] || fail "no main process found for $name"
+  case "$owner" in
+    root | 0) fail "$name runs its main process as root" ;;
+  esac
+done
+echo "ok: no service's main process runs as root"

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -23,7 +23,7 @@ import { loadDataset, type Dataset } from './dataset.ts';
 import { parseEnv, isWeakToken } from './env.ts';
 import { Erp } from './erp.ts';
 import { createLogger } from './log.ts';
-import { createErpServer } from './server.ts';
+import { bearerMatches, createErpServer, tokenDigest, type ErpApiRoute } from './server.ts';
 import { ErpStore } from './store.ts';
 
 const REPO = resolve(import.meta.dirname, '../../..');
@@ -42,6 +42,7 @@ afterEach(async () => {
 interface Running {
   readonly base: string;
   readonly logs: string[];
+  readonly routes: readonly ErpApiRoute[];
   stop(): Promise<void>;
 }
 
@@ -75,7 +76,7 @@ async function start(file: string, admin = false): Promise<Running> {
     store.close();
   };
   cleanups.push(stop);
-  return { base: `http://127.0.0.1:${String(port)}`, logs, stop };
+  return { base: `http://127.0.0.1:${String(port)}`, logs, routes: server.apiRoutes, stop };
 }
 
 const auth = { authorization: `Bearer ${TOKEN}` };
@@ -895,6 +896,103 @@ describe('quality notifications and the lot view (Phase 8)', () => {
     ]);
     // Other lots are untouched.
     expect((await lotView(base, 'SK2-2610-01')).blocked).toBe(false);
+  });
+});
+
+describe('the bearer token (#242, checklist S7)', () => {
+  it('compares SHA-256 digests in constant time: never the raw token, whatever its length', () => {
+    const expected = tokenDigest(TOKEN);
+    expect(expected).toHaveLength(32);
+    expect(bearerMatches(`Bearer ${TOKEN}`, expected)).toBe(true);
+    expect(bearerMatches(`bearer  ${TOKEN} `, expected)).toBe(true);
+    // A wrong token of any length (shorter, longer, the same length differing in the last
+    // character, very long) is refused without throwing: `timingSafeEqual` on the raw values
+    // would throw on a length mismatch, and so reveal the length.
+    const sameLength = `${TOKEN.slice(0, -1)}${TOKEN.endsWith('f') ? 'e' : 'f'}`;
+    for (const header of [
+      undefined,
+      '',
+      TOKEN,
+      `Bearer ${TOKEN.slice(0, -1)}`,
+      `Bearer ${TOKEN}0`,
+      `Bearer ${sameLength}`,
+      `Bearer ${'a'.repeat(100_000)}`,
+      `Basic ${TOKEN}`,
+      `Bearer ${TOKEN} ${TOKEN}`,
+      'Bearer',
+    ]) {
+      expect(bearerMatches(header, expected), String(header).slice(0, 40)).toBe(false);
+    }
+    // The check is the only comparison of the token in the source: no `===` on it anywhere.
+    const source = readFileSync(join(REPO, 'apps/erp-mock/src/server.ts'), 'utf8');
+    expect(source).toContain('timingSafeEqual(tokenDigest(match[1]), expected)');
+    expect(source).not.toMatch(/token\s*[!=]==|[!=]==\s*(options\.)?token\b/);
+  });
+
+  it('needs the token on every route and method of /api/v1, before routing (401, counted)', async () => {
+    const { base, routes } = await start(storePath());
+    // The route table as declared: a new route joins this list, and the loop below covers it.
+    const declared = routes.flatMap((r) =>
+      r.methods.map((m) => `${m} ${r.pattern.source.replaceAll('\\/', '/')}`),
+    );
+    expect(declared.sort()).toEqual(
+      [
+        'GET ^/api/v1/orders$',
+        'POST ^/api/v1/orders$',
+        'GET ^/api/v1/orders/([^/]+)$',
+        'GET ^/api/v1/lots$',
+        'GET ^/api/v1/lots/([^/]+)$',
+        'GET ^/api/v1/quality-notifications$',
+        'POST ^/api/v1/quality-notifications$',
+        'GET ^/api/v1/confirmations$',
+        'POST ^/api/v1/confirmations$',
+        'GET ^/api/v1/order-status$',
+        'POST ^/api/v1/order-status$',
+      ].sort(),
+    );
+    const wrong = [
+      {},
+      { authorization: 'Bearer wrong' },
+      { authorization: `Bearer ${TOKEN.slice(0, -1)}` },
+      { authorization: TOKEN },
+    ];
+    let refused = 0;
+    for (const route of routes) {
+      const path = route.pattern.source
+        .replace(/^\^/, '')
+        .replace(/\$$/, '')
+        .replaceAll('\\/', '/')
+        .replace('([^/]+)', 'ORD-1001');
+      for (const method of route.methods) {
+        for (const headers of wrong) {
+          const response = await fetch(`${base}${path}`, {
+            method,
+            headers: { ...headers, 'content-type': 'application/json' },
+            ...(method === 'POST' ? { body: '{}' } : {}),
+          });
+          expect(response.headers.get('www-authenticate'), `${method} ${path}`).toBe(
+            'Bearer realm="erp-mock"',
+          );
+          await problem(response, 401);
+          refused++;
+        }
+        // With the token the same request gets past the check (whatever it answers then).
+        const allowed = await fetch(`${base}${path}`, {
+          method,
+          headers: { ...auth, 'content-type': 'application/json' },
+          ...(method === 'POST' ? { body: '{}' } : {}),
+        });
+        expect(allowed.status, `${method} ${path}`).not.toBe(401);
+        await allowed.body?.cancel();
+      }
+    }
+    // Unknown /api/v1 paths and methods are refused for the token first: nothing about the
+    // routes is learned without it.
+    await problem(await fetch(`${base}/api/v1/nothing`), 401);
+    await problem(await fetch(`${base}/api/v1/lots`, { method: 'DELETE' }), 401);
+    refused += 2;
+    const metrics = await (await fetch(`${base}/metrics`)).text();
+    expect(metrics).toContain(`erp_unauthorized_requests_total ${String(refused)}`);
   });
 });
 

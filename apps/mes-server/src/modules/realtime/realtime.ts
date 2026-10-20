@@ -316,6 +316,11 @@ export interface RealtimeOptions {
    * its proxy headers (`X-Original-Method`; `X-Real-IP` from P9-15) believed. Default: never.
    */
   readonly trustsProxy?: (request: FastifyRequest) => boolean;
+  /**
+   * The client's address a login is keyed by (#242): nginx's `X-Real-IP` when `trustsProxy`, else
+   * the socket's. Default: the socket's.
+   */
+  readonly clientAddress?: (request: FastifyRequest) => string;
 }
 
 /**
@@ -423,6 +428,7 @@ const IDENTITY_STATUS = {
   'not-found': 404,
   conflict: 409,
   invalid: 422,
+  throttled: 429,
 } as const;
 
 /** The value of one cookie of a `Cookie` header. */
@@ -748,6 +754,9 @@ export async function registerRealtime(
   const touchOf = (request: FastifyRequest): boolean =>
     (request.routeOptions.config as Partial<RouteConfig> | undefined)?.touch?.(request) ?? true;
   const trustsProxy = options.trustsProxy ?? (() => false);
+  const clientAddress =
+    options.clientAddress ??
+    ((request: FastifyRequest): string => request.raw.socket.remoteAddress ?? 'unknown');
   /**
    * The Origin's scheme behind the HTTPS front (#241 review, ADR-0039): a request nginx proxied
    * over the `edge` network carries the scheme the browser used in `X-Forwarded-Proto` (always
@@ -2415,10 +2424,14 @@ export async function registerRealtime(
       );
 
       // Identity (#168, ADR-0026): the session and user administration.
-      const identityProblem = (error: unknown): unknown =>
-        error instanceof IdentityError
-          ? new HttpProblem(IDENTITY_STATUS[error.kind], error.message, error.type)
-          : error;
+      const identityProblem = (error: unknown, reply?: FastifyReply): unknown => {
+        if (!(error instanceof IdentityError)) return error;
+        // A 429 (#242: the global delay, or the login buckets) says when to come back.
+        if (error.retryAfterS !== undefined) {
+          reply?.header('retry-after', String(error.retryAfterS));
+        }
+        return new HttpProblem(IDENTITY_STATUS[error.kind], error.message, error.type);
+      };
       const setCookie = (reply: FastifyReply, token: string, maxAgeS: number): void => {
         reply.header(
           'set-cookie',
@@ -2436,9 +2449,15 @@ export async function registerRealtime(
           description:
             `Sets \`${cookieName}\` (HttpOnly, SameSite=Strict, Path=/) to a new random token; ` +
             'a session the request carried ends. Every failure (unknown or disabled user, wrong ' +
-            'password, a locked account, an admin within its delay) is the same 401. Five ' +
-            'failures in a row lock a normal account for 15 minutes; an admin is delayed instead ' +
-            '(1 s doubling, at most 5 min). Passes the write guards (login CSRF).',
+            'password, a user locked for this address, an admin within its delay) is the same ' +
+            '401. Five failures in a row from one client address lock the user for that address ' +
+            'for 15 minutes (the address is X-Real-IP from nginx over the edge network, else the ' +
+            "connection's); an admin is delayed instead (1 s doubling, at most 5 min). Once a " +
+            'user has 10 or more failed attempts in 15 minutes from all addresses together (n), ' +
+            'an attempt within min(2^(n-10) s, 30 s) of the last failure is answered 429 with ' +
+            'Retry-After, the remaining wait rounded up, without checking the password; a 429 is ' +
+            'not counted, and the user is never locked from every address. Passes the write ' +
+            'guards (login CSRF).',
           tags: ['identity'],
           params: z.strictObject({}),
           body: loginRequestSchema,
@@ -2447,11 +2466,8 @@ export async function registerRealtime(
         },
         LIMITS.writeBodyBytes,
         async ({ body, requestId, request, reply }) => {
-          const wait = loginRefusal(body.username);
-          if (wait !== undefined) {
-            reply.header('retry-after', String(wait));
-            throw new HttpProblem(429, 'too many logins; try again', PROBLEM_TYPES.loginRate);
-          }
+          // The login buckets are asked under the user's row lock, after the global delay (#242):
+          // an attempt the delay refuses answers its own Retry-After and spends no token.
           const { token, principal } = await needIdentity()
             .login({
               username: body.username,
@@ -2459,9 +2475,11 @@ export async function registerRealtime(
               kind: body.kind,
               requestId,
               replaces: tokenOf(request),
+              address: clientAddress(request),
+              admit: () => loginRefusal(body.username),
             })
             .catch((error: unknown) => {
-              throw identityProblem(error);
+              throw identityProblem(error, reply);
             });
           const { createdAt, expiresAt } = principal.session;
           setCookie(reply, token, Math.ceil((expiresAt.getTime() - createdAt.getTime()) / 1000));
@@ -2563,11 +2581,17 @@ export async function registerRealtime(
           errors: [400, 405, 413, 415, 422, 429, 503],
         },
         LIMITS.writeBodyBytes,
-        async ({ body, requestId, request }) => {
+        async ({ body, requestId, request, reply }) => {
           const { endedSessions } = await needIdentity()
-            .changePassword(principalOf(request), body.currentPassword, body.newPassword, requestId)
+            .changePassword(
+              principalOf(request),
+              body.currentPassword,
+              body.newPassword,
+              requestId,
+              clientAddress(request),
+            )
             .catch((error: unknown) => {
-              throw identityProblem(error);
+              throw identityProblem(error, reply);
             });
           return { changed: true as const, endedSessions };
         },

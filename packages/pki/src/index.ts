@@ -26,6 +26,7 @@ export {
   DEFAULT_VALIDITY_DAYS,
   EMPTIED_FOLDERS,
   RENEW_WITHIN_DAYS,
+  STAGING_FOLDER,
   UnknownIdentityError,
   ensureOpcuaPki,
   type EnsurePkiOptions,

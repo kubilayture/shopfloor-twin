@@ -147,6 +147,23 @@ describe('bucket status', () => {
     expect(pickBucket(final, newer)).toBe(newer);
     expect(pickBucket(bucket('cell-m1', { final: true, revision: 1 }), newer)).toBe(newer);
   });
+
+  it('drops a final line bucket of an older plant epoch for the push, and keeps a newer one (#257)', () => {
+    const withdrawn = lineBucket('hour', '2026-10-12T05:00:00.000Z', { final: true, epoch: 1 });
+    const pushed = lineBucket('hour', '2026-10-12T05:00:00.000Z', { final: false, epoch: 2 });
+    expect(pickBucket(withdrawn, pushed)).toBe(pushed);
+    // A REST answer of a newer epoch over an older push.
+    const restNewer = lineBucket('hour', '2026-10-12T05:00:00.000Z', { final: false, epoch: 3 });
+    expect(pickBucket(restNewer, pushed)).toBe(restNewer);
+    // Within one epoch, as before: a final REST bucket over a provisional push.
+    const sameEpoch = lineBucket('hour', '2026-10-12T05:00:00.000Z', { final: true, epoch: 2 });
+    expect(pickBucket(sameEpoch, pushed)).toBe(sameEpoch);
+    // No epoch on either side (no plant clock): the flag rule.
+    expect(pickBucket({ ...withdrawn, epoch: null }, pushed)).toEqual({
+      ...withdrawn,
+      epoch: null,
+    });
+  });
 });
 
 describe('order and line OEE (#233)', () => {

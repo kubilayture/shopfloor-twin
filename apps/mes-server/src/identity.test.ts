@@ -677,6 +677,40 @@ describe('identity module (#168)', () => {
     expect(left.n).toBe(0);
   });
 
+  it('reads the time of a decision once it holds the row lock, never before (#242 gate: Retry-After 31)', async () => {
+    await user('sol', ['operator']);
+    // Another transaction holds the user's row; an attempt made now waits for it.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let locked: () => void = () => undefined;
+    const isLocked = new Promise<void>((resolve) => (locked = resolve));
+    const holder = db.transaction().execute(async (trx) => {
+      await trx
+        .selectFrom('identity.user_account')
+        .select('id')
+        .where('username', '=', 'sol')
+        .forUpdate()
+        .execute();
+      locked();
+      await held;
+    });
+    await isLocked;
+    const waiting = failedLogin('sol', 'wrong-password-x', '10.50.0.1');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    clock += 5_000;
+    const decidedAt = clock;
+    release();
+    await holder;
+    await waiting;
+    const [failure] = await db
+      .selectFrom('identity.login_failure as f')
+      .innerJoin('identity.user_account as u', 'u.id', 'f.user_id')
+      .select('f.at')
+      .where('u.username', '=', 'sol')
+      .execute();
+    expect(failure?.at.getTime()).toBe(decidedAt);
+  });
+
   it('applies the global delay to a password change too: 429 before the hash (#242)', async () => {
     const password = await user('ria', ['quality']);
     const { principal } = await identity.login({ username: 'ria', password, kind: 'desk' });

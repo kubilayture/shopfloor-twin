@@ -572,7 +572,6 @@ export class Identity {
    */
   async #reserve(
     where: { readonly username: string } | { readonly id: number },
-    now: Date,
     address: string,
     admit: (() => number | undefined) | undefined,
   ): Promise<
@@ -613,6 +612,9 @@ export class Identity {
           ? query.where('u.id', '=', where.id)
           : query.where('u.username', '=', where.username);
       const row = await query.executeTakeFirst();
+      // The time of the decision is read once the row lock is held (#242 gate): an attempt that
+      // waited for the lock behind a judged one must not measure its wait from before that one.
+      const now = this.#now();
       if (!row) return { kind: 'unknown' as const };
       const roles = ROLES.filter((role) => row.roles.includes(role));
       const user: AccountRow = {
@@ -638,7 +640,8 @@ export class Identity {
             return {
               kind: 'throttled' as const,
               user,
-              retryAfterS: Math.max(1, Math.ceil(remaining / 1000)),
+              // Never more than the wait itself, also if the wall clock stepped back.
+              retryAfterS: Math.max(1, Math.ceil(Math.min(remaining, wait) / 1000)),
             };
           }
         }
@@ -831,7 +834,7 @@ export class Identity {
       throw new IdentityError('unauthenticated', LOGIN_FAILED, PROBLEM_TYPES.unauthenticated);
     };
     const reserved = USERNAME_PATTERN.test(name)
-      ? await this.#reserve({ username: name }, now, address, input.admit)
+      ? await this.#reserve({ username: name }, address, input.admit)
       : ({ kind: 'unknown' } as const);
     if (reserved.kind === 'throttled') return tooSoon(reserved.retryAfterS, LOGIN_THROTTLED);
     if (reserved.kind === 'rate-limited') return tooSoon(reserved.retryAfterS, LOGIN_RATE);
@@ -1037,7 +1040,7 @@ export class Identity {
     }
     // The current password is checked like a login (#168 review, M1): the attempt is reserved
     // first, so a mismatch counts towards the same lock or admin delay.
-    const reserved = await this.#reserve({ id: principal.userId }, this.#now(), from, undefined);
+    const reserved = await this.#reserve({ id: principal.userId }, from, undefined);
     if (reserved.kind === 'throttled' || reserved.kind === 'rate-limited') {
       throw new IdentityError(
         'throttled',

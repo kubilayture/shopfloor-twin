@@ -631,3 +631,10 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed | 1,434.4 s | `order-oee.e2e.test.ts` (12 tests, all four goldens) with the same counts |
     | smoke     | passed | 95.0 s    | rerun; the first run failed on the ERP mock's readiness (140.4 s)         |
     | reconcile | passed | 1,663.2 s | alarms OK, orders OK, quality OK                                          |
+
+  - **Re-review of PR #266** (approved), small changes before the merge, after a rebase onto `main` `3f7a65e` (#267; conflicts in STATUS and this log only, both sides kept):
+    1. `pickBucket`'s comment: alarm KPI buckets carry the plant epoch too (#145), so the epoch rule applies to `alarm-kpi.tsx` (`ScopeCard`, `withPushed`); kept (the newest plant run wins), with a cross-epoch alarm KPI test.
+    2. `pickBucket` compares epochs before revisions (revisions don't compare across epochs); tested both ways.
+    3. A test for the two-run order: job 1 on CNC-01 in run 1, job 2 in run 2; the order OEE and yield final, the line value not; it fails with both `run !== undefined` conditions dropped. ADR-0036 states that such an order's topic stays `open`.
+    4. A race-guard test for `OrderOee.order` (a read parked under epoch 1 keeps nothing after epoch 2 dropped the cache); dropping the guard fails it.
+    5. `epoch` stays required: the web and the MES ship together (noted in ADR-0036).

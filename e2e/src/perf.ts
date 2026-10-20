@@ -965,7 +965,16 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
     for (const socket of [...t3Sockets, ...t4Sockets]) closeSocket(socket);
     events.close();
     await sim.pause();
-    const bufferEnd = await gatewayBuffer(live.gateway).catch(() => undefined);
+    // The paused plant still has its last messages in the outbox for a moment (a 1 s sample saw
+    // 2 in flight): empty at the end means it empties once the plant is paused.
+    const pausedAt = Date.now();
+    let bufferEnd = await gatewayBuffer(live.gateway).catch(() => undefined);
+    const bufferAtPause = bufferEnd;
+    while (bufferEnd !== 0 && Date.now() - pausedAt < 10_000) {
+      await sleep(250);
+      bufferEnd = await gatewayBuffer(live.gateway).catch(() => undefined);
+    }
+    const bufferEmptyMs = bufferEnd === 0 ? Date.now() - pausedAt : null;
 
     // ---- T1 ----
     const lag1 = histogram(metrics1, 'mes_ingest_lag_seconds');
@@ -1235,6 +1244,8 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       mesPeriods: periods,
       memory,
       gatewayBufferEnd: bufferEnd ?? null,
+      gatewayBufferAtPause: bufferAtPause ?? null,
+      gatewayBufferEmptyMs: bufferEmptyMs,
     };
     judge(
       report,
@@ -1272,8 +1283,8 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       report,
       'T5',
       'gateway buffer at the end',
-      '0',
-      String(bufferEnd ?? 'unknown'),
+      '0 within 10 s of the pause',
+      `${String(bufferEnd ?? 'unknown')} (${String(bufferAtPause ?? 'unknown')} at the pause, empty after ${String(bufferEmptyMs ?? 'more than 10,000')} ms)`,
       bufferEnd === 0,
     );
 

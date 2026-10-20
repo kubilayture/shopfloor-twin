@@ -1,4 +1,4 @@
-# Status — updated 2026-10-19
+# Status — updated 2026-10-20
 
 ## Current phase: 09 – Simulation console, scenarios and hardening (in progress; plan accepted in #226; Phase 8 closed 2026-10-18)
 
@@ -6,6 +6,7 @@
 
 ## Done since last update
 
+- #244 done (P9-17, branch `feat/244-observability`, wave C; ADR-0012 amendment; no migration): `compose.observability.yml` (profile `observability`, off by default, `pnpm stack:up:observability`): Prometheus scraping the MES, gateway, simulator, ERP mock and itself inside the Compose network (no published MES or gateway port, not on `edge`, no credential), Grafana with the provisioned datasource only, `GRAFANA_ADMIN_PASSWORD` required by the profile alone, both on `127.0.0.1` with limits; Grafana dashboards cut (cut line, deviation); the profile started once with all 5 targets up (phase log).
 - #240 done (branch `feat/240-mqtt-dynsec`, on `main` `5629ccf`; ADR-0039 MQTT section; UNS contract 1.5; no migration, no new secret): MQTT dynamic security. The broker's `entrypoint.sh` generates the dynamic-security configuration into `/mosquitto/data` on every start from `config/mosquitto/dynamic-security.json` and `MQTT_USERS` (fail closed, `0600`, no admin); the gateway's and the MES's users are bound to their client ids (`gw-01`, `gw-01-cmd`, `mes-server`, `mes-server-cmd`; the command connections log in as `gw-01-cmd` and `mes-cmd`, `MQTT_CMD_USERNAME`), and so are `dev`, `healthcheck` and the smoke's second reader `smoke-reader` (each to its own name; `mosquitto_sub -i dev`, one `dev` session at a time). ACL parity tested against the frozen Phase 8 broker (publish, subscribe, deliveries, unsubscribe; Mosquitto 2.1's ACL file grants every subscription and filters on delivery, kept). Security tests: takeover, wrong user and password, anonymous, generation; the smoke checks the binding. Mosquitto checks no username on a session takeover, so binding every user is what closes S2's takeover; this reverses the plan's round-1 decision to leave `dev` and `healthcheck` unbound (ADR-0039). MQTT TLS cut (accepted risk on loopback). Rebased onto `main` `7ddc20b`; full gate `GATE-OK` on `9275889` before the binding change, then `GATE_STEPS=verify,e2e,smoke` on the rebased head (phase log); `pnpm test:resilience` doesn't exist yet. Security review of PR #261 approved (S2 met); its small fixes F1–F8 (entrypoint name and password checks, `MQTT_USERS` out of Mosquitto's environment, `persistent_client_expiration 14d`, regression tests for `$CONTROL`, wills, retained messages and empty client ids, ADR-0039 notes) are on the branch.
 - #241 done (P9-14, branch `feat/241-https-front`, wave C; ADR-0039 HTTPS section; no migration): the `pki` step makes a name-constrained dev CA per stack (key only in `pki-ca`) and nginx's certificate (SAN `localhost`, `127.0.0.1`); nginx serves HTTPS only on 8443 (TLS 1.3, no HTTP listener, no redirect, no HSTS); `MES_COOKIE_SECURE` on by default (`__Host-sft_session; Secure`); the MES, the gateway and the database unpublished (`compose.dev-ports.yml`, `pnpm stack:up:dev`; `pnpm stack:ca` exports the CA); harnesses trust only their stack (`NODE_EXTRA_CA_CERTS`, in-process trust, Chromium pinned with `--ignore-certificate-errors-spki-list`, another certificate refused in Playwright); `pnpm test:console` 12 of 12, `pnpm test:trace-perf` over HTTPS backward p95 2.87 ms, forward p95 25.68 ms. **Owner action:** see "Blockers and open questions".
 - #238 done (branch `feat/238-derived-work`, wave B; ADR-0032 and ADR-0035 amendments; no migration): incremental SPC derivation in `spc-core` (`SpcDerivation`, property test against `spcChart`), the `quality` module charting through it, hold scopes rebuilt on genealogy changes and hold transitions instead of every second, the histograms `mes_quality_spc_derive_seconds{kind}`, `mes_quality_chart_read_seconds`, `mes_quality_hold_scope_seconds` and `mes_genealogy_round_seconds`; budgets met on `week-01`, a synthetic month and 200 open holds (exit criterion 8; figures in `docs/phases/phase-09-log.md`); goldens byte-identical; full gate passed.
@@ -165,8 +166,7 @@
 ## Next up
 
 - Wave B: complete once #233 and #238 merge.
-- Wave C, as dependencies and the two-PR limit allow:
-  - P9-13 (#240) and P9-17 (#244) need only P9-01.
+- Wave C: P9-15 (#242), its dependency P9-14 (#241) merged.
 - Carried to P9-15 (#242): OPC UA logins have only a 250 ms wait per refused password (#239 review); S5's per-account and per-address throttling should cover them.
 - Carried to P9-18 (#245): order-OEE read cost (derived on read, golden p95 28.5 and 45.1 ms) in P1 against T4 and T5.
 

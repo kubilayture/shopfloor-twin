@@ -51,7 +51,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:13.2.3-slim
+    image: grafana/grafana:13.2.3
     profiles: [observability]
     depends_on:
       prometheus:
@@ -79,7 +79,8 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 256M
+          # 250 MiB at idle with the stack (#244); 256 MiB left it at 99 % of its limit.
+          memory: 512M
     healthcheck:
       test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:3000/api/health']
       interval: 5s

@@ -89,6 +89,14 @@ export function createDatabase(
   // An idle connection that the server closes (a database restart) is dropped from the pool; the
   // next query reconnects or fails where it is handled. Unhandled, the event would end the process.
   pool.on('error', () => undefined);
+  // The same for a connection a caller holds between queries (a transaction, Kysely's
+  // `connection()`): pg-pool listens only to idle clients, so a server that ends such a connection
+  // (FATAL 57P01 on a database restart, then ECONNRESET) emitted 'error' with no listener and
+  // ended the MES (#243, resilience run R1). The holder's next query fails and the broken client
+  // is dropped when it is released.
+  pool.on('connect', (client) => {
+    client.on('error', () => undefined);
+  });
   const db = new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
   pools.set(db, pool);
   return db;

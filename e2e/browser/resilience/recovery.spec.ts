@@ -168,7 +168,11 @@ test('after every fault the overview reconnects, is current within 2 s and stays
       }
       if (ref !== undefined) {
         const reference = ref;
-        const changed = [...truth.values()].some((list) => list.some((c) => c.at > reference));
+        // A change counts once its 2 s are over (it is judged up to `sampleEnd`).
+        const judgeable = Date.now() - LIMIT_MS;
+        const changed = [...truth.values()].some((list) =>
+          list.some((c) => c.at > reference && c.at <= judgeable),
+        );
         const enough = Date.now() >= ref + SAMPLE_MS + LIMIT_MS;
         if (enough && (changed || Date.now() >= ref + SAMPLE_MAX_MS)) {
           sampleEnd = Date.now() - LIMIT_MS;

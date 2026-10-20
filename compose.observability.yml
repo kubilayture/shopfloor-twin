@@ -4,6 +4,8 @@
 # `docker compose --file docker-compose.yml --file compose.observability.yml --profile observability --profile grafana up -d --wait`
 # (runbook, "Observability profile"); the performance suite (P9-18) starts Prometheus only
 # (`--profile observability`), so Grafana's memory never counts against its resource targets.
+# Compose interpolates every service of a loaded file, inactive profiles included, so loading this
+# file needs GRAFANA_ADMIN_PASSWORD even for Prometheus alone.
 # `pnpm stack:up` and `docker compose up` never read this file, so the default stack needs no secret
 # of it; both services carry a profile besides, so a COMPOSE_FILE that names this file still starts
 # them only with their profile.

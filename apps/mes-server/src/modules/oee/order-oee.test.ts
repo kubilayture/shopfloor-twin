@@ -5,7 +5,7 @@
  */
 import { resolve } from 'node:path';
 import { idealCycleMs, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { StoredInterval } from '../equipment/index.ts';
 import type { UnitRecord } from '../execution/index.ts';
 import type { CommandRecord, OrderChange, OrderRecord } from '../orders/index.ts';
@@ -543,6 +543,95 @@ describe('order OEE finality (#231)', () => {
     expect(await new OrderOee(sources(w).options).order('A')).toEqual(after);
     await oee.order('A');
     expect(calls.commands).toBe(2);
+  });
+
+  it('keeps no view derived under an epoch the cache has left meanwhile (#257 race guard)', async () => {
+    // A read under epoch 1 is parked in its command read while a read under epoch 2 drops the
+    // cache: the parked read's view must not be kept under epoch 2 (the next read derives again).
+    const calls = { order: 0, commands: 0, blanks: 0 };
+    const w = world();
+    w.clock = { epoch: 1, at: 60 };
+    const { options } = sources(w, calls);
+    let park: (() => void) | undefined;
+    let parked: Promise<void> | undefined;
+    const commands = options.orders.commands;
+    const oee = new OrderOee({
+      ...options,
+      orders: {
+        ...options.orders,
+        commands: async (...args: Parameters<typeof commands>) => {
+          if (parked === undefined) {
+            parked = new Promise((resolve) => (park = resolve));
+            await parked;
+          }
+          return commands(...args);
+        },
+      },
+    });
+    const first = oee.order('A');
+    await vi.waitFor(() => {
+      expect(park).toBeDefined();
+    });
+    // Epoch 2 drops the cache; its read is not final (execution behind), so it keeps nothing.
+    w.clock = { epoch: 2, at: 60 };
+    w.processed = at(10);
+    expect((await oee.order('A'))?.final).toBe(false);
+    // The parked read finishes with every input final: final, but derived under epoch 1.
+    w.processed = at(60);
+    park?.();
+    expect((await first)?.final).toBe(true);
+    // Not kept under epoch 2: the next read derives again, and is kept from then on.
+    const derived = calls.commands;
+    await oee.order('A');
+    expect(calls.commands).toBe(derived + 1);
+    await oee.order('A');
+    expect(calls.commands).toBe(derived + 1);
+  });
+
+  it('never makes the line value of an order with jobs in two runs final (#257)', async () => {
+    // Job 1 on CNC-01 in run 1 (ended), job 2 in run 2: the order OEE and its yield final, its
+    // line value (the bottleneck's pieces of which run?) never.
+    const w = world();
+    w.order = { ...w.order, quantity: 4, dispatched: 4 };
+    w.deviceEpoch = 2;
+    w.processedEpoch = 2;
+    w.finalThrough = at(120);
+    w.processed = at(120);
+    w.completedAt = at(100);
+    w.commands = [
+      {
+        commandId: 'A~OP10~1',
+        orderId: 'A',
+        deviceEpoch: 1,
+        startedAt: at(10),
+        completedAt: at(30),
+      },
+      {
+        commandId: 'A~OP10~2',
+        orderId: 'A',
+        deviceEpoch: 2,
+        acceptedAt: at(60),
+        startedAt: at(70),
+        completedAt: at(90),
+      },
+    ];
+    w.pieces = [
+      ...w.pieces,
+      { from: 60, to: 70, state: 'Setup', epoch: 2 },
+      { from: 70, to: 90, state: 'Running', epoch: 2 },
+      { from: 90, to: 120, state: 'Idle', epoch: 2 },
+    ];
+    w.units = [
+      ...w.units,
+      { commandId: 'A~OP10~2', op10: 80 },
+      { commandId: 'A~OP10~2', op10: 90 },
+    ];
+    const view = await read(w);
+    expect(view.jobs.map((j) => [j.deviceEpoch, j.final])).toEqual([
+      [1, true],
+      [2, true],
+    ]);
+    expect([view.final, view.firstPassYield.final, view.line?.final]).toEqual([true, true, false]);
   });
 
   it('recomputes the same final value after a restart (a fresh module, nothing in memory)', async () => {

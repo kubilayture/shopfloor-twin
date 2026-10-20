@@ -71,12 +71,17 @@ compose_without() {
   rm -f "$stripped"
   return $result
 }
-# The same with the observability profile (P9-17, compose.observability.yml) on the hardened files.
+# The same with the observability file (P9-17, compose.observability.yml) on the hardened files and
+# the profiles given after the key (`observability`: Prometheus; `grafana`: Grafana).
 observability_without() {
   stripped=$(mktemp)
   grep -v "^$1=" "$env_file" >"$stripped" || true
+  shift
+  profiles=
+  for profile in "$@"; do profiles="$profiles --profile $profile"; done
+  # shellcheck disable=SC2086 # profiles is a list of words
   env -i PATH="$PATH" HOME="$HOME" docker compose --env-file "$stripped" \
-    --file docker-compose.yml --file compose.observability.yml --profile observability \
+    --file docker-compose.yml --file compose.observability.yml $profiles \
     config -q >/dev/null 2>&1
   result=$?
   rm -f "$stripped"
@@ -96,12 +101,15 @@ echo "ok: Compose refuses to start without a required secret, not without the bo
 compose_without GRAFANA_ADMIN_PASSWORD ||
   fail "the default stack requires GRAFANA_ADMIN_PASSWORD (the observability profile's)"
 if [ -n "${GRAFANA_ADMIN_PASSWORD:-}" ]; then
-  observability_without NONE ||
-    fail "Compose refused the observability profile with every secret set"
-  if observability_without GRAFANA_ADMIN_PASSWORD; then
-    fail "Compose accepted the observability profile without GRAFANA_ADMIN_PASSWORD"
+  observability_without NONE observability grafana ||
+    fail "Compose refused the observability profiles with every secret set"
+  if observability_without GRAFANA_ADMIN_PASSWORD observability grafana; then
+    fail "Compose accepted Grafana's profile without GRAFANA_ADMIN_PASSWORD"
   fi
-  echo "ok: the observability profile is opt-in and refuses to start without GRAFANA_ADMIN_PASSWORD"
+  # Prometheus alone (the performance suite, P9-18) needs no Grafana password.
+  observability_without GRAFANA_ADMIN_PASSWORD observability ||
+    fail "Compose refused Prometheus alone without GRAFANA_ADMIN_PASSWORD"
+  echo "ok: the observability profiles are opt-in; Grafana's refuses to start without GRAFANA_ADMIN_PASSWORD, Prometheus alone doesn't need it"
 else
   echo "ok: the default stack needs no GRAFANA_ADMIN_PASSWORD (not set here: profile not checked)"
 fi

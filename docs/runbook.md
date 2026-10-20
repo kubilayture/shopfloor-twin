@@ -320,24 +320,24 @@ It ends with one record for the pull request's "Gate" section, also written to `
 
 A commit after the gate reruns the jobs its files touch, with `GATE_STEPS` (a comma list of `verify`, `golden`, `e2e`, `smoke`, `reconcile`), and the pull request names them:
 
-| Files changed                                                                                            | Rerun                                                                   |
-| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Documentation only (`docs/`, `*.md`)                                                                     | `verify` (formatting)                                                   |
-| `apps/simulator`, `packages/sim-core`, `config/plant`                                                    | `verify,golden,e2e,smoke,reconcile`                                     |
-| `packages/spc-core`, `packages/trace-core` (shape `trace.json`)                                          | `verify,golden,e2e,smoke,reconcile`                                     |
-| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`                                              | `verify,e2e,smoke,reconcile`                                            |
-| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*`                                            | `verify,smoke,reconcile`                                                |
-| `e2e/` (reconciliation, Playwright)                                                                      | `verify,reconcile`                                                      |
-| `scripts/stack-smoke*`                                                                                   | `verify,smoke`                                                          |
-| `e2e/src/quality-pass.ts`, `e2e/browser/quality/` only                                                   | `verify,reconcile` with `RECONCILE_PASSES=quality`                      |
-| `e2e/src/trace-perf.ts`, `apps/mes-server/src/trace-perf-load*`                                          | `verify,e2e` and `pnpm test:trace-perf`                                 |
-| `apps/web/src/screens/console*`, `apps/web/nginx/`, `e2e/browser/console/`, `e2e/src/console-pass.ts`    | `verify,smoke` and `pnpm test:console`                                  |
-| `packages/oee-core` (shapes `line-oee.json`, Phase 9)                                                    | `verify,golden,e2e,smoke,reconcile`                                     |
-| `config/scenarios/`                                                                                      | `verify,golden,e2e`                                                     |
-| `config/mosquitto/`, nginx (`apps/web/nginx/`), the `pki` step (`packages/pki`), `compose.dev-ports.yml` | `verify,e2e,smoke,reconcile` and `pnpm test:resilience`                 |
-| `e2e/src/resilience*`                                                                                    | `verify` and `pnpm test:resilience`                                     |
-| `e2e/src/perf*`, `apps/mes-server/src/perf-replay*`, `compose.observability.yml`                         | `verify` and `pnpm test:perf`                                           |
-| `compose.observability.yml`, `config/prometheus/`, `config/grafana/`, `scripts/observability-smoke.ts`   | `verify`, `pnpm stack:smoke:observability` and `pnpm test:perf` (P9-18) |
+| Files changed                                                                                            | Rerun                                                                              |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Documentation only (`docs/`, `*.md`)                                                                     | `verify` (formatting)                                                              |
+| `apps/simulator`, `packages/sim-core`, `config/plant`                                                    | `verify,golden,e2e,smoke,reconcile`                                                |
+| `packages/spc-core`, `packages/trace-core` (shape `trace.json`)                                          | `verify,golden,e2e,smoke,reconcile`                                                |
+| `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`                                              | `verify,e2e,smoke,reconcile`                                                       |
+| `apps/web`, `apps/erp-mock`, `docker-compose.yml`, `config/*`                                            | `verify,smoke,reconcile`                                                           |
+| `e2e/` (reconciliation, Playwright)                                                                      | `verify,reconcile`                                                                 |
+| `scripts/stack-smoke*`                                                                                   | `verify,smoke`                                                                     |
+| `e2e/src/quality-pass.ts`, `e2e/browser/quality/` only                                                   | `verify,reconcile` with `RECONCILE_PASSES=quality`                                 |
+| `e2e/src/trace-perf.ts`, `apps/mes-server/src/trace-perf-load*`                                          | `verify,e2e` and `pnpm test:trace-perf`                                            |
+| `apps/web/src/screens/console*`, `apps/web/nginx/`, `e2e/browser/console/`, `e2e/src/console-pass.ts`    | `verify,smoke` and `pnpm test:console`                                             |
+| `packages/oee-core` (shapes `line-oee.json`, Phase 9)                                                    | `verify,golden,e2e,smoke,reconcile`                                                |
+| `config/scenarios/`                                                                                      | `verify,golden,e2e`                                                                |
+| `config/mosquitto/`, nginx (`apps/web/nginx/`), the `pki` step (`packages/pki`), `compose.dev-ports.yml` | `verify,e2e,smoke,reconcile` and `pnpm test:resilience`                            |
+| `e2e/src/resilience*`                                                                                    | `verify` and `pnpm test:resilience`                                                |
+| `e2e/src/perf*`, `apps/mes-server/src/perf-replay*`                                                      | `verify` and `pnpm test:perf` (from P9-18)                                         |
+| `compose.observability.yml`, `config/prometheus/`, `config/grafana/`, `scripts/observability-smoke.ts`   | `verify,smoke`, `pnpm stack:smoke:observability` and `pnpm test:perf` (from P9-18) |
 
 ## Full stack (Compose)
 
@@ -464,14 +464,15 @@ The web front is HTTPS only, on `https://localhost:8443` (`WEB_HTTPS_PORT`): no 
 
 ### Observability profile (#244, P9-17, ADR-0012 amendment)
 
-Prometheus and Grafana beside the stack, opt-in (`compose.observability.yml`, profile `observability`): `pnpm stack:up` never starts them and needs nothing new. Prometheus scrapes every component's `/metrics` every 5 s inside the Compose network (the MES on `mes:4700`, the gateway on `gateway:4900`, the simulator on `simulator:4800`, the ERP mock on `erp:4600`, and itself), so the MES and the gateway stay unpublished. Grafana has the Prometheus datasource and **no dashboards** (on the Phase 9 cut line, cut): use its Explore view or Prometheus's own UI with the queries below.
+Prometheus and Grafana beside the stack, opt-in (`compose.observability.yml`). `pnpm stack:up` never starts them and needs nothing new. The file has two profiles: `observability` is Prometheus, `grafana` is Grafana on top of it. `pnpm stack:up:observability` starts both; the performance suite (P9-18) starts Prometheus only. Prometheus scrapes every component's `/metrics` every 5 s inside the Compose network (the MES on `mes:4700`, the gateway on `gateway:4900`, the simulator on `simulator:4800`, the ERP mock on `erp:4600`, and itself), so the MES and the gateway stay unpublished. Grafana has the Prometheus datasource and **no dashboards** (on the Phase 9 cut line, cut): use its Explore view or Prometheus's own UI with the queries below.
 
-First time: add the Grafana admin's password to `.env` (the profile refuses to start without it; no default):
+First time: add the Grafana admin's password to `.env` (Grafana's profile refuses to start without it; no default):
 
 ```bash
 printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 16)" >> .env
-pnpm stack:up:observability      # the stack and the profile; add `--file compose.dev-ports.yml` by hand if you need both
-pnpm stack:down:observability    # stops both; plain `pnpm stack:down` leaves Prometheus and Grafana running
+pnpm stack:up:observability      # the stack, Prometheus and Grafana; add `--file compose.dev-ports.yml` by hand if you need both
+pnpm stack:down:observability    # stops all of it; plain `pnpm stack:down` leaves Prometheus and Grafana running
+pnpm stack:reset:observability   # the same with every volume, Prometheus's data included
 ```
 
 | What       | URL (127.0.0.1 only)                        | Login                              |
@@ -479,29 +480,35 @@ pnpm stack:down:observability    # stops both; plain `pnpm stack:down` leaves Pr
 | Prometheus | <http://localhost:9090> (`PROMETHEUS_PORT`) | none (as the `/metrics` it reads)  |
 | Grafana    | <http://localhost:3000> (`GRAFANA_PORT`)    | `admin` / `GRAFANA_ADMIN_PASSWORD` |
 
-- **Grafana keeps no state** (no volume): the password is `.env`'s at every start (change it there and `pnpm stack:up:observability`); anything saved in its UI is gone when the container is recreated. Anonymous access and sign-up are off; it makes no outgoing call (no usage report, update check, news or plugin install). It is on its own `observability` network with Prometheus only.
-- **Prometheus keeps 3 days or 1 GB**, whichever comes first (`PROMETHEUS_RETENTION_TIME`, `PROMETHEUS_RETENTION_SIZE`), in the volume `prometheus-data`; `docker compose --file docker-compose.yml --file compose.observability.yml --profile observability down --volumes` removes it with the stack's.
-- **Limits:** 0.5 CPU each; Prometheus 256 MiB, Grafana 512 MiB. Measured with the stack at 60× (#244, Colima VM 4 GiB / 4 CPUs, a few minutes after start): Prometheus 33 MiB anonymous memory (1,385 series, 180 KB on disk), Grafana 231 MiB anonymous plus page cache (`docker stats` shows 340–470 MiB); no OOM kill. Images: Prometheus 357 MB, Grafana 1.8 GB unpacked.
-- **Ports:** `PROMETHEUS_PORT=0` or `GRAFANA_PORT=0` lets Docker choose a free port; read it back with `docker compose --file docker-compose.yml --file compose.observability.yml --profile observability port grafana 3000`.
-- **Check it:** `pnpm stack:smoke:observability` starts the stack and the profile (as `stack:up:observability`, from `.env` or `SMOKE_ENV_FILE`) and checks every target up, one metric of each component, Grafana's health, the refusal of anonymous and `admin:admin` logins, the datasource reaching Prometheus and both networks; it prints both containers' memory.
-- **Not in Prometheus:** the broker and the database (no exporter), nginx, and container CPU and memory (no cAdvisor: it needs the Docker socket; the Node services' `process_cpu_seconds_total` and `process_resident_memory_bytes` are there, and the performance suite reads the cgroups).
+- **Grafana keeps its state in memory** (a tmpfs on `/var/lib/grafana`): the password is `.env`'s on every start and restart (change it there and `pnpm stack:up:observability`), and a restart ends every session and API token and drops anything saved in its UI.
+- **What Grafana can't do:** anonymous access, sign-up, plugin installs (also from the UI), plugin signature-key downloads, usage reports, update checks, news, external snapshots, public dashboards, alerting and its own `/metrics` are off; its data source proxy is allowed `prometheus:9090` only.
+- **What it still can, an accepted risk (ADR-0012 amendment):** its `observability` network can't be `internal` (an internal network can't publish a port), so the container has a route to the Docker host (with Colima, everything the Mac publishes on `127.0.0.1`: the plant's ports, other projects' databases) and to the internet. The only user is `admin` with a random password on `127.0.0.1`; don't share it, and stop the profile when you don't use it.
+- **Prometheus sends no CORS header**, so a web page on another origin can't read the metrics from your browser. It has no Host check, so a DNS-rebinding page still could: read-only metrics, no secrets (accepted, ADR-0012 amendment).
+- **Prometheus keeps 3 days or 1 GB**, whichever comes first (`PROMETHEUS_RETENTION_TIME`, `PROMETHEUS_RETENTION_SIZE`), in the volume `prometheus-data`. Prometheus reads "GB" as GiB, and its write-ahead log can take it a little over the size limit. `pnpm stack:reset:observability` removes it with the stack's volumes; a `down --volumes` without `--file compose.observability.yml` leaves it behind.
+- **Limits:** 0.5 CPU each; Prometheus 256 MiB, Grafana 512 MiB. Measured with the stack at 60× (#244, Colima VM 4 GiB / 4 CPUs, a few minutes after start): Prometheus 33 MiB anonymous memory (1,385 series, 180 KB on disk), Grafana 231 MiB anonymous plus page cache (`docker stats` shows 340–470 MiB, peak 502 MiB); no OOM kill. That peak is why the performance suite leaves Grafana out (T5: every container's peak below 80 % of its limit). Images: Prometheus 357 MB, Grafana 1.8 GB unpacked.
+- **Ports:** `PROMETHEUS_PORT=0` or `GRAFANA_PORT=0` lets Docker choose a free port; read it back with `docker compose --file docker-compose.yml --file compose.observability.yml --profile observability --profile grafana port grafana 3000`.
+- **Check it:** `pnpm stack:smoke:observability` starts the stack and both profiles (as `stack:up:observability`, from `.env` or `SMOKE_ENV_FILE`) and checks every target up, one metric of each component, no CORS header, Grafana's health, the refusal of anonymous and `admin:admin` logins, the datasource reaching Prometheus, Grafana's hardening (no `/metrics`, no plugin admin, state on a tmpfs) and both networks; it prints both containers' memory.
+- **Not in Prometheus:** the broker and the database (no exporter), nginx, and container CPU and memory (no cAdvisor: it needs the Docker socket). The simulator's, gateway's and MES's `process_*` metrics are there; the ERP mock has none.
 
-Queries for the performance targets (Phase 9 plan, "Performance"; T1 and the pending gauge need P9-18's `mes_ingest_lag_seconds` and `mes_ingest_pending_messages`):
+Queries for the performance targets (Phase 9 plan, "Performance"). `mes_ingest_lag_seconds`, `mes_ingest_lag_excluded_total` and `mes_ingest_pending_messages` arrive with P9-18. `W` is the run's measurement window, for T1 from the MES's catch-up to the end of shift A (at 60×, about 8 wall minutes: `[8m]`); evaluate the query at the window's end (the `@` modifier or the query's time). The suite judges every target itself; these are for looking at a run.
 
-| Target                    | Query                                                                                                                                                                                                       |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Targets up                | `up`                                                                                                                                                                                                        |
-| T1, ingest lag p95 / p99  | `histogram_quantile(0.95, sum by (le) (rate(mes_ingest_lag_seconds_bucket[1m])))` (0.99 likewise)                                                                                                           |
-| T1, pending messages      | `max_over_time(mes_ingest_pending_messages[1m])`                                                                                                                                                            |
-| T1, P1, replayed messages | `max_over_time(gateway_buffer_messages[5m])` (0 over the T1 window)                                                                                                                                         |
-| T2, drain rate            | `sum(rate(mes_ingest_messages_total[30s]))` (messages/s)                                                                                                                                                    |
-| T3, push                  | `sum by (type) (rate(mes_push_messages_total[1m]))`, `rate(mes_ws_dropped_total[5m])`                                                                                                                       |
-| T3, OEE derive (paced)    | `histogram_quantile(0.95, sum by (le, kind) (rate(mes_push_paced_compute_seconds_bucket[5m])))`                                                                                                             |
-| SPC and holds (P9-11)     | `histogram_quantile(0.95, sum by (le, kind) (rate(mes_quality_spc_derive_seconds_bucket[5m])))`; `mes_quality_chart_read_seconds`, `mes_quality_hold_scope_seconds`, `mes_genealogy_round_seconds` likewise |
-| T5, CPU per Node service  | `rate(process_cpu_seconds_total{job=~"mes\|gateway\|simulator"}[1m])` (cores)                                                                                                                               |
-| T5, memory                | `max_over_time(process_resident_memory_bytes[10m])` by job                                                                                                                                                  |
-| T6, simulator pace        | `sim_speed_ratio`, `sim_lag_seconds`                                                                                                                                                                        |
-| Outages (resilience)      | `increase(mes_ingest_suspensions_total[5m])`, `gateway_buffer_messages`, `gateway_mqtt_connected`                                                                                                           |
+| Target                         | Query and what it gives                                                                                                                                                                                                                                               |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Targets up                     | `up`                                                                                                                                                                                                                                                                  |
+| T1, ingest lag p95 / p99       | `histogram_quantile(0.95, sum by (le) (increase(mes_ingest_lag_seconds_bucket[W])))` (0.99 likewise): the window's quantile, interpolated within a bucket. The max (≤ 5 s) can't come from a histogram (it gives only a bucket's upper bound): the suite measures it. |
+| T1, pending messages           | `mes_ingest_pending_messages` at each simulated hour boundary (≤ 100); `max_over_time(mes_ingest_pending_messages[W])` for the window                                                                                                                                 |
+| T1, P1, no replayed message    | `max_over_time(gateway_buffer_messages[W])` = 0 over the whole T1 window                                                                                                                                                                                              |
+| T1, excluded deliveries        | `sum by (reason) (increase(mes_ingest_lag_excluded_total[W]))`                                                                                                                                                                                                        |
+| T2, drain rate                 | `sum(rate(mes_ingest_messages_total{outcome="stored"}[30s]))` (stored messages/s; ≥ 800 while P2 drains)                                                                                                                                                              |
+| T3, push throughput            | `sum by (type) (rate(mes_push_messages_total[1m]))`, `increase(mes_ws_dropped_total[W])`: throughput and drops only. T3's latencies are judged client-side by the suite (the latency judge of Phases 4–8); no MES metric gives them                                   |
+| Paced OEE and alarm-KPI derive | `histogram_quantile(0.95, sum by (le, kind) (increase(mes_push_paced_compute_seconds_bucket[W])))`                                                                                                                                                                    |
+| T4, reads under load           | none: the MES has no HTTP latency histogram; the suite measures reads client-side                                                                                                                                                                                     |
+| SPC and holds (P9-11)          | `histogram_quantile(0.95, sum by (le, kind) (increase(mes_quality_spc_derive_seconds_bucket[W])))`; `mes_quality_chart_read_seconds`, `mes_quality_hold_scope_seconds`, `mes_genealogy_round_seconds` likewise                                                        |
+| T5, CPU per Node service       | `increase(process_cpu_seconds_total{job=~"mes\|gateway\|simulator"}[8m]) / 480` at the end of shift A (cores averaged over the shift); throttling isn't here: the suite reads `cpu.stat`                                                                              |
+| T5, memory                     | `max_over_time(process_resident_memory_bytes[8m])` by job at the end of shift A: the process's resident memory, not the cgroup's `memory.peak` the target is judged on (page cache counts there); none for the ERP mock                                               |
+| T6, lag on the headroom run    | T1's lag query on P3's own stack (Prometheus started there), with `W` from P3's first message to its last                                                                                                                                                             |
+| Simulator pace (P1)            | `sim_speed_ratio`, `sim_lag_seconds`                                                                                                                                                                                                                                  |
+| Outages (resilience)           | `increase(mes_ingest_suspensions_total[5m])`, `gateway_buffer_messages`, `gateway_mqtt_connected`                                                                                                                                                                     |
 
 ### Troubleshooting
 

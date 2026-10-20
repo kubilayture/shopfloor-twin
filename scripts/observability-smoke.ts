@@ -3,7 +3,8 @@
  * it: the Phase 9 plan's "the profile started once", repeatable (the performance suite, P9-18,
  * reads the same Prometheus).
  *
- * 1. `docker compose … --profile observability up -d --wait` (the stack and the profile);
+ * 1. `docker compose … --profile observability --profile grafana up -d --wait` (the stack,
+ *    Prometheus and Grafana, as `pnpm stack:up:observability`);
  * 2. Prometheus: every scrape target up, and the targets exactly the five jobs of
  *    `config/prometheus/prometheus.yml` (prometheus, mes, gateway, simulator, erp), within 90 s;
  *    one metric of each component's own present;
@@ -71,7 +72,17 @@ const files = [
 function compose(...args: string[]): string {
   return execFileSync(
     'docker',
-    ['compose', '--env-file', envFile, ...files, '--profile', 'observability', ...args],
+    [
+      'compose',
+      '--env-file',
+      envFile,
+      ...files,
+      '--profile',
+      'observability',
+      '--profile',
+      'grafana',
+      ...args,
+    ],
     { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] },
   ).trim();
 }
@@ -152,6 +163,16 @@ for (const [job, metric] of Object.entries(OWN_METRICS)) {
 }
 ok(`Prometheus holds each component's own metrics (${Object.values(OWN_METRICS).join(', ')})`);
 
+// No CORS (#244 review): a page on another origin gets no Access-Control-Allow-Origin.
+const cors = await fetch(`${prometheus}/api/v1/query?query=up`, {
+  headers: { origin: 'https://attacker.example' },
+  signal: AbortSignal.timeout(10_000),
+});
+await cors.text();
+const allowed = cors.headers.get('access-control-allow-origin');
+if (allowed !== null) fail(`Prometheus allows the origin ${allowed} (CORS)`);
+ok('Prometheus sends no CORS header to another origin');
+
 // Grafana: health, no anonymous access, the provisioned datasource reaching Prometheus.
 const grafana = published('grafana', 3000);
 const health = await json(`${grafana}/api/health`);
@@ -180,8 +201,22 @@ if (check.status !== 200 || (check.body as { status?: string }).status !== 'OK')
     `Grafana's Prometheus datasource check: ${String(check.status)} ${JSON.stringify(check.body)}`,
   );
 }
+// Hardening (#244 review): no Grafana /metrics, no plugin admin, the database on a tmpfs.
+const grafanaMetrics = await json(`${grafana}/metrics`);
+if (grafanaMetrics.status === 200) fail('Grafana serves /metrics');
+const settings = await json(`${grafana}/api/admin/settings`, { headers: admin });
+const plugins = (settings.body as Record<string, Record<string, string>>).plugins ?? {};
+if (plugins.plugin_admin_enabled !== 'false') {
+  fail(`Grafana's plugin admin: ${String(plugins.plugin_admin_enabled)}`);
+}
+const tmpfs = execFileSync(
+  'docker',
+  ['inspect', '--format', '{{json .HostConfig.Tmpfs}}', compose('ps', '-q', 'grafana')],
+  { encoding: 'utf8' },
+);
+if (!tmpfs.includes('/var/lib/grafana')) fail(`Grafana's /var/lib/grafana is no tmpfs: ${tmpfs}`);
 ok(
-  'Grafana: healthy, anonymous and admin:admin refused, the provisioned datasource reaches Prometheus',
+  'Grafana: healthy, anonymous and admin:admin refused, the datasource reaches Prometheus; no /metrics, no plugin admin, state on a tmpfs',
 );
 
 // Networks: Grafana only on `observability`; Prometheus on `default` and `observability`.

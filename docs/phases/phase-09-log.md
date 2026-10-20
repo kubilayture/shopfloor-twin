@@ -606,3 +606,11 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - **Pagination:** `checkOrderOee` fails when `GET /orders` says `truncated`.
   - **Property test:** the `spc-core` property test's `change` also edits `seq` and the device epoch; dropping either from `sameReading` now fails it (five runs each).
   - **Phase-log wording:** the review of PR #259 credits about 8,000 cases of the reviewer's fuzzer plus 40,000 runs of the PR's property test, not 48,000 of the fuzzer.
+  - **Gate** on `685eaeb` (`GATE_STEPS=verify,e2e,smoke,reconcile`, `GATE_PROJECT=gate257`, `GATE_TAG=pr257`), `GATE-OK`; free at the start: host 28.8 GiB, Docker 78.6 GiB. The entry's gate table came after it (documentation only).
+
+    | Step      | Result | Time      | Notes                                                                     |
+    | --------- | ------ | --------- | ------------------------------------------------------------------------- |
+    | verify    | passed | 341.2 s   | `pnpm verify --concurrency=1`                                             |
+    | e2e       | passed | 1,467.2 s | `order-oee.e2e.test.ts` (12 tests, all four goldens) with the same counts |
+    | smoke     | passed | 96.2 s    |                                                                           |
+    | reconcile | passed | 1,665.9 s | alarms OK, orders OK, quality OK                                          |

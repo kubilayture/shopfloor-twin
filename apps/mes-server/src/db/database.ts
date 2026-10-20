@@ -61,13 +61,39 @@ export interface PoolLimits {
 
 /** The pg pool behind each database handle, for the pool gauges (#147). */
 const pools = new WeakMap<Kysely<Database>, pg.Pool>();
+/** Connections the server ended under each handle, idle or held (#243). */
+const endedConnections = new WeakMap<pg.Pool, number>();
 
-/** Connections of a handle's pool: all, idle and queries waiting for one. */
+/** Where a connection the server ended was: in the pool, or held by a caller between queries. */
+export type ConnectionErrorPlace = 'idle' | 'held';
+
+let reportConnectionError = (error: Error, place: ConnectionErrorPlace): void => {
+  console.warn(`database connection ended (${place}): ${error.message}`);
+};
+
+/**
+ * Who hears of a connection the server ended (#243 review): the MES logs it as a warning once its
+ * logger exists; before that, and in tools, it goes to stderr. Never thrown: see `createDatabase`.
+ */
+export function onConnectionError(
+  listener: (error: Error, place: ConnectionErrorPlace) => void,
+): void {
+  reportConnectionError = listener;
+}
+
+/** Connections of a handle's pool: all, idle, queries waiting for one, and connections ended. */
 export function poolStats(
   db: Kysely<Database>,
-): { total: number; idle: number; waiting: number } | undefined {
+): { total: number; idle: number; waiting: number; ended: number } | undefined {
   const pool = pools.get(db);
-  return pool && { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount };
+  return (
+    pool && {
+      total: pool.totalCount,
+      idle: pool.idleCount,
+      waiting: pool.waitingCount,
+      ended: endedConnections.get(pool) ?? 0,
+    }
+  );
 }
 
 export function createDatabase(
@@ -88,14 +114,31 @@ export function createDatabase(
   });
   // An idle connection that the server closes (a database restart) is dropped from the pool; the
   // next query reconnects or fails where it is handled. Unhandled, the event would end the process.
-  pool.on('error', () => undefined);
+  const ended = (error: Error, place: ConnectionErrorPlace) => {
+    endedConnections.set(pool, (endedConnections.get(pool) ?? 0) + 1);
+    reportConnectionError(error, place);
+  };
+  pool.on('error', (error) => {
+    ended(error, 'idle');
+  });
   // The same for a connection a caller holds between queries (a transaction, Kysely's
   // `connection()`): pg-pool listens only to idle clients, so a server that ends such a connection
   // (FATAL 57P01 on a database restart, then ECONNRESET) emitted 'error' with no listener and
   // ended the MES (#243, resilience run R1). The holder's next query fails and the broken client
   // is dropped when it is released.
+  // pg-pool's own idle listener reports an idle client's error to the pool (above); this one
+  // reports only while the client is held, so no error is counted twice.
+  const held = new WeakSet<pg.PoolClient>();
+  pool.on('acquire', (client) => {
+    held.add(client);
+  });
+  pool.on('release', (_error, client) => {
+    held.delete(client);
+  });
   pool.on('connect', (client) => {
-    client.on('error', () => undefined);
+    client.on('error', (error) => {
+      if (held.has(client)) ended(error, 'held');
+    });
   });
   const db = new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
   pools.set(db, pool);

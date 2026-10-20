@@ -9,7 +9,7 @@ import { buildMesHttp } from '../http.ts';
 import { startDatabase } from '../testing.ts';
 import { DECLARED_COLUMNS, actualColumns, actualTables } from './columns.ts';
 import { DATA_MODEL_FILE, generateDataModel } from './data-model.ts';
-import { createDatabase, type Database } from './database.ts';
+import { createDatabase, onConnectionError, poolStats, type Database } from './database.ts';
 import { migrate, readMigrations } from './migrate.ts';
 
 const MIGRATIONS = resolve(import.meta.dirname, '../../../../db/migrations');
@@ -265,6 +265,10 @@ describe('migrations (ADR-0016)', () => {
 
 describe('connections the server ends (#243)', () => {
   it('survives the server ending a connection a caller holds between queries', async () => {
+    const reported: string[] = [];
+    onConnectionError((_error, place) => {
+      reported.push(place);
+    });
     const db = database();
     const other = database();
     await db.connection().execute(async (held) => {
@@ -277,6 +281,9 @@ describe('connections the server ends (#243)', () => {
       await expect(sql`SELECT 1`.execute(held)).rejects.toThrow();
     });
     expect((await sql<{ one: number }>`SELECT 1 AS one`.execute(db)).rows).toEqual([{ one: 1 }]);
+    // Reported and counted once (#243 review), as held.
+    expect(reported).toContain('held');
+    expect(poolStats(db)?.ended).toBeGreaterThanOrEqual(1);
   });
 });
 

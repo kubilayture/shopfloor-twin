@@ -29,7 +29,8 @@
  * naming the fault and every unsettled condition: readiness (MES, gateway with every device
  * connected, ERP mock); the gateway's buffer empty; ingest caught up: `mes_ingest_pending_messages`
  * ≤ 100 once the MES has that gauge (P9-18), until then its stand-in, the MES's plant clock at most
- * 60 simulated seconds behind the simulator with the UNS session subscribed; and every machine
+ * 60 simulated seconds behind the simulator with the UNS session subscribed, and per machine
+ * every fact raised up to 60 simulated seconds ago settled in the MES; and every machine
  * final through the previous fault's end: its device stream settled (stored, or written off as a
  * reported gap, `ingest.source_cursor`) at least up to the last fact it raised at or before that
  * end (from the live event log), so a machine silent since before the fault counts as final.
@@ -52,9 +53,10 @@
  *
  * Detected loss (R3), after the drain and the gap write-off: per machine the numbers in the MES's
  * `sequence-gap` incidents equal (raised − stored); every lost fact's time lies in
- * [outage start − ε, resync] with ε = 2 simulated minutes, the outage start being the simulated
- * time read when the fault was taken and the resync the plant time of the fact `asOfSeq` of the
- * gateway's first resync snapshot after the session returned (its own record of the resync); the
+ * [outage start − ε, resync] with ε = 2 simulated minutes and its number at most the resync's
+ * `asOfSeq`, the outage start being the simulated time read when the fault was taken and the resync
+ * `asOfSeq` taken from the gateway's first resync snapshot after the session returned (its own
+ * record), its time read from the simulator's event log, never from the system under test; the
  * observed maximum lead is recorded; the state resyncs (a new state anchor in the MES equal to the
  * simulator's state) within 10 s of wall time of the session's return; nothing stored twice; every
  * machine final; and the MES's shift A OEE and totals equal the golden harness's on the facts the MES
@@ -67,7 +69,8 @@
  * RESILIENCE_DEADLINE_MS (per run, default 35 minutes). Results: e2e/results/resilience/results.json
  * (the VM, the host, the images, per run and fault the timings, the observed ε lead and the resync
  * times) and per run report.json, recovery.json, Playwright traces and compose.log on failure.
- * SIGINT and SIGTERM remove the running project and its env file.
+ * SIGINT, SIGTERM and SIGHUP stop every further Docker action, remove the running project, its env
+ * file and the images this process built.
  */
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -298,6 +301,8 @@ if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(imageTag) || imageTag === 'dev') {
 }
 
 const started = Date.now();
+/** Set once this process built the images, so a signal removes them too. */
+let imagesBuilt = false;
 const log = (message: string) => {
   console.log(`[resilience +${((Date.now() - started) / 1000).toFixed(1)}s] ${message}`);
 };
@@ -422,6 +427,14 @@ interface Signals {
   /** `mes_ingest_store_errors_total` before the fault and its highest value while it lasted. */
   storeErrorsBefore: number | null;
   storeErrorsMax: number | null;
+  /**
+   * Deliveries ingest dropped as duplicates (`mes_ingest_messages_total{outcome="duplicate"}`)
+   * before the fault and at most while it lasted; the counter restarts with the MES. Recorded, not
+   * asserted: no fault here forces a redelivery (the MES acknowledges after its commit, the
+   * gateway forgets a message once the broker acknowledged it), so 0 is as right as more.
+   */
+  duplicatesBefore: number | null;
+  duplicatesMax: number | null;
 }
 
 interface Resync {
@@ -433,7 +446,10 @@ interface Resync {
   stateAnchor: { state: string; sourceTime: string; truthState: string | null } | null;
   /** The gateway's resync record: the first alarm snapshot after the return. */
   asOfSeq: number | null;
+  /** The gateway's own time of that fact (the snapshot's `sourceTime`), for the record only. */
   asOfTime: string | null;
+  /** The time of fact `asOfSeq` in the simulator's event log: the window's end. */
+  asOfFactTime: string | null;
 }
 
 interface FaultReport {
@@ -454,7 +470,8 @@ interface FaultReport {
   caughtUp?: { wallMs: number; sim: string };
   exit?: { code: number | null; oomKilled: boolean; exitedMs: number };
   signals?: Signals;
-  outage?: { start: string; resync: Record<string, string | null> };
+  /** The outage's start (simulated, read at the action) and per machine its resync's `asOfSeq`. */
+  outage?: { start: string; resync: Record<string, number | null> };
   resync?: Resync[];
 }
 
@@ -553,20 +570,36 @@ async function runOne(
   });
   let browser: ChildProcess | undefined;
   let browserExit: Promise<number> | undefined;
+  // A signal (#243 review): no Docker action of the run starts after it (`act`), so no late `up`
+  // or `start` races the removal; then the stack, its env file and the images this process built.
+  let aborted = false;
   const stop = (signal: NodeJS.Signals) => {
+    if (aborted) return;
+    aborted = true;
     console.error(`${signal}: removing the stack`);
     browser?.kill('SIGTERM');
-    stack
+    void stack
       .destroy()
       .catch((error: unknown) => {
         console.error('could not remove the stack', error);
       })
+      .then(() => (imagesBuilt && !keepImages ? removeImages(imageTag) : undefined))
       .finally(() => {
-        process.exit(signal === 'SIGINT' ? 130 : 143);
+        process.exit({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal as string] ?? 143);
       });
   };
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
+  const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+  for (const signal of SIGNALS) process.once(signal, stop);
+  /** A Compose call of the run, refused once a signal began the removal. */
+  const compose = (args: readonly string[], timeoutMs?: number) =>
+    aborted
+      ? Promise.reject(new Error(`stopping: not running docker compose ${args.join(' ')}`))
+      : stack.compose(args, timeoutMs);
+  /** A Docker call of the run, refused the same way. */
+  const docker = (args: readonly string[]) =>
+    aborted
+      ? Promise.reject(new Error(`stopping: not running docker ${args.join(' ')}`))
+      : run('docker', args);
   let deadlineTimer: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_, reject) => {
     deadlineTimer = setTimeout(() => {
@@ -581,27 +614,19 @@ async function runOne(
       deadline,
       (async () => {
         await stack.prepare();
-        await stack.compose(['down', '--volumes', '--remove-orphans']);
+        await compose(['down', '--volumes', '--remove-orphans']);
         if (build) {
           log('building the images');
-          await stack.compose(['build'], 1_200_000);
+          await compose(['build'], 1_200_000);
+          imagesBuilt = true;
           await pruneBuildCache(log);
         }
         phase('build');
 
         // ---- Start, as the reconciliation's orders pass ----
-        await stack.compose([
-          'up',
-          '--detach',
-          '--wait',
-          '--no-build',
-          'db',
-          'broker',
-          'mes',
-          'erp',
-        ]);
+        await compose(['up', '--detach', '--wait', '--no-build', 'db', 'broker', 'mes', 'erp']);
         const container = async (service: Service | 'simulator' | 'web') => {
-          const id = (await stack.compose(['ps', '--all', '--quiet', service])).trim();
+          const id = (await compose(['ps', '--all', '--quiet', service])).trim();
           if (id === '' || id.includes('\n')) throw new Error(`no single ${service} container`);
           return id;
         };
@@ -617,7 +642,7 @@ async function runOne(
           gateway: new GatewayClient('http://127.0.0.1:1'),
           erp: new ErpClient(await stack.url('erp', 4600), stack.value('ERP_API_TOKEN')),
         };
-        await stack.compose(['up', '--detach', '--wait', '--no-build', 'simulator', 'gateway']);
+        await compose(['up', '--detach', '--wait', '--no-build', 'simulator', 'gateway']);
         const sim = new SimulatorClient(
           await stack.url('simulator', 4800),
           stack.value('SIM_CONTROL_TOKEN'),
@@ -653,9 +678,7 @@ async function runOne(
         // off as history without an incident (ADR-0017 amendment), so it is neither lost nor owed.
         const history = Object.fromEntries(
           [
-            ...raisedFacts(
-              await stack.compose(['exec', '-T', 'simulator', 'cat', EVENT_LOG]),
-            ).entries(),
+            ...raisedFacts(await compose(['exec', '-T', 'simulator', 'cat', EVENT_LOG])).entries(),
           ].map(([id, facts]) => [id, facts.length]),
         );
         report.history = history;
@@ -721,7 +744,7 @@ async function runOne(
           if (posted.status !== 'scheduled')
             throw new Error(`injection not scheduled: ${JSON.stringify(posted)}`);
         }
-        await stack.compose(['up', '--detach', '--wait', '--no-build', 'web']);
+        await compose(['up', '--detach', '--wait', '--no-build', 'web']);
         const trust = await stack.webTrust();
         phase('ready');
 
@@ -755,7 +778,7 @@ async function runOne(
 
         // ---- Helpers bound to this run ----
         const eventLog = async (): Promise<Raised> =>
-          raisedFacts(await stack.compose(['exec', '-T', 'simulator', 'cat', EVENT_LOG]));
+          raisedFacts(await compose(['exec', '-T', 'simulator', 'cat', EVENT_LOG]));
         const mesMetrics = async () => {
           const response = await fetch(`${clients.mes.base}/metrics`, {
             signal: AbortSignal.timeout(2_000),
@@ -820,6 +843,20 @@ async function runOne(
               problems.push(
                 `ingest: the MES's plant clock is ${String(lag / 1000)} simulated s behind (${ingest})`,
               );
+            }
+            // The clock is an aggregate (#243 review): per machine too, every fact raised up to
+            // 60 simulated seconds ago (1 s of wall time) settled in the MES.
+            const fresh = await eventLog();
+            const recent = Date.parse(status.simTime) - WATERMARK_LAG_MS;
+            for (const id of machines) {
+              const needed = lastSeqBy(fresh.get(id), recent);
+              const stream = cursor.get(id);
+              const settled = stream?.epoch === epoch ? stream.settled : 0;
+              if (settled < needed) {
+                problems.push(
+                  `ingest: ${id} is settled through seq ${String(settled)}, its facts up to ${iso(recent)} (60 simulated s ago) run to seq ${String(needed)}`,
+                );
+              }
             }
           }
           const finalThrough: Record<string, string | null> = {};
@@ -890,6 +927,8 @@ async function runOne(
                 signals.suspensionsMax = Math.max(signals.suspensionsMax ?? 0, suspensions);
                 const errors = gauge(text, 'mes_ingest_store_errors_total').get('') ?? 0;
                 signals.storeErrorsMax = Math.max(signals.storeErrorsMax ?? 0, errors);
+                const dropped = gauge(text, 'mes_ingest_messages_total').get('duplicate') ?? 0;
+                signals.duplicatesMax = Math.max(signals.duplicatesMax ?? 0, dropped);
               }
               const erpOk = await fetch(`${clients.erp.base}/health/ready`, {
                 signal: AbortSignal.timeout(1_000),
@@ -1015,11 +1054,15 @@ async function runOne(
             suspensionsMax: null,
             storeErrorsBefore: null,
             storeErrorsMax: null,
+            duplicatesBefore: null,
+            duplicatesMax: null,
           };
           // The counters before the fault, then a sample every 250 ms until the MES caught up.
           const before = await mesMetrics().catch(() => '');
           signals.suspensionsBefore = gauge(before, 'mes_ingest_suspensions_total').get('') ?? 0;
           signals.storeErrorsBefore = gauge(before, 'mes_ingest_store_errors_total').get('') ?? 0;
+          signals.duplicatesBefore =
+            gauge(before, 'mes_ingest_messages_total').get('duplicate') ?? 0;
           record.signals = signals;
           active = signals;
           const sampler = setInterval(sample, 250);
@@ -1045,24 +1088,24 @@ async function runOne(
           log(`${name}: ${fault.name} at ${startStatus.simTime}`);
           let back: number;
           if (spec.kind === 'restart') {
-            await run('docker', ['restart', '--time', '15', await container(spec.service)]);
+            await docker(['restart', '--time', '15', await container(spec.service)]);
             back = record.start.wall;
           } else {
             if (spec.kind === 'stop') {
-              await run('docker', ['stop', '--time', '10', await container(spec.service)]);
+              await docker(['stop', '--time', '10', await container(spec.service)]);
             } else if (spec.kind === 'kill') {
               const id = await container(spec.service);
-              await run('docker', ['kill', '--signal', spec.signal, id]);
+              await docker(['kill', '--signal', spec.signal, id]);
               const exitedMs = await poll(
                 `${spec.service} exited after ${spec.signal}`,
                 async () =>
                   (
-                    await run('docker', ['inspect', '--format', '{{.State.Running}}', id])
+                    await docker(['inspect', '--format', '{{.State.Running}}', id])
                   ).stdout.trim() === 'false',
                 30_000,
               );
               const state = JSON.parse(
-                (await run('docker', ['inspect', '--format', '{{json .State}}', id])).stdout,
+                (await docker(['inspect', '--format', '{{json .State}}', id])).stdout,
               ) as { ExitCode: number; OOMKilled: boolean };
               record.exit = { code: state.ExitCode, oomKilled: state.OOMKilled, exitedMs };
             } else if (spec.kind === 'opcua-offline') {
@@ -1072,7 +1115,7 @@ async function runOne(
             }
             await waitSim(fault.until ?? fault.at);
             if (spec.kind === 'stop' || spec.kind === 'kill') {
-              await run('docker', ['start', await container(spec.service)]);
+              await docker(['start', await container(spec.service)]);
             } else if (spec.kind === 'opcua-offline') {
               await sim.opcuaOffline(spec.machine, false);
             } else {
@@ -1139,6 +1182,13 @@ async function runOne(
               { state: string; sourceTime: string; seenAt: number }
             >();
             const snapshotAt = new Map<string, { asOfSeq: number; sourceTime: string }>();
+            // A machine that raised a fact since its last snapshot owes a new one (#243 review: the
+            // window's end must not be missed by a poll that saw the anchor first).
+            const raisedAtReturn = await eventLog();
+            const owed = resyncMachines.filter((id) => {
+              const before = snapshotsBefore[id];
+              return (raisedAtReturn.get(id)?.length ?? 0) > (before?.asOfSeq ?? 0);
+            });
             await poll(
               `${fault.name}: a resync snapshot and state anchor of ${resyncMachines.join(', ')}`,
               async () => {
@@ -1169,7 +1219,10 @@ async function runOne(
                   }
                 }
                 // A machine whose number did not move since the last snapshot keeps that one.
-                return resyncMachines.every((id) => anchorAt.has(id));
+                return (
+                  resyncMachines.every((id) => anchorAt.has(id)) &&
+                  owed.every((id) => snapshotAt.has(id))
+                );
               },
               60_000,
             ).catch((error: unknown) => {
@@ -1201,6 +1254,10 @@ async function runOne(
                   : null,
                 asOfSeq: snapshot?.asOfSeq ?? null,
                 asOfTime: snapshot ? new Date(snapshot.sourceTime).toISOString() : null,
+                asOfFactTime:
+                  snapshot && facts[snapshot.asOfSeq - 1]
+                    ? iso(facts[snapshot.asOfSeq - 1]?.at ?? 0)
+                    : null,
               };
               resyncs.push(resync);
               if (resync.stateResyncMs === null || resync.stateResyncMs > RESYNC_MS) {
@@ -1217,7 +1274,7 @@ async function runOne(
             record.resync = resyncs;
             record.outage = {
               start: record.start.sim,
-              resync: Object.fromEntries(resyncs.map((r) => [r.machine, r.asOfTime])),
+              resync: Object.fromEntries(resyncs.map((r) => [r.machine, r.asOfSeq])),
             };
           }
 
@@ -1322,6 +1379,9 @@ async function runOne(
              SELECT equipment, json_agg(seq ORDER BY seq) AS seqs FROM ingest.equipment_event
              WHERE epoch = ${String(epoch)} GROUP BY equipment) t`,
         );
+        // Two rows of one (equipment, epoch, seq), whatever their times: the table's unique key
+        // includes `source_time` (a hypertable's key must), so a copy with another time would
+        // pass it; this count does not.
         const duplicates = await stack.sqlJson<number>(
           `SELECT count(*) - count(DISTINCT (equipment, epoch, seq)) FROM ingest.equipment_event`,
         );
@@ -1485,6 +1545,13 @@ async function runOne(
         };
 
         const detectedLossChecks = async () => {
+          // Loss only as gaps: no ring overrun, no buffer overflow, nothing rejected.
+          const otherLoss = lossIncidents.filter((i) => i.type !== 'sequence-gap');
+          if (otherLoss.length > 0) fail(`incidents of lost data: ${JSON.stringify(otherLoss)}`);
+          const rejected = await stack.sqlJson<number>(
+            'SELECT count(*) FROM ingest.rejected_message',
+          );
+          if (rejected !== 0) fail(`${String(rejected)} rejected UNS messages`);
           // Per machine: the numbers in the MES's gap incidents = raised − stored.
           const gaps: Record<string, number[]> = {};
           for (const incident of incidents) {
@@ -1509,7 +1576,8 @@ async function runOne(
           let lostTotal = 0;
           for (const id of machines) {
             const expected = [...(lost[id] ?? [])].sort((a, b) => a - b);
-            const found = [...new Set(gaps[id] ?? [])].sort((a, b) => a - b);
+            // As a multiset: a number in two incidents (a gap recorded twice) fails too.
+            const found = [...(gaps[id] ?? [])].sort((a, b) => a - b);
             lostTotal += expected.length;
             if (JSON.stringify(found) !== JSON.stringify(expected)) {
               fail(
@@ -1519,14 +1587,19 @@ async function runOne(
             const facts = raisedFinal.get(id) ?? [];
             const outside: string[] = [];
             const leads: number[] = [];
+            // The window's end is the resync's `asOfSeq`, judged on the simulator's own event log
+            // (#243 review): the lost number at most `asOfSeq`, its time at most that fact's.
             for (const seq of expected) {
               const at = facts[seq - 1]?.at ?? Number.NaN;
               const window = windows.find((w) => {
-                const resync = w.resync[id];
+                const asOfSeq = w.resync[id];
+                const end = typeof asOfSeq === 'number' ? facts[asOfSeq - 1]?.at : undefined;
                 return (
-                  typeof resync === 'string' &&
+                  typeof asOfSeq === 'number' &&
+                  end !== undefined &&
+                  seq <= asOfSeq &&
                   at >= w.start - EPSILON_MS &&
-                  at <= Date.parse(resync)
+                  at <= end
                 );
               });
               if (!window) outside.push(`${String(seq)} at ${Number.isNaN(at) ? '?' : iso(at)}`);
@@ -1542,7 +1615,7 @@ async function runOne(
             };
             if (outside.length > 0) {
               fail(
-                `${id}: lost facts outside every outage window [start − ε, resync]: ${outside.join(', ')}`,
+                `${id}: lost facts outside every outage window [start − ε, the resync's asOfSeq fact]: ${outside.join(', ')}`,
               );
             }
           }
@@ -1682,8 +1755,7 @@ async function runOne(
     await stack.destroy().catch((error: unknown) => {
       console.error('could not remove the stack', error);
     });
-    process.off('SIGINT', stop);
-    process.off('SIGTERM', stop);
+    for (const signal of SIGNALS) process.off(signal, stop);
   }
 
   // R3: the golden harness on the stored facts, once the stack is gone.
@@ -1802,6 +1874,8 @@ async function main(): Promise<boolean> {
     startedAt: new Date(started).toISOString(),
     scenario: GOLDEN,
     speed: SPEED,
+    // `plan`: the non-loss R3 variant, which does not satisfy exit criterion 5.
+    r3Schedule,
     ...(await environment()),
     runs: {},
   };
@@ -1845,7 +1919,14 @@ async function main(): Promise<boolean> {
   log(`results: ${join(RESULTS, 'results.json')}`);
   for (const [name, r] of Object.entries(runs)) log(`${name}: ${JSON.stringify(r)}`);
   const passed = results.passed === true;
-  console.log(passed ? 'RESILIENCE-OK' : 'RESILIENCE-FAILED');
+  const variant = runNames.includes('r3') && r3Schedule === 'plan';
+  console.log(
+    passed
+      ? variant
+        ? 'RESILIENCE-OK (non-loss R3 variant; does not satisfy exit criterion 5)'
+        : 'RESILIENCE-OK'
+      : 'RESILIENCE-FAILED',
+  );
   return passed;
 }
 

@@ -188,12 +188,13 @@ export function bucketFlags(bucket: OeeBucketDto): BucketFlag[] {
 /**
  * The bucket to show for one key. The MES pushes the whole bucket after any change (at most a
  * second apart) while the plant clock is in it, so a pushed bucket replaces the REST one, unless
- * the REST answer is further along: final where the push is not (the bucket became final after
- * the clock left it), or a higher revision. A final holds only within its revision and, for a line
- * bucket, its plant epoch (`epoch`, #257): a push of a higher revision or a newer epoch is newer
- * whatever its flag says, so it is taken whole (a simulator restart over the same plant time may
- * withdraw a final), and a REST answer of a newer epoch wins over an older push. Alarm KPI buckets
- * (#145) follow the same rule (they carry no epoch).
+ * the REST answer is further along. First the plant epoch (`epoch`: a line bucket's, #257, and an
+ * alarm KPI bucket's, #145): a final holds only within its epoch, and revisions don't compare
+ * across epochs, so when both sides carry different epochs the newer run's answer wins whole (a
+ * simulator restart over the same plant time may withdraw a final). Within one epoch (or without
+ * one, as an OEE bucket), a push of a higher revision is newer whatever its flag says and is taken
+ * whole (#257 A1); otherwise the REST answer wins when it is final where the push is not (the
+ * bucket became final after the clock left it) or has a higher revision.
  */
 export function pickBucket<
   B extends {
@@ -204,12 +205,12 @@ export function pickBucket<
 >(rest: B | undefined, pushed: B | undefined): B | undefined {
   if (!pushed) return rest;
   if (!rest) return pushed;
-  if (pushed.revision > rest.revision) return pushed;
   const restEpoch = rest.epoch ?? null;
   const pushedEpoch = pushed.epoch ?? null;
   if (restEpoch !== null && pushedEpoch !== null && restEpoch !== pushedEpoch) {
     return pushedEpoch > restEpoch ? pushed : rest;
   }
+  if (pushed.revision > rest.revision) return pushed;
   if (rest.final && !pushed.final) return rest;
   if (rest.revision > pushed.revision) return rest;
   return pushed;

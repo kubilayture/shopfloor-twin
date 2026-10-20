@@ -18,7 +18,8 @@
  *   `equipment.state_hourly`, each with its hour's `final` (a `bucket_finality` row and the
  *   aggregate refreshed through it) and `revision`. Final for OEE also needs
  *   `Ingest.cyclesRefreshed(hour)`.
- * - `Equipment.onPiecesChanged(listener)`: after any write to the pieces, with the hours touched.
+ * - `Equipment.onPiecesChanged(listener)`: after any write to the pieces, with the hours touched,
+ *   and after a late cycle raised a final hour's revision (#257).
  * - `Equipment.stateAggregate()`: how far `state_hourly` is refreshed; `refreshAggregates()` runs
  *   a pending refresh now. The module refreshes `state_hourly` itself and tells ingest how far
  *   buckets are final, so `cycle_hourly` follows (`Ingest.refreshCyclesThrough`).

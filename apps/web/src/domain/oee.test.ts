@@ -27,6 +27,7 @@ import {
   waterfall,
 } from './oee.ts';
 import { fraction } from '@shopfloor/oee-core';
+import { hourKpi } from '../test/alarm-fixtures.ts';
 
 describe('ratio text', () => {
   it('shows the API decimal as sent and null as n/a, never 0', () => {
@@ -142,6 +143,51 @@ describe('bucket status', () => {
     expect(pickBucket(final, pushed)).toBe(final);
     const revised = bucket('cell-m1', { revision: 1 });
     expect(pickBucket(revised, pushed)).toBe(revised);
+    // A push of a higher revision wins whole, over a final REST bucket of a lower one (#257 A1).
+    const newer = bucket('cell-m1', { provisionalMs: 1, revision: 2 });
+    expect(pickBucket(final, newer)).toBe(newer);
+    expect(pickBucket(bucket('cell-m1', { final: true, revision: 1 }), newer)).toBe(newer);
+  });
+
+  it('takes the alarm KPI bucket of the newer plant run too (#257)', () => {
+    // Alarm KPI buckets carry the plant epoch (#145): a REST final of run 1 yields to run 2's push,
+    // a push of run 1 to a REST answer of run 2, whatever their revisions.
+    const run1 = hourKpi('2026-10-15T05:00:00.000Z', { epoch: 1, final: true, revision: 3 });
+    const run2 = hourKpi('2026-10-15T05:00:00.000Z', { epoch: 2, final: false, revision: 0 });
+    expect(pickBucket(run1, run2)).toBe(run2);
+    expect(pickBucket(run2, run1)).toBe(run2);
+    // One run: as before.
+    const same = hourKpi('2026-10-15T05:00:00.000Z', { epoch: 1, final: false, revision: 3 });
+    expect(pickBucket(run1, same)).toBe(run1);
+  });
+
+  it('drops a final line bucket of an older plant epoch for the push, and keeps a newer one (#257)', () => {
+    const withdrawn = lineBucket('hour', '2026-10-12T05:00:00.000Z', { final: true, epoch: 1 });
+    const pushed = lineBucket('hour', '2026-10-12T05:00:00.000Z', { final: false, epoch: 2 });
+    expect(pickBucket(withdrawn, pushed)).toBe(pushed);
+    // A REST answer of a newer epoch over an older push.
+    const restNewer = lineBucket('hour', '2026-10-12T05:00:00.000Z', { final: false, epoch: 3 });
+    expect(pickBucket(restNewer, pushed)).toBe(restNewer);
+    // Within one epoch, as before: a final REST bucket over a provisional push.
+    const sameEpoch = lineBucket('hour', '2026-10-12T05:00:00.000Z', { final: true, epoch: 2 });
+    expect(pickBucket(sameEpoch, pushed)).toBe(sameEpoch);
+    // Epochs before revisions: a REST answer of a newer epoch beats an older push of a higher
+    // revision, and a newer push beats an older REST final of a higher revision.
+    const olderRevised = lineBucket('hour', '2026-10-12T05:00:00.000Z', {
+      final: true,
+      epoch: 2,
+      revision: 5,
+    });
+    expect(pickBucket(restNewer, olderRevised)).toBe(restNewer);
+    expect(pickBucket(olderRevised, { ...restNewer, revision: 0 })).toEqual({
+      ...restNewer,
+      revision: 0,
+    });
+    // No epoch on either side (no plant clock): the flag rule.
+    expect(pickBucket({ ...withdrawn, epoch: null }, pushed)).toEqual({
+      ...withdrawn,
+      epoch: null,
+    });
   });
 });
 
@@ -232,6 +278,16 @@ describe('order and line OEE (#233)', () => {
     const revised = orderOee('PO-1', { revision: 1 });
     expect(pickOrderOee(revised, rest)).toBe(revised);
     expect(pickOrderOee(rest, revised)).toBe(revised);
+    // A push of a higher revision wins whole, even over REST parts final where its own are not
+    // (#257 A1): a final REST part of a lower revision is older.
+    const newer = orderOee('PO-1', {
+      final: false,
+      revision: 2,
+      line: { ...ORDER_LINE, final: false, open: true },
+      firstPassYield: { ...rest.firstPassYield, final: false },
+    });
+    expect(pickOrderOee(rest, newer)).toBe(newer);
+    expect(pickOrderOee(revised, newer)).toBe(newer);
   });
 
   it('keeps each final part of the REST answer: a push final for the order but not its line', () => {

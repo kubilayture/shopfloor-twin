@@ -188,15 +188,29 @@ export function bucketFlags(bucket: OeeBucketDto): BucketFlag[] {
 /**
  * The bucket to show for one key. The MES pushes the whole bucket after any change (at most a
  * second apart) while the plant clock is in it, so a pushed bucket replaces the REST one, unless
- * the REST answer is further along: final where the push is not (the bucket became final after
- * the clock left it), or a higher revision. Alarm KPI buckets (#145) follow the same rule.
+ * the REST answer is further along. First the plant epoch (`epoch`: a line bucket's, #257, and an
+ * alarm KPI bucket's, #145): a final holds only within its epoch, and revisions don't compare
+ * across epochs, so when both sides carry different epochs the newer run's answer wins whole (a
+ * simulator restart over the same plant time may withdraw a final). Within one epoch (or without
+ * one, as an OEE bucket), a push of a higher revision is newer whatever its flag says and is taken
+ * whole (#257 A1); otherwise the REST answer wins when it is final where the push is not (the
+ * bucket became final after the clock left it) or has a higher revision.
  */
-export function pickBucket<B extends { readonly final: boolean; readonly revision: number }>(
-  rest: B | undefined,
-  pushed: B | undefined,
-): B | undefined {
+export function pickBucket<
+  B extends {
+    readonly final: boolean;
+    readonly revision: number;
+    readonly epoch?: number | null;
+  },
+>(rest: B | undefined, pushed: B | undefined): B | undefined {
   if (!pushed) return rest;
   if (!rest) return pushed;
+  const restEpoch = rest.epoch ?? null;
+  const pushedEpoch = pushed.epoch ?? null;
+  if (restEpoch !== null && pushedEpoch !== null && restEpoch !== pushedEpoch) {
+    return pushedEpoch > restEpoch ? pushed : rest;
+  }
+  if (pushed.revision > rest.revision) return pushed;
   if (rest.final && !pushed.final) return rest;
   if (rest.revision > pushed.revision) return rest;
   return pushed;
@@ -375,8 +389,11 @@ export function orderLineFlags(line: NonNullable<OrderOeeDto['line']>): StatusFl
  * REST one, except where the REST answer is further along. The order OEE with its jobs, the
  * first-pass yield and the order's line OEE each turn final on their own, so each part is taken
  * from the REST answer when it is final there and not in the push (or the REST answer has a
- * higher revision), as `pickBucket` does for a bucket. A final part never changes again (or only
- * with a higher revision), so mixing parts of two answers shows nothing that was never true.
+ * higher revision), as `pickBucket` does for a bucket. A final part changes again only with a
+ * higher revision (an order's final reads its own run's facts only, so a simulator restart doesn't
+ * withdraw it, #257), so mixing parts of two answers of one revision shows nothing that was never
+ * true. A push with a higher revision than the REST answer is newer in every part, so it is taken
+ * whole (#257 A1): a final REST part of a lower revision never overrides it.
  */
 export function pickOrderOee(
   rest: OrderOeeDto | undefined,
@@ -384,6 +401,7 @@ export function pickOrderOee(
 ): OrderOeeDto | undefined {
   if (!pushed) return rest;
   if (!rest) return pushed;
+  if (pushed.revision > rest.revision) return pushed;
   const restAhead = rest.revision > pushed.revision;
   const order = restAhead || (rest.final && !pushed.final);
   // A part final on one side only comes from that side; otherwise from where the order part does.

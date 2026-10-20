@@ -5,7 +5,7 @@
  */
 import { resolve } from 'node:path';
 import { idealCycleMs, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { StoredInterval } from '../equipment/index.ts';
 import type { UnitRecord } from '../execution/index.ts';
 import type { CommandRecord, OrderChange, OrderRecord } from '../orders/index.ts';
@@ -34,7 +34,14 @@ interface World {
   order: Partial<OrderRecord>;
   commands: Partial<CommandRecord>[];
   /** `start`: the interval's start when the piece is a later piece of it (cut at an hour). */
-  pieces: { from: number; to: number; state: string; provisional?: boolean; start?: number }[];
+  pieces: {
+    from: number;
+    to: number;
+    state: string;
+    provisional?: boolean;
+    start?: number;
+    epoch?: number;
+  }[];
   units: { commandId: string; op10: number; records?: [string, 'good' | 'scrap' | 'rework'][] }[];
   completedAt: Date | null;
   inMachine: number;
@@ -55,8 +62,10 @@ interface World {
   revision: number;
   /** The ranges `Equipment.revision` was asked for. */
   revisionReads: { machine: string; epoch: number; from: number; to: number }[];
-  /** Pieces of ASM-01 (the bottleneck), by minutes. */
+  /** Pieces of ASM-01 (the bottleneck), by minutes (epoch 1 unless said). */
   bottleneck: World['pieces'];
+  /** The plant clock (`watermarks()[0]`), when there is one: its epoch and time in minutes. */
+  clock?: { epoch: number; at: number };
 }
 
 /** One order A, one job of 2 blanks on CNC-01: Setup 10 min, Running 20 min, then Idle. */
@@ -224,20 +233,22 @@ function sources(w: World, calls = { order: 0, commands: 0, blanks: 0 }) {
         w.revisionReads.push({ machine, epoch, from: from.getTime(), to: to.getTime() });
         return Promise.resolve(w.revision);
       },
-      watermarks: () => [],
+      watermarks: () =>
+        w.clock === undefined ? [] : [{ epoch: w.clock.epoch, watermark: at(w.clock.at) }],
       intervals: (
         machine: string,
         from: Date,
         to: Date,
-        options: { state?: string } = {},
+        options: { state?: string; epoch?: number } = {},
       ): Promise<StoredInterval[]> =>
         Promise.resolve(
           (machine === 'asm-01' ? w.bottleneck : w.pieces)
             .filter((p) => T0 + p.to * MIN > from.getTime() && T0 + p.from * MIN < to.getTime())
             .filter((p) => options.state === undefined || p.state === options.state)
+            .filter((p) => options.epoch === undefined || (p.epoch ?? 1) === options.epoch)
             .map((p) => ({
               equipment: machine,
-              epoch: 1,
+              epoch: p.epoch ?? 1,
               start: at(p.from),
               end: at(p.to),
               state: p.state,
@@ -512,6 +523,117 @@ describe('order OEE finality (#231)', () => {
     expect(view.final).toBe(false);
   });
 
+  it('keeps a final order across a simulator restart over its plant time, as an MES restarted then derives it (#257)', async () => {
+    const calls = { order: 0, commands: 0, blanks: 0 };
+    const w = world();
+    w.clock = { epoch: 1, at: 60 };
+    const oee = new OrderOee(sources(w, calls).options);
+    const before = await oee.order('A');
+    expect([before?.final, before?.line?.final]).toEqual([true, true]);
+    await oee.order('A');
+    expect(calls.commands).toBe(1);
+    // Run 2 re-lives 03:00Z with Maintenance on ASM-01 over the order's in-progress time: the
+    // order reads its own run's pieces only, so nothing changes; the cache is derived again once.
+    w.clock = { epoch: 2, at: 40 };
+    w.processedEpoch = 2;
+    w.bottleneck = [...w.bottleneck, { from: 0, to: 40, state: 'Maintenance', epoch: 2 }];
+    const after = await oee.order('A');
+    expect(calls.commands).toBe(2);
+    expect(after).toEqual(before);
+    expect(await new OrderOee(sources(w).options).order('A')).toEqual(after);
+    await oee.order('A');
+    expect(calls.commands).toBe(2);
+  });
+
+  it('keeps no view derived under an epoch the cache has left meanwhile (#257 race guard)', async () => {
+    // A read under epoch 1 is parked in its command read while a read under epoch 2 drops the
+    // cache: the parked read's view must not be kept under epoch 2 (the next read derives again).
+    const calls = { order: 0, commands: 0, blanks: 0 };
+    const w = world();
+    w.clock = { epoch: 1, at: 60 };
+    const { options } = sources(w, calls);
+    let park: (() => void) | undefined;
+    let parked: Promise<void> | undefined;
+    const commands = options.orders.commands;
+    const oee = new OrderOee({
+      ...options,
+      orders: {
+        ...options.orders,
+        commands: async (...args: Parameters<typeof commands>) => {
+          if (parked === undefined) {
+            parked = new Promise((resolve) => (park = resolve));
+            await parked;
+          }
+          return commands(...args);
+        },
+      },
+    });
+    const first = oee.order('A');
+    await vi.waitFor(() => {
+      expect(park).toBeDefined();
+    });
+    // Epoch 2 drops the cache; its read is not final (execution behind), so it keeps nothing.
+    w.clock = { epoch: 2, at: 60 };
+    w.processed = at(10);
+    expect((await oee.order('A'))?.final).toBe(false);
+    // The parked read finishes with every input final: final, but derived under epoch 1.
+    w.processed = at(60);
+    park?.();
+    expect((await first)?.final).toBe(true);
+    // Not kept under epoch 2: the next read derives again, and is kept from then on.
+    const derived = calls.commands;
+    await oee.order('A');
+    expect(calls.commands).toBe(derived + 1);
+    await oee.order('A');
+    expect(calls.commands).toBe(derived + 1);
+  });
+
+  it('never makes the line value of an order with jobs in two runs final (#257)', async () => {
+    // Job 1 on CNC-01 in run 1 (ended), job 2 in run 2: the order OEE and its yield final, its
+    // line value (the bottleneck's pieces of which run?) never.
+    const w = world();
+    w.order = { ...w.order, quantity: 4, dispatched: 4 };
+    w.deviceEpoch = 2;
+    w.processedEpoch = 2;
+    w.finalThrough = at(120);
+    w.processed = at(120);
+    w.completedAt = at(100);
+    w.commands = [
+      {
+        commandId: 'A~OP10~1',
+        orderId: 'A',
+        deviceEpoch: 1,
+        startedAt: at(10),
+        completedAt: at(30),
+      },
+      {
+        commandId: 'A~OP10~2',
+        orderId: 'A',
+        deviceEpoch: 2,
+        acceptedAt: at(60),
+        startedAt: at(70),
+        completedAt: at(90),
+      },
+    ];
+    w.pieces = [
+      ...w.pieces,
+      { from: 60, to: 70, state: 'Setup', epoch: 2 },
+      { from: 70, to: 90, state: 'Running', epoch: 2 },
+      { from: 90, to: 120, state: 'Idle', epoch: 2 },
+    ];
+    w.units = [
+      ...w.units,
+      { commandId: 'A~OP10~2', op10: 80 },
+      { commandId: 'A~OP10~2', op10: 90 },
+    ];
+    const view = await read(w);
+    expect(view.jobs.map((j) => [j.deviceEpoch, j.final])).toEqual([
+      [1, true],
+      [2, true],
+    ]);
+    expect([view.final, view.firstPassYield.final, view.line?.final]).toEqual([true, true, false]);
+  });
+
   it('recomputes the same final value after a restart (a fresh module, nothing in memory)', async () => {
     const before = await read(world());
     const after = await read(world());
@@ -678,6 +800,34 @@ describe('order OEE finality (#231)', () => {
     const atEnd = world();
     atEnd.completedAt = at(35);
     expect((await read(atEnd)).line?.value.good).toEqual({ 'VB-100': 2 });
+    // Only the order's own good records at the last operation are packs (#257): a scrap or a
+    // rework at OP50 is none, nor is a good record at another operation (OP10 included).
+    const mixed = world();
+    mixed.units = [
+      {
+        commandId: 'A~OP10~1',
+        op10: 20,
+        records: [
+          ['OP20', 'good'],
+          ['OP50', 'scrap'],
+        ],
+      },
+      {
+        commandId: 'A~OP10~1',
+        op10: 30,
+        records: [
+          ['OP50', 'rework'],
+          ['OP50', 'good'],
+        ],
+      },
+    ];
+    expect((await read(mixed)).line?.value.good).toEqual({ 'VB-100': 1 });
+    const none = world();
+    none.units = [
+      { commandId: 'A~OP10~1', op10: 20, records: [['OP40', 'good']] },
+      { commandId: 'A~OP10~1', op10: 30, records: [['OP50', 'scrap']] },
+    ];
+    expect((await read(none)).line?.value.good).toEqual({});
     // Maintenance on the bottleneck is a planned stop: 2 400 000 ms, 1/8.
     const maintained = world();
     maintained.bottleneck = [

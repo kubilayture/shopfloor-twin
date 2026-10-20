@@ -3412,7 +3412,7 @@
         "tags": [
           "oee"
         ],
-        "description": "Derived on read (ADR-0036 and its P9-05 amendment): good units packed at the last operation × the designed bottleneck's effective cycle per product (deriveBottlenecks: ideal cycle ÷ machines on the operation, the largest; ASM-01) ÷ line planned busy time: the shift buckets minus the breaks and the bottleneck machines' Maintenance; in orders mode only while an order is in progress (from the earliest head time of its jobs to its completion, ADR-0031). One ratio, no A × P × Q split; not capped (`aboveOne`), null when nothing is planned. Planned time and packs count before the plant clock (`through`). `final` once every input is final through the bucket's end; `incidents` lists written-off gaps under it (`mayRevise`, `revision`). The current hour and shift are pushed on `oee:line`. Access: permission `read` (MES_AUTH=on; ADR-0026).",
+        "description": "Derived on read (ADR-0036 and its P9-05 amendment): good units packed at the last operation × the designed bottleneck's effective cycle per product (deriveBottlenecks: ideal cycle ÷ machines on the operation, the largest; ASM-01) ÷ line planned busy time: the shift buckets minus the breaks and the bottleneck machines' Maintenance; in orders mode only while an order is in progress (from the earliest head time of its jobs to its completion, ADR-0031). One ratio, no A × P × Q split; not capped (`aboveOne`), null when nothing is planned. Planned time and packs count before the plant clock (`through`). `final` once every input is final through the bucket's end; `incidents` lists written-off gaps under it (`mayRevise`, `revision`). A final holds within the plant epoch it was derived under (`epoch`, #257): after a simulator restart over the same plant time, a bucket the new run re-lives may turn provisional again or change, so a final of an older epoch is replaced by a newer answer. The current hour and shift are pushed on `oee:line`. Access: permission `read` (MES_AUTH=on; ADR-0026).",
         "parameters": [
           {
             "schema": {
@@ -3664,6 +3664,19 @@
                             "minimum": -9007199254740991,
                             "maximum": 9007199254740991,
                             "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                          },
+                          "epoch": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The plant clock’s device epoch the bucket was derived under (#257): a final holds within it; after a simulator restart (a newer epoch) a bucket the new run re-lives may turn provisional again or change, so a final of an older epoch is replaced by a newer answer. Null without a plant clock"
                           }
                         },
                         "required": [
@@ -3680,7 +3693,8 @@
                           "final",
                           "incidents",
                           "mayRevise",
-                          "revision"
+                          "revision",
+                          "epoch"
                         ],
                         "additionalProperties": false,
                         "description": "Line throughput OEE of one hour or shift bucket (#232)"

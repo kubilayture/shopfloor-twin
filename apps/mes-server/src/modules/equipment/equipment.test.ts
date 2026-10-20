@@ -664,9 +664,24 @@ describe('interval finality (#113)', () => {
       ['Down', 30, 0, 1, 1],
       ['Running', 20, 0, 1, 1],
     ]);
-    // A late cycle changes the hour's count, so it revises it too.
+    // A late cycle changes the hour's count, so it revises it too, and tells the pieces'
+    // listeners (#257: a final order or line OEE over the hour carries its revision).
+    const told: { equipment: string; from: string; to: string }[] = [];
+    const stop = equipment.onPiecesChanged((change) =>
+      told.push({
+        equipment: change.equipment,
+        from: change.from.toISOString(),
+        to: change.to.toISOString(),
+      }),
+    );
     await send(feed.cycle('cnc-a', E1, 3, at('10:45')));
+    stop();
     expect(await finalHours(db, 'cnc-a')).toEqual([['E1', '10:00', 2, 1]]);
+    expect(told).toContainEqual({
+      equipment: 'cnc-a',
+      from: new Date(at('10:00')).toISOString(),
+      to: new Date(at('11:00')).toISOString(),
+    });
     const [incident] = await db.selectFrom('ingest.data_quality_incident').selectAll().execute();
     expect(incident).toMatchObject({ seq_from: 2, seq_to: 3, resolution: 'filled' });
     const revised = await finalHours(db, 'cnc-a');

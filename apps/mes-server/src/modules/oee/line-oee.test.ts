@@ -8,7 +8,7 @@
 import { resolve } from 'node:path';
 import { formatFraction } from '@shopfloor/oee-core';
 import { idealCycleMs, loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { StoredInterval } from '../equipment/index.ts';
 import type { IngestNotice } from '../ingest/index.ts';
 import {
@@ -67,6 +67,12 @@ interface World {
   /** Execution's progress of one machine, when it differs from `processed`. */
   processedOf: Record<string, number>;
   watermark: number | null;
+  /** The plant clock's device epoch (default: the newest of `epochs`, at least 1). */
+  clockEpoch?: number;
+  /** The epoch of execution's last round (default 1). */
+  processedEpoch?: number;
+  /** Another line model (default: the plant's); its first bottleneck machine has `bottleneck`. */
+  model?: LineModel;
 }
 
 function world(): World {
@@ -101,7 +107,7 @@ function sources(w: World, mode: 'schedule' | 'orders' = 'schedule') {
     shiftPattern: plant.shifts,
     productionMode: mode,
     orderOee: {
-      lineModel: () => Promise.resolve(model),
+      lineModel: () => Promise.resolve(w.model ?? model),
       lineOrders: () => Promise.resolve(w.lineOrders),
       order: (id: string) => Promise.resolve(views.get(id)),
       onChange: (l: (change: object) => void) => {
@@ -163,7 +169,7 @@ function sources(w: World, mode: 'schedule' | 'orders' = 'schedule') {
     equipment: {
       intervals: (machine: string, from: Date, to: Date): Promise<StoredInterval[]> =>
         Promise.resolve(
-          (machine === 'asm-01' ? w.bottleneck : [])
+          (machine === (w.model ?? model).bottleneckMachines[0] ? w.bottleneck : [])
             .filter((p) => at(p.to) > from.getTime() && at(p.from) < to.getTime())
             .map((p) => ({
               equipment: machine,
@@ -185,7 +191,14 @@ function sources(w: World, mode: 'schedule' | 'orders' = 'schedule') {
         return () => listeners.pieces.delete(l);
       },
       watermarks: () =>
-        w.watermark === null ? [] : [{ epoch: 1, watermark: new Date(at(w.watermark)) }],
+        w.watermark === null
+          ? []
+          : [
+              {
+                epoch: w.clockEpoch ?? Math.max(1, ...Object.values(w.epochs)),
+                watermark: new Date(at(w.watermark)),
+              },
+            ],
     },
     execution: {
       processedThrough: () =>
@@ -194,7 +207,7 @@ function sources(w: World, mode: 'schedule' | 'orders' = 'schedule') {
             m,
             {
               equipment: m,
-              epoch: 1,
+              epoch: w.processedEpoch ?? 1,
               settledTime: new Date(at(w.processedOf[m] ?? w.processed)),
               settledSeq: 1,
             },
@@ -698,7 +711,7 @@ describe('line OEE buckets (#232)', () => {
     expect(first?.value.good).toEqual({ 'VB-100': 1 });
   });
 
-  it('counts only the newest device epoch with data in a bucket, never final across epochs or for an ended run', async () => {
+  it('counts only the newest device epoch with data in a bucket, never final across epochs', async () => {
     // A simulator restarted over the same plant time: PCK-01's epoch 2 and the old run's epoch 1
     // both pack in 03:00Z; ASM-01's Maintenance of the old run isn't a planned stop of the new one.
     const w = world();
@@ -719,12 +732,6 @@ describe('line OEE buckets (#232)', () => {
       { 'VB-100': 1 },
       3_600_000,
     ]);
-    // Only the old run's data in a bucket (the current epoch is 2): counted, not final.
-    const v = world();
-    v.epochs = { 'pck-01': 2 };
-    v.packs = [{ at: 10, epoch: 1 }];
-    const [old] = await hours(new LineOee(sources(v).options), 0, 60);
-    expect([old?.final, old?.value.good]).toEqual([false, { 'VB-100': 1 }]);
     // The current epoch alone: final.
     const u = world();
     u.epochs = { 'pck-01': 2, 'asm-01': 2 };
@@ -734,9 +741,157 @@ describe('line OEE buckets (#232)', () => {
     expect([current?.final, current?.value.good]).toEqual([true, { 'VB-100': 1 }]);
   });
 
-  it('looks gaps up in each contributing machine’s current epoch', async () => {
+  it('makes an ended run’s bucket final once every machine is settled in the newest epoch past it (#257)', async () => {
+    // Run 1 packed in 03:00Z and its pieces cover 03:00–05:00Z; the simulator restarted (epoch 2)
+    // with a later clock, its run from 06:00Z on.
+    const ended = (w: World): World => {
+      w.packs = [
+        { at: 10, epoch: 1 },
+        { at: 20, epoch: 1 },
+        { at: 190, epoch: 2 },
+      ];
+      w.bottleneck = [
+        { from: 0, to: 120, state: 'Running', epoch: 1 },
+        { from: 180, to: 24 * 60, state: 'Running', epoch: 2 },
+      ];
+      return w;
+    };
+    const w = ended(world());
+    w.epochs = { 'pck-01': 2, 'asm-01': 2 };
+    const [first, second, third] = await hours(new LineOee(sources(w).options), 0, 180);
+    expect([first?.final, first?.value.good, second?.final, second?.value.good]).toEqual([
+      true,
+      { 'VB-100': 2 },
+      true,
+      {},
+    ]);
+    // 05:00Z: the old run's pieces end at 05:00Z, the new one's start at 06:00Z (a hole).
+    expect(third?.final).toBe(false);
+    // A machine not settled in the newest epoch yet (PCK-01 still on epoch 1, ASM-01 on 2): its
+    // new run may still pack anywhere after its start, so nothing is final; the same with the
+    // plant clock's epoch ahead of both (a telemetry sample of the new run came first).
+    for (const epochs of [{ 'asm-01': 2 }, { 'pck-01': 2 }]) {
+      const v = ended(world());
+      v.epochs = epochs;
+      v.clockEpoch = 2;
+      const [early] = await hours(new LineOee(sources(v).options), 0, 60);
+      expect([epochs, early?.final, early?.value.good]).toEqual([epochs, false, { 'VB-100': 2 }]);
+    }
+    const v = ended(world());
+    v.clockEpoch = 2;
+    expect((await hours(new LineOee(sources(v).options), 0, 60))[0]?.final).toBe(false);
+    // Settled in epoch 2 but not past the bucket's end: provisional.
+    const x = ended(world());
+    x.epochs = { 'pck-01': 2, 'asm-01': 2 };
+    x.finalThrough = { 'pck-01': 50 };
+    expect((await hours(new LineOee(sources(x).options), 0, 60))[0]?.final).toBe(false);
+  });
+
+  it('gives after a simulator restart what an MES restarted then gives, the cached finals included (#257)', async () => {
+    // Run 1 (epoch 1) up to 05:00Z: hours 03:00Z and 04:00Z final and kept.
     const w = world();
-    w.epochs = { 'pck-01': 3 };
+    w.through = 120;
+    w.watermark = 120;
+    w.packs = [
+      { at: 10, epoch: 1 },
+      { at: 70, epoch: 1 },
+      { at: 80, epoch: 1 },
+    ];
+    w.bottleneck = [{ from: 0, to: 120, state: 'Running', epoch: 1 }];
+    const { options, calls } = sources(w);
+    const oee = new LineOee(options);
+    const before = await hours(oee, 0, 120);
+    expect(before.map((b) => [b.final, b.value.good])).toEqual([
+      [true, { 'VB-100': 1 }],
+      [true, { 'VB-100': 2 }],
+    ]);
+    const same = async (label: string) => {
+      const kept = await hours(oee, 0, 240);
+      const fresh = await hours(new LineOee(sources(w).options), 0, 240);
+      expect([label, kept]).toEqual([label, fresh]);
+      return kept;
+    };
+    // The new run's clock (epoch 2) is seen before any of its facts: the cache is dropped and
+    // nothing is final, as an MES started now finds it.
+    w.clockEpoch = 2;
+    w.watermark = 200;
+    const cycles = calls.cycles;
+    const dropped = await same('epoch 2 on the clock only');
+    expect(calls.cycles).toBeGreaterThan(cycles);
+    expect(dropped.map((b) => b.final)).toEqual([false, false, false, false]);
+    // Its machines report and settle past run 1's hours: final again, with run 1's values.
+    w.epochs = { 'pck-01': 2, 'asm-01': 2 };
+    w.through = 24 * 60;
+    w.watermark = 24 * 60;
+    w.packs.push({ at: 200, epoch: 2 });
+    w.bottleneck.push({ from: 180, to: 24 * 60, state: 'Running', epoch: 2 });
+    const after = await same('epoch 2 settled');
+    // The same values and flags, now under epoch 2.
+    expect(after.slice(0, 2)).toEqual(before.map((b) => ({ ...b, epoch: 2 })));
+    expect(before.map((b) => b.epoch)).toEqual([1, 1]);
+    expect(after.map((b) => b.final)).toEqual([true, true, false, true]);
+    // Kept again: a later read derives nothing.
+    const reads = calls.cycles;
+    await hours(oee, 0, 120);
+    expect(calls.cycles).toBe(reads);
+  });
+
+  it('withdraws a final when the simulator restarts over the same plant time, and agrees with an MES restart (#257)', async () => {
+    // Run 1 (epoch 1) packed in 03:00Z, 04:00Z and 05:00Z: all final and kept at 06:00Z.
+    const w = world();
+    w.through = 180;
+    w.watermark = 180;
+    w.packs = [
+      { at: 10, epoch: 1 },
+      { at: 70, epoch: 1 },
+      { at: 130, epoch: 1 },
+    ];
+    w.bottleneck = [{ from: 0, to: 180, state: 'Running', epoch: 1 }];
+    const oee = new LineOee(sources(w).options);
+    expect((await hours(oee, 0, 180)).map((b) => b.final)).toEqual([true, true, true]);
+    const same = async (label: string) => {
+      const kept = await hours(oee, 0, 180);
+      const fresh = await hours(new LineOee(sources(w).options), 0, 180);
+      expect([label, kept]).toEqual([label, fresh]);
+      return kept;
+    };
+    // Run 2 (epoch 2) starts again at 03:00Z; its clock is at 03:30Z, one pack at 03:20Z.
+    w.epochs = { 'pck-01': 2, 'asm-01': 2 };
+    w.through = 30;
+    w.watermark = 30;
+    w.packs.push({ at: 20, epoch: 2 });
+    w.bottleneck.push({ from: 0, to: 30, state: 'Running', epoch: 2 });
+    const early = await same('run 2 at 03:30Z');
+    expect(early.map((b) => [b.final, b.value.good, b.value.through])).toEqual([
+      [false, { 'VB-100': 1 }, at(30)],
+      [false, {}, at(60)],
+      [false, {}, at(120)],
+    ]);
+    // Run 2 settled past 07:00Z: per machine the newest run with data counts (03:00Z run 2's
+    // pack, 04:00Z run 1's, PCK-01 packed none of run 2 there, 05:00Z run 2's two), but ASM-01 has
+    // pieces of both runs in each of them: never final. 06:00Z is run 2's alone: final.
+    w.through = 24 * 60;
+    w.watermark = 24 * 60;
+    w.packs.push({ at: 150, epoch: 2 }, { at: 160, epoch: 2 }, { at: 200, epoch: 2 });
+    w.bottleneck.push({ from: 30, to: 24 * 60, state: 'Running', epoch: 2 });
+    const later = await hours(oee, 0, 240);
+    expect(later).toEqual(await hours(new LineOee(sources(w).options), 0, 240));
+    expect(later.map((b) => [b.final, b.value.good])).toEqual([
+      [false, { 'VB-100': 1 }],
+      [false, { 'VB-100': 1 }],
+      [false, { 'VB-100': 2 }],
+      [true, { 'VB-100': 1 }],
+    ]);
+    // A late pack of run 2 in 04:00Z: run 2 counts there now, still provisional.
+    w.packs.push({ at: 90, epoch: 2 });
+    const [late] = await hours(oee, 60, 120);
+    expect([late?.final, late?.value.good]).toEqual([false, { 'VB-100': 1 }]);
+  });
+
+  it('looks gaps up in each contributing machine’s current epoch and in the ended run a bucket counts', async () => {
+    const w = world();
+    w.epochs = { 'pck-01': 3, 'asm-01': 3 };
+    w.bottleneck = [{ from: 0, to: 24 * 60, state: 'Running', epoch: 3 }];
     w.gaps = [
       { machine: 'pck-01', after: 30, before: 31, epoch: 3 },
       { machine: 'pck-01', after: 30, before: 31, epoch: 1 }, // an ended run's
@@ -744,6 +899,118 @@ describe('line OEE buckets (#232)', () => {
     const [first] = await hours(new LineOee(sources(w).options), 0, 60);
     expect(first?.incidents).toEqual([
       { machine: 'pck-01', epoch: 3, id: 1, seqFrom: 5, seqTo: 6 },
+    ]);
+    // 03:00Z counts run 1's data (ended): its gaps lie under them, listed, never kept; 04:00Z
+    // counts run 2's alone, so run 1's gap there is not its own.
+    const v = world();
+    v.epochs = { 'pck-01': 2, 'asm-01': 2 };
+    v.packs = [{ at: 10, epoch: 1 }];
+    v.bottleneck = [
+      { from: 0, to: 60, state: 'Running', epoch: 1 },
+      { from: 60, to: 24 * 60, state: 'Running', epoch: 2 },
+    ];
+    v.gaps = [{ machine: 'pck-01', after: 30, before: 90, epoch: 1 }];
+    const { options, calls } = sources(v);
+    const oee = new LineOee(options);
+    const [old, next] = await hours(oee, 0, 120);
+    expect([old?.final, old?.mayRevise, old?.incidents]).toEqual([
+      true,
+      true,
+      [{ machine: 'pck-01', epoch: 1, id: 1, seqFrom: 5, seqTo: 6 }],
+    ]);
+    expect([next?.final, next?.incidents]).toEqual([true, []]);
+    await hours(oee, 0, 120);
+    expect(calls.cycles).toBe(2);
+  });
+
+  it('is never final with one run’s packs over another run’s pieces (#266 review)', async () => {
+    // Both machines settled in epoch 2; PCK-01 packed in 03:00Z only in run 1, ASM-01's pieces
+    // there are run 2's: each machine has one run, the bucket two. Counted, never final.
+    const w = world();
+    w.epochs = { 'pck-01': 2, 'asm-01': 2 };
+    w.packs = [{ at: 10, epoch: 1 }];
+    w.bottleneck = [{ from: 0, to: 24 * 60, state: 'Running', epoch: 2 }];
+    const [mixed] = await hours(new LineOee(sources(w).options), 0, 60);
+    expect([mixed?.final, mixed?.value.good, mixed?.epoch]).toEqual([false, { 'VB-100': 1 }, 2]);
+    // The other way round: run 2's packs over run 1's pieces.
+    const v = world();
+    v.epochs = { 'pck-01': 2, 'asm-01': 2 };
+    v.packs = [{ at: 10, epoch: 2 }];
+    v.bottleneck = [{ from: 0, to: 24 * 60, state: 'Running', epoch: 1 }];
+    expect((await hours(new LineOee(sources(v).options), 0, 60))[0]?.final).toBe(false);
+  });
+
+  it('keeps no final derived under an epoch the cache has left meanwhile (#257 race guard)', async () => {
+    // A read under epoch 1 is parked in its packs read while a read under epoch 2 drops the cache;
+    // the parked read's final (epoch 1) must not be kept under epoch 2.
+    const w = world();
+    const { options } = sources(w);
+    let park: (() => void) | undefined;
+    let parked: Promise<void> | undefined;
+    const reads = options.ingest.cycleResults;
+    const gated = {
+      ...options,
+      ingest: {
+        ...options.ingest,
+        cycleResults: async (...args: Parameters<typeof reads>) => {
+          if (park === undefined && parked === undefined) {
+            parked = new Promise((resolve) => (park = resolve));
+            await parked;
+          }
+          return reads(...args);
+        },
+      },
+    } as LineOeeOptions;
+    const oee = new LineOee(gated);
+    const first = hours(oee, 0, 60);
+    await vi.waitFor(() => {
+      expect(park).toBeDefined();
+    });
+    // Epoch 2 on the clock, its machines not reported yet: nothing final.
+    w.clockEpoch = 2;
+    const [meanwhile] = await hours(oee, 0, 60);
+    expect([meanwhile?.final, meanwhile?.epoch]).toEqual([false, 2]);
+    park?.();
+    const [late] = await first;
+    expect([late?.final, late?.epoch]).toEqual([true, 1]);
+    const [again] = await hours(oee, 0, 60);
+    expect(again).toEqual((await hours(new LineOee(sources(w).options), 0, 60))[0]);
+    expect(again?.final).toBe(false);
+  });
+
+  it('lets a CNC of an older epoch not hold the line back in orders mode, unless it is a bottleneck machine (#257)', async () => {
+    // Run 2 on the clock; every machine but the CNCs reported in it; the CNCs (no job of run 2
+    // yet) are still in epoch 1: a job of them is dispatched after the plant clock.
+    const w = world();
+    w.epochs = Object.fromEntries(
+      model.machines.filter((m) => !model.first.includes(m)).map((m) => [m, 2]),
+    );
+    w.clockEpoch = 2;
+    w.processedEpoch = 2;
+    w.packs = [{ at: 10, epoch: 2 }];
+    w.bottleneck = [{ from: 0, to: 24 * 60, state: 'Running', epoch: 2 }];
+    const read = async () => (await hours(new LineOee(sources(w, 'orders').options), 0, 60))[0];
+    expect((await read())?.final).toBe(true);
+    // A CNC that is also the bottleneck is held by its settled time in the newest epoch: its run 1
+    // pieces alone in the bucket, nothing packed, while run 2's pieces of it may still come.
+    w.model = { ...model, bottleneckMachines: ['cnc-01'] };
+    w.packs = [];
+    w.bottleneck = [{ from: 0, to: 24 * 60, state: 'Running', epoch: 1 }];
+    w.epochs = { ...w.epochs, 'cnc-01': 1 };
+    expect((await read())?.final).toBe(false);
+    w.epochs = { ...w.epochs, 'cnc-01': 2 };
+    expect((await read())?.final).toBe(true);
+  });
+
+  it('lists a current-epoch gap over a bucket with no data of that epoch (#257)', async () => {
+    const w = world();
+    w.epochs = { 'pck-01': 2, 'asm-01': 2 };
+    w.packs = [{ at: 10, epoch: 1 }];
+    w.bottleneck = [{ from: 0, to: 24 * 60, state: 'Running', epoch: 1 }];
+    w.gaps = [{ machine: 'asm-01', after: 30, before: 31, epoch: 2 }];
+    const [first] = await hours(new LineOee(sources(w).options), 0, 60);
+    expect(first?.incidents).toEqual([
+      { machine: 'asm-01', epoch: 2, id: 1, seqFrom: 5, seqTo: 6 },
     ]);
   });
 

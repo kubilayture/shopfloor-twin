@@ -3039,6 +3039,19 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
                       "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                    },
+                    "epoch": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The plant clock’s device epoch the bucket was derived under (#257): a final holds within it; after a simulator restart (a newer epoch) a bucket the new run re-lives may turn provisional again or change, so a final of an older epoch is replaced by a newer answer. Null without a plant clock"
                     }
                   },
                   "required": [
@@ -3055,7 +3068,8 @@
                     "final",
                     "incidents",
                     "mayRevise",
-                    "revision"
+                    "revision",
+                    "epoch"
                   ],
                   "additionalProperties": false,
                   "description": "Line throughput OEE of one hour or shift bucket (#232)"
@@ -3205,6 +3219,19 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
                       "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                    },
+                    "epoch": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The plant clock’s device epoch the bucket was derived under (#257): a final holds within it; after a simulator restart (a newer epoch) a bucket the new run re-lives may turn provisional again or change, so a final of an older epoch is replaced by a newer answer. Null without a plant clock"
                     }
                   },
                   "required": [
@@ -3221,7 +3248,8 @@
                     "final",
                     "incidents",
                     "mayRevise",
-                    "revision"
+                    "revision",
+                    "epoch"
                   ],
                   "additionalProperties": false,
                   "description": "Line throughput OEE of one hour or shift bucket (#232)"
@@ -6676,6 +6704,19 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
                       "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                    },
+                    "epoch": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The plant clock’s device epoch the bucket was derived under (#257): a final holds within it; after a simulator restart (a newer epoch) a bucket the new run re-lives may turn provisional again or change, so a final of an older epoch is replaced by a newer answer. Null without a plant clock"
                     }
                   },
                   "required": [
@@ -6692,7 +6733,8 @@
                     "final",
                     "incidents",
                     "mayRevise",
-                    "revision"
+                    "revision",
+                    "epoch"
                   ],
                   "additionalProperties": false,
                   "description": "Line throughput OEE of one hour or shift bucket (#232)"
@@ -6841,6 +6883,19 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991,
                       "description": "How often a final hour under it changed after it was final (the machines’ highest hour revision), read while it carries incidents, else 0: a revised final has a higher number (#232)"
+                    },
+                    "epoch": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The plant clock’s device epoch the bucket was derived under (#257): a final holds within it; after a simulator restart (a newer epoch) a bucket the new run re-lives may turn provisional again or change, so a final of an older epoch is replaced by a newer answer. Null without a plant clock"
                     }
                   },
                   "required": [
@@ -6857,7 +6912,8 @@
                     "final",
                     "incidents",
                     "mayRevise",
-                    "revision"
+                    "revision",
+                    "epoch"
                   ],
                   "additionalProperties": false,
                   "description": "Line throughput OEE of one hour or shift bucket (#232)"

@@ -179,6 +179,7 @@ const bucketOf = (
     incidents: [],
     mayRevise: false,
     revision: 0,
+    epoch: 1,
   }) satisfies LineBucketDto;
 
 /** A context whose simulator serves `live` and whose MES answers from `mes` (the truth by default). */
@@ -202,6 +203,7 @@ function contextOf(live: LineOeeTruth, change: (dto: OrderOeeDto) => OrderOeeDto
             id,
             completedAt: o.completedAt,
           })),
+          truncated: false,
         }),
       lineOee: (bucket: 'hour' | 'shift') =>
         Promise.resolve({
@@ -299,6 +301,20 @@ describe('checkOrderOee (#233)', () => {
       });
     await checkOrderOee(ctx, cut, truthOf(5));
     expect(failures.some((f) => f.startsWith('orders the MES completed in shift A'))).toBe(true);
+  });
+
+  it('fails when the MES’s order list is truncated (#257)', async () => {
+    const truth = truthOf(5);
+    const { ctx, failures } = contextOf(truth);
+    const mes = (ctx as unknown as { mes: { orders: () => Promise<unknown> } }).mes;
+    mes.orders = () =>
+      Promise.resolve({
+        orders: Object.entries(truth.orders).map(([id, o]) => ({ id, completedAt: o.completedAt })),
+        truncated: true,
+      });
+    await checkOrderOee(ctx, cut, truthOf(5));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatch(/^GET \/orders is truncated/);
   });
 });
 

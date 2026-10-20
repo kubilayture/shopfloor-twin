@@ -699,6 +699,11 @@ export const lineBucketSchema = z
       .describe('Written-off gaps on the contributing machines overlapping the bucket'),
     mayRevise: mayReviseSchema,
     revision: revisionSchema,
+    epoch: int
+      .nullable()
+      .describe(
+        'The plant clock’s device epoch the bucket was derived under (#257): a final holds within it; after a simulator restart (a newer epoch) a bucket the new run re-lives may turn provisional again or change, so a final of an older epoch is replaced by a newer answer. Null without a plant clock',
+      ),
   })
   .describe('Line throughput OEE of one hour or shift bucket (#232)');
 

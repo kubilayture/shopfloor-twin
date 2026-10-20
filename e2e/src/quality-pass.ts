@@ -39,7 +39,7 @@ import {
 } from '@shopfloor/trace-core';
 import type { MesClient } from './clients.ts';
 import { jsonDifferences } from './compare.ts';
-import type { PassContext } from './orders-pass.ts';
+import { listOrders, type PassContext } from './orders-pass.ts';
 import { REPO } from './stack.ts';
 import {
   episodeIdentity,
@@ -155,7 +155,7 @@ export async function mesTrace(
     }
   }
   // The orders in the truth's order (cartons are listed by order as given, then number).
-  const listed = (await ctx.mes.orders()).orders;
+  const listed = await listOrders(ctx);
   const orders: OrderPacking[] = [];
   for (const id of orderIds) {
     const order = listed.find((o) => o.id === id);

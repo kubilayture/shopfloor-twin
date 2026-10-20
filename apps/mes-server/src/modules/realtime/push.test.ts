@@ -12,7 +12,7 @@ import type {
   QualityChange,
   SignalRecord,
 } from '../quality/index.ts';
-import { PushHub, type PushOptions, type PushSources } from './push.ts';
+import { orderFollow, PushHub, type PushOptions, type PushSources } from './push.ts';
 import { serverMessageSchema, type ServerMessage } from './schemas.ts';
 
 /** A socket that records what is sent; `bufferedAmount` is set by the test. */
@@ -685,6 +685,7 @@ describe('the OEE topics’ budgets and the line topic (#232)', () => {
     incidents: [],
     mayRevise: false,
     revision: 0,
+    epoch: 1,
   });
 
   function lineSetup() {
@@ -851,7 +852,25 @@ describe('order OEE topics refresh while a part is not final (#233 review)', () 
     endLost: false,
     lost: false,
     final: true,
-    jobs: [],
+    jobs: [
+      {
+        commandId: 'PO-1~OP10~1',
+        machine: 'cnc-01',
+        deviceEpoch: 1,
+        quantity: 1,
+        notBefore: new Date(T0).toISOString(),
+        head: {
+          kind: 'head' as const,
+          at: new Date(T0).toISOString(),
+          source: 'accepted' as const,
+          reason: null,
+        },
+        window: null,
+        cycles: 1,
+        oee: null,
+        final: true,
+      },
+    ],
     firstPassYield: { firstPassGood: 1, started: 1, yield: ratio, final: true },
     completedAt: new Date(T0).toISOString(),
     cutoffs: [],
@@ -872,7 +891,7 @@ describe('order OEE topics refresh while a part is not final (#233 review)', () 
     },
   });
 
-  function orderSetup() {
+  function orderSetup(make: (lineFinal: boolean) => object = body) {
     const fake = fakeSources();
     const listeners = new Set<(change: { orderId?: string; machine?: string }) => void>();
     let calls = 0;
@@ -882,7 +901,7 @@ describe('order OEE topics refresh while a part is not final (#233 review)', () 
       orderOee: {
         order: () => {
           calls++;
-          return Promise.resolve(body(lineFinal) as never);
+          return Promise.resolve(make(lineFinal) as never);
         },
         onChange: (listener) => {
           listeners.add(listener);
@@ -944,5 +963,65 @@ describe('order OEE topics refresh while a part is not final (#233 review)', () 
     emit({ orderId: 'PO-1' });
     await advance(20);
     expect(calls()).toBe(6);
+  });
+  it('tells what an order topic follows: open parts, a revisable final, or nothing more (#257)', () => {
+    const final = { ...body(true), mayRevise: false };
+    expect(orderFollow(final)).toBe('none');
+    expect(orderFollow({ ...final, mayRevise: true })).toBe('revisable');
+    expect(orderFollow(body(false))).toBe('open');
+    // Never final whatever comes: a lost body, a terminal status without a job.
+    expect(orderFollow({ ...body(false), final: false, lost: true })).toBe('none');
+    const noJob = { ...body(false), jobs: [], final: false, line: null };
+    for (const status of ['cancelled', 'closed', 'rejected', 'completed']) {
+      expect([status, orderFollow({ ...noJob, status })]).toEqual([status, 'none']);
+    }
+    // No job yet but not terminal: a job may still come.
+    expect(orderFollow({ ...noJob, status: 'released' })).toBe('open');
+    // A terminal status with a job, a part still open: followed as before.
+    expect(orderFollow({ ...body(false), status: 'closed' })).toBe('open');
+  });
+
+  it('leaves a body that can never be final out of the open set: no recompute on other machines or the clock (#257 A2)', async () => {
+    const bodies = [
+      () => ({ ...body(false), final: false, lost: true }),
+      () => ({ ...body(false), status: 'cancelled', jobs: [], final: false, line: null }),
+    ];
+    for (const make of bodies) {
+      const { socket, fake, calls, emit } = orderSetup(make);
+      socket.request({ type: 'subscribe', topic: 'oee:order:PO-1' });
+      await advance(20);
+      expect(calls()).toBe(1);
+      emit({ machine: 'asm-01' });
+      fake.state('cnc-01', 30, 'Running');
+      await advance(20);
+      expect(calls()).toBe(1);
+      emit({ orderId: 'PO-1' });
+      await advance(20);
+      expect(calls()).toBe(2);
+    }
+  });
+
+  it('keeps following a final body with incidents on every machine, not the clock (#257 A3)', async () => {
+    const { socket, fake, calls, emit, finish } = orderSetup((lineFinal) => ({
+      ...body(lineFinal),
+      incidents: [{ machine: 'pck-01', epoch: 1, id: 7, seqFrom: 5, seqTo: 6 }],
+      mayRevise: true,
+      revision: 1,
+    }));
+    finish();
+    socket.request({ type: 'subscribe', topic: 'oee:order:PO-1' });
+    await advance(20);
+    expect(socket.sent.find((m) => m.type === 'snapshot')).toMatchObject({
+      order: { final: true, line: { final: true }, mayRevise: true },
+    });
+    expect(calls()).toBe(1);
+    // A revision of ASM-01's hours (the order has no job on it) may move its `revision`.
+    emit({ machine: 'asm-01' });
+    await advance(20);
+    expect(calls()).toBe(2);
+    // The clock alone doesn't: the order is complete.
+    fake.state('cnc-01', 30, 'Running');
+    await advance(20);
+    expect(calls()).toBe(2);
   });
 });

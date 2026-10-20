@@ -258,7 +258,10 @@ export interface NoOrderHour {
   readonly ms: number;
 }
 
-/** Sent after any write to the stored pieces of one (equipment, epoch) (#118). */
+/**
+ * Sent after any write to the stored pieces of one (equipment, epoch) (#118), and after a late
+ * cycle raised the revision of a final hour without a piece write (#257).
+ */
 export interface PiecesChanged {
   readonly equipment: string;
   readonly epoch: number;
@@ -486,7 +489,10 @@ export class Equipment {
     await this.#states?.stop();
   }
 
-  /** Listens for every write to the stored pieces, with the hours it touched (#118). */
+  /**
+   * Listens for every write to the stored pieces, with the hours it touched (#118), and for a late
+   * cycle's revision of a final hour (#257).
+   */
   onPiecesChanged(listener: (change: PiecesChanged) => void): () => void {
     this.#pieceListeners.add(listener);
     return () => this.#pieceListeners.delete(listener);
@@ -1310,6 +1316,9 @@ export class Equipment {
       // changes that hour's count: its revision goes up (#113).
       if (sample.kind === 'cycle' && this.#isFinalHour(track, hourOf(at))) {
         await this.#revise(track, [hourOf(at)], 1);
+        // No piece changed, but the hour's revision did: readers of it (an order or line OEE
+        // final with incidents, #257) are told as for a piece write.
+        this.#piecesChanged(track, [hourOf(at)]);
       }
       if (await this.#learn(track, settledSeq, { seq: sample.seq, at })) {
         await this.#verifyFacts(track, 0);

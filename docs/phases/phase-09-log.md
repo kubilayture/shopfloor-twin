@@ -557,3 +557,10 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | ------ | ------ | ------- | ----------------------------------------------------------------------------------------------------------------- |
     | verify | passed | 528.2 s | `pnpm verify --concurrency=1`, uncached (16.9 s from the cache in the first run)                                  |
     | smoke  | passed | 94.7 s  | the default stack needs no `GRAFANA_ADMIN_PASSWORD`; the profile refuses to start without it; hardened ports, TLS |
+
+  - **Rebased onto `main` `4a2194f` (#261, MQTT dynamic security):** conflicts in CHANGELOG, STATUS and this log only, both sides kept; the smoke runs #261's binding checks and the Grafana secret checks. Gate on `6a897cc` (`GATE_STEPS=verify,smoke`, `GATE_PROJECT=gate244b`, `GATE_TAG=pr244b`), `GATE-OK`; free at the start: host 47.7 GiB, Docker 84.8 GiB.
+
+    | Step   | Result | Time   | Notes                                                                                                      |
+    | ------ | ------ | ------ | ---------------------------------------------------------------------------------------------------------- |
+    | verify | passed | 14.4 s | `pnpm verify --concurrency=1`; Turbo: 49 of 52 tasks from the cache                                        |
+    | smoke  | passed | 93.6 s | the profile refuses to start without `GRAFANA_ADMIN_PASSWORD`; every broker user bound (#261); HTTPS front |

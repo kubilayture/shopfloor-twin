@@ -140,3 +140,106 @@ export function judgeCounts(
   });
   return { latencies, unjudged };
 }
+
+/** One sample of the drain sampler: wall ms and the MES's counters. */
+export interface DrainSample {
+  readonly at: number;
+  readonly stored: number;
+  readonly handled: number;
+  readonly subscribed: number;
+}
+
+/**
+ * T2's drain rate (#245 review, finding 2): the slope of the stored count between consecutive
+ * samples (Δstored ÷ Δt of the same two samples), over the steady drain: from the first sample
+ * after the subscription where the count rose to the last sample before the catch-up, without the
+ * first and the last second (the ramp and the tail). The median slope is the rate; the mean (the
+ * count's growth over the steady span) is reported beside it.
+ */
+export function drainRate(
+  series: readonly DrainSample[],
+  caughtUpAt: number | undefined,
+): {
+  median: number | undefined;
+  mean: number | undefined;
+  subscribedAt: number | undefined;
+  reason: string;
+  report: {
+    messagesDrained: number | null;
+    messagesHandled: number | null;
+    drainMs: number | null;
+    steadyMs: number | null;
+    slopes: number;
+    medianPerSecond: number | null;
+    meanPerSecond: number | null;
+  };
+} {
+  const empty = (reason: string, subscribedAt?: number) => ({
+    median: undefined,
+    mean: undefined,
+    subscribedAt,
+    reason,
+    report: {
+      messagesDrained: null,
+      messagesHandled: null,
+      drainMs: null,
+      steadyMs: null,
+      slopes: 0,
+      medianPerSecond: null,
+      meanPerSecond: null,
+    },
+  });
+  const subscribed = series.findIndex((x) => x.subscribed === 1);
+  const subscribedAt = series[subscribed]?.at;
+  if (subscribed < 0) return empty('the session never subscribed');
+  if (caughtUpAt === undefined) return empty('no catch-up', subscribedAt);
+  let first = subscribed;
+  while (
+    first + 1 < series.length &&
+    (series[first + 1]?.stored ?? 0) <= (series[first]?.stored ?? 0)
+  ) {
+    first++;
+  }
+  let last = series.length - 1;
+  while (last > first && (series[last]?.at ?? Infinity) > caughtUpAt) last--;
+  const begin = series[first];
+  const end = series[last];
+  if (!begin || !end || last <= first) return empty('no sample inside the drain', subscribedAt);
+  const steady = series
+    .slice(first, last + 1)
+    .filter((x) => x.at >= begin.at + 1_000 && x.at <= end.at - 1_000);
+  const slopes: number[] = [];
+  for (let i = 1; i < steady.length; i++) {
+    const a = steady[i - 1];
+    const b = steady[i];
+    if (a && b && b.at > a.at) slopes.push((b.stored - a.stored) / ((b.at - a.at) / 1000));
+  }
+  const sorted = [...slopes].sort((x, y) => x - y);
+  const mid = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length === 0
+      ? undefined
+      : sorted.length % 2 === 1
+        ? sorted[mid]
+        : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+  const s0 = steady[0];
+  const s1 = steady.at(-1);
+  const mean =
+    s0 && s1 && s1.at > s0.at ? (s1.stored - s0.stored) / ((s1.at - s0.at) / 1000) : undefined;
+  const r = (v: number | undefined) => (v === undefined ? null : Math.round(v * 10) / 10);
+  return {
+    median,
+    mean,
+    subscribedAt,
+    reason: median === undefined ? 'the drain was shorter than its ramp and tail' : '',
+    report: {
+      messagesDrained: end.stored - (series[subscribed]?.stored ?? 0),
+      messagesHandled: end.handled - (series[subscribed]?.handled ?? 0),
+      drainMs: end.at - begin.at,
+      steadyMs: s0 && s1 ? s1.at - s0.at : null,
+      slopes: slopes.length,
+      medianPerSecond: r(median),
+      meanPerSecond: r(mean),
+    },
+  };
+}

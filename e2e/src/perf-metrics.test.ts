@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  drainRate,
   histogram,
   histogramDelta,
   judgeCounts,
@@ -81,5 +82,25 @@ describe('the performance suite’s metrics (#245)', () => {
     const judged = judgeCounts(truth, page, 100_000, 2_000);
     expect(judged.latencies).toEqual([500, undefined, 1_500]);
     expect(judgeCounts(truth, page, 4_000, 2_000).unjudged).toBe(1);
+  });
+
+  it('takes the drain rate as the median slope between its own samples, ramp and tail left out', () => {
+    // Subscribed at 0, nothing stored for 0.5 s, then 1,000/s for 10 s, a slow tail; caught up at 11 s.
+    const series = Array.from({ length: 121 }, (_, i) => {
+      const at = i * 100;
+      const stored = at < 500 ? 0 : at <= 10_500 ? at - 500 : 10_000 + (at - 10_500) / 10;
+      return { at, stored, handled: stored + 5, subscribed: 1 };
+    });
+    const drain = drainRate(series, 11_000);
+    expect(drain.median).toBeCloseTo(1_000, 6);
+    expect(drain.report.messagesDrained).toBe(10_050);
+    expect(drain.subscribedAt).toBe(0);
+    expect(drainRate(series, undefined).median).toBeUndefined();
+    expect(
+      drainRate(
+        series.map((s) => ({ ...s, subscribed: 0 })),
+        11_000,
+      ).reason,
+    ).toMatch(/never subscribed/);
   });
 });

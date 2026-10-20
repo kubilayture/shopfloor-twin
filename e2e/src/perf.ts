@@ -89,6 +89,7 @@ import { jsonDifferences, percentile } from './compare.ts';
 import { judgeLatency, type Change } from './latency.ts';
 import {
   histogram,
+  drainRate,
   histogramDelta,
   judgeCounts,
   parseMetrics,
@@ -96,6 +97,7 @@ import {
   settledThrough,
   shareAtOrBelow,
   total,
+  type DrainSample,
   type Range,
   type Sample,
 } from './perf-metrics.ts';
@@ -115,6 +117,13 @@ const REPLAY_FILES = ['e2e/compose.perf-replay.yml', OBSERVABILITY];
 const EVENT_LOG = '/tmp/perf-events.jsonl';
 const DEVICE_FACTS = new Set(['state', 'cycle-complete', 'alarm', 'job']);
 const PENDING_LIMIT = 100;
+/**
+ * P2's MES stop (wall): 15 minutes, so the backlog takes over 10 s to drain at the target rate
+ * (coordinator's decision on PR #269, finding 2: the plan's 5 minutes gave a 4 s drain).
+ */
+const P2_STOP_MS = 15 * MINUTE;
+/** P3's publisher may run this late against its schedule (wall ms), else the run fails. */
+const REPLAY_LATE_MS = 1_000;
 /** How long after a truth change the judges look for it (wall); later counts as missed. */
 const JUDGE_LIMIT_MS = 10_000;
 const SUPERVISOR = 'perf-supervisor';
@@ -522,6 +531,10 @@ async function gatewayState(gateway: GatewayClient) {
  * no replay; a replay needs a broker session lost (or a gateway restart, T5's RestartCount).
  */
 const LIVE_OUTBOX = 200;
+
+/** P1's live message rate (msg/s, every outcome), for P3's offered load (#245 review). */
+let liveRate: number | undefined =
+  process.env.PERF_LIVE_RATE === undefined ? undefined : Number(process.env.PERF_LIVE_RATE);
 
 /** Waits until the simulator's time reaches `at`, polling every 250 ms; resolves with it. */
 async function untilSimTime(sim: SimulatorClient, at: number, timeoutMs: number): Promise<number> {
@@ -931,10 +944,11 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
     const serialTimer = setInterval(() => void refreshSerials(), 15_000);
     await refreshSerials();
 
-    // ---- Hour boundaries: pending read straight from /metrics ----
+    // ---- Hour boundaries: the oldest pending delivery's age read straight from /metrics ----
     const boundaries: {
       boundary: string;
       readAt: string;
+      oldestAgeS: number | null;
       pending: number | null;
       buffer: number | null;
     }[] = [];
@@ -947,6 +961,7 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       boundaries.push({
         boundary: iso(hour),
         readAt: iso(reached),
+        oldestAgeS: (m && total(m, 'mes_ingest_oldest_pending_age_seconds')) ?? null,
         pending: (m && total(m, 'mes_ingest_pending_messages')) ?? null,
         buffer: buffer ?? null,
       });
@@ -994,7 +1009,17 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       excluded[reason] =
         after - (total(metrics0, 'mes_ingest_lag_excluded_total', { reason }) ?? 0);
     }
+    // The live message rate (every outcome): what P3 must offer three times over (#245 review).
+    const handled0 = total(metrics0, 'mes_ingest_messages_total') ?? 0;
+    const handled1 = total(metrics1, 'mes_ingest_messages_total') ?? 0;
+    liveRate = (handled1 - handled0) / ((windowEnd - windowStart) / 1000);
+    const rejected =
+      (total(metrics1, 'mes_ingest_messages_total', { outcome: 'rejected' }) ?? 0) -
+      (total(metrics0, 'mes_ingest_messages_total', { outcome: 'rejected' }) ?? 0);
     const t1: Record<string, unknown> = {
+      liveMessagesPerSecond: round(liveRate, 2),
+      messagesHandled: handled1 - handled0,
+      rejected,
       windowStart: iso(windowStart),
       windowEnd: iso(windowEnd),
       windowSim: { from: iso(windowSim0), to: iso(shiftEnd) },
@@ -1041,7 +1066,7 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
         'T1',
         'ingest lag p95',
         '≤ 250 ms (≥ 95 % at or below the 0.25 s edge)',
-        `${ms(Number(t1.p95Ms))} (${pct(share025)} ≤ 250 ms, ${String(window.count)} observations)`,
+        `${ms(Number(t1.p95Ms))} interpolated in its bucket (${pct(share025)} ≤ 250 ms, ${String(window.count)} observations)`,
         window.count > 0 && share025 >= 0.95,
       );
       judge(
@@ -1049,7 +1074,7 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
         'T1',
         'ingest lag p99',
         '≤ 1 s (≥ 99 % at or below the 1 s edge)',
-        `${ms(Number(t1.p99Ms))} (${pct(share1)} ≤ 1 s)`,
+        `${ms(Number(t1.p99Ms))} interpolated (${pct(share1)} ≤ 1 s)`,
         window.count > 0 && share1 >= 0.99,
       );
       judge(
@@ -1061,16 +1086,30 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
         window.count > 0 && share5 === 1 && (max === null || max <= 5_000),
       );
     }
-    const boundaryPending = boundaries.map((b) => b.pending);
+    // The pending gauge is bounded by the receive maximum, so it is recorded, not judged
+    // (#245 review, finding 3): the oldest pending delivery's age is.
+    const ages = boundaries.map((b) => b.oldestAgeS);
+    const hasAge = ages.some((a) => a !== null);
     judge(
       report,
       'T1',
-      'pending messages at every hour boundary',
-      '≤ 100',
-      hasPending
-        ? `max ${String(Math.max(...boundaryPending.map((p) => p ?? 0)))} over ${String(boundaries.length)} boundaries`
-        : 'no mes_ingest_pending_messages on this MES',
-      hasPending ? boundaryPending.every((p) => p !== null && p <= PENDING_LIMIT) : null,
+      'oldest pending delivery at every hour boundary',
+      '≤ 1 s',
+      hasAge
+        ? `max ${String(round(Math.max(...ages.map((a) => a ?? Infinity)), 3))} s over ${String(boundaries.length)} boundaries (pending ${boundaries.map((b) => String(b.pending)).join(', ')})`
+        : 'no mes_ingest_oldest_pending_age_seconds on this MES',
+      hasAge ? ages.every((a) => a !== null && a <= 1) : null,
+    );
+    const duplicates = excluded.duplicate;
+    judge(
+      report,
+      'T1',
+      'no duplicate delivery in the window',
+      '0 (Δ mes_ingest_lag_excluded_total{duplicate})',
+      duplicates === undefined
+        ? 'no exclusion counter on this MES'
+        : `${String(duplicates)} (rejected: ${String(rejected)})`,
+      duplicates === undefined ? null : duplicates === 0,
     );
     judge(
       report,
@@ -1159,7 +1198,10 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
     }
 
     // ---- T4 ----
-    const byKind: Record<string, unknown> = {};
+    const byKind: Record<
+      string,
+      { requests: number; p50: number; p95: number; max: number; errors: number }
+    > = {};
     for (const kind of [...new Set(reads.map((r) => r.kind))].sort()) {
       const times = reads.filter((r) => r.kind === kind).map((r) => r.ms);
       byKind[kind] = {
@@ -1170,6 +1212,11 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
         errors: reads.filter((r) => r.kind === kind && r.status !== 200).length,
       };
     }
+    // Every screen's own p95 too (#245 review): a pooled p95 can hide one slow screen.
+    const slowKinds = Object.entries(byKind)
+      .filter(([kind, k]) => k.p95 > (kind === 'trace-backward' ? 100 : 200))
+      .map(([kind, k]) => `${kind} ${String(k.p95)} ms`);
+    const non200 = reads.filter((r) => r.status !== 200);
     const plain = reads.filter((r) => r.kind !== 'trace-backward').map((r) => r.ms);
     const backward = reads.filter((r) => r.kind === 'trace-backward').map((r) => r.ms);
     const fiveXx = reads.filter((r) => r.status >= 500 || r.status === 0);
@@ -1179,7 +1226,8 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       requests: reads.length,
       byKind,
       fiveXx: fiveXx.length,
-      non200: reads.filter((r) => r.status !== 200).length,
+      non200: non200.length,
+      non200Statuses: [...new Set(non200.map((r) => `${r.kind} ${String(r.status)}`))],
       sockets: t4Sockets.map((s) => ({
         name: s.name,
         messages: s.messages,
@@ -1213,6 +1261,24 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       `${String(fiveXx.length)} 5xx or failed, ${String(closed.length)} sockets closed`,
       fiveXx.length === 0 && closed.length === 0,
     );
+    judge(
+      report,
+      'T4',
+      'every read answered 200',
+      '0 non-200',
+      `${String(non200.length)} of ${String(reads.length)}`,
+      reads.length > 0 && non200.length === 0,
+    );
+    judge(
+      report,
+      'T4',
+      'p95 of every screen read',
+      '≤ 200 ms each (backward traces ≤ 100 ms)',
+      slowKinds.length === 0
+        ? `${String(Object.keys(byKind).length)} kinds, slowest ${slowest(byKind)}`
+        : slowKinds.join(', '),
+      Object.keys(byKind).length > 0 && slowKinds.length === 0,
+    );
 
     // ---- T5 ----
     const elapsedUsec = (windowEnd - windowStart) * 1000;
@@ -1222,7 +1288,12 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
     const memory: Record<string, unknown> = {};
     const memoryProblems: string[] = [];
     const restarts: string[] = [];
-    for (const [service, id] of await containers(stack)) {
+    // Every container, exited ones too (#245 review, finding 4): a service that died must fail.
+    const all = await allContainers(stack);
+    const lifecycle = lifecycleProblems(all);
+    for (const [service, id] of all
+      .filter((c) => c.state === 'running')
+      .map((c) => [c.service, c.id] as const)) {
       const group = await cgroup(id);
       const state = await inspect(id);
       const share = group.limitBytes === null ? null : group.peakBytes / group.limitBytes;
@@ -1279,6 +1350,20 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       restarts.length === 0 ? 'none' : restarts.join(', '),
       restarts.length === 0,
     );
+    report.t5 = {
+      ...(report.t5 as Record<string, unknown>),
+      containers: all,
+    };
+    judge(
+      report,
+      'T5',
+      'every service running at the end, one-shots exited 0',
+      `${LONG_RUNNING.join(', ')} running; pki, migrate exited 0; no OOM`,
+      lifecycle.length === 0
+        ? `${String(all.length)} containers as expected`
+        : lifecycle.join('; '),
+      lifecycle.length === 0,
+    );
     judge(
       report,
       'T5',
@@ -1297,6 +1382,78 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       targetsUp: await promQuery(stack, 'up'),
     };
   });
+}
+
+function slowest(byKind: Record<string, { p95: number }>): string {
+  const [kind, k] = Object.entries(byKind).sort(([, a], [, b]) => b.p95 - a.p95)[0] ?? [
+    'none',
+    { p95: 0 },
+  ];
+  return `${kind} ${String(k.p95)} ms`;
+}
+
+/** The long-running services of a live run (P1), each must be running at the end. */
+const LONG_RUNNING = ['db', 'broker', 'simulator', 'gateway', 'mes', 'erp', 'web', 'prometheus'];
+const ONE_SHOTS = ['pki', 'migrate'];
+
+interface ContainerState {
+  readonly service: string;
+  readonly id: string;
+  readonly state: string;
+  readonly exitCode: number;
+  readonly oomKilled: boolean;
+  readonly restartCount: number;
+}
+
+/** Every container of the project (`ps --all`), with `docker inspect`'s state. */
+async function allContainers(stack: Stack): Promise<ContainerState[]> {
+  const out = await stack.compose(['ps', '--all', '--format', 'json']);
+  const rows: ContainerState[] = [];
+  for (const line of out.trim().split('\n')) {
+    if (line.trim() === '') continue;
+    const row = JSON.parse(line) as { Service: string; ID: string };
+    const { stdout } = await execute('docker', [
+      'inspect',
+      '--format',
+      '{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.RestartCount}}',
+      row.ID,
+    ]);
+    const [state = '', code = '0', oom = 'false', restarts = '0'] = stdout.trim().split(' ');
+    rows.push({
+      service: row.Service,
+      id: row.ID,
+      state,
+      exitCode: Number(code),
+      oomKilled: oom === 'true',
+      restartCount: Number(restarts),
+    });
+  }
+  return rows.sort((a, b) => a.service.localeCompare(b.service));
+}
+
+/** What is wrong with the containers: a long-running one missing or not running, a one-shot not exited 0. */
+export function lifecycleProblems(all: readonly ContainerState[]): string[] {
+  const problems: string[] = [];
+  for (const service of LONG_RUNNING) {
+    const found = all.filter((c) => c.service === service);
+    if (found.length !== 1) problems.push(`${service}: ${String(found.length)} containers`);
+    for (const c of found) {
+      if (c.state !== 'running')
+        problems.push(`${service} ${c.state} (exit ${String(c.exitCode)})`);
+    }
+  }
+  for (const service of ONE_SHOTS) {
+    for (const c of all.filter((x) => x.service === service)) {
+      if (c.state !== 'exited' || c.exitCode !== 0) {
+        problems.push(`${service} ${c.state} (exit ${String(c.exitCode)})`);
+      }
+    }
+  }
+  for (const c of all) {
+    if (c.oomKilled) problems.push(`${c.service} OOM-killed`);
+    if (c.restartCount > 0) problems.push(`${c.service} restarted ${String(c.restartCount)} times`);
+  }
+  return problems;
 }
 
 function highestShare(memory: Record<string, unknown>): string {
@@ -1324,8 +1481,8 @@ async function runP2(config: PlantConfig, scenario: Scenario, dir: string): Prom
     if (mesId === undefined) throw new Error('no MES container');
     await execute('docker', ['stop', '--time', '15', mesId]);
     const stoppedAt = Date.now();
-    log(`P2: MES stopped at ${iso(stopSim)}; waiting 5 minutes`);
-    await sleep(Math.max(0, 5 * MINUTE - (Date.now() - stoppedAt)));
+    log(`P2: MES stopped at ${iso(stopSim)}; waiting ${String(P2_STOP_MS / MINUTE)} minutes`);
+    await sleep(Math.max(0, P2_STOP_MS - (Date.now() - stoppedAt)));
     const gatewayPublished = total(
       parseMetrics(await live.gateway.metrics()),
       'gateway_published_messages',
@@ -1340,42 +1497,41 @@ async function runP2(config: PlantConfig, scenario: Scenario, dir: string): Prom
       startSim,
     );
     const mes = new MesClient(live.mesBase, live.supervisor.cookie);
-    const series: {
-      at: number;
-      stored: number;
-      handled: number;
-      subscribed: number;
-      pending: number | undefined;
-    }[] = [];
-    let subscribedAt: number | undefined;
+    // A sampler that only reads /metrics, every 100 ms (#245 review, finding 2): the rate comes
+    // from the stored count's slope between its own samples, never across a slower check.
+    const series: (DrainSample & { pending: number | undefined })[] = [];
+    let done = false;
+    const sampler = (async () => {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- set by another task
+      while (!done && Date.now() - startedAt < 6 * MINUTE) {
+        const tick = Date.now();
+        const m = await mesMetrics(live.mesBase).catch(() => undefined);
+        if (m) {
+          series.push({
+            at: (tick + Date.now()) / 2,
+            stored: total(m, 'mes_ingest_messages_total', { outcome: 'stored' }) ?? 0,
+            handled: total(m, 'mes_ingest_messages_total') ?? 0,
+            subscribed: total(m, 'mes_ingest_subscribed') ?? 0,
+            pending: total(m, 'mes_ingest_pending_messages'),
+          });
+        }
+        await sleep(Math.max(0, 100 - (Date.now() - tick)));
+      }
+    })();
+    // The catch-up (the plant clock within 60 simulated s) and finality, in a loop of their own.
     let caughtUpAt: number | undefined;
     let finalAt: number | undefined;
     let lastProblem = '';
     const deadline = startedAt + 6 * MINUTE;
     while (Date.now() < deadline && (caughtUpAt === undefined || finalAt === undefined)) {
-      const at = Date.now();
-      const m = await mesMetrics(live.mesBase).catch(() => undefined);
-      if (m) {
-        // Stored: new facts, the target's count; handled: every outcome (duplicates, anchors).
-        const stored = total(m, 'mes_ingest_messages_total', { outcome: 'stored' }) ?? 0;
-        const handled = total(m, 'mes_ingest_messages_total') ?? 0;
-        const subscribed = total(m, 'mes_ingest_subscribed') ?? 0;
-        series.push({
-          at,
-          stored,
-          handled,
-          subscribed,
-          pending: total(m, 'mes_ingest_pending_messages'),
-        });
-        if (subscribed === 1) subscribedAt ??= at;
-        if (subscribedAt !== undefined && caughtUpAt === undefined) {
-          const [plant, status] = await Promise.all([
-            mes.plant().catch(() => undefined),
-            sim.status(),
-          ]);
-          const watermark = plant?.clock ? Date.parse(plant.clock.watermark) : 0;
-          if (Date.parse(status.simTime) - watermark <= MINUTE) caughtUpAt = Date.now();
-        }
+      const tick = Date.now();
+      if (caughtUpAt === undefined) {
+        const [plant, status] = await Promise.all([
+          mes.plant().catch(() => undefined),
+          sim.status(),
+        ]);
+        const watermark = plant?.clock ? Date.parse(plant.clock.watermark) : 0;
+        if (Date.parse(status.simTime) - watermark <= MINUTE) caughtUpAt = Date.now();
       }
       if (finalAt === undefined) {
         const through = await settled(stack).catch(() => new Map<string, number>());
@@ -1386,50 +1542,35 @@ async function runP2(config: PlantConfig, scenario: Scenario, dir: string): Prom
             .map((id) => `${id} ${String(through.get(id) ?? 0)}/${String(raised.get(id) ?? 0)}`)
             .join(', ');
       }
-      await sleep(Math.max(0, 500 - (Date.now() - at)));
+      await sleep(Math.max(0, 250 - (Date.now() - tick)));
     }
+    done = true;
+    await sampler;
     await sim.pause();
-    const at = (t: number | undefined) =>
-      t === undefined ? undefined : series.findLast((s) => s.at <= t);
-    const drained = at(caughtUpAt)?.stored;
-    const drainMs =
-      caughtUpAt !== undefined && subscribedAt !== undefined
-        ? caughtUpAt - subscribedAt
-        : undefined;
-    const rate =
-      drained !== undefined && drainMs !== undefined && drainMs > 0
-        ? drained / (drainMs / 1000)
-        : undefined;
-    const fromStartRate =
-      drained !== undefined && caughtUpAt !== undefined
-        ? drained / ((caughtUpAt - startedAt) / 1000)
-        : undefined;
+    const drain = drainRate(series, caughtUpAt);
     report.t2 = {
       stoppedAt: iso(stopSim),
       startedAt: iso(startSim),
       stoppedWallMs: startedAt - stoppedAt,
       gatewayPublishedAtStart: gatewayPublished ?? null,
-      subscribedMs: subscribedAt === undefined ? null : subscribedAt - startedAt,
+      subscribedMs: drain.subscribedAt === undefined ? null : drain.subscribedAt - startedAt,
       caughtUpMs: caughtUpAt === undefined ? null : caughtUpAt - startedAt,
-      drainMs: drainMs ?? null,
-      messagesDrained: drained ?? null,
-      messagesHandled: at(caughtUpAt)?.handled ?? null,
-      ratePerSecond: rate === undefined ? null : round(rate, 1),
-      ratePerSecondFromStart: fromStartRate === undefined ? null : round(fromStartRate, 1),
+      ...drain.report,
       finalMs: finalAt === undefined ? null : finalAt - startedAt,
       notFinal: finalAt === undefined ? lastProblem : null,
-      pendingMax: Math.max(0, ...series.map((s) => s.pending ?? 0)),
+      pendingMax: Math.max(0, ...series.map((x) => x.pending ?? 0)),
+      samples: series.length,
       raisedAtStart: Object.fromEntries(raised),
     };
     judge(
       report,
       'T2',
-      'backlog drain rate after a 5-minute MES stop',
-      '≥ 800 msg/s',
-      rate === undefined
-        ? 'did not catch up'
-        : `${String(round(rate, 1))} msg/s (${String(drained)} messages in ${String(drainMs)} ms)`,
-      rate !== undefined && rate >= 800,
+      `backlog drain rate after a ${String(P2_STOP_MS / MINUTE)}-minute MES stop`,
+      '≥ 800 msg/s (median 100 ms slope over the steady drain)',
+      drain.median === undefined
+        ? `no steady drain measured (${drain.reason})`
+        : `${String(round(drain.median, 1))} msg/s median (mean ${String(round(drain.mean ?? 0, 1))}; ${String(drain.report.messagesDrained)} stored over ${String(round((drain.report.drainMs ?? 0) / 1000, 1))} s, steady ${String(round((drain.report.steadyMs ?? 0) / 1000, 1))} s)`,
+      drain.median !== undefined && drain.median >= 800,
     );
     judge(
       report,
@@ -1521,6 +1662,9 @@ async function runP3(config: PlantConfig, dir: string): Promise<RunReport> {
           messages: number;
           wallMs: number;
           start: string;
+          telemetry: number;
+          messagesPerSecond: number;
+          lateMaxMs: number;
         },
       () => undefined,
     );
@@ -1609,7 +1753,10 @@ async function runP3(config: PlantConfig, dir: string): Promise<RunReport> {
     report.t6 = {
       clockSkewMs: skew,
       messages: replay.messages,
-      messagesPerSecond: round(replay.messages / (replay.wallMs / 1000), 1),
+      messagesPerSecond: replay.messagesPerSecond,
+      telemetry: replay.telemetry,
+      lateMaxMs: replay.lateMaxMs,
+      liveMessagesPerSecond: liveRate === undefined ? null : round(liveRate, 2),
       lag:
         window === undefined
           ? null
@@ -1646,6 +1793,23 @@ async function runP3(config: PlantConfig, dir: string): Promise<RunReport> {
         window.count > 0 && share1 >= 0.95,
       );
     }
+    const offered = replay.messagesPerSecond;
+    judge(
+      report,
+      'T6',
+      'offered load three times the live rate',
+      `≥ 3 × P1's ${liveRate === undefined ? '(not measured)' : String(round(liveRate, 2))} msg/s`,
+      `${String(offered)} msg/s (${String(replay.messages)} messages, ${String(replay.telemetry)} of them telemetry)`,
+      liveRate === undefined ? null : offered >= 3 * liveRate,
+    );
+    judge(
+      report,
+      'T6',
+      'publisher kept its pacing',
+      `late by ≤ ${String(REPLAY_LATE_MS)} ms`,
+      `${String(replay.lateMaxMs)} ms at most`,
+      replay.lateMaxMs <= REPLAY_LATE_MS,
+    );
     judge(
       report,
       'T6',

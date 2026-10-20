@@ -1159,8 +1159,15 @@ export async function checkOrderOee(
       `orders completed in shift A: live ${completed.join(', ')}, golden ${goldenCompleted.join(', ')}`,
     );
   }
-  // The MES's own set: its orders completed before the cut are the same (#233 review).
-  const mesCompleted = (await ctx.mes.orders()).orders
+  // The MES's own set: its orders completed before the cut are the same (#233 review), from a
+  // whole list (`GET /orders` answers at most 500 and says so: #257).
+  const mesList = await ctx.mes.orders();
+  if (mesList.truncated) {
+    ctx.fail(
+      `GET /orders is truncated (${String(mesList.orders.length)} listed): the set is partial`,
+    );
+  }
+  const mesCompleted = mesList.orders
     .filter((o) => o.completedAt !== null && Date.parse(o.completedAt) < cut.to)
     .map((o) => o.id)
     .sort();

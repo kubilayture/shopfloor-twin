@@ -8,8 +8,8 @@
  * rules, segments, subgroups, pending and dropped readings, retests and every episode with its
  * extent, closing point and baseline flag). The operations: deliver a batch of the universe in a
  * random order (new readings at the end, late ones anywhere before it), deliver a batch again (a
- * duplicate changes nothing), remove readings, change a reading in place (value, position or pass,
- * as a part's rebuild renumbers its passes), create limit version 1 from the readings so far,
+ * duplicate changes nothing), remove readings, change a reading in place (value, plant time,
+ * sequence, device epoch or pass, as a part's rebuild renumbers its passes), create limit version 1 from the readings so far,
  * create a later version from a window of them applying from a position, and end the newest
  * open version at a position. Each update's `kind` is checked too: `new` exactly when it only
  * appended first-pass readings at the end of the chart.
@@ -123,7 +123,7 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
     arbitrary: fc.record({
       kind: fc.constant('change' as const),
       pick: fc.nat(),
-      what: fc.integer({ min: 0, max: 2 }),
+      what: fc.integer({ min: 0, max: 4 }),
       by: fc.integer({ min: -40, max: 40 }),
     }),
   },
@@ -220,12 +220,18 @@ describe('spc-core incremental derivation', () => {
                 const key = keys[op.pick % (keys.length + 1)];
                 const old = key === undefined ? undefined : held.get(key);
                 if (old === undefined) break;
+                // Value, plant time, pass, sequence or device epoch (#257: every field
+                // `sameReading` compares, so a change to any one of them is never skipped).
                 const changed: Reading =
                   op.what === 0
                     ? { ...old, value: old.value + op.by }
                     : op.what === 1
                       ? { ...old, at: Math.max(0, old.at + op.by * 1000) }
-                      : { ...old, pass: old.pass === 1 ? 2 : 1 };
+                      : op.what === 2
+                        ? { ...old, pass: old.pass === 1 ? 2 : 1 }
+                        : op.what === 3
+                          ? { ...old, seq: Math.max(0, old.seq + (op.by === 0 ? 1 : op.by)) }
+                          : { ...old, epoch: Math.max(1, old.epoch + (op.by < 0 ? -1 : 1)) };
                 held.set(changed.key, changed);
                 // Now and then removed and upserted again in one change (as a part's rebuild).
                 const update =

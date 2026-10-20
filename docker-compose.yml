@@ -32,13 +32,19 @@ services:
 
   broker:
     image: eclipse-mosquitto:2.1.2-alpine
+    # Dynamic security (P9-13, ADR-0039): entrypoint.sh generates the plugin's configuration into
+    # the data volume on every start, from config/mosquitto/dynamic-security.json (users, bound
+    # client ids, roles) and these passwords.
     entrypoint: ['/bin/sh', '/mosquitto/config/entrypoint.sh']
     environment:
       MQTT_USERS: >-
         healthcheck:${MQTT_HEALTHCHECK_PASSWORD:?Set MQTT_HEALTHCHECK_PASSWORD in .env}
         dev:${MQTT_DEV_PASSWORD:?Set MQTT_DEV_PASSWORD in .env}
+        smoke-reader:${MQTT_DEV_PASSWORD:?Set MQTT_DEV_PASSWORD in .env}
         gw-01:${MQTT_GATEWAY_PASSWORD:?Set MQTT_GATEWAY_PASSWORD in .env}
+        gw-01-cmd:${MQTT_GATEWAY_PASSWORD:?Set MQTT_GATEWAY_PASSWORD in .env}
         mes:${MQTT_MES_PASSWORD:?Set MQTT_MES_PASSWORD in .env}
+        mes-cmd:${MQTT_MES_PASSWORD:?Set MQTT_MES_PASSWORD in .env}
       MQTT_HEALTHCHECK_PASSWORD: ${MQTT_HEALTHCHECK_PASSWORD}
     ports:
       - '127.0.0.1:${MQTT_PORT:-1883}:1883'
@@ -54,7 +60,7 @@ services:
       test:
         [
           'CMD-SHELL',
-          'mosquitto_sub -h localhost -u healthcheck -P "$${MQTT_HEALTHCHECK_PASSWORD}" -t "\$$SYS/broker/uptime" -C 1 -W 3',
+          'mosquitto_sub -h localhost -i healthcheck -u healthcheck -P "$${MQTT_HEALTHCHECK_PASSWORD}" -t "\$$SYS/broker/uptime" -C 1 -W 3',
         ]
       interval: 5s
       timeout: 5s

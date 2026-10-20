@@ -58,6 +58,10 @@ export const envSchema = z.object({
   MQTT_USERNAME: text.default('mes'),
   MQTT_PASSWORD: z.string().min(1),
   MQTT_CLIENT_ID: text.default('mes-server'),
+  // The command connection's broker user (P9-13, ADR-0039). The broker binds client id
+  // `mes-server` to MQTT_USERNAME and `mes-server-cmd` to this user, and refuses any other id for
+  // them; both use MQTT_PASSWORD.
+  MQTT_CMD_USERNAME: text.default('mes-cmd'),
   // How long the broker keeps the session (and queues messages) while the MES is away: 7 days.
   MQTT_SESSION_EXPIRY_S: integer.pipe(z.number().min(60)).default(604_800),
   // How long a sequence hole may stay open (wall time) before it is recorded as an incident.

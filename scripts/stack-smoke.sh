@@ -177,12 +177,56 @@ if docker compose exec -T broker mosquitto_pub -h localhost -t smoke/anon -m x 2
 fi
 echo "ok: anonymous MQTT client refused"
 
+# The client id the broker binds to a user (P9-13, ADR-0039; config/mosquitto/dynamic-security.json):
+# every user is bound, most to their own name.
+bound_id() {
+  case "$1" in
+    mes) echo mes-server ;;
+    mes-cmd) echo mes-server-cmd ;;
+    *) echo "$1" ;;
+  esac
+}
+# as_user <user> <password> <command…>: the command in the broker container as that user, under
+# its bound client id (so one connection per user at a time). As gw-01 that takes the gateway's
+# publishing session over for a moment (clean, with an outbox: it reconnects and resends). Never as
+# mes: its session is persistent, and a clean connection under its id would end it.
 as_user() {
   user=$1
   password=$2
   shift 2
-  docker compose exec -T broker "$@" -h localhost -u "$user" -P "$password"
+  id=$(bound_id "$user")
+  docker compose exec -T broker "$@" -h localhost -u "$user" -P "$password" -i "$id"
 }
+# connects <user> <password> <client id>: does the broker accept this login?
+connects() {
+  docker compose exec -T broker mosquitto_pub -h localhost -u "$1" -P "$2" -i "$3" \
+    -t smoke/login -n >/dev/null 2>&1
+}
+
+# Client-id binding and passwords (P9-13, S2): no user may take another's session (Mosquitto checks
+# no username on a takeover, so every user is bound, dev and healthcheck included), a user connects
+# only under its own id, a wrong password is refused. The generated configuration holds the
+# password hashes: private to the broker, and the plain password file of Phase 8 is gone.
+for login in "mes:$MQTT_MES_PASSWORD:gw-01" "mes-cmd:$MQTT_MES_PASSWORD:mes-server" \
+  "gw-01:$MQTT_GATEWAY_PASSWORD:mes-server" "gw-01-cmd:$MQTT_GATEWAY_PASSWORD:gw-01" \
+  "gw-01:$MQTT_GATEWAY_PASSWORD:gw-01-cmd" "mes:$MQTT_MES_PASSWORD:mes-server-cmd" \
+  "gw-01:$MQTT_GATEWAY_PASSWORD:smoke-$$" "mes:$MQTT_MES_PASSWORD:smoke-$$" \
+  "dev:$MQTT_DEV_PASSWORD:gw-01" "healthcheck:$MQTT_HEALTHCHECK_PASSWORD:gw-01" \
+  "dev:$MQTT_DEV_PASSWORD:mes-server-cmd" "smoke-reader:$MQTT_DEV_PASSWORD:dev" \
+  "dev:$MQTT_DEV_PASSWORD:smoke-$$" "healthcheck:$MQTT_HEALTHCHECK_PASSWORD:smoke-$$"; do
+  user=${login%%:*}
+  id=${login##*:}
+  password=${login#*:}
+  password=${password%:*}
+  if connects "$user" "$password" "$id"; then fail "the broker accepted $user with client id $id"; fi
+done
+if connects gw-01 "not-the-password-$$" gw-01; then fail "the broker accepted a wrong password"; fi
+if connects dev "$MQTT_GATEWAY_PASSWORD" "smoke-$$"; then fail "the broker accepted another user's password"; fi
+connects dev "$MQTT_DEV_PASSWORD" dev || fail "dev cannot connect with its own client id"
+[ "$(docker compose exec -T broker stat -c '%a %U' /mosquitto/data/dynamic-security.json)" = '600 mosquitto' ] ||
+  fail "the dynamic-security configuration is not private to the broker"
+if docker compose exec -T broker test -e /mosquitto/data/passwd; then fail "the Phase 8 password file is still there"; fi
+echo "ok: broker client ids bound to every user (no takeover, also by dev or healthcheck); wrong passwords refused"
 
 topic=orbis/gebze/_sys/edge-gateway/gw-01/smoke
 as_user gw-01 "$MQTT_GATEWAY_PASSWORD" mosquitto_pub -q 1 -r -t "$topic" -m persisted
@@ -193,7 +237,9 @@ as_user gw-01 "$MQTT_GATEWAY_PASSWORD" mosquitto_pub -q 1 -r -n -t "$topic"
 [ "$received" = persisted ] || fail "retained message lost across broker restart"
 echo "ok: retained message survives broker restart"
 
-# delivered <publisher> <publisher password> <topic>: does a message from this user reach `mes`?
+# delivered <publisher> <publisher password> <topic>: does a message from this user reach a reader?
+# The reader is `smoke-reader` (dev's role: reads orbis/#, as `mes` does), so the MES's session is
+# never touched and `dev` can publish meanwhile.
 acl_out=$(mktemp)
 # The dev CA's and the web's certificates (P9-14), read from the web container below.
 tls_dir=$(mktemp -d)
@@ -219,7 +265,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 delivered() {
-  as_user mes "$MQTT_MES_PASSWORD" mosquitto_sub -t "$3" -C 1 -W 6 >"$acl_out" 2>/dev/null &
+  as_user smoke-reader "$MQTT_DEV_PASSWORD" mosquitto_sub -t "$3" -C 1 -W 6 >"$acl_out" 2>/dev/null &
   sub=$!
   # The subscriber must be listening before the publish, or a denial would pass vacuously.
   sleep 2

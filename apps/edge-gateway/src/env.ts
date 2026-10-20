@@ -20,6 +20,9 @@ export const envSchema = z
     PLANT_CONFIG_DIR: text.default(DEFAULT_CONFIG),
     MQTT_URL: z.url({ protocol: /^mqtts?$/ }).default('mqtt://127.0.0.1:1883'),
     MQTT_USERNAME: text.default('gw-01'),
+    // The command connection's broker user (P9-13, ADR-0039): the broker binds client id
+    // `{GATEWAY_ID}-cmd` to it, as it binds `GATEWAY_ID` to MQTT_USERNAME. Same password.
+    MQTT_CMD_USERNAME: text.default('gw-01-cmd'),
     // Not trimmed: spaces may be part of a password.
     MQTT_PASSWORD: z.string().min(1),
     OPCUA_HOST: text.default('localhost'),

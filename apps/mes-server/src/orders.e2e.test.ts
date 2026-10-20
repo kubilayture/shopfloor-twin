@@ -17,7 +17,7 @@ import { OPCUA_MACHINES } from '@shopfloor/contracts';
 import { expandErpDataset, type FeedEntry } from '@shopfloor/contracts/erp-api';
 import { PROBLEM_TYPES } from '@shopfloor/contracts/mes-api';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
-import { TEST_PASSWORDS, startBroker } from '@shopfloor/test-kit/broker';
+import { TEST_PASSWORDS, brokerLogin, startBroker } from '@shopfloor/test-kit/broker';
 import {
   TcpProxy,
   opcuaProxies,
@@ -242,10 +242,10 @@ async function injectResult(message: {
   readonly value: Record<string, unknown>;
 }): Promise<void> {
   const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
-    username: 'gw-01',
-    password: TEST_PASSWORDS['gw-01'],
+    // The broker binds client id gw-01 to gw-01 (ADR-0039): this takes the gateway's publishing
+    // session over for a moment if it is connected (clean, its outbox resends anything unacked).
+    ...brokerLogin('gw-01'),
     protocolVersion: 5,
-    clientId: `mes-orders-e2e-gateway-voice-${String(message.seq)}`,
   });
   try {
     await injector.publishAsync(
@@ -297,18 +297,14 @@ beforeAll(async () => {
   ingest = new Ingest({
     db,
     url: `mqtt://127.0.0.1:${String(ingestProxy.port)}`,
-    username: 'mes',
-    password: TEST_PASSWORDS.mes,
-    clientId: 'mes-orders-e2e',
+    ...brokerLogin('mes'),
     gapGraceMs: 60_000,
   });
   await ingest.start();
   await ingest.waitSubscribed();
   publisher = new MqttCommandPublisher({
     url: `mqtt://127.0.0.1:${String(brokerPort)}`,
-    username: 'mes',
-    password: TEST_PASSWORDS.mes,
-    clientId: 'mes-orders-e2e-cmd',
+    ...brokerLogin('mes-cmd'),
   });
   orders = new Orders({ db, ingest, masterData, erp, tickMs: 0, erpPollMs: 0, erpPostMs: 0 });
   await orders.start();
@@ -321,10 +317,8 @@ beforeAll(async () => {
   });
   await until('the command connection', () => publisher.connected);
   listener = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
-    username: 'mes',
-    password: TEST_PASSWORDS.mes,
+    ...brokerLogin('dev'), // reads every cmd; the MES's ids are taken
     protocolVersion: 5,
-    clientId: 'mes-orders-e2e-listener',
   });
   listener.on('message', (topic, payload) => {
     deliveries.push({ topic, payload: payload.toString() });
@@ -794,10 +788,8 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
         .executeTakeFirst();
       expect(last === undefined || last.value.result === 'unknown').toBe(true);
       const injector = await mqtt.connectAsync(`mqtt://127.0.0.1:${String(brokerPort)}`, {
-        username: 'gw-01',
-        password: TEST_PASSWORDS['gw-01'],
+        ...brokerLogin('gw-01'), // takes the gateway's publishing session over for a moment
         protocolVersion: 5,
-        clientId: 'mes-orders-e2e-gateway-voice',
       });
       try {
         await injector.publishAsync(
@@ -876,7 +868,8 @@ describe('commands exactly once from the MES (#174, exit criterion 3)', () => {
     await until('confirmed', async () => (await command(sent.commandId)).confirmed, 60_000);
     const copy = deliveries.find((d) => d.payload.includes(`"${sent.commandId}"`));
     if (!copy) throw new Error('the delivery was not seen');
-    await listener.publishAsync(copy.topic, copy.payload, { qos: 1 }); // the broker's duplicate
+    // The broker's duplicate, on the MES's own command connection (the listener reads as `dev`).
+    await publisher.publish(copy.topic, copy.payload);
     await until(
       'both deliveries answered',
       async () => (await ingest.commandResults([sent.commandId])).length >= 2,

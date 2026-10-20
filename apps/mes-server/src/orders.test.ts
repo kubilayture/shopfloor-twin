@@ -37,7 +37,7 @@ import {
   type ServerMessage,
 } from '@shopfloor/contracts/mes-api';
 import { loadPlantConfig, type PlantConfig } from '@shopfloor/plant-config';
-import { TEST_PASSWORDS, startBroker } from '@shopfloor/test-kit/broker';
+import { brokerLogin, startBroker } from '@shopfloor/test-kit/broker';
 import type { Kysely } from 'kysely';
 import mqtt from 'mqtt';
 import type { StartedTestContainer } from 'testcontainers';
@@ -1838,27 +1838,20 @@ describe('the orders API and push (#174)', () => {
 });
 
 describe('the command connection (#174)', () => {
-  it('publishes commands as `mes` with its own client id, QoS 1, and refuses while disconnected', async () => {
+  it('publishes commands as `mes-cmd` with its own client id, QoS 1, and refuses while disconnected', async () => {
     const { url, container: broker } = await startBroker();
     cleanups.push(async () => {
       await broker.stop();
     });
     const listener = await mqtt.connectAsync(url, {
-      username: 'mes',
-      password: TEST_PASSWORDS.mes,
+      ...brokerLogin('mes'),
       protocolVersion: 5,
-      clientId: 'orders-test-listener',
     });
     cleanups.push(() => listener.endAsync(true));
     const received: string[] = [];
     listener.on('message', (topic, payload) => received.push(`${topic} ${payload.toString()}`));
     await listener.subscribeAsync('orbis/gebze/+/+/+/cmd/#', { qos: 1 });
-    const publisher = new MqttCommandPublisher({
-      url,
-      username: 'mes',
-      password: TEST_PASSWORDS.mes,
-      clientId: 'mes-server-cmd',
-    });
+    const publisher = new MqttCommandPublisher({ url, ...brokerLogin('mes-cmd') });
     for (let deadline = Date.now() + 10_000; !publisher.connected;) {
       if (Date.now() > deadline) throw new Error('not connected');
       await new Promise((r) => setTimeout(r, 50));

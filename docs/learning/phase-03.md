@@ -93,7 +93,7 @@ A count can balance by accident: one fact lost and another duplicated. The set e
 
 Watch the edge survive failures.
 
-1. `pnpm stack:up`, then `docker compose exec broker mosquitto_sub -u dev -P <MQTT_DEV_PASSWORD> -t 'orbis/gebze/+/+/+/state/current' -v`.
+1. `pnpm stack:up`, then `docker compose exec broker mosquitto_sub -i dev -u dev -P <MQTT_DEV_PASSWORD> -t 'orbis/gebze/+/+/+/state/current' -v`.
 2. Look at `curl -s localhost:4900/metrics | grep gateway_`: every machine connected, buffer at 0.
 3. `docker compose stop broker` for 30 s. The `gateway_buffer_messages` metric grows (`curl localhost:4900/metrics`; the gateway's HTTP port stays up).
 4. `docker compose start broker`: `gateway_buffer_messages` falls to 0 and `gateway_published_messages` rises. Resubscribing shows the retained current states; a subscriber started later can't see the replayed history.

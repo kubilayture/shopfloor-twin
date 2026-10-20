@@ -34,6 +34,7 @@
     "test:e2e": "node scripts/heavy.ts turbo run test:e2e --concurrency=1",
     "test:reconcile": "pnpm --filter @shopfloor/e2e test:reconcile",
     "test:trace-perf": "pnpm --filter @shopfloor/e2e test:trace-perf",
+    "test:perf": "pnpm --filter @shopfloor/e2e test:perf",
     "test:console": "pnpm --filter @shopfloor/e2e test:console",
     "test:resilience": "pnpm --filter @shopfloor/e2e test:resilience",
     "gate": "node scripts/gate.ts",

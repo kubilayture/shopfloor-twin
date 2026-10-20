@@ -149,4 +149,4 @@ Evidence references: test files and test names as they run in `pnpm verify` (V),
 
 ## Gate of #242
 
-Filled in by the PR's gate run (phase log, #242 entry).
+`pnpm gate` on `7c99332` (`GATE_PROJECT=gate242`, `GATE_TAG=pr242`, `TURBO_FORCE=1`): `GATE-OK`. verify 523.0 s, golden 1.6 s, e2e 1,467.9 s, smoke 188.2 s (`ok: burst of 20 from a fresh address after n = 15: 1 judged, 19 x 429 (Retry-After 30 s, 166 ms), n = 16`), reconcile 1,666.8 s; `gate: none of the 11 generated secrets in the smoke output` and in the reconcile output. The first gate (`8b48a92`) failed the smoke with a `Retry-After` of 31: the decision's time was read before the row lock; fixed in `7c99332` (phase log, #242 entry).

@@ -759,3 +759,5 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed | 1,435.8 s | the replay entry skipped without its broker |
     | smoke     | passed | 203.0 s   |                                             |
     | reconcile | passed | 1,665.2 s | alarms, orders, quality                     |
+
+  - **Re-review of PR #269: approved**, with four small changes: STATUS figures updated to the final run; T2 judged on min(median, mean) ≥ 800 (974.8 on the final run, still a pass; ADR-0040 and the results file); `results.json` and `results.md` record `liveRateSource` (`p1` or `PERF_LIVE_RATE`); unit tests for `lifecycleProblems` (moved to `perf-metrics.ts`: a missing, duplicated or stopped service, a one-shot not exited 0, an OOM kill, a restart) and for `drainRate` with a ramp and tail that move an unfiltered median (the filter-removed mutant fails it). The heavy suite was not rerun.

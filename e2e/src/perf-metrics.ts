@@ -243,3 +243,50 @@ export function drainRate(
     },
   };
 }
+
+/** The long-running services of a live run (P1), each must be running at the end. */
+export const LONG_RUNNING = [
+  'db',
+  'broker',
+  'simulator',
+  'gateway',
+  'mes',
+  'erp',
+  'web',
+  'prometheus',
+];
+export const ONE_SHOTS = ['pki', 'migrate'];
+
+export interface ContainerState {
+  readonly service: string;
+  readonly id: string;
+  readonly state: string;
+  readonly exitCode: number;
+  readonly oomKilled: boolean;
+  readonly restartCount: number;
+}
+
+/** What is wrong with the containers: a long-running one missing or not running, a one-shot not exited 0. */
+export function lifecycleProblems(all: readonly ContainerState[]): string[] {
+  const problems: string[] = [];
+  for (const service of LONG_RUNNING) {
+    const found = all.filter((c) => c.service === service);
+    if (found.length !== 1) problems.push(`${service}: ${String(found.length)} containers`);
+    for (const c of found) {
+      if (c.state !== 'running')
+        problems.push(`${service} ${c.state} (exit ${String(c.exitCode)})`);
+    }
+  }
+  for (const service of ONE_SHOTS) {
+    for (const c of all.filter((x) => x.service === service)) {
+      if (c.state !== 'exited' || c.exitCode !== 0) {
+        problems.push(`${service} ${c.state} (exit ${String(c.exitCode)})`);
+      }
+    }
+  }
+  for (const c of all) {
+    if (c.oomKilled) problems.push(`${c.service} OOM-killed`);
+    if (c.restartCount > 0) problems.push(`${c.service} restarted ${String(c.restartCount)} times`);
+  }
+  return problems;
+}

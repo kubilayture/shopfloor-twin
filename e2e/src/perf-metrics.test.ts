@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  LONG_RUNNING,
   drainRate,
   histogram,
   histogramDelta,
   judgeCounts,
+  lifecycleProblems,
   parseMetrics,
   quantile,
   settledThrough,
   shareAtOrBelow,
   total,
+  type ContainerState,
 } from './perf-metrics.ts';
 
 const text = (count: number, at025: number, at1: number, at5: number) => `
@@ -102,5 +105,76 @@ describe('the performance suite’s metrics (#245)', () => {
         11_000,
       ).reason,
     ).toMatch(/never subscribed/);
+  });
+
+  it('keeps a large ramp and tail out of the drain rate', () => {
+    // A 1 s ramp at 100/s, a 1.5 s drain at 1,000/s, a 1 s tail at 50/s, caught up at 3.5 s:
+    // unfiltered, the 20 slow slopes outnumber the 15 of the drain and the median would be slow.
+    const rate = (t: number) => (t < 1_000 ? 100 : t < 2_500 ? 1_000 : 50);
+    let stored = 0;
+    const series = Array.from({ length: 36 }, (_, i) => {
+      const at = i * 100;
+      if (i > 0) stored += rate(at - 100) / 10;
+      return { at, stored, handled: stored, subscribed: 1 };
+    });
+    const unfiltered = series
+      .slice(1)
+      .map((x, i) => (x.stored - (series[i]?.stored ?? 0)) * 10)
+      .sort((p, q) => p - q);
+    expect(unfiltered[Math.floor(unfiltered.length / 2)]).toBeLessThan(800);
+    const drain = drainRate(series, 3_500);
+    expect(drain.median).toBeCloseTo(1_000, 6);
+    expect(drain.mean).toBeCloseTo(1_000, 6);
+    expect(drain.report.slopes).toBe(15);
+  });
+
+  describe('lifecycleProblems (T5)', () => {
+    const healthy = (): ContainerState[] => [
+      ...LONG_RUNNING.map((service) => ({
+        service,
+        id: service,
+        state: 'running',
+        exitCode: 0,
+        oomKilled: false,
+        restartCount: 0,
+      })),
+      ...['pki', 'migrate'].map((service) => ({
+        service,
+        id: service,
+        state: 'exited',
+        exitCode: 0,
+        oomKilled: false,
+        restartCount: 0,
+      })),
+    ];
+    const change = (service: string, patch: Partial<ContainerState>) =>
+      healthy().map((c) => (c.service === service ? { ...c, ...patch } : c));
+
+    it('accepts every long-running service running and the one-shots exited 0', () => {
+      expect(lifecycleProblems(healthy())).toEqual([]);
+    });
+
+    it('fails a missing, a duplicated and a stopped service', () => {
+      expect(lifecycleProblems(healthy().filter((c) => c.service !== 'mes'))).toEqual([
+        'mes: 0 containers',
+      ]);
+      expect(
+        lifecycleProblems([...healthy(), { ...healthy()[0], id: 'twin' } as ContainerState]),
+      ).toEqual(['db: 2 containers']);
+      expect(lifecycleProblems(change('gateway', { state: 'exited', exitCode: 137 }))).toEqual([
+        'gateway exited (exit 137)',
+      ]);
+    });
+
+    it('fails a one-shot that did not exit 0, an OOM kill and a restart', () => {
+      expect(lifecycleProblems(change('pki', { exitCode: 1 }))).toEqual(['pki exited (exit 1)']);
+      expect(lifecycleProblems(change('migrate', { state: 'running' }))).toEqual([
+        'migrate running (exit 0)',
+      ]);
+      expect(lifecycleProblems(change('web', { oomKilled: true }))).toEqual(['web OOM-killed']);
+      expect(lifecycleProblems(change('broker', { restartCount: 2 }))).toEqual([
+        'broker restarted 2 times',
+      ]);
+    });
   });
 });

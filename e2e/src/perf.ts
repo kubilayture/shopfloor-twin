@@ -89,14 +89,17 @@ import { jsonDifferences, percentile } from './compare.ts';
 import { judgeLatency, type Change } from './latency.ts';
 import {
   histogram,
+  LONG_RUNNING,
   drainRate,
   histogramDelta,
   judgeCounts,
   parseMetrics,
   quantile,
   settledThrough,
+  lifecycleProblems,
   shareAtOrBelow,
   total,
+  type ContainerState,
   type DrainSample,
   type Range,
   type Sample,
@@ -533,6 +536,9 @@ async function gatewayState(gateway: GatewayClient) {
 const LIVE_OUTBOX = 200;
 
 /** P1's live message rate (msg/s, every outcome), for P3's offered load (#245 review). */
+/** Where the live rate came from: measured by P1 of this invocation, or `PERF_LIVE_RATE`. */
+let liveRateSource: 'p1' | 'PERF_LIVE_RATE' | null =
+  process.env.PERF_LIVE_RATE === undefined ? null : 'PERF_LIVE_RATE';
 let liveRate: number | undefined =
   process.env.PERF_LIVE_RATE === undefined ? undefined : Number(process.env.PERF_LIVE_RATE);
 
@@ -1013,6 +1019,7 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
     const handled0 = total(metrics0, 'mes_ingest_messages_total') ?? 0;
     const handled1 = total(metrics1, 'mes_ingest_messages_total') ?? 0;
     liveRate = (handled1 - handled0) / ((windowEnd - windowStart) / 1000);
+    liveRateSource = 'p1';
     const rejected =
       (total(metrics1, 'mes_ingest_messages_total', { outcome: 'rejected' }) ?? 0) -
       (total(metrics0, 'mes_ingest_messages_total', { outcome: 'rejected' }) ?? 0);
@@ -1392,19 +1399,6 @@ function slowest(byKind: Record<string, { p95: number }>): string {
   return `${kind} ${String(k.p95)} ms`;
 }
 
-/** The long-running services of a live run (P1), each must be running at the end. */
-const LONG_RUNNING = ['db', 'broker', 'simulator', 'gateway', 'mes', 'erp', 'web', 'prometheus'];
-const ONE_SHOTS = ['pki', 'migrate'];
-
-interface ContainerState {
-  readonly service: string;
-  readonly id: string;
-  readonly state: string;
-  readonly exitCode: number;
-  readonly oomKilled: boolean;
-  readonly restartCount: number;
-}
-
 /** Every container of the project (`ps --all`), with `docker inspect`'s state. */
 async function allContainers(stack: Stack): Promise<ContainerState[]> {
   const out = await stack.compose(['ps', '--all', '--format', 'json']);
@@ -1429,31 +1423,6 @@ async function allContainers(stack: Stack): Promise<ContainerState[]> {
     });
   }
   return rows.sort((a, b) => a.service.localeCompare(b.service));
-}
-
-/** What is wrong with the containers: a long-running one missing or not running, a one-shot not exited 0. */
-export function lifecycleProblems(all: readonly ContainerState[]): string[] {
-  const problems: string[] = [];
-  for (const service of LONG_RUNNING) {
-    const found = all.filter((c) => c.service === service);
-    if (found.length !== 1) problems.push(`${service}: ${String(found.length)} containers`);
-    for (const c of found) {
-      if (c.state !== 'running')
-        problems.push(`${service} ${c.state} (exit ${String(c.exitCode)})`);
-    }
-  }
-  for (const service of ONE_SHOTS) {
-    for (const c of all.filter((x) => x.service === service)) {
-      if (c.state !== 'exited' || c.exitCode !== 0) {
-        problems.push(`${service} ${c.state} (exit ${String(c.exitCode)})`);
-      }
-    }
-  }
-  for (const c of all) {
-    if (c.oomKilled) problems.push(`${c.service} OOM-killed`);
-    if (c.restartCount > 0) problems.push(`${c.service} restarted ${String(c.restartCount)} times`);
-  }
-  return problems;
 }
 
 function highestShare(memory: Record<string, unknown>): string {
@@ -1566,11 +1535,13 @@ async function runP2(config: PlantConfig, scenario: Scenario, dir: string): Prom
       report,
       'T2',
       `backlog drain rate after a ${String(P2_STOP_MS / MINUTE)}-minute MES stop`,
-      '≥ 800 msg/s (median 100 ms slope over the steady drain)',
+      '≥ 800 msg/s (the lower of the median 100 ms slope and the mean over the steady drain)',
       drain.median === undefined
         ? `no steady drain measured (${drain.reason})`
         : `${String(round(drain.median, 1))} msg/s median (mean ${String(round(drain.mean ?? 0, 1))}; ${String(drain.report.messagesDrained)} stored over ${String(round((drain.report.drainMs ?? 0) / 1000, 1))} s, steady ${String(round((drain.report.steadyMs ?? 0) / 1000, 1))} s)`,
-      drain.median !== undefined && drain.median >= 800,
+      drain.median !== undefined &&
+        drain.mean !== undefined &&
+        Math.min(drain.median, drain.mean) >= 800,
     );
     judge(
       report,
@@ -1757,6 +1728,7 @@ async function runP3(config: PlantConfig, dir: string): Promise<RunReport> {
       telemetry: replay.telemetry,
       lateMaxMs: replay.lateMaxMs,
       liveMessagesPerSecond: liveRate === undefined ? null : round(liveRate, 2),
+      liveRateSource,
       lag:
         window === undefined
           ? null
@@ -1798,7 +1770,7 @@ async function runP3(config: PlantConfig, dir: string): Promise<RunReport> {
       report,
       'T6',
       'offered load three times the live rate',
-      `≥ 3 × P1's ${liveRate === undefined ? '(not measured)' : String(round(liveRate, 2))} msg/s`,
+      `≥ 3 × the live ${liveRate === undefined ? '(not measured)' : String(round(liveRate, 2))} msg/s (${liveRateSource ?? 'no source'})`,
       `${String(offered)} msg/s (${String(replay.messages)} messages, ${String(replay.telemetry)} of them telemetry)`,
       liveRate === undefined ? null : offered >= 3 * liveRate,
     );
@@ -1987,6 +1959,8 @@ function markdown(results: { environment: Record<string, unknown>; targets: Targ
     '',
     `Commit \`${env.commit}\`. VM: ${String(env.vm.cpus)} CPUs, ${String(env.vm.memoryGiB)} GiB (Colima: \`${JSON.stringify(env.vm.colima)}\`). Host load average ${JSON.stringify(env.host.loadAverage)}, free disk ${String(env.host.freeDisk)}.`,
     '',
+    `Live rate for T6: ${liveRate === undefined ? 'not measured' : `${String(round(liveRate, 2))} msg/s`} (source: ${liveRateSource ?? 'none'}).`,
+    '',
     '| Target | Run | What | Target value | Measured | Result |',
     '| ------ | --- | ---- | ------------ | -------- | ------ |',
     ...results.targets.map(
@@ -2050,6 +2024,7 @@ async function main(): Promise<boolean> {
       r.failures.map((f) => `${String(r.run)}: ${f}`),
     );
     const results = {
+      liveRate: { messagesPerSecond: liveRate ?? null, source: liveRateSource },
       environment: {
         ...env,
         finishedLoadAverage: loadavg().map((l) => round(l, 2)),

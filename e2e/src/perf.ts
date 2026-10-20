@@ -503,8 +503,25 @@ async function mesMetrics(base: string): Promise<Map<string, Sample[]>> {
 }
 
 async function gatewayBuffer(gateway: GatewayClient): Promise<number | undefined> {
-  return total(parseMetrics(await gateway.metrics()), 'gateway_buffer_messages');
+  return (await gatewayState(gateway)).buffer;
 }
+
+/** The gateway's outbox depth, its broker session and its drops (`/metrics`). */
+async function gatewayState(gateway: GatewayClient) {
+  const m = parseMetrics(await gateway.metrics());
+  return {
+    buffer: total(m, 'gateway_buffer_messages'),
+    connected: total(m, 'gateway_mqtt_connected'),
+    dropped: total(m, 'gateway_buffer_dropped_messages'),
+  };
+}
+
+/**
+ * Every message passes through the gateway's outbox (ADR-0014): committed, sent, deleted after its
+ * PUBACK. So live traffic shows a small depth (up to 100 in flight and a commit batch of 100) with
+ * no replay; a replay needs a broker session lost (or a gateway restart, T5's RestartCount).
+ */
+const LIVE_OUTBOX = 200;
 
 /** Waits until the simulator's time reaches `at`, polling every 250 ms; resolves with it. */
 async function untilSimTime(sim: SimulatorClient, at: number, timeoutMs: number): Promise<number> {
@@ -757,6 +774,8 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       pending: number | undefined;
       lagMax: number | undefined;
       buffer: number | undefined;
+      connected: number | undefined;
+      dropped: number | undefined;
       stored: number | undefined;
     }[] = [];
     let sampling = true;
@@ -764,15 +783,17 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- set by another task
       while (sampling) {
         const at = Date.now();
-        const [m, buffer] = await Promise.all([
+        const [m, gw] = await Promise.all([
           mesMetrics(live.mesBase).catch(() => undefined),
-          gatewayBuffer(live.gateway).catch(() => undefined),
+          gatewayState(live.gateway).catch(() => undefined),
         ]);
         samples.push({
           at,
           pending: m && total(m, 'mes_ingest_pending_messages'),
           lagMax: m && total(m, 'mes_ingest_lag_max_seconds'),
-          buffer,
+          buffer: gw?.buffer,
+          connected: gw?.connected,
+          dropped: gw?.dropped,
           stored: m && total(m, 'mes_ingest_messages_total'),
         });
         await sleep(Math.max(0, 1_000 - (Date.now() - at)));
@@ -950,6 +971,9 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
     const lag1 = histogram(metrics1, 'mes_ingest_lag_seconds');
     const windowSamples = samples.filter((s) => s.at >= windowStart && s.at <= windowEnd);
     const bufferMax = Math.max(0, ...windowSamples.map((s) => s.buffer ?? 0));
+    const bufferZero = windowSamples.filter((s) => s.buffer === 0).length;
+    const sessionDown = windowSamples.filter((s) => s.connected !== 1).length;
+    const droppedGrew = (windowSamples.at(-1)?.dropped ?? 0) - (windowSamples[0]?.dropped ?? 0);
     const sampledLagMax = windowSamples.reduce<number | undefined>(
       (max, s) => (s.lagMax === undefined ? max : Math.max(max ?? 0, s.lagMax)),
       undefined,
@@ -968,6 +992,9 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
       catchUpMs: catchUp - resumedAt,
       pendingMetric: hasPending,
       gatewayBufferMax: bufferMax,
+      gatewayBufferZeroSamples: bufferZero,
+      gatewaySessionDownSamples: sessionDown,
+      gatewayDropped: droppedGrew,
       boundaries,
       excluded,
     };
@@ -1039,10 +1066,13 @@ async function runP1(config: PlantConfig, scenario: Scenario, dir: string): Prom
     judge(
       report,
       'T1',
-      'gateway buffer over the window',
-      '0 at every sample',
-      `max ${String(bufferMax)} over ${String(windowSamples.length)} samples`,
-      bufferMax === 0,
+      'no replayed delivery in the window (gateway outbox)',
+      `broker session up at every sample, depth ≤ ${String(LIVE_OUTBOX)} (live traffic only), nothing dropped`,
+      `session down at ${String(sessionDown)} of ${String(windowSamples.length)} samples; depth max ${String(bufferMax)}, 0 at ${String(bufferZero)} samples; ${String(droppedGrew)} dropped`,
+      windowSamples.length > 0 &&
+        sessionDown === 0 &&
+        bufferMax <= LIVE_OUTBOX &&
+        droppedGrew === 0,
     );
 
     // ---- T3 ----

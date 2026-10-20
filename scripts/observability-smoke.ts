@@ -202,8 +202,11 @@ if (check.status !== 200 || (check.body as { status?: string }).status !== 'OK')
   );
 }
 // Hardening (#244 review): no Grafana /metrics, no plugin admin, the database on a tmpfs.
+// With metrics off, /metrics falls through to the web app's page (200, HTML), not Prometheus text.
 const grafanaMetrics = await json(`${grafana}/metrics`);
-if (grafanaMetrics.status === 200) fail('Grafana serves /metrics');
+if (typeof grafanaMetrics.body === 'string' && /^# (HELP|TYPE) /m.test(grafanaMetrics.body)) {
+  fail('Grafana serves /metrics');
+}
 const settings = await json(`${grafana}/api/admin/settings`, { headers: admin });
 const plugins = (settings.body as Record<string, Record<string, string>>).plugins ?? {};
 if (plugins.plugin_admin_enabled !== 'false') {

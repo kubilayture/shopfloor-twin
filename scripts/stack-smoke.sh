@@ -354,6 +354,20 @@ pki_state=$(docker inspect "$pki_container" --format '{{.State.Status}} {{.State
 pki_summary=$(docker compose logs --no-log-prefix pki 2>/dev/null | grep '^pki: ok' | head -n 1)
 [ -n "$pki_summary" ] || fail "the pki step logged no summary"
 echo "ok: pki step exited 0 (first run: ${pki_summary#pki: ok, })"
+# The `up` after the broker restart above reran the step against the running simulator and gateway
+# (#265): it must have written no pin and removed nothing, so the running certificate managers'
+# trust index is left alone (a rewritten pin could drop out of it until a restart).
+pki_runs=$(docker compose logs --no-log-prefix pki 2>/dev/null | grep -c '^pki: ok' || true)
+[ "$pki_runs" -ge 2 ] || fail "the pki step did not rerun on the second up ($pki_runs run(s))"
+pki_rerun=$(docker compose logs --no-log-prefix pki 2>/dev/null | grep '^pki: ok' | tail -n 1)
+case "$pki_rerun" in
+  *' 0 of 7 OPC UA certificates made, 20 pins (0 written),'*) ;;
+  *) fail "the pki rerun touched certificates or pins: $pki_rerun" ;;
+esac
+if docker compose logs --no-log-prefix pki 2>/dev/null | grep -q '^pki: removed '; then
+  fail "the pki step removed a trust file on a fresh stack"
+fi
+echo "ok: pki rerun against the running stack kept every certificate and wrote no pin (${pki_rerun#pki: ok, })"
 # Each PKI volume is mounted by its own component only (the pki step mounts all of them while it
 # runs; the tools volume and the dev CA's, pki-ca, by no long-running service; web-tls, nginx's
 # certificate and key, by the web alone, read-only).
@@ -376,11 +390,18 @@ for service in $(docker compose ps --format '{{.Service}}'); do
 done
 echo "ok: each PKI volume mounted by its own component only (pki-ca by none, web-tls read-only)"
 # Checklist S1 as the tools client (opcua-reader, the tools certificate every server pins), inside
-# the Compose network: SignAndEncrypt only, LoadOrder and LoadProgram refused with
+# the Compose network, after the pki rerun above (#265: the servers must still trust the tools pin
+# on all five machines): SignAndEncrypt only, LoadOrder and LoadProgram refused with
 # BadUserAccessDenied (a permission refusal on a trusted certificate), an unpinned client
 # certificate refused, anonymous sessions and a wrong password refused, and no variable writable
 # (none with CurrentWrite, every Write refused, on all five machines; #239 review).
 docker compose run --rm --no-deps opcua-tools || fail "OPC UA security checks failed"
+# The regression check of #265 on Linux, in the simulator image (a temporary folder of its own, no
+# volume): the pki step rerun 16 times, unchanged and renewing, while node-opcua certificate
+# managers watch every identity's folder, each staged file held back 0-20 ms before its rename;
+# every pin must stay trusted by the running managers.
+docker compose run --rm --no-deps opcua-tools node apps/simulator/src/opcua/pin-race-cli.ts |
+  tail -n 1 | grep '^ok: ' || fail "a pki rerun dropped a pin from a running trust index (#265)"
 
 ready=$(in_container gateway 4900 /health/ready) || fail "gateway not ready"
 echo "ok: gateway ready ($ready)"

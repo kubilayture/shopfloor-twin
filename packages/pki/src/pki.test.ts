@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPCUA_MACHINES } from '@shopfloor/contracts';
@@ -10,6 +10,7 @@ import {
   createEmptyCrl,
   createKeyAndCertificate,
   EMPTIED_FOLDERS,
+  STAGING_FOLDER,
   UnknownIdentityError,
   ensureOpcuaPki,
   inspectCertificate,
@@ -68,6 +69,7 @@ describe('ensureOpcuaPki, the pki step', () => {
     const result = await ensureOpcuaPki(roots);
     expect(result.identities.map((i) => i.action)).toEqual(Array(7).fill('created'));
     expect(result.pinned).toBe(5 * 2 + 5 + 5);
+    expect(result.written).toBe(5 * 2 + 5 + 5);
     for (const identity of opcuaIdentities(roots)) {
       const info = await certificate(identity.folder);
       expect(info.uris).toEqual([identity.applicationUri]);
@@ -168,6 +170,65 @@ describe('ensureOpcuaPki, the pki step', () => {
     expect(inspectCertificate(pinned).thumbprint).toBe(
       (await certificate(roots.gateway)).thumbprint,
     );
+  });
+
+  it('leaves unchanged pins alone on a rerun (#265)', async () => {
+    await ensureOpcuaPki(roots);
+    const pins = opcuaIdentities(roots).flatMap((identity) =>
+      identity.pins.map((peer) => join(pkiFiles(identity.folder).trustedCerts, `${peer}.pem`)),
+    );
+    const before = await Promise.all(pins.map((pin) => stat(pin)));
+    // A pin whose mode drifted is fixed in place, not rewritten.
+    await chmod(pins[0] ?? '', 0o600);
+    const staged: string[] = [];
+    const again = await ensureOpcuaPki({ ...roots, onStaged: (file) => void staged.push(file) });
+    expect(again).toMatchObject({ pinned: 20, written: 0, removed: [] });
+    expect(staged).toEqual([]);
+    const after = await Promise.all(pins.map((pin) => stat(pin)));
+    expect(after.map((s) => [s.ino, s.mtimeMs])).toEqual(before.map((s) => [s.ino, s.mtimeMs]));
+    expect(after.every((s) => (s.mode & 0o777) === 0o644)).toBe(true);
+  });
+
+  it('stages every file outside the watched folders, then renames it into place (#265)', async () => {
+    const watched = ['trusted/certs', 'trusted/crl', 'issuers/certs', 'issuers/crl', 'rejected'];
+    const listWatched = async () => {
+      const files: string[] = [];
+      for (const identity of opcuaIdentities(roots)) {
+        for (const folder of watched) {
+          const path = join(identity.folder, folder);
+          for (const file of await readdir(path).catch(() => [])) files.push(join(path, file));
+        }
+      }
+      return files;
+    };
+    const seen: { staged: string; target: string; watched: string[] }[] = [];
+    const onStaged = async (staged: string, target: string) => {
+      seen.push({ staged, target, watched: await listWatched() });
+    };
+    await ensureOpcuaPki({ ...roots, onStaged });
+    const renewed = await ensureOpcuaPki({ ...roots, renew: ['tools'], onStaged });
+    expect(renewed.written).toBe(5);
+    // 7 keys and certificates and 20 pins, then the tools key, certificate and its 5 pins.
+    expect(seen).toHaveLength(7 * 2 + 20 + 2 + 5);
+    for (const { staged, target, watched: files } of seen) {
+      const identity = opcuaIdentities(roots).find((i) => target.startsWith(`${i.folder}/`));
+      expect(staged.startsWith(join(identity?.folder ?? '?', STAGING_FOLDER, ''))).toBe(true);
+      // Nothing but final files ever lies in a folder a certificate manager watches.
+      expect(files.filter((file) => !file.endsWith('.pem'))).toEqual([]);
+      expect(files).not.toContain(staged);
+    }
+    for (const identity of opcuaIdentities(roots)) {
+      expect(await readdir(identity.folder)).not.toContain(STAGING_FOLDER);
+    }
+  });
+
+  it('removes what a run that died while staging left behind', async () => {
+    await ensureOpcuaPki(roots);
+    const leftover = join(roots.tools, STAGING_FOLDER);
+    await mkdir(leftover);
+    await writeFile(join(leftover, 'cnc-01.pem.123.tmp'), 'half');
+    await ensureOpcuaPki(roots);
+    expect(await readdir(roots.tools)).not.toContain(STAGING_FOLDER);
   });
 
   it('refuses to renew an identity it does not know', async () => {

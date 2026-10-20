@@ -87,7 +87,8 @@ try {
   }
   console.log(
     `pki: ok, ${String(made)} of ${String(result.identities.length)} OPC UA certificates made, ` +
-      `${String(result.pinned)} pins, ${String(Math.round(result.elapsedMs))} ms; ` +
+      `${String(result.pinned)} pins (${String(result.written)} written), ` +
+      `${String(Math.round(result.elapsedMs))} ms; ` +
       `dev CA ${devCa?.action ?? '?'}, web ${web?.action ?? '?'}, ${String(Math.round(tls.elapsedMs))} ms`,
   );
 } catch (error) {

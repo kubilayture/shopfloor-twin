@@ -22,7 +22,13 @@ import {
   type ScryptParams,
 } from './password.ts';
 import type { SessionEndReason } from './tables.ts';
-import { BUSY, LoginThrottle } from './throttle.ts';
+import { BUSY, HashSlots, LoginThrottle } from './throttle.ts';
+
+/**
+ * Login hashes held at once, running or waiting (#264 re-review, N1): two run at a time, so ten
+ * is about 0.7 s of queue at 140 ms a hash; at most three of them from one client address.
+ */
+export const LOGIN_HASH_SLOTS = { total: 10, perAddress: 3 } as const;
 
 const MINUTE = 60_000;
 
@@ -240,6 +246,8 @@ export interface IdentityOptions {
   readonly loginDb?: Kysely<Database>;
   /** `loginDb`'s connections: reservations at once (default 2); more wait, at most 16. */
   readonly loginPoolSize?: number;
+  /** Login hashes held at once, in all and per address (default `LOGIN_HASH_SLOTS`). */
+  readonly hashSlots?: { readonly total: number; readonly perAddress: number };
 }
 
 /** What ended sessions: their ids and why. */
@@ -292,6 +300,9 @@ type Reservation =
  * A login's decision before any hash (#264 review, F1): a reservation, a wait known from memory
  * (429, the user's delay), or the login buckets or a full queue (429).
  */
+/** A decision that will be hashed holds a hash slot until `release` (#264 re-review, N1). */
+type Held = Decision & { readonly release?: () => void };
+
 type Decision =
   | Reservation
   | { readonly kind: 'throttled'; readonly retryAfterS: number; readonly user?: undefined }
@@ -335,6 +346,7 @@ export class Identity {
   readonly #db: Kysely<Database>;
   readonly #loginDb: Kysely<Database>;
   readonly #throttle: LoginThrottle;
+  readonly #hashes: HashSlots;
   readonly #log: IdentityLog;
   readonly #now: () => Date;
   readonly #params: ScryptParams;
@@ -353,6 +365,8 @@ export class Identity {
       perNameQueue: 32,
       exemptMs: IDENTITY_LIMITS.throttleWindowMs,
     });
+    const slots = options.hashSlots ?? LOGIN_HASH_SLOTS;
+    this.#hashes = new HashSlots(slots.total, slots.perAddress);
     this.#log = options.log ?? silent;
     this.#now = options.now ?? (() => new Date());
     this.#params = options.hashParams ?? SCRYPT_PARAMS;
@@ -380,6 +394,21 @@ export class Identity {
     }
     // The dummy hash an unknown name is checked against, made now rather than at the first one.
     await this.#dummyHash();
+    // The logins of the last 15 minutes exempt their addresses from the global delay (#264
+    // re-review, N2): remembered across a restart, or memory would refuse what the database
+    // exempts once an attack has set the delay again.
+    const since = new Date(this.#now().getTime() - IDENTITY_LIMITS.throttleWindowMs);
+    const successes = await this.#db
+      .selectFrom('identity.login_address as a')
+      .innerJoin('identity.user_account as u', 'u.id', 'a.user_id')
+      .select(['u.username', 'a.address', 'a.last_success_at'])
+      .where('a.last_success_at', '>', since)
+      .execute();
+    for (const row of successes) {
+      if (row.last_success_at !== null) {
+        this.#throttle.noteSuccess(row.username, row.address, row.last_success_at.getTime());
+      }
+    }
     let admin: 'exists' | 'created' | 'missing' = (await this.#enabledAdmins(this.#db))
       ? 'exists'
       : 'missing';
@@ -791,14 +820,24 @@ export class Identity {
     address: string,
     where: { readonly username: string } | { readonly id: number },
     admit: (() => number | undefined) | undefined,
-  ): Promise<Decision> {
-    const busy: Decision = { kind: 'rate-limited', retryAfterS: 1 };
-    const decided = await this.#throttle.serial(name, async (): Promise<Decision> => {
+  ): Promise<Held> {
+    const busy: Held = { kind: 'rate-limited', retryAfterS: 1 };
+    const decided = await this.#throttle.serial(name, async (): Promise<Held> => {
       const known = this.#throttle.refusal(name, address, this.#now().getTime());
       if (known !== undefined) return { kind: 'throttled', retryAfterS: known };
       const wait = admit?.();
       if (wait !== undefined) return { kind: 'rate-limited', retryAfterS: wait };
-      const reserved = await this.#throttle.reservation(() => this.#reserve(where, address));
+      // A hash slot before the database (#264 re-review, N1): with none free the attempt is a
+      // 429 that is neither counted nor hashed.
+      const release = this.#hashes.take(address);
+      if (release === undefined) return busy;
+      const reserved = await this.#throttle
+        .reservation(() => this.#reserve(where, address))
+        .catch((error: unknown) => {
+          release();
+          throw error;
+        });
+      if (reserved === BUSY || reserved.kind === 'throttled') release();
       if (reserved === BUSY) return busy;
       if (reserved.kind === 'throttled') {
         if (reserved.admin) this.#throttle.noteAdmin(name, reserved.until);
@@ -811,7 +850,7 @@ export class Identity {
           this.#throttle.noteAdmin(name, reserved.nextAttemptAt.getTime());
         }
       }
-      return reserved;
+      return reserved.kind === 'throttled' ? reserved : { ...reserved, release };
     });
     return decided === BUSY ? busy : decided;
   }
@@ -937,20 +976,28 @@ export class Identity {
     );
     if (reserved.kind === 'throttled') return tooSoon(reserved.retryAfterS, LOGIN_THROTTLED);
     if (reserved.kind === 'rate-limited') return tooSoon(reserved.retryAfterS, LOGIN_RATE);
+    /** The one hash of this attempt; its slot is free again once it is done (N1). */
+    const hashed = async (password: string, stored: string): Promise<boolean> => {
+      try {
+        return await verifyPassword(password, stored);
+      } finally {
+        reserved.release?.();
+      }
+    };
     if (reserved.kind === 'unknown') {
-      await verifyPassword(input.password, await this.#dummyHash());
+      await hashed(input.password, await this.#dummyHash());
       return failed('unknown-user');
     }
     const user = reserved.user;
     if (reserved.kind === 'refused') {
-      await verifyPassword(input.password, await this.#dummyHash());
+      await hashed(input.password, await this.#dummyHash());
       return failed(
         reserved.reason,
         user,
         reserved.until === undefined ? {} : { lockedUntil: reserved.until.toISOString() },
       );
     }
-    if (!(await verifyPassword(input.password, user.passwordHash))) {
+    if (!(await hashed(input.password, user.passwordHash))) {
       const extra = await this.#lockedBy(user, reserved, address, input.requestId);
       if (reserved.nextAttemptAt !== undefined) {
         extra.nextAttemptAt = reserved.nextAttemptAt.toISOString();
@@ -1169,9 +1216,16 @@ export class Identity {
       );
     };
     if (reserved.kind !== 'reserved') {
+      reserved.release?.();
       return refusedOrWrong(reserved.kind === 'refused' ? reserved.reason : 'unknown-user', {});
     }
-    if (!(await verifyPassword(current, reserved.user.passwordHash))) {
+    let matches: boolean;
+    try {
+      matches = await verifyPassword(current, reserved.user.passwordHash);
+    } finally {
+      reserved.release?.();
+    }
+    if (!matches) {
       const extra = await this.#lockedBy(reserved.user, reserved, from, requestId);
       if (reserved.nextAttemptAt !== undefined) {
         extra.nextAttemptAt = reserved.nextAttemptAt.toISOString();
@@ -1372,6 +1426,9 @@ export class Identity {
       });
       return ended;
     });
+    // A role change or an enable or disable changes which delay applies (#264 re-review, N3):
+    // what memory holds of this name is forgotten, and the next attempt asks the database.
+    if (change.roles !== undefined || change.enabled !== undefined) this.#throttle.forget(username);
     this.#emit({ ids, reason: 'user-disabled' });
     return this.user(username);
   }

@@ -67,9 +67,12 @@ export const MES_API_LIMITS = {
   loginBurst: 10,
   userLoginsPerSecond: 1,
   userLoginBurst: 5,
-  /** All logins together: a ceiling for the server only, far above one client's buckets. */
-  loginCeilingPerSecond: 100,
-  loginCeilingBurst: 200,
+  /**
+   * All logins together: a ceiling for the server, about what the login hashes can do (two at a
+   * time, about 140 ms each; #264 re-review, N1); the per-address buckets share it out.
+   */
+  loginCeilingPerSecond: 10,
+  loginCeilingBurst: 20,
   /** Alarm list (#142): occurrences per page, by default and at most. */
   alarmPage: 100,
   alarmPageMax: 500,

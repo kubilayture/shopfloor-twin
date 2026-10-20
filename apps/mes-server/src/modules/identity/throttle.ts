@@ -165,3 +165,44 @@ export class LoginThrottle {
     }
   }
 }
+
+/**
+ * Slots for the password hashes of logins (#264 re-review, N1): every admitted attempt costs one
+ * scrypt hash (a dummy one for an unknown name), and the hashes run two at a time, about 14 per
+ * second. Without a bound their queue grew under attack until every login, the victim's included,
+ * waited longer than nginx's timeout. At most `total` attempts hold a slot (running or waiting
+ * for a hash), at most `perAddress` of them from one client address, so no address takes the
+ * slots of the others; an attempt that finds none is answered 429 without a hash.
+ */
+export class HashSlots {
+  readonly #total: number;
+  readonly #perAddress: number;
+  #held = 0;
+  readonly #byAddress = new Map<string, number>();
+
+  constructor(total: number, perAddress: number) {
+    this.#total = total;
+    this.#perAddress = perAddress;
+  }
+
+  get held(): number {
+    return this.#held;
+  }
+
+  /** A slot for `address`, released by the function returned; undefined when none is free. */
+  take(address: string): (() => void) | undefined {
+    const mine = this.#byAddress.get(address) ?? 0;
+    if (this.#held >= this.#total || mine >= this.#perAddress) return undefined;
+    this.#held++;
+    this.#byAddress.set(address, mine + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#held--;
+      const left = (this.#byAddress.get(address) ?? 1) - 1;
+      if (left === 0) this.#byAddress.delete(address);
+      else this.#byAddress.set(address, left);
+    };
+  }
+}

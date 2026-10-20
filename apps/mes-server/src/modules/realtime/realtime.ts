@@ -307,10 +307,12 @@ export interface RealtimeOptions {
   readonly userWriteRate?: { readonly perSecond: number; readonly burst: number };
   /** How often open sockets' sessions are checked for expiry (default 15 s). */
   readonly sessionCheckMs?: number;
-  /** All logins together (default `LIMITS`: 5 per second, bursts of 10). */
+  /** Logins per client address (default `LIMITS`: 5 per second, bursts of 10; #264 review F2). */
   readonly loginRate?: { readonly perSecond: number; readonly burst: number };
-  /** Logins per user name (default `LIMITS`: 1 per second, bursts of 5). */
+  /** Logins per (user name, client address) (default `LIMITS`: 1 per second, bursts of 5). */
   readonly userLoginRate?: { readonly perSecond: number; readonly burst: number };
+  /** All logins together, a ceiling for the server only (default `LIMITS`: 100/s, 200). */
+  readonly loginCeiling?: { readonly perSecond: number; readonly burst: number };
   /**
    * Whether a request came from nginx over the `edge` network (#237, `EdgeTrust`): only then are
    * its proxy headers (`X-Original-Method`; `X-Real-IP` from P9-15) believed. Default: never.
@@ -704,8 +706,10 @@ export async function registerRealtime(
   };
 
   // Logins have buckets of their own (#168 review, M2), so anonymous login attempts never spend
-  // the write bucket that plant writes need: one for all logins together and one per user name.
-  const loginLimiter = new WriteLimiter(
+  // the write bucket that plant writes need. They are keyed by the client's address (#264 review,
+  // F2: an unkeyed bucket let one address keep a user, or everyone, out): one per address, one per
+  // (user name, address), and only a high ceiling for all logins together, for the server's sake.
+  const addressLimiters = new KeyedLimiter(
     options.loginRate?.perSecond ?? LIMITS.loginsPerSecond,
     options.loginRate?.burst ?? LIMITS.loginBurst,
   );
@@ -713,8 +717,14 @@ export async function registerRealtime(
     options.userLoginRate?.perSecond ?? LIMITS.userLoginsPerSecond,
     options.userLoginRate?.burst ?? LIMITS.userLoginBurst,
   );
-  const loginRefusal = (username: string): number | undefined =>
-    nameLimiters.take(username.trim().toLowerCase()) ?? loginLimiter.take();
+  const loginCeiling = new WriteLimiter(
+    options.loginCeiling?.perSecond ?? LIMITS.loginCeilingPerSecond,
+    options.loginCeiling?.burst ?? LIMITS.loginCeilingBurst,
+  );
+  const loginRefusal = (username: string, address: string): number | undefined =>
+    nameLimiters.take(`${username.trim().toLowerCase()}\n${address}`) ??
+    addressLimiters.take(address) ??
+    loginCeiling.take();
 
   // Identity (#168, ADR-0026).
   const identity = options.identity;
@@ -2449,14 +2459,16 @@ export async function registerRealtime(
           description:
             `Sets \`${cookieName}\` (HttpOnly, SameSite=Strict, Path=/) to a new random token; ` +
             'a session the request carried ends. Every failure (unknown or disabled user, wrong ' +
-            'password, a user locked for this address, an admin within its delay) is the same ' +
-            '401. Five failures in a row from one client address lock the user for that address ' +
-            'for 15 minutes (the address is X-Real-IP from nginx over the edge network, else the ' +
-            "connection's); an admin is delayed instead (1 s doubling, at most 5 min). Once a " +
-            'user has 10 or more failed attempts in 15 minutes from all addresses together (n), ' +
-            'an attempt within min(2^(n-10) s, 30 s) of the last failure is answered 429 with ' +
-            'Retry-After, the remaining wait rounded up, without checking the password; a 429 is ' +
-            'not counted, and the user is never locked from every address. Passes the write ' +
+            'password, a user locked for this address) is the same 401. Five failures in a row ' +
+            'from one client address lock the user for that address for 15 minutes (the address ' +
+            "is X-Real-IP from nginx over the edge network, else the connection's). Once a user " +
+            'has 10 or more failed attempts in 15 minutes from all addresses together (n), an ' +
+            'attempt within min(2^(n-10) s, 30 s) of the last failure is answered 429 with ' +
+            'Retry-After, the remaining wait rounded up, without checking the password, except ' +
+            'from an address that logged in to that user within those 15 minutes; a 429 is not ' +
+            'counted. An admin is never locked: from its fifth failure an attempt within its ' +
+            'delay (1 s doubling, at most 5 min) is 429 with Retry-After too. Login buckets per ' +
+            'client address and per (user name, address) answer 429 as well. Passes the write ' +
             'guards (login CSRF).',
           tags: ['identity'],
           params: z.strictObject({}),
@@ -2476,7 +2488,7 @@ export async function registerRealtime(
               requestId,
               replaces: tokenOf(request),
               address: clientAddress(request),
-              admit: () => loginRefusal(body.username),
+              admit: () => loginRefusal(body.username, clientAddress(request)),
             })
             .catch((error: unknown) => {
               throw identityProblem(error, reply);

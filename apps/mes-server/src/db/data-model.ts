@@ -164,9 +164,9 @@ const TABLES: Readonly<Record<string, string>> = {
   'identity.role':
     'The five roles (operator, maintenance, quality, supervisor, admin), as `ROLES` in contracts; what each may do is `ROLE_PERMISSIONS` there (#168).',
   'identity.user_account':
-    'Users: name, scrypt hash with its parameters, enabled, must-change-password, and the account-wide failed-login state (consecutive failures, next attempt for admins); a normal account’s lock is per address since #242 (`identity.login_address`) (#168).',
+    'Users: name, scrypt hash with its parameters, enabled, must-change-password, and an admin’s failed-login state (consecutive failures and the next attempt, counted for admins only since #242); a normal account’s lock is per address (`identity.login_address`) (#168).',
   'identity.login_address':
-    'Consecutive failed logins of a normal account from one client address (nginx’s `X-Real-IP` over the `edge` network, else the connection’s) and the 15-minute lock the fifth sets; deleted by a success from that address, an admin’s reset, or the sweep a day after the last failure once unlocked (#242, ADR-0039).',
+    'One account at one client address (nginx’s `X-Real-IP` over the `edge` network, else the connection’s): consecutive failed logins since the last success there, the 15-minute lock the fifth sets (never an admin’s), and the last success, which exempts the address from the global delay for 15 minutes; a success resets the count, an admin’s reset deletes the account’s rows, the sweep those a day after their last failure or success once unlocked (#242, ADR-0039).',
   'identity.login_failure':
     'Every judged failed login of an account, from any address, kept 15 minutes: n for the global delay (from 10, an attempt within min(2^(n−10) s, 30 s) of the last is refused with 429 before any hash); a success deletes the account’s rows, the sweep those past the window (#242, ADR-0039).',
   'identity.user_role': 'The roles of each user, one or more (#168).',

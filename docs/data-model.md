@@ -1551,7 +1551,7 @@ The one audit log: every identity action (logins, failures, locks, logouts, user
 
 ### identity.login_address
 
-Consecutive failed logins of a normal account from one client address (nginx’s `X-Real-IP` over the `edge` network, else the connection’s) and the 15-minute lock the fifth sets; deleted by a success from that address, an admin’s reset, or the sweep a day after the last failure once unlocked (#242, ADR-0039).
+One account at one client address (nginx’s `X-Real-IP` over the `edge` network, else the connection’s): consecutive failed logins since the last success there, the 15-minute lock the fifth sets (never an admin’s), and the last success, which exempts the address from the global delay for 15 minutes; a success resets the count, an admin’s reset deletes the account’s rows, the sweep those a day after their last failure or success once unlocked (#242, ADR-0039).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |
@@ -1559,14 +1559,16 @@ Consecutive failed logins of a normal account from one client address (nginx’s
 | `address` | `text` | not null |  |
 | `failed_logins` | `integer` | not null |  |
 | `locked_until` | `timestamp with time zone` | null |  |
-| `last_failure_at` | `timestamp with time zone` | not null |  |
+| `last_failure_at` | `timestamp with time zone` | null |  |
+| `last_success_at` | `timestamp with time zone` | null |  |
 
 | Kind | Name | Definition |
 | --- | --- | --- |
 | Primary key | `login_address_pkey` | `PRIMARY KEY (user_id, address)` |
 | Foreign key | `login_address_user_id_fkey` | `FOREIGN KEY (user_id) REFERENCES identity.user_account(id)` |
 | Check | `login_address_address_check` | `CHECK (((length(address) >= 1) AND (length(address) <= 64)))` |
-| Check | `login_address_failed_logins_check` | `CHECK ((failed_logins > 0))` |
+| Check | `login_address_check` | `CHECK (((last_failure_at IS NOT NULL) OR (last_success_at IS NOT NULL)))` |
+| Check | `login_address_failed_logins_check` | `CHECK ((failed_logins >= 0))` |
 
 ### identity.login_failure
 
@@ -1631,7 +1633,7 @@ Login sessions by the SHA-256 of their cookie token: user, kind (desk or termina
 
 ### identity.user_account
 
-Users: name, scrypt hash with its parameters, enabled, must-change-password, and the account-wide failed-login state (consecutive failures, next attempt for admins); a normal account’s lock is per address since #242 (`identity.login_address`) (#168).
+Users: name, scrypt hash with its parameters, enabled, must-change-password, and an admin’s failed-login state (consecutive failures and the next attempt, counted for admins only since #242); a normal account’s lock is per address (`identity.login_address`) (#168).
 
 | Column | Type | Null | Default |
 | --- | --- | --- | --- |

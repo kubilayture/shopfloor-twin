@@ -142,6 +142,36 @@ describe('the hardened Compose (P9-14, checklist S8)', () => {
     const web = await readFile(join(REPO, 'apps/web/Dockerfile'), 'utf8');
     expect(web).toMatch(/^FROM\s+\S*nginx-unprivileged\S*/m);
   });
+
+  it('loosens no service in any Compose file: no user, cap_add, security_opt, privileged, socket (#264 review, F6)', async () => {
+    const files = [
+      'docker-compose.yml',
+      'compose.dev-ports.yml',
+      'compose.observability.yml',
+      ...(await readdir(join(REPO, 'e2e')))
+        .filter((f) => /^compose\..*\.yml$/.test(f))
+        .map((f) => `e2e/${f}`),
+    ];
+    expect(files.length).toBeGreaterThanOrEqual(8);
+    for (const file of files) {
+      for (const [name, service] of Object.entries(await services(file))) {
+        const raw = service as Record<string, unknown>;
+        for (const key of [
+          'user',
+          'cap_add',
+          'security_opt',
+          'privileged',
+          'pid',
+          'network_mode',
+        ]) {
+          expect(raw[key], `${file}: ${name}.${key}`).toBeUndefined();
+        }
+        expect(JSON.stringify(service.volumes ?? []), `${file}: ${name}`).not.toMatch(
+          /docker\.sock/,
+        );
+      }
+    }
+  });
 });
 
 describe('the observability profile (P9-17, compose.observability.yml)', () => {

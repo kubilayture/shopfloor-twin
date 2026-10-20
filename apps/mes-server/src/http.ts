@@ -40,9 +40,10 @@ export interface MesHttpOptions {
   readonly userWriteRate?: { readonly perSecond: number; readonly burst: number };
   /** How often open sockets' sessions are checked (default 15 s). */
   readonly sessionCheckMs?: number;
-  /** Login buckets: all together (default 5/s, bursts of 10) and per user name (1/s, 5). */
+  /** Login buckets: per address (default 5/s, bursts of 10), per (name, address) (1/s, 5), all (100/s, 200). */
   readonly loginRate?: { readonly perSecond: number; readonly burst: number };
   readonly userLoginRate?: { readonly perSecond: number; readonly burst: number };
+  readonly loginCeiling?: { readonly perSecond: number; readonly burst: number };
   /**
    * The learned `edge` network (#237): only requests from it may carry trusted proxy headers
    * (`X-Original-Method`, and `X-Real-IP` from P9-15). Default: nothing trusted.
@@ -73,6 +74,7 @@ export async function buildMesHttp({
   sessionCheckMs,
   loginRate,
   userLoginRate,
+  loginCeiling,
   edge = NO_EDGE,
 }: MesHttpOptions): Promise<MesHttp> {
   // A request id per request (UUID): logged, returned as X-Request-Id on writes and audited.
@@ -205,6 +207,7 @@ export async function buildMesHttp({
     ...(sessionCheckMs === undefined ? {} : { sessionCheckMs }),
     ...(loginRate === undefined ? {} : { loginRate }),
     ...(userLoginRate === undefined ? {} : { userLoginRate }),
+    ...(loginCeiling === undefined ? {} : { loginCeiling }),
     trustsProxy,
     clientAddress,
   });

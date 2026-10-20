@@ -37,15 +37,17 @@ export interface UserRoleTable {
 }
 
 /**
- * Consecutive failures of one account from one address and the lock the fifth sets (#242,
- * migration 0033); never an admin's.
+ * One account at one address (#242, migration 0033): consecutive failures since the last success
+ * there, the lock the fifth sets (never an admin's), and the last success (exempt from the global
+ * delay for the window).
  */
 export interface LoginAddressTable {
   user_id: number;
   address: string;
   failed_logins: number;
   locked_until: NullableTimestamp;
-  last_failure_at: Timestamp;
+  last_failure_at: NullableTimestamp;
+  last_success_at: NullableTimestamp;
 }
 
 /** One judged failed login of an account, kept 15 minutes for the global delay (#242). */
@@ -151,6 +153,7 @@ export const IDENTITY_COLUMNS = {
     'failed_logins',
     'locked_until',
     'last_failure_at',
+    'last_success_at',
   ],
   'identity.login_failure': ['id', 'user_id', 'address', 'at'],
 } as const;

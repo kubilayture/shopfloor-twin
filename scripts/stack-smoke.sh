@@ -670,12 +670,13 @@ login_user() {
     >/dev/null || fail "user:create could not create $SMOKE_LOGIN_USERNAME"
   smoke_users="$smoke_users $SMOKE_LOGIN_USERNAME"
 }
-# pairs_of <user>: "<address>:<failures>:<locked>" per (account, address) pair, by address.
+# pairs_of <user>: "<address>:<failures>:<locked>" per (account, address) pair with failures (a
+# success keeps its pair at 0 failures, the exemption), by address.
 pairs_of() {
   as_super "select a.address || ':' || a.failed_logins || ':' ||
       coalesce(a.locked_until > now(), false)::text
     from identity.login_address a join identity.user_account u on u.id = a.user_id
-    where u.username = '$1' order by a.address"
+    where u.username = '$1' and a.failed_logins > 0 order by a.address"
 }
 # judged_of <user>: n, the user's judged failures in the 15-minute window.
 judged_of() {
@@ -776,42 +777,58 @@ unset SMOKE_LOGIN_USERNAME SMOKE_LOGIN_PASSWORD SMOKE_LOGIN_CA
 # Secrets (checklist S7, #242): no value of the env file's passwords and tokens, nor the passwords
 # of this run's users, in any container's log (one-shot steps included), in the images' metadata
 # and build history, or in the repository's files (tracked and untracked). The gate searches its own
-# output of this run for the same values. Values shorter than 12 characters are skipped (a dev
-# `.env` placeholder would match ordinary text); the gate's are 36 hex characters.
+# output of this run for the same values. A value in quotes is searched without them; every value
+# must be at least 12 characters (a shorter one can't be told from ordinary text, and the gate's are
+# 36 hex characters), and every one is searched (#264 review, F5).
 secrets_file=$(mktemp)
-grep -E '^[A-Z0-9_]+_(PASSWORD|TOKEN)=' "$env_file" | cut -d= -f2- >"$secrets_file"
+grep -E '^[A-Z0-9_]+_(PASSWORD|TOKEN)=' "$env_file" | cut -d= -f2- |
+  sed -e "s/^'\(.*\)'\$/\1/" -e 's/^"\(.*\)"$/\1/' >"$secrets_file"
 printf '%s\n' "$SMOKE_PASSWORD" "$thr_password" >>"$secrets_file"
 if [ "${SMOKE_WRITES:-}" = 1 ]; then
   printf '%s\n' "$SMOKE_SUPERVISOR_PASSWORD" "$SMOKE_QUALITY_PASSWORD" >>"$secrets_file"
 fi
+expected=$(grep -c . "$secrets_file")
 haystack=$(mktemp)
 docker compose logs --no-color --no-log-prefix >"$haystack" 2>&1 ||
   fail "could not read the containers' logs"
 for image in $(docker compose ps -a --format "{{.Image}}" | sort -u); do
-  docker image inspect "$image" >>"$haystack" 2>/dev/null || true
-  docker history --no-trunc --format '{{.CreatedBy}}' "$image" >>"$haystack" 2>/dev/null || true
+  docker image inspect "$image" >>"$haystack" 2>/dev/null || fail "could not inspect $image"
+  docker history --no-trunc --format '{{.CreatedBy}}' "$image" >>"$haystack" 2>/dev/null ||
+    fail "could not read the history of $image"
 done
+scan_fail() {
+  rm -f "$secrets_file" "$haystack"
+  fail "$1"
+}
 checked=0
 while IFS= read -r value; do
-  [ "${#value}" -ge 12 ] || continue
+  [ -n "$value" ] || continue
+  [ "${#value}" -ge 12 ] || scan_fail "a password or token is shorter than 12 characters"
   checked=$((checked + 1))
   if grep -qF -- "$value" "$haystack"; then
-    rm -f "$secrets_file" "$haystack"
-    fail "a secret appears in a container's log or an image"
+    scan_fail "a secret appears in a container's log or an image"
   fi
-  if git grep -qF --untracked -e "$value" 2>/dev/null; then
-    rm -f "$secrets_file" "$haystack"
-    fail "a secret appears in the repository's files"
-  fi
+  # git grep: 0 found, 1 not found, anything else an error (never read as "not found").
+  status=0
+  git grep -qF --untracked -e "$value" >/dev/null 2>&1 || status=$?
+  case "$status" in
+    0) scan_fail "a secret appears in the repository's files" ;;
+    1) ;;
+    *) scan_fail "git grep failed (exit $status) while searching the repository" ;;
+  esac
 done <"$secrets_file"
 rm -f "$secrets_file" "$haystack"
-[ "$checked" -gt 0 ] || fail "no secret long enough to search for"
+[ "$checked" -gt 0 ] && [ "$checked" = "$expected" ] ||
+  fail "searched $checked secrets of $expected"
 echo "ok: none of $checked secrets in the containers' logs, the images or the repository"
 
 # Containers (checklist S8, #242): every running service's main process runs as a user other than
 # root (the four Node images as node, the web as nginx; the database and the broker drop to
 # postgres and mosquitto). `docker top` lists the processes as the VM sees them; State.Pid is the
-# main one.
+# main one. The services that run (pki and migrate are one-shot steps, opcua-tools a profile): all
+# seven (#264 review, F6).
+running=$(docker compose ps -q | wc -l | tr -d ' ')
+[ "$running" = 7 ] || fail "expected 7 running services, found $running"
 for container in $(docker compose ps -q); do
   name=$(docker inspect --format '{{.Name}}' "$container")
   pid=$(docker inspect --format '{{.State.Pid}}' "$container")
@@ -821,4 +838,4 @@ for container in $(docker compose ps -q); do
     root | 0) fail "$name runs its main process as root" ;;
   esac
 done
-echo "ok: no service's main process runs as root"
+echo "ok: no main process of the 7 running services runs as root"

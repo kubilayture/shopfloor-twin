@@ -71,6 +71,9 @@ const aggregateDb = createDatabase(env.DATABASE_URL, 2);
 // Logins, sessions and users on their own small pool (#168): a burst of logins or the session
 // lookup of every request never takes a connection ingest's acknowledgement path waits for.
 const identityDb = createDatabase(env.DATABASE_URL, 2);
+// Logins and password checks on a pool of their own (#264 review, F1): a flood of logins waits
+// there, never for the connections the session lookup of every request uses.
+const loginDb = createDatabase(env.DATABASE_URL, 2);
 const state = { migrated: false, stopping: false };
 // The identity module answers the API from the start (503 until `start()` after the migrations);
 // its log is the app's, which exists only once the HTTP server is built.
@@ -85,7 +88,7 @@ const identityLog: IdentityLog = {
     app.log.child({ module: 'identity' }).error(object, message);
   },
 };
-const identity = new Identity({ db: identityDb, log: identityLog });
+const identity = new Identity({ db: identityDb, loginDb, loginPoolSize: 2, log: identityLog });
 
 let ingest: Ingest | undefined;
 let equipment: Equipment | undefined;
@@ -135,6 +138,7 @@ const pools = [
   ['api', readDb],
   ['aggregate', aggregateDb],
   ['identity', identityDb],
+  ['login', loginDb],
 ] as const;
 for (const field of ['total', 'idle', 'waiting'] as const) {
   new Gauge({
@@ -182,6 +186,7 @@ async function shutdown(signal: string): Promise<void> {
       return Promise.resolve();
     },
     () => identityDb.destroy(),
+    () => loginDb.destroy(),
     () => db.destroy(),
     () => readDb.destroy(),
     () => aggregateDb.destroy(),
@@ -539,6 +544,7 @@ try {
   await readDb.destroy();
   await aggregateDb.destroy();
   await identityDb.destroy();
+  await loginDb.destroy();
   process.exit(1);
 }
 log.info('mes-server started; ready once subscribed to the UNS');

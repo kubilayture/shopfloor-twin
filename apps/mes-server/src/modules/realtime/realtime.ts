@@ -1261,7 +1261,10 @@ export async function registerRealtime(
             '(`aboveOne`), null when nothing is planned. Planned time and packs count before the ' +
             'plant clock (`through`). `final` once every input is final through the ' +
             "bucket's end; `incidents` lists written-off gaps under it (`mayRevise`, `revision`). " +
-            'The current hour and shift are pushed on `oee:line`.',
+            'A final holds within the plant epoch it was derived under (`epoch`, #257): after a ' +
+            'simulator restart over the same plant time, a bucket the new run re-lives may turn ' +
+            'provisional again or change, so a final of an older epoch is replaced by a newer ' +
+            'answer. The current hour and shift are pushed on `oee:line`.',
           tags: ['oee'],
           query: lineOeeQuery,
           response: lineOeeSchema,

@@ -179,6 +179,7 @@ const bucketOf = (
     incidents: [],
     mayRevise: false,
     revision: 0,
+    epoch: 1,
   }) satisfies LineBucketDto;
 
 /** A context whose simulator serves `live` and whose MES answers from `mes` (the truth by default). */

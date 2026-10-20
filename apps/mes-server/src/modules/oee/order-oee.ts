@@ -292,8 +292,16 @@ export function piecesFinal(pieces: readonly StoredInterval[], window: Range): b
 export class OrderOee {
   readonly #options: OrderOeeOptions;
   readonly #listeners = new Set<(change: OrderOeeChange) => void>();
-  /** Final views never change (ADR-0018): kept so a final order costs nothing to read again. */
+  /**
+   * Final views without incidents (ADR-0018): kept so a final order costs nothing to read again.
+   * A view reads its own run's facts only (its CNCs' pieces in the queue's epoch, the bottleneck's
+   * in the order's run, its own units), so a simulator restart doesn't change it; the cache is still
+   * dropped when the plant clock's epoch changes (#257), as line OEE's is, so a read after a
+   * restart is always derived the way an MES started then derives it.
+   */
   readonly #finals = new Map<string, OrderOeeView>();
+  /** The plant clock's device epoch the kept views were derived under (#257). */
+  #finalsEpoch: number | undefined;
   #operations: Map<string, string> | undefined;
   #model: LineModel | undefined;
   #detach: (() => void)[] = [];
@@ -510,6 +518,11 @@ export class OrderOee {
   async order(orderId: string): Promise<OrderOeeView | undefined> {
     const order = await this.#options.orders.order(orderId);
     if (!order) return undefined;
+    const epoch = this.#options.equipment.watermarks()[0]?.epoch;
+    if (epoch !== this.#finalsEpoch) {
+      this.#finals.clear();
+      this.#finalsEpoch = epoch;
+    }
     const cached = this.#finals.get(orderId);
     if (cached) return { ...cached, status: order.status, cutoffs: await this.#cutoffs(cached) };
     const view = await this.#compute(order);
@@ -518,7 +531,8 @@ export class OrderOee {
       view.final &&
       view.firstPassYield.final &&
       view.line?.final === true &&
-      view.incidents.length === 0
+      view.incidents.length === 0 &&
+      this.#finalsEpoch === epoch
     ) {
       this.#finals.set(orderId, view);
     }
@@ -784,16 +798,24 @@ export class OrderOee {
       lineRange = range;
       const { scheduled: planned, breaks } = calendar(this.#options.shiftPattern, range);
       const stops: Range[] = [...breaks];
-      let stopsFinal = true;
+      // The bottleneck's pieces of the order's own run only (#257): a run restarted over the same
+      // plant time has its own Maintenance. An order with jobs in two runs reads every run's and is
+      // never final.
+      const runs = [...new Set(jobs.map(({ queue }) => queue.epoch))];
+      const run = runs.length === 1 ? runs[0] : undefined;
+      let stopsFinal = run !== undefined;
       // Every piece only when the value can be final (their coverage decides it); else only the
       // Maintenance pieces, the planned stops (a long order spans many hours of pieces).
-      const candidate = oeeFinal && completedAt !== null;
+      const candidate = oeeFinal && completedAt !== null && run !== undefined;
       for (const machine of model.bottleneckMachines) {
         const pieces = await equipment.intervals(
           machine,
           new Date(range.from),
           new Date(range.to),
-          candidate ? {} : { state: 'Maintenance' },
+          {
+            ...(run === undefined ? {} : { epoch: run }),
+            ...(candidate ? {} : { state: 'Maintenance' }),
+          },
         );
         stops.push(...maintenance(pieces));
         stopsFinal &&= candidate && piecesFinal(pieces, range);

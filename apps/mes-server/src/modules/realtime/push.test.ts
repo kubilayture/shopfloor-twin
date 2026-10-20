@@ -685,6 +685,7 @@ describe('the OEE topics’ budgets and the line topic (#232)', () => {
     incidents: [],
     mayRevise: false,
     revision: 0,
+    epoch: 1,
   });
 
   function lineSetup() {

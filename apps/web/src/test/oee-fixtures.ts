@@ -274,6 +274,7 @@ export function lineBucket(
     incidents: [],
     mayRevise: false,
     revision: 0,
+    epoch: 1,
     ...overrides,
   };
 }

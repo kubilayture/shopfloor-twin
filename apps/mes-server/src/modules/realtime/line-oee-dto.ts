@@ -43,6 +43,7 @@ export function lineBucketDto(bucket: LineBucket): LineBucketDto {
     incidents: bucket.incidents.map((incident) => ({ ...incident })),
     mayRevise: bucket.mayRevise,
     revision: bucket.revision,
+    epoch: bucket.epoch,
   };
 }
 

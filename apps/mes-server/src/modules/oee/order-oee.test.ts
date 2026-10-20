@@ -34,7 +34,14 @@ interface World {
   order: Partial<OrderRecord>;
   commands: Partial<CommandRecord>[];
   /** `start`: the interval's start when the piece is a later piece of it (cut at an hour). */
-  pieces: { from: number; to: number; state: string; provisional?: boolean; start?: number }[];
+  pieces: {
+    from: number;
+    to: number;
+    state: string;
+    provisional?: boolean;
+    start?: number;
+    epoch?: number;
+  }[];
   units: { commandId: string; op10: number; records?: [string, 'good' | 'scrap' | 'rework'][] }[];
   completedAt: Date | null;
   inMachine: number;
@@ -55,8 +62,10 @@ interface World {
   revision: number;
   /** The ranges `Equipment.revision` was asked for. */
   revisionReads: { machine: string; epoch: number; from: number; to: number }[];
-  /** Pieces of ASM-01 (the bottleneck), by minutes. */
+  /** Pieces of ASM-01 (the bottleneck), by minutes (epoch 1 unless said). */
   bottleneck: World['pieces'];
+  /** The plant clock (`watermarks()[0]`), when there is one: its epoch and time in minutes. */
+  clock?: { epoch: number; at: number };
 }
 
 /** One order A, one job of 2 blanks on CNC-01: Setup 10 min, Running 20 min, then Idle. */
@@ -224,20 +233,22 @@ function sources(w: World, calls = { order: 0, commands: 0, blanks: 0 }) {
         w.revisionReads.push({ machine, epoch, from: from.getTime(), to: to.getTime() });
         return Promise.resolve(w.revision);
       },
-      watermarks: () => [],
+      watermarks: () =>
+        w.clock === undefined ? [] : [{ epoch: w.clock.epoch, watermark: at(w.clock.at) }],
       intervals: (
         machine: string,
         from: Date,
         to: Date,
-        options: { state?: string } = {},
+        options: { state?: string; epoch?: number } = {},
       ): Promise<StoredInterval[]> =>
         Promise.resolve(
           (machine === 'asm-01' ? w.bottleneck : w.pieces)
             .filter((p) => T0 + p.to * MIN > from.getTime() && T0 + p.from * MIN < to.getTime())
             .filter((p) => options.state === undefined || p.state === options.state)
+            .filter((p) => options.epoch === undefined || (p.epoch ?? 1) === options.epoch)
             .map((p) => ({
               equipment: machine,
-              epoch: 1,
+              epoch: p.epoch ?? 1,
               start: at(p.from),
               end: at(p.to),
               state: p.state,
@@ -510,6 +521,28 @@ describe('order OEE finality (#231)', () => {
     const view = await read(w);
     expect(view.firstPassYield.started).toBe(3n);
     expect(view.final).toBe(false);
+  });
+
+  it('keeps a final order across a simulator restart over its plant time, as an MES restarted then derives it (#257)', async () => {
+    const calls = { order: 0, commands: 0, blanks: 0 };
+    const w = world();
+    w.clock = { epoch: 1, at: 60 };
+    const oee = new OrderOee(sources(w, calls).options);
+    const before = await oee.order('A');
+    expect([before?.final, before?.line?.final]).toEqual([true, true]);
+    await oee.order('A');
+    expect(calls.commands).toBe(1);
+    // Run 2 re-lives 03:00Z with Maintenance on ASM-01 over the order's in-progress time: the
+    // order reads its own run's pieces only, so nothing changes; the cache is derived again once.
+    w.clock = { epoch: 2, at: 40 };
+    w.processedEpoch = 2;
+    w.bottleneck = [...w.bottleneck, { from: 0, to: 40, state: 'Maintenance', epoch: 2 }];
+    const after = await oee.order('A');
+    expect(calls.commands).toBe(2);
+    expect(after).toEqual(before);
+    expect(await new OrderOee(sources(w).options).order('A')).toEqual(after);
+    await oee.order('A');
+    expect(calls.commands).toBe(2);
   });
 
   it('recomputes the same final value after a restart (a fresh module, nothing in memory)', async () => {

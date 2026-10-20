@@ -20,7 +20,7 @@
  *   it never passes the plant clock (without a clock nothing is final);
  * - device epochs: per bucket and machine only the newest epoch with data in it counts (a restarted
  *   simulator's run over the same plant time is never counted twice); a bucket with data of two
- *   epochs is never final; one with data of an ended run only (an epoch older than the machine's
+ *   epochs, on one machine or across its machines, is never final; one with data of an ended run only (an epoch older than the machine's
  *   current one) may be final like any other (#257): the old epoch is closed at its watermark
  *   (ADR-0018), and the line's final-through counts a machine only once it is settled in the
  *   plant's newest epoch, so no newer run can still bring data into a bucket before it;
@@ -36,10 +36,12 @@
  * machines (each in its own device epoch) overlapping the bucket are listed (`incidents`): a final
  * bucket over them carries `mayRevise` and the hours' `revision`, as the OEE buckets do.
  *
- * A final bucket without incidents never changes, so it is kept in memory (derive and cache; no
- * table, ADR-0022); a read computes only the buckets not kept. A new device epoch (the plant
- * clock's) drops them all (#257): a simulator restarted over the same plant time counts its own
- * run there, and a recomputation after an MES restart must give what the cache gives.
+ * A final bucket without incidents never changes while the plant clock stays in one device
+ * epoch, so it is kept in memory (derive and cache; no table, ADR-0022); a read computes only the
+ * buckets not kept. A new device epoch (the plant clock's) drops them all (#257): a simulator
+ * restarted over the same plant time counts its own run there, so a final of the old epoch may be
+ * withdrawn (provisional again, or another value). Every bucket carries the epoch it was derived
+ * under (`epoch`), so a consumer holding a final of an older epoch knows a newer answer replaces it.
  */
 import type { Millis, Range } from '@shopfloor/oee-core';
 import {
@@ -109,6 +111,11 @@ export interface LineBucket {
   readonly mayRevise: boolean;
   /** The highest revision of the incidents' machines' hours over the bucket; 0 without incidents. */
   readonly revision: number;
+  /**
+   * The plant clock's device epoch the bucket was derived under (#257): a final holds within it;
+   * a newer epoch may withdraw it. Null without a plant clock.
+   */
+  readonly epoch: number | null;
 }
 
 /** An order's line OEE over its in-progress time (`GET /oee/line/orders`). */
@@ -133,7 +140,10 @@ const cacheKey = (kind: LineBucketKind, key: string): string => `${kind}\u0000${
 export class LineOee {
   readonly #options: LineOeeOptions;
   readonly #listeners = new Set<(change: LineChange) => void>();
-  /** Final buckets without incidents never change (ADR-0018): kept so a read skips them. */
+  /**
+   * Final buckets without incidents, unchanged within the plant clock's epoch (ADR-0018): kept so a
+   * read skips them; dropped when that epoch changes (#257).
+   */
   readonly #finals = new Map<string, LineBucket>();
   /** The plant clock's device epoch the kept finals were derived under (#257). */
   #finalsEpoch: number | undefined;
@@ -356,12 +366,18 @@ export class LineOee {
     for (const machine of contributing) {
       // A machine counts only once it is settled in the plant's newest epoch (#257): until then
       // that run may still bring its data anywhere after its start, before the bucket's end too.
+      const settled =
+        progress.get(machine)?.epoch === newest ? finalThrough(machine) : Number.NEGATIVE_INFINITY;
+      // A CNC's job facts come from jobs the MES dispatches after the plant clock, so it is held
+      // only by `cncThrough`; a CNC that is also a bottleneck machine (its pieces are read) is
+      // held by its settled time in the newest epoch too (ADR-0036 P9-F1 amendment).
       const through =
         lineOrders && model.first.includes(machine)
-          ? (lineOrders.cncThrough.get(machine) ?? Number.POSITIVE_INFINITY)
-          : progress.get(machine)?.epoch === newest
-            ? finalThrough(machine)
-            : Number.NEGATIVE_INFINITY;
+          ? Math.min(
+              lineOrders.cncThrough.get(machine) ?? Number.POSITIVE_INFINITY,
+              model.bottleneckMachines.includes(machine) ? settled : Number.POSITIVE_INFINITY,
+            )
+          : settled;
       cut = Math.min(cut, through);
     }
     // Good packed before the plant clock, with their device epoch.
@@ -419,8 +435,9 @@ export class LineOee {
       const bucket = { from: def.start, to: def.end };
       // The epoch rule (ADR-0036 P9-05 amendment, #257): per machine, only the newest device epoch
       // with data in the bucket counts, so a simulator restarted over the same plant time is never
-      // counted twice; a bucket with data of two epochs is never final, one with an ended run's
-      // data alone may be (the line's final-through then guards against a newer run).
+      // counted twice; a bucket with data of two epochs (on one machine or across machines) is
+      // never final, one with an ended run's data alone may be (the line's final-through then
+      // guards against a newer run).
       let epochsOk = true;
       const counted: Pack[] = [];
       const bucketRuns = new Set<number>();
@@ -447,6 +464,9 @@ export class LineOee {
         stops.push(...maintenance(chosen));
         piecesOk &&= piecesFinal(chosen, bucket);
       }
+      // One run per bucket across the machines too (#266 review): run 1's packs over run 2's
+      // planned time (or the other way round) is no value either run had.
+      epochsOk &&= bucketRuns.size <= 1;
       const value = lineValue({
         bucket,
         cut: clock,
@@ -498,6 +518,7 @@ export class LineOee {
         incidents,
         mayRevise: incidents.length > 0,
         revision,
+        epoch: newest ?? null,
       };
       // Kept only under the epoch it was derived in (a newer one may have dropped the cache since).
       if (final && incidents.length === 0 && this.#finalsEpoch === newest) {

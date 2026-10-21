@@ -828,3 +828,10 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | e2e       | passed | 1,468.7 s |                                   |
     | smoke     | passed | 185.5 s   | no generated secret in the output |
     | reconcile | passed | 1,666.2 s | alarms, orders, quality           |
+
+  - **Runs on `c5dfce9`** (rebased onto `main` `2634296`), one at a time under the heavy lock. Free at the start: host 44.9 GiB, Docker 84.7 GiB. Images removed after each run. This line is documentation only.
+    - **Gate** (`GATE_STEPS=verify`, `GATE_PROJECT=gate272b`, `GATE_TAG=pr272b`, `TURBO_FORCE=1`): `GATE-OK`, verify passed in 575.5 s.
+    - **`pnpm test:console`** (`CONSOLE_PROJECT=console272`, `CONSOLE_TAG=pr272c`), twice in a row: the first run built the images and the second reused them (`CONSOLE_SKIP_BUILD=1`). `CONSOLE-OK` both, at 103 s and 73 s. In each run the new anchor wait was met: every machine, WSH-01 included, was in the second run's epoch 6–7 s after the recreate began, `compose up --wait` included.
+    - **`pnpm test:resilience`** (`RESILIENCE_PROJECT=shopfloor-resilience272`, `RESILIENCE_TAG=res272`): `RESILIENCE-OK` in 1,632 s, with R1, R2 and R3 passed.
+      - R1's WSH-01 Modbus silence drives the changed failure path end to end. The gateway was ready 509 ms after the silence was undone and the MES caught up 1,162 ms after; the overview showed nothing late (max 161 ms, no violation).
+      - R3 lost 16 facts, all detected (`exercised: true`, lead 0 ms). WSH-01 lost none and its state resynced 387 ms after the gateway's session returned.

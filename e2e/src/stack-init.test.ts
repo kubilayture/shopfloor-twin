@@ -194,6 +194,11 @@ describe('scripts/stack-init.sh (#277)', () => {
     const again = init(dir);
     expect(again.code).toBe(0);
     expect(again.stdout).toContain('already initialised');
+    // It read every required value to check it, and prints none of them.
+    for (const [key, value] of entries(before.toString('utf8'))) {
+      if (GENERATED_KEY.test(key))
+        expect(`${again.stdout}${again.stderr}`, key).not.toContain(value);
+    }
     expect(readFileSync(join(dir, '.env'))).toEqual(before);
     expect(statSync(join(dir, '.env')).mtimeMs).toBe(mtime);
   });

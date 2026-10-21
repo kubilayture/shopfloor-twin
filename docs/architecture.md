@@ -87,10 +87,12 @@ flowchart LR
     svc_pki -.->|"certificates and pins in their volumes"| svc_simulator
     svc_pki -.->|"certificate and pins"| svc_gateway
     svc_pki -.->|"TLS certificate"| svc_web
-    devtools -.->|"127.0.0.1:1883, 4800, 4841-4845, 5020, 4600"| svc_broker
+    devtools -.->|"MQTT 127.0.0.1:1883"| svc_broker
+    devtools -.->|"127.0.0.1:4800, 4841-4845, 5020"| svc_simulator
+    devtools -.->|"127.0.0.1:4600"| svc_erp
 ```
 
-Key: a box is a container (long-running unless it says one-shot or profile), a cylinder is a data store; a solid arrow is a connection its tail opens, labelled with protocol, port and credential; a dotted arrow from `pki` is a file handed over in a volume (section 7), and the developer tools' arrow stands for every port published on `127.0.0.1` (the simulator's, the ERP mock's and the broker's). Every service is on the `default` network; `web` and `mes` are on `edge` too.
+Key: a box is a container (long-running unless it says one-shot or profile), a cylinder is a data store; a solid arrow is a connection its tail opens, labelled with protocol, port and credential; a dotted arrow from `pki` is a file handed over in a volume (section 7), and the developer tools' dotted arrows are the ports published on `127.0.0.1` besides the web's (the broker's, the simulator's and the ERP mock's). Every service is on the `default` network; `web` and `mes` are on `edge` too.
 
 | Service       | Image                                     | Published on the host (default stack)                 | Starts after                                             | Volumes                                                                |
 | ------------- | ----------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------- |
@@ -522,8 +524,9 @@ sequenceDiagram
     participant mod_realtime as MES realtime
     participant svc_erp as ERP mock
     q->>mod_quality: POST /api/v1/quality/holds {subject: lot, serial, carton or order, reason}
-    mod_quality->>mod_genealogy: scope(subject): the units it covers now
-    mod_quality->>mod_quality: one transaction under the close lock: hold open,<br/>transition 1, audit, ERP message {holdId}~opened~1 in the orders outbox
+    mod_quality->>mod_quality: one transaction, the close lock taken first
+    mod_quality->>mod_genealogy: scope(subject): the units it covers now (same transaction)
+    mod_quality->>mod_quality: hold open, transition 1, audit,<br/>ERP message {holdId}~opened~1 in the orders outbox, commit
     mod_quality->>mod_realtime: quality-hold change
     mod_orders->>svc_erp: POST /api/v1/quality-notifications, Idempotency-Key
     svc_erp-->>mod_orders: 201
@@ -603,31 +606,34 @@ sequenceDiagram
     o--xsvc_broker: connection lost
     Note over o: rows stay on disk, ordered by id<br/>(at most 200,000, then the oldest dropped with buffer-overflow)
     Note over mod_ingest: session gone, MES not ready
-    svc_broker-->>o: back (Mosquitto persistence kept the MES's session and queue)
+    svc_broker-->>o: back after a clean restart (Mosquitto saved the MES's session and queue)
     o->>svc_broker: replay in insertion order, 100 in flight, delete after each PUBACK
     svc_broker->>mod_ingest: redeliver the queue, then the replay
     mod_ingest->>mod_ingest: duplicates dropped by (epoch, seq), nothing lost
 ```
 
-The resilience suite's run R1 restarts the broker and must lose nothing ([runbook](runbook.md), "Resilience suite"; [ADR-0014](adr/0014-store-and-forward-in-sqlite.md); glossary: _Store-and-forward_). The same replay follows a gateway restart for everything committed before it.
+The resilience suite's run R1 restarts the broker and must lose nothing ([runbook](runbook.md), "Resilience suite"; [ADR-0014](adr/0014-store-and-forward-in-sqlite.md); glossary: _Store-and-forward_). The same replay follows a gateway restart for everything committed before it. **A broker crash is different for the MES's queue:** Mosquitto writes its in-memory state (sessions and their queued messages) on a clean shutdown and at each autosave, so after a crash the MES's persistent session keeps only what the last autosave held; messages the broker had acknowledged to the gateway and queued after it are gone (a known limit since the Phase 4 report). The gateway's outbox is unaffected: it deletes a row only after the broker's PUBACK, and what the broker lost after that is the broker's durability, not the outbox's ([UNS contract](contracts/uns.md), "Store-and-forward").
 
 ### 6.10 Gateway outage: detected loss, resync and replay
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant m as machines (simulator)
+    participant m as OPC UA machines (simulator)
+    participant w as WSH-01 (simulator Modbus)
     participant svc_gateway as gateway
     participant svc_broker as broker
     participant mod_ingest as MES ingest
     participant mod_equipment as MES equipment
     Note over svc_gateway: killed (SIGKILL)
     svc_broker->>mod_ingest: last will: _sys/edge-gateway/gw-01/status offline
-    m->>m: facts n+1 to n+k raised while no session listens
+    m->>m: OPC UA facts n+1 to n+k raised while no session listens
+    w->>w: facts kept in its 64-entry event ring
     Note over svc_gateway: restarted: new gateway epoch for its topic counters
     svc_gateway->>svc_broker: outbox replay of what it had committed
     svc_gateway->>m: sessions, read ShopFloor.Epoch, state and active alarms, subscribe
     svc_gateway->>svc_broker: state snapshot (deviceEpoch) and alarm snapshot (asOfSeq), retained
+    svc_gateway->>w: read epoch and event counter, replay the ring from the stored cursor<br/>(at most 64 behind, else ring-overrun)
     m->>svc_gateway: new facts from n+k+1
     svc_gateway->>svc_broker: facts
     svc_broker->>mod_ingest: snapshots and facts
@@ -636,7 +642,7 @@ sequenceDiagram
     mod_equipment->>mod_equipment: intervals continue, final through the written-off gap
 ```
 
-Facts raised while no gateway session listens are history: OPC UA keeps no event history here ([ADR-0009](adr/0009-lossless-opcua-delivery.md) amendment), so the loss is **detected and counted, never hidden**; a late fact still fills its gap. The resilience suite's run R3 kills the gateway while the line runs and checks that the MES's gap numbers equal the facts raised minus those stored ([runbook](runbook.md), "Resilience suite"; glossary: _Gap incident, write-off_, _Anchor_). A machine's OPC UA server going away while the gateway lives loses nothing: the subscription republishes its queue on the reconnect.
+For the five OPC UA machines, facts raised while no gateway session listens are history: OPC UA keeps no event history here ([ADR-0009](adr/0009-lossless-opcua-delivery.md) amendment), so the loss is **detected and counted, never hidden**; a late fact still fills its gap. **WSH-01 loses nothing in a short outage:** the Modbus poller saves its cursor (device epoch and the last sequence handled) in the outbox's transaction with the messages it produced, and on restart resumes from it when the device's epoch is unchanged, reading the missed entries from the washer's 64-entry ring; only more than 64 facts behind is a loss, reported as a `ring-overrun` incident, which R3 requires none of ([contracts/modbus-register-map.md](contracts/modbus-register-map.md), [UNS contract](contracts/uns.md), "Store-and-forward"). **A simulator restart** (a new device epoch) is not a loss either: every machine re-anchors in the new epoch from its snapshot and numbers from 1, the old epoch's open intervals close at its watermark ([ADR-0018](adr/0018-equipment-intervals-provisional-and-catch-up.md)), and the poller reports `epoch-change` and starts the washer's new run; since #272 (P9-F4, [ADR-0013](adr/0013-modbus-serial-for-modbus-tcp.md) amendment) a failed poll drops its connection with `destroy()` instead of awaiting a `close()` that never called back, which had left WSH-01 in the old epoch. The resilience suite's run R3 kills the gateway while the line runs and checks that the MES's gap numbers equal the facts raised minus those stored ([runbook](runbook.md), "Resilience suite"; glossary: _Gap incident, write-off_, _Anchor_). A machine's OPC UA server going away while the gateway lives loses nothing: the subscription republishes its queue on the reconnect.
 
 ## 7. Deployment
 
@@ -694,7 +700,7 @@ Key: a cylinder is a named volume, a box a service using it (from `docker-compos
 
 **Delivery guarantees and idempotency.** At least once on every hop, exactly once in effect: QoS 1 everywhere; the gateway's outbox and command inbox commit before they acknowledge ([ADR-0014](adr/0014-store-and-forward-in-sqlite.md), [ADR-0029](adr/0029-command-path-at-least-once-with-device-dedup-and-settled-outcomes.md)); the MES acknowledges only committed facts and deduplicates by (source, epoch, sequence) ([ADR-0017](adr/0017-mes-ingest-acks-anchors-and-gaps.md)); commands are deduplicated by command id on the device and answered from the gateway's result memory; every MES message to the ERP is written to the orders outbox in the transaction that causes it and posted with an idempotency key the ERP mock answers 200 on a replay ([ADR-0028](adr/0028-erp-mock-rest-feed-and-idempotent-messages.md)). A loss that can't be prevented (facts raised while no gateway listens) is detected by the sequence and reported as an incident. Glossary: _Idempotency key_, _Store-and-forward_, _Gap incident, write-off_.
 
-**Identity and the auth model.** People: five roles and twenty permissions (`ROLE_PERMISSIONS`, one table for the MES's checks and the web's menus), sessions in an `HttpOnly` cookie, scrypt passwords, a throttle per account and client address, a bootstrap admin who must change the password, every write audited ([ADR-0026](adr/0026-identity-sessions-roles-and-auth-switch.md), [ADR-0027](adr/0027-database-roles-and-one-audit-log.md), [ADR-0039](adr/0039-mqtt-dynamic-security-https-front-and-login-throttling.md)). The admin role holds only user administration and the console (separation of duties). Machines and services: OPC UA certificates pinned both ways plus two OPC UA users ([ADR-0038](adr/0038-opcua-signandencrypt-pinned-certificates-and-users.md)); MQTT users bound to client ids with per-role topic rights; bearer tokens for the control API and the ERP mock; database roles that separate the migration owner from the application. All secrets come from `.env`, generated by `scripts/stack-init.sh` and never committed ([security review](security-review.md), S7). Glossary: _SignAndEncrypt_, _Pinned certificate_, _Dynamic security_, _Dev CA_.
+**Identity and the auth model.** People: five roles and twenty permissions (`ROLE_PERMISSIONS`, one table for the MES's checks and the web's menus), sessions in an `HttpOnly` cookie, scrypt passwords, a throttle per account and client address, a bootstrap admin who must change the password, every write audited ([ADR-0026](adr/0026-identity-sessions-roles-and-auth-switch.md), [ADR-0027](adr/0027-database-roles-and-one-audit-log.md), [ADR-0039](adr/0039-mqtt-dynamic-security-https-front-and-login-throttling.md)). The admin role holds only `read`, user administration and the console (separation of duties). Machines and services: OPC UA certificates pinned both ways plus two OPC UA users ([ADR-0038](adr/0038-opcua-signandencrypt-pinned-certificates-and-users.md)); MQTT users bound to client ids with per-role topic rights; bearer tokens for the control API and the ERP mock; database roles that separate the migration owner from the application. All secrets come from `.env`, generated by `scripts/stack-init.sh` and never committed ([security review](security-review.md), S7). Glossary: _SignAndEncrypt_, _Pinned certificate_, _Dynamic security_, _Dev CA_.
 
 **Determinism.** A seed and a scenario fix a headless run's event log byte for byte: named random streams per purpose ([ADR-0007](adr/0007-random-streams.md)), simulated time without wall-clock reads in the model ([ADR-0006](adr/0006-simulation-time.md)), the golden scenarios compared by `pnpm test:golden`, and the ground truth (`trace.json`, `line-oee.json`, …) reconciled with what the MES derives live (`pnpm test:reconcile`). A live run is paced by the wall clock, so the MES's view of it is checked against facts, not bytes. Glossary: _Golden scenario_, _Ground truth_, _Reconciliation_, _Timeline_.
 
@@ -711,4 +717,4 @@ Key: a cylinder is a named volume, a box a service using it (from `docker-compos
 | `packages`       | the workspace packages and their `workspace:` dependencies (solid) and development dependencies (dotted) | yes, nodes and edges (tooling dev edges exempt)       |
 | every block      | any `svc_`, `vol_`, `mod_` or `pkg_` id must name an existing service, volume, module or package         | –                                                     |
 
-Each marked view must occur exactly once (`<!-- architecture-check: <view> -->` just before its block). A flowchart line the script can't read fails it rather than being skipped. Not checked: networks, ports, labels, the other component views, the sequences and the prose; they are kept true by review. The rerun row for `scripts/check-*.ts` is `verify` (runbook, "Merge gate").
+Each marked view must occur exactly once (`<!-- architecture-check: <view> -->` just before its block); in a flowchart a prefixed id needs a node of its own, not only edges, and module imports are solid arrows. A flowchart line the script can't read fails it rather than being skipped. The workspace is read from `pnpm-workspace.yaml` (a pattern other than `dir/*` or a folder fails the check), and a service that only a Compose overlay defines (`compose.dev-ports.yml`, `compose.demo.yml`, `e2e/compose.*.yml`) fails it too, since no view would show it. Not checked: networks, ports, labels, the other component views, the sequences and the prose; they are kept true by review. The rerun row for `scripts/check-*.ts` is `verify` (runbook, "Merge gate").

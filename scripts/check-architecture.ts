@@ -10,8 +10,11 @@
  *   `compose.observability.yml`;
  * - `vol_<volume>`: a named Compose volume of those files;
  * - `mod_<module>`: a module folder of `apps/mes-server/src/modules`;
- * - `pkg_<package>`: a workspace package `@shopfloor/<package>` (the folders of
- *   `pnpm-workspace.yaml`: `apps/*`, `packages/*`, `e2e`).
+ * - `pkg_<package>`: a workspace package `@shopfloor/<package>` (the folders `pnpm-workspace.yaml`
+ *   names, `dir/*` expanded; another pattern fails the check).
+ *
+ * The Compose overlays (`compose.dev-ports.yml`, `compose.demo.yml`, `e2e/compose.*.yml`) may only
+ * change services of the two files above: a service only an overlay defines fails the check.
  *
  * Every prefixed id in any Mermaid block (flowchart nodes, subgraphs, sequence participants) must
  * name something that exists, and in a flowchart must have a node of its own (`svc_db[("db …")]`),
@@ -95,6 +98,10 @@ export interface Facts {
   readonly moduleImports: readonly string[];
   /** Workspace packages by short name (`mes-server`), with their workspace dependencies. */
   readonly packages: Readonly<Record<string, WorkspacePackage>>;
+  /** Services named by each Compose overlay (`compose.dev-ports.yml`, `e2e/compose.*.yml`, …). */
+  readonly overlays: Readonly<Record<string, readonly string[]>>;
+  /** What the reading itself could not make sense of (an unexpandable workspace pattern). */
+  readonly readProblems: readonly string[];
 }
 
 const MARKER = /^<!--\s*architecture-check:\s*([a-z-]+)\s*-->$/;
@@ -202,15 +209,21 @@ export function parseFlowchart(source: string): Diagram {
 }
 
 const SEQUENCE_MESSAGE =
-  /^([A-Za-z][A-Za-z0-9_]*)\s*(?:-{1,2}>>|-{1,2}>|-{1,2}x|-{1,2}\))[+-]?\s*([A-Za-z][A-Za-z0-9_]*)\s*:/;
+  /^([A-Za-z][A-Za-z0-9_]*)\s*(?:<<-{1,2}>>|-{1,2}>>|-{1,2}>|-{1,2}x|-{1,2}\))[+-]?\s*([A-Za-z][A-Za-z0-9_]*)\s*:/;
+const SEQUENCE_NOTE = /^note\s+(?:over|left of|right of)\s+([^:]+):/i;
 
-/** The participants of a Mermaid sequence diagram: declared ones and every message's ends. */
+/**
+ * The participants of a Mermaid sequence diagram: declared ones (`participant`, `actor`, also
+ * after `create`), every message's ends and every id a note names.
+ */
 export function parseSequence(source: string): Diagram {
   const ids = new Set<string>();
   for (const raw of source.split('\n')) {
     const line = raw.replace(/%%.*$/, '').trim();
-    const declared = /^(?:participant|actor)\s+([A-Za-z][A-Za-z0-9_]*)/.exec(line);
+    const declared = /^(?:create\s+)?(?:participant|actor)\s+([A-Za-z][A-Za-z0-9_]*)/.exec(line);
     if (declared?.[1] !== undefined) ids.add(declared[1]);
+    const note = SEQUENCE_NOTE.exec(line);
+    for (const id of note?.[1]?.split(',') ?? []) ids.add(id.trim());
     const message = SEQUENCE_MESSAGE.exec(line);
     if (message?.[1] !== undefined && message[2] !== undefined) {
       ids.add(message[1]);
@@ -327,7 +340,7 @@ function checkView(view: View, diagram: Diagram, facts: Facts, where: string): s
       const drawn = new Set(
         diagram.edges
           .filter((e) => e.from.startsWith('mod_') && e.to.startsWith('mod_'))
-          .map((e) => `${e.from} --> ${e.to}`),
+          .map((e) => `${e.from} ${e.kind === 'solid' ? '-->' : `(${e.kind})`} ${e.to}`),
       );
       return [
         ...difference('module', expected, ofPrefix(diagram.defined, 'mod'), where),
@@ -369,16 +382,61 @@ export function topLevelKeys(yaml: string, section: string): string[] {
   const keys: string[] = [];
   let indent: number | undefined;
   for (const line of lines.slice(start + 1)) {
-    if (/^\S/.test(line)) break;
     if (/^\s*(#.*)?$/.test(line)) continue;
+    if (/^\S/.test(line)) break;
     const width = line.length - line.trimStart().length;
     indent ??= width;
     if (width !== indent) continue;
-    const key = /^\s*([A-Za-z0-9._-]+):(\s.*|$)/.exec(line)?.[1];
+    const key = /^\s*(['"]?)([A-Za-z0-9._-]+)\1:(\s.*|$)/.exec(line)?.[2];
     if (key !== undefined) keys.push(key);
   }
   return keys;
 }
+
+/** The items of a top-level YAML list (`packages:` of `pnpm-workspace.yaml`), unquoted. */
+export function topLevelList(yaml: string, section: string): string[] {
+  const lines = yaml.split(/\r?\n/);
+  const start = lines.findIndex((line) => new RegExp(`^${section}:\\s*(#.*)?$`).test(line));
+  if (start < 0) return [];
+  const items: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    if (/^\S/.test(line)) break;
+    const item = /^\s*-\s+(['"]?)([^'"#]+?)\1\s*(#.*)?$/.exec(line)?.[2];
+    if (item !== undefined) items.push(item);
+  }
+  return items;
+}
+
+/**
+ * The workspace folders named by `pnpm-workspace.yaml`: a plain folder, or `dir/*` for every
+ * folder in it. Any other pattern is a problem (the check would not know which folders it names).
+ */
+export function workspaceFolders(
+  root: string,
+  globs: readonly string[],
+): { folders: string[]; problems: string[] } {
+  const folders: string[] = [];
+  const problems: string[] = [];
+  if (globs.length === 0) problems.push('pnpm-workspace.yaml: no packages read');
+  for (const glob of globs) {
+    if (/^[A-Za-z0-9._-]+\/\*$/.test(glob)) {
+      const dir = glob.slice(0, -2);
+      if (!existsSync(join(root, dir))) continue;
+      for (const name of readdirSync(join(root, dir)).sort()) {
+        if (statSync(join(root, dir, name)).isDirectory()) folders.push(`${dir}/${name}`);
+      }
+    } else if (/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(glob)) {
+      folders.push(glob);
+    } else {
+      problems.push(`pnpm-workspace.yaml: the pattern ${glob} is not one the check can expand`);
+    }
+  }
+  return { folders, problems };
+}
+
+/** Compose overlays: each may only change services the base and observability files define. */
+export const OVERLAY_FILES = ['compose.dev-ports.yml', 'compose.demo.yml'] as const;
 
 const SKIP_SOURCE = /\.test\.ts$|test-support\.ts$/;
 const SPECIFIER = /\b(?:from|import)\s*\(?\s*(['"])([^'"]+)\1/g;
@@ -439,13 +497,27 @@ export function readFacts(root: string): Facts {
   const modules = readdirSync(modulesDir)
     .filter((name) => statSync(join(modulesDir, name)).isDirectory())
     .sort();
-  const packages: Record<string, WorkspacePackage> = {};
-  const folders = [
-    ...['apps', 'packages'].flatMap((group) =>
-      readdirSync(join(root, group)).map((name) => join(group, name)),
-    ),
-    'e2e',
+  const overlays: Record<string, readonly string[]> = {};
+  const overlayFiles = [
+    ...OVERLAY_FILES,
+    ...(existsSync(join(root, 'e2e'))
+      ? readdirSync(join(root, 'e2e'))
+          .filter((name) => /^compose\..*\.ya?ml$/.test(name))
+          .sort()
+          .map((name) => `e2e/${name}`)
+      : []),
   ];
+  for (const file of overlayFiles) {
+    if (existsSync(join(root, file))) {
+      overlays[file] = topLevelKeys(readFileSync(join(root, file), 'utf8'), 'services');
+    }
+  }
+  const packages: Record<string, WorkspacePackage> = {};
+  const workspaceFile = join(root, 'pnpm-workspace.yaml');
+  const { folders, problems: readProblems } = workspaceFolders(
+    root,
+    existsSync(workspaceFile) ? topLevelList(readFileSync(workspaceFile, 'utf8'), 'packages') : [],
+  );
   for (const folder of folders) {
     const file = join(root, folder, 'package.json');
     if (!existsSync(file)) continue;
@@ -462,6 +534,8 @@ export function readFacts(root: string): Facts {
     modules,
     moduleImports: moduleImports(modulesDir),
     packages,
+    overlays,
+    readProblems,
   };
 }
 
@@ -473,6 +547,17 @@ export function factProblems(facts: Facts): string[] {
   }
   if (facts.modules.length === 0) problems.push('apps/mes-server/src/modules: no modules read');
   if (Object.keys(facts.packages).length === 0) problems.push('no workspace packages read');
+  problems.push(...facts.readProblems);
+  const known = new Set(Object.values(facts.services).flat());
+  for (const [file, services] of Object.entries(facts.overlays)) {
+    for (const service of services) {
+      if (!known.has(service)) {
+        problems.push(
+          `${file}: service ${service} is in no file the views show (${COMPOSE_FILES.join(', ')})`,
+        );
+      }
+    }
+  }
   return problems;
 }
 

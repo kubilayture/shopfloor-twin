@@ -554,7 +554,7 @@ A commit after the gate reruns the jobs its files touch, with `GATE_STEPS` (a co
 
 | Files changed                                                                                                                                  | Rerun                                                                              |
 | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Documentation only (`docs/`, `*.md`)                                                                                                           | `verify` (formatting)                                                              |
+| Documentation only (`docs/`, `*.md`)                                                                                                           | `verify` (formatting and the architecture check)                                   |
 | `apps/simulator`, `packages/sim-core`, `config/plant`                                                                                          | `verify,golden,e2e,smoke,reconcile`                                                |
 | `packages/spc-core`, `packages/trace-core` (shape `trace.json`)                                                                                | `verify,golden,e2e,smoke,reconcile`                                                |
 | `apps/mes-server`, `apps/edge-gateway`, `db/`, `packages/*`                                                                                    | `verify,e2e,smoke,reconcile`                                                       |

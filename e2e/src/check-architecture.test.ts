@@ -23,6 +23,8 @@ import {
   parseSequence,
   readFacts,
   topLevelKeys,
+  topLevelList,
+  workspaceFolders,
 } from '../../scripts/check-architecture.ts';
 
 /**
@@ -135,6 +137,33 @@ describe('parseSequence', () => {
     );
     expect([...diagram.ids].sort()).toEqual(['sup', 'svc_ghost', 'svc_mes']);
   });
+
+  it('takes created participants, ids in notes and both ends of <<->> messages', () => {
+    const diagram = parseSequence(
+      [
+        'sequenceDiagram',
+        '    create participant svc_new as new',
+        '    create actor op as operator',
+        '    Note over svc_a,svc_b: spans two',
+        '    note left of svc_c: left',
+        '    Note right of svc_d: right',
+        '    svc_e<<->>svc_f: both ways',
+        '    svc_g<<-->>svc_h: both ways, dotted',
+      ].join('\n'),
+    );
+    expect([...diagram.ids].sort()).toEqual([
+      'op',
+      'svc_a',
+      'svc_b',
+      'svc_c',
+      'svc_d',
+      'svc_e',
+      'svc_f',
+      'svc_g',
+      'svc_h',
+      'svc_new',
+    ]);
+  });
 });
 
 describe('mermaidBlocks', () => {
@@ -180,6 +209,60 @@ describe('topLevelKeys', () => {
     expect(topLevelKeys(yaml, 'services')).toEqual(['db', 'opcua-tools']);
     expect(topLevelKeys(yaml, 'volumes')).toEqual(['db-data', 'web-tls']);
     expect(topLevelKeys(yaml, 'networks')).toEqual([]);
+  });
+
+  it('reads past column-0 comments and blank lines, and takes quoted keys', () => {
+    const yaml = [
+      'services:',
+      '  db:',
+      '    image: postgres',
+      '# a comment at column 0 between services',
+      '',
+      "  'broker':",
+      '    image: mosquitto',
+      '  "web":',
+      '    image: nginx',
+      'networks:',
+      '  edge:',
+    ].join('\n');
+    expect(topLevelKeys(yaml, 'services')).toEqual(['db', 'broker', 'web']);
+  });
+});
+
+describe('the workspace list', () => {
+  it('reads pnpm-workspace.yaml’s packages and expands dir/* into folders', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'check-architecture-ws-'));
+    dirs.push(dir);
+    for (const path of ['apps/a', 'apps/b', 'tools'])
+      mkdirSync(join(dir, path), { recursive: true });
+    writeFileSync(join(dir, 'apps', 'README.md'), 'not a folder\n');
+    const yaml = [
+      'packages:',
+      '  - apps/*',
+      "  - 'tools' # quoted",
+      '',
+      'catalog:',
+      '  zod: 4.6.5',
+    ].join('\n');
+    expect(topLevelList(yaml, 'packages')).toEqual(['apps/*', 'tools']);
+    expect(workspaceFolders(dir, topLevelList(yaml, 'packages'))).toEqual({
+      folders: ['apps/a', 'apps/b', 'tools'],
+      problems: [],
+    });
+  });
+
+  it('refuses a pattern it cannot expand, and an empty list', () => {
+    expect(workspaceFolders(REPO, ['apps/*', 'packages/**', '!e2e']).problems).toEqual([
+      'pnpm-workspace.yaml: the pattern packages/** is not one the check can expand',
+      'pnpm-workspace.yaml: the pattern !e2e is not one the check can expand',
+    ]);
+    expect(workspaceFolders(REPO, []).problems).toEqual(['pnpm-workspace.yaml: no packages read']);
+  });
+
+  it('reads this repository’s workspace as apps/*, packages/* and e2e', () => {
+    const yaml = readFileSync(join(REPO, 'pnpm-workspace.yaml'), 'utf8');
+    expect(topLevelList(yaml, 'packages')).toEqual(['apps/*', 'packages/*', 'e2e']);
+    expect(Object.keys(FACTS.packages)).toHaveLength(19);
   });
 });
 
@@ -390,9 +473,78 @@ describe('checkArchitecture against docs/architecture.md', () => {
     ]);
   });
 
+  it('fails when a marked view occurs twice', () => {
+    const block = mermaidBlocks(DOC).find((b) => b.view === 'packages');
+    expect(block).toBeDefined();
+    const twice = `${DOC}\n<!-- architecture-check: packages -->\n\n\`\`\`mermaid\n${block?.source ?? ''}\n\`\`\`\n`;
+    expect(checkArchitecture(twice, FACTS)).toEqual([
+      expect.stringMatching(/the view "packages" is marked 2 times/),
+    ]);
+  });
+
   it('fails on a line of a view it cannot read', () => {
     const doc = editView('containers', (s) => `${s}\n    svc_web -- HTTPS --> svc_mes`);
     expect(checkArchitecture(doc, FACTS)).toEqual([expect.stringMatching(/cannot read/)]);
+  });
+
+  it('fails on a module import drawn dotted instead of solid', () => {
+    const doc = editView('mes-components', (s) =>
+      s.replace(
+        'mod_quality --> mod_identity & mod_ingest',
+        'mod_quality -.-> mod_identity & mod_ingest',
+      ),
+    );
+    expect(checkArchitecture(doc, FACTS)).toEqual([
+      expect.stringMatching(/import edge mod_quality --> mod_identity is missing/),
+      expect.stringMatching(/import edge mod_quality --> mod_ingest is missing/),
+      expect.stringMatching(/import edge mod_quality \(dotted\) mod_identity is not in the code/),
+      expect.stringMatching(/import edge mod_quality \(dotted\) mod_ingest is not in the code/),
+    ]);
+  });
+});
+
+describe('factProblems', () => {
+  const EMPTY: Facts = {
+    services: {},
+    volumes: [],
+    modules: [],
+    moduleImports: [],
+    packages: {},
+    overlays: {},
+    readProblems: [],
+  };
+
+  it('reports facts too thin to compare: both Compose files, the modules, the packages', () => {
+    expect(factProblems(EMPTY)).toHaveLength(4);
+    expect(factProblems(FACTS)).toEqual([]);
+  });
+
+  it('reports a service only a Compose overlay defines, and the reading’s own problems', () => {
+    const facts: Facts = {
+      ...FACTS,
+      overlays: { ...FACTS.overlays, 'e2e/compose.extra.yml': ['mes', 'cache'] },
+      readProblems: ['pnpm-workspace.yaml: the pattern x/** is not one the check can expand'],
+    };
+    expect(factProblems(facts)).toEqual([
+      'pnpm-workspace.yaml: the pattern x/** is not one the check can expand',
+      expect.stringMatching(
+        /^e2e\/compose\.extra\.yml: service cache is in no file the views show/,
+      ),
+    ]);
+  });
+
+  it('reads every overlay of this repository', () => {
+    expect(Object.keys(FACTS.overlays)).toEqual(
+      expect.arrayContaining([
+        'compose.dev-ports.yml',
+        'compose.demo.yml',
+        'e2e/compose.reconcile.yml',
+        'e2e/compose.ephemeral-ports.yml',
+      ]),
+    );
+    expect(FACTS.overlays['e2e/compose.reconcile.yml']).toEqual(
+      expect.arrayContaining(['db', 'gateway', 'mes']),
+    );
   });
 });
 
@@ -412,6 +564,9 @@ describe('the command line', () => {
     for (const path of [
       'docker-compose.yml',
       'compose.observability.yml',
+      'compose.dev-ports.yml',
+      'compose.demo.yml',
+      'pnpm-workspace.yaml',
       'apps/mes-server/src/modules',
       'e2e/package.json',
       ...manifests,

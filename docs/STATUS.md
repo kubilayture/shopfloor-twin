@@ -1,4 +1,4 @@
-# Status — updated 2026-10-20
+# Status — updated 2026-10-21
 
 ## Current phase: 09 – Simulation console, scenarios and hardening: complete, pending the owner's sign-off and the `phase-09` tag (closing gate on `1cecd17`); next: Phase 10 – Release 1.0 (plan pending)
 

@@ -24,13 +24,13 @@ Since the Phase 9 close (#246, PR #274, `d589ef7`, tag `phase-09`). Each entry i
 - #281 (P10-06, PR #290, `0fdf488`): the demo scenario: probe D1 (`pnpm demo:probe`), `config/scenarios/demo-v1.yaml` with its ERP dataset, `pnpm demo` (eight scenes, each asserting what it shows), `docs/demo.md`. Gate `verify,golden,e2e,reconcile` `GATE-OK`; `pnpm demo` `DEMO-OK` twice in a row.
 - #279 (P10-04, PR #291, `80d670f`): `docs/api/realtime.md` fixed, `docs/api/erp-mock.md` with its drift test, the glossary (63 terms), the documentation index `docs/README.md` with its audit, ADR-0011's note, master plan sections 5, 10 and 13. Gate `verify,smoke,reconcile` `GATE-OK`.
 - #277 (P10-02, PR #289, `464b75b`): the fresh-clone start: probe F1 (the old quick start failed), `scripts/stack-init.sh` and `pnpm stack:init`, the OPC UA and Modbus host ports as variables, `pnpm test:fresh-clone`, the README's quick-start block. Gate `verify,smoke,reconcile` and `verify,smoke` `GATE-OK`; `FRESH-CLONE-OK` cached and uncached.
+- #288 (P10-F1, PR #292, `af9e7a4`): explicit timeouts for the tests slow under the default `verify` concurrency (`spc-core`'s incremental property 30 s, `shift-calendar`'s buckets property and the `pki` step's tests 15 s, `requireOwnMaterial` 10 s); `pnpm verify` passes at the default concurrency; the timeout rule in the runbook. Full gate `GATE-OK` and `RESILIENCE-OK`.
 - #278 (P10-03, branch `docs/278-docs-pass-1`): README (run, screens, develop, documentation), the runbook restructured (a commands table, the current procedure first, the upgrade notes in one section, the CI section, the CA export without Node), this STATUS trimmed to the fixed layout.
 
 ## In progress
 
 - #278 (P10-03) documentation pass 1: this branch, in review.
 - #280 (P10-05) architecture views and `scripts/check-architecture.ts`.
-- #288 (P10-F1, PR #292): explicit timeouts for tests slow under the default `verify` concurrency (`spc-core`'s incremental property test timed out in probe F1's fresh clone).
 
 ## Next up
 
@@ -84,4 +84,4 @@ Project board: https://github.com/users/kubilayture/projects/1
 - Tests: 2,654 in `pnpm verify` uncached at the Phase 9 close (`1cecd17`); Phase 10 adds `@shopfloor/fc-seed`'s suite, the init and fresh-clone checks in `e2e`, the ERP mock's API document test and the demo's scene-log check. Beyond `verify`: `pnpm test:golden` (`week-01`, `alarms-01`, `orders-01`, `quality-01`, `line-oee.json` included), `pnpm test:e2e`, `pnpm test:reconcile` (live `alarms`, `orders` and `quality` passes), `pnpm test:console`, `pnpm test:resilience` (R1–R3), `pnpm test:perf` (P1–P3), `pnpm test:trace-perf`, `pnpm demo` and `pnpm test:fresh-clone`.
 - Coverage (lines / branches) at the Phase 9 close: `sim-core` 99.4 / 98.4 (floor 95 / 90), `oee-core` 100 / 98.4 (floor 95 / 90), `alarm-core` 100 / 96.4 (floor 95 / 90), `spc-core` 99.6 / 94.0 (floor 95 / 90), `trace-core` 100 / 93.4 (floor 95 / 90), `shift-calendar` 100 / 91.4, `plant-config` 99.5 / 95.9 (floor 90 / 85), `pki` 97.3 / 86.7, simulator 88.5 / 82.4, `edge-gateway` 93.7 / 82.3, `mes-server` 95.7 / 85.3, `erp-mock` 98.1 / 91.6 and web 95.3 / 85.8 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
 - Golden scenarios `week-01`, `alarms-01`, `orders-01` and `quality-01`: green locally (`pnpm test:golden`, `pnpm test:e2e` in the Phase 10 gates); no regeneration in Phases 9 and 10.
-- Open bugs: 1, #288 (P10-F1, PR #292 open): `spc-core`'s incremental property test times out at Vitest's 5 s under the default `pnpm verify` concurrency, a test timing, not a product defect; the gate runs `verify --concurrency=1` and never saw it. Flakes to watch: the ERP mock's readiness in the smoke and the `opcua-tools` S1 step once on `lkt-01` (from Phase 9).
+- Open bugs: 0 (#288, P10-F1, fixed by PR #292: `pnpm verify` passes at the default concurrency). Flakes to watch: the ERP mock's readiness in the smoke and the `opcua-tools` S1 step once on `lkt-01` (from Phase 9).

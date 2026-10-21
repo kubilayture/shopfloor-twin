@@ -229,7 +229,7 @@ pnpm install
 pnpm verify
 ```
 
-`pnpm install` also installs a git pre-commit hook (lefthook) that formats and lints the files you stage. To skip it for one commit in an emergency: `git commit --no-verify`. `pnpm verify` is the merge gate's first step (as `pnpm verify --concurrency=1`) and CI's `verify` job (from #4; "Continuous integration"). Until P10-F1 (#288) is merged, `packages/spc-core/src/incremental.test.ts` can time out at Vitest's 5 s under the default concurrency (probe F1 of #277); `pnpm verify --concurrency=1` avoids that.
+`pnpm install` also installs a git pre-commit hook (lefthook) that formats and lints the files you stage. To skip it for one commit in an emergency: `git commit --no-verify`. `pnpm verify` is the merge gate's first step (as `pnpm verify --concurrency=1`) and CI's `verify` job (from #4; "Continuous integration").
 
 `pnpm verify` runs turbo at its default concurrency, every workspace's tasks side by side; the gate runs `pnpm verify --concurrency=1`. Both must pass (#288). Under the default concurrency a test runs two to five times slower than alone (up to about 5.5× for spc-core's property), so test timeouts follow one rule:
 

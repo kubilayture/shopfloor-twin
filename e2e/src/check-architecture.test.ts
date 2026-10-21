@@ -97,6 +97,22 @@ describe('parseFlowchart', () => {
     ]);
   });
 
+  it('tells nodes defined with a shape from ids only used in edges', () => {
+    const diagram = parseFlowchart(
+      [
+        'flowchart LR',
+        '  subgraph g ["group"]',
+        '    a["a"]',
+        '  end',
+        '  a -->|"to b (bare)"| b',
+        '  c[("c")] -.-> d(["d"]) & e',
+        '  f -->e2{"e2"}',
+      ].join('\n'),
+    );
+    expect([...diagram.defined].sort()).toEqual(['a', 'c', 'd', 'e2', 'g']);
+    expect([...diagram.ids].sort()).toEqual(['a', 'b', 'c', 'd', 'e', 'e2', 'f', 'g']);
+  });
+
   it('reports a line it cannot read instead of skipping it', () => {
     const diagram = parseFlowchart('flowchart LR\n  a -- text --> b\n  c-d --> e');
     expect(diagram.problems).toHaveLength(2);
@@ -216,6 +232,24 @@ describe('checkArchitecture against docs/architecture.md', () => {
   it('marks every checked view exactly once', () => {
     const views = mermaidBlocks(DOC).flatMap((block) => (block.view ? [block.view] : []));
     expect(views.sort()).toEqual([...VIEWS].sort());
+  });
+
+  it('fails on a service whose node is removed while its edges stay', () => {
+    const doc = editView('containers', (s) => s.replace(/^\s*svc_erp\["erp<br\/>.*\n/m, ''));
+    expect(doc).not.toBe(DOC);
+    expect(checkArchitecture(doc, FACTS)).toEqual([
+      expect.stringMatching(/svc_erp appears only in edges/),
+      expect.stringMatching(/\(containers\): service svc_erp is missing/),
+    ]);
+  });
+
+  it('fails on a volume whose node is removed while the pki step still writes it', () => {
+    const doc = editView('deployment', (s) => s.replace(/^\s*vol_pki_ca\[.*\n/m, ''));
+    expect(doc).not.toBe(DOC);
+    expect(checkArchitecture(doc, FACTS)).toEqual([
+      expect.stringMatching(/vol_pki_ca appears only in edges/),
+      expect.stringMatching(/\(deployment\): volume vol_pki_ca is missing/),
+    ]);
   });
 
   it('fails on a fake service added to the container view', () => {

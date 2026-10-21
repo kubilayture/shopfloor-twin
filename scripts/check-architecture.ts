@@ -14,7 +14,8 @@
  *   `pnpm-workspace.yaml`: `apps/*`, `packages/*`, `e2e`).
  *
  * Every prefixed id in any Mermaid block (flowchart nodes, subgraphs, sequence participants) must
- * name something that exists. A block preceded by `<!-- architecture-check: <view> -->` is checked
+ * name something that exists, and in a flowchart must have a node of its own (`svc_db[("db …")]`),
+ * not only appear in edges (Mermaid would draw a bare box for it). A block preceded by `<!-- architecture-check: <view> -->` is checked
  * further, and each of these views must be present exactly once:
  *
  * - `containers`: its services equal the services of `docker-compose.yml`, both directions;
@@ -72,6 +73,8 @@ export interface MermaidBlock {
 
 export interface Diagram {
   readonly ids: ReadonlySet<string>;
+  /** Ids given a node of their own (a shape with text, a subgraph, a participant). */
+  readonly defined: ReadonlySet<string>;
   readonly edges: readonly Edge[];
   readonly problems: readonly string[];
 }
@@ -128,6 +131,8 @@ const ARROWS: readonly (readonly [RegExp, ArrowKind])[] = [
 ];
 const ARROW_TOKEN = /(<?-\.+->|-\.+-|<?=+>|<?-{2,}>|-{3,})/;
 const IGNORED = /^(flowchart|graph|end|classDef|class|style|linkStyle|direction|click)\b/;
+/** An id followed by a shape (`id["text"]`, `id[("text")]`, `id(["text"])`, …): its node. */
+const NODE_DEFINITION = /(?:^|[\s&>-])([A-Za-z][A-Za-z0-9_]*)(?=\s*[[({])/g;
 
 function arrowKind(token: string): ArrowKind | undefined {
   return ARROWS.find(([pattern]) => pattern.test(token))?.[1];
@@ -146,6 +151,7 @@ function bareStatement(line: string): string {
 /** The node ids and edges of a Mermaid flowchart, in the subset `docs/architecture.md` uses. */
 export function parseFlowchart(source: string): Diagram {
   const ids = new Set<string>();
+  const defined = new Set<string>();
   const edges: Edge[] = [];
   const problems: string[] = [];
   source.split('\n').forEach((raw, index) => {
@@ -154,9 +160,15 @@ export function parseFlowchart(source: string): Diagram {
     const subgraph = /^subgraph\s+([^\s[]+)/.exec(line);
     if (subgraph) {
       const id = subgraph[1] ?? '';
-      if (ID.test(id)) ids.add(id);
-      else problems.push(`line ${String(index + 1)}: subgraph id ${id} unreadable`);
+      if (ID.test(id)) {
+        ids.add(id);
+        defined.add(id);
+      } else problems.push(`line ${String(index + 1)}: subgraph id ${id} unreadable`);
       return;
+    }
+    const unlabelled = line.replace(/"[^"]*"/g, '""').replace(/\|[^|]*\|/g, ' ');
+    for (const match of unlabelled.matchAll(NODE_DEFINITION)) {
+      if (match[1] !== undefined) defined.add(match[1]);
     }
     const parts = bareStatement(line)
       .split(ARROW_TOKEN)
@@ -186,7 +198,7 @@ export function parseFlowchart(source: string): Diagram {
       }
     });
   });
-  return { ids, edges, problems };
+  return { ids, defined, edges, problems };
 }
 
 const SEQUENCE_MESSAGE =
@@ -205,14 +217,19 @@ export function parseSequence(source: string): Diagram {
       ids.add(message[2]);
     }
   }
-  return { ids, edges: [], problems: [] };
+  return { ids, defined: ids, edges: [], problems: [] };
 }
 
 export function parseDiagram(source: string): Diagram {
   const first = source.trim().split('\n')[0]?.trim() ?? '';
   if (/^sequenceDiagram\b/.test(first)) return parseSequence(source);
   if (/^(flowchart|graph)\b/.test(first)) return parseFlowchart(source);
-  return { ids: new Set(), edges: [], problems: [`unsupported diagram type "${first}"`] };
+  return {
+    ids: new Set(),
+    defined: new Set(),
+    edges: [],
+    problems: [`unsupported diagram type "${first}"`],
+  };
 }
 
 const toId = (prefix: string, name: string): string => `${prefix}_${name.replaceAll('-', '_')}`;
@@ -255,8 +272,10 @@ export function checkArchitecture(markdown: string, facts: Facts): string[] {
     problems.push(...diagram.problems.map((problem) => `${where}: ${problem}`));
     for (const id of diagram.ids) {
       const prefix = /^(svc|vol|mod|pkg)_/.exec(id)?.[1];
-      if (prefix !== undefined && !known[prefix]?.has(id)) {
-        problems.push(`${where}: ${id} names nothing in the code`);
+      if (prefix === undefined) continue;
+      if (!known[prefix]?.has(id)) problems.push(`${where}: ${id} names nothing in the code`);
+      if (!diagram.defined.has(id)) {
+        problems.push(`${where}: ${id} appears only in edges (give it a node with its text)`);
       }
     }
     if (block.view === undefined) continue;
@@ -284,10 +303,10 @@ function checkView(view: View, diagram: Diagram, facts: Facts, where: string): s
       const expected = new Set(
         (facts.services['docker-compose.yml'] ?? []).map((s) => toId('svc', s)),
       );
-      return difference('service', expected, ofPrefix(diagram.ids, 'svc'), where);
+      return difference('service', expected, ofPrefix(diagram.defined, 'svc'), where);
     }
     case 'observability': {
-      const shown = ofPrefix(diagram.ids, 'svc');
+      const shown = ofPrefix(diagram.defined, 'svc');
       return (facts.services['compose.observability.yml'] ?? [])
         .map((s) => toId('svc', s))
         .filter((id) => !shown.has(id))
@@ -295,7 +314,7 @@ function checkView(view: View, diagram: Diagram, facts: Facts, where: string): s
     }
     case 'deployment': {
       const expected = new Set(facts.volumes.map((v) => toId('vol', v)));
-      return difference('volume', expected, ofPrefix(diagram.ids, 'vol'), where);
+      return difference('volume', expected, ofPrefix(diagram.defined, 'vol'), where);
     }
     case 'mes-components': {
       const expected = new Set(facts.modules.map((m) => toId('mod', m)));
@@ -311,7 +330,7 @@ function checkView(view: View, diagram: Diagram, facts: Facts, where: string): s
           .map((e) => `${e.from} --> ${e.to}`),
       );
       return [
-        ...difference('module', expected, ofPrefix(diagram.ids, 'mod'), where),
+        ...difference('module', expected, ofPrefix(diagram.defined, 'mod'), where),
         ...difference('import edge', edges, drawn, where),
       ];
     }
@@ -335,7 +354,7 @@ function checkView(view: View, diagram: Diagram, facts: Facts, where: string): s
           ),
       );
       return [
-        ...difference('package', expected, ofPrefix(diagram.ids, 'pkg'), where),
+        ...difference('package', expected, ofPrefix(diagram.defined, 'pkg'), where),
         ...difference('dependency edge', edges, drawn, where),
       ];
     }

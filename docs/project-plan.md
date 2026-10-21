@@ -208,7 +208,7 @@ The simulator is a deterministic discrete-event engine: the same seed, plant con
 
 Seven runtime components mirror the levels of a real plant: devices (simulator), edge (gateway), integration (MQTT Unified Namespace), operations (MES with its database) and business (mock ERP), plus the web UI. Each runs in its own container, and the simulator knows nothing about the MES.
 
-The diagrams are in [`docs/architecture.md`](architecture.md): the system context, the containers, the components, the runtime sequences of the data paths below and the deployment, checked against the code (Phase 10, P10-05).
+The diagrams are in [`docs/architecture.md`](architecture.md), written by P10-05 ([#280](https://github.com/kubilayture/shopfloor-twin/issues/280)): the system context, the containers, the components, the runtime sequences of the data paths below and the deployment, checked against the code by `scripts/check-architecture.ts`.
 
 Only the gateway talks to machines and only the MES talks to the database; the console reaches the simulator directly because the simulator stands in for the physical world.
 

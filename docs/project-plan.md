@@ -208,7 +208,7 @@ The simulator is a deterministic discrete-event engine: the same seed, plant con
 
 Seven runtime components mirror the levels of a real plant: devices (simulator), edge (gateway), integration (MQTT Unified Namespace), operations (MES with its database) and business (mock ERP), plus the web UI. Each runs in its own container, and the simulator knows nothing about the MES.
 
-The diagrams are in [`docs/architecture.md`](architecture.md), written by P10-05 ([#280](https://github.com/kubilayture/shopfloor-twin/issues/280)): the system context, the containers, the components, the runtime sequences of the data paths below and the deployment, checked against the code by `scripts/check-architecture.ts`.
+The diagrams are in [`docs/architecture.md`](architecture.md), written by P10-05 ([#280](https://github.com/kubilayture/shopfloor-twin/issues/280)): the system context, the containers, the components, the workspace packages, the runtime sequences of the data paths below and the deployment. `scripts/check-architecture.ts` checks them against the code in `pnpm verify`: the containers against the Compose services, the MES components against the module folders and their imports, the packages against the workspace's dependencies and the deployment against the volumes; the sequences are kept true by review.
 
 Only the gateway talks to machines and only the MES talks to the database; the console reaches the simulator directly because the simulator stands in for the physical world.
 
@@ -486,7 +486,7 @@ Every document has one owner-facing purpose and a fixed update trigger, so nothi
 | `docs/phases/phase-NN-report.md` | Outcome against exit criteria, metrics, known issues, carry-overs | Phase close |
 | `docs/learning/phase-NN.md` | Concepts explained, suggested reading order of the code, review questions, hands-on exercise, owner's answers | Phase close (owner adds answers) |
 | `docs/adr/NNNN-title.md` | Architecture decision records in MADR format: context, options, decision, consequences | Any decision not already in this plan |
-| `docs/architecture.md` | Architecture overview (arc42-lite): context, containers, runtime views, deployment | A component, interface or data flow changes |
+| `docs/architecture.md` | Architecture overview (arc42-lite) with C4-style Mermaid views: context, containers, components, packages, runtime sequences, deployment, cross-cutting concepts; checked by `scripts/check-architecture.ts` | A component, interface or data flow changes |
 | `docs/contracts/uns.md` + generated JSON Schema | Topic tree, payloads, QoS and retain rules | Any UNS change (version bump required) |
 | `docs/contracts/opcua-address-space.md` | Node ids, types, methods, events per machine | Any address-space change |
 | `docs/contracts/modbus-register-map.md` | Register addresses, scaling, units for WSH-01 | Any register change |

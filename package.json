@@ -8,7 +8,7 @@
   },
   "scripts": {
     "verify": "node scripts/heavy.ts pnpm run verify:steps",
-    "verify:steps": "pnpm format:check && pnpm check:dockerfiles && turbo run lint typecheck test build",
+    "verify:steps": "pnpm format:check && pnpm check:dockerfiles && pnpm check:architecture && turbo run lint typecheck test build",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
@@ -16,6 +16,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:dockerfiles": "tsc -p . && node scripts/check-dockerfiles.ts",
+    "check:architecture": "node scripts/check-architecture.ts",
     "prepare": "lefthook install",
     "stack:init": "sh scripts/stack-init.sh",
     "stack:up": "docker compose up -d --wait",

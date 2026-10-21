@@ -4,10 +4,11 @@
  * directory and Compose project, with no Node.js on the PATH.
  *
  * 1. `git clone --no-local` of the repository at HEAD (the committed tree, never the working tree)
- *    into a new directory under the OS temporary directory. A dirty checkout is refused unless
- *    FRESH_CLONE_ALLOW_DIRTY=1, which marks the record "not of record"; the record says whether the
- *    commit is contained in `origin/main` (required for the closing run). The clone must have no
- *    `.env`.
+ *    into a new directory under ~/.cache/shopfloor-twin/fresh-clone, outside the repository (the OS
+ *    temporary directory is not shared with a Colima VM, so the clone's bind mounts would be
+ *    empty). A dirty checkout is refused unless FRESH_CLONE_ALLOW_DIRTY=1, which marks the record
+ *    "not of record"; the record says whether the commit is contained in `origin/main` (required
+ *    for the closing run). The clone must have no `.env`.
  * 2. Isolation by process environment, never by editing a file: `COMPOSE_PROJECT_NAME` and
  *    `IMAGE_TAG` `fresh-<hex>` and a free host port in every port variable (five contiguous ones
  *    for `SIM_OPCUA_HOST_PORTS`, each checked). Every Compose call after the README line (this
@@ -46,7 +47,7 @@
  * 10. Record: e2e/results/fresh-clone/result.json.
  *
  * Usage: pnpm test:fresh-clone (under the heavy lock). Environment: FRESH_CLONE_NO_CACHE=1,
- * FRESH_CLONE_ALLOW_DIRTY=1.
+ * FRESH_CLONE_ALLOW_DIRTY=1, FRESH_CLONE_TMPDIR (the clone's base directory; one the Docker VM shares).
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -62,7 +63,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setDefaultCACertificates } from 'node:tls';
@@ -146,7 +147,18 @@ const project = disposableName(hex);
 const tag = project;
 assertDisposable(project, tag);
 
-const tmp = mkdtempSync(join(tmpdir(), 'shopfloor-fresh-clone-'));
+// Under the home directory, not the OS temporary directory: Compose bind-mounts files of the clone
+// (config/mosquitto), and Colima (like Docker Desktop's defaults) shares only the home directory
+// with its VM, so a clone under /var/folders started a broker with an empty configuration (#277,
+// first run). FRESH_CLONE_TMPDIR names another base, one the Docker VM can see.
+const base =
+  process.env.FRESH_CLONE_TMPDIR ?? join(homedir(), '.cache', 'shopfloor-twin', 'fresh-clone');
+if (resolve(base).startsWith(`${REPO}/`) || resolve(base) === REPO) {
+  console.error(`fresh-clone: FRESH_CLONE_TMPDIR must be outside the repository: ${base}`);
+  process.exit(2);
+}
+mkdirSync(base, { recursive: true, mode: 0o700 });
+const tmp = mkdtempSync(join(base, 'run-'));
 const clone = join(tmp, 'shopfloor-twin');
 const placeholderFile = join(tmp, 'placeholder.env');
 const bin = join(tmp, 'bin');

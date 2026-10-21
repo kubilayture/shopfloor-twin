@@ -68,17 +68,27 @@ export async function connectModbus(
   timeoutMs: number,
 ): Promise<RegisterReader> {
   const client = new ModbusRTU();
-  await client.connectTCP(host, { port, timeout: timeoutMs });
+  // modbus-serial's close() calls back on the socket's next 'close' event only, so it never settles
+  // for a socket the device has closed already (a simulator recreated, #272). destroy() cancels
+  // what is pending, closes the socket and calls back at once, whatever the socket's state.
+  const destroy = () =>
+    new Promise<void>((resolve) => {
+      client.destroy(() => {
+        resolve();
+      });
+    });
+  try {
+    await client.connectTCP(host, { port, timeout: timeoutMs });
+  } catch (error) {
+    // A connect that timed out leaves its socket connecting: never leave it behind.
+    await destroy();
+    throw error;
+  }
   client.setID(MODBUS_UNIT_ID);
   client.setTimeout(timeoutMs);
   return {
     read: async (address, length) => (await client.readHoldingRegisters(address, length)).data,
-    close: () =>
-      new Promise<void>((resolve) => {
-        client.close(() => {
-          resolve();
-        });
-      }),
+    close: destroy,
   };
 }
 
@@ -184,8 +194,11 @@ export class ModbusPoller {
       this.#failures = 0;
     } catch (error) {
       this.#failures++;
-      await this.#reader?.close().catch(() => undefined);
+      // Dropped at once and its close not awaited: a connection the device closed may never finish
+      // closing, and the next poll must connect again rather than wait for it (#272).
+      const reader = this.#reader;
       this.#reader = undefined;
+      void reader?.close().catch(() => undefined);
       if (!this.#silent && this.#failures >= (this.#options.silentAfter ?? 3)) {
         this.#silent = true;
         this.#snapshotDue = true;

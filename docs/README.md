@@ -44,12 +44,12 @@ Every document of the repository, what it is for, when it changes and whether a 
 
 ## Running, demo and operations
 
-| Document                             | Purpose                                                                                                      | Updated when                          | Checked by                                                      |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------ | ------------------------------------- | --------------------------------------------------------------- |
-| [`../README.md`](../README.md)       | What the project is, how to run it                                                                           | A capability or the start changes     | – (its quick-start block: `pnpm test:fresh-clone`, from P10-02) |
-| [`runbook.md`](runbook.md)           | Start, stop, reset, scenarios, the gate and the heavy lock, the harnesses, troubleshooting                   | Operations change                     | –                                                               |
-| [`demo.md`](demo.md)                 | The demo scenario's scene script, runnable by hand, probe D1's margins; the recording's record (from P10-07) | The demo's scenes or recording change | `pnpm demo` plays the same scenes (`e2e/src/demo.ts`)           |
-| [`../CHANGELOG.md`](../CHANGELOG.md) | Keep a Changelog, grouped by release                                                                         | Every pull request                    | –                                                               |
+| Document                             | Purpose                                                                                                                              | Updated when                          | Checked by                                                      |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------- | --------------------------------------------------------------- |
+| [`../README.md`](../README.md)       | What the project is, how to run it                                                                                                   | A capability or the start changes     | – (its quick-start block: `pnpm test:fresh-clone`, from P10-02) |
+| [`runbook.md`](runbook.md)           | Every command; start, stop, reset, scenarios, the gate and the heavy lock, the harnesses, troubleshooting, upgrading a pre-1.0 stack | Operations change                     | –                                                               |
+| [`demo.md`](demo.md)                 | The demo scenario's scene script, runnable by hand, probe D1's margins; the recording's record (from P10-07)                         | The demo's scenes or recording change | `pnpm demo` plays the same scenes (`e2e/src/demo.ts`)           |
+| [`../CHANGELOG.md`](../CHANGELOG.md) | Keep a Changelog, grouped by release                                                                                                 | Every pull request                    | –                                                               |
 
 ## Phases and learning
 
@@ -89,8 +89,13 @@ Every document above was read against the code on `main` at `0fdf488`. What was 
 **Stale, owned by another Phase 10 issue (not changed here):**
 
 - `architecture.md`: stale throughout (phase labels, no `pki`, `migrate`, `opcua-tools` or `edge` network, no diagrams): P10-05, [#280](https://github.com/kubilayture/shopfloor-twin/issues/280).
-- `../README.md` (quick start fails on a fresh clone), `runbook.md` ("Continuous integration" describes `ci.yml` as running; dated upgrade notes inside "Full stack") and `STATUS.md` (still names Phase 9 the current phase; the done list keeps every pull request since Phase 1): P10-02 and P10-03, [#277](https://github.com/kubilayture/shopfloor-twin/issues/277), [#278](https://github.com/kubilayture/shopfloor-twin/issues/278).
 - `api/mes.openapi.json` (generated): `info.version` `0.0.0`, and its description still says "API of the MES (Phases 4 and 5)" and "login sets the session cookie sft_session"; the text comes from `apps/mes-server/src/http.ts` and changes with the regeneration of P10-09, [#284](https://github.com/kubilayture/shopfloor-twin/issues/284).
+
+**Fixed since, by P10-02 and P10-03 ([#277](https://github.com/kubilayture/shopfloor-twin/issues/277), [#278](https://github.com/kubilayture/shopfloor-twin/issues/278)):**
+
+- `../README.md`: its quick start failed on a fresh clone; since #277 it is the one command line `pnpm test:fresh-clone` runs, and since #278 the README has "Run it", "Screens", "Develop" and "Documentation".
+- `runbook.md`: "Continuous integration" described `ci.yml` as running; it now says GitHub Actions is unavailable and the local `pnpm gate` is the merge gate. The dated upgrade notes inside "Full stack" (and in "Run the MES server" and "HTTPS and the dev CA") are in one section, "Upgrading a stack from before 1.0"; the current procedure comes first, with a table of every command (#278).
+- `STATUS.md`: it named Phase 9 the current phase and kept every pull request since Phase 1 under "Done since last update"; it is trimmed to master plan section 10's fixed layout, Phase 10 current, the history left to the phase logs and reports (#278).
 
 **Known gaps, recorded:**
 

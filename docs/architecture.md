@@ -114,7 +114,7 @@ Every service has CPU and memory limits and runs as a non-root user (security re
 3. **The `edge` network.** nginx and the MES only, `internal: true` and without an IPv4 gateway. The MES learns the network's subnet at start from its alias `mes-edge` (and refuses to start without it) and trusts proxy headers (`X-Original-Method`, `X-Real-IP` for the login throttle) only from it.
 4. **The console's proxy.** `/sim/` reaches the simulator's control API only for allowlisted routes and methods, same-origin, after nginx's `auth_request` asks the MES whether the session holds `sim:control`; nginx then adds the control token, which the browser never sees. The control API needs the token on every route but `/health/*` and `/metrics`.
 5. **OPC UA.** SignAndEncrypt only, each side's certificate pinned by the other, users `opcua-gateway` (the only one allowed `LoadOrder`) and `opcua-reader` ([ADR-0038](adr/0038-opcua-signandencrypt-pinned-certificates-and-users.md)). Modbus TCP has no security of its own; WSH-01's port is published to loopback only.
-6. **MQTT.** No anonymous access; Mosquitto's dynamic security binds every user to one client id and grants topics per role: only `mes` may publish `cmd`, only `gw-01` may publish facts and `cmd-res` ([UNS contract](contracts/uns.md), "Broker"). The broker listens without TLS, inside the Compose network and on loopback.
+6. **MQTT.** No anonymous access; Mosquitto's dynamic security binds every user to one client id and grants topics per role: only the MES's users (`mes`, `mes-cmd`) may publish `cmd`, only the gateway's (`gw-01`, `gw-01-cmd`) facts and `cmd-res` ([UNS contract](contracts/uns.md), "Broker"). The broker listens without TLS, inside the Compose network and on loopback.
 7. **The database.** Not published; the MES connects as `mes_app`, which owns nothing; `migrate` alone runs DDL ([ADR-0027](adr/0027-database-roles-and-one-audit-log.md)).
 8. **The ERP mock.** A shared bearer token guards `/api/v1` ([ADR-0028](adr/0028-erp-mock-rest-feed-and-idempotent-messages.md)).
 
@@ -588,7 +588,7 @@ sequenceDiagram
     end
 ```
 
-The console talks only to the simulator, through nginx's allowlist ([runbook](runbook.md), "Simulation console"); a route outside it is 404 and a cross-origin write 403. The WebSocket's topics, limits and close codes are in [api/realtime.md](api/realtime.md) ([ADR-0019](adr/0019-mes-api-decimation-and-push-backpressure.md)); logins are throttled per account and client address ([ADR-0039](adr/0039-mqtt-dynamic-security-https-front-and-login-throttling.md)).
+The console talks only to the simulator, through nginx's allowlist (`apps/web/nginx/default.conf.template`; [runbook](runbook.md), "Console run"); a route outside it is 404 and a cross-origin write 403. The WebSocket's topics, limits and close codes are in [api/realtime.md](api/realtime.md) ([ADR-0019](adr/0019-mes-api-decimation-and-push-backpressure.md)); logins are throttled per account and client address ([ADR-0039](adr/0039-mqtt-dynamic-security-https-front-and-login-throttling.md)).
 
 ### 6.9 Broker outage: store-and-forward
 

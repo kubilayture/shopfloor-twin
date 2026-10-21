@@ -84,10 +84,28 @@ The bottleneck is ASM-01 (VB-100, OP30, 150 s) in every variant. Beyond the enve
 
 ## Assertion mutants
 
-Each scene's assertions were proved able to fail: one change per scene, in a throwaway copy, each run against the live walkthrough (see "Run records") and killed.
+Each scene's assertions were proved able to fail. One mutant per scene, each a `expect.soft` beside the real assertion that expects a wrong fact, applied together to an uncommitted copy of `e2e/browser/demo/walkthrough.spec.ts` (the walkthrough is one test with a step per scene, so soft failures let every later scene run) and played once against the live stack (`DEMO_SKIP_BUILD=1 pnpm demo`, 2026-10-21, on `a5de2db`). Every mutant was killed; the copy was then restored.
 
-(Filled in by #281's last commit.)
+| Scene | Mutant: the walkthrough expects                      | Killed: the run saw                       |
+| ----- | ---------------------------------------------------- | ----------------------------------------- |
+| 1     | seven machine cards on the overview                  | 6                                         |
+| 2     | each job on the other CNC than the dispatch rule's   | cnc-01 and cnc-02 as planned (4 failures) |
+| 3     | the timeline's pause at 06:15 (the planned start)    | 06:14:00                                  |
+| 4     | the alarm acknowledged by the operator               | `demo-maintenance`                        |
+| 5     | CNC-01 as VB-100's bottleneck on the line card       | `asm-01`                                  |
+| 6     | the drift's episode on rule 2 (the truth's rule + 1) | rule 1                                    |
+| 7     | the close refused with `sign-off-missing`            | `quality-hold`                            |
+| 8     | the serial's OP10 lot of `BLANK-200`                 | `BLANK-100`                               |
 
 ## Run records
 
-(Filled in by #281's last commit.)
+All on `a5de2db` (main `13f8faf` plus #281), 2026-10-21, under the heavy-suite lock, Node 26.11.1, Docker 29.5.2.
+
+| Run                          | What                                                                                                 | Result                                                                                                                                                        |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gate                         | `GATE_STEPS=verify,golden,e2e,reconcile GATE_PROJECT=gate281 GATE_TAG=pr281 TURBO_FORCE=1 pnpm gate` | `GATE-OK`: verify 596.5 s, golden 1.5 s (the four goldens byte-identical), e2e 1,499.2 s, reconcile 1,754 s; host 36.1 GiB, Docker 75.5 GiB free at the start |
+| Mutants                      | `DEMO_SKIP_BUILD=1 pnpm demo` with the eight mutants                                                 | 8 of 8 killed (above)                                                                                                                                         |
+| `pnpm demo`, first           | build, run, images removed                                                                           | `DEMO-OK` in 499 s, the walkthrough 6.5 min; jobs accepted at 06:04; host 58.6 GiB free                                                                       |
+| `pnpm demo`, second in a row | build, run, images removed                                                                           | `DEMO-OK` in 443 s, the walkthrough 6.4 min; jobs accepted at 06:03; host 52.2 GiB free                                                                       |
+
+Both runs showed the facts probe D1 gives inside the envelope: the alarm raised at 07:15 and its 30-minute `Down` record, PO-2610-301 the first completed order (OEE 0.5446, availability 0.5488, first-pass yield 1.0000), ASM-01 the bottleneck, the drift's first episode on the I chart, rule 1, at 11:51:13 on unit 106 (`I~1~1~106/1`), the hold on PO-2610-302 (60 units) and its close refused, serial VB-100-000001 of carton PO-2610-301-C01 back to BL100-2610-01, SK1-2610-01 and SP100-2610-01, operator op-a1, leak value 2.46. CNC-01's shift availability so far differed in the fourth decimal (0.5986, 0.5983): it is read live, at the plant time scene 5 reached.

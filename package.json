@@ -17,6 +17,7 @@
     "format:check": "prettier --check .",
     "check:dockerfiles": "tsc -p . && node scripts/check-dockerfiles.ts",
     "prepare": "lefthook install",
+    "stack:init": "sh scripts/stack-init.sh",
     "stack:up": "docker compose up -d --wait",
     "stack:up:dev": "docker compose --file docker-compose.yml --file compose.dev-ports.yml up -d --wait",
     "stack:up:observability": "docker compose --file docker-compose.yml --file compose.observability.yml --profile observability --profile grafana up -d --wait",
@@ -39,6 +40,7 @@
     "test:resilience": "pnpm --filter @shopfloor/e2e test:resilience",
     "demo": "pnpm --filter @shopfloor/e2e demo",
     "demo:probe": "pnpm --filter @shopfloor/e2e demo:probe",
+    "test:fresh-clone": "pnpm --filter @shopfloor/e2e test:fresh-clone",
     "gate": "node scripts/gate.ts",
     "playwright:install": "pnpm --filter @shopfloor/e2e playwright:install"
   },

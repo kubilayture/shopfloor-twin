@@ -14,6 +14,7 @@
     "test:resilience": "node ../scripts/heavy.ts node src/resilience.ts",
     "demo": "node ../scripts/heavy.ts node src/demo.ts",
     "demo:probe": "node src/demo-probe.ts",
+    "test:fresh-clone": "node ../scripts/heavy.ts node src/fresh-clone.ts",
     "playwright:install": "playwright install --only-shell chromium"
   },
   "dependencies": {

@@ -60,25 +60,13 @@ import {
   formatGib,
   pruneBuildCache,
 } from '@shopfloor/test-kit/heavy-lock';
+import { gateComposeEnv, gateSmokeEnv } from './gate-smoke-env.ts';
+import { envFromExample } from './required-secrets.ts';
 
 const REPO = resolve(import.meta.dirname, '..');
 const STEPS = ['verify', 'golden', 'e2e', 'smoke', 'reconcile'] as const;
 type Step = (typeof STEPS)[number];
 const SERVICES = ['simulator', 'edge-gateway', 'mes-server', 'erp-mock', 'web'] as const;
-/** Secrets the stack requires (Compose `:?`) plus the bootstrap admin's, appended when missing. */
-const REQUIRED_SECRETS = [
-  'DB_PASSWORD',
-  'DB_APP_PASSWORD',
-  'MQTT_HEALTHCHECK_PASSWORD',
-  'MQTT_DEV_PASSWORD',
-  'MQTT_GATEWAY_PASSWORD',
-  'MQTT_MES_PASSWORD',
-  'ERP_API_TOKEN',
-  'SIM_CONTROL_TOKEN',
-  'OPCUA_GATEWAY_PASSWORD',
-  'OPCUA_READER_PASSWORD',
-  'MES_BOOTSTRAP_ADMIN_PASSWORD',
-];
 
 const selected = (process.env.GATE_STEPS ?? STEPS.join(','))
   .split(',')
@@ -193,16 +181,8 @@ function envFile(dir: string): string {
     generated.push(value);
     return value;
   };
-  const seen = new Set<string>();
-  const lines = readFileSync(join(REPO, '.env.example'), 'utf8')
-    .split('\n')
-    .map((line) => {
-      const key = /^([A-Z0-9_]+)=/.exec(line)?.[1];
-      if (key === undefined) return line;
-      seen.add(key);
-      return /_(PASSWORD|TOKEN)$/.test(key) ? `${key}=${secret()}` : line;
-    });
-  for (const key of REQUIRED_SECRETS) if (!seen.has(key)) lines.push(`${key}=${secret()}`);
+  // The same keys as scripts/stack-init.sh writes (#277, e2e/src/stack-init.test.ts).
+  const lines = envFromExample(readFileSync(join(REPO, '.env.example'), 'utf8'), secret);
   lines.push(`COMPOSE_PROJECT_NAME=${project}`, `IMAGE_TAG=${tag}`, '');
   const path = join(dir, 'gate.env');
   writeFileSync(path, lines.join('\n'), { mode: 0o600 });
@@ -253,11 +233,7 @@ const commands: Readonly<Record<Step, [string, string[], NodeJS.ProcessEnv]>> = 
   verify: ['pnpm', ['verify', '--concurrency=1'], {}],
   golden: ['pnpm', ['test:golden'], {}],
   e2e: ['pnpm', ['test:e2e'], {}],
-  smoke: [
-    'sh',
-    ['scripts/stack-smoke.sh'],
-    { SMOKE_ENV_FILE: env, SMOKE_WRITES: '1', SMOKE_EPHEMERAL_PORTS: '1' },
-  ],
+  smoke: ['sh', ['scripts/stack-smoke.sh'], gateSmokeEnv(env, project, tag)],
   reconcile: [
     'pnpm',
     ['test:reconcile'],
@@ -273,7 +249,7 @@ const commands: Readonly<Record<Step, [string, string[], NodeJS.ProcessEnv]>> = 
 };
 
 const compose = (...args: string[]) =>
-  run('docker', ['compose', '--env-file', env, ...args], { COMPOSE_PROJECT_NAME: project });
+  run('docker', ['compose', '--env-file', env, ...args], gateComposeEnv(project, tag));
 
 let cleaned: Promise<void> | undefined;
 /** The project down with its volumes, the tag's images removed, the env file deleted; once. */

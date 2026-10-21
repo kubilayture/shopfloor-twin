@@ -5,9 +5,32 @@ cd "$(dirname "$0")/.."
 # The env file: ./.env by default; SMOKE_ENV_FILE names another (the gate's throw-away file with
 # generated secrets, #178), which every docker compose call below then reads instead of ./.env.
 env_file=${SMOKE_ENV_FILE:-./.env}
+# The project, the image tag and the host ports: a value set in the environment wins over the env
+# file's, as in Compose's own interpolation (#277: the fresh-clone test runs a clone's smoke under
+# its isolation environment, and the clone's .env has the default ports).
+isolation_vars='COMPOSE_PROJECT_NAME IMAGE_TAG MQTT_PORT SIM_CONTROL_PORT SIM_OPCUA_HOST_PORTS
+  SIM_MODBUS_HOST_PORT ERP_HTTP_PORT WEB_HTTPS_PORT'
+for name in $isolation_vars; do
+  eval "saved_$name=\${$name-} given_$name=\${$name+1}"
+done
 set -a
 . "$env_file"
 set +a
+for name in $isolation_vars; do
+  if eval "[ -n \"\$given_$name\" ]"; then eval "$name=\$saved_$name; export $name"; fi
+done
+# Another env file than ./.env is a disposable stack's (the gate's, the fresh-clone test's): never
+# the dev stack's project or its images (#277 review), whatever the shell exported.
+if [ -n "${SMOKE_ENV_FILE:-}" ]; then
+  if [ "${COMPOSE_PROJECT_NAME:-shopfloor-twin}" = shopfloor-twin ]; then
+    echo "stack-smoke: refusing SMOKE_ENV_FILE with the dev project shopfloor-twin: set COMPOSE_PROJECT_NAME to a disposable project" >&2
+    exit 2
+  fi
+  if [ "${IMAGE_TAG:-dev}" = dev ]; then
+    echo "stack-smoke: refusing SMOKE_ENV_FILE with the dev images' tag dev: set IMAGE_TAG to a disposable tag" >&2
+    exit 2
+  fi
+fi
 # SMOKE_EPHEMERAL_PORTS=1 (the gate, #228): every published port on an ephemeral host port chosen
 # by Docker (e2e/compose.ephemeral-ports.yml; the broker unpublished too), so a dev stack on the
 # default ports can stay up. The smoke reads each address back with `docker compose port` either
@@ -62,11 +85,12 @@ in_container() {
 
 # Compose refuses to start without a required secret, but not without the optional bootstrap
 # admin password (#168, ADR-0026): `config` interpolates like `up`, in a clean environment so the
-# variables exported above don't fill the gap.
+# variables exported above don't fill the gap (only the project and the image tag are passed, #277).
 compose_without() {
   stripped=$(mktemp)
   grep -v "^$1=" "$env_file" >"$stripped" || true
-  env -i PATH="$PATH" HOME="$HOME" docker compose --env-file "$stripped" config -q >/dev/null 2>&1
+  env -i PATH="$PATH" HOME="$HOME" ${COMPOSE_PROJECT_NAME:+"COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME"} \
+    ${IMAGE_TAG:+"IMAGE_TAG=$IMAGE_TAG"} docker compose --env-file "$stripped" config -q >/dev/null 2>&1
   result=$?
   rm -f "$stripped"
   return $result
@@ -80,7 +104,8 @@ observability_without() {
   profiles=
   for profile in "$@"; do profiles="$profiles --profile $profile"; done
   # shellcheck disable=SC2086 # profiles is a list of words
-  env -i PATH="$PATH" HOME="$HOME" docker compose --env-file "$stripped" \
+  env -i PATH="$PATH" HOME="$HOME" ${COMPOSE_PROJECT_NAME:+"COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME"} \
+    ${IMAGE_TAG:+"IMAGE_TAG=$IMAGE_TAG"} docker compose --env-file "$stripped" \
     --file docker-compose.yml --file compose.observability.yml $profiles \
     config -q >/dev/null 2>&1
   result=$?

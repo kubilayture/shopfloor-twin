@@ -1,0 +1,544 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { gateComposeEnv, gateSmokeEnv } from '../../scripts/gate-smoke-env.ts';
+import { REQUIRED_SECRETS } from '../../scripts/required-secrets.ts';
+import {
+  PLACEHOLDER,
+  assertDisposable,
+  baseInside,
+  mayStart,
+  cleanupCommands,
+  configProblems,
+  disposableName,
+  expectedPublished,
+  foreignRows,
+  isolationEnv,
+  leakedCount,
+  nodeFreeTools,
+  parsePs,
+  placeholderEnv,
+  portProblems,
+  quickStartLines,
+  secretValues,
+  serviceProblems,
+  type HostPorts,
+  type PsRow,
+} from './fresh-clone-checks.ts';
+import { REPO } from './stack.ts';
+
+/** The fresh-clone test's checks (#277, P10-02; Phase 10 plan "The fresh-clone test"). */
+
+const PORTS: HostPorts = {
+  mqtt: 31001,
+  simControl: 31002,
+  opcuaBase: 21000,
+  modbus: 31003,
+  erp: 31004,
+  web: 31005,
+};
+const PROJECT = 'fresh-0a1b2c3d';
+
+describe('the README quick-start block', () => {
+  it('is one line in the README: the init, then docker compose up -d --wait', () => {
+    expect(quickStartLines(readFileSync(join(REPO, 'README.md'), 'utf8'))).toEqual([
+      'sh scripts/stack-init.sh && docker compose up -d --wait',
+    ]);
+  });
+
+  it('leaves out blank lines, comments, git clone and cd; refuses a missing or doubled block', () => {
+    const block = (body: string) =>
+      `x\n<!-- quick-start -->\n\n\`\`\`sh\n${body}\n\`\`\`\n\n<!-- quick-start -->\ny`;
+    expect(
+      quickStartLines(block('git clone https://example/x.git\ncd x\n\n# a comment\na && b\nc')),
+    ).toEqual(['a && b', 'c']);
+    expect(() => quickStartLines('no markers')).toThrow(/exactly two/);
+    expect(() => quickStartLines(`${block('a')}\n<!-- quick-start -->`)).toThrow(/exactly two/);
+    expect(() => quickStartLines('<!-- quick-start -->\ntext\n<!-- quick-start -->')).toThrow(
+      /no fenced code block/,
+    );
+    expect(() => quickStartLines(block('cd x'))).toThrow(/no command/);
+  });
+});
+
+describe('the isolation environment and the refusals', () => {
+  it('names the project and tag fresh-<hex> and sets every host-port variable, five contiguous for OPC UA', () => {
+    expect(disposableName('0a1b2c3d')).toBe(PROJECT);
+    expect(() => disposableName('xyz')).toThrow();
+    expect(isolationEnv(PROJECT, PROJECT, PORTS)).toEqual({
+      COMPOSE_PROJECT_NAME: PROJECT,
+      IMAGE_TAG: PROJECT,
+      MQTT_PORT: '31001',
+      SIM_CONTROL_PORT: '31002',
+      SIM_OPCUA_HOST_PORTS: '21000-21004',
+      SIM_MODBUS_HOST_PORT: '31003',
+      ERP_HTTP_PORT: '31004',
+      WEB_HTTPS_PORT: '31005',
+    });
+  });
+
+  it('covers every host-port variable of docker-compose.yml', () => {
+    const compose = readFileSync(join(REPO, 'docker-compose.yml'), 'utf8');
+    const variables = [...compose.matchAll(/'127\.0\.0\.1:\$\{([A-Z_]+):-[^}]*\}:[\d-]+'/g)].map(
+      (match) => match[1],
+    );
+    expect(variables.length).toBeGreaterThan(0);
+    expect(compose.match(/'127\.0\.0\.1:/g)).toHaveLength(variables.length);
+    const env = isolationEnv(PROJECT, PROJECT, PORTS);
+    for (const variable of variables) expect(env, variable).toHaveProperty(String(variable));
+  });
+
+  it("refuses the developer's project shopfloor-twin and tag dev, and malformed names", () => {
+    expect(() => {
+      assertDisposable('shopfloor-twin', PROJECT);
+    }).toThrow(/refusing Compose project/);
+    expect(() => {
+      assertDisposable(PROJECT, 'dev');
+    }).toThrow(/refusing image tag/);
+    expect(() => {
+      assertDisposable('', PROJECT);
+    }).toThrow();
+    expect(() => {
+      assertDisposable(PROJECT, '');
+    }).toThrow();
+    expect(() => isolationEnv('shopfloor-twin', PROJECT, PORTS)).toThrow();
+    expect(() => {
+      assertDisposable(PROJECT, PROJECT);
+    }).not.toThrow();
+  });
+
+  it('cleans up with the project named by -p, its volumes, and only the tag’s images; refuses the developer’s', () => {
+    const commands = cleanupCommands(PROJECT, PROJECT, '/tmp/x/placeholder.env');
+    const [down, ...images] = commands;
+    expect(down?.slice(0, 2)).toEqual(['compose', '--env-file']);
+    expect(down?.[down.indexOf('-p') + 1]).toBe(PROJECT);
+    expect(down?.indexOf('-p')).toBeLessThan(down?.indexOf('down') ?? -1);
+    expect(down).toContain('--volumes');
+    expect(images).toHaveLength(5);
+    for (const image of images) {
+      expect(image.slice(0, 3)).toEqual(['image', 'rm', '--force']);
+      expect(image[3]).toMatch(new RegExp(`^shopfloor-twin/[a-z-]+:${PROJECT}$`));
+    }
+    expect(() => cleanupCommands('shopfloor-twin', PROJECT, '/x')).toThrow();
+    expect(() => cleanupCommands(PROJECT, 'dev', '/x')).toThrow();
+  });
+});
+
+describe('the placeholder env file and the resolution check', () => {
+  const example = readFileSync(join(REPO, '.env.example'), 'utf8');
+
+  it('has every key of .env.example, every password, token and required secret the placeholder', () => {
+    const text = placeholderEnv(example);
+    const keys = (source: string) =>
+      [...source.matchAll(/^([A-Z0-9_]+)=(.*)$/gm)].map((match) => [match[1], match[2]] as const);
+    const written = new Map(keys(text));
+    for (const [key, value] of keys(example)) {
+      expect(written.has(key), key).toBe(true);
+      const secret = /_(PASSWORD|TOKEN)$/.test(String(key));
+      expect(written.get(key), key).toBe(secret ? PLACEHOLDER : value);
+    }
+    for (const key of REQUIRED_SECRETS) expect(written.get(key), key).toBe(PLACEHOLDER);
+    expect(text).not.toContain('change-me');
+  });
+
+  const config = (name: string, tag: string) => ({
+    name,
+    services: {
+      db: { image: 'timescale/timescaledb:2.30.2-pg18' },
+      simulator: { build: { context: '.' }, image: `shopfloor-twin/simulator:${tag}` },
+      'opcua-tools': { image: `shopfloor-twin/simulator:${tag}` },
+      web: { build: { context: '.' }, image: `shopfloor-twin/web:${tag}` },
+    },
+  });
+
+  it('accepts the disposable project with every built image on its tag', () => {
+    expect(configProblems(config(PROJECT, PROJECT), PROJECT, PROJECT)).toEqual([]);
+  });
+
+  it("refuses the file's own name, the dev tag, an untagged build and no services", () => {
+    expect(configProblems(config('shopfloor-twin', PROJECT), PROJECT, PROJECT)).toEqual([
+      `the project resolves to "shopfloor-twin", not ${PROJECT}`,
+    ]);
+    expect(configProblems(config(PROJECT, 'dev'), PROJECT, PROJECT)).toHaveLength(3);
+    expect(
+      configProblems(
+        { name: PROJECT, services: { mes: { build: { context: '.' } } } },
+        PROJECT,
+        PROJECT,
+      ),
+    ).toEqual([`service mes uses image undefined, not one tagged ${PROJECT}`]);
+    expect(configProblems({ name: PROJECT, services: {} }, PROJECT, PROJECT)).toEqual([
+      'no service builds an image',
+    ]);
+    expect(configProblems(null, PROJECT, PROJECT)).toEqual(['the configuration is not an object']);
+  });
+
+  it('never runs interpolated config except with the placeholder env file (fresh-clone.ts)', () => {
+    const source = readFileSync(join(REPO, 'e2e/src/fresh-clone.ts'), 'utf8');
+    const configCalls = [...source.matchAll(/'config'/g)];
+    expect(configCalls).toHaveLength(1);
+    expect(source).toContain("['--env-file', placeholderFile, 'config', '--format', 'json']");
+    // Every Compose call goes through compose() (the isolation environment) or the cleanup's
+    // commands (which name the project with -p).
+    // (`docker compose version` for the record touches no project.)
+    expect([...source.matchAll(/\['compose', (?!'version')/g)]).toHaveLength(1);
+    expect(source).toContain("return run('docker', ['compose', ...args], {");
+    expect(source).toContain('env: { ...baseEnv(), ...isolation },');
+  });
+});
+
+const row = (service: string, extra: Partial<PsRow> = {}): PsRow => ({
+  Name: `${PROJECT}-${service}-1`,
+  Service: service,
+  Project: PROJECT,
+  State: 'running',
+  Health: 'healthy',
+  ExitCode: 0,
+  Labels: `com.docker.compose.service=${service},com.docker.compose.project=${PROJECT}`,
+  ...extra,
+});
+const healthy = (): PsRow[] => [
+  ...['db', 'broker', 'simulator', 'gateway', 'mes', 'erp', 'web'].map((s) => row(s)),
+  row('pki', { State: 'exited', Health: '' }),
+  row('migrate', { State: 'exited', Health: '' }),
+];
+
+describe('the containers after up', () => {
+  it('parses docker compose ps as an array or as one object per line', () => {
+    const rows = healthy();
+    expect(parsePs(JSON.stringify(rows))).toEqual(rows);
+    expect(parsePs(rows.map((r) => JSON.stringify(r)).join('\n'))).toEqual(rows);
+    expect(parsePs('\n')).toEqual([]);
+  });
+
+  it('finds containers of another project by their label', () => {
+    expect(foreignRows(healthy(), PROJECT)).toEqual([]);
+    const theirs = row('db', {
+      Name: 'shopfloor-twin-db-1',
+      Project: 'shopfloor-twin',
+      Labels: 'com.docker.compose.project=shopfloor-twin',
+    });
+    expect(foreignRows([...healthy(), theirs], PROJECT)).toEqual([
+      'shopfloor-twin-db-1 (label shopfloor-twin)',
+    ]);
+    expect(foreignRows([row('db', { Labels: '' })], PROJECT)).toHaveLength(1);
+  });
+
+  it('wants every long-running service healthy, pki and migrate exited 0, opcua-tools absent', () => {
+    expect(serviceProblems(healthy())).toEqual([]);
+    const rows = healthy().map((r) =>
+      r.Service === 'mes'
+        ? { ...r, Health: 'starting' }
+        : r.Service === 'migrate'
+          ? { ...r, ExitCode: 1 }
+          : r,
+    );
+    expect(serviceProblems(rows)).toEqual([
+      'mes: running starting',
+      'migrate: exited (exit 1), not exited 0',
+    ]);
+    expect(serviceProblems([...healthy(), row('opcua-tools')])).toEqual([
+      'opcua-tools was started (profile tools)',
+    ]);
+    expect(serviceProblems(healthy().filter((r) => r.Service !== 'erp'))).toEqual([
+      'erp: 0 containers, not 1',
+    ]);
+  });
+
+  const published = (ports: HostPorts): PsRow[] => {
+    const rows = healthy();
+    const byService = new Map<
+      string,
+      { URL: string; TargetPort: number; PublishedPort: number }[]
+    >();
+    for (const [key, host] of expectedPublished(ports)) {
+      const [service, target] = key.split(':');
+      const list = byService.get(String(service)) ?? [];
+      list.push({ URL: '127.0.0.1', TargetPort: Number(target), PublishedPort: host });
+      byService.set(String(service), list);
+    }
+    return rows.map((r) => ({
+      ...r,
+      Publishers: [
+        ...(byService.get(r.Service ?? '') ?? []),
+        // Exposed, not published: ignored.
+        { URL: '', TargetPort: 9999, PublishedPort: 0 },
+      ],
+    }));
+  };
+
+  it('wants exactly the S8 ports, each on 127.0.0.1 at the chosen host port', () => {
+    expect(expectedPublished(PORTS).size).toBe(10);
+    expect(portProblems(published(PORTS), PORTS)).toEqual([]);
+  });
+
+  it('refuses a missing, extra, moved or wildcard-bound port, and a published MES, gateway or database', () => {
+    const rows = published(PORTS);
+    const without = rows.map((r) => (r.Service === 'erp' ? { ...r, Publishers: [] } : r));
+    expect(portProblems(without, PORTS)).toEqual(['erp:4600 is not published']);
+    const extra = rows.map((r) =>
+      r.Service === 'mes'
+        ? { ...r, Publishers: [{ URL: '127.0.0.1', TargetPort: 4700, PublishedPort: 4700 }] }
+        : r,
+    );
+    expect(portProblems(extra, PORTS)).toEqual([
+      'published outside the S8 set: mes:4700 at 127.0.0.1:4700',
+      'mes:4700 is published',
+    ]);
+    const defaults = rows.map((r) =>
+      r.Service === 'web'
+        ? { ...r, Publishers: [{ URL: '127.0.0.1', TargetPort: 8443, PublishedPort: 8443 }] }
+        : r,
+    );
+    expect(portProblems(defaults, PORTS)).toEqual([
+      'web:8443 at 127.0.0.1:8443, not 127.0.0.1:31005',
+    ]);
+    const wildcard = rows.map((r) =>
+      r.Service === 'broker'
+        ? { ...r, Publishers: [{ URL: '0.0.0.0', TargetPort: 1883, PublishedPort: 31001 }] }
+        : r,
+    );
+    expect(portProblems(wildcard, PORTS)).toEqual([
+      'broker:1883 at 0.0.0.0:31001, not 127.0.0.1:31001',
+    ]);
+  });
+});
+
+describe('the Node-free PATH', () => {
+  const script = readFileSync(join(REPO, 'scripts/stack-init.sh'), 'utf8');
+
+  it("links sh, git, docker, the init's utilities and optional tools, and the configured credential helpers", () => {
+    expect(nodeFreeTools(script, {})).toEqual({
+      required: ['sh', 'git', 'docker', 'od', 'tr'],
+      optional: ['openssl'],
+    });
+    expect(
+      nodeFreeTools(script, {
+        credsStore: 'osxkeychain',
+        credHelpers: { 'ghcr.io': 'gh', x: 'osxkeychain' },
+      }).required,
+    ).toEqual([
+      'sh',
+      'git',
+      'docker',
+      'od',
+      'tr',
+      'docker-credential-osxkeychain',
+      'docker-credential-gh',
+    ]);
+    expect(() => nodeFreeTools('#!/bin/sh\n', {})).toThrow(/no utilities/);
+  });
+
+  it('lists every external command the init calls in its header', () => {
+    const body = script
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('#'))
+      .join('\n');
+    const { required, optional } = nodeFreeTools(script, {});
+    for (const tool of ['od', 'tr', 'openssl']) expect(body).toContain(`${tool} `);
+    // No other common external utility is used (each would be missing on the Node-free PATH).
+    for (const tool of [
+      'sed',
+      'awk',
+      'grep',
+      'cut',
+      'head',
+      'tail',
+      'cat',
+      'mktemp',
+      'mv',
+      'cp',
+      'chmod',
+      'date',
+    ]) {
+      expect(body, tool).not.toMatch(new RegExp(`(^|[\\s|;&(\`$])${tool}\\s`, 'm'));
+    }
+    expect([...required, ...optional]).toContain('od');
+  });
+});
+
+describe('checklist S7 in the output', () => {
+  it("takes every password's and token's value of 12 characters or more, without quotes", () => {
+    const text = [
+      'DB_PASSWORD=0123456789abcdef',
+      'ERP_API_TOKEN="quoted-value-123"',
+      "MQTT_DEV_PASSWORD='single-quoted-1'",
+      'SHORT_TOKEN=short',
+      'DB_NAME=shopfloor',
+      '# OTHER_PASSWORD=commented-out-value',
+    ].join('\n');
+    expect(secretValues(text)).toEqual(['0123456789abcdef', 'quoted-value-123', 'single-quoted-1']);
+  });
+
+  it('counts the secrets that appear, never naming them', () => {
+    expect(
+      leakedCount('a log with 0123456789abcdef in it', ['0123456789abcdef', 'zzzzzzzzzzzzzz']),
+    ).toBe(1);
+    expect(leakedCount('clean', ['0123456789abcdef'])).toBe(0);
+  });
+});
+
+describe('the stack smoke under an isolation environment (#277)', () => {
+  const smoke = readFileSync(join(REPO, 'scripts/stack-smoke.sh'), 'utf8');
+  // From the env file's choice to the refusals: the lines before the first Compose call.
+  const start = smoke.indexOf('env_file=${SMOKE_ENV_FILE');
+  const end = smoke.indexOf('# SMOKE_EPHEMERAL_PORTS=1 (the gate');
+  const print =
+    'printf \'%s|%s|%s|%s|%s|%s\\n\' "$MQTT_PORT" "$WEB_HTTPS_PORT" "$SIM_OPCUA_HOST_PORTS" "$DB_NAME" "$COMPOSE_PROJECT_NAME" "$IMAGE_TAG"';
+
+  /** Runs the smoke's first lines with this env file and environment: exit code and output. */
+  function head(file: string, env: Record<string, string>) {
+    const dir = mkdtempSync(join(tmpdir(), 'smoke-env-'));
+    try {
+      const envFile = join(dir, 'smoke.env');
+      writeFileSync(envFile, file);
+      const result = spawnSync(
+        '/bin/sh',
+        ['-c', `set -eu\n${smoke.slice(start, end)}\n${print}\n`],
+        {
+          encoding: 'utf8',
+          env: { PATH: process.env.PATH ?? '', SMOKE_ENV_FILE: envFile, ...env },
+        },
+      );
+      return { code: result.status, stdout: result.stdout.trim(), stderr: result.stderr };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  const FILE = [
+    'MQTT_PORT=1883',
+    'WEB_HTTPS_PORT=8443',
+    'SIM_OPCUA_HOST_PORTS=4841-4845',
+    'DB_NAME=shopfloor',
+    'COMPOSE_PROJECT_NAME=gate-x',
+    'IMAGE_TAG=gate-x',
+    '',
+  ].join('\n');
+
+  it("keeps the project, tag and host ports given in the environment over its env file's", () => {
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const result = head(FILE, {
+      MQTT_PORT: '31001',
+      SIM_OPCUA_HOST_PORTS: '21000-21004',
+      COMPOSE_PROJECT_NAME: PROJECT,
+      IMAGE_TAG: PROJECT,
+    });
+    expect(result.stderr).toBe('');
+    // Given: kept; not given: the file's.
+    expect(result.stdout).toBe(`31001|8443|21000-21004|shopfloor|${PROJECT}|${PROJECT}`);
+    // Nothing given: the file's project and tag (the gate's env file names both).
+    expect(head(FILE, {}).stdout).toBe('1883|8443|4841-4845|shopfloor|gate-x|gate-x');
+  });
+
+  it("refuses SMOKE_ENV_FILE with the dev stack's project or tag, from the shell or by default", () => {
+    const stray = head(FILE, { COMPOSE_PROJECT_NAME: 'shopfloor-twin' });
+    expect(stray.code).toBe(2);
+    expect(stray.stdout).toBe('');
+    expect(stray.stderr).toContain('refusing SMOKE_ENV_FILE with the dev project shopfloor-twin');
+    const dev = head(FILE, { IMAGE_TAG: 'dev' });
+    expect(dev.code).toBe(2);
+    expect(dev.stdout).toBe('');
+    expect(dev.stderr).toContain("refusing SMOKE_ENV_FILE with the dev images' tag dev");
+    // An env file that names neither falls back to the Compose file's name and the tag dev.
+    const bare = 'DB_NAME=shopfloor\n';
+    expect(head(bare, { IMAGE_TAG: PROJECT }).code).toBe(2);
+    expect(head(bare, { COMPOSE_PROJECT_NAME: PROJECT }).code).toBe(2);
+    // Both given: no refusal (the print then stops on the unset ports: set -u).
+    expect(head(bare, { COMPOSE_PROJECT_NAME: PROJECT, IMAGE_TAG: PROJECT }).stderr).not.toContain(
+      'refusing',
+    );
+  });
+
+  it('is given the project and the tag by the gate, whatever the shell exported', () => {
+    expect(gateSmokeEnv('/tmp/gate.env', 'gate277b', 'pr277b')).toEqual({
+      COMPOSE_PROJECT_NAME: 'gate277b',
+      IMAGE_TAG: 'pr277b',
+      SMOKE_ENV_FILE: '/tmp/gate.env',
+      SMOKE_WRITES: '1',
+      SMOKE_EPHEMERAL_PORTS: '1',
+    });
+    expect(gateComposeEnv('gate277b', 'pr277b')).toEqual({
+      COMPOSE_PROJECT_NAME: 'gate277b',
+      IMAGE_TAG: 'pr277b',
+    });
+    // gate.ts uses them for the smoke and for its own Compose calls; `run` spreads the process
+    // environment first, so these win over anything exported.
+    const gate = readFileSync(join(REPO, 'scripts/gate.ts'), 'utf8');
+    expect(gate).toContain('gateSmokeEnv(env, project, tag)]');
+    expect(gate).toContain(
+      "run('docker', ['compose', '--env-file', env, ...args], gateComposeEnv(project, tag));",
+    );
+    expect(gate).toContain('env: { ...process.env, ...env },');
+  });
+});
+
+describe("the clone's base directory", () => {
+  it('is refused when it is, or is inside, a checkout of the repository', () => {
+    const roots = ['/Users/x/shopfloor-twin', '/Users/x/shopfloor-twin/.claude/worktrees/a'];
+    expect(baseInside('/Users/x/.cache/shopfloor-twin/fresh-clone', roots)).toBeUndefined();
+    expect(baseInside('/Users/x/shopfloor-twin-other', roots)).toBeUndefined();
+    expect(baseInside('/Users/x/shopfloor-twin', roots)).toBe(roots[0]);
+    expect(baseInside('/Users/x/shopfloor-twin/', roots)).toBe(roots[0]);
+    expect(baseInside('/Users/x/shopfloor-twin/tmp/fresh', roots)).toBe(roots[0]);
+    expect(baseInside('/Users/x/shopfloor-twin/.claude/worktrees/a/e2e', roots)).toBe(roots[0]);
+  });
+
+  it('is checked with links resolved, against this checkout and the main one (fresh-clone.ts)', () => {
+    const source = readFileSync(join(REPO, 'e2e/src/fresh-clone.ts'), 'utf8');
+    expect(source).toContain(
+      "realpathSync(resolve(REPO, git('rev-parse', '--git-common-dir'), '..'))",
+    );
+    expect(source).toContain('baseInside(realpathSync(base), [realpathSync(REPO), mainCheckout])');
+  });
+});
+
+describe('after a signal (fresh-clone.ts)', () => {
+  it("starts only the cleanup's commands", () => {
+    expect(mayStart(false, false)).toBe(true);
+    expect(mayStart(false, true)).toBe(true);
+    expect(mayStart(true, true)).toBe(true);
+    expect(mayStart(true, false)).toBe(false);
+  });
+
+  it("runs the cleanup's down before the cleanup's promise is assigned, and refuses the next step", async () => {
+    // The harness's shape: run() asks mayStart with its own flag; cleanup() is `cleaned ??= (async
+    // () => { await run(down, cleanup) … })()`, whose first run() starts before `cleaned` exists.
+    const signals = { stopping: false };
+    const ran: string[] = [];
+    let cleaned: Promise<void> | undefined;
+    const run = (what: string, options: { readonly cleanup?: boolean } = {}) => {
+      if (!mayStart(signals.stopping, options.cleanup === true)) {
+        ran.push(`${what}:refused`);
+        return Promise.resolve(130);
+      }
+      ran.push(`${what}:ran${cleaned === undefined ? ' (cleaned unassigned)' : ''}`);
+      return Promise.resolve(0);
+    };
+    const cleanup = () => {
+      cleaned ??= (async () => {
+        await run('down', { cleanup: true });
+        await run('image-rm', { cleanup: true });
+      })();
+      return cleaned;
+    };
+    signals.stopping = true;
+    await cleanup();
+    await run('next-step');
+    expect(ran).toEqual(['down:ran (cleaned unassigned)', 'image-rm:ran', 'next-step:refused']);
+  });
+
+  it("gives both of the cleanup's run() calls the cleanup flag, and nothing else", () => {
+    const source = readFileSync(join(REPO, 'e2e/src/fresh-clone.ts'), 'utf8');
+    const body = source.slice(
+      source.indexOf('function cleanup()'),
+      source.indexOf('const EXIT_CODES'),
+    );
+    expect([...body.matchAll(/await run\(/g)]).toHaveLength(2);
+    expect([...body.matchAll(/cleanup: true/g)]).toHaveLength(2);
+    expect([...source.matchAll(/cleanup: true/g)]).toHaveLength(2);
+    expect(source).toContain('if (!mayStart(signals.stopping, options.cleanup === true)) {');
+  });
+});

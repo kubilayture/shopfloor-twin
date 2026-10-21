@@ -481,6 +481,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
+      '@shopfloor/fc-seed':
+        specifier: workspace:*
+        version: link:../../packages/fc-seed
       '@shopfloor/test-kit':
         specifier: workspace:*
         version: link:../../packages/test-kit
@@ -569,6 +572,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
+      '@shopfloor/fc-seed':
+        specifier: workspace:*
+        version: link:../../packages/fc-seed
       '@shopfloor/test-kit':
         specifier: workspace:*
         version: link:../../packages/test-kit
@@ -737,6 +743,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@shopfloor/fc-seed':
+        specifier: workspace:*
+        version: link:../fc-seed
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -768,6 +777,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@shopfloor/fc-seed':
+        specifier: workspace:*
+        version: link:../fc-seed
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -821,11 +833,39 @@ importers:
         specifier: 'catalog:'
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(@vitest/coverage-v8@4.1.11)(jsdom@30.1.1)(vite@8.3.4(@types/node@26.6.5)(jiti@2.7.0)(yaml@2.9.1))
 
+  packages/fc-seed:
+    dependencies:
+      fast-check:
+        specifier: 'catalog:'
+        version: 4.10.2
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(@vitest/coverage-v8@4.1.11)(jsdom@30.1.1)(vite@8.3.4(@types/node@26.6.5)(jiti@2.7.0)(yaml@2.9.1))
+    devDependencies:
+      '@shopfloor/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@shopfloor/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.5
+      eslint:
+        specifier: 'catalog:'
+        version: 10.12.0(jiti@2.7.0)(supports-color@7.2.0)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+
   packages/oee-core:
     devDependencies:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@shopfloor/fc-seed':
+        specifier: workspace:*
+        version: link:../fc-seed
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -927,6 +967,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@shopfloor/fc-seed':
+        specifier: workspace:*
+        version: link:../fc-seed
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -954,6 +997,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@shopfloor/fc-seed':
+        specifier: workspace:*
+        version: link:../fc-seed
       '@shopfloor/test-kit':
         specifier: workspace:*
         version: link:../test-kit
@@ -988,6 +1034,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@shopfloor/fc-seed':
+        specifier: workspace:*
+        version: link:../fc-seed
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -1050,6 +1099,9 @@ importers:
       '@shopfloor/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@shopfloor/fc-seed':
+        specifier: workspace:*
+        version: link:../fc-seed
       '@shopfloor/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig

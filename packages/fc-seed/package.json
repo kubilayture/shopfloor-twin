@@ -1,0 +1,27 @@
+{
+  "name": "@shopfloor/fc-seed",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./global-setup": "./src/global-setup.ts",
+    "./setup": "./src/setup.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "fast-check": "catalog:",
+    "vitest": "catalog:"
+  },
+  "devDependencies": {
+    "@shopfloor/eslint-config": "workspace:*",
+    "@shopfloor/tsconfig": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "typescript": "catalog:"
+  }
+}

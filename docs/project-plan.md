@@ -18,7 +18,7 @@ Oct 10, 2026 · @Kubilay
 
 > **Change note — rev. 9 (18 Oct 2026).** From the Phase 9 plan, updated after its review round 1: (1) Phase 9 is XL, delivered in four waves (section 11). (2) The load-testing tool is a Node script and the performance targets are set in the Phase 9 plan, recorded in ADR-0040 (sections 9, 12). (3) Metrics stay on `prom-client` (ADR-0012); OpenTelemetry tracing is not adopted in v1 (section 6).
 
-> **Change note — rev. 10 (21 Oct 2026).** From the Phase 10 plan: (1) Phase 10 is M, delivered in four waves (section 11). (2) Criterion 1 is verified by a one-time init and `docker compose up -d --wait` on a fresh clone, in one command line, because the stack needs per-stack secrets that can't be committed; criterion 2 by the local gate while GitHub Actions is unavailable (section 1; both for the owner's review). (3) Sparkplug B is not added in v1.x (ADR-0041); the decided open decisions are ticked (section 12).
+> **Change note — rev. 10 (21 Oct 2026).** From the Phase 10 plan: (1) Phase 10 is M, delivered in four waves (section 11). (2) Criterion 1 is verified by a one-time init and `docker compose up -d --wait` on a fresh clone, in one command line, because the stack needs per-stack secrets that can't be committed; criterion 2 by the local gate while GitHub Actions is unavailable (section 1; both for the owner's review). (3) Sparkplug B is to be decided by ADR-0041 (P10-08; the plan proposes not adding it in v1.x); the decided open decisions are ticked (section 12).
 
 ShopFloor Twin is a realistic simulation of a discrete-manufacturing plant plus a working MES core built on top of it, developed end to end in TypeScript. The simulator plays the role of the physical shop floor; everything above it (edge gateway, MQTT Unified Namespace, historian, MES, operator and management UIs) is built the way it would be in a real plant, so the same software could in principle be pointed at real machines.
 
@@ -588,7 +588,7 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 - [x] Genealogy identity and cartons (decided in the Phase 8 plan; ADR-0034; Phase 8)
 - [x] Quality holds and ERP quality notifications (decided in the Phase 8 plan; ADR-0035; Phase 8)
 - [x] Load-testing tool and performance targets (decided in the Phase 9 plan; ADR-0040; Phase 9, rev. 9)
-- [ ] Whether to add Sparkplug B after v1.0 (decided in the Phase 10 plan: not in v1.x; ADR-0041 and the final report, P10-08; rev. 10)
+- [ ] Whether to add Sparkplug B after v1.0 (to be decided by ADR-0041, P10-08; rev. 10)
 
 ## 13. Glossary and references
 

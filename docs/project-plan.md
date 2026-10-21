@@ -18,6 +18,8 @@ Oct 10, 2026 · @Kubilay
 
 > **Change note — rev. 9 (18 Oct 2026).** From the Phase 9 plan, updated after its review round 1: (1) Phase 9 is XL, delivered in four waves (section 11). (2) The load-testing tool is a Node script and the performance targets are set in the Phase 9 plan, recorded in ADR-0040 (sections 9, 12). (3) Metrics stay on `prom-client` (ADR-0012); OpenTelemetry tracing is not adopted in v1 (section 6).
 
+> **Change note — rev. 10 (21 Oct 2026).** From the Phase 10 plan: (1) Phase 10 is M, delivered in four waves (section 11). (2) Criterion 1 is verified by a one-time init and `docker compose up -d --wait` on a fresh clone, in one command line, because the stack needs per-stack secrets that can't be committed; criterion 2 by the local gate while GitHub Actions is unavailable (section 1; both for the owner's review). (3) Sparkplug B is to be decided by ADR-0041 (P10-08; the plan proposes not adding it in v1.x); the decided open decisions are ticked (section 12).
+
 ShopFloor Twin is a realistic simulation of a discrete-manufacturing plant plus a working MES core built on top of it, developed end to end in TypeScript. The simulator plays the role of the physical shop floor; everything above it (edge gateway, MQTT Unified Namespace, historian, MES, operator and management UIs) is built the way it would be in a real plant, so the same software could in principle be pointed at real machines.
 
 ## 1. Purpose, goals and non-goals
@@ -46,8 +48,8 @@ ShopFloor Twin is a realistic simulation of a discrete-manufacturing plant plus 
 
 | # | Criterion | How it is verified |
 | --- | --- | --- |
-| 1 | The whole system starts with one command on a clean machine | `docker compose up` on a fresh clone, documented in README |
-| 2 | The same seed and scenario always produce the same events and KPIs | Golden-scenario test in CI compares output with a committed snapshot |
+| 1 | The whole system starts with one command on a clean machine | `sh scripts/stack-init.sh && docker compose up -d --wait` on a fresh clone (a one-time init that writes the stack's own secrets, then the start; rev. 10), tested by `pnpm test:fresh-clone`, documented in README |
+| 2 | The same seed and scenario always produce the same events and KPIs | Golden-scenario test in CI compares output with a committed snapshot; while GitHub Actions is unavailable, the same test in the local gate on the release commit (rev. 10) |
 | 3 | OEE numbers match hand-calculated reference cases exactly | Reference-case unit tests in the OEE package |
 | 4 | A finished serial number can be traced back to its raw-material lot, machines, operators and test results | End-to-end test plus a traceability screen |
 | 5 | Data survives a broker outage without loss | Integration test: broker stopped and restarted, gateway buffer replayed, no gaps |
@@ -542,7 +544,7 @@ Eleven phases build the system bottom-up, following the data from the machine to
 | 7 | Orders, ERP and execution | `erp-mock`; `identity` (users, roles, login, audit) and separate database roles; order import, release and dispatch over the command path (`cmd/load-order` → `LoadOrder`); routing execution per part; operator terminal; confirmations to ERP; the ERP mock serves the lots the simulator stocks (same lot file) | An order runs end to end: ERP → MES → machine program → production → confirmation in ERP, quantities reconciled; role permissions tested | XL (two waves) |
 | 8 | Traceability and quality | Lots from the ERP mock, serial units, cartons by the MES's packing rule, genealogy queries; rework genealogy (the rework loop itself in Phase 7); leak-test measurements and an injectable drift; SPC charts (I-MR, X̄-R) with Nelson run rules; quality holds with ERP notifications; traceability, SPC and holds screens (rev. 8) | Any shipped serial traces back to its blank lot, component lots, machines, operators and test values, and a lot traces forward to all affected cartons; SPC detects an injected drift; a shipped serial is one packed in a closed carton (rev. 8) | XL (three waves) |
 | 9 | Simulation console, scenarios and hardening | Interactive console UI; per-order and line OEE (from Phase 8, rev. 8); scenario playback; resilience suite; OPC UA security mode SignAndEncrypt with certificates; optional Prometheus + Grafana profile; load-test tool chosen and performance test run | Resilience suite passes; performance at 60× meets the targets set in the phase plan; security review checklist complete | XL (four waves, rev. 9) |
-| 10 | Release 1.0 | Documentation pass, architecture views updated, demo scenario and recording, final report, `v1.0.0` tag | All six success criteria in section 1 verified and recorded in the final report | S |
+| 10 | Release 1.0 | Documentation pass, architecture views updated, demo scenario and recording, final report, `v1.0.0` tag | All six success criteria in section 1 verified and recorded in the final report | M (four waves, rev. 10) |
 
 The golden scenario grows phase by phase: from simulator-only output in Phase 1 to full end-to-end reconciliation (states, OEE, orders, genealogy) by Phase 8.
 
@@ -581,12 +583,12 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 - [x] Auto-classification rules for downtime: an ordered list of (state, cause pattern) → reason in `config/plant/reasons.yaml`, first match wins, else UNCODED (ADR-0021, #119)
 - [x] Order-driven simulation and the command path (decided in the Phase 7 plan): `orders` mode beside the schedule, idempotent `LoadOrder`, job facts in the device sequence (ADR-0029, ADR-0030; Phase 7)
 - [x] Identity (decided in the Phase 7 plan): sessions in a cookie, scrypt, five roles, one audit log; separate database roles (ADR-0026, ADR-0027; Phase 7)
-- [ ] SPC definitions, control limits and run rules (decided in the Phase 8 plan; ADR-0032; Phase 8)
-- [ ] Traceability facts and their ground truth (decided in the Phase 8 plan; ADR-0033; Phase 8)
-- [ ] Genealogy identity and cartons (decided in the Phase 8 plan; ADR-0034; Phase 8)
-- [ ] Quality holds and ERP quality notifications (decided in the Phase 8 plan; ADR-0035; Phase 8)
-- [ ] Load-testing tool and performance targets (decided in the Phase 9 plan; ADR-0040; Phase 9, rev. 9)
-- [ ] Whether to add Sparkplug B after v1.0 (Phase 10 report)
+- [x] SPC definitions, control limits and run rules (decided in the Phase 8 plan; ADR-0032; Phase 8)
+- [x] Traceability facts and their ground truth (decided in the Phase 8 plan; ADR-0033; Phase 8)
+- [x] Genealogy identity and cartons (decided in the Phase 8 plan; ADR-0034; Phase 8)
+- [x] Quality holds and ERP quality notifications (decided in the Phase 8 plan; ADR-0035; Phase 8)
+- [x] Load-testing tool and performance targets (decided in the Phase 9 plan; ADR-0040; Phase 9, rev. 9)
+- [ ] Whether to add Sparkplug B after v1.0 (to be decided by ADR-0041, P10-08; rev. 10)
 
 ## 13. Glossary and references
 

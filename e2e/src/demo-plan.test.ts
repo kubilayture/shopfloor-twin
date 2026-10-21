@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { CLOSE_AT, DEMO, SCENES, plantClock, plantTime } from './demo-plan.ts';
+import { CLOSE_AT, CODE_AT, DEMO, SCENES, plantClock, plantTime } from './demo-plan.ts';
 import { ENVELOPE, variant } from './demo-probe.ts';
 import { REPO } from './stack.ts';
 
@@ -112,7 +112,8 @@ describe("the demo's timeline and its probe twin", () => {
     expect(SCENES.map((s) => s.n)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     const times = SCENES.flatMap((s) => (s.at === null ? [] : [plantTime(s.at)]));
     expect([...times].sort((a, b) => a - b)).toEqual(times);
-    expect(plantTime('07:55')).toBeGreaterThan(DEMO.failure.at);
+    expect(plantTime('07:20')).toBeGreaterThan(DEMO.failure.at);
+    expect(plantTime(CODE_AT)).toBeGreaterThan(DEMO.failure.at + 30 * 60_000);
     expect(plantTime('12:00')).toBeGreaterThan(DEMO.drift.at);
     expect(plantTime(CLOSE_AT)).toBeGreaterThan(plantTime('12:00'));
     expect(plantClock(plantTime('06:14'))).toBe('06:14:00');

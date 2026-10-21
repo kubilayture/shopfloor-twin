@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { parse, stringify } from 'yaml';
-import { CLOSE_AT, DEMO, SCENES, plantClock, plantTime, sceneAt } from './demo-plan.ts';
+import { CLOSE_AT, CODE_AT, DEMO, SCENES, plantClock, plantTime, sceneAt } from './demo-plan.ts';
 import { REPO } from './stack.ts';
 
 const run = promisify(execFile);
@@ -270,7 +270,7 @@ export function marginsOf(facts: Facts): Margin[] {
   const close = plantTime(CLOSE_AT);
   return [
     margin(4, `${DEMO.failure.code} raised on ${DEMO.failure.machine}`, alarms, facts.alarmRaised),
-    margin(4, 'its repair ends (breakdown record closed)', alarms, facts.alarmCleared),
+    margin(4, 'its repair ends (breakdown record closed)', plantTime(CODE_AT), facts.alarmCleared),
     margin(5, 'availability loss on CNC-01 (the breakdown)', oee, facts.alarmRaised),
     margin(5, 'first order completed', oee, facts.firstCompletedOrder?.at ?? null),
     margin(5, `OP10 starved MATERIAL:${DEMO.blockedMaterial}`, oee, facts.starvedMaterial),

@@ -57,7 +57,7 @@ export const SCENES = [
   { n: 1, id: 'overview', title: 'Overview: six machines live at 60×', at: null },
   { n: 2, id: 'orders', title: 'Orders: release and dispatch; the CNCs accept', at: null },
   { n: 3, id: 'console', title: 'Console: status, timeline progress, pause and resume', at: null },
-  { n: 4, id: 'alarms', title: 'Alarms and downtime: acknowledged, breakdown coded', at: '07:55' },
+  { n: 4, id: 'alarms', title: 'Alarms and downtime: acknowledged, breakdown coded', at: '07:20' },
   { n: 5, id: 'oee', title: 'OEE: availability loss, bottleneck, an order’s OEE', at: '09:00' },
   { n: 6, id: 'spc', title: 'SPC: the leak test’s drift episode', at: '12:00' },
   { n: 7, id: 'hold', title: 'Hold: from the episode; the close refused', at: '12:00' },
@@ -68,6 +68,9 @@ export const SCENES = [
     at: null,
   },
 ] as const;
+
+/** Scene 4 codes the breakdown no earlier than this (its repair has ended by then). */
+export const CODE_AT = '07:50';
 
 /** Scene 7 tries the close no earlier than this (the held order completed by then). */
 export const CLOSE_AT = '12:25';

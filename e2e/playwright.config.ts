@@ -29,6 +29,8 @@ import { WEB_SPKI_ENV, chromiumSpkiArgument } from '@shopfloor/test-kit/tls';
  * (#270) the effects of a lot block and a failure seen in the MES; then `console-shift`
  * (browser/console-shift), on a second simulator run started at 13:40: both ASM-01 operators of
  * shift B absent leave ASM-01 Idle NO-OPERATOR from its start.
+ * The demo (#281, `pnpm demo`, src/demo.ts) has `demo` (browser/demo): the eight scenes of
+ * docs/demo.md on one page, each asserting what it shows.
  * The resilience suite (#243, `pnpm test:resilience`, src/resilience.ts) has `resilience`
  * (browser/resilience): the overview open through a whole run, reconnecting and current after
  * every fault.
@@ -75,6 +77,7 @@ export default defineConfig({
         'console-shift/**',
         'tls/**',
         'resilience/**',
+        'demo/**',
       ],
       outputDir: join(results, 'playwright', 'live'),
       use: { ...chromium },
@@ -131,6 +134,12 @@ export default defineConfig({
       name: 'console',
       testMatch: ['console/*.spec.ts', 'tls/*.spec.ts'],
       outputDir: join(results, 'playwright', 'console'),
+      use: { ...chromium },
+    },
+    {
+      name: 'demo',
+      testDir: './browser/demo',
+      outputDir: join(results, 'playwright', 'demo'),
       use: { ...chromium },
     },
     {

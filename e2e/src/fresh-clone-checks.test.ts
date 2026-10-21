@@ -3,10 +3,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { gateComposeEnv, gateSmokeEnv } from '../../scripts/gate-smoke-env.ts';
 import { REQUIRED_SECRETS } from '../../scripts/required-secrets.ts';
 import {
   PLACEHOLDER,
   assertDisposable,
+  baseInside,
   cleanupCommands,
   configProblems,
   disposableName,
@@ -377,40 +379,117 @@ describe('checklist S7 in the output', () => {
   });
 });
 
-describe("the clone's smoke under the isolation environment", () => {
-  it("keeps the project, tag and host ports given in the environment over its env file's", () => {
-    const smoke = readFileSync(join(REPO, 'scripts/stack-smoke.sh'), 'utf8');
-    const start = smoke.indexOf('env_file=${SMOKE_ENV_FILE');
-    const end = smoke.indexOf('\ndone\n', smoke.indexOf('set +a', start)) + '\ndone\n'.length;
-    expect(start).toBeGreaterThan(0);
+describe('the stack smoke under an isolation environment (#277)', () => {
+  const smoke = readFileSync(join(REPO, 'scripts/stack-smoke.sh'), 'utf8');
+  // From the env file's choice to the refusals: the lines before the first Compose call.
+  const start = smoke.indexOf('env_file=${SMOKE_ENV_FILE');
+  const end = smoke.indexOf('# SMOKE_EPHEMERAL_PORTS=1 (the gate');
+  const print =
+    'printf \'%s|%s|%s|%s|%s|%s\\n\' "$MQTT_PORT" "$WEB_HTTPS_PORT" "$SIM_OPCUA_HOST_PORTS" "$DB_NAME" "$COMPOSE_PROJECT_NAME" "$IMAGE_TAG"';
+
+  /** Runs the smoke's first lines with this env file and environment: exit code and output. */
+  function head(file: string, env: Record<string, string>) {
     const dir = mkdtempSync(join(tmpdir(), 'smoke-env-'));
     try {
       const envFile = join(dir, 'smoke.env');
-      writeFileSync(
-        envFile,
-        'MQTT_PORT=1883\nWEB_HTTPS_PORT=8443\nSIM_OPCUA_HOST_PORTS=4841-4845\nDB_NAME=shopfloor\n',
-      );
-      const print =
-        'printf \'%s|%s|%s|%s|%s|%s\\n\' "$MQTT_PORT" "$WEB_HTTPS_PORT" "$SIM_OPCUA_HOST_PORTS" "$DB_NAME" "$COMPOSE_PROJECT_NAME" "${IMAGE_TAG-unset}"';
+      writeFileSync(envFile, file);
       const result = spawnSync(
         '/bin/sh',
         ['-c', `set -eu\n${smoke.slice(start, end)}\n${print}\n`],
         {
           encoding: 'utf8',
-          env: {
-            PATH: process.env.PATH ?? '',
-            SMOKE_ENV_FILE: envFile,
-            MQTT_PORT: '31001',
-            SIM_OPCUA_HOST_PORTS: '21000-21004',
-            COMPOSE_PROJECT_NAME: PROJECT,
-          },
+          env: { PATH: process.env.PATH ?? '', SMOKE_ENV_FILE: envFile, ...env },
         },
       );
-      expect(result.stderr).toBe('');
-      // Given: kept; not given: the file's; IMAGE_TAG neither given nor in the file: unset.
-      expect(result.stdout.trim()).toBe(`31001|8443|21000-21004|shopfloor|${PROJECT}|unset`);
+      return { code: result.status, stdout: result.stdout.trim(), stderr: result.stderr };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  }
+  const FILE = [
+    'MQTT_PORT=1883',
+    'WEB_HTTPS_PORT=8443',
+    'SIM_OPCUA_HOST_PORTS=4841-4845',
+    'DB_NAME=shopfloor',
+    'COMPOSE_PROJECT_NAME=gate-x',
+    'IMAGE_TAG=gate-x',
+    '',
+  ].join('\n');
+
+  it("keeps the project, tag and host ports given in the environment over its env file's", () => {
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const result = head(FILE, {
+      MQTT_PORT: '31001',
+      SIM_OPCUA_HOST_PORTS: '21000-21004',
+      COMPOSE_PROJECT_NAME: PROJECT,
+      IMAGE_TAG: PROJECT,
+    });
+    expect(result.stderr).toBe('');
+    // Given: kept; not given: the file's.
+    expect(result.stdout).toBe(`31001|8443|21000-21004|shopfloor|${PROJECT}|${PROJECT}`);
+    // Nothing given: the file's project and tag (the gate's env file names both).
+    expect(head(FILE, {}).stdout).toBe('1883|8443|4841-4845|shopfloor|gate-x|gate-x');
+  });
+
+  it("refuses SMOKE_ENV_FILE with the dev stack's project or tag, from the shell or by default", () => {
+    const stray = head(FILE, { COMPOSE_PROJECT_NAME: 'shopfloor-twin' });
+    expect(stray.code).toBe(2);
+    expect(stray.stdout).toBe('');
+    expect(stray.stderr).toContain('refusing SMOKE_ENV_FILE with the dev project shopfloor-twin');
+    const dev = head(FILE, { IMAGE_TAG: 'dev' });
+    expect(dev.code).toBe(2);
+    expect(dev.stdout).toBe('');
+    expect(dev.stderr).toContain("refusing SMOKE_ENV_FILE with the dev images' tag dev");
+    // An env file that names neither falls back to the Compose file's name and the tag dev.
+    const bare = 'DB_NAME=shopfloor\n';
+    expect(head(bare, { IMAGE_TAG: PROJECT }).code).toBe(2);
+    expect(head(bare, { COMPOSE_PROJECT_NAME: PROJECT }).code).toBe(2);
+    // Both given: no refusal (the print then stops on the unset ports: set -u).
+    expect(head(bare, { COMPOSE_PROJECT_NAME: PROJECT, IMAGE_TAG: PROJECT }).stderr).not.toContain(
+      'refusing',
+    );
+  });
+
+  it('is given the project and the tag by the gate, whatever the shell exported', () => {
+    expect(gateSmokeEnv('/tmp/gate.env', 'gate277b', 'pr277b')).toEqual({
+      COMPOSE_PROJECT_NAME: 'gate277b',
+      IMAGE_TAG: 'pr277b',
+      SMOKE_ENV_FILE: '/tmp/gate.env',
+      SMOKE_WRITES: '1',
+      SMOKE_EPHEMERAL_PORTS: '1',
+    });
+    expect(gateComposeEnv('gate277b', 'pr277b')).toEqual({
+      COMPOSE_PROJECT_NAME: 'gate277b',
+      IMAGE_TAG: 'pr277b',
+    });
+    // gate.ts uses them for the smoke and for its own Compose calls; `run` spreads the process
+    // environment first, so these win over anything exported.
+    const gate = readFileSync(join(REPO, 'scripts/gate.ts'), 'utf8');
+    expect(gate).toContain('gateSmokeEnv(env, project, tag)]');
+    expect(gate).toContain(
+      "run('docker', ['compose', '--env-file', env, ...args], gateComposeEnv(project, tag));",
+    );
+    expect(gate).toContain('env: { ...process.env, ...env },');
+  });
+});
+
+describe("the clone's base directory", () => {
+  it('is refused when it is, or is inside, a checkout of the repository', () => {
+    const roots = ['/Users/x/shopfloor-twin', '/Users/x/shopfloor-twin/.claude/worktrees/a'];
+    expect(baseInside('/Users/x/.cache/shopfloor-twin/fresh-clone', roots)).toBeUndefined();
+    expect(baseInside('/Users/x/shopfloor-twin-other', roots)).toBeUndefined();
+    expect(baseInside('/Users/x/shopfloor-twin', roots)).toBe(roots[0]);
+    expect(baseInside('/Users/x/shopfloor-twin/', roots)).toBe(roots[0]);
+    expect(baseInside('/Users/x/shopfloor-twin/tmp/fresh', roots)).toBe(roots[0]);
+    expect(baseInside('/Users/x/shopfloor-twin/.claude/worktrees/a/e2e', roots)).toBe(roots[0]);
+  });
+
+  it('is checked with links resolved, against this checkout and the main one (fresh-clone.ts)', () => {
+    const source = readFileSync(join(REPO, 'e2e/src/fresh-clone.ts'), 'utf8');
+    expect(source).toContain(
+      "realpathSync(resolve(REPO, git('rev-parse', '--git-common-dir'), '..'))",
+    );
+    expect(source).toContain('baseInside(realpathSync(base), [realpathSync(REPO), mainCheckout])');
   });
 });

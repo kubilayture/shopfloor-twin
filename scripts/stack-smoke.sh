@@ -19,6 +19,18 @@ set +a
 for name in $isolation_vars; do
   if eval "[ -n \"\$given_$name\" ]"; then eval "$name=\$saved_$name; export $name"; fi
 done
+# Another env file than ./.env is a disposable stack's (the gate's, the fresh-clone test's): never
+# the dev stack's project or its images (#277 review), whatever the shell exported.
+if [ -n "${SMOKE_ENV_FILE:-}" ]; then
+  if [ "${COMPOSE_PROJECT_NAME:-shopfloor-twin}" = shopfloor-twin ]; then
+    echo "stack-smoke: refusing SMOKE_ENV_FILE with the dev project shopfloor-twin: set COMPOSE_PROJECT_NAME to a disposable project" >&2
+    exit 2
+  fi
+  if [ "${IMAGE_TAG:-dev}" = dev ]; then
+    echo "stack-smoke: refusing SMOKE_ENV_FILE with the dev images' tag dev: set IMAGE_TAG to a disposable tag" >&2
+    exit 2
+  fi
+fi
 # SMOKE_EPHEMERAL_PORTS=1 (the gate, #228): every published port on an ephemeral host port chosen
 # by Docker (e2e/compose.ephemeral-ports.yml; the broker unpublished too), so a dev stack on the
 # default ports can stay up. The smoke reads each address back with `docker compose port` either

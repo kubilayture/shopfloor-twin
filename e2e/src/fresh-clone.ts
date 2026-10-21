@@ -58,6 +58,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -73,6 +74,7 @@ import { portIsFree, freePort } from '@shopfloor/test-kit/ports';
 import { generatedPassword, mesLogin, mesWrite, rawRequest } from './clients.ts';
 import {
   BUILT_IMAGES,
+  baseInside,
   FORBIDDEN_TOOLS,
   OWNER_PROJECT,
   assertDisposable,
@@ -153,11 +155,19 @@ assertDisposable(project, tag);
 // first run). FRESH_CLONE_TMPDIR names another base, one the Docker VM can see.
 const base =
   process.env.FRESH_CLONE_TMPDIR ?? join(homedir(), '.cache', 'shopfloor-twin', 'fresh-clone');
-if (resolve(base).startsWith(`${REPO}/`) || resolve(base) === REPO) {
-  console.error(`fresh-clone: FRESH_CLONE_TMPDIR must be outside the repository: ${base}`);
+// Checked before it is made (nothing created in a checkout), and again with links resolved after.
+if (baseInside(resolve(base), [REPO, resolve(REPO, git('rev-parse', '--git-common-dir'), '..')])) {
+  console.error(`fresh-clone: the clone's base ${base} is inside a checkout of the repository`);
   process.exit(2);
 }
 mkdirSync(base, { recursive: true, mode: 0o700 });
+// Never inside this checkout or the main one (#277 review m2), symbolic links resolved.
+const mainCheckout = realpathSync(resolve(REPO, git('rev-parse', '--git-common-dir'), '..'));
+const insideCheckout = baseInside(realpathSync(base), [realpathSync(REPO), mainCheckout]);
+if (insideCheckout !== undefined) {
+  console.error(`fresh-clone: the clone's base ${base} is inside the checkout ${insideCheckout}`);
+  process.exit(2);
+}
 const tmp = mkdtempSync(join(base, 'run-'));
 const clone = join(tmp, 'shopfloor-twin');
 const placeholderFile = join(tmp, 'placeholder.env');
@@ -228,6 +238,8 @@ function run(
     readonly onLine?: (line: string) => void;
   },
 ): Promise<RunResult> {
+  // After a signal nothing new starts (#277 review m3), except the cleanup's own commands.
+  if (signals.stopping && cleaned === undefined) return Promise.resolve({ code: 130, stdout: '' });
   return new Promise((done) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -652,7 +664,14 @@ try {
   log(`FAILED: ${failure}`);
 } finally {
   if (signals.stopping) await new Promise(() => undefined); // the signal handler owns the exit
-  // 8. Checklist S7: no generated secret in anything this run printed, pass or fail.
+  // 9. Cleanup first, so its output is searched too (#277 review n2).
+  await cleanup().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    transcript.push(`cleanup failed: ${message}\n`);
+    console.error('cleanup failed', error);
+  });
+  // 8. Checklist S7: no generated secret in anything this run printed (cleanup included), pass or
+  // fail.
   if (secrets.length > 0) {
     const leaked = leakedCount(transcript.join(''), secrets);
     if (leaked > 0) {
@@ -719,9 +738,6 @@ try {
     result: failure === undefined ? 'passed' : 'failed',
     failure: failure ?? null,
   };
-  await cleanup().catch((error: unknown) => {
-    console.error('cleanup failed', error);
-  });
   mkdirSync(RESULTS, { recursive: true });
   writeFileSync(join(RESULTS, 'result.json'), `${JSON.stringify(record, null, 2)}\n`);
   log(`record: ${join(RESULTS, 'result.json')}`);

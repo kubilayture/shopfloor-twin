@@ -153,7 +153,11 @@ describe('scripts/stack-init.sh (#277)', () => {
     const a = entries(readFileSync(join(withOpenssl, '.env'), 'utf8'));
     const b = entries(readFileSync(join(withoutOpenssl, '.env'), 'utf8'));
     expect(b.map(([key]) => key)).toEqual(a.map(([key]) => key));
-    for (const [key, value] of b) if (GENERATED_KEY.test(key)) expect(value, key).toMatch(HEX32);
+    const generated = b.filter(([key]) => GENERATED_KEY.test(key)).map(([, value]) => value);
+    for (const value of generated) expect(value).toMatch(HEX32);
+    // Random, not merely well-formed: every value distinct, none all zeros (/dev/zero).
+    expect(new Set(generated).size).toBe(generated.length);
+    for (const value of generated) expect(value).not.toMatch(/^0+$/);
   });
 
   it('acts on its working directory, or on $1, never on its own directory', () => {

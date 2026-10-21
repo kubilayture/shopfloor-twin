@@ -347,3 +347,16 @@ export function cleanupCommands(project: string, tag: string, placeholderFile: s
     ...BUILT_IMAGES.map((image) => ['image', 'rm', '--force', `shopfloor-twin/${image}:${tag}`]),
   ];
 }
+
+/**
+ * The first of `roots` that `path` equals or lies inside (all absolute, links already resolved by
+ * the caller), or undefined: the clone's base must be inside no checkout of the repository.
+ */
+export function baseInside(path: string, roots: readonly string[]): string | undefined {
+  const clean = (p: string) => p.replace(/\/+$/, '');
+  return roots.find((root) => {
+    const r = clean(root);
+    const p = clean(path);
+    return p === r || p.startsWith(`${r}/`);
+  });
+}

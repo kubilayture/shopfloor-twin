@@ -60,6 +60,7 @@ import {
   formatGib,
   pruneBuildCache,
 } from '@shopfloor/test-kit/heavy-lock';
+import { gateComposeEnv, gateSmokeEnv } from './gate-smoke-env.ts';
 import { envFromExample } from './required-secrets.ts';
 
 const REPO = resolve(import.meta.dirname, '..');
@@ -232,11 +233,7 @@ const commands: Readonly<Record<Step, [string, string[], NodeJS.ProcessEnv]>> = 
   verify: ['pnpm', ['verify', '--concurrency=1'], {}],
   golden: ['pnpm', ['test:golden'], {}],
   e2e: ['pnpm', ['test:e2e'], {}],
-  smoke: [
-    'sh',
-    ['scripts/stack-smoke.sh'],
-    { SMOKE_ENV_FILE: env, SMOKE_WRITES: '1', SMOKE_EPHEMERAL_PORTS: '1' },
-  ],
+  smoke: ['sh', ['scripts/stack-smoke.sh'], gateSmokeEnv(env, project, tag)],
   reconcile: [
     'pnpm',
     ['test:reconcile'],
@@ -252,7 +249,7 @@ const commands: Readonly<Record<Step, [string, string[], NodeJS.ProcessEnv]>> = 
 };
 
 const compose = (...args: string[]) =>
-  run('docker', ['compose', '--env-file', env, ...args], { COMPOSE_PROJECT_NAME: project });
+  run('docker', ['compose', '--env-file', env, ...args], gateComposeEnv(project, tag));
 
 let cleaned: Promise<void> | undefined;
 /** The project down with its volumes, the tag's images removed, the env file deleted; once. */

@@ -140,10 +140,10 @@ The web front is HTTPS only, on `https://localhost:8443` (`WEB_HTTPS_PORT`): no 
 
 - **Trust the dev CA once per stack:** `pnpm stack:ca` (the dev stack; `COMPOSE_PROJECT_NAME=… pnpm stack:ca` for another) reads the CA certificate from the web container, checks that it issued the certificate nginx serves, writes it to `dev-ca.pem` (ignored by Git; `pnpm stack:ca <file>` for another path) and prints its SHA-256 fingerprint (the `pki` step logs the same: `docker compose logs pki | grep 'dev CA sha256'`). Then:
   - macOS (Safari, Chrome, Edge): `security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db dev-ca.pem` (asks for your password; `-p ssl` trusts it for TLS servers only), or Keychain Access → File → Import, then in the certificate's Trust section set **only "Secure Sockets Layer (SSL)"** to "Always Trust" and leave "When using this certificate" at "Use System Defaults". Check the fingerprint against the one printed. Remove it when you don't need it: `security delete-certificate -c 'shopfloor-twin dev CA' ~/Library/Keychains/login.keychain-db`.
-  - Without Node.js: `docker compose exec -T web cat /etc/nginx/tls/ca.pem > dev-ca.pem` (`-T`: no terminal, so the file holds the certificate as it is), then `openssl x509 -in dev-ca.pem -noout -fingerprint -sha256` prints the fingerprint to check; trust it as above.
   - Firefox (its own store): Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import, tick "Trust this CA to identify websites".
   - Node.js tools: `NODE_EXTRA_CA_CERTS=$PWD/dev-ca.pem node …`; curl: `curl --cacert dev-ca.pem https://localhost:8443/healthz`.
   - Open the app as `localhost` (the certificate covers `127.0.0.1` too, but the cookie is per host name).
+- **Without Node.js:** `docker compose exec -T web cat /etc/nginx/tls/ca.pem > dev-ca.pem` exports the same certificate (`-T`: no terminal, so the file holds the certificate as it is); `openssl x509 -in dev-ca.pem -noout -fingerprint -sha256` prints the fingerprint to check; then trust it as above.
 - **The browser says `NET::ERR_CERT_AUTHORITY_INVALID` / "Your connection is not private":** the dev CA isn't trusted yet, or this stack has a new one (after `pnpm stack:reset`, which deletes `pki-ca`, or `PKI_RENEW=dev-ca`). Run `pnpm stack:ca` and trust it again; remove the old "shopfloor-twin dev CA" from the keychain (`security delete-certificate -c 'shopfloor-twin dev CA' ~/Library/Keychains/login.keychain-db` removes one by name).
 - **See the expiry dates:** `docker compose run --rm pki` (or `docker compose logs pki`) prints `dev-ca` and `web` with their `until` dates beside the OPC UA certificates, the CA's SHA-256 fingerprint and the web certificate's SPKI hash.
 - **Renew:** the step renews what expires within 30 days on every `up`. `PKI_RENEW=web docker compose run --rm pki` renews nginx's certificate now; `PKI_RENEW=dev-ca …` makes a new CA and a new web certificate (then trust the new CA). **When it prints `pki: !!! RENEWED the web certificate: RESTART THE WEB !!!`:** `docker compose restart web` (nginx reads its certificate when it starts; `up` doesn't recreate an unchanged web container).
@@ -674,7 +674,7 @@ Notes:
 
 ## Other suites
 
-Each on disposable Compose projects of its own, under the heavy lock, beside a dev stack on the default ports; each pull request touching a suite's files records it as the rerun table names ("Merge gate").
+Each runs on disposable Compose projects of its own with ephemeral or freely chosen host ports, so no port collides with a dev stack's, under the heavy lock; each pull request touching a suite's files records it as the rerun table names ("Merge gate").
 
 ### Trace performance (#204)
 

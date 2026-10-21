@@ -229,16 +229,32 @@ try {
   const mes = new MesClient(mesBase, supervisor.cookie);
   // Every machine, the washer (Modbus) included: its poller reconnects and publishes the new
   // run's snapshot at its first answer (#272 fixed a poller that stopped after the recreate).
+  // Exactly the ground truth's machines, so a machine missing from the MES's list fails the wait.
   let anchors = 'not read';
   await until(
-    `every machine anchored in the MES in the second run's epoch ${String(truth.epoch)}`,
+    `every machine of the ground truth (${machines.join(', ')}) anchored in the MES in the second run's epoch ${String(truth.epoch)}`,
     async () => {
       const { equipment } = await mes.equipment().catch((error: unknown) => {
         anchors = `read failed: ${String(error)}`;
         throw error;
       });
-      anchors = JSON.stringify(equipment.map((e) => [e.id, e.current]));
-      return equipment.length > 0 && equipment.every((e) => e.current?.epoch === truth.epoch);
+      const byId = new Map(equipment.map((e) => [e.id, e]));
+      const missing = machines.filter((id) => !byId.has(id));
+      const stale = machines.filter(
+        (id) => byId.has(id) && byId.get(id)?.current?.epoch !== truth.epoch,
+      );
+      const extra = equipment.map((e) => e.id).filter((id) => !machines.includes(id));
+      anchors = JSON.stringify({
+        missing,
+        stale: stale.map((id) => [id, byId.get(id)?.current ?? null]),
+        extra,
+      });
+      return (
+        machines.length > 0 &&
+        machines.includes('wsh-01') &&
+        equipment.length === machines.length &&
+        machines.every((id) => byId.get(id)?.current?.epoch === truth.epoch)
+      );
     },
     60_000,
   ).catch((error: unknown) => {

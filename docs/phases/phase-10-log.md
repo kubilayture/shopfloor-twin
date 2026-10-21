@@ -192,3 +192,28 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     - **the gate** on `f7fb86f` (`GATE_STEPS=verify`, `GATE_PROJECT=gate282`, `GATE_TAG=pr282`, `TURBO_FORCE=1`; the rerun rows `e2e/src/demo*` and `e2e/browser/demo/` → `verify` and `pnpm demo`): `GATE-OK`, clean tree, host 36.7 GiB and Docker 72.4 GiB free at the start; verify 591.7 s, 55 turbo tasks, `e2e` unit tests 146 passed. Seeds: alarm-core 1310377009, contracts 1679792963, fc-seed 1286252341, mes-server 747483705, oee-core 236871270, shift-calendar 1988210397, sim-core 925056551, simulator 761826319, spc-core 456184667, trace-core 996604031.
 
     The commit after the gate adds only these records (`pnpm format:check`), as #278 did. Images, projects and volumes are removed; no `:demo` image or demo container is left.
+
+  - **Review of PR #296** (changes requested; nothing weakened, no leak), fixed in `f0bddd1`:
+    - **M1:** `pnpm demo:record` now stages in `e2e/results/demo/record/publish/`, checks the staged files and only then replaces `docs/demo/`'s files.
+      - The checks: size, length, 960 × 540, the screenshots' total, secrets.
+      - `recordingProblems` and `publishStaged` are in `e2e/src/demo-record.ts`, with unit tests. A refused publish makes no file-system call; an accepted one copies the ten files and removes a screenshot no scene has.
+      - It refuses a tree whose tracked files outside `docs/` and Markdown differ from `HEAD`. Shown by running it with one changed line in `e2e/src/demo-plan.ts`: exit 1, `refuses a changed tree … M e2e/src/demo-plan.ts`, nothing built.
+      - The probe stages and checks scenes 1 to 3 and publishes nothing.
+    - **m1:** the `type="password"` check is in `logIn` and `signOnAtTerminal` (`e2e/browser/login.ts`).
+    - **m2:** `Stack.secretValues()` (every `*_PASSWORD` and `*_TOKEN` of the run's env file) is searched with the users' passwords.
+    - **m3:** the third fallback's wording.
+    - **m4:** the rerun row.
+    - **m5:** no hold after scenes 1 and 2 (`RECORDING.heldScenes`).
+    - **n1:** the README's scene 5 label.
+    - **n3:** the resolution check.
+    - **M2:** the recording is not remade yet. #295 (P10-F2) changes scenes 3 and 6; after it merges, this branch is rebased and `pnpm demo:record` runs once. The committed recording (`577d8ce`) stays until then.
+  - **Runs after the review** on `f0bddd1`, under the heavy lock. Besides the coordinator's `verify`, `pnpm demo` and the probe, the rerun table asks for `verify,reconcile` for `e2e/browser/login.ts` (the `e2e/` Playwright row), plus `pnpm test:resilience` for `e2e/src/stack.ts`:
+    - `DEMO_RECORD_PROBE_S=60 pnpm demo:record`: `PROBE-OK`. 960 × 540, 61.3 s, 4.82 MiB from Playwright, staged with no problem. `docs/demo/` was byte-identical before and after (SHA-256 of every file compared).
+    - `pnpm demo`: `DEMO-OK` in 440 s, jobs accepted at 06:03 and 06:04.
+    - `GATE_STEPS=verify,reconcile GATE_PROJECT=gate282b GATE_TAG=pr282b TURBO_FORCE=1 pnpm gate`: `GATE-OK`, clean tree, host 30.1 GiB and Docker 69.3 GiB free at the start.
+      - verify 591.1 s, with 150 `e2e` unit tests passed;
+      - reconcile 1,697 s (alarms, orders and quality OK);
+      - seeds: alarm-core 1717547745, contracts 2085819225, fc-seed 1408192448, mes-server 330602956, oee-core 478124793, shift-calendar 1403087137, sim-core 1529599771, simulator 1686552074, spc-core 1622596501, trace-core 1823852475.
+    - `RESILIENCE_PROJECT=resilience282 RESILIENCE_TAG=res282 pnpm test:resilience`: `RESILIENCE-OK` in 1,665 s (R1, R2 and R3 passed), host 36.1 GiB free at the start; `fstrim` in Colima's VM before it.
+
+    Images and projects are removed.

@@ -29,7 +29,6 @@ Since the Phase 9 close (#246, PR #274, `d589ef7`, tag `phase-09`). Each entry i
 
 ## In progress
 
-- #278 (P10-03) documentation pass 1: this branch, in review.
 - #280 (P10-05) architecture views and `scripts/check-architecture.ts`.
 
 ## Next up
@@ -44,7 +43,8 @@ Since the Phase 9 close (#246, PR #274, `d589ef7`, tag `phase-09`). Each entry i
 
 None of these is claimed as met. `v1.0.0` is tagged only after the owner's sign-off (P10-11, #286); Claude sets no version tag.
 
-- **Sign off Phases 4, 5, 6, 7, 8 and 9** (v1 success criterion 6): Claude closed each under the standing instruction of 2026-10-15 without the owner's review; reports in `docs/phases/phase-NN-report.md`. Phase 9 is complete with 9 of 9 exit criteria met by local runs on `1cecd17`; its tag `phase-09` is set on `d589ef7`. Phase 10 will need the same sign-off (P10-11).
+- **Sign off Phases 4, 5, 6, 7, 8 and 9** (v1 success criterion 6): Claude closed each under the standing instruction of 2026-10-15 without the owner's review; reports in `docs/phases/phase-NN-report.md`. Phase 9 is complete with 9 of 9 exit criteria met by local runs on `1cecd17`; its tag `phase-09` was set on `d589ef7` by the coordinator at PR #274's merge, as for earlier phases (the Phase 9 report had the owner set it); the owner's sign-off confirms or moves it. Phase 10 will need the same sign-off (P10-11).
+- **Confirm or move the `phase-09` tag:** the coordinator set it on `d589ef7` at PR #274's merge with the owner's git identity, as for Phases 4–8, where the Phase 9 report said the owner would set it.
 - **Approve or reject the two golden-summary regenerations** made under the standing instruction (master plan section 12 requires the owner's approval; reasons in `apps/simulator/golden/README.md`):
   - #172: `week-01` and `alarms-01` to `sim-summary/4`: only the schema line, an empty `orders` section, `analysisConfigSha256` and `oee.config.scheduledTime` changed, `events.sha256` unchanged;
   - #140: `week-01` to `sim-summary/3`: only the new `alarms` section, `analysisConfigSha256` and the schema line changed, `events.sha256` unchanged.
@@ -74,7 +74,7 @@ None of these is claimed as met. `v1.0.0` is tagged only after the owner's sign-
 - **Publish GitHub releases for `phase-02` to `phase-09`** (optional; only `phase-00` and `phase-01` have one): publishing is the owner's; the runbook's "Releasing" (P10-09) will say how.
 - Optional: run `pnpm stack:up`, log in (above) and look at the plant at <https://localhost:8443>: the console at `/console` (admin), the order detail's OEE under `/orders`, the OEE dashboard's line card at `/oee`, and the other screens (README, "Screens"); or play the demo by hand (`docs/demo.md`, "Running it by hand"). No exit criterion depends on it (orders and cartons run only with `SIM_PRODUCTION=orders`). Codings, acknowledgements, shelves, comments and notes saved there are audited permanently. The default dev database already holds one smoke coding and its clear from #121's first local smoke run (Phase 5 report, Known issues).
 
-The Docker VM item of earlier phases (raise Colima to 4 GiB) is done: every Phase 9 and Phase 10 suite ran on 4 CPUs and about 3.8 GiB visible to Docker.
+The Docker VM item of earlier phases (raise Colima to 4 GiB) is done: every Phase 9 suite ran on 4 CPUs and 3.81 GiB visible to Docker (Phase 9 report, "Owner items"), and #277's fresh-clone runs recorded the same VM (4 CPUs, 3.8 GiB; phase log).
 
 Project board: https://github.com/users/kubilayture/projects/1
 

@@ -2,7 +2,7 @@
 
 How to start, stop and reset the system, run its suites and gate a merge. Updated whenever operations change.
 
-The current procedure comes first: "Prerequisites", "Commands" and "Full stack (Compose)". Then running the components outside Compose, the workspace checks and golden scenarios, the merge gate and CI, the reconciliation run and the other suites. Steps for a stack or an `.env` made before 1.0 are in one section at the end, "Upgrading a stack from before 1.0".
+The current procedure comes first: "Prerequisites", "Commands" and "Full stack (Compose)". Then the workspace checks, running the components outside Compose and the golden scenarios, the merge gate and CI, the reconciliation run and the other suites. Steps for a stack or an `.env` made before 1.0 are in one section at the end, "Upgrading a stack from before 1.0".
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@ The current procedure comes first: "Prerequisites", "Commands" and "Full stack (
 
 ## Commands
 
-Every script of the root `package.json`, and where it is described. "Heavy" commands take the host-wide heavy lock first, so one runs at a time on the machine, and refuse to start below 25 GiB free on the host or 15 GiB in Docker ("Merge gate", "One heavy suite at a time").
+Every script of the root `package.json` but `verify:steps` (`verify`'s body without the lock), and where it is described. "Heavy" commands take the host-wide heavy lock first, so one runs at a time on the machine, and refuse to start below 25 GiB free on the host or 15 GiB in Docker ("Merge gate", "One heavy suite at a time").
 
 | Command                                                                                                                | What it does                                                                                                                        | Heavy               | Section                                                   |
 | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------- | --------------------------------------------------------- |
@@ -601,7 +601,7 @@ pnpm playwright:install   # once: Chromium's headless shell for Playwright
 pnpm test:reconcile       # about 28 minutes locally for the three passes; each about 9: start-up, 8 minutes of shift
 ```
 
-It needs Docker (Colima or Docker Desktop; with Colima, export `DOCKER_HOST` from `docker context inspect --format '{{.Endpoints.docker.Host}}'`) and Node.js 26. It does not use `.env`: it writes its own env file with random passwords (`MES_BOOTSTRAP_ADMIN_PASSWORD` included, #170) to a temporary directory and runs Compose as project `shopfloor-reconcile-alarms` (and `shopfloor-reconcile-orders` for the orders pass, below) with `e2e/compose.reconcile.yml` on top of `docker-compose.yml` (ephemeral host ports on `127.0.0.1`, no published database or broker ports, no restarts, fresh volumes). A dev stack on the default ports can keep running beside it; its images are built from the working tree under their own tag (`IMAGE_TAG=reconcile`, so `shopfloor-twin/*:reconcile`; the dev stack's `:dev` images stay as they are). At the end the project is removed with its volumes, also after a failure; Ctrl+C or SIGTERM removes it and the env file before exiting, and after 25 minutes (`RECONCILE_DEADLINE_MS`) the run fails by itself with its report and logs.
+It needs Docker (Colima or Docker Desktop; with Colima, export `DOCKER_HOST` from `docker context inspect --format '{{.Endpoints.docker.Host}}'`) and Node.js 26. It does not use `.env`: it writes its own env file with random passwords (`MES_BOOTSTRAP_ADMIN_PASSWORD` included, #170) to a temporary directory and runs Compose as project `shopfloor-reconcile-alarms` (and `shopfloor-reconcile-orders` for the orders pass, below) with `e2e/compose.reconcile.yml` on top of `docker-compose.yml` (ephemeral host ports on `127.0.0.1`, no published database or broker ports, no restarts, fresh volumes). A dev stack on the default ports can keep running beside it; its images are built from the working tree under their own tag (`IMAGE_TAG=reconcile`, so `shopfloor-twin/*:reconcile`; the dev stack's `:dev` images stay as they are). At the end the project is removed with its volumes, also after a failure; Ctrl+C or SIGTERM removes it and the env file before exiting, and after 25 minutes per pass (`RECONCILE_DEADLINE_MS`) the run fails by itself with its report and logs.
 
 What it does, in the Phase 4 plan's order:
 
@@ -669,12 +669,12 @@ Notes:
 - Interval finality (#113, ADR-0018): a stored piece is final once it ends at or before its machine's "final through", the latest time of that machine's own device facts with no open sequence gap below them, or once its epoch is closed. So shift A becomes final as soon as each machine has sent a fact after 14:00; the plant watermark alone can't do it, since it is plant-wide and a busy machine moves it past a silent one. If a run fails with `provisionalMs` above 0, look at `silentWait` and the machine's state at 14:00 in the report: a machine silent for longer than `RECONCILE_SILENT_WAIT_MS` fails the run with its name. A `revision` above 0 means a fact arrived for an hour that was already final (a gap reported as an incident and filled late, or a late fact of a closed epoch), and `incidents` above 0 a sequence gap; neither may happen with this start order.
 - If the run fails with lag, read `lagMs` in `report.json` (the simulator's `GET /api/v1/status`): at 60× the simulator processes events within a few milliseconds of their time on a laptop. A large lag means the machine (or the CI runner) is short of CPU; the run fails if the shift takes more than twice its nominal wall time, rather than slowing down silently.
 - The run uses about 450 MiB in the Docker VM, like the full stack; Chromium runs on the host.
-- Duration (#147, measured locally on an M3 MacBook Air with cached images): 523–526 s in all (two passing runs), of which 486 s are the shift at 60× (lag p95 2.4–2.5 ms), about 35 s start-up and about 4.3 s for the `final` project. Cold image builds and the browser's system libraries add several minutes in CI (Phase 5: 10.8 minutes for the whole job), well inside the job's 30-minute limit and the run's own 25-minute deadline.
+- Duration (#147, measured locally on an M3 MacBook Air with cached images): 523–526 s in all (two passing runs), of which 486 s are the shift at 60× (lag p95 2.4–2.5 ms), about 35 s start-up and about 4.3 s for the `final` project. Cold image builds and the browser's system libraries add several minutes in CI (Phase 5: 10.8 minutes for the whole job), well inside the job's 30-minute limit and the run's own 25-minute deadline per pass.
 - If the alarm check fails on `rows`, look at `alarms-latency.json`: `unmatchedRows` are rows of no raise of the truth, and a violation without a latency is a raise never listed. `injected.judged` below `applied` means an injection's raise was applied before sampling began (a browser that started late) or not at all (`GET /api/v1/faults/injections`).
 
 ## Other suites
 
-Each runs on disposable Compose projects of its own with ephemeral or freely chosen host ports, so no port collides with a dev stack's, under the heavy lock; each pull request touching a suite's files records it as the rerun table names ("Merge gate").
+Each runs on disposable Compose projects of its own with ephemeral or freely chosen host ports, so no port collides with a dev stack's, under the heavy lock (`pnpm demo:probe` excepted: no stack, no lock); each pull request touching a suite's files records it as the rerun table names ("Merge gate").
 
 ### Trace performance (#204)
 

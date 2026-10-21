@@ -35,7 +35,9 @@ import {
   cell,
   inputClass,
   primaryClass,
+  plantBeside,
   timeOf,
+  wallTimeOf,
 } from '../components/quality-ui.tsx';
 import {
   CHART_TEXT,
@@ -117,7 +119,7 @@ function Notice({
       <p className="font-semibold">Baseline changed</p>
       <p>
         {notice.detail} Version 1 is not re-derived: a quality user decides whether to estimate a
-        new version (noticed {timeOf(notice.at)}).
+        new version (noticed {wallTimeOf(notice.at)}).
       </p>
       {onEstimate ? (
         <button
@@ -679,8 +681,8 @@ function SignalRow({
       <td className={cell}>
         {signal.acknowledged ? (
           <span data-testid="signal-ack">
-            {signal.acknowledged.by}, {timeOf(signal.acknowledged.at)}: “
-            {signal.acknowledged.comment}”
+            {signal.acknowledged.by}, {wallTimeOf(signal.acknowledged.at)}
+            {plantBeside(signal.acknowledged.plantAt)}: “{signal.acknowledged.comment}”
             {signal.orphaned ? ' (orphaned: the episode was withdrawn)' : ''}
           </span>
         ) : (

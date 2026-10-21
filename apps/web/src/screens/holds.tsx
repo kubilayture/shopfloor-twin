@@ -37,7 +37,10 @@ import {
   cell,
   inputClass,
   primaryClass,
+  plantBeside,
+  plantOrWall,
   timeOf,
+  wallTimeOf,
 } from '../components/quality-ui.tsx';
 import {
   COMMENT_MAX,
@@ -53,7 +56,6 @@ import {
   subjectText,
   type QualityFailure,
 } from '../domain/quality.ts';
-import { wallTimeText } from '../domain/time.ts';
 import { useLiveQuality, useQualityTopic } from '../live/live-context.tsx';
 import { upsertHold } from '../live/live-quality.ts';
 import { SubjectLink as TraceSubjectLink } from './trace-common.tsx';
@@ -110,7 +112,7 @@ function HoldRow({ hold }: { readonly hold: HoldDto }) {
         ) : null}
       </td>
       <td className={cell}>
-        {hold.openedBy}, {timeOf(hold.openedPlantAt ?? hold.openedAt)}
+        {hold.openedBy}, {plantOrWall(hold.openedPlantAt, hold.openedAt)}
       </td>
       <td className={cell}>{scopeText(hold.scope)}</td>
       <td className={cell}>{hold.heldMaterialConsumed}</td>
@@ -1150,7 +1152,7 @@ function Scope({ detail }: { readonly detail: HoldDetailDto }) {
                   )}
                 </td>
                 <td className={cell}>{u.carton ?? '–'}</td>
-                <td className={cell}>{timeOf(u.joinedAt)}</td>
+                <td className={cell}>{wallTimeOf(u.joinedAt)}</td>
               </tr>
             ))}
           </Table>
@@ -1186,7 +1188,10 @@ function Transitions({ detail }: { readonly detail: HoldDetailDto }) {
             <td className={cell}>{t.reason ?? '–'}</td>
             <td className={cell}>{t.comment ?? '–'}</td>
             <td className={cell}>{t.by}</td>
-            <td className={cell}>{timeOf(t.at)}</td>
+            <td className={cell} data-testid="hold-transition-at">
+              {wallTimeOf(t.at)}
+              {plantBeside(t.plantAt)}
+            </td>
             <td className={cell}>
               {t.scope
                 ? `${String(t.scope.units)} units, ${String(t.scope.cartons)} cartons, ${String(t.scope.orders)} orders${t.scope.final ? '' : ' (provisional)'}`
@@ -1236,9 +1241,7 @@ function Incidents({ detail }: { readonly detail: HoldDetailDto }) {
                 {i.pass === null ? '' : ` (pass ${String(i.pass)})`}
               </td>
               <td className={cell}>{timeOf(i.consumedAt)}</td>
-              <td className={cell}>
-                <time dateTime={i.detectedAt}>{wallTimeText(i.detectedAt)}</time>
-              </td>
+              <td className={cell}>{wallTimeOf(i.detectedAt)}</td>
               <td className={cell}>{i.message}</td>
             </tr>
           ))}
@@ -1297,16 +1300,17 @@ function HoldDetail({ id }: { readonly id: string }) {
                 ['Reason', hold.reason],
                 [
                   'Opened',
-                  <span key="o">
-                    {hold.openedBy}, {timeOf(hold.openedAt)}
+                  <span key="o" data-testid="hold-opened">
+                    {hold.openedBy}, {wallTimeOf(hold.openedAt)}
                   </span>,
                 ],
                 ['Opened at plant time', timeOf(hold.openedPlantAt)],
                 [
                   'Decided',
                   hold.decidedBy ? (
-                    <span key="d">
-                      {hold.decidedBy}, {timeOf(hold.decidedAt)} ({hold.decisionReason})
+                    <span key="d" data-testid="hold-decided">
+                      {hold.decidedBy}, {wallTimeOf(hold.decidedAt)}
+                      {plantBeside(hold.decidedPlantAt)} ({hold.decisionReason})
                     </span>
                   ) : (
                     '–'

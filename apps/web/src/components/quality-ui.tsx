@@ -2,7 +2,7 @@ import type { HoldState, SpcSignalDto } from '@shopfloor/contracts/mes-api';
 import { Link } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 import { HOLD_STATE_TEXT, SIGNAL_STATUS_TEXT, type QualityFailure } from '../domain/quality.ts';
-import { formatPlantTime } from '../domain/time.ts';
+import { formatPlantTime, wallTimeText } from '../domain/time.ts';
 
 // Shared pieces of the SPC and holds screens (#203): sections, tables, badges and messages. State
 // is always a word, never colour alone.
@@ -17,6 +17,18 @@ const head = `${cell} font-semibold`;
 
 export const timeOf = (value: string | null): ReactNode =>
   value === null ? '–' : <time dateTime={value}>{formatPlantTime(value)}</time>;
+
+/** A wall-clock time (when the MES or a person did it), labelled so (#295): never like plant time. */
+export const wallTimeOf = (value: string | null): ReactNode =>
+  value === null ? '–' : <time dateTime={value}>{wallTimeText(value)}</time>;
+
+/** The plant clock beside a wall time, when the MES recorded one: ` (plant Thu 15 Oct, 08:51:00)`. */
+export const plantBeside = (plantAt: string | null): ReactNode =>
+  plantAt === null ? null : <> (plant {timeOf(plantAt)})</>;
+
+/** When something happened: in plant time when the MES knew the plant clock, else wall time. */
+export const plantOrWall = (plantAt: string | null, wallAt: string): ReactNode =>
+  plantAt === null ? wallTimeOf(wallAt) : timeOf(plantAt);
 
 export function Section({
   id,

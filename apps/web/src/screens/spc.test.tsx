@@ -308,8 +308,9 @@ describe('SPC chart page', () => {
           closedBy: signal(1).last,
           acknowledged: {
             by: 'quinn',
-            at: '2026-10-15T06:00:00.000Z',
-            plantAt: null,
+            // A wall time a week after the plant clock, as in the demo (#295).
+            at: '2026-10-22T07:12:03.000Z',
+            plantAt: '2026-10-15T06:00:00.000Z',
             comment: (body as { comment: string }).comment,
           },
         }),
@@ -324,9 +325,9 @@ describe('SPC chart page', () => {
     fireEvent.click(screen.getByTestId('ack-submit'));
     expect(await screen.findByTestId('ack-done')).toBeTruthy();
     expect(screen.getByTestId('signal-row-1').dataset.acknowledged).toBe('true');
-    expect(
-      within(screen.getByTestId('signal-row-1')).getByTestId('signal-ack').textContent,
-    ).toContain('in control');
+    expect(within(screen.getByTestId('signal-row-1')).getByTestId('signal-ack').textContent).toBe(
+      'quinn, Thu 22 Oct, 10:12:03 (wall time) (plant Thu 15 Oct, 09:00:00): “in control”',
+    );
     expect(screen.queryByTestId('ack-1')).toBeNull();
     expect(server.posts()[0]?.path).toBe('/api/v1/quality/signals/1/ack');
   });
@@ -387,6 +388,8 @@ describe('SPC chart page', () => {
     await app.open();
     const notice = await screen.findByTestId('spc-notice');
     expect(notice.textContent).toContain('A late reading');
+    // When the MES noticed it is a wall time (#295).
+    expect(notice.textContent).toContain('(noticed Thu 15 Oct, 09:00:00 (wall time)).');
     fireEvent.click(screen.getByTestId('notice-estimate'));
     const form = screen.getByTestId('limits-form');
     expect(form.dataset.version).toBe('2');

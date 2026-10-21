@@ -20,10 +20,10 @@ import {
   Section,
   Table,
   cell,
-  plantTime,
   tracePolling,
   unitStatus,
 } from './trace-common.tsx';
+import { wallTimeText } from '../domain/time.ts';
 
 function Master({ trace }: { readonly trace: LotTraceDto }) {
   const master = trace.master;
@@ -53,7 +53,14 @@ function Master({ trace }: { readonly trace: LotTraceDto }) {
                 ? 'Listed by the ERP'
                 : 'Retired (no longer listed by the ERP)',
           ],
-          ['Imported', master ? plantTime(master.importedAt) : '–'],
+          [
+            'Imported',
+            master ? (
+              <time dateTime={master.importedAt}>{wallTimeText(master.importedAt)}</time>
+            ) : (
+              '–'
+            ),
+          ],
         ]}
       />
     </div>

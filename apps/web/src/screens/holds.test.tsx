@@ -2,7 +2,7 @@ import { PROBLEM_TYPES, type HoldDto, type HoldOpenRequest } from '@shopfloor/co
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { json, problem, sessionOf } from '../test/fixtures.ts';
-import { HOLD_ID, HOLD_ID_2, hold, holdDetail, suggestion } from '../test/quality-fixtures.ts';
+import { HOLD_ID, HOLD_ID_2, at, hold, holdDetail, suggestion } from '../test/quality-fixtures.ts';
 import { qualityMes, qualityState, type Write } from '../test/quality-mes.ts';
 import { renderApp, settle } from '../test/render-app.tsx';
 
@@ -248,6 +248,51 @@ describe('opening a hold', () => {
     vi.stubGlobal('fetch', qualityMes(qualityState()).fetch);
     await renderApp('/quality/holds/new?kind=lot&id=K1', { session: sessionOf(['operator']) });
     expect(await screen.findByTestId('hold-open-forbidden')).toBeTruthy();
+  });
+});
+
+describe('a hold’s wall-clock times (#295)', () => {
+  // Wall times a week after the plant clock, as in the demo: never written like plant time.
+  const WALL = '2026-10-22T07:12:03.000Z';
+  const DECIDED = '2026-10-22T08:00:00.000Z';
+
+  it('labels opened, decided, transitions and units as wall time, the plant clock beside', async () => {
+    const decided = hold({
+      state: 'released',
+      openedAt: WALL,
+      decidedBy: 'quinn',
+      decidedAt: DECIDED,
+      decidedPlantAt: at(130),
+      decisionReason: 'CONFORMS',
+    });
+    const state = qualityState({ details: { [HOLD_ID]: holdDetail(decided) } });
+    vi.stubGlobal('fetch', qualityMes(state).fetch);
+    const app = await renderApp(`/quality/holds/${HOLD_ID}`);
+    await app.open();
+    await screen.findByTestId('hold-summary');
+    expect(screen.getByTestId('hold-opened').textContent).toBe(
+      'quinn, Thu 22 Oct, 10:12:03 (wall time)',
+    );
+    expect(screen.getByTestId('hold-decided').textContent).toBe(
+      'quinn, Thu 22 Oct, 11:00:00 (wall time) (plant Thu 15 Oct, 09:10:00) (CONFORMS)',
+    );
+    expect(screen.getByTestId('hold-transition-at').textContent).toBe(
+      'Thu 22 Oct, 10:12:03 (wall time) (plant Thu 15 Oct, 08:50:00)',
+    );
+    expect(screen.getByTestId('hold-unit-1-7').textContent).toContain(
+      'Thu 15 Oct, 08:50:00 (wall time)',
+    );
+  });
+
+  it('lists a hold at its plant time, or at its wall time, labelled, without one', async () => {
+    const state = qualityState({
+      holds: [hold({ openedAt: WALL, openedPlantAt: null })],
+    });
+    vi.stubGlobal('fetch', qualityMes(state).fetch);
+    const app = await renderApp('/quality/holds');
+    await app.open();
+    const row = await screen.findByTestId(`hold-row-${HOLD_ID}`);
+    expect(row.textContent).toContain('quinn, Thu 22 Oct, 10:12:03 (wall time)');
   });
 });
 

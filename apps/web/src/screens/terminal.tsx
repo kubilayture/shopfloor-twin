@@ -40,7 +40,7 @@ import {
   withoutScrapRecord,
 } from '../domain/terminal.ts';
 import { CHART_TEXT, SIGNAL_STATUS_TEXT, isOpenEpisode, subjectText } from '../domain/quality.ts';
-import { formatPlantTime } from '../domain/time.ts';
+import { formatPlantTime, wallTimeText } from '../domain/time.ts';
 import { liveKeys } from '../live/live-cache.ts';
 import { useLiveTerminal } from '../live/live-context.tsx';
 
@@ -503,7 +503,9 @@ function QualityBanners({ view }: { readonly view: TerminalViewDto }) {
             <p className="text-lg">
               {hold.reason} · orders here: {orders.join(', ')} · {hold.scope.units} unit
               {hold.scope.units === 1 ? '' : 's'} held so far · opened by {hold.openedBy}{' '}
-              {formatPlantTime(hold.openedPlantAt ?? hold.openedAt)}
+              {hold.openedPlantAt === null
+                ? wallTimeText(hold.openedAt)
+                : formatPlantTime(hold.openedPlantAt)}
             </p>
             <p className="text-base">
               Keep the held goods apart; quality releases or rejects the hold. The order cannot be

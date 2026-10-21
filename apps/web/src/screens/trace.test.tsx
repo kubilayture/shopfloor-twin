@@ -483,6 +483,10 @@ describe('lot page (forward trace)', () => {
       status: 'active',
       quantity: '1800',
     });
+    // The import is a wall time (#295).
+    expect(screen.getByTestId('lot-master').textContent).toContain(
+      'Imported:Thu 15 Oct, 05:00:00 (wall time)',
+    );
     expect(screen.getByTestId('lot-units').dataset.count).toBe('2');
     const first = screen.getByTestId('lot-unit-3-42');
     expect(first.dataset).toMatchObject({

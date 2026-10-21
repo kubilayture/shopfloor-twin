@@ -99,15 +99,17 @@ export async function closeDemoPage(page: Page): Promise<void> {
 }
 
 /**
- * Under `pnpm demo:record`, as the scene ends: its last view held for RECORDING.dwellMs (the page
- * left as the assertions left it; nothing is done on it), so the video shows what the scene
- * asserted, then its screenshot (`NN-<scene>.png`), with what the page loads after the assertions
- * (the SPC charts) drawn. A hold before a wait for a plant time (scenes 4, 5 and 6, scene 7's
+ * Under `pnpm demo:record`, as the scene ends: from scene 3 on, its last view held for
+ * RECORDING.dwellMs (the page left as the assertions left it; nothing is done on it), so the video
+ * shows what the scene asserted; then its screenshot (`NN-<scene>.png`), with what the page loads
+ * after the assertions (the SPC charts) drawn. Scenes 1 and 2 aren't held: they run before the
+ * timeline's pause at 06:14, and a hold there would take from the dispatch's margin, which must
+ * stay as in `pnpm demo`. A hold before a wait for a plant time (scenes 4, 5 and 6, scene 7's
  * close) only shortens that wait; the others lengthen the video.
  */
 export async function sceneEnd(page: Page, n: number, id: string): Promise<void> {
   if (recordDir === '') return;
-  await sleep(RECORDING.dwellMs);
+  if ((RECORDING.heldScenes as readonly number[]).includes(n)) await sleep(RECORDING.dwellMs);
   await page.screenshot({ path: join(recordDir, screenshotName(n, id)) });
 }
 
@@ -119,8 +121,8 @@ export async function untilProbeEnd(): Promise<void> {
 
 /**
  * Logs the page's user out (if any) and `user` in, on the same page: one page for the demo. The
- * password field is checked to be one (`type="password"`, shown masked) before it is filled: the
- * recording shows every login.
+ * login checks the password field is one (`type="password"`, shown masked) before filling it
+ * (browser/login.ts): the recording shows every login.
  */
 export async function switchTo(page: Page, user: Account): Promise<string> {
   const signedIn = page.getByTestId('signed-in-user');
@@ -128,8 +130,6 @@ export async function switchTo(page: Page, user: Account): Promise<string> {
     await page.getByTestId('logout').click();
     await expect(signedIn).toHaveCount(0);
   }
-  await page.goto('/login');
-  await expect(page.getByTestId('login-password')).toHaveAttribute('type', 'password');
   return logIn(page, user);
 }
 

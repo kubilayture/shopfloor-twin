@@ -31,6 +31,11 @@ export const RECORDING = {
    * long before they open).
    */
   dwellMs: 3_000,
+  /**
+   * The scenes held (#282 review m5): from scene 3 on. Scenes 1 and 2 run before the timeline's
+   * pause at 06:14, where a hold would take from the dispatch's margin.
+   */
+  heldScenes: [3, 4, 5, 6, 7, 8],
   /** Where `pnpm demo:record` publishes (relative to the repository). */
   dir: 'docs/demo',
   videoFile: 'shopfloor-twin-v1.webm',
@@ -119,12 +124,15 @@ const hhmm = (iso: string) => plantClock(Date.parse(iso)).slice(0, 5);
  * shows and its plant times; between scenes, where the walkthrough waits for the plant, a cue
  * saying so. Refused unless the log holds scenes 1 to 8 in order.
  */
-export function captionsFromSceneLog(text: string, videoStartMs: number): string {
+export function captionsFromSceneLog(
+  text: string,
+  videoStartMs: number,
+  expected: readonly number[] = SCENES.map((s) => s.n),
+): string {
   const scenes = text
     .split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => JSON.parse(line) as LoggedScene);
-  const expected = SCENES.map((s) => s.n);
   if (JSON.stringify(scenes.map((s) => s.n)) !== JSON.stringify(expected)) {
     throw new Error(`the scene log must hold scenes ${expected.join(', ')} in order`);
   }
@@ -198,4 +206,79 @@ export function probeInfo(stderr: string): { seconds: number; width: number; hei
     width: Number(size[1]),
     height: Number(size[2]),
   };
+}
+
+/** What `pnpm demo:record` has staged and checks before it publishes anything. */
+export interface StagedRecording {
+  readonly bytes: number;
+  readonly seconds: number;
+  readonly width: number;
+  readonly height: number;
+  readonly screenshotBytes: number;
+  /** The text files to publish or keep (captions, the record): searched for secrets. */
+  readonly texts: readonly string[];
+}
+
+/**
+ * Why a staged recording must not be published (none: it may be): the video over 12 MiB or the
+ * length limit or not at RECORDING.video's size, the screenshots over 4 MiB together, a secret of
+ * the run in a text file.
+ */
+export function recordingProblems(staged: StagedRecording, secrets: readonly string[]): string[] {
+  const { limits, video } = RECORDING;
+  const mib = (bytes: number) => `${(bytes / MiB).toFixed(2)} MiB`;
+  const problems: string[] = [];
+  if (staged.bytes > limits.videoBytes) problems.push(`the video is ${mib(staged.bytes)}`);
+  if (staged.seconds > limits.seconds) {
+    problems.push(`the video is ${staged.seconds.toFixed(1)} s long`);
+  }
+  if (staged.width !== video.width || staged.height !== video.height) {
+    problems.push(`the video is ${String(staged.width)}×${String(staged.height)}`);
+  }
+  if (staged.screenshotBytes > limits.screenshotBytes) {
+    problems.push(`the screenshots are ${mib(staged.screenshotBytes)} together`);
+  }
+  if (secrets.some((secret) => secret !== '' && staged.texts.some((t) => t.includes(secret)))) {
+    problems.push('the captions or the record hold a secret of the run');
+  }
+  return problems;
+}
+
+/** The files `pnpm demo:record` publishes in docs/demo/: the video, the captions, the screenshots. */
+export const PUBLISHED_FILES: readonly string[] = [
+  RECORDING.videoFile,
+  RECORDING.captionsFile,
+  ...SCENES.map((s) => screenshotName(s.n, s.id)),
+];
+
+/** The file-system steps of a publish, injected (node:fs/promises in the harness). */
+export interface PublishSteps {
+  mkdir(dir: string): Promise<unknown>;
+  readdir(dir: string): Promise<string[]>;
+  rm(path: string): Promise<void>;
+  copyFile(from: string, to: string): Promise<void>;
+}
+
+/**
+ * Publishes a staged recording (every file of PUBLISHED_FILES in `staged`) to `out`, only when it
+ * has no problem; otherwise throws before touching `out`, which then keeps the last recording
+ * whole. A screenshot in `out` that the recording doesn't have (`NN-<scene>.png` of a scene since
+ * removed) is removed.
+ */
+export async function publishStaged(
+  staged: string,
+  out: string,
+  problems: readonly string[],
+  steps: PublishSteps,
+): Promise<void> {
+  if (problems.length > 0) {
+    throw new Error(`the recording is refused (docs/demo/ unchanged): ${problems.join('; ')}`);
+  }
+  await steps.mkdir(out);
+  for (const name of await steps.readdir(out)) {
+    if (/^\d\d-.+\.png$/.test(name) && !PUBLISHED_FILES.includes(name)) {
+      await steps.rm(join(out, name));
+    }
+  }
+  for (const name of PUBLISHED_FILES) await steps.copyFile(join(staged, name), join(out, name));
 }

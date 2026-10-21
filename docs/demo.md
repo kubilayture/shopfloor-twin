@@ -116,10 +116,23 @@ The first minute is the busiest part of the walkthrough (three logins, eight ord
 It is `pnpm demo` (`e2e/src/demo.ts --record`), the same harness and the same Playwright test, with three additions on the walkthrough's one context and page:
 
 - **Video:** Playwright's video recording on that context, at **960 × 540**, the plan's first fallback (the page is still 1280 × 720; Playwright scales the frames). It is one continuous video from the page's opening to its close, with the users changing by logout and login on that page.
-- **Screenshots:** at each scene's end, after its assertions, the scene's last view is held for 3 s (`RECORDING.dwellMs`). Nothing is done on the page during that time. Then the scene's screenshot is taken at 1280 × 720 (`NN-<scene>.png`). The hold came from the first full recording, which showed scene 6 for 0.5 s and scene 8 for 0.65 s, because their facts exist long before they open. A hold before a wait for plant time only shortens that wait.
+- **Screenshots:** at each scene's end, after its assertions, the scene's last view is held for 3 s (`RECORDING.dwellMs`). Nothing is done on the page during that time. Then the scene's screenshot is taken at 1280 × 720 (`NN-<scene>.png`).
+  - The hold came from the first full recording, which showed scene 6 for 0.5 s and scene 8 for 0.65 s, because their facts exist long before they open.
+  - A hold before a wait for plant time only shortens that wait.
+  - Scenes 1 and 2 are not held (`RECORDING.heldScenes`, after the review of PR #296). They run before the timeline's pause at 06:14, where a hold would take from the dispatch's margin, which stays as in `pnpm demo`. They keep their screenshots.
 - **Captions:** after the run, `docs/demo/demo-v1.vtt` is written from the scene log (`scenes.jsonl`) and the video's start. It has one cue per scene, from its start to its end, giving its number, title, plant times and what it shows. Between scenes there is a cue for the wait: "The run goes on at 60× (plant 09:03 to 12:00)". No caption or overlay is injected into the application's pages.
 
-Every scene is asserted exactly as in `pnpm demo`, and the harness checks the scene log the same way (scenes 1 to 8, once each, in order). Only after `DEMO-OK` does it publish anything. It then publishes the video (re-encoded only when over the limit), the eight screenshots and the captions to `docs/demo/`. It refuses the recording, exiting 1, if the video is over 12 MiB or 7 minutes, if the screenshots together are over 4 MiB, or if the captions or the record hold any secret of the run. Those secrets are the users' generated passwords, the bootstrap admin's, the control token, the ERP token and the database passwords. Last, it writes `e2e/results/demo/recording.json`: the commit, whether `apps/`, `packages/`, `config/` and `e2e/` were unchanged from it, the SHA-256, size, length and resolution, and the size before any re-encode.
+It refuses to start on a tree whose tracked files outside `docs/` and Markdown differ from `HEAD`, so a recording shows exactly its commit. Every scene is asserted exactly as in `pnpm demo`, and the harness checks the scene log the same way (scenes 1 to 8, once each, in order). After `DEMO-OK` it publishes in two steps (after the review of PR #296):
+
+1. **Stage.** It writes the video (re-encoded only when over the limit), the eight screenshots and the captions to `e2e/results/demo/record/publish/`. It writes the record `e2e/results/demo/recording.json`: the commit, SHA-256, size, length, resolution, and the size before any re-encode.
+2. **Check, then replace.** It checks the staged files. It refuses the recording, exiting 1, if:
+   - the video is over 12 MiB, over 7 minutes, or not 960 × 540;
+   - the screenshots together are over 4 MiB;
+   - the captions or the record hold any secret of the run: every user's generated password and every `*_PASSWORD` and `*_TOKEN` value of the run's env file (`Stack.secretValues()`).
+
+   Only a recording without a problem replaces the files in `docs/demo/` (`publishStaged`, tested with the file-system steps injected). A refused one leaves `docs/demo/` as it was.
+
+`DEMO_RECORD_PROBE_S=60` stages and checks scenes 1 to 3 the same way and publishes nothing.
 
 **The scripted re-encode** (the plan's second fallback) is in `REENCODE_ARGS` (`e2e/src/demo-record.ts`). It runs Playwright's bundled ffmpeg (`ffmpeg-<revision>` beside the browsers, revision from `playwright-core/browsers.json`), which decodes and encodes VP9 only:
 
@@ -127,7 +140,7 @@ Every scene is asserted exactly as in `pnpm demo`, and the harness checks the sc
 ffmpeg -i walkthrough.webm -c:v libvpx-vp9 -crf 36 -b:v 0 -deadline good -cpu-used 4 -row-mt 1 -an shopfloor-twin-v1.webm
 ```
 
-That is one pass at constant quality with no bitrate cap, at the same size and frame rate, with no audio. Playwright records in real time at `-crf 8` up to a bitrate cap, so the same pictures take about a fifth of the space. CRF 36 was chosen on the probe's video, scaled to 960 × 540: about 1.2 MiB a minute (CRF 42 gave 0.93 MiB) with the UI's text still sharp. The re-encode runs only when the recording is over 12 MiB. At 960 × 540 Playwright's video of the whole walkthrough is about 26 MiB, so every recording so far has been re-encoded. The plan's third fallback, a shorter walkthrough, was not needed.
+That is one pass at constant quality with no bitrate cap, at the same size and frame rate, with no audio. Playwright records in real time at `-crf 8` up to a bitrate cap, so the same pictures take about a fifth of the space. CRF 36 was chosen on the probe's video, scaled to 960 × 540: about 1.2 MiB a minute (CRF 42 gave 0.93 MiB) with the UI's text still sharp. The re-encode runs only when the recording is over 12 MiB. At 960 × 540 Playwright's video of the whole walkthrough is about 26 MiB, so every recording so far has been re-encoded. The plan's third fallback, a shorter walkthrough, was not needed for size. For length, it would cut waits or asserted scenes; the coordinator decision below (Length) replaces it with a 7-minute limit for the owner's review.
 
 ### Length: at most 7 minutes (a deviation)
 
@@ -143,20 +156,22 @@ The plan's limit is 6 minutes. The walkthrough can't meet it at 60× without cut
 | [`demo-v1.vtt`](demo/demo-v1.vtt)                                               | The WebVTT captions: one cue per scene, one per wait                                                                                                      |
 | [`01-overview.png`](demo/01-overview.png) … [`08-trace.png`](demo/08-trace.png) | The eight scenes' screenshots, 1280 × 720, 969,618 bytes together (0.92 MiB)                                                                              |
 
+**To be replaced:** #295 (P10-F2) changes what scenes 3 and 6 show. Once it has merged, the recording is made once more on this branch with the review's changes, and this table, the Phase 10 log, STATUS and the CHANGELOG get its values. The present one also predates the review's changes: it holds scenes 1 and 2 for 3 s, and was published without staging.
+
 It was recorded by `pnpm demo:record` on **`577d8ce`** (main `6f345bf` plus this branch's code; `apps/`, `packages/`, `config/` and `e2e/` unchanged from it) on 2026-10-21, under the heavy lock. The video was 26.50 MiB from Playwright and was re-encoded as above. In the walkthrough's scene log the jobs were accepted at 06:07 and PO-2610-301 was the first completed order (OEE 0.5446, availability 0.5488, first-pass yield 1.0000). The drift's first episode was on the I chart, rule 1, at 11:51:13 on unit 106. The hold was on PO-2610-302 (60 units) and its close was refused. Serial VB-100-000001 of carton PO-2610-301-C01 traced back to BL100-2610-01, SK1-2610-01 and SP100-2610-01, operator op-a1, leak value 2.46. These are the facts of #281's runs.
 
 **Secrets.** The demo's secrets are generated per run and thrown away with its stack, and none can appear in the recording:
 
-- Passwords are typed only into the login form's password field. The demo's login helper checks that the field is `type="password"` before filling it (`e2e/browser/demo/demo.ts`, `switchTo`). Frames of the committed video taken at each login showed the field masked.
+- Passwords are typed only into the login form's password field. Every Playwright login checks that the field is `type="password"` before filling it: `logIn` and `signOnAtTerminal` in `e2e/browser/login.ts`, after the review of PR #296. Before that review, only the demo's own `switchTo` checked it. Frames of the committed video taken at each login showed the field masked.
 - The control token and the other secrets never reach the browser: the test reads the control API itself.
-- The captions are generated from scene titles and plant times only. `pnpm demo:record` searched the captions and its record for every secret of the run and found none.
+- The captions are generated from scene titles and plant times only. For the committed recording, `pnpm demo:record` searched the captions and its record for the users' passwords, the bootstrap admin's, the control token, the ERP token and the database passwords, and found none. Since the review of PR #296 it searches every `*_PASSWORD` and `*_TOKEN` of the run's env file as well.
 - The eight screenshots were looked at: user names and plant data only.
 
 ### Re-recording
 
 Re-record only when a scene's visible behaviour changed; at most one recording on `main` per release. A change to a scene's assertions that changes nothing on screen, or a new UI detail outside the scenes, is not a reason.
 
-To re-record, start from a clean checkout of the commit to record, with the heavy lock free and Docker's VM at 4 GiB. Run `pnpm demo:record`. It rewrites the files in `docs/demo/` only after `RECORD-OK`. Then copy the values from `e2e/results/demo/recording.json` (commit, SHA-256, length, size) into the table above and into the final report. Commit the video, captions and screenshots together. Never edit, cut or re-encode the video by hand: if it is over a limit, change the committed parameters (`e2e/src/demo-record.ts`) in the plan's order and record again.
+To re-record, start from a clean checkout of the commit to record, with the heavy lock free and Docker's VM at 4 GiB. Run `pnpm demo:record`; it refuses a tree with uncommitted changes outside the docs. It replaces the files in `docs/demo/` only when the staged recording passes its checks (`RECORD-OK`). Then copy the values from `e2e/results/demo/recording.json` (commit, SHA-256, length, size) into the table above and into the final report. Commit the video, captions and screenshots together. Never edit, cut or re-encode the video by hand: if it is over a limit, change the committed parameters (`e2e/src/demo-record.ts`) in the plan's order and record again.
 
 **Narration** is for the owner to add, if wanted: Claude can't record it in his voice. The captions file is the script it can follow.
 

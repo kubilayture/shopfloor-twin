@@ -149,10 +149,13 @@ services:
       OPCUA_GATEWAY_PASSWORD: ${OPCUA_GATEWAY_PASSWORD:?Set OPCUA_GATEWAY_PASSWORD in .env (copy .env.example)}
       OPCUA_READER_PASSWORD: ${OPCUA_READER_PASSWORD:?Set OPCUA_READER_PASSWORD in .env (copy .env.example)}
       LOG_LEVEL: ${SIM_LOG_LEVEL:-info}
+    # Host ports (#277): every published port of the default stack is set in .env, so a second
+    # stack (the fresh-clone test's) can run beside this one. SIM_OPCUA_HOST_PORTS is a range of
+    # five, the machines' servers in order (CNC-01, CNC-02, ASM-01, LKT-01, PCK-01).
     ports:
       - '127.0.0.1:${SIM_CONTROL_PORT:-4800}:4800'
-      - '127.0.0.1:4841-4845:4841-4845'
-      - '127.0.0.1:5020:5020'
+      - '127.0.0.1:${SIM_OPCUA_HOST_PORTS:-4841-4845}:4841-4845'
+      - '127.0.0.1:${SIM_MODBUS_HOST_PORT:-5020}:5020'
     volumes:
       - simulator-pki:/var/lib/simulator/pki
     deploy:

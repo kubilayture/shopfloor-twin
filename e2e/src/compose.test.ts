@@ -74,6 +74,29 @@ describe('the hardened Compose (P9-14, checklist S8)', () => {
     ]);
   });
 
+  it('sets every published host port in .env, with the defaults unchanged (#277)', async () => {
+    const all = await services('docker-compose.yml');
+    const example = await readFile(join(REPO, '.env.example'), 'utf8');
+    const hosts = Object.values(all).flatMap((service) =>
+      [...new Set(published(service.ports).map((p) => p.host))].map((host) => {
+        const match = /^\$\{([A-Z_]+):-([\d-]+)\}$/.exec(host);
+        if (!match) throw new Error(`a host port that is not a variable: ${host}`);
+        return [match[1] ?? '', match[2] ?? ''] as const;
+      }),
+    );
+    expect(Object.fromEntries(hosts)).toEqual({
+      MQTT_PORT: '1883',
+      SIM_CONTROL_PORT: '4800',
+      SIM_OPCUA_HOST_PORTS: '4841-4845',
+      SIM_MODBUS_HOST_PORT: '5020',
+      ERP_HTTP_PORT: '4600',
+      WEB_HTTPS_PORT: '8443',
+    });
+    for (const [variable, fallback] of hosts) {
+      expect(example).toContain(`\n${variable}=${fallback}\n`);
+    }
+  });
+
   it('republishes the MES, the gateway and the database for development only (compose.dev-ports.yml)', async () => {
     const dev = await services('compose.dev-ports.yml');
     expect(Object.keys(dev).sort()).toEqual(['db', 'gateway', 'mes']);

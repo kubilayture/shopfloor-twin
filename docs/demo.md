@@ -97,6 +97,20 @@ Each scene's assertions were proved able to fail. One mutant per scene, each a `
 | 7     | the close refused with `sign-off-missing`            | `quality-hold`                            |
 | 8     | the serial's OP10 lot of `BLANK-200`                 | `BLANK-100`                               |
 
+## The recording
+
+`pnpm demo:record` (#282, P10-07) records the walkthrough above as a video, with a screenshot per scene and captions, into [`docs/demo/`](demo/).
+
+### Size probe (60 s)
+
+The plan asks for a 60 s probe first, with its size extrapolated to the whole walkthrough. It ran as `DEMO_RECORD_PROBE_S=60 pnpm demo:record`, under the heavy lock, on 2026-10-21. That is the walkthrough with Playwright's video on its one page at 1280 × 720 (Playwright's own encoder: VP9, `-crf 8 -deadline realtime`, bitrate cap 2,560 kbit/s at this size), scenes 1 to 3 asserted, then the run until the video was 60 s long. The working tree was main `081d7c8` plus this branch's first changes.
+
+| Video                        | Length | Size     | Per minute | Whole walkthrough (6.5 min) | At 7 min   | Limit  |
+| ---------------------------- | ------ | -------- | ---------- | --------------------------- | ---------- | ------ |
+| 1280 × 720, Playwright's VP9 | 61.6 s | 7.85 MiB | 7.65 MiB   | ≈ 49.7 MiB                  | ≈ 53.5 MiB | 12 MiB |
+
+The first minute is the busiest part of the walkthrough (three logins, eight order pages, the console), so the extrapolation errs on the high side. Even so, at about four times the limit the recording at 1280 × 720 can't fit. The plan's fallbacks therefore apply, in its order: 960 × 540, then the scripted re-encode (below).
+
 ## Run records
 
 All on `a5de2db` (main `13f8faf` plus #281), 2026-10-21, under the heavy-suite lock, Node 26.11.1, Docker 29.5.2.

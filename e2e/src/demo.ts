@@ -17,14 +17,33 @@
  * the images already built under that tag), DEMO_KEEP_IMAGES=1 (keep them; by default they are
  * removed at the end, #228). Results (the scene log, Playwright traces on failure, compose.log on
  * failure) go to e2e/results/demo/. SIGINT and SIGTERM remove the stack and the env file.
+ *
+ * `pnpm demo:record` (#282, `--record`) is the same run with Playwright's video on the
+ * walkthrough's one page and a screenshot per scene (e2e/results/demo/record/); only once the
+ * walkthrough has passed with every scene does it publish to docs/demo/ (src/demo-record.ts): the
+ * video, re-encoded by the scripted fallback only when over the size limit, the screenshots, and
+ * the WebVTT captions from the scene log; then it checks the limits and that no secret of the run
+ * is in the captions or the record. DEMO_RECORD_PROBE_S (the 60 s size probe) records scenes 1 to
+ * 3 and the run until the video is that long, publishes nothing and prints the size extrapolated
+ * to the walkthrough's length.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
 import { GatewayClient, MesClient, SimulatorClient, gauge, provisionUsers } from './clients.ts';
-import { DEMO, checkSceneLog } from './demo-plan.ts';
+import { DEMO, SCENES, checkSceneLog } from './demo-plan.ts';
+import {
+  REENCODE_ARGS,
+  RECORDING,
+  bundledFfmpeg,
+  captionsFromSceneLog,
+  probeInfo,
+  screenshotName,
+} from './demo-record.ts';
 import { REPO, Stack, removeImages } from './stack.ts';
 
 const project = process.env.DEMO_PROJECT ?? 'shopfloor-demo-run';
@@ -32,6 +51,10 @@ const tag = process.env.DEMO_TAG ?? 'demo';
 const skipBuild = process.env.DEMO_SKIP_BUILD === '1';
 const keepImages = process.env.DEMO_KEEP_IMAGES === '1';
 const RESULTS = join(REPO, 'e2e/results/demo');
+const record = process.argv.includes('--record');
+const probeSeconds = Number(process.env.DEMO_RECORD_PROBE_S ?? '0');
+const RECORD_DIR = join(RESULTS, 'record');
+const execFileP = promisify(execFile);
 /** One user per role besides the bootstrap admin, made through the API. */
 const ROLE_USERS = {
   operator: { username: 'demo-operator', roles: ['operator'] },
@@ -74,6 +97,110 @@ async function until(what: string, check: () => Promise<boolean>, timeoutMs: num
     }
     await sleep(500);
   }
+}
+
+/** `ffmpeg -i <video>`'s report: its duration and size (ffmpeg exits 1 without an output). */
+async function videoInfo(file: string) {
+  const result = await execFileP(bundledFfmpeg(), ['-hide_banner', '-i', file]).catch(
+    (error: unknown) => error as { stderr?: string },
+  );
+  return probeInfo(result.stderr ?? '');
+}
+
+const mib = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+
+/** The size probe's measure: the video's size, extrapolated to the walkthrough's length. */
+async function reportProbe() {
+  const file = join(RECORD_DIR, 'walkthrough.webm');
+  const { size } = await stat(file);
+  const info = await videoInfo(file);
+  const perMinute = (size / info.seconds) * 60;
+  log(
+    `PROBE: ${String(info.width)}×${String(info.height)}, ${info.seconds.toFixed(1)} s, ${mib(size)}; ` +
+      `${mib(perMinute)} per minute; 6.5 min ≈ ${mib(perMinute * 6.5)}, 7 min ≈ ${mib(perMinute * 7)} ` +
+      `(limit ${mib(RECORDING.limits.videoBytes)})`,
+  );
+}
+
+/**
+ * Publishes the passed walkthrough's recording to docs/demo/: the video (re-encoded with
+ * REENCODE_ARGS only when over the size limit), a screenshot per scene and the captions from the
+ * scene log. Refuses one over a limit, and captions or a record holding a secret of the run.
+ */
+async function publishRecording(secrets: readonly string[]) {
+  const out = join(REPO, RECORDING.dir);
+  await mkdir(out, { recursive: true });
+  for (const name of await readdir(out)) {
+    if (/^\d\d-.+\.png$/.test(name)) await rm(join(out, name));
+  }
+  const recorded = join(RECORD_DIR, 'walkthrough.webm');
+  const recordedSize = (await stat(recorded)).size;
+  const video = join(out, RECORDING.videoFile);
+  let reencoded = false;
+  if (recordedSize > RECORDING.limits.videoBytes) {
+    log(`video ${mib(recordedSize)}: over the limit, re-encoding (${REENCODE_ARGS.join(' ')})`);
+    await execFileP(
+      bundledFfmpeg(),
+      ['-hide_banner', '-loglevel', 'error', '-y', '-i', recorded, ...REENCODE_ARGS, video],
+      { timeout: 1_800_000 },
+    );
+    reencoded = true;
+  } else {
+    await copyFile(recorded, video);
+  }
+  const bytes = await readFile(video);
+  const info = await videoInfo(video);
+  const problems: string[] = [];
+  if (bytes.length > RECORDING.limits.videoBytes) {
+    problems.push(`the video is ${mib(bytes.length)}`);
+  }
+  if (info.seconds > RECORDING.limits.seconds) {
+    problems.push(`the video is ${info.seconds.toFixed(1)} s long`);
+  }
+  let screenshots = 0;
+  for (const s of SCENES) {
+    const name = screenshotName(s.n, s.id);
+    await copyFile(join(RECORD_DIR, name), join(out, name));
+    screenshots += (await stat(join(out, name))).size;
+  }
+  if (screenshots > RECORDING.limits.screenshotBytes) {
+    problems.push(`the screenshots are ${mib(screenshots)} together`);
+  }
+  const { videoStart } = JSON.parse(
+    await readFile(join(RECORD_DIR, 'video-start.json'), 'utf8'),
+  ) as { videoStart: string };
+  const captions = captionsFromSceneLog(
+    await readFile(join(RESULTS, 'scenes.jsonl'), 'utf8'),
+    Date.parse(videoStart),
+  );
+  await writeFile(join(out, RECORDING.captionsFile), captions);
+  const commit = (await execFileP('git', ['rev-parse', 'HEAD'], { cwd: REPO })).stdout.trim();
+  // What the images and the walkthrough are built from, unchanged since that commit.
+  const changed = (
+    await execFileP(
+      'git',
+      ['status', '--porcelain', '--untracked-files=no', '--', 'apps', 'packages', 'config', 'e2e'],
+      { cwd: REPO },
+    )
+  ).stdout.trim();
+  const summary = {
+    commit,
+    cleanTree: changed === '',
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    bytes: bytes.length,
+    seconds: Number(info.seconds.toFixed(1)),
+    resolution: `${String(info.width)}x${String(info.height)}`,
+    recordedBytes: recordedSize,
+    reencoded,
+    screenshotBytes: screenshots,
+  };
+  const summaryText = `${JSON.stringify(summary, null, 2)}\n`;
+  await writeFile(join(RESULTS, 'recording.json'), summaryText);
+  if (secrets.some((s) => s !== '' && (captions.includes(s) || summaryText.includes(s)))) {
+    problems.push('the captions or the record hold a secret of the run');
+  }
+  log(`recording: ${JSON.stringify(summary)}`);
+  if (problems.length > 0) throw new Error(`the recording is refused: ${problems.join('; ')}`);
 }
 
 let browserChild: ChildProcess | undefined;
@@ -124,6 +251,9 @@ let built = false;
 try {
   await mkdir(RESULTS, { recursive: true });
   await rm(join(RESULTS, 'scenes.jsonl'), { force: true });
+  await rm(RECORD_DIR, { recursive: true, force: true });
+  // Playwright's ffmpeg, installed with its Chromium: missing, nothing is built or started.
+  if (record) await stat(bundledFfmpeg());
   await stack.prepare();
   await stack.compose(['down', '--volumes', '--remove-orphans']);
   if (!skipBuild) {
@@ -208,14 +338,35 @@ try {
     RECONCILE_ACCOUNTS: JSON.stringify(accounts),
     DEMO_SIM_URL: simBase,
     DEMO_SIM_TOKEN: token,
+    ...(record ? { DEMO_RECORD_DIR: RECORD_DIR } : {}),
+    ...(record && probeSeconds > 0 ? { DEMO_RECORD_PROBE_MS: String(probeSeconds * 1000) } : {}),
   });
   if (code !== 0) throw new Error(`the demo walkthrough failed (exit ${String(code)})`);
-  // A skipped walkthrough exits 0 too: DEMO-OK only with every scene recorded, once, in order.
-  const scenes = checkSceneLog(
-    await readFile(join(RESULTS, 'scenes.jsonl'), 'utf8').catch(() => ''),
-  );
-  log(`scene log: scenes ${scenes.join(', ')} recorded`);
-  log('DEMO-OK');
+  if (record && probeSeconds > 0) {
+    // Scenes 1 to 3 only: a size measure, never a demo run (no DEMO-OK, nothing published).
+    await reportProbe();
+    log('PROBE-OK');
+  } else {
+    // A skipped walkthrough exits 0 too: DEMO-OK only with every scene recorded, once, in order.
+    const scenes = checkSceneLog(
+      await readFile(join(RESULTS, 'scenes.jsonl'), 'utf8').catch(() => ''),
+    );
+    log(`scene log: scenes ${scenes.join(', ')} recorded`);
+    log('DEMO-OK');
+  }
+  if (record && probeSeconds <= 0) {
+    // Every secret of the run that a page or the test could ever have held.
+    const secrets = [
+      ...Object.values(accounts).map((a) => a.password),
+      stack.bootstrapAdminPassword,
+      token,
+      stack.value('ERP_API_TOKEN'),
+      stack.value('DB_PASSWORD'),
+      stack.value('DB_APP_PASSWORD'),
+    ];
+    await publishRecording(secrets);
+    log('RECORD-OK');
+  }
 } catch (error) {
   failed = true;
   console.error(error);

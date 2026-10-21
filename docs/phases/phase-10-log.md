@@ -173,7 +173,7 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - **Fallbacks, in the plan's order:** 960 × 540, then the scripted re-encode with Playwright's bundled ffmpeg (`REENCODE_ARGS`: VP9 `-crf 36 -b:v 0 -deadline good -cpu-used 4 -row-mt 1 -an`, chosen on the probe's video). The re-encode runs only when the video is over 12 MiB, and at 960 × 540 it always is (about 26 MiB). The third fallback, a shorter walkthrough, was not needed for size. For length, it would cut waits or asserted scenes; the coordinator decision (Length) replaces it with a 7-minute limit for the owner's review.
   - **Length, coordinator decision for the owner's review:** the plan's 6 minutes can't be met at 60× without cutting asserted scenes. The run needs plant time 06:00 to 12:25 (scene 7's close), at least 6 min 25 s, and a speed-up within the harness would no longer show a real run at 60×. The limit is therefore **at most 7 minutes**, enforced by `pnpm demo:record`. No scene is cut and the video is not edited. Recorded in `docs/demo.md` ("Length") and STATUS's owner items.
   - **Also a coordinator decision:** the 3 s hold on each scene's last view. The first recording (`2b80665`) showed scene 6 for 0.5 s and scene 8 for 0.65 s. The hold adds about 8 s. The screenshot moved after the hold because the second recording (`a66eede`) caught scene 6's SPC charts still loading. Neither recording was committed.
-  - **The committed recording** (`docs/demo/`), recorded on `577d8ce` (main `6f345bf` plus this branch's code), `RECORD-OK`:
+  - **The first committed recording** (superseded before merge by the one below), recorded on `577d8ce` (main `6f345bf` plus this branch's code), `RECORD-OK`:
     - `shopfloor-twin-v1.webm`: 6 min 36.5 s, 960 × 540, 4,866,985 bytes (4.64 MiB; 26.50 MiB from Playwright), SHA-256 `c365ab9ab3bc20f07c4d64a9a04f9b2747d3af4937ac7a63a4925f2feefed3a4`;
     - eight screenshots, 969,618 bytes (0.92 MiB) together;
     - `demo-v1.vtt`, 11 cues.
@@ -217,3 +217,19 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     - `RESILIENCE_PROJECT=resilience282 RESILIENCE_TAG=res282 pnpm test:resilience`: `RESILIENCE-OK` in 1,665 s (R1, R2 and R3 passed), host 36.1 GiB free at the start; `fstrim` in Colima's VM before it.
 
     Images and projects are removed.
+
+  - **The recording after #297** (P10-F2: SPC values at their precision, plant time on the console, wall-clock labels).
+    - **Rebase** onto `29321ea`: one conflict, in this log, where #295's section and this one both appended. Both are kept. Commit hashes before 2026-10-22 are those before the rebase onto `29321ea` (#297). After it they are: `5479ff1` → `b9700df`, `2b80665` → `47111a4`, `a66eede` → `c4eaddf`, `577d8ce` → `7581e00`, `f7fb86f` → `20c2229`, `12bbdc6` → `b22655b`, `f0bddd1` → `d591b1f` and `6086fbe` → `da16fbb`.
+    - **`pnpm demo:record`** once on `da16fbb`, a clean tree, under the heavy lock (host 34.2 GiB free): `DEMO-OK` and `RECORD-OK` in 610 s, jobs accepted at 06:04, the staged files checked before they replaced the earlier ones.
+      - `shopfloor-twin-v1.webm`: 6 min 35.0 s (395.0 s), 960 × 540, 5,020,720 bytes (4.79 MiB; 26.34 MiB from Playwright), SHA-256 `d884a72072e0b972f8218868bc3036fe5a1395e711ed003c8790f120c8024e92`;
+      - eight screenshots, 971,737 bytes (0.93 MiB) together;
+      - `demo-v1.vtt`, 11 cues.
+    - **Checked on the staged files:**
+      - scene 6's point table shows `3.381`;
+      - scene 3's simulation time is plant time (`Mon 12 Oct, 06:17:08`);
+      - scenes 1 and 2 aren't held (1.5 s and 2.8 s in the captions);
+      - all eight screenshots looked at: user names and plant data only (the lot page's import time is labelled "(wall time)");
+      - frames at all nine logins show the password masked;
+      - `pnpm demo:record` found none of the run's secrets (every user's password, every `*_PASSWORD` and `*_TOKEN`) in the captions or the record.
+    - **Superseded before merge:** the first committed recording (`577d8ce`, now `7581e00`; SHA-256 `c365ab9a…`). Only the new one reaches `main`.
+    - **Gate** @@GATE3@@

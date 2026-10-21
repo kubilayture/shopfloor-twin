@@ -202,21 +202,33 @@ On the plan's schedule R3 lost nothing: CNC-01 offline kept its OPC UA session, 
 
 A database restart killed the MES. pg-pool listens for errors only on idle clients; a connection held between two queries, when the database ended it, emitted `error` with no listener, which ends a Node process. Every client now gets a listener on connect, the holder's next query fails cleanly and the broken client is dropped. It had passed twice before by timing; a regression test terminates a held backend.
 
-**36. Why must the system be "settled" before each fault?**
+**36. After the simulator was recreated, the gateway stopped polling the washer for good (P9-F4, #272). Why did `close()` never return, why was nothing logged, and how does the test prove it?**
+
+When the old simulator process ended, it destroyed its Modbus sockets, so the gateway's next read failed. The poller's failure path then awaited the reader's `close()` before reconnecting. `modbus-serial` 8.0.25's `close(cb)` ends the socket and calls `cb` only from the socket's next `close` event, but a socket the peer has already closed has emitted that event already and never emits it again; even if one arrived, the callback is gated on the port's `openFlag`, which the peer's close had cleared. So the awaited promise never settled, `poll()` never returned, and the scheduler's `finally`, which arms the next poll, never ran: polling stopped until the gateway restarted.
+
+Nothing was logged because everything that would have reported it came **after** that `await`: `onError`, the silence count that raises `device-silent`, and dropping the reader. The reader was still set, so `gateway_device_connected` stayed 1, and the MES saw no incident; WSH-01 simply stayed in the old epoch. The Modbus `silent` fault of the resilience suite never triggered it, because a silent server keeps its socket open and `close()` then completes normally.
+
+The fix drops a failed connection at once without waiting for its close, closes with `destroy()` (which calls back immediately), and destroys the socket of a failed connect. The tests prove it at three levels, each failing on the old code: `connectModbus` against a TCP server that closed the connection must reject the read and settle `close()` within 1 s; the poller against a connection whose close never settles must settle every poll within 1 s, report itself disconnected and publish the new epoch's snapshot on reconnect; and a real simulator child process stopped and started on the same ports must have its new-epoch snapshot published within 2 s of being ready (`main`'s poller times out after 7 s). The console run now also waits for every machine, WSH-01 included, in the new epoch.
+
+**37. What is the general lesson of P9-F4?**
+
+Never await a library's close, or any cleanup, without a bound. Cleanup paths are the least tested code in a library and run exactly when the other side has already gone away. An unbounded `await` there turns a recoverable fault into a silent, permanent stop, and silence is the worst failure mode for a monitoring system: no error, no incident, a gauge still saying "connected". Destroy instead of closing gracefully when the peer is gone, or race the close against a timeout, and put the reporting (`onError`, counters) before any step that can hang.
+
+**38. Why must the system be "settled" before each fault?**
 
 Two overlapping recoveries can hide each other: a second fault during the first one's catch-up could be blamed for the first's loss, or its own loss masked by the first's backlog. So at each fault's time the test asserts readiness back, the gateway's buffer empty, ingest caught up and every machine final through the previous fault's end, and the run fails, naming the condition, if not. The schedules leave at least one simulated hour (one wall minute) between a fault's end and the next.
 
 ### Performance testing method
 
-**37. Why judge a percentile on bucket edges rather than on the printed p95?**
+**39. Why judge a percentile on bucket edges rather than on the printed p95?**
 
 A Prometheus histogram stores counts per bucket, not the observations. A p95 read from it is interpolated inside a bucket, so a printed "46 ms" may stand for anything between two edges. The suite instead judges what the histogram can say exactly: T1's "p95 ≤ 250 ms" is "at least 95 % of observations at or below the 0.25 s edge", which is why the plan chose targets that are bucket edges. The interpolated p50, p95 and p99 are printed beside it as information, labelled interpolated; Prometheus's own `histogram_quantile` agreed with the suite to 0.1 ms.
 
-**38. Why is the drain rate in P2 the lower of the median slope and the mean?**
+**40. Why is the drain rate in P2 the lower of the median slope and the mean?**
 
-The first method divided the messages stored by the time until catch-up, measured across a slower polling loop, which biased the rate upward over a 4 s drain. Now a sampler reads only `/metrics` every 100 ms, the rate between each pair of samples is a slope, and over the steady part of the drain (first and last second dropped) the median of those slopes is robust to a pause or a burst, while the mean counts everything stored. Either alone could be carried by a few outliers in one direction, so the judge takes the lower. The MES was stopped for 15 minutes instead of 5 so the drain is long enough for about 90 slopes. Final run: min(987.7, 974.8) = 974.8 msg/s against ≥ 800 (#269; 948.9 at the close).
+The first method divided the messages stored by the time until catch-up, measured across a slower polling loop, which biased the rate upward over a 4 s drain. Now a sampler reads only `/metrics` every 100 ms, the rate between each pair of samples is a slope, and over the steady part of the drain (first and last second dropped) the median of those slopes is robust to a pause or a burst, while the mean counts everything stored. Either alone could be carried by a few outliers in one direction, so the judge takes the lower. The MES was stopped for 15 minutes instead of 5 so the drain is long enough for about 90 slopes. Final run: min(987.7, 974.8) = 974.8 msg/s against ≥ 800 (#269; 938.2 at the final close on `1cecd17`).
 
-**39. What is a vacuous judge, and which ones did Phase 9 find in its own suites?**
+**41. What is a vacuous judge, and which ones did Phase 9 find in its own suites?**
 
 A check that cannot fail whatever the system does. Phase 9 found several in its own work, each by asking "what would make this fail?":
 
@@ -229,7 +241,7 @@ A check that cannot fail whatever the system does. Phase 9 found several in its 
 
 The lesson is the same as Phase 8's counterfactual for SPC: a test is only evidence if it was shown to fail on the wrong answer.
 
-**40. Why are these method changes listed for the owner's review rather than simply adopted?**
+**42. Why are these method changes listed for the owner's review rather than simply adopted?**
 
 Because they change how a target is judged after the plan fixed it, and "a target is never relaxed silently" was a plan rule. Each change is argued in ADR-0040 ("Coordinator decisions") with the number that motivated it: some made a judge stricter (T5, T6, T2), one replaced a check that couldn't fail (pending), one replaced a check that failed on correct behaviour (the buffer). The coordinator took them so the work didn't stop; the owner can reverse any of them.
 

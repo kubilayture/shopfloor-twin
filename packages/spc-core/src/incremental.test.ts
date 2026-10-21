@@ -161,7 +161,12 @@ function appendedOnly(before: readonly Reading[], after: readonly Reading[]): bo
 }
 
 describe('spc-core incremental derivation', () => {
-  it('equals the whole derivation after every change', () => {
+  // 30 s, not Vitest's default 5 s (#288): 500 runs of up to 30 operations, each checked against
+  // the whole derivation, take 1.3 to 2.6 s alone with coverage and took 5.7 to 7.2 s in
+  // `pnpm verify` at turbo's default concurrency (four runs, every one over 5 s). 30 s is four
+  // times that worst. The property is synchronous, so the timeout cannot stop it early: it only
+  // fails it afterwards when it ran too long; runs and sizes are unchanged.
+  it('equals the whole derivation after every change', { timeout: 30_000 }, () => {
     fc.assert(
       fc.property(
         universeArb,

@@ -64,7 +64,10 @@ describe('the OPC UA identities (ADR-0038)', () => {
   });
 });
 
-describe('ensureOpcuaPki, the pki step', () => {
+// 15 s per test, not Vitest's default 5 s (#288): each run of the step makes several RSA-2048
+// keys, whose time varies; a test takes up to 1.1 s alone and took up to 2.2 s in `pnpm verify`
+// at turbo's default concurrency. 15 s is about seven times that worst.
+describe('ensureOpcuaPki, the pki step', { timeout: 15_000 }, () => {
   it('makes a key and a certificate per identity with the URI, DNS names, key usage and EKU', async () => {
     const result = await ensureOpcuaPki(roots);
     expect(result.identities.map((i) => i.action)).toEqual(Array(7).fill('created'));

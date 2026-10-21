@@ -17,6 +17,12 @@ pnpm verify
 
 `pnpm install` also installs a git pre-commit hook (lefthook) that formats and lints the files you stage. To skip it for one commit in an emergency: `git commit --no-verify`. CI runs the same checks (from #4).
 
+`pnpm verify` runs turbo at its default concurrency, every workspace's tasks side by side; the gate runs `pnpm verify --concurrency=1`. Both must pass (#288). Under the default concurrency a test runs three to five times slower than alone, so test timeouts follow one rule:
+
+- **Workspace-wide timeouts** only where the whole suite is slow by nature: `apps/mes-server` and `apps/edge-gateway` 120 s (processes and containers), `apps/simulator` 60 s (OPC UA and Modbus servers, real-clock runs), `packages/fc-seed` 60 s (child Vitest runs), `apps/web` 30 s (jsdom screens beside the Testcontainers suites). Everywhere else Vitest's default 5 s stays, so a hang in a fast test still fails fast.
+- **An explicit timeout on the test** (or its `describe`) when it takes more than about 2 s in `pnpm verify` at the default concurrency, sized at least four times the worst time measured there, with the measurement in a comment beside it. Runs and sizes stay as they are. Since #288: `packages/spc-core/src/incremental.test.ts` "equals the whole derivation after every change" (30 s), `packages/shift-calendar/src/instances.test.ts` "property: buckets tile the range…" (15 s) and `packages/pki/src/pki.test.ts` "ensureOpcuaPki, the pki step" (15 s per test).
+- A synchronous property (one `fc.assert` without `await`) can't be stopped by its timeout: Vitest fails it only after it has run. Its timeout is a budget, not a hang guard.
+
 ### Property seeds: reproducing a failing property run (#276, P10-01)
 
 The property tests (fast-check) of the nine workspaces (verify prints ten seed lines: the nine fast-check workspaces plus `@shopfloor/fc-seed`'s own suite; P10-10 records the nine, the tenth is expected) that use it (`apps/mes-server`, `apps/simulator`, `packages/alarm-core`, `contracts`, `oee-core`, `shift-calendar`, `sim-core`, `spc-core`, `trace-core`) run with one seed per workspace and run, set by `@shopfloor/fc-seed` (registered in each `vitest.config.ts` as `...fcSeed`; a guard test in `packages/fc-seed/src/seed.test.ts` fails when a workspace listing `fast-check` lacks the registration). Each test run prints it once per workspace, before the tests:

@@ -89,36 +89,46 @@ describe('shift instances and buckets from the calendar (#120, moved here by #14
     );
   });
 
-  it('property: buckets tile the range in whole hours, keyed as shiftKeyAt keys their hours', () => {
-    const monday = utc('2026-10-12T00:00:00Z');
-    fc.assert(
-      fc.property(
-        fc.integer({ min: 0, max: 21 * 24 * HOUR }),
-        fc.integer({ min: 1, max: 5 * 24 * HOUR }),
-        (offset, length) => {
-          const from = monday + offset;
-          const to = from + length;
-          const buckets = shiftBuckets(PATTERN, from, to);
-          expect(buckets.length).toBeGreaterThan(0);
-          for (const [i, bucket] of buckets.entries()) {
-            expect(hourStart(bucket.start)).toBe(bucket.start);
-            expect(hourStart(bucket.end)).toBe(bucket.end);
-            expect(bucket.end).toBeGreaterThan(bucket.start);
-            const next = buckets[i + 1];
-            if (next) expect(next.start).toBe(bucket.end);
-            for (let hour = bucket.start; hour < bucket.end; hour += HOUR) {
-              expect(shiftKeyAt(PATTERN, hour)).toBe(bucket.key);
+  // 15 s, not Vitest's default 5 s (#288): 200 runs over ranges of up to 5 days, every hour
+  // checked, take 0.7 to 0.8 s alone with coverage and took 2.4 to 2.6 s in `pnpm verify` at
+  // turbo's default concurrency, half the default. 15 s is about six times that worst; runs and
+  // sizes are unchanged.
+  it(
+    'property: buckets tile the range in whole hours, keyed as shiftKeyAt keys their hours',
+    {
+      timeout: 15_000,
+    },
+    () => {
+      const monday = utc('2026-10-12T00:00:00Z');
+      fc.assert(
+        fc.property(
+          fc.integer({ min: 0, max: 21 * 24 * HOUR }),
+          fc.integer({ min: 1, max: 5 * 24 * HOUR }),
+          (offset, length) => {
+            const from = monday + offset;
+            const to = from + length;
+            const buckets = shiftBuckets(PATTERN, from, to);
+            expect(buckets.length).toBeGreaterThan(0);
+            for (const [i, bucket] of buckets.entries()) {
+              expect(hourStart(bucket.start)).toBe(bucket.start);
+              expect(hourStart(bucket.end)).toBe(bucket.end);
+              expect(bucket.end).toBeGreaterThan(bucket.start);
+              const next = buckets[i + 1];
+              if (next) expect(next.start).toBe(bucket.end);
+              for (let hour = bucket.start; hour < bucket.end; hour += HOUR) {
+                expect(shiftKeyAt(PATTERN, hour)).toBe(bucket.key);
+              }
             }
-          }
-          expect(buckets[0]?.start).toBeLessThanOrEqual(from);
-          expect(buckets.at(-1)?.end).toBeGreaterThanOrEqual(to);
-          // The scheduled shifts are exactly the buckets that are not no-shift.
-          expect(shiftInstances(PATTERN, from, to).map((s) => [s.key, s.start, s.end])).toEqual(
-            buckets.filter((b) => b.key !== NO_SHIFT).map((b) => [b.key, b.start, b.end]),
-          );
-        },
-      ),
-      { numRuns: 200 },
-    );
-  });
+            expect(buckets[0]?.start).toBeLessThanOrEqual(from);
+            expect(buckets.at(-1)?.end).toBeGreaterThanOrEqual(to);
+            // The scheduled shifts are exactly the buckets that are not no-shift.
+            expect(shiftInstances(PATTERN, from, to).map((s) => [s.key, s.start, s.end])).toEqual(
+              buckets.filter((b) => b.key !== NO_SHIFT).map((b) => [b.key, b.start, b.end]),
+            );
+          },
+        ),
+        { numRuns: 200 },
+      );
+    },
+  );
 });

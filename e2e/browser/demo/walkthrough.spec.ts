@@ -18,7 +18,7 @@ import {
   openDemoPage,
   probeMs,
   recordScene,
-  sceneScreenshot,
+  sceneEnd,
   sim,
   simStatus,
   switchTo,
@@ -84,7 +84,7 @@ async function scene(n: number, body: () => Promise<Record<string, unknown>>): P
   const wallStart = new Date().toISOString();
   const plantStart = (await simStatus()).simTime;
   const facts = await body();
-  await sceneScreenshot(page, n, meta.id);
+  await sceneEnd(page, n, meta.id);
   await recordScene({
     n,
     id: meta.id,

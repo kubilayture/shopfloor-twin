@@ -25,6 +25,12 @@ export const RECORDING = {
    * for the whole walkthrough (docs/demo.md, "Size probe").
    */
   video: { width: 960, height: 540 },
+  /**
+   * How long the recording holds each scene's last view (e2e/browser/demo/demo.ts `sceneEnd`). The
+   * first recording, without it, showed scenes 6 and 8 for under a second each (their facts exist
+   * long before they open).
+   */
+  dwellMs: 3_000,
   /** Where `pnpm demo:record` publishes (relative to the repository). */
   dir: 'docs/demo',
   videoFile: 'shopfloor-twin-v1.webm',

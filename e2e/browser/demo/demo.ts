@@ -98,9 +98,16 @@ export async function closeDemoPage(page: Page): Promise<void> {
   if (video && recordDir !== '') await video.saveAs(join(recordDir, 'walkthrough.webm'));
 }
 
-/** Under `pnpm demo:record`, the scene's screenshot (`NN-<scene>.png`) as the scene ends. */
-export async function sceneScreenshot(page: Page, n: number, id: string): Promise<void> {
-  if (recordDir !== '') await page.screenshot({ path: join(recordDir, screenshotName(n, id)) });
+/**
+ * Under `pnpm demo:record`, as the scene ends: its screenshot (`NN-<scene>.png`), then its last
+ * view held for RECORDING.dwellMs (the page left as the assertions left it; nothing is done on
+ * it), so the video shows what the scene asserted. A hold before a wait for a plant time (scenes
+ * 4, 5 and 6, scene 7's close) only shortens that wait; the others lengthen the video.
+ */
+export async function sceneEnd(page: Page, n: number, id: string): Promise<void> {
+  if (recordDir === '') return;
+  await page.screenshot({ path: join(recordDir, screenshotName(n, id)) });
+  await sleep(RECORDING.dwellMs);
 }
 
 /** The size probe (DEMO_RECORD_PROBE_MS): waits until the video is that long. */

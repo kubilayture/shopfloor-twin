@@ -777,3 +777,6 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     | Step   | Result | Time  | Notes                                   |
     | ------ | ------ | ----- | --------------------------------------- |
     | verify | passed | 583 s | `pnpm verify --concurrency=1`, uncached |
+
+  - **Review of PR #271** (changes requested; the design, the UI path and the stack scope held), fixed in `8c8b22e`: (1) the washer note reworded (above; #272, P9-F4, investigates it, not fixed here); (2) the runbook's run time is about 85 s; (3) no later Monday shift is free in the first run (B by the timeline, C by `2-actions.spec.ts`); (4) the absence check counts only records of the second run's epoch (the ground truth's `epoch`); (5) `SIM_START` is passed to the one Compose call that recreates the simulator (`Stack.compose` takes an `env`), not set in `process.env`.
+    - **Epoch-filter mutant killed** by a probe (not committed, on `console270b`): after the passing second run, the simulator recreated a third time and `console-shift` run again without the absence action, so only the second run's epoch holds an ASM-01 `Idle NO-OPERATOR` record from 14:00. With the filter the third run fails (last seen: `asm-01#1792542846 Idle/NO-OPERATOR from 11:00Z`, the previous epoch); with the filter removed it passes in 1.2 s on that previous epoch's record.

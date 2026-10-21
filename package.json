@@ -37,6 +37,8 @@
     "test:perf": "pnpm --filter @shopfloor/e2e test:perf",
     "test:console": "pnpm --filter @shopfloor/e2e test:console",
     "test:resilience": "pnpm --filter @shopfloor/e2e test:resilience",
+    "demo": "pnpm --filter @shopfloor/e2e demo",
+    "demo:probe": "pnpm --filter @shopfloor/e2e demo:probe",
     "gate": "node scripts/gate.ts",
     "playwright:install": "pnpm --filter @shopfloor/e2e playwright:install"
   },

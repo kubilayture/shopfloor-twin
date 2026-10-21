@@ -1,0 +1,43 @@
+# ERP mock dataset of the demo (#281, Phase 10 plan "Demo scenario (P10-06)", docs/demo.md): the
+# orders the walkthrough releases and dispatches on Monday shift A with the timeline
+# config/scenarios/demo-v1.yaml. Served by the ERP mock with compose.demo.yml (ERP_DATASET); lots
+# come from config/plant/stock.yaml. Same format as config/erp/orders.yaml.
+#
+# Why its own dataset: config/erp/orders.yaml has only 100 units startable before shift B (ORD-1001
+# and ORD-1002), exactly the SPC baseline's 100 first-pass readings, so no leak-test drift after the
+# baseline could show an episode in shift A.
+#
+# Every order starts at 06:15 (plannedStart, the dispatch's NotBefore), one minute after the
+# timeline's pause at 06:14: a job accepted at any time before it starts at 06:15, so production
+# doesn't depend on how fast the walkthrough dispatches (probe D1, docs/demo.md).
+
+orders:
+  # Small and first on CNC-01: the first completed order and its carton.
+  - orderNumber: PO-2610-301
+    revision: 1
+    product: VB-100
+    quantity: 20
+    plannedStart: '2026-10-12T06:15:00+03:00'
+    dueDate: '2026-10-12T12:00:00+03:00'
+    priority: 1
+  - orderNumber: PO-2610-302
+    revision: 1
+    product: VB-100
+    quantity: 60
+    plannedStart: '2026-10-12T06:15:00+03:00'
+    dueDate: '2026-10-12T14:00:00+03:00'
+    priority: 2
+  - orderNumber: PO-2610-303
+    revision: 1
+    product: VB-100
+    quantity: 60
+    plannedStart: '2026-10-12T06:15:00+03:00'
+    dueDate: '2026-10-12T22:00:00+03:00'
+    priority: 3
+  - orderNumber: PO-2610-304
+    revision: 1
+    product: VB-100
+    quantity: 40
+    plannedStart: '2026-10-12T06:15:00+03:00'
+    dueDate: '2026-10-12T22:00:00+03:00'
+    priority: 3

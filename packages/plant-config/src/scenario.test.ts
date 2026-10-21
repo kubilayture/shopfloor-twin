@@ -176,7 +176,12 @@ describe('scenario schema (#235)', () => {
 
   it('parses the committed timelines, which together use every action kind', async () => {
     const kinds = new Set<string>();
-    for (const name of ['monday-breakdown-and-recovery', 'monday-orders-dispatch']) {
+    for (const name of [
+      'demo-v1',
+      'demo-v1-probe',
+      'monday-breakdown-and-recovery',
+      'monday-orders-dispatch',
+    ]) {
       const read = await readScenarioFile(join(SCENARIOS, `${name}.yaml`));
       if (!read.ok) throw new Error(read.message);
       for (const entry of read.scenario.timeline ?? []) kinds.add(entry.action);

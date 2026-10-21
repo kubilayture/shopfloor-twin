@@ -1,0 +1,66 @@
+# Probe D1 of the demo (#281, Phase 10 plan "Demo scenario (P10-06)", docs/demo.md): the
+# headless-only twin of demo-v1.yaml. The same entries, plus a `dispatch` entry for each order the
+# walkthrough releases (config/erp/demo-v1.yaml), on the CNC the MES's dispatch rule chooses, with
+# the order's planned start as NotBefore. A live run refuses it (dispatch entries are headless only).
+#
+# `pnpm demo:probe` (e2e/src/demo-probe.ts) runs it in each acceptance-time variant (NotBefore
+# moved to the later of the planned start and the acceptance time: a job accepted at T on an idle
+# CNC starts at T, as one given at the start with NotBefore T) and reads each scene's facts from the
+# ground truth. Headless:
+#   pnpm sim:headless --timeline demo-v1-probe
+
+description: >-
+  Probe D1 of the demo: demo-v1's actions with the four demo orders dispatched as the MES's
+  dispatch rule places them, started at their planned start 06:15
+seed: 20261012
+start: '2026-10-12T06:00:00+03:00'
+days: 1
+config: config/plant
+production: orders
+
+timeline:
+  - action: dispatch
+    commandId: PO-2610-301~OP10~1
+    machine: cnc-01
+    orderId: PO-2610-301
+    product: VB-100
+    quantity: 20
+    notBefore: '2026-10-12T06:15:00+03:00'
+  - action: dispatch
+    commandId: PO-2610-302~OP10~1
+    machine: cnc-02
+    orderId: PO-2610-302
+    product: VB-100
+    quantity: 60
+    notBefore: '2026-10-12T06:15:00+03:00'
+  - action: dispatch
+    commandId: PO-2610-303~OP10~1
+    machine: cnc-01
+    orderId: PO-2610-303
+    product: VB-100
+    quantity: 60
+    notBefore: '2026-10-12T06:15:00+03:00'
+  - action: dispatch
+    commandId: PO-2610-304~OP10~1
+    machine: cnc-02
+    orderId: PO-2610-304
+    product: VB-100
+    quantity: 40
+    notBefore: '2026-10-12T06:15:00+03:00'
+  # The entries of demo-v1.yaml, unchanged (e2e/src/demo-plan.test.ts compares them).
+  - { at: '2026-10-12T06:14:00+03:00', action: pause }
+  - at: '2026-10-12T07:15:00+03:00'
+    action: failure
+    machine: cnc-01
+    code: SPINDLE-OVERLOAD
+    repairMs: 1800000
+  - { at: '2026-10-12T08:15:00+03:00', action: lot-block, lot: BL100-2610-01 }
+  - { at: '2026-10-12T08:15:00+03:00', action: lot-block, lot: BL100-2610-02 }
+  - { at: '2026-10-12T08:30:00+03:00', action: lot-release, lot: BL100-2610-01 }
+  - { at: '2026-10-12T08:30:00+03:00', action: lot-release, lot: BL100-2610-02 }
+  - { at: '2026-10-12T09:00:00+03:00', action: tool-breakage, machine: cnc-02 }
+  - at: '2026-10-12T11:45:00+03:00'
+    action: leak-drift
+    machine: lkt-01
+    until: '2026-10-12T13:00:00+03:00'
+    shift: 0.6

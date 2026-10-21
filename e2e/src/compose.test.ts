@@ -148,11 +148,12 @@ describe('the hardened Compose (P9-14, checklist S8)', () => {
       'docker-compose.yml',
       'compose.dev-ports.yml',
       'compose.observability.yml',
+      'compose.demo.yml',
       ...(await readdir(join(REPO, 'e2e')))
         .filter((f) => /^compose\..*\.yml$/.test(f))
         .map((f) => `e2e/${f}`),
     ];
-    expect(files.length).toBeGreaterThanOrEqual(8);
+    expect(files.length).toBeGreaterThanOrEqual(9);
     for (const file of files) {
       for (const [name, service] of Object.entries(await services(file))) {
         const raw = service as Record<string, unknown>;

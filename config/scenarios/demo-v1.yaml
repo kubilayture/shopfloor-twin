@@ -1,0 +1,44 @@
+# The demo's timeline (#281, Phase 10 plan "Demo scenario (P10-06)", docs/demo.md): Monday shift A
+# in orders mode, live-playable (no `dispatch` entries: the MES dispatches through LoadOrder). Run
+# with compose.demo.yml, which sets SIM_PRODUCTION=orders, SIM_TIMELINE=demo-v1, this seed and
+# start, and the ERP dataset config/erp/demo-v1.yaml; `pnpm demo` walks through it and asserts each
+# scene. Its headless-only twin with the walkthrough's dispatches is demo-v1-probe.yaml (probe D1).
+#
+# The plant actions are at fixed simulated times. Production depends on when the MES's LoadOrders
+# arrive, so the event log differs between runs; but every demo order starts at 06:15 (its planned
+# start) and the pause at 06:14 holds the run until the console resumes it, so a job accepted at any
+# time before the pause starts at 06:15 and the plant's facts are the same in every run.
+
+description: >-
+  The demo's Monday: four orders released and dispatched before 06:15, the run paused at 06:14 for
+  the console, a spindle overload on CNC-01 and its repair, both BLANK-100 lots blocked and
+  released (OP10 starved), a broken tool on CNC-02, and a leak-test drift on LKT-01 after the SPC
+  baseline
+seed: 20261012
+start: '2026-10-12T06:00:00+03:00'
+days: 1
+config: config/plant
+production: orders
+
+timeline:
+  # Infrastructure only: the run waits here until scene 3 resumes it from the console.
+  - { at: '2026-10-12T06:14:00+03:00', action: pause }
+  # An alarm, a breakdown and an availability loss on CNC-01 (scenes 4 and 5).
+  - at: '2026-10-12T07:15:00+03:00'
+    action: failure
+    machine: cnc-01
+    code: SPINDLE-OVERLOAD
+    repairMs: 1800000
+  # Every lot of OP10's blank blocked for 15 minutes: OP10 starved MATERIAL:BLANK-100.
+  - { at: '2026-10-12T08:15:00+03:00', action: lot-block, lot: BL100-2610-01 }
+  - { at: '2026-10-12T08:15:00+03:00', action: lot-block, lot: BL100-2610-02 }
+  - { at: '2026-10-12T08:30:00+03:00', action: lot-release, lot: BL100-2610-01 }
+  - { at: '2026-10-12T08:30:00+03:00', action: lot-release, lot: BL100-2610-02 }
+  # A broken tool: a TOOL-CHANGE setup on CNC-02.
+  - { at: '2026-10-12T09:00:00+03:00', action: tool-breakage, machine: cnc-02 }
+  # After the SPC baseline (the 100th first-pass reading, 11:37 by probe D1): the episode of scene 6.
+  - at: '2026-10-12T11:45:00+03:00'
+    action: leak-drift
+    machine: lkt-01
+    until: '2026-10-12T13:00:00+03:00'
+    shift: 0.6

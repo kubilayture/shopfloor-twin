@@ -72,7 +72,12 @@ describe('scenario.json and timelines, one schema (#235)', () => {
   });
 
   it('finds a committed timeline by name, anything else as a path', () => {
-    expect(timelineNames()).toEqual(['monday-breakdown-and-recovery', 'monday-orders-dispatch']);
+    expect(timelineNames()).toEqual([
+      'demo-v1',
+      'demo-v1-probe',
+      'monday-breakdown-and-recovery',
+      'monday-orders-dispatch',
+    ]);
     expect(timelinePath('monday-orders-dispatch', '/x')).toBe(
       join(SCENARIOS, 'monday-orders-dispatch.yaml'),
     );

@@ -32,6 +32,9 @@ import { ManualClock } from './testing.ts';
 
 const EXAMPLE = join(SCENARIOS, 'monday-breakdown-and-recovery.yaml');
 const HEADLESS_ONLY = join(SCENARIOS, 'monday-orders-dispatch.yaml');
+/** The demo's timeline and its headless-only twin of probe D1 (#281). */
+const DEMO = join(SCENARIOS, 'demo-v1.yaml');
+const DEMO_PROBE = join(SCENARIOS, 'demo-v1-probe.yaml');
 
 let folder: string;
 let config: PlantConfig;
@@ -226,6 +229,38 @@ describe('loading a live timeline (#235)', () => {
     expect(run.actions()).toEqual([]);
     // The same file runs headless.
     expect((await loadTimeline(HEADLESS_ONLY)).options.dispatches).toHaveLength(3);
+  });
+
+  it("loads the demo's timeline live in an orders run, and refuses its probe twin (#281)", async () => {
+    const make = (scenario: Scenario) => {
+      const plan = scenarioPlan(scenario);
+      return createLiveRun({
+        config,
+        seed: plan.seed,
+        start: plan.start,
+        production: 'orders',
+        clock: new ManualClock(),
+      });
+    };
+    const demo = await readScenarioFile(DEMO);
+    if (!demo.ok) throw new Error(demo.message);
+    const run = make(demo.scenario);
+    expect(run.loadTimeline(demo.scenario)).toMatchObject({ ok: true });
+    expect(run.injections().map((i) => i.machine)).toEqual(['cnc-01']);
+    expect(run.drifts().map((d) => d.machine)).toEqual(['lkt-01']);
+    expect(run.actions().map((a) => a.kind)).toEqual([
+      'lot-block',
+      'lot-block',
+      'lot-release',
+      'lot-release',
+      'tool-breakage',
+    ]);
+    const probe = await readScenarioFile(DEMO_PROBE);
+    if (!probe.ok) throw new Error(probe.message);
+    expect(make(probe.scenario).loadTimeline(probe.scenario)).toMatchObject({
+      ok: false,
+      code: 'dispatch',
+    });
   });
 
   it('is accepted only while idle, once, for the run it names, and all or nothing', () => {

@@ -1,0 +1,29 @@
+# The demo (#281, docs/demo.md): an override of docker-compose.yml that runs Monday shift A of the
+# timeline config/scenarios/demo-v1.yaml in orders mode with its own ERP dataset. Use it in a
+# Compose project of its own, never the dev stack's:
+#
+#   docker compose -p shopfloor-demo -f docker-compose.yml -f compose.demo.yml up -d --wait
+#   docker compose -p shopfloor-demo -f docker-compose.yml -f compose.demo.yml down --volumes
+#
+# `pnpm demo` (e2e/src/demo.ts) uses it too, with e2e/compose.reconcile.yml's ephemeral ports.
+# It publishes nothing and mounts nothing of its own: the dataset is in the ERP mock's image
+# (config/erp), the timeline in the simulator's (config/scenarios).
+
+services:
+  simulator:
+    environment:
+      # The timeline's own run: it is refused for another seed, start or production mode.
+      SIM_SEED: '20261012'
+      SIM_START: '2026-10-12T06:00:00+03:00'
+      SIM_PRODUCTION: orders
+      SIM_TIMELINE: demo-v1
+      # Idle until started: from the console (by hand) or by the walkthrough's harness.
+      SIM_AUTOSTART: 'false'
+  mes:
+    environment:
+      # Line OEE (#232): in orders mode only in-progress time is planned line time.
+      MES_PRODUCTION_MODE: orders
+  erp:
+    environment:
+      # The demo's four orders (config/erp/demo-v1.yaml) instead of config/erp/orders.yaml.
+      ERP_DATASET: /app/config/erp/demo-v1.yaml

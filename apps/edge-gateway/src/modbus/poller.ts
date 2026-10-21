@@ -69,8 +69,9 @@ export async function connectModbus(
 ): Promise<RegisterReader> {
   const client = new ModbusRTU();
   // modbus-serial's close() calls back on the socket's next 'close' event only, so it never settles
-  // for a socket the device has closed already (a simulator recreated, #272). destroy() cancels
-  // what is pending, closes the socket and calls back at once, whatever the socket's state.
+  // for a socket the device has closed already (a simulator recreated, #272). destroy() clears
+  // pending requests' timers (an in-flight read then never settles), destroys the socket and
+  // calls back at once, whatever the socket's state.
   const destroy = () =>
     new Promise<void>((resolve) => {
       client.destroy(() => {
@@ -161,6 +162,10 @@ export class ModbusPoller {
     this.#schedule(0);
   }
 
+  /**
+   * Stops polling and closes the connection. Doesn't wait for a poll in flight: a read pending when
+   * the connection is destroyed never settles (#272), and nothing awaits that poll.
+   */
   async stop(): Promise<void> {
     this.#running = false;
     this.#started = true;

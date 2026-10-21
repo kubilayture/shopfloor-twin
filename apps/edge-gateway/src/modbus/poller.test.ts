@@ -532,25 +532,29 @@ describe('connectModbus on a connection the device closed (#272)', () => {
   });
 });
 
+// Ports chosen at runtime by `startSimulator` (#212). A Modbus answer may take this long on a
+// loaded machine before the poll counts as failed: two slow answers in a row must not look like
+// the silence the test injects.
+const MODBUS_TIMEOUT_MS = 2_000;
+
+/** The washer's tables from the plant configuration, as the gateway derives them. */
+async function loadWasherTables(): Promise<ReturnType<typeof modbusTables>> {
+  const loaded = await loadPlantConfig(resolve(import.meta.dirname, '../../../../config/plant'));
+  if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
+  const failures = loaded.config.failures.equipment['wsh-01'];
+  return modbusTables({
+    products: loaded.config.products.products.map((p) => p.id),
+    failureCodes: failures?.failureModes.map((m) => m.code) ?? [],
+    minorStopCauses: failures?.minorStops.causes ?? [],
+  });
+}
+
 describe('Modbus poller against the real simulator (#77)', () => {
-  // Ports chosen at runtime by `startSimulator` (#212). A Modbus answer may take this long on a
-  // loaded machine before the poll counts as failed: two slow answers in a row must not look like
-  // the silence the test injects.
-  const MODBUS_TIMEOUT_MS = 2_000;
-  /** The new run's snapshot after the simulator is ready again: one poll and one timeout, with room. */
-  const REANCHOR_BOUND_MS = 2_000;
   let simulator: RunningSimulator | undefined;
   let washerTables: ReturnType<typeof modbusTables>;
 
   beforeAll(async () => {
-    const loaded = await loadPlantConfig(resolve(import.meta.dirname, '../../../../config/plant'));
-    if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
-    const failures = loaded.config.failures.equipment['wsh-01'];
-    washerTables = modbusTables({
-      products: loaded.config.products.products.map((p) => p.id),
-      failureCodes: failures?.failureModes.map((m) => m.code) ?? [],
-      minorStopCauses: failures?.minorStops.causes ?? [],
-    });
+    washerTables = await loadWasherTables();
     simulator = await startSimulator();
   }, 180_000);
 
@@ -679,8 +683,25 @@ describe('Modbus poller against the real simulator (#77)', () => {
       expect(snapshot.value.active, `at ${String(snapshot.asOfSeq)}`).toEqual([...active].sort());
     }
   }, 240_000);
+});
 
-  it("publishes the new run's state snapshot within a bound after the simulator restarts with a new epoch (#272)", async () => {
+describe('Modbus poller across a simulator restart with a new epoch (#272)', () => {
+  /** The new run's snapshot after the simulator is ready again: one poll and one timeout, with room. */
+  const REANCHOR_BOUND_MS = 2_000;
+  // A simulator of its own: the test stops it and starts another one on the same ports.
+  let simulator: RunningSimulator | undefined;
+  let washerTables: ReturnType<typeof modbusTables>;
+
+  beforeAll(async () => {
+    washerTables = await loadWasherTables();
+    simulator = await startSimulator();
+  }, 180_000);
+
+  afterAll(async () => {
+    await simulator?.stop();
+  });
+
+  it("publishes the new run's state snapshot within a bound after the simulator restarts", async () => {
     const old = simulator;
     if (!old) throw new Error('no simulator');
     const published: { at: number; message: UnsPublication['message'] }[] = [];
@@ -691,8 +712,8 @@ describe('Modbus poller against the real simulator (#77)', () => {
       tables: washerTables,
       scaling: { bath: 0.1, conveyor: 0.01 },
       alarmSeverity: 700,
-      // As the stack's gateway: MODBUS_POLL_MS 250, so a 250 ms timeout (main.ts).
-      connect: () => connectModbus('127.0.0.1', old.modbusPort, 250),
+      // The stack's poll period; the timeout of the other real-simulator test, for a loaded machine.
+      connect: () => connectModbus('127.0.0.1', old.modbusPort, MODBUS_TIMEOUT_MS),
       publisher: {
         publish: (p) => {
           published.push({ at: Date.now(), message: p.message });

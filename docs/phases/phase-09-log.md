@@ -801,7 +801,7 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     - The MES side was correct. Its unit test passes on `main`: the current state moves to the new epoch at that epoch's snapshot, after telemetry opened it.
   - **Fix:**
     - A failed poll drops its connection at once and doesn't await its close.
-    - `connectModbus` closes with `destroy()`, which cancels pending requests, destroys the socket and calls back at once.
+    - `connectModbus` closes with `destroy()`, which clears pending requests' timers (an in-flight read then never settles), destroys the socket and calls back at once. `stop()` doesn't wait for a poll in flight.
     - A failed connect destroys its socket. Before, a timed-out connect left its socket connecting and leaked it.
     - Golden and reconcile behaviour is unchanged: only connection handling changed.
   - **Tests** (`apps/edge-gateway/src/modbus/poller.test.ts`, 15 tests, 4 new; `apps/mes-server/src/modules/equipment/equipment.test.ts`, 1 new):

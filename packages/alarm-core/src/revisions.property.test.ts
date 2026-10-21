@@ -202,5 +202,6 @@ describe('revision completeness', () => {
       { numRuns: 1_000, examples: [[SEED_527283026]] },
     );
     // Each run recomputes every hour twice; on a loaded CI runner 1,000 runs take several seconds.
+    // Measured (#288): 1.45 s worst in pnpm verify at the default concurrency, 0.37–0.44 s alone.
   }, 60_000);
 });

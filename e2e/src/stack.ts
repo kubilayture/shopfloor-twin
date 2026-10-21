@@ -128,8 +128,15 @@ export class Stack {
     return value;
   }
 
-  /** Runs `docker compose …` for this project; resolves with stdout. */
-  async compose(args: readonly string[], timeoutMs = 600_000): Promise<string> {
+  /**
+   * Runs `docker compose …` for this project; resolves with stdout. `env` overrides variables of
+   * the env file for this call only (Compose takes the shell's value over the env file's).
+   */
+  async compose(
+    args: readonly string[],
+    timeoutMs = 600_000,
+    env?: Readonly<Record<string, string>>,
+  ): Promise<string> {
     if (this.#dir === undefined) throw new Error('prepare() first');
     const { stdout } = await run(
       'docker',
@@ -149,7 +156,12 @@ export class Stack {
         ...this.#profiles.flatMap((profile) => ['--profile', profile]),
         ...args,
       ],
-      { cwd: REPO, maxBuffer: 256 * 1024 * 1024, timeout: timeoutMs },
+      {
+        cwd: REPO,
+        maxBuffer: 256 * 1024 * 1024,
+        timeout: timeoutMs,
+        ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
+      },
     );
     return stdout;
   }

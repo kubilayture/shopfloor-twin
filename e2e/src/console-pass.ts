@@ -29,8 +29,9 @@
  * seed, a new device epoch; the MES, gateway and web keep running), the gateway reconnected and
  * every OPC UA machine anchored in the MES in the new epoch, and Playwright's `console-shift` project
  * (e2e/browser/console-shift): both ASM-01 operators of shift B marked absent through the console
- * leave ASM-01 `Idle` `NO-OPERATOR` from 14:00 in the MES. The first run can't show it in bounded
- * time: its timeline already marks shift B absent, and shift C starts 16 simulated hours later.
+ * leave ASM-01 `Idle` `NO-OPERATOR` from 14:00 in the MES. The first run can't show it: its
+ * timeline marks shift B absent and 2-actions.spec.ts marks shift C absent, so no later Monday
+ * shift is free.
  *
  * The users are made through the API by the bootstrap admin (generated passwords, never written to
  * a file): `admin` and one user per other role.
@@ -194,13 +195,14 @@ try {
   const code = await runBrowser('console', { ...browserEnv, CONSOLE_SIM_URL: simBase });
   if (code !== 0) throw new Error(`the console Playwright run failed (exit ${String(code)})`);
 
-  // The second simulator run (#270): only the simulator recreated, idle at 13:40. The shell's
-  // SIM_START takes precedence over the env file's in Compose's interpolation.
+  // The second simulator run (#270): only the simulator recreated, idle at 13:40. This call's
+  // SIM_START takes precedence over the env file's in Compose's interpolation; later calls (logs,
+  // down) recreate nothing, so they don't need it.
   log(`recreating the simulator idle at ${SHIFT_RUN_START} (a second run, a new epoch)`);
-  process.env.SIM_START = SHIFT_RUN_START;
   await stack.compose(
     ['up', '--detach', '--wait', '--no-build', '--no-deps', '--force-recreate', 'simulator'],
     300_000,
+    { SIM_START: SHIFT_RUN_START },
   );
   const shiftSimBase = await stack.url('simulator', 4800);
   const shiftSim = new SimulatorClient(shiftSimBase, stack.value('SIM_CONTROL_TOKEN'));
@@ -224,9 +226,10 @@ try {
   const supervisor = users.get(ROLE_USERS.supervisor.username);
   if (!supervisor) throw new Error('the supervisor was not created');
   const mes = new MesClient(mesBase, supervisor.cookie);
-  // The OPC UA machines (ASM-01 among them) are anchored at once from their servers' start-up
-  // state; the washer (Modbus) keeps its old epoch in the MES until its first fact of the new
-  // run, so it isn't waited for here.
+  // Observed: wsh-01's `current` was still in the old epoch when the OPC UA machines had
+  // re-anchored; the Modbus path republishes a snapshot with `deviceEpoch` on an epoch change, so
+  // this is under investigation in #272 (P9-F4); the wait covers the OPC UA machines only
+  // (ASM-01 among them).
   let anchors = 'not read';
   await until(
     `every OPC UA machine anchored in the MES in the second run's epoch ${String(truth.epoch)}`,

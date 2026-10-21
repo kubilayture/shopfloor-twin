@@ -20,10 +20,11 @@ export const RECORDING = {
   /** The page's viewport: the walkthrough's (Playwright's Desktop Chrome). */
   viewport: { width: 1280, height: 720 },
   /**
-   * The video's size. The plan's first fallback over the size limit is 960 × 540 (scaled from the
-   * 1280 × 720 viewport by Playwright); the 60 s probe (docs/demo.md) chose this one.
+   * The video's size: the plan's first fallback over the size limit, 960 × 540 (the 1280 × 720
+   * viewport scaled down by Playwright). The 60 s probe at 1280 × 720 extrapolated to about 50 MiB
+   * for the whole walkthrough (docs/demo.md, "Size probe").
    */
-  video: { width: 1280, height: 720 },
+  video: { width: 960, height: 540 },
   /** Where `pnpm demo:record` publishes (relative to the repository). */
   dir: 'docs/demo',
   videoFile: 'shopfloor-twin-v1.webm',
@@ -42,14 +43,17 @@ export const RECORDING = {
 
 /**
  * The scripted re-encode (the plan's second fallback over the size limit), with Playwright's
- * bundled ffmpeg (VP9 in, VP9 out; it has no other codec): constant quality, two-pass-free, good
- * deadline. Applied by `pnpm demo:record` only when the recorded video is over the size limit.
+ * bundled ffmpeg (it decodes and encodes VP9 only): one pass at constant quality (`-crf 36
+ * -b:v 0`, no bitrate cap) with libvpx's `good` deadline, where Playwright records in real time at
+ * `-crf 8` up to a bitrate cap. Same size, same frame rate, no audio. Applied by `pnpm demo:record`
+ * only when the recorded video is over the size limit. CRF 36 was chosen on the probe's video
+ * (docs/demo.md): about 1.2 MiB per minute at 960 × 540, the UI's text still sharp.
  */
 export const REENCODE_ARGS = [
   '-c:v',
   'libvpx-vp9',
   '-crf',
-  '42',
+  '36',
   '-b:v',
   '0',
   '-deadline',

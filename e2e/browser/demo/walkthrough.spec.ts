@@ -50,6 +50,8 @@ const LEAK = DEMO.drift.characteristic;
 const QUALITY_HOLD = 'urn:shopfloor:quality-hold';
 
 let page: Page;
+/** Whether beforeAll opened the page (a skipped run never does). */
+let opened = false;
 /** What one scene learnt and a later one needs. */
 const learnt: {
   firstCompleted?: string;
@@ -60,10 +62,11 @@ const learnt: {
 test.beforeAll(async ({ browser }) => {
   test.skip(!insideDemoRun(), 'runs inside pnpm demo');
   page = await (await browser.newContext()).newPage();
+  opened = true;
 });
 
 test.afterAll(async () => {
-  if (insideDemoRun()) await page.context().close();
+  if (opened) await page.context().close();
 });
 
 /** Runs one scene: waits for its plant time, runs it, records it in the scene log. */

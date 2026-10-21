@@ -25,7 +25,10 @@ import { WEB_SPKI_ENV, chromiumSpkiArgument } from '@shopfloor/test-kit/tls';
  * - `quality-final`, after the drain: a serial's trace page with its crew, holds from the drift's
  *   episode and a lot, the terminal's banners, the close refused while held and allowed after.
  * The console run (#237, `pnpm test:console`, src/console-pass.ts) has a project of its own,
- * `console` (browser/console): every `/sim/` refusal and every console action as admin.
+ * `console` (browser/console): every `/sim/` refusal and every console action as admin, and
+ * (#270) the effects of a lot block and a failure seen in the MES; then `console-shift`
+ * (browser/console-shift), on a second simulator run started at 13:40: both ASM-01 operators of
+ * shift B absent leave ASM-01 Idle NO-OPERATOR from its start.
  * The resilience suite (#243, `pnpm test:resilience`, src/resilience.ts) has `resilience`
  * (browser/resilience): the overview open through a whole run, reconnecting and current after
  * every fault.
@@ -64,7 +67,15 @@ export default defineConfig({
   projects: [
     {
       name: 'live',
-      testIgnore: ['final/**', 'orders/**', 'quality/**', 'console/**', 'tls/**', 'resilience/**'],
+      testIgnore: [
+        'final/**',
+        'orders/**',
+        'quality/**',
+        'console/**',
+        'console-shift/**',
+        'tls/**',
+        'resilience/**',
+      ],
       outputDir: join(results, 'playwright', 'live'),
       use: { ...chromium },
     },
@@ -120,6 +131,12 @@ export default defineConfig({
       name: 'console',
       testMatch: ['console/*.spec.ts', 'tls/*.spec.ts'],
       outputDir: join(results, 'playwright', 'console'),
+      use: { ...chromium },
+    },
+    {
+      name: 'console-shift',
+      testDir: './browser/console-shift',
+      outputDir: join(results, 'playwright', 'console-shift'),
       use: { ...chromium },
     },
   ],

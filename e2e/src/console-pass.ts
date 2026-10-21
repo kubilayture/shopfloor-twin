@@ -21,6 +21,17 @@
  * - the HTTPS front (P9-14, checklist S4, browser/tls): the page over TLS 1.3 with the pki step's
  *   certificate, Chromium pinned to that key alone (another certificate refused), plain HTTP to the
  *   port refused, the session cookie `__Host-` and `Secure`.
+ * - each action's effect seen in the MES (#270, P9-F3, exit criterion 4; browser/console/
+ *   4-effects.spec.ts): every lot of OP10's material blocked starves an OP10 machine with
+ *   `MATERIAL:`, and an injected failure raises its alarm at the time it was applied.
+ *
+ * Then a second simulator run (#270): the simulator alone is recreated idle at Monday 13:40 (same
+ * seed, a new device epoch; the MES, gateway and web keep running), the gateway reconnected and
+ * every OPC UA machine anchored in the MES in the new epoch, and Playwright's `console-shift` project
+ * (e2e/browser/console-shift): both ASM-01 operators of shift B marked absent through the console
+ * leave ASM-01 `Idle` `NO-OPERATOR` from 14:00 in the MES. The first run can't show it: its
+ * timeline marks shift B absent and 2-actions.spec.ts marks shift C absent, so no later Monday
+ * shift is free.
  *
  * The users are made through the API by the bootstrap admin (generated passwords, never written to
  * a file): `admin` and one user per other role.
@@ -36,7 +47,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
-import { MesClient, SimulatorClient, provisionUsers } from './clients.ts';
+import { GatewayClient, MesClient, SimulatorClient, gauge, provisionUsers } from './clients.ts';
 import { REPO, Stack, removeImages } from './stack.ts';
 
 const project = process.env.CONSOLE_PROJECT ?? 'shopfloor-console';
@@ -47,6 +58,8 @@ const RESULTS = join(REPO, 'e2e/results/console');
 /** The committed timeline's seed and start (config/scenarios/monday-breakdown-and-recovery.yaml). */
 const SEED = '20261012';
 const START = '2026-10-12T06:00:00+03:00';
+/** The second run's start (#270): 20 simulated minutes, 20 s at 60×, before shift B. */
+const SHIFT_RUN_START = '2026-10-12T13:40:00+03:00';
 const EVENTS_LIFETIME_MS = 4_000;
 /** One user per role besides the bootstrap admin. */
 const ROLE_USERS = {
@@ -80,9 +93,9 @@ async function until(what: string, check: () => Promise<boolean>, timeoutMs: num
 }
 
 let browserChild: ChildProcess | undefined;
-function runBrowser(env: Record<string, string>): Promise<number> {
+function runBrowser(project: string, env: Record<string, string>): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn('pnpm', ['exec', 'playwright', 'test', '--project', 'console'], {
+    const child = spawn('pnpm', ['exec', 'playwright', 'test', '--project', project], {
       cwd: join(REPO, 'e2e'),
       env: { ...process.env, ...env },
       stdio: 'inherit',
@@ -170,17 +183,76 @@ try {
   );
   log('users made: admin and one per other role');
 
-  const code = await runBrowser({
+  const browserEnv = {
     ...trust.env,
     RECONCILE_WEB_URL: web,
     RECONCILE_RESULTS: RESULTS,
     RECONCILE_ACCOUNTS: JSON.stringify(accounts),
-    CONSOLE_SIM_URL: simBase,
     CONSOLE_SIM_TOKEN: stack.value('SIM_CONTROL_TOKEN'),
     CONSOLE_MES_URL: mesBase,
     CONSOLE_EVENTS_LIFETIME_MS: String(EVENTS_LIFETIME_MS),
-  });
+  };
+  const code = await runBrowser('console', { ...browserEnv, CONSOLE_SIM_URL: simBase });
   if (code !== 0) throw new Error(`the console Playwright run failed (exit ${String(code)})`);
+
+  // The second simulator run (#270): only the simulator recreated, idle at 13:40. This call's
+  // SIM_START takes precedence over the env file's in Compose's interpolation; later calls (logs,
+  // down) recreate nothing, so they don't need it.
+  log(`recreating the simulator idle at ${SHIFT_RUN_START} (a second run, a new epoch)`);
+  await stack.compose(
+    ['up', '--detach', '--wait', '--no-build', '--no-deps', '--force-recreate', 'simulator'],
+    300_000,
+    { SIM_START: SHIFT_RUN_START },
+  );
+  const shiftSimBase = await stack.url('simulator', 4800);
+  const shiftSim = new SimulatorClient(shiftSimBase, stack.value('SIM_CONTROL_TOKEN'));
+  const shiftIdle = await shiftSim.status();
+  if (shiftIdle.state !== 'idle' || Date.parse(shiftIdle.simTime) !== Date.parse(SHIFT_RUN_START))
+    throw new Error(
+      `the second run must wait idle at ${SHIFT_RUN_START}: ${JSON.stringify(shiftIdle)}`,
+    );
+  const truth = await shiftSim.groundTruth();
+  const machines = Object.keys(truth.machines).sort();
+  const gateway = new GatewayClient(await stack.url('gateway', 4900));
+  await until(
+    'gateway ready with every machine connected to the second run',
+    async () => {
+      if (!(await gateway.ready())) return false;
+      const connected = gauge(await gateway.metrics(), 'gateway_device_connected');
+      return machines.every((id) => connected.get(id) === 1);
+    },
+    60_000,
+  );
+  const supervisor = users.get(ROLE_USERS.supervisor.username);
+  if (!supervisor) throw new Error('the supervisor was not created');
+  const mes = new MesClient(mesBase, supervisor.cookie);
+  // Observed: wsh-01's `current` was still in the old epoch when the OPC UA machines had
+  // re-anchored; the Modbus path republishes a snapshot with `deviceEpoch` on an epoch change, so
+  // this is under investigation in #272 (P9-F4); the wait covers the OPC UA machines only
+  // (ASM-01 among them).
+  let anchors = 'not read';
+  await until(
+    `every OPC UA machine anchored in the MES in the second run's epoch ${String(truth.epoch)}`,
+    async () => {
+      const { equipment } = await mes.equipment().catch((error: unknown) => {
+        anchors = `read failed: ${String(error)}`;
+        throw error;
+      });
+      anchors = JSON.stringify(equipment.map((e) => [e.id, e.current]));
+      const opcua = equipment.filter((e) => e.interface === 'opcua');
+      return opcua.length > 0 && opcua.every((e) => e.current?.epoch === truth.epoch);
+    },
+    60_000,
+  ).catch((error: unknown) => {
+    throw new Error(`${String(error)}; the MES holds ${anchors}`);
+  });
+  log('second run ready');
+  const shiftCode = await runBrowser('console-shift', {
+    ...browserEnv,
+    CONSOLE_SIM_URL: shiftSimBase,
+  });
+  if (shiftCode !== 0)
+    throw new Error(`the console-shift Playwright run failed (exit ${String(shiftCode)})`);
   log('CONSOLE-OK');
 } catch (error) {
   failed = true;

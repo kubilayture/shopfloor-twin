@@ -161,53 +161,47 @@ const SEED_527283026: Scenario = {
 };
 
 describe('revision completeness', () => {
-  // 10 s, not Vitest's default 5 s: 1.45 s worst in pnpm verify at the default concurrency,
-  // 0.37–0.44 s alone (#288). Runs and sizes are unchanged.
-  it(
-    'revises every hour and range a late fact changes, in every scope',
-    { timeout: 10_000 },
-    () => {
-      fc.assert(
-        fc.property(scenarioArb, ({ occurrences, pick, late, moved, closed, limit }) => {
-          const k = pick % occurrences.length;
-          const target = occurrences[k];
-          if (target === undefined) return;
-          let before: Occurrence[];
-          let fact: LateFact;
-          if (late === 'raise') {
-            before = occurrences.filter((_, i) => i !== k);
-            fact = { kind: 'raise', ...target };
-          } else {
-            const alternative = moved === null ? null : Math.min(limit, target.raisedAt + moved);
-            before = occurrences.map((o, i) => (i === k ? { ...o, clearedAt: alternative } : o));
-            fact = {
-              kind: 'end',
-              raisedAt: target.raisedAt,
-              before: alternative,
-              after: target.clearedAt,
-            };
-          }
-          const hours = new Set(
-            revisedHours(fact, prepare(occurrences, { asOf: SPAN, closedAt: closed }, CONFIG)),
-          );
-          for (const scope of ['plant', 'p1', 'p2']) {
-            const was = snapshot(before, closed, scope);
-            for (const [key, value] of snapshot(occurrences, closed, scope)) {
-              if (was.get(key) === value) continue;
-              if (key >= 0) {
-                expect(hours.has(key), `${scope} hour ${String(key / HOUR)}`).toBe(true);
-              } else {
-                const from = key === -1 ? 0 : SPAN / 2;
-                const inRange = [...hours].some((hour) => hour >= from && hour < from + SPAN / 2);
-                expect(inRange, `${scope} bad actors ${String(key)}`).toBe(true);
-              }
+  it('revises every hour and range a late fact changes, in every scope', () => {
+    fc.assert(
+      fc.property(scenarioArb, ({ occurrences, pick, late, moved, closed, limit }) => {
+        const k = pick % occurrences.length;
+        const target = occurrences[k];
+        if (target === undefined) return;
+        let before: Occurrence[];
+        let fact: LateFact;
+        if (late === 'raise') {
+          before = occurrences.filter((_, i) => i !== k);
+          fact = { kind: 'raise', ...target };
+        } else {
+          const alternative = moved === null ? null : Math.min(limit, target.raisedAt + moved);
+          before = occurrences.map((o, i) => (i === k ? { ...o, clearedAt: alternative } : o));
+          fact = {
+            kind: 'end',
+            raisedAt: target.raisedAt,
+            before: alternative,
+            after: target.clearedAt,
+          };
+        }
+        const hours = new Set(
+          revisedHours(fact, prepare(occurrences, { asOf: SPAN, closedAt: closed }, CONFIG)),
+        );
+        for (const scope of ['plant', 'p1', 'p2']) {
+          const was = snapshot(before, closed, scope);
+          for (const [key, value] of snapshot(occurrences, closed, scope)) {
+            if (was.get(key) === value) continue;
+            if (key >= 0) {
+              expect(hours.has(key), `${scope} hour ${String(key / HOUR)}`).toBe(true);
+            } else {
+              const from = key === -1 ? 0 : SPAN / 2;
+              const inRange = [...hours].some((hour) => hour >= from && hour < from + SPAN / 2);
+              expect(inRange, `${scope} bad actors ${String(key)}`).toBe(true);
             }
           }
-        }),
-        { numRuns: 1_000, examples: [[SEED_527283026]] },
-      );
-      // Each run recomputes every hour twice; on a loaded CI runner 1,000 runs take several seconds.
-    },
-    60_000,
-  );
+        }
+      }),
+      { numRuns: 1_000, examples: [[SEED_527283026]] },
+    );
+    // Each run recomputes every hour twice; on a loaded CI runner 1,000 runs take several seconds.
+    // Measured (#288): 1.45 s worst in pnpm verify at the default concurrency, 0.37–0.44 s alone.
+  }, 60_000);
 });

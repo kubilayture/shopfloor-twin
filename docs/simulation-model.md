@@ -131,7 +131,7 @@ Some changes carry no cause: `Running`, a `Starved` caused by an empty buffer, `
 
 ## Material flow
 
-Source: `apps/simulator/src/plant/line.ts`. Failures, minor stops, shifts, operators and materials are added by later issues (#24–#27). This section describes the flow they build on.
+Source: `apps/simulator/src/plant/line.ts`. This section describes the flow; failures and minor stops, shifts and operators, and material lots build on it in the sections below (#24–#27).
 
 ### Stations and buffers
 

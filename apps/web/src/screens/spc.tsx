@@ -58,6 +58,14 @@ import {
   toPlantInput,
   type QualityFailure,
 } from '../domain/quality.ts';
+import {
+  fixedText,
+  plainText,
+  pointDecimals,
+  spcPrecision,
+  spcValueText,
+  type SpcPrecision,
+} from '../domain/numbers.ts';
 import { useLiveQuality, useQualityTopic } from '../live/live-context.tsx';
 import { upsertCharacteristic, upsertSignal } from '../live/live-quality.ts';
 import type { SpcChartSearch } from '../routes/quality.ts';
@@ -183,7 +191,8 @@ export function SpcList() {
               </Link>
             </h2>
             <p className="text-sm text-slate-700">
-              {c.equipment} · {c.operation} · {c.unit} · upper specification {c.upperSpec}
+              {c.equipment} · {c.operation} · {c.unit} · upper specification{' '}
+              {plainText(c.upperSpec)}
             </p>
             <p className="mt-2 text-sm">
               {c.signals.open} open episode{c.signals.open === 1 ? '' : 's'},{' '}
@@ -317,7 +326,7 @@ function WindowPicker({
   );
 }
 
-function pointRows(points: readonly SpcPointDto[]) {
+function pointRows(points: readonly SpcPointDto[], precision: SpcPrecision, places: number) {
   return points.map((p) => (
     <tr
       key={`${String(p.epoch)}-${String(p.seq)}-${String(p.partId)}`}
@@ -326,7 +335,7 @@ function pointRows(points: readonly SpcPointDto[]) {
     >
       <td className={cell}>{timeOf(p.at)}</td>
       <td className={cell}>{p.partId}</td>
-      <td className={`${cell} font-mono`}>{p.value.value}</td>
+      <td className={`${cell} font-mono`}>{spcValueText(p.value, precision, places)}</td>
       <td className={cell}>{p.version === null ? 'not judged' : `v${String(p.version)}`}</td>
       <td className={cell}>{p.rules.length === 0 ? '–' : p.rules.join(', ')}</td>
       <td className={cell}>
@@ -350,6 +359,8 @@ function ChartFigure({
 }) {
   const [showAll, setShowAll] = useState(false);
   const points = view.points[chart];
+  const precision = spcPrecision(view.characteristic.resolution);
+  const places = pointDecimals(precision, chart);
   const option = useMemo(
     () =>
       points.length === 0
@@ -361,8 +372,17 @@ function ChartFigure({
             signals,
             retests: view.retests,
             unit: chart === 'I' || chart === 'Xbar' ? view.characteristic.unit : 'range',
+            resolution: view.characteristic.resolution,
           }),
-    [chart, points, view.limits, view.retests, view.characteristic.unit, signals],
+    [
+      chart,
+      points,
+      view.limits,
+      view.retests,
+      view.characteristic.unit,
+      view.characteristic.resolution,
+      signals,
+    ],
   );
   const firing = points.filter((p) => p.rules.length > 0);
   const provisional = points.filter((p) => !p.final).length;
@@ -390,7 +410,7 @@ function ChartFigure({
             columns={POINT_COLUMNS}
             count={firing.length}
           >
-            {pointRows(firing.slice(-50))}
+            {pointRows(firing.slice(-50), precision, places)}
           </Table>
         </div>
       ) : null}
@@ -415,7 +435,7 @@ function ChartFigure({
                 columns={POINT_COLUMNS}
                 count={points.length}
               >
-                {pointRows(points)}
+                {pointRows(points, precision, places)}
               </Table>
             </div>
           ) : null}
@@ -1021,18 +1041,20 @@ function LimitsForm({
   );
 }
 
-const value3 = (v: { value: number }): string => String(Math.round(v.value * 1000) / 1000);
-
 function LimitRow({
   limit,
+  precision,
   canLimits,
   onEnd,
 }: {
   readonly limit: LimitVersionDto;
+  readonly precision: SpcPrecision;
   readonly canLimits: boolean;
   readonly onEnd: () => void;
 }) {
   const open = limit.endedAt === null;
+  const stat = (v: LimitVersionDto['charts']['I']['centre']): string =>
+    spcValueText(v, precision, precision.statistic);
   return (
     <tr
       data-testid={`limit-version-${String(limit.version)}`}
@@ -1060,20 +1082,17 @@ function LimitRow({
         ) : null}
       </td>
       <td className={`${cell} font-mono`}>
-        {value3(limit.charts.I.lower)} / {value3(limit.charts.I.centre)} /{' '}
-        {value3(limit.charts.I.upper)}
+        {stat(limit.charts.I.lower)} / {stat(limit.charts.I.centre)} / {stat(limit.charts.I.upper)}
       </td>
       <td className={`${cell} font-mono`}>
-        {value3(limit.charts.Xbar.lower)} / {value3(limit.charts.Xbar.centre)} /{' '}
-        {value3(limit.charts.Xbar.upper)}
+        {stat(limit.charts.Xbar.lower)} / {stat(limit.charts.Xbar.centre)} /{' '}
+        {stat(limit.charts.Xbar.upper)}
       </td>
       <td className={`${cell} font-mono`}>
-        {value3(limit.charts.MR.upper)} / {value3(limit.charts.R.upper)}
+        {stat(limit.charts.MR.upper)} / {stat(limit.charts.R.upper)}
       </td>
       <td className={cell} data-testid="limit-cpk">
-        {limit.capability === null
-          ? 'n/a'
-          : (Math.round(limit.capability.cpk * 100) / 100).toFixed(2)}
+        {limit.capability === null ? 'n/a' : fixedText(limit.capability.cpk, 2)}
       </td>
       <td className={cell}>
         {canLimits && open ? (
@@ -1107,12 +1126,14 @@ function Limits({
   const canLimits = useCan('spc:limits');
   const [done, setDone] = useState<string | undefined>(undefined);
   const versions = [...chart.limits].sort((a, b) => b.version - a.version);
+  const precision = spcPrecision(characteristic.resolution);
   return (
     <Section id="spc-limits" title="Control limit versions">
       <p className="text-sm text-slate-700">
         Frozen and append-only: limits never move by themselves, so a drift can’t hide in its own
         limits. Values as lower / centre / upper; MR and R as upper limits; Cpk against the upper
-        specification ({characteristic.upperSpec} {characteristic.unit}), shown, not reconciled.
+        specification ({plainText(characteristic.upperSpec)} {characteristic.unit}), shown, not
+        reconciled.
       </p>
       <p className="mt-1 text-sm">
         Rules on I: {rulesText(characteristic.rules.I)}; MR: {rulesText(characteristic.rules.MR)};
@@ -1187,6 +1208,7 @@ function Limits({
               <LimitRow
                 key={limit.version}
                 limit={limit}
+                precision={precision}
                 canLimits={canLimits && !draft}
                 onEnd={() => {
                   setDone(undefined);

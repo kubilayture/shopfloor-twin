@@ -36,6 +36,15 @@ export function formatPlantTime(time: string | number): string {
   return dateTime.format(new Date(time));
 }
 
+/**
+ * An API time for people, in plant time as the header shows it (#295): `–` when there is none, the
+ * text as it came when it is no time (never a thrown `RangeError` from a malformed event line).
+ */
+export function plantTimeText(time: string | undefined): string {
+  if (time === undefined) return '–';
+  return Number.isFinite(Date.parse(time)) ? formatPlantTime(time) : time;
+}
+
 export function formatClockTime(time: string | number): string {
   return clockTime.format(new Date(time));
 }

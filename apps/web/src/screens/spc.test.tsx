@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { forgetCharts } from '../api/quality.ts';
 import { json, problem, sessionOf } from '../test/fixtures.ts';
-import { characteristic, chart, limitVersion, signal } from '../test/quality-fixtures.ts';
+import { characteristic, chart, limitVersion, point, signal } from '../test/quality-fixtures.ts';
 import { qualityMes, qualityState, type Write } from '../test/quality-mes.ts';
 import { renderApp, settle } from '../test/render-app.tsx';
 
@@ -106,6 +106,59 @@ describe('SPC chart page', () => {
     expect(screen.getByTestId('signal-list').dataset.count).toBe('1');
     fireEvent.change(screen.getByTestId('signal-filter'), { target: { value: 'withdrawn' } });
     expect(screen.getByTestId('signals-empty')).toBeTruthy();
+  });
+
+  it('shows values at the characteristic’s precision, never a raw double (#295)', async () => {
+    // What the MES sends for 3381 steps of 0.001 (`3381 * 0.001`), as in the demo's scene 6.
+    const noisy = { value: 3381 * 0.001, steps: '3381/1' };
+    const base = limitVersion(1);
+    const state = qualityState({
+      chart: chart({
+        points: {
+          I: [point(101, 2.1), { ...point(102, 3.381, { rules: [1] }), value: noisy }],
+          MR: [{ ...point(102, 1.281), value: { value: 0.1 + 0.2, steps: '300/1' } }],
+          Xbar: [{ ...point(105, 3.3812), value: { value: 3.3812000000000006, steps: '16906/5' } }],
+          R: [],
+        },
+        limits: [
+          limitVersion(1, {
+            charts: {
+              ...base.charts,
+              I: {
+                lower: { value: -0.25, steps: '-250/1' },
+                centre: { value: 2.0000000000000004, steps: '2000/1' },
+                upper: { value: 3.381333333333333, steps: '10144/3' },
+              },
+            },
+            capability: { sigma: { value: 0.43, steps: '430/1' }, cpu: 1.005, cpk: 1.005 },
+          }),
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', qualityMes(state).fetch);
+    const app = await renderApp('/quality/spc/leak-rate');
+    await app.open();
+    await screen.findByTestId('spc-chart-page');
+    const valueCell = (table: string, row = 0) =>
+      within(screen.getByTestId(table)).getAllByRole('row')[row + 1]?.querySelectorAll('td')[2]
+        ?.textContent;
+    // Readings and ranges at the resolution's decimals (0.001 → 3).
+    expect(valueCell('spc-signal-points-I')).toBe('3.381');
+    fireEvent.click(screen.getByTestId('spc-values-toggle-I'));
+    expect(valueCell('spc-values-I', 0)).toBe('2.100');
+    expect(valueCell('spc-values-I', 1)).toBe('3.381');
+    fireEvent.click(screen.getByTestId('spc-values-toggle-MR'));
+    expect(valueCell('spc-values-MR')).toBe('0.300');
+    // X̄ points, centre lines and limits are statistics: one decimal more.
+    fireEvent.click(screen.getByTestId('spc-values-toggle-Xbar'));
+    expect(valueCell('spc-values-Xbar')).toBe('3.3812');
+    const limits = screen.getByTestId('limit-version-1').querySelectorAll('td');
+    expect(limits[4]?.textContent).toBe('-0.2500 / 2.0000 / 3.3813');
+    expect(limits[5]?.textContent).toBe('1.4200 / 2.0000 / 2.5800');
+    expect(limits[6]?.textContent).toBe('1.6300 / 2.1100');
+    // Cpk two decimals, half-up on its decimal value (1.005.toFixed(2) would say 1.00).
+    expect(screen.getByTestId('limit-cpk').textContent).toBe('1.01');
+    expect(screen.getByTestId('spc-chart-page').textContent).not.toMatch(/\d\.\d{7,}/);
   });
 
   it('reads the chart again on a characteristic push, with If-None-Match (304 keeps it)', async () => {

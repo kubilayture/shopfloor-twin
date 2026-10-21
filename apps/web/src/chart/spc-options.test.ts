@@ -37,6 +37,7 @@ describe('SPC chart options (#203)', () => {
       signals: view.signals,
       retests: view.retests,
       unit: 'Pa/min',
+      resolution: 0.001,
     });
     const [first, second] = named(option, 'Points')?.data as {
       symbol: string;
@@ -77,6 +78,7 @@ describe('SPC chart options (#203)', () => {
       signals: view.signals,
       retests: view.retests,
       unit: 'range',
+      resolution: 0.001,
     });
     expect(named(option, '+1σ')).toBeUndefined();
     expect(named(option, 'Retests')).toBeUndefined();
@@ -127,5 +129,44 @@ describe('SPC chart options (#203)', () => {
     ]);
     expect(spcTooltip({ seriesName: 'UCL', value: [0, null] }).split('\n')[0]).toBe('UCL: –');
     expect(spcTooltip({})).toBe(': –');
+  });
+
+  it('shows values in the tooltip at the characteristic’s precision, never as a raw double (#295)', () => {
+    // 3381 steps of 0.001 is 3.3810000000000002 as a double: the MES sends that `value`.
+    const noisy = 3381 * 0.001;
+    expect(String(noisy)).toBe('3.3810000000000002');
+    const points = [
+      point(101, 2.1),
+      { ...point(102, 3.381), value: { value: noisy, steps: '3381/1' } },
+    ];
+    const [retest] = view.retests;
+    if (!retest) throw new Error('the fixture has a retest');
+    const option = (chartName: 'I' | 'Xbar') =>
+      spcChartOption({
+        chart: chartName,
+        points,
+        limits: view.limits,
+        signals: [],
+        retests: [{ ...retest, value: 0.1 + 0.2, steps: 300 }],
+        unit: 'Pa/min',
+        resolution: 0.001,
+      });
+    const data = (o: ReturnType<typeof spcChartOption>, name: string) =>
+      named(o, name)?.data as { value: [number, number]; text: string }[];
+    const shown = data(option('I'), 'Points')[1];
+    // The drawn value stays the API's double; the text is the reading at the resolution's decimals.
+    expect(shown?.value[1]).toBe(noisy);
+    expect(shown?.text).toBe('3.381');
+    expect(
+      spcTooltip({ seriesName: 'Points', value: shown?.value, data: shown }).split('\n')[0],
+    ).toBe('Points: 3.381');
+    // X̄ points are means: one decimal more.
+    expect(data(option('Xbar'), 'Points')[1]?.text).toBe('3.3810');
+    // Retests are readings: 0.1 + 0.2 (0.30000000000000004) from its 300 steps.
+    expect(data(option('I'), 'Retests')[0]?.text).toBe('0.300');
+    // A mark without its text (none drawn so today) still loses the binary noise.
+    expect(spcTooltip({ seriesName: 'UCL', value: [0, 0.1 + 0.2] }).split('\n')[0]).toBe(
+      'UCL: 0.3',
+    );
   });
 });

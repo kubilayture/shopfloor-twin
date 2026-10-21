@@ -6,6 +6,13 @@ import type {
   SpcSignalDto,
 } from '@shopfloor/contracts/mes-api';
 import type { EChartsCoreOption } from 'echarts/core';
+import {
+  plainText,
+  pointDecimals,
+  spcPrecision,
+  spcValueText,
+  type SpcPrecision,
+} from '../domain/numbers.ts';
 import { isGrowing } from '../domain/quality.ts';
 import { formatPlantTime } from '../domain/time.ts';
 
@@ -55,7 +62,7 @@ function line(
 }
 
 /** The point's mark: a signalling point red and a diamond, a provisional one hollow. */
-function pointItem(p: SpcPointDto) {
+function pointItem(p: SpcPointDto, precision: SpcPrecision, places: number) {
   const signalling = p.rules.length > 0;
   const colour = signalling
     ? SPC_COLORS.signal
@@ -68,6 +75,7 @@ function pointItem(p: SpcPointDto) {
     symbolSize: signalling ? 10 : 5,
     itemStyle: { color: colour, borderColor: colour },
     // Read by the tooltip formatter.
+    text: spcValueText(p.value, precision, places),
     partId: p.partId,
     rules: p.rules,
     final: p.final,
@@ -110,13 +118,23 @@ interface TooltipParams {
   readonly data?: unknown;
 }
 
-/** The tooltip as plain text (rich text on the canvas). */
+/**
+ * The tooltip as plain text (rich text on the canvas): a mark's value as its item's `text` (the
+ * characteristic's precision, #295), else the number without binary noise.
+ */
 export function spcTooltip(params: TooltipParams): string {
   const value = Array.isArray(params.value) ? (params.value as unknown[]) : [];
   const [t, v] = value as [number | undefined, number | null | undefined];
-  const lines = [`${params.seriesName ?? ''}: ${v === null || v === undefined ? '–' : String(v)}`];
+  const data = params.data as
+    { text?: string; partId?: number; rules?: number[]; final?: boolean } | undefined;
+  const text =
+    data && typeof data === 'object' && typeof data.text === 'string'
+      ? data.text
+      : v === null || v === undefined
+        ? '–'
+        : plainText(v);
+  const lines = [`${params.seriesName ?? ''}: ${text}`];
   if (typeof t === 'number') lines.push(formatPlantTime(t));
-  const data = params.data as { partId?: number; rules?: number[]; final?: boolean } | undefined;
   if (data && typeof data === 'object' && typeof data.partId === 'number') {
     lines.push(`Part ${String(data.partId)}${data.final ? '' : ' (provisional)'}`);
     if (data.rules && data.rules.length > 0) lines.push(`Rules: ${data.rules.join(', ')}`);
@@ -132,11 +150,15 @@ export interface SpcChartInput {
   /** Shown on I only. */
   readonly retests?: readonly SpcMeasurementDto[];
   readonly unit: string;
+  /** The characteristic's resolution: the decimals values are shown with (#295). */
+  readonly resolution: number;
 }
 
 export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
   const { chart, points, unit } = input;
   const limits = limitsOf(input.limits, chart);
+  const precision = spcPrecision(input.resolution);
+  const places = pointDecimals(precision, chart);
   const zones = chart === 'I' || chart === 'Xbar';
   const sigma = (l: Limits) => (l.upper.value - l.centre.value) / 3;
   const dashed = (name: string, data: [number, number | null][], colour: string) => ({
@@ -153,7 +175,7 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
     {
       type: 'line',
       name: 'Points',
-      data: points.map(pointItem),
+      data: points.map((p) => pointItem(p, precision, places)),
       lineStyle: { color: SPC_COLORS.provisional, width: 1 },
       itemStyle: { color: SPC_COLORS.point },
       markArea: { silent: true, data: episodeAreas(input.signals, chart) },
@@ -222,6 +244,7 @@ export function spcChartOption(input: SpcChartInput): EChartsCoreOption {
       itemStyle: { color: SPC_COLORS.retest },
       data: input.retests.map((m) => ({
         value: [Date.parse(m.at), m.value],
+        text: spcValueText(m, precision, precision.reading),
         partId: m.partId,
         final: m.final,
       })),

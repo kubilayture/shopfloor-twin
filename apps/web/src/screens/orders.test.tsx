@@ -199,6 +199,11 @@ describe('order detail', () => {
     expect(within(first).getByTestId('command-result').textContent).toContain(
       'seq after expiry 51',
     );
+    // Times in plant time as the header shows them, never raw ISO (#295).
+    for (const id of ['command-result', 'command-attempt']) {
+      expect(within(first).getAllByTestId(id)[0]?.textContent).not.toMatch(/\d{4}-\d\d-\d\dT/);
+    }
+    expect(screen.getAllByTestId('order-incident')[0]?.textContent).not.toMatch(/\d{4}-\d\d-\d\dT/);
     expect(
       within(screen.getByTestId(`command-${second.commandId}`)).getByTestId('command-state')
         .textContent,

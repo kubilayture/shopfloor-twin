@@ -17,6 +17,28 @@ pnpm verify
 
 `pnpm install` also installs a git pre-commit hook (lefthook) that formats and lints the files you stage. To skip it for one commit in an emergency: `git commit --no-verify`. CI runs the same checks (from #4).
 
+### Property seeds: reproducing a failing property run (#276, P10-01)
+
+The property tests (fast-check) of the nine workspaces that use it (`apps/mes-server`, `apps/simulator`, `packages/alarm-core`, `contracts`, `oee-core`, `shift-calendar`, `sim-core`, `spc-core`, `trace-core`) run with one seed per workspace and run, set by `@shopfloor/fc-seed` (registered in each `vitest.config.ts` as `...fcSeed`). Each test run prints it once per workspace, before the tests:
+
+```text
+@shopfloor/sim-core:test: fast-check seed @shopfloor/sim-core: 415925531 (FC_SEED=415925531 reproduces)
+```
+
+The seed is `FC_SEED` when set, otherwise a new one drawn for each run (so the properties still see new inputs every run). To reproduce a failure, take the seed line of the failing workspace from the log and rerun that workspace with it; every property without its own `seed` generates the same values again:
+
+```bash
+FC_SEED=415925531 pnpm --filter @shopfloor/sim-core test
+FC_SEED=415925531 pnpm --filter @shopfloor/sim-core exec vitest run src/random.test.ts   # one file
+FC_SEED=415925531 pnpm verify                                                              # every workspace
+```
+
+- A property's own seed wins: a call with `{ seed: … }` (the two `fc.sample` calls in `apps/mes-server/src/alarm-writes.test.ts`, seeds 156 and 1156) keeps it whatever `FC_SEED` says.
+- fast-check's failure report still prints the counterexample's `seed` and `path`; `fc.assert(…, { seed, path })` on that one property replays straight to the shrunk case.
+- Every property without its own seed starts from the run's seed, whatever ran before it, so one file (or one test, `-t`) reproduces with `FC_SEED` as the whole workspace does.
+- `FC_SEED` must be a decimal integer from −2147483648 to 2147483647; anything else fails the run before any test (`FC_SEED must be an integer …`). Empty counts as unset.
+- Turbo: `FC_SEED` is part of the `test` task's cache key (`turbo.json`), so a pinned run is cached per seed. A drawn seed isn't: a cache hit replays the log of the run that made the cache, seed line included, which is the seed that cached result ran with. `TURBO_FORCE=1` (the closing gate's `verify` runs) draws new seeds.
+
 ## Run the simulator headless
 
 Runs the plant as fast as possible, with no network servers, and writes an event log and a ground-truth summary (plan section 4).
@@ -346,6 +368,7 @@ A commit after the gate reruns the jobs its files touch, with `GATE_STEPS` (a co
 | `e2e/src/shift-checks.ts`, `e2e/src/orders-pass.ts`, `e2e/src/quality-pass.ts`, `e2e/src/stack.ts`                                  | `verify,reconcile` and `pnpm test:resilience`                                      |
 | `e2e/src/perf*`, `apps/mes-server/src/perf-replay*`                                                                                 | `verify` and `pnpm test:perf` (from P9-18)                                         |
 | `compose.observability.yml`, `config/prometheus/`, `config/grafana/`, `scripts/observability-smoke.ts`                              | `verify,smoke`, `pnpm stack:smoke:observability` and `pnpm test:perf` (from P9-18) |
+| `packages/fc-seed/` (how every property test runs, `trace.json`-shaping ones included; P10-01)                                      | `verify,golden,e2e,smoke,reconcile`                                                |
 
 ## Full stack (Compose)
 

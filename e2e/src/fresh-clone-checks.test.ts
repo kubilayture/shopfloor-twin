@@ -9,6 +9,7 @@ import {
   PLACEHOLDER,
   assertDisposable,
   baseInside,
+  mayStart,
   cleanupCommands,
   configProblems,
   disposableName,
@@ -491,5 +492,53 @@ describe("the clone's base directory", () => {
       "realpathSync(resolve(REPO, git('rev-parse', '--git-common-dir'), '..'))",
     );
     expect(source).toContain('baseInside(realpathSync(base), [realpathSync(REPO), mainCheckout])');
+  });
+});
+
+describe('after a signal (fresh-clone.ts)', () => {
+  it("starts only the cleanup's commands", () => {
+    expect(mayStart(false, false)).toBe(true);
+    expect(mayStart(false, true)).toBe(true);
+    expect(mayStart(true, true)).toBe(true);
+    expect(mayStart(true, false)).toBe(false);
+  });
+
+  it("runs the cleanup's down before the cleanup's promise is assigned, and refuses the next step", async () => {
+    // The harness's shape: run() asks mayStart with its own flag; cleanup() is `cleaned ??= (async
+    // () => { await run(down, cleanup) … })()`, whose first run() starts before `cleaned` exists.
+    const signals = { stopping: false };
+    const ran: string[] = [];
+    let cleaned: Promise<void> | undefined;
+    const run = (what: string, options: { readonly cleanup?: boolean } = {}) => {
+      if (!mayStart(signals.stopping, options.cleanup === true)) {
+        ran.push(`${what}:refused`);
+        return Promise.resolve(130);
+      }
+      ran.push(`${what}:ran${cleaned === undefined ? ' (cleaned unassigned)' : ''}`);
+      return Promise.resolve(0);
+    };
+    const cleanup = () => {
+      cleaned ??= (async () => {
+        await run('down', { cleanup: true });
+        await run('image-rm', { cleanup: true });
+      })();
+      return cleaned;
+    };
+    signals.stopping = true;
+    await cleanup();
+    await run('next-step');
+    expect(ran).toEqual(['down:ran (cleaned unassigned)', 'image-rm:ran', 'next-step:refused']);
+  });
+
+  it("gives both of the cleanup's run() calls the cleanup flag, and nothing else", () => {
+    const source = readFileSync(join(REPO, 'e2e/src/fresh-clone.ts'), 'utf8');
+    const body = source.slice(
+      source.indexOf('function cleanup()'),
+      source.indexOf('const EXIT_CODES'),
+    );
+    expect([...body.matchAll(/await run\(/g)]).toHaveLength(2);
+    expect([...body.matchAll(/cleanup: true/g)]).toHaveLength(2);
+    expect([...source.matchAll(/cleanup: true/g)]).toHaveLength(2);
+    expect(source).toContain('if (!mayStart(signals.stopping, options.cleanup === true)) {');
   });
 });

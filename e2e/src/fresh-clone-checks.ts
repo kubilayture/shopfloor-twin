@@ -360,3 +360,11 @@ export function baseInside(path: string, roots: readonly string[]): string | und
     return p === r || p.startsWith(`${r}/`);
   });
 }
+
+/**
+ * Whether a command may start (#277 re-review): before a signal, any; after it, only the cleanup's
+ * own (`docker compose -p … down --volumes` and the image removals), which carry their own flag.
+ * Keyed on the command, never on whether the cleanup's promise exists yet: that promise is
+ * assigned only after the cleanup's first command has already been asked to start.
+ */
+export const mayStart = (stopping: boolean, isCleanup: boolean): boolean => !stopping || isCleanup;

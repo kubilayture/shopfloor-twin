@@ -75,6 +75,7 @@ import { generatedPassword, mesLogin, mesWrite, rawRequest } from './clients.ts'
 import {
   BUILT_IMAGES,
   baseInside,
+  mayStart,
   FORBIDDEN_TOOLS,
   OWNER_PROJECT,
   assertDisposable,
@@ -236,10 +237,14 @@ function run(
     readonly env: NodeJS.ProcessEnv;
     readonly mode?: 'tee' | 'quiet';
     readonly onLine?: (line: string) => void;
+    /** A command of the cleanup: the only kind that starts after a signal. */
+    readonly cleanup?: boolean;
   },
 ): Promise<RunResult> {
   // After a signal nothing new starts (#277 review m3), except the cleanup's own commands.
-  if (signals.stopping && cleaned === undefined) return Promise.resolve({ code: 130, stdout: '' });
+  if (!mayStart(signals.stopping, options.cleanup === true)) {
+    return Promise.resolve({ code: 130, stdout: '' });
+  }
   return new Promise((done) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -434,10 +439,14 @@ function cleanup(): Promise<void> {
         const [down, ...images] = cleanupCommands(project, tag, placeholderFile);
         log(`cleanup: docker compose -p ${project} down --volumes, images :${tag} removed`);
         if (down !== undefined) {
-          await run('docker', down, { cwd: clone, env: { ...baseEnv(), ...isolation } });
+          await run('docker', down, {
+            cwd: clone,
+            env: { ...baseEnv(), ...isolation },
+            cleanup: true,
+          });
         }
         for (const image of images) {
-          await run('docker', image, { cwd: tmp, env: baseEnv() });
+          await run('docker', image, { cwd: tmp, env: baseEnv(), cleanup: true });
         }
         await pruneBuildCache((message) => {
           log(message);

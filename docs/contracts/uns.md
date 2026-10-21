@@ -31,17 +31,17 @@ Equipment data:
 - Build topics only with the helpers `stateTopic`, `telemetryTopic`, `cycleTopic`, `jobTopic`, `alarmTopic`, `alarmSnapshotTopic`, `commandTopic`, `commandResultTopic` and `equipmentTopic`, and parse them with `parseEquipmentTopic`.
 - One exception to kebab-case (1.2): the name `_snapshot` (`ALARM_SNAPSHOT_NAME`) under the `alarms` class. The underscore keeps it apart from every alarm code's topic name; anywhere else it is refused.
 
-| Class and name          | Example                            | Schema                        | Retained                       |
-| ----------------------- | ---------------------------------- | ----------------------------- | ------------------------------ |
-| `state/current`         | `…/cnc-01/state/current`           | `uns.state.current/1`         | yes                            |
-| `telemetry/{name}`      | `…/cnc-01/telemetry/spindle-load`  | `uns.telemetry/1`             | yes (last value)               |
-| `events/cycle-complete` | `…/lkt-01/events/cycle-complete`   | `uns.events.cycle-complete/1` | no                             |
-| `alarms/{code}`         | `…/cnc-01/alarms/spindle-overload` | `uns.alarms/1`                | yes (last transition per code) |
-| `alarms/_snapshot`      | `…/cnc-01/alarms/_snapshot`        | `uns.alarm-snapshot/1` (1.2)  | yes (latest resync)            |
-| `events/job`            | `…/cnc-01/events/job`              | `uns.events.job/1` (1.3)      | no                             |
-| `cmd/load-order`        | `…/cnc-01/cmd/load-order`          | `uns.cmd.load-order/1` (1.3)  | no                             |
-| `cmd-res/load-order`    | `…/cnc-01/cmd-res/load-order`      | `uns.cmd-res/1` (1.3)         | no                             |
-| `mes/…`                 | Phase 4 onwards                    | –                             | yes                            |
+| Class and name          | Example                              | Schema                        | Retained                       |
+| ----------------------- | ------------------------------------ | ----------------------------- | ------------------------------ |
+| `state/current`         | `…/cnc-01/state/current`             | `uns.state.current/1`         | yes                            |
+| `telemetry/{name}`      | `…/cnc-01/telemetry/spindle-load`    | `uns.telemetry/1`             | yes (last value)               |
+| `events/cycle-complete` | `…/lkt-01/events/cycle-complete`     | `uns.events.cycle-complete/1` | no                             |
+| `alarms/{code}`         | `…/cnc-01/alarms/spindle-overload`   | `uns.alarms/1`                | yes (last transition per code) |
+| `alarms/_snapshot`      | `…/cnc-01/alarms/_snapshot`          | `uns.alarm-snapshot/1` (1.2)  | yes (latest resync)            |
+| `events/job`            | `…/cnc-01/events/job`                | `uns.events.job/1` (1.3)      | no                             |
+| `cmd/load-order`        | `…/cnc-01/cmd/load-order`            | `uns.cmd.load-order/1` (1.3)  | no                             |
+| `cmd-res/load-order`    | `…/cnc-01/cmd-res/load-order`        | `uns.cmd-res/1` (1.3)         | no                             |
+| `mes/…`                 | reserved; nothing publishes it in v1 | –                             | yes                            |
 
 Component topics (helper `sysTopic`):
 

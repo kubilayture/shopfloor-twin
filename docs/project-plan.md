@@ -208,7 +208,7 @@ The simulator is a deterministic discrete-event engine: the same seed, plant con
 
 Seven runtime components mirror the levels of a real plant: devices (simulator), edge (gateway), integration (MQTT Unified Namespace), operations (MES with its database) and business (mock ERP), plus the web UI. Each runs in its own container, and the simulator knows nothing about the MES.
 
-&#91;embedded content: system architecture · 7 components by ISA-95 level\]
+The diagrams are in [`docs/architecture.md`](architecture.md): the system context, the containers, the components, the runtime sequences of the data paths below and the deployment, checked against the code (Phase 10, P10-05).
 
 Only the gateway talks to machines and only the MES talks to the database; the console reaches the simulator directly because the simulator stands in for the physical world.
 
@@ -490,13 +490,18 @@ Every document has one owner-facing purpose and a fixed update trigger, so nothi
 | `docs/contracts/uns.md` + generated JSON Schema | Topic tree, payloads, QoS and retain rules | Any UNS change (version bump required) |
 | `docs/contracts/opcua-address-space.md` | Node ids, types, methods, events per machine | Any address-space change |
 | `docs/contracts/modbus-register-map.md` | Register addresses, scaling, units for WSH-01 | Any register change |
-| `docs/api/openapi.json` (generated) | MES and ERP mock REST APIs | Generated in CI; checked for drift |
+| `docs/api/mes.openapi.json`, `docs/api/simulator-control.openapi.json`, `docs/api/mes-realtime.schema.json` (generated) | MES REST API, the simulator's control API, the MES's WebSocket messages | Generated from the zod schemas; a test fails on drift |
+| `docs/api/realtime.md` | The MES's WebSocket push: connection, topics, delivery | A topic, message or connection rule changes |
+| `docs/api/erp-mock.md` | The ERP mock's REST API: routes, token, idempotency, datasets, errors | A route, payload or dataset changes (a test checks its route table against the server) |
 | `docs/data-model.md` (generated) | Entity-relationship diagram and table notes | A migration is added |
 | `docs/oee-reference-cases.md` | Hand-calculated OEE cases that also drive tests | OEE logic or definitions change |
 | `docs/simulation-model.md` | Every stochastic model, its parameters and its validation | Simulator behaviour changes |
 | `docs/runbook.md` | Start, stop, reset data, run scenarios, troubleshoot | Operations change |
 | `docs/dependencies.md` | Why each third-party dependency exists | A dependency is added or removed |
 | `docs/glossary.md` | Industrial and project terms | A new term appears in code or docs |
+| `docs/README.md` | Documentation index: every document, its purpose, its update trigger and whether a test checks it | A document is added, removed or renamed |
+| `docs/demo.md` | The demo scenario's scene script, runnable by hand, and the recording's record | The demo's scenes or recording change |
+| `docs/final-report.md` | The v1.0 final report: each success criterion with its proof on the release commit (to come in P10-08) | Release |
 | `CHANGELOG.md` | Keep a Changelog format, grouped by release | Every pull request ("Unreleased" section) |
 
 **GitHub tracking**
@@ -592,26 +597,7 @@ The biggest risk is not technical: it is the scope outgrowing the owner's review
 
 ## 13. Glossary and references
 
-| Term | Meaning in this project |
-| --- | --- |
-| ADR | Architecture Decision Record: a short file recording one decision, its options and consequences |
-| Blocked / Starved | A machine that cannot unload because the downstream buffer is full / cannot load because the upstream buffer is empty |
-| Changeover (setup) | Time to switch a machine from one product variant to another |
-| DES | Discrete-event simulation: time jumps from event to event instead of ticking |
-| DMC | Data Matrix Code laser-marked on a part, carrying its serial number |
-| Genealogy | Parent-child links between lots, serials and cartons that make traceability possible |
-| Golden scenario | A fixed seed and scenario whose expected outputs are committed and checked in CI |
-| ISA-95 | Standard for integrating enterprise and control systems; defines the equipment hierarchy and the level model used here |
-| ISO 22400-2 | Standard defining manufacturing KPIs, including the OEE terms used here |
-| MES | Manufacturing Execution System: software that manages and records production on the shop floor |
-| Micro-stop | A `Stopped` episode shorter than the configured threshold; counted as performance loss, not availability loss. Breakdowns (`Down`) are never micro-stops |
-| MQTT | Lightweight publish/subscribe protocol; QoS 1 means at-least-once delivery |
-| OEE | Overall Equipment Effectiveness = Availability × Performance × Quality |
-| OPC UA | Industrial communication standard with a typed information model, subscriptions, methods and security |
-| Modbus TCP | Older, register-based industrial protocol with no built-in semantics |
-| SPC | Statistical Process Control: control charts and run rules that detect process drift |
-| Store-and-forward | Buffering data locally while the network is down and sending it later in order |
-| UNS | Unified Namespace: one shared MQTT topic tree, organized by the plant hierarchy, as the single hub of shop-floor data |
+The glossary is [`docs/glossary.md`](glossary.md): the terms of this plan and every term the code and the documents use, each pointing to the ADR or document that defines it. It was kept here as a second copy until Phase 10 (P10-04).
 
 **References**
 

@@ -33,6 +33,7 @@ import {
 import { useCan } from '../auth/auth.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
+import { plantTimeText } from '../domain/time.ts';
 
 // The simulation console (#237, Phase 9 plan "Simulation console", ADR-0037): the physical world
 // under test, for `admin` only (`sim:control`). Everything goes to the simulator's control API
@@ -153,8 +154,8 @@ function Panel({
   );
 }
 
-const timeText = (iso: string | undefined): string =>
-  iso === undefined ? '–' : iso.replace('T', ' ').replace(/\.\d{3}Z$/, 'Z');
+/** Simulation times in plant time, as the header shows the plant clock (#295). */
+const timeText = plantTimeText;
 
 const STATE_TEXT: Readonly<Record<SimStatus['state'], string>> = {
   idle: 'Idle (not started)',
@@ -189,7 +190,7 @@ function RunPanel({ status }: { readonly status: SimStatus | undefined }) {
           <div>
             <dt className="text-slate-600">Simulation time</dt>
             <dd data-testid="sim-time" className="font-mono">
-              {timeText(status.simTime)}
+              <time dateTime={status.simTime}>{timeText(status.simTime)}</time>
             </dd>
           </div>
           <div>
@@ -362,7 +363,7 @@ function FailurePanel({
           </datalist>
         </label>
         <label className="flex flex-col text-sm">
-          At (simulation time, optional)
+          At (simulation time, optional; UTC, ISO 8601)
           <input
             className={inputClass}
             data-testid="failure-at"
@@ -454,10 +455,11 @@ function DriftPanel({ testers }: { readonly testers: readonly EquipmentDto[] }) 
           />
         </label>
         <label className="flex flex-col text-sm">
-          From (optional)
+          From (simulation time, optional; UTC, ISO 8601)
           <input
             className={inputClass}
             data-testid="drift-at"
+            placeholder="2026-10-12T05:00:00Z"
             value={at}
             onChange={(event) => {
               setAt(event.target.value);
@@ -465,7 +467,7 @@ function DriftPanel({ testers }: { readonly testers: readonly EquipmentDto[] }) 
           />
         </label>
         <label className="flex flex-col text-sm">
-          Until (simulation time)
+          Until (simulation time; UTC, ISO 8601)
           <input
             className={inputClass}
             data-testid="drift-until"

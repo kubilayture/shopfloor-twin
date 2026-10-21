@@ -366,7 +366,12 @@ describe('the operator terminal (#177)', () => {
     }
     expect(screen.getByTestId('terminal-quality').dataset.empty).toBe('true');
     expect(screen.queryByTestId('terminal-lots')).toBeNull();
-    const held = hold({ subject: { kind: 'lot', id: 'K1' } });
+    // Opened without a plant clock: its wall time, labelled (#295).
+    const held = hold({
+      subject: { kind: 'lot', id: 'K1' },
+      openedAt: '2026-10-22T07:12:03.000Z',
+      openedPlantAt: null,
+    });
     const view = viewOf({
       crew: mes.view.crew,
       quality: {
@@ -398,6 +403,7 @@ describe('the operator terminal (#177)', () => {
     });
     await app.push({ type: 'terminal', topic: 'terminal:line-a1', view });
     const banner = screen.getByTestId(`terminal-hold-${held.id}`);
+    expect(banner.textContent).toContain('opened by quinn Thu 22 Oct, 10:12:03 (wall time)');
     // Into the same live regions, not new ones.
     expect(screen.getByTestId('terminal-holds')).toBe(holdList);
     expect(screen.getByTestId('terminal-signals')).toBe(signalList);

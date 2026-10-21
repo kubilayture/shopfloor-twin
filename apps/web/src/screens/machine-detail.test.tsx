@@ -173,6 +173,17 @@ describe('machine detail', () => {
       value: 51,
     });
     expect(screen.getByTestId('latest-spindle-load').textContent).toBe('51');
+
+    // A sample whose binary form is not exact is shown without the noise (#295).
+    await app.push({
+      type: 'telemetry',
+      equipment: 'cnc-01',
+      metric: 'spindle-load',
+      unit: 'percent',
+      t: at(12),
+      value: 0.1 + 0.2,
+    });
+    expect(screen.getByTestId('latest-spindle-load').textContent).toBe('0.3');
   });
 
   it("moves focus to the new screen's heading after navigating", async () => {

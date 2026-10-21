@@ -11,6 +11,7 @@ import { ApiError } from '../api/client.ts';
 import { queryKeys } from '../api/queries.ts';
 import { getSerialTrace } from '../api/trace.ts';
 import { useHeadingFocus } from '../components/heading-focus.ts';
+import { plainText } from '../domain/numbers.ts';
 import { QueryError } from '../components/query-error.tsx';
 import {
   RESULT_TEXT,
@@ -87,9 +88,9 @@ function Reading({ record }: { readonly record: TraceRecordDto }) {
       data-over={String(over)}
       className={over ? 'font-semibold text-red-900' : ''}
     >
-      {reading.value} {reading.unit}{' '}
+      {plainText(reading.value)} {reading.unit}{' '}
       <span className="text-xs font-normal text-slate-700">
-        ({over ? 'over' : 'within'} the limit {reading.upperLimit} {reading.unit})
+        ({over ? 'over' : 'within'} the limit {plainText(reading.upperLimit)} {reading.unit})
       </span>
     </span>
   );

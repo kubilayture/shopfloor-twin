@@ -9,6 +9,7 @@ import { TrendChart } from '../chart/trend-chart.tsx';
 import { useHeadingFocus } from '../components/heading-focus.ts';
 import { QueryError } from '../components/query-error.tsx';
 import { StateBadge } from '../components/state-badge.tsx';
+import { plainText } from '../domain/numbers.ts';
 import { chartData } from '../domain/series.ts';
 import {
   STALE_TEXT,
@@ -347,7 +348,7 @@ function MetricTable({
                 </th>
                 <td>{metric.unit}</td>
                 <td className="text-right tabular-nums" data-testid={`latest-${metric.metric}`}>
-                  {latest.value}
+                  {plainText(latest.value)}
                 </td>
                 <td>
                   <time dateTime={latest.t}>{formatPlantTime(latest.t)}</time>

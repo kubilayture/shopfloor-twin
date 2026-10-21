@@ -164,6 +164,30 @@ describe('serial page (backward trace)', () => {
     expect(screen.getByTestId('trace-holds-empty')).toBeTruthy();
   });
 
+  it('shows a reading without binary noise; its data attributes keep the value as sent (#295)', async () => {
+    const noisy = 3381 * 0.001; // 3.3810000000000002
+    const records = [
+      record({
+        operation: 'OP40',
+        equipment: 'LKT-01',
+        seq: 13,
+        lots: [],
+        reading: { characteristic: 'leak-rate', value: noisy, unit: 'Pa/min', upperLimit: 3.2 },
+      }),
+    ];
+    const server = traceMes(
+      traceState({ serials: { 'VB-100-000042': serialTrace({ units: [unit({ records })] }) } }),
+    );
+    vi.stubGlobal('fetch', server.fetch);
+    const app = await renderApp('/trace/serials/VB-100-000042');
+    await app.open();
+    const reading = within(await screen.findByTestId('record-OP40-1')).getByTestId(
+      'record-reading',
+    );
+    expect(reading.textContent).toBe('3.381 Pa/min (over the limit 3.2 Pa/min)');
+    expect(reading.dataset.value).toBe('3.3810000000000002');
+  });
+
   it('says which machines are not final yet and shows holds on the unit, without hold actions', async () => {
     const server = traceMes(
       traceState({
@@ -459,6 +483,10 @@ describe('lot page (forward trace)', () => {
       status: 'active',
       quantity: '1800',
     });
+    // The import is a wall time (#295).
+    expect(screen.getByTestId('lot-master').textContent).toContain(
+      'Imported:Thu 15 Oct, 05:00:00 (wall time)',
+    );
     expect(screen.getByTestId('lot-units').dataset.count).toBe('2');
     const first = screen.getByTestId('lot-unit-3-42');
     expect(first.dataset).toMatchObject({

@@ -2,6 +2,7 @@ import { ROLES } from '@shopfloor/contracts/identity';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { EQUIPMENT, json, sessionOf } from '../test/fixtures.ts';
+import { formatPlantTime } from '../domain/time.ts';
 import { renderApp } from '../test/render-app.tsx';
 
 // The simulation console (#237): admin only; every action goes to /sim/api/v1 (nginx's allowlist
@@ -250,6 +251,11 @@ it('drives the run, injects, blocks, marks absent, breaks a tool and loads a tim
   await waitFor(() => {
     expect(screen.getByTestId('sim-state').dataset.state).toBe('idle');
   });
+  // Simulation time in plant time, as the header shows the plant clock, never raw UTC (#295).
+  const simTime = screen.getByTestId('sim-time');
+  expect(simTime.textContent).toBe(formatPlantTime('2026-10-12T03:00:00.000Z'));
+  expect(simTime.textContent).toBe('Mon 12 Oct, 06:00:00');
+  expect(simTime.querySelector('time')?.getAttribute('datetime')).toBe('2026-10-12T03:00:00.000Z');
 
   // The timeline loads only while idle.
   fireEvent.click(await screen.findByTestId('scenario-load-monday-breakdown-and-recovery'));

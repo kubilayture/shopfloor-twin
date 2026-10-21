@@ -80,7 +80,7 @@ Inside the envelope the three variants are the same run (NotBefore stays 06:15);
 
 The bottleneck is ASM-01 (VB-100, OP30, 150 s) in every variant. Beyond the envelope the drift starts inside the SPC baseline from 06:20 on, so the pause at 06:14 is what keeps the demo's facts. The tool breakage's `TOOL-CHANGE` setup on CNC-02 starts at 09:01:53 in the envelope.
 
-**Deviation from the plan's estimate.** The plan asked for the alarm, the episode, a completed order and a closed carton "by about 09:30". The alarm (07:15), the first completed order (08:49) and the scene 8's carton PO-2610-301-C01 (closed at 08:49 with its order) are; the episode can't be: an episode after the baseline needs the baseline's 100 first-pass readings first, and the line (ASM-01 at 150 s per unit, a 30-minute break at 10:00, the failure and the lot block) has them at 11:37. The drift starts at 11:45 and its episode is at 11:51, so the walkthrough runs to about 12:30.
+**Deviation from the plan's estimate.** The plan asked for the alarm, the episode, a completed order and a closed carton "by about 09:30". The alarm (07:15), the first completed order (08:49) and scene 8's carton PO-2610-301-C01 (closed at 08:49 with its order) are; the episode can't be: an episode after the baseline needs the baseline's 100 first-pass readings first, and the line (ASM-01 at 150 s per unit, a 30-minute break at 10:00, the failure and the lot block) has them at 11:37. The drift starts at 11:45 and its episode is at 11:51, so the walkthrough runs to about 12:30.
 
 ## Assertion mutants
 

@@ -815,3 +815,12 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     - awaiting the close in the failure path again fails the never-settles test (`poll() did not settle`);
     - `main`'s `poller.ts` as a whole fails all three closed-connection tests, the real-simulator restart with `timed out after 7000 ms: a snapshot of the new run`.
   - **For PR #271:** once both are merged, the anchor wait of `console-pass.ts`'s second run can require every machine, WSH-01 included, in the new epoch within its 60 s bound. Its comment that the washer keeps its old epoch until its first fact can go.
+  - **Gate** on `f67c18c` (`GATE_PROJECT=gate272`, `GATE_TAG=pr272`, `TURBO_FORCE=1`, under the heavy lock), `GATE-OK`; free at the start: host 46.9 GiB, Docker 84.6 GiB. The rerun table names no extra suite for `apps/edge-gateway` (`pnpm test:resilience` not required). This line is documentation only.
+
+    | Step      | Result | Time      | Notes                             |
+    | --------- | ------ | --------- | --------------------------------- |
+    | verify    | passed | 583.0 s   | `pnpm verify --concurrency=1`     |
+    | golden    | passed | 1.5 s     | all four goldens byte-identical   |
+    | e2e       | passed | 1,468.7 s |                                   |
+    | smoke     | passed | 185.5 s   | no generated secret in the output |
+    | reconcile | passed | 1,666.2 s | alarms, orders, quality           |

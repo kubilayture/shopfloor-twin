@@ -814,7 +814,11 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     - the old `close()` (awaiting `client.close`) in `connectModbus` fails the `connectModbus` test (`pending`);
     - awaiting the close in the failure path again fails the never-settles test (`poll() did not settle`);
     - `main`'s `poller.ts` as a whole fails all three closed-connection tests, the real-simulator restart with `timed out after 7000 ms: a snapshot of the new run`.
-  - **For PR #271:** once both are merged, the anchor wait of `console-pass.ts`'s second run can require every machine, WSH-01 included, in the new epoch within its 60 s bound. Its comment that the washer keeps its old epoch until its first fact can go.
+  - **Console run's anchor wait** (after PR #271 merged; branch rebased onto `main` `2634296`): `console-pass.ts`'s second run now requires every machine, WSH-01 included, in the new epoch within its 60 s bound. Its comment that the wait covers the OPC UA machines while #272 investigates is replaced, and so is #270's log wording; the runbook's "Console run" says so.
+  - **Review of PR #273** (approved, small changes before the merge):
+    - `destroy()` clears pending requests' timers, so an in-flight read then never settles; it does not cancel them. The ADR, the comment, CHANGELOG and this entry are reworded, and `stop()`'s doc says it doesn't wait for a poll in flight.
+    - The ADR's cause adds the `openFlag` gate: even if a `close` event arrived, the callback is gated on a flag the peer's close or an error has already cleared.
+    - The restart test runs on a simulator of its own (its own `describe`, `beforeAll` and `afterAll`), with `MODBUS_TIMEOUT_MS` (2 s) instead of 250 ms and `pollMs` 250. It passed three runs in a row, and `main`'s `poller.ts` still fails it (`timed out after 7000 ms: a snapshot of the new run`), as well as the other two closed-connection tests.
   - **Gate** on `f67c18c` (`GATE_PROJECT=gate272`, `GATE_TAG=pr272`, `TURBO_FORCE=1`, under the heavy lock), `GATE-OK`; free at the start: host 46.9 GiB, Docker 84.6 GiB. The rerun table names no extra suite for `apps/edge-gateway` (`pnpm test:resilience` not required). This line is documentation only.
 
     | Step      | Result | Time      | Notes                             |

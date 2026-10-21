@@ -90,9 +90,9 @@ describe('shift instances and buckets from the calendar (#120, moved here by #14
   });
 
   // 15 s, not Vitest's default 5 s (#288): 200 runs over ranges of up to 5 days, every hour
-  // checked, take 0.7 to 0.8 s alone with coverage and took 2.4 to 2.6 s in `pnpm verify` at
-  // turbo's default concurrency, half the default. 15 s is about six times that worst; runs and
-  // sizes are unchanged.
+  // checked, take 0.7 to 0.8 s alone with coverage and took 2.4 to 2.7 s in `pnpm verify` at
+  // turbo's default concurrency, over half the default. 15 s is more than five times that worst;
+  // runs and sizes are unchanged.
   it(
     'property: buckets tile the range in whole hours, keyed as shiftKeyAt keys their hours',
     {

@@ -66,7 +66,9 @@ describe('the OPC UA identities (ADR-0038)', () => {
 
 // 15 s per test, not Vitest's default 5 s (#288): each run of the step makes several RSA-2048
 // keys, whose time varies; a test takes up to 1.1 s alone and took up to 2.2 s in `pnpm verify`
-// at turbo's default concurrency. 15 s is about seven times that worst.
+// at turbo's default concurrency. 15 s is about seven times that worst. The describe's few
+// validation-only tests (no keys made) share it; `tls.test.ts` stays on the default (its
+// longest test: 0.6 s alone, 1.17 s under load, under a quarter of the default).
 describe('ensureOpcuaPki, the pki step', { timeout: 15_000 }, () => {
   it('makes a key and a certificate per identity with the URI, DNS names, key usage and EKU', async () => {
     const result = await ensureOpcuaPki(roots);
@@ -300,35 +302,43 @@ describe('ensureOpcuaPki, the pki step', { timeout: 15_000 }, () => {
 });
 
 describe('requireOwnMaterial', () => {
-  it('names what is missing, another URI, a foreign key and an expired certificate', async () => {
-    const folder = join(roots.simulator, 'cnc-01');
-    expect(() => requireOwnMaterial(folder, machineApplicationUri('cnc-01'))).toThrow(
-      /certificate\.pem is missing: run the pki step first/,
-    );
-    await ensureOpcuaPki(roots);
-    expect(requireOwnMaterial(folder, machineApplicationUri('cnc-01'))).toEqual(pkiFiles(folder));
-    expect(() => requireOwnMaterial(folder, machineApplicationUri('cnc-02'))).toThrow(
-      /is for urn:orbis-components:shopfloor-twin:cnc-01, not .*cnc-02/,
-    );
-    await writeFile(
-      pkiFiles(folder).privateKeyFile,
-      await readFile(pkiFiles(roots.tools).privateKeyFile, 'utf8'),
-    );
-    expect(() => requireOwnMaterial(folder, machineApplicationUri('cnc-01'))).toThrow(
-      /is not the key of/,
-    );
-    const expired = await createKeyAndCertificate({
-      commonName: 'old',
-      role: 'server',
-      applicationUri: machineApplicationUri('cnc-01'),
-      dnsNames: [],
-      validityDays: 31,
-      now: new Date(Date.now() - 40 * DAY_MS),
-    });
-    await writeFile(pkiFiles(folder).privateKeyFile, expired.privateKeyPem);
-    await writeFile(pkiFiles(folder).certificateFile, expired.certificatePem);
-    expect(() => requireOwnMaterial(folder, machineApplicationUri('cnc-01'))).toThrow(/expired/);
-  });
+  // 10 s, not Vitest's default 5 s (#288): it makes the step's keys first; 0.37 to 0.49 s alone,
+  // 1.04 to 1.61 s in `pnpm verify` at the default concurrency, over a quarter of the default.
+  it(
+    'names what is missing, another URI, a foreign key and an expired certificate',
+    {
+      timeout: 10_000,
+    },
+    async () => {
+      const folder = join(roots.simulator, 'cnc-01');
+      expect(() => requireOwnMaterial(folder, machineApplicationUri('cnc-01'))).toThrow(
+        /certificate\.pem is missing: run the pki step first/,
+      );
+      await ensureOpcuaPki(roots);
+      expect(requireOwnMaterial(folder, machineApplicationUri('cnc-01'))).toEqual(pkiFiles(folder));
+      expect(() => requireOwnMaterial(folder, machineApplicationUri('cnc-02'))).toThrow(
+        /is for urn:orbis-components:shopfloor-twin:cnc-01, not .*cnc-02/,
+      );
+      await writeFile(
+        pkiFiles(folder).privateKeyFile,
+        await readFile(pkiFiles(roots.tools).privateKeyFile, 'utf8'),
+      );
+      expect(() => requireOwnMaterial(folder, machineApplicationUri('cnc-01'))).toThrow(
+        /is not the key of/,
+      );
+      const expired = await createKeyAndCertificate({
+        commonName: 'old',
+        role: 'server',
+        applicationUri: machineApplicationUri('cnc-01'),
+        dnsNames: [],
+        validityDays: 31,
+        now: new Date(Date.now() - 40 * DAY_MS),
+      });
+      await writeFile(pkiFiles(folder).privateKeyFile, expired.privateKeyPem);
+      await writeFile(pkiFiles(folder).certificateFile, expired.certificatePem);
+      expect(() => requireOwnMaterial(folder, machineApplicationUri('cnc-01'))).toThrow(/expired/);
+    },
+  );
 });
 
 describe('a certificate authority (probe Q1)', () => {

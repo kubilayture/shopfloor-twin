@@ -27,7 +27,8 @@
  *
  * Then a second simulator run (#270): the simulator alone is recreated idle at Monday 13:40 (same
  * seed, a new device epoch; the MES, gateway and web keep running), the gateway reconnected and
- * every OPC UA machine anchored in the MES in the new epoch, and Playwright's `console-shift` project
+ * every machine (WSH-01 included, #272) anchored in the MES in the new epoch within 60 s, and
+ * Playwright's `console-shift` project
  * (e2e/browser/console-shift): both ASM-01 operators of shift B marked absent through the console
  * leave ASM-01 `Idle` `NO-OPERATOR` from 14:00 in the MES. The first run can't show it: its
  * timeline marks shift B absent and 2-actions.spec.ts marks shift C absent, so no later Monday
@@ -226,21 +227,34 @@ try {
   const supervisor = users.get(ROLE_USERS.supervisor.username);
   if (!supervisor) throw new Error('the supervisor was not created');
   const mes = new MesClient(mesBase, supervisor.cookie);
-  // Observed: wsh-01's `current` was still in the old epoch when the OPC UA machines had
-  // re-anchored; the Modbus path republishes a snapshot with `deviceEpoch` on an epoch change, so
-  // this is under investigation in #272 (P9-F4); the wait covers the OPC UA machines only
-  // (ASM-01 among them).
+  // Every machine, the washer (Modbus) included: its poller reconnects and publishes the new
+  // run's snapshot at its first answer (#272 fixed a poller that stopped after the recreate).
+  // Exactly the ground truth's machines, so a machine missing from the MES's list fails the wait.
   let anchors = 'not read';
   await until(
-    `every OPC UA machine anchored in the MES in the second run's epoch ${String(truth.epoch)}`,
+    `every machine of the ground truth (${machines.join(', ')}) anchored in the MES in the second run's epoch ${String(truth.epoch)}`,
     async () => {
       const { equipment } = await mes.equipment().catch((error: unknown) => {
         anchors = `read failed: ${String(error)}`;
         throw error;
       });
-      anchors = JSON.stringify(equipment.map((e) => [e.id, e.current]));
-      const opcua = equipment.filter((e) => e.interface === 'opcua');
-      return opcua.length > 0 && opcua.every((e) => e.current?.epoch === truth.epoch);
+      const byId = new Map(equipment.map((e) => [e.id, e]));
+      const missing = machines.filter((id) => !byId.has(id));
+      const stale = machines.filter(
+        (id) => byId.has(id) && byId.get(id)?.current?.epoch !== truth.epoch,
+      );
+      const extra = equipment.map((e) => e.id).filter((id) => !machines.includes(id));
+      anchors = JSON.stringify({
+        missing,
+        stale: stale.map((id) => [id, byId.get(id)?.current ?? null]),
+        extra,
+      });
+      return (
+        machines.length > 0 &&
+        machines.includes('wsh-01') &&
+        equipment.length === machines.length &&
+        machines.every((id) => byId.get(id)?.current?.epoch === truth.epoch)
+      );
     },
     60_000,
   ).catch((error: unknown) => {

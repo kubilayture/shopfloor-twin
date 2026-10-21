@@ -1,3 +1,4 @@
+import { createServer, type AddressInfo, type Socket } from 'node:net';
 import { resolve } from 'node:path';
 import {
   ENTRY_SIZE,
@@ -322,6 +323,85 @@ describe('Modbus poller against a register map in memory (#77)', () => {
     );
   });
 
+  it('publishes a state snapshot of the new device epoch at the first poll after a device restart (#272)', async () => {
+    const washer = new FakeWasher(100);
+    const { poller, published, incidents } = setup(washer);
+    await poller.poll();
+    washer.fact(state(1));
+    await poller.poll();
+    const before = published.length;
+    // The simulator restarts idle: a new epoch, no fact yet, the state register at 0 (Off).
+    washer.restart(200);
+    await poller.poll();
+    expect(incidents.map((i) => i.type)).toEqual(['epoch-change']);
+    const after = published.slice(before);
+    const snapshots = after.filter(
+      (p) => p.message.schema === 'uns.state.current/1' && p.message.kind === 'snapshot',
+    );
+    expect(snapshots).toHaveLength(1);
+    const snapshot = snapshots[0]?.message as Extract<StateCurrent, { kind: 'snapshot' }>;
+    expect(snapshot).toMatchObject({ deviceEpoch: 200, value: { state: 'Off', cause: null } });
+    expect(snapshots[0]?.retain).toBe(true);
+    // The telemetry of the same read names the new run too.
+    const telemetry = after.filter((p) => p.message.schema === 'uns.telemetry/1');
+    expect(telemetry.map((p) => (p.message as Telemetry).deviceEpoch)).toEqual([200, 200]);
+    // And no further snapshot while the run stays the same.
+    const count = published.length;
+    await poller.poll();
+    expect(
+      published
+        .slice(count)
+        .filter((p) => p.message.schema === 'uns.state.current/1' && p.message.kind === 'snapshot'),
+    ).toEqual([]);
+  });
+
+  it('keeps polling when the device closed the connection and closing it never settles (#272)', async () => {
+    const washer = new FakeWasher(100);
+    // One connection per connect; `peerClosed` is the simulator's process ending (its sockets
+    // destroyed). modbus-serial then rejects reads, and its close() never calls back: the socket
+    // closed already, so the 'close' event it waits for never comes again.
+    const connections: { peerClosed: boolean }[] = [];
+    const connect = (): Promise<RegisterReader> => {
+      const connection = { peerClosed: false };
+      connections.push(connection);
+      return Promise.resolve({
+        read: (address, length) =>
+          connection.peerClosed
+            ? Promise.reject(new Error('Port Not Open'))
+            : washer.read(address, length),
+        close: () =>
+          connection.peerClosed ? new Promise<void>(() => undefined) : Promise.resolve(),
+      });
+    };
+    const { poller, published, incidents } = setup(washer, undefined, undefined, connect);
+    const bounded = (what: string) =>
+      Promise.race([
+        poller.poll(),
+        wait(1_000).then(() => {
+          throw new Error(`${what}: poll() did not settle`);
+        }),
+      ]);
+    await bounded('first contact');
+    expect(poller.connected).toBe(true);
+    // The simulator is recreated: the old process closes the connection, the new run starts idle.
+    for (const connection of connections) connection.peerClosed = true;
+    washer.restart(200);
+    await bounded('the poll that finds the connection closed');
+    expect(poller.connected).toBe(false); // no reader any more, though silentAfter is not reached
+    await bounded('the poll on a new connection');
+    expect(connections).toHaveLength(2);
+    expect(incidents.map((i) => i.type)).toEqual(['epoch-change']);
+    const snapshot = published
+      .map((p) => p.message)
+      .filter(
+        (m): m is Extract<StateCurrent, { kind: 'snapshot' }> =>
+          m.schema === 'uns.state.current/1' && m.kind === 'snapshot',
+      )
+      .at(-1);
+    expect(snapshot?.deviceEpoch).toBe(200);
+    expect(poller.connected).toBe(true);
+  });
+
   it('counts facts overwritten during one walk in a single incident', async () => {
     const washer = new FakeWasher(100);
     const { poller, facts, incidents } = setup(washer);
@@ -422,23 +502,59 @@ async function until(what: string, condition: () => boolean, timeoutMs = 60_000)
   }
 }
 
+describe('connectModbus on a connection the device closed (#272)', () => {
+  it('rejects reads and closes at once', async () => {
+    // A device that accepts and then goes away, as a recreated simulator's old process does.
+    const sockets: Socket[] = [];
+    const server = createServer((socket) => {
+      sockets.push(socket);
+    });
+    await new Promise<void>((resolveListen) => {
+      server.listen(0, '127.0.0.1', resolveListen);
+    });
+    const { port } = server.address() as AddressInfo;
+    try {
+      const reader = await connectModbus('127.0.0.1', port, 250);
+      await until('accepted', () => sockets.length === 1, 5_000);
+      for (const socket of sockets) socket.destroy();
+      await wait(100); // the client sees its socket close
+      await expect(reader.read(0, SNAPSHOT_LENGTH)).rejects.toThrow();
+      const closed = await Promise.race([
+        reader.close().then(() => 'closed'),
+        wait(1_000).then(() => 'pending'),
+      ]);
+      // The poller's stop() awaits this close: it must settle on such a connection too.
+      expect(closed).toBe('closed');
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolveClose) => server.close(resolveClose));
+    }
+  });
+});
+
+// Ports chosen at runtime by `startSimulator` (#212). A Modbus answer may take this long on a
+// loaded machine before the poll counts as failed: two slow answers in a row must not look like
+// the silence the test injects.
+const MODBUS_TIMEOUT_MS = 2_000;
+
+/** The washer's tables from the plant configuration, as the gateway derives them. */
+async function loadWasherTables(): Promise<ReturnType<typeof modbusTables>> {
+  const loaded = await loadPlantConfig(resolve(import.meta.dirname, '../../../../config/plant'));
+  if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
+  const failures = loaded.config.failures.equipment['wsh-01'];
+  return modbusTables({
+    products: loaded.config.products.products.map((p) => p.id),
+    failureCodes: failures?.failureModes.map((m) => m.code) ?? [],
+    minorStopCauses: failures?.minorStops.causes ?? [],
+  });
+}
+
 describe('Modbus poller against the real simulator (#77)', () => {
-  // Ports chosen at runtime by `startSimulator` (#212). A Modbus answer may take this long on a
-  // loaded machine before the poll counts as failed: two slow answers in a row must not look like
-  // the silence the test injects.
-  const MODBUS_TIMEOUT_MS = 2_000;
   let simulator: RunningSimulator | undefined;
   let washerTables: ReturnType<typeof modbusTables>;
 
   beforeAll(async () => {
-    const loaded = await loadPlantConfig(resolve(import.meta.dirname, '../../../../config/plant'));
-    if (!loaded.ok) throw new Error(formatIssues(loaded.issues));
-    const failures = loaded.config.failures.equipment['wsh-01'];
-    washerTables = modbusTables({
-      products: loaded.config.products.products.map((p) => p.id),
-      failureCodes: failures?.failureModes.map((m) => m.code) ?? [],
-      minorStopCauses: failures?.minorStops.causes ?? [],
-    });
+    washerTables = await loadWasherTables();
     simulator = await startSimulator();
   }, 180_000);
 
@@ -565,6 +681,87 @@ describe('Modbus poller against the real simulator (#77)', () => {
         else active.delete(String(event.code));
       }
       expect(snapshot.value.active, `at ${String(snapshot.asOfSeq)}`).toEqual([...active].sort());
+    }
+  }, 240_000);
+});
+
+describe('Modbus poller across a simulator restart with a new epoch (#272)', () => {
+  /** The new run's snapshot after the simulator is ready again: one poll and one timeout, with room. */
+  const REANCHOR_BOUND_MS = 2_000;
+  // A simulator of its own: the test stops it and starts another one on the same ports.
+  let simulator: RunningSimulator | undefined;
+  let washerTables: ReturnType<typeof modbusTables>;
+
+  beforeAll(async () => {
+    washerTables = await loadWasherTables();
+    simulator = await startSimulator();
+  }, 180_000);
+
+  afterAll(async () => {
+    await simulator?.stop();
+  });
+
+  it("publishes the new run's state snapshot within a bound after the simulator restarts", async () => {
+    const old = simulator;
+    if (!old) throw new Error('no simulator');
+    const published: { at: number; message: UnsPublication['message'] }[] = [];
+    const incidents: IncidentInput[] = [];
+    const poller = new ModbusPoller({
+      machineId: 'wsh-01',
+      path: PATH,
+      tables: washerTables,
+      scaling: { bath: 0.1, conveyor: 0.01 },
+      alarmSeverity: 700,
+      // The stack's poll period; the timeout of the other real-simulator test, for a loaded machine.
+      connect: () => connectModbus('127.0.0.1', old.modbusPort, MODBUS_TIMEOUT_MS),
+      publisher: {
+        publish: (p) => {
+          published.push({ at: Date.now(), message: p.message });
+          return Promise.resolve();
+        },
+      },
+      sequences: new TopicSequences(1_800_000_000),
+      incidents: { report: (i) => incidents.push(i) },
+      pollMs: 250,
+    });
+    const snapshotEpochs = () =>
+      published.flatMap(({ at, message }) =>
+        message.schema === 'uns.state.current/1' && message.kind === 'snapshot'
+          ? [{ at, deviceEpoch: message.deviceEpoch }]
+          : [],
+      );
+    poller.start();
+    try {
+      await until("the first run's snapshot", () => snapshotEpochs().length >= 1);
+      const first = snapshotEpochs()[0]?.deviceEpoch;
+      // The device epoch is the start's wall-clock second: a restart within it is the same run.
+      await wait(1_100);
+      await old.stop();
+      // As `docker compose up --force-recreate simulator` with another SIM_START: the same ports,
+      // a new process, idle, a new epoch.
+      simulator = undefined;
+      const restarted = await startSimulator(old.ports, {
+        SIM_START: '2026-10-12T13:40:00+03:00',
+      });
+      simulator = restarted;
+      const ready = Date.now();
+      await until(
+        'a snapshot of the new run',
+        () => snapshotEpochs().some((s) => s.deviceEpoch !== first),
+        REANCHOR_BOUND_MS + 5_000,
+      );
+      const snapshot = snapshotEpochs().find((s) => s.deviceEpoch !== first);
+      if (!snapshot) throw new Error('no snapshot of the new run');
+      expect(snapshot.deviceEpoch).toBeGreaterThan(first ?? Infinity);
+      // Usually negative: the Modbus server listens before the control API says ready.
+      expect(
+        snapshot.at - ready,
+        "ms from the simulator ready to the new run's snapshot",
+      ).toBeLessThanOrEqual(REANCHOR_BOUND_MS);
+      expect(incidents.map((i) => i.type)).toContain('epoch-change');
+    } finally {
+      // Bounded: before #272 a poller stuck on a closed connection never stopped either.
+      await Promise.race([poller.stop(), wait(5_000)]);
     }
   }, 240_000);
 });

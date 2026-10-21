@@ -434,6 +434,32 @@ describe('equipment state intervals (#96)', () => {
     );
   });
 
+  it('re-anchors the current state at the new run’s snapshot, after telemetry opened the epoch (#272)', async () => {
+    const { start, send } = await setup();
+    const equipment = await start();
+    const changes: EquipmentChange[] = [];
+    equipment.onChange((change) => changes.push(change));
+    await send(
+      feed.state('wsh-01', E1, 1, at('10:00'), 'Running'),
+      feed.telemetry('wsh-01', at('10:30'), E1),
+    );
+    expect(equipment.currentState('wsh-01')).toMatchObject({ epoch: E1, state: 'Running' });
+    // The simulator restarts idle with an earlier SIM_START: the gateway's first poll of the new
+    // run publishes its telemetry before the snapshot of the same read.
+    await send(feed.telemetry('wsh-01', at('09:00'), E2));
+    // Until the snapshot arrives, the old run is the newest one with a known state.
+    expect(equipment.currentState('wsh-01')).toMatchObject({ epoch: E1, state: 'Running' });
+    await send(feed.snapshot('wsh-01', E2, at('09:00'), 'Off'));
+    expect(equipment.currentState('wsh-01')).toMatchObject({
+      epoch: E2,
+      state: 'Off',
+      seq: null,
+      since: new Date(at('09:00')),
+    });
+    expect(changes.at(-1)?.current).toMatchObject({ epoch: E2, state: 'Off' });
+    expect(equipment.epochEnd('wsh-01', E1).closed).toBe(true);
+  });
+
   it('handles a device clock that goes back with one recompute, then window by window', async () => {
     const { db, ingest, send } = await setup();
     let rebuilds = 0;

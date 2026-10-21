@@ -41,7 +41,7 @@ On your Mac, with Docker running and your dev `.env` in the repository (it holds
 
 ## The scenes
 
-Times are plant time (Istanbul). At 60× one simulated minute is one second, so the walkthrough takes about seven minutes. "Opens at" is when `pnpm demo` opens the scene (it waits for that plant time); by hand, any time after it works.
+Times are plant time (Istanbul). At the default 60× (`SIM_SPEED` in `.env`) one simulated minute is one second, so the walkthrough takes about seven minutes. "Opens at" is when `pnpm demo` opens the scene (it waits for that plant time); by hand, any time after it works.
 
 | #   | Opens at              | Who                      | Open                                                                                             | Do                                                                                                                                                    | It shows (and `pnpm demo` asserts)                                                                                                                                                                                                                                                                                                                                | Illustrates                                                                                              |
 | --- | --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -64,23 +64,23 @@ Environment: `DEMO_PROJECT` (refuses `shopfloor-twin` and `shopfloor-demo`, whic
 
 `pnpm demo:probe` (`e2e/src/demo-probe.ts`; light, no stack) runs `demo-v1-probe.yaml` headless with every job accepted at a given time: a job accepted at T on an idle CNC starts at T (its changeover first), as one given at the start with `NotBefore` T does, so a variant moves each dispatch's `NotBefore` to the later of the planned start and T. It reads each scene's facts from the variant's ground truth (`summary.json`, `trace.json`, `line-oee.json`, the event log) and compares them with the plant time the walkthrough opens the scene. Inside the envelope (accepted at 06:00, 06:07 and 06:14, the latest the walkthrough can accept, since the run waits paused at 06:14) a missing fact or a negative margin fails the probe; three later variants show what a slower dispatch would do. The walkthrough fails a run whose jobs were accepted after 06:14 (scene 2).
 
-Inside the envelope every variant gives the same facts: the CNCs' changeovers start at 06:15 in each.
+Inside the envelope the three variants are the same run (NotBefore stays 06:15); that a job accepted live before 06:15 behaves the same rests on Line.loadOrder waking the CNC at NotBefore (plant/load-order.test.ts) and on the two live runs.
 
-| Scene | Fact                                                              | Needed by         | Accepted 06:00, 06:07 or 06:14 | Margin    | Accepted 06:20 | 06:30     | 06:45     |
-| ----- | ----------------------------------------------------------------- | ----------------- | ------------------------------ | --------- | -------------- | --------- | --------- |
-| 4     | `SPINDLE-OVERLOAD` raised on CNC-01                               | 07:20             | 07:15:00                       | 5.0 min   | 07:15:00       | 07:15:00  | 07:15:00  |
-| 4     | its repair ends (breakdown record closed)                         | 07:50             | 07:45:00                       | 5.0 min   | 07:45:00       | 07:45:00  | 07:45:00  |
-| 5     | availability loss on CNC-01 (the breakdown)                       | 09:00             | 07:15:00                       | 105 min   | 07:15:00       | 07:15:00  | 07:15:00  |
-| 5     | first order completed (PO-2610-301)                               | 09:00             | 08:49:04                       | 10.9 min  | 08:58:56       | −9.6 min  | −24.3 min |
-| 5     | OP10 starved `MATERIAL:BLANK-100`                                 | 09:00             | 08:18:20                       | 41.7 min  | 08:15:52       | 08:16:28  | 08:15:43  |
-| 6     | SPC baseline complete (limit version 1)                           | 11:45 (the drift) | 11:37:27                       | 7.5 min   | −0.4 min       | −13.0 min | −35.1 min |
-| 6     | the drift's first episode (I chart, rule 1, latency 3)            | 12:00             | 11:51:13                       | 8.8 min   | 11:49:46       | −2.4 min  | −22.1 min |
-| 7     | the held order (PO-2610-302, the episode's last unit's) completed | 12:25             | 12:17:28                       | 7.5 min   | −2.9 min       | −17.8 min | −37.6 min |
-| 8     | first carton closed (PO-2610-302-C01)                             | 12:25             | 08:11:29                       | 253.5 min | 08:16:54       | 08:29:45  | 08:54:26  |
+| Scene | Fact                                                                 | Needed by         | Accepted 06:00, 06:07 or 06:14 | Margin    | Accepted 06:20 | 06:30     | 06:45     |
+| ----- | -------------------------------------------------------------------- | ----------------- | ------------------------------ | --------- | -------------- | --------- | --------- |
+| 4     | `SPINDLE-OVERLOAD` raised on CNC-01                                  | 07:20             | 07:15:00                       | 5.0 min   | 07:15:00       | 07:15:00  | 07:15:00  |
+| 4     | its repair ends (breakdown record closed)                            | 07:50             | 07:45:00                       | 5.0 min   | 07:45:00       | 07:45:00  | 07:45:00  |
+| 5     | availability loss on CNC-01 (the breakdown)                          | 09:00             | 07:15:00                       | 105 min   | 07:15:00       | 07:15:00  | 07:15:00  |
+| 5     | first order completed (PO-2610-301)                                  | 09:00             | 08:49:04                       | 10.9 min  | 08:58:56       | −9.6 min  | −24.3 min |
+| 5     | OP10 starved `MATERIAL:BLANK-100`                                    | 09:00             | 08:18:20                       | 41.7 min  | 08:15:52       | 08:16:28  | 08:15:43  |
+| 6     | SPC baseline complete (limit version 1)                              | 11:45 (the drift) | 11:37:27                       | 7.5 min   | −0.4 min       | −13.0 min | −35.1 min |
+| 6     | the drift's first episode (I chart, rule 1, latency 3)               | 12:00             | 11:51:13                       | 8.8 min   | 11:49:46       | −2.4 min  | −22.1 min |
+| 7     | the held order (PO-2610-302, the episode's last unit's) completed    | 12:25             | 12:17:28                       | 7.5 min   | −2.9 min       | −17.8 min | −37.6 min |
+| 8     | its own carton closed (PO-2610-301-C01, the first completed order's) | 12:25             | 08:49:04                       | 215.9 min | 08:58:56       | 09:09:36  | 09:24:15  |
 
 The bottleneck is ASM-01 (VB-100, OP30, 150 s) in every variant. Beyond the envelope the drift starts inside the SPC baseline from 06:20 on, so the pause at 06:14 is what keeps the demo's facts. The tool breakage's `TOOL-CHANGE` setup on CNC-02 starts at 09:01:53 in the envelope.
 
-**Deviation from the plan's estimate.** The plan asked for the alarm, the episode, a completed order and a closed carton "by about 09:30". The alarm (07:15), the first completed order (08:49) and the first closed carton (08:11) are; the episode can't be: an episode after the baseline needs the baseline's 100 first-pass readings first, and the line (ASM-01 at 150 s per unit, a 30-minute break at 10:00, the failure and the lot block) has them at 11:37. The drift starts at 11:45 and its episode is at 11:51, so the walkthrough runs to about 12:30.
+**Deviation from the plan's estimate.** The plan asked for the alarm, the episode, a completed order and a closed carton "by about 09:30". The alarm (07:15), the first completed order (08:49) and the scene 8's carton PO-2610-301-C01 (closed at 08:49 with its order) are; the episode can't be: an episode after the baseline needs the baseline's 100 first-pass readings first, and the line (ASM-01 at 150 s per unit, a 30-minute break at 10:00, the failure and the lot block) has them at 11:37. The drift starts at 11:45 and its episode is at 11:51, so the walkthrough runs to about 12:30.
 
 ## Assertion mutants
 

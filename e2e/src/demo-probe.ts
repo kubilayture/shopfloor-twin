@@ -83,6 +83,8 @@ export interface Facts {
   readonly toolChange: number | null;
   readonly firstCompletedOrder: { readonly id: string; readonly at: number } | null;
   readonly firstClosedCarton: { readonly id: string; readonly at: number } | null;
+  /** Scene 8's own carton: the first completed order's first carton (`…-C01`), closed. */
+  readonly sceneCarton: { readonly id: string; readonly at: number } | null;
   readonly baselineEnd: number | null;
   readonly driftStart: { readonly at: number; readonly firstPassBefore: number } | null;
   readonly episode: {
@@ -213,6 +215,10 @@ export function factsOf(
     ),
     firstCompletedOrder: completed[0] ?? null,
     firstClosedCarton: cartons[0] ?? null,
+    sceneCarton:
+      completed[0] === undefined
+        ? null
+        : (cartons.find((c) => c.id === `${completed[0]?.id ?? ''}-C01`) ?? null),
     baselineEnd: min(
       trace.spc.limits.filter((l) => l.version === 1).map((l) => Date.parse(l.createdAt)),
     ),
@@ -282,7 +288,12 @@ export function marginsOf(facts: Facts): Margin[] {
       close,
       facts.heldOrder?.completedAt ?? null,
     ),
-    margin(8, 'first carton closed', close, facts.firstClosedCarton?.at ?? null),
+    margin(
+      8,
+      `its carton closed (${facts.sceneCarton?.id ?? 'the first completed order’s -C01'})`,
+      close,
+      facts.sceneCarton?.at ?? null,
+    ),
   ];
 }
 
@@ -395,8 +406,8 @@ async function main(): Promise<void> {
     for (const v of all) {
       const f = v.facts;
       console.log(
-        `accepted ${v.accepted}: changeovers from ${f.productionStart === null ? '-' : plantClock(f.productionStart)}, first order ${f.firstCompletedOrder?.id ?? '-'}, first carton ${
-          f.firstClosedCarton?.id ?? '-'
+        `accepted ${v.accepted}: changeovers from ${f.productionStart === null ? '-' : plantClock(f.productionStart)}, first order ${f.firstCompletedOrder?.id ?? '-'}, scene 8's carton ${
+          f.sceneCarton?.id ?? '-'
         }, episode ${f.episode ? `${f.episode.chart} rule ${String(f.episode.rule)} latency ${String(f.episode.latency)}` : '-'}, held order ${f.heldOrder?.id ?? '-'}, bottleneck ${JSON.stringify(f.bottleneck)}${
           v.problems.length > 0 ? `; PROBLEMS: ${v.problems.join('; ')}` : ''
         }`,

@@ -82,3 +82,28 @@ export function sceneAt(id: SceneId): number | null {
   const at = SCENES.find((s) => s.id === id)?.at ?? null;
   return at === null ? null : plantTime(at);
 }
+
+/**
+ * The scenes a run's scene log (`scenes.jsonl`, one JSON record per scene) holds, refused unless
+ * it is exactly scenes 1 to 8 in order: a walkthrough that was skipped or stopped early exits 0
+ * from Playwright too, and must not count as a demo run.
+ */
+export function checkSceneLog(text: string): number[] {
+  const lines = text.split('\n').filter((line) => line.trim() !== '');
+  const scenes = lines.map((line) => {
+    try {
+      return (JSON.parse(line) as { n?: unknown }).n;
+    } catch {
+      return undefined;
+    }
+  });
+  const expected = SCENES.map((s) => s.n);
+  if (JSON.stringify(scenes) !== JSON.stringify(expected)) {
+    throw new Error(
+      `the scene log must record scenes ${expected.join(', ')} once each, in order; it has ${
+        lines.length === 0 ? 'nothing' : JSON.stringify(scenes)
+      }`,
+    );
+  }
+  return expected;
+}

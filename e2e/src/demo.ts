@@ -19,12 +19,12 @@
  * failure) go to e2e/results/demo/. SIGINT and SIGTERM remove the stack and the env file.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pruneBuildCache } from '@shopfloor/test-kit/heavy-lock';
 import { GatewayClient, MesClient, SimulatorClient, gauge, provisionUsers } from './clients.ts';
-import { DEMO } from './demo-plan.ts';
+import { DEMO, checkSceneLog } from './demo-plan.ts';
 import { REPO, Stack, removeImages } from './stack.ts';
 
 const project = process.env.DEMO_PROJECT ?? 'shopfloor-demo-run';
@@ -60,9 +60,18 @@ const log = (message: string) => {
 
 async function until(what: string, check: () => Promise<boolean>, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs;
+  let lastError = 'none';
   for (;;) {
-    if (await check().catch(() => false)) return;
-    if (Date.now() > deadline) throw new Error(`timed out after ${String(timeoutMs)} ms: ${what}`);
+    const ok = await check().catch((error: unknown) => {
+      lastError = error instanceof Error ? error.message : String(error);
+      return false;
+    });
+    if (ok) return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `timed out after ${String(timeoutMs)} ms: ${what} (last error: ${lastError})`,
+      );
+    }
     await sleep(500);
   }
 }
@@ -96,11 +105,13 @@ const stack = new Stack({
 const stop = (signal: NodeJS.Signals) => {
   console.error(`${signal}: removing the stack`);
   browserChild?.kill('SIGTERM');
-  stack
+  void stack
     .destroy()
     .catch((error: unknown) => {
       console.error('could not remove the stack', error);
     })
+    // The images too, as the run's own end removes them (#228).
+    .then(() => (!keepImages && !skipBuild ? removeImages(tag) : undefined))
     .finally(() => {
       process.exit(signal === 'SIGINT' ? 130 : 143);
     });
@@ -199,6 +210,11 @@ try {
     DEMO_SIM_TOKEN: token,
   });
   if (code !== 0) throw new Error(`the demo walkthrough failed (exit ${String(code)})`);
+  // A skipped walkthrough exits 0 too: DEMO-OK only with every scene recorded, once, in order.
+  const scenes = checkSceneLog(
+    await readFile(join(RESULTS, 'scenes.jsonl'), 'utf8').catch(() => ''),
+  );
+  log(`scene log: scenes ${scenes.join(', ')} recorded`);
   log('DEMO-OK');
 } catch (error) {
   failed = true;

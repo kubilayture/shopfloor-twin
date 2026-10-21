@@ -2,7 +2,15 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { CLOSE_AT, CODE_AT, DEMO, SCENES, plantClock, plantTime } from './demo-plan.ts';
+import {
+  CLOSE_AT,
+  CODE_AT,
+  DEMO,
+  SCENES,
+  checkSceneLog,
+  plantClock,
+  plantTime,
+} from './demo-plan.ts';
 import { ENVELOPE, variant } from './demo-probe.ts';
 import { REPO } from './stack.ts';
 
@@ -137,6 +145,7 @@ describe("the demo's ERP dataset and Compose override", () => {
     const override = await yaml<{
       services: Record<string, { environment?: Record<string, string>; [key: string]: unknown }>;
     }>('compose.demo.yml');
+    expect(Object.keys(override)).toEqual(['services']);
     expect(Object.keys(override.services).sort()).toEqual(['erp', 'mes', 'simulator']);
     for (const service of Object.values(override.services)) {
       expect(Object.keys(service)).toEqual(['environment']);
@@ -171,5 +180,21 @@ describe('probe D1’s variants', () => {
     expect(
       variant(twin, plantTime('06:45')).timeline.filter((e) => e.action !== 'dispatch'),
     ).toEqual(twin.timeline.filter((e) => e.action !== 'dispatch'));
+  });
+});
+
+describe("the walkthrough's scene log", () => {
+  const record = (n: number) => JSON.stringify({ n, id: 'x', facts: {} });
+  it('passes exactly scenes 1 to 8 in order', () => {
+    expect(checkSceneLog(`${[1, 2, 3, 4, 5, 6, 7, 8].map(record).join('\n')}\n`)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8,
+    ]);
+  });
+  it('refuses an empty log (a skipped walkthrough), a missing, repeated or extra scene', () => {
+    expect(() => checkSceneLog('')).toThrow('it has nothing');
+    expect(() => checkSceneLog([1, 2, 3].map(record).join('\n'))).toThrow('[1,2,3]');
+    expect(() => checkSceneLog([1, 2, 3, 4, 5, 6, 7, 7].map(record).join('\n'))).toThrow();
+    expect(() => checkSceneLog([1, 2, 3, 4, 5, 6, 7, 8, 8].map(record).join('\n'))).toThrow();
+    expect(() => checkSceneLog('not json')).toThrow();
   });
 });

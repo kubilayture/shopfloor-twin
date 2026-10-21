@@ -210,8 +210,14 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
           .toBeGreaterThan(first);
         moved = Date.parse((await clock.getAttribute('datetime')) ?? '');
       } else {
-        moved = first;
+        // Already held by the timeline's pause: the page's clock has followed the run to it.
         expect(Date.parse(status.simTime)).toBe(DEMO.pauseAt);
+        await expect
+          .poll(async () => Date.parse((await clock.getAttribute('datetime')) ?? ''), {
+            timeout: 15_000,
+          })
+          .toBe(DEMO.pauseAt);
+        moved = DEMO.pauseAt;
       }
       return { speed: status.speed, states, plantClock: [plantClock(first), plantClock(moved)] };
     });
@@ -444,10 +450,17 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       expect(bucket?.result.losses?.availability.own.down ?? 0).toBeGreaterThanOrEqual(30 * 60_000);
 
       await page.goto(`/oee?shift=${encodeURIComponent(SHIFT)}&focus=${machine}`);
-      await expect(page.getByTestId(`oee-machine-${machine}`)).toBeVisible({ timeout: 30_000 });
-      await expect(
-        page.getByTestId('pareto').getByTestId(`pareto-BREAKDOWN/${DEMO.failure.code}`),
-      ).toBeVisible({ timeout: 30_000 });
+      const machineRow = page.getByTestId(`oee-machine-${machine}`);
+      await expect(machineRow).toBeVisible({ timeout: 30_000 });
+      const paretoRow = page
+        .getByTestId('pareto')
+        .getByTestId(`pareto-BREAKDOWN/${DEMO.failure.code}`);
+      await expect(paretoRow).toBeVisible({ timeout: 30_000 });
+      // On the page: the breakdown's 30 minutes in CNC-01's Pareto, its availability below 1.
+      await expect(paretoRow.locator('td').nth(2)).toHaveText('30.0 min');
+      const shownAvailability = machineRow.locator('td').nth(1);
+      await expect(shownAvailability).toHaveText(/^0\.\d{4}$/);
+      await expect(shownAvailability).not.toHaveText('1.0000');
 
       // The line card's bottleneck per product, equal to the MES's derived one.
       const line = await mes<{ bottlenecks: { product: string; equipment: string[] }[] }>(
@@ -612,13 +625,19 @@ test('the demo walkthrough: eight scenes, each asserting what it shows', async (
       );
       const hold = (
         await mes<{
-          holds: { id: string; state: string; subject: { kind: string; id: string } }[];
+          holds: {
+            id: string;
+            state: string;
+            openedBy: string;
+            subject: { kind: string; id: string };
+          }[];
         }>(page, '/api/v1/quality/holds')
       ).holds.find(
         (h) => h.subject.kind === 'order' && h.subject.id === order && h.state === 'open',
       );
       expect(hold).toBeDefined();
       if (!hold) throw new Error('no open hold on the order');
+      expect(hold.openedBy).toBe(account('quality').username);
 
       // The holds screen: the hold and its scope.
       await page.goto('/quality/holds');

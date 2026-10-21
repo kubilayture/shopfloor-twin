@@ -19,7 +19,7 @@ pnpm verify
 
 ### Property seeds: reproducing a failing property run (#276, P10-01)
 
-The property tests (fast-check) of the nine workspaces that use it (`apps/mes-server`, `apps/simulator`, `packages/alarm-core`, `contracts`, `oee-core`, `shift-calendar`, `sim-core`, `spc-core`, `trace-core`) run with one seed per workspace and run, set by `@shopfloor/fc-seed` (registered in each `vitest.config.ts` as `...fcSeed`). Each test run prints it once per workspace, before the tests:
+The property tests (fast-check) of the nine workspaces (verify prints ten seed lines: the nine fast-check workspaces plus `@shopfloor/fc-seed`'s own suite; P10-10 records the nine, the tenth is expected) that use it (`apps/mes-server`, `apps/simulator`, `packages/alarm-core`, `contracts`, `oee-core`, `shift-calendar`, `sim-core`, `spc-core`, `trace-core`) run with one seed per workspace and run, set by `@shopfloor/fc-seed` (registered in each `vitest.config.ts` as `...fcSeed`; a guard test in `packages/fc-seed/src/seed.test.ts` fails when a workspace listing `fast-check` lacks the registration). Each test run prints it once per workspace, before the tests:
 
 ```text
 @shopfloor/sim-core:test: fast-check seed @shopfloor/sim-core: 415925531 (FC_SEED=415925531 reproduces)

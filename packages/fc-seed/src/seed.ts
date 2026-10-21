@@ -6,14 +6,20 @@ const MAX_SEED = 2 ** 31 - 1;
 
 /**
  * The seed `FC_SEED` pins, or `undefined` when it is unset or empty. Anything but a decimal
- * 32-bit signed integer throws, so a typo fails the run before any test instead of silently
+ * 32-bit signed integer in canonical form (no leading zeros, no `-0`) throws, so a typo fails the run before any test instead of silently
  * drawing a fresh seed.
  */
 export function parseSeed(raw: string | undefined): number | undefined {
   if (raw === undefined || raw.trim() === '') return undefined;
   const text = raw.trim();
   const seed = Number(text);
-  if (!/^-?\d+$/.test(text) || !Number.isSafeInteger(seed) || seed < MIN_SEED || seed > MAX_SEED) {
+  if (
+    !/^-?(0|[1-9]\d*)$/.test(text) ||
+    text === '-0' ||
+    !Number.isSafeInteger(seed) ||
+    seed < MIN_SEED ||
+    seed > MAX_SEED
+  ) {
     throw new Error(
       `FC_SEED must be an integer from ${String(MIN_SEED)} to ${String(MAX_SEED)}, got ${JSON.stringify(raw)}`,
     );

@@ -32,6 +32,9 @@ function runProbe(fcSeed: string | undefined): ProbeRun {
   const child = spawnSync(vitestBin, ['run', '--root', probeDir], {
     cwd: probeDir,
     encoding: 'utf8',
+    // A hung child fails its test by name instead of the whole file's hook.
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
     env: {
       ...env,
       FC_PROBE_OUT: out,
@@ -39,9 +42,10 @@ function runProbe(fcSeed: string | undefined): ProbeRun {
       ...(fcSeed === undefined ? {} : { FC_SEED: fcSeed }),
     },
   });
+  const spawnError = child.error === undefined ? '' : `\nspawn error: ${String(child.error)}`;
   return {
     status: child.status,
-    output: `${child.stdout}${child.stderr}`,
+    output: `${child.stdout}${child.stderr}${spawnError}`,
     record: existsSync(out) ? (JSON.parse(readFileSync(out, 'utf8')) as ProbeRecord) : undefined,
   };
 }

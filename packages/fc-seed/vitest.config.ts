@@ -7,5 +7,6 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     // The reproduction tests start Vitest on the probe workspace, several times.
     testTimeout: 60_000,
+    hookTimeout: 60_000,
   },
 });

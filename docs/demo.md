@@ -111,6 +111,55 @@ The plan asks for a 60 s probe first, with its size extrapolated to the whole wa
 
 The first minute is the busiest part of the walkthrough (three logins, eight order pages, the console), so the extrapolation errs on the high side. Even so, at about four times the limit the recording at 1280 × 720 can't fit. The plan's fallbacks therefore apply, in its order: 960 × 540, then the scripted re-encode (below).
 
+### What `pnpm demo:record` does
+
+It is `pnpm demo` (`e2e/src/demo.ts --record`), the same harness and the same Playwright test, with three additions on the walkthrough's one context and page:
+
+- **Video:** Playwright's video recording on that context, at **960 × 540**, the plan's first fallback (the page is still 1280 × 720; Playwright scales the frames). It is one continuous video from the page's opening to its close, with the users changing by logout and login on that page.
+- **Screenshots:** at each scene's end, after its assertions, the scene's last view is held for 3 s (`RECORDING.dwellMs`). Nothing is done on the page during that time. Then the scene's screenshot is taken at 1280 × 720 (`NN-<scene>.png`). The hold came from the first full recording, which showed scene 6 for 0.5 s and scene 8 for 0.65 s, because their facts exist long before they open. A hold before a wait for plant time only shortens that wait.
+- **Captions:** after the run, `docs/demo/demo-v1.vtt` is written from the scene log (`scenes.jsonl`) and the video's start. It has one cue per scene, from its start to its end, giving its number, title, plant times and what it shows. Between scenes there is a cue for the wait: "The run goes on at 60× (plant 09:03 to 12:00)". No caption or overlay is injected into the application's pages.
+
+Every scene is asserted exactly as in `pnpm demo`, and the harness checks the scene log the same way (scenes 1 to 8, once each, in order). Only after `DEMO-OK` does it publish anything. It then publishes the video (re-encoded only when over the limit), the eight screenshots and the captions to `docs/demo/`. It refuses the recording, exiting 1, if the video is over 12 MiB or 7 minutes, if the screenshots together are over 4 MiB, or if the captions or the record hold any secret of the run. Those secrets are the users' generated passwords, the bootstrap admin's, the control token, the ERP token and the database passwords. Last, it writes `e2e/results/demo/recording.json`: the commit, whether `apps/`, `packages/`, `config/` and `e2e/` were unchanged from it, the SHA-256, size, length and resolution, and the size before any re-encode.
+
+**The scripted re-encode** (the plan's second fallback) is in `REENCODE_ARGS` (`e2e/src/demo-record.ts`). It runs Playwright's bundled ffmpeg (`ffmpeg-<revision>` beside the browsers, revision from `playwright-core/browsers.json`), which decodes and encodes VP9 only:
+
+```text
+ffmpeg -i walkthrough.webm -c:v libvpx-vp9 -crf 36 -b:v 0 -deadline good -cpu-used 4 -row-mt 1 -an shopfloor-twin-v1.webm
+```
+
+That is one pass at constant quality with no bitrate cap, at the same size and frame rate, with no audio. Playwright records in real time at `-crf 8` up to a bitrate cap, so the same pictures take about a fifth of the space. CRF 36 was chosen on the probe's video, scaled to 960 × 540: about 1.2 MiB a minute (CRF 42 gave 0.93 MiB) with the UI's text still sharp. The re-encode runs only when the recording is over 12 MiB. At 960 × 540 Playwright's video of the whole walkthrough is about 26 MiB, so every recording so far has been re-encoded. The plan's third fallback, a shorter walkthrough, was not needed.
+
+### Length: at most 7 minutes (a deviation)
+
+The plan's limit is 6 minutes. The walkthrough can't meet it at 60× without cutting asserted scenes. Its last scenes need plant time 12:25 (scene 7's close, once the held order has completed) and the run starts at 06:00. That is 385 minutes of plant time, so at least 385 s, or 6 min 25 s, of wall time at 60×, before any scene's own work. The recording shows a real run at 60× (the plan), so no speed-up of the run is possible within the harness. The only idle wait that isn't plant time is the timeline's pause at 06:14, which scene 3 resumes as soon as it has asserted it (about 9 s here).
+
+**Coordinator decision (#282), for the owner's review:** the limit is **at most 7 minutes**. No scene is cut and the video is not edited by hand. `RECORDING.limits.seconds` is 420, and `pnpm demo:record` refuses a longer video. It is listed in STATUS's owner items and the Phase 10 log.
+
+### The committed recording
+
+| File                                                                            | What                                                                                                                                                      |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`shopfloor-twin-v1.webm`](demo/shopfloor-twin-v1.webm)                         | The video, 6 min 36.5 s (396.5 s), 960 × 540, VP9, 4,866,985 bytes (4.64 MiB); SHA-256 `c365ab9ab3bc20f07c4d64a9a04f9b2747d3af4937ac7a63a4925f2feefed3a4` |
+| [`demo-v1.vtt`](demo/demo-v1.vtt)                                               | The WebVTT captions: one cue per scene, one per wait                                                                                                      |
+| [`01-overview.png`](demo/01-overview.png) … [`08-trace.png`](demo/08-trace.png) | The eight scenes' screenshots, 1280 × 720, 969,618 bytes together (0.92 MiB)                                                                              |
+
+It was recorded by `pnpm demo:record` on **`577d8ce`** (main `6f345bf` plus this branch's code; `apps/`, `packages/`, `config/` and `e2e/` unchanged from it) on 2026-10-21, under the heavy lock. The video was 26.50 MiB from Playwright and was re-encoded as above. In the walkthrough's scene log the jobs were accepted at 06:07 and PO-2610-301 was the first completed order (OEE 0.5446, availability 0.5488, first-pass yield 1.0000). The drift's first episode was on the I chart, rule 1, at 11:51:13 on unit 106. The hold was on PO-2610-302 (60 units) and its close was refused. Serial VB-100-000001 of carton PO-2610-301-C01 traced back to BL100-2610-01, SK1-2610-01 and SP100-2610-01, operator op-a1, leak value 2.46. These are the facts of #281's runs.
+
+**Secrets.** The demo's secrets are generated per run and thrown away with its stack, and none can appear in the recording:
+
+- Passwords are typed only into the login form's password field. The demo's login helper checks that the field is `type="password"` before filling it (`e2e/browser/demo/demo.ts`, `switchTo`). Frames of the committed video taken at each login showed the field masked.
+- The control token and the other secrets never reach the browser: the test reads the control API itself.
+- The captions are generated from scene titles and plant times only. `pnpm demo:record` searched the captions and its record for every secret of the run and found none.
+- The eight screenshots were looked at: user names and plant data only.
+
+### Re-recording
+
+Re-record only when a scene's visible behaviour changed; at most one recording on `main` per release. A change to a scene's assertions that changes nothing on screen, or a new UI detail outside the scenes, is not a reason.
+
+To re-record, start from a clean checkout of the commit to record, with the heavy lock free and Docker's VM at 4 GiB. Run `pnpm demo:record`. It rewrites the files in `docs/demo/` only after `RECORD-OK`. Then copy the values from `e2e/results/demo/recording.json` (commit, SHA-256, length, size) into the table above and into the final report. Commit the video, captions and screenshots together. Never edit, cut or re-encode the video by hand: if it is over a limit, change the committed parameters (`e2e/src/demo-record.ts`) in the plan's order and record again.
+
+**Narration** is for the owner to add, if wanted: Claude can't record it in his voice. The captions file is the script it can follow.
+
 ## Run records
 
 All on `a5de2db` (main `13f8faf` plus #281), 2026-10-21, under the heavy-suite lock, Node 26.11.1, Docker 29.5.2.
@@ -125,3 +174,14 @@ All on `a5de2db` (main `13f8faf` plus #281), 2026-10-21, under the heavy-suite l
 **After the review of PR #290**, on `828e3cd`: `GATE_STEPS=verify GATE_PROJECT=gate281b GATE_TAG=pr281b TURBO_FORCE=1 pnpm gate` gave `GATE-OK` (verify 598.1 s; host 45.1 GiB free); `pnpm demo:probe` gave `D1-OK` with the table above; `pnpm demo` twice in a row gave `DEMO-OK` (440 s and 441 s, each with the scene log of scenes 1 to 8). The harness's scene-log check was proved by a mutant: with the walkthrough forced to skip (Playwright exits 0, `1 skipped`), the run fails with "the scene log must record scenes 1, 2, 3, 4, 5, 6, 7, 8 once each, in order; it has nothing".
 
 Both runs showed the facts probe D1 gives inside the envelope: the alarm raised at 07:15 and its 30-minute `Down` record, PO-2610-301 the first completed order (OEE 0.5446, availability 0.5488, first-pass yield 1.0000), ASM-01 the bottleneck, the drift's first episode on the I chart, rule 1, at 11:51:13 on unit 106 (`I~1~1~106/1`), the hold on PO-2610-302 (60 units) and its close refused, serial VB-100-000001 of carton PO-2610-301-C01 back to BL100-2610-01, SK1-2610-01 and SP100-2610-01, operator op-a1, leak value 2.46. CNC-01's shift availability so far differed in the fourth decimal (0.5986, 0.5983): it is read live, at the plant time scene 5 reached.
+
+**The recording (#282)**, all under the heavy lock with Node 26.11.1, each building its images and removing them at the end:
+
+| Run                     | Commit                                                                   | What                                                  | Result                                                                                                                                                                                |
+| ----------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Size probe              | `dcac1b1` (on main `081d7c8`; `5479ff1` after the rebase onto `6f345bf`) | `DEMO_RECORD_PROBE_S=60 pnpm demo:record`, 1280 × 720 | `PROBE-OK`: 61.6 s, 7.85 MiB ("Size probe" above); host 29.5 GiB free                                                                                                                 |
+| First recording         | `2b80665`                                                                | `pnpm demo:record` at 960 × 540, no hold              | `DEMO-OK`, `RECORD-OK`: 25.50 MiB from Playwright, 4.59 MiB re-encoded, 388.6 s. Not committed: it showed scene 6 for 0.5 s and scene 8 for 0.65 s, hence the 3 s hold                |
+| Second recording        | `a66eede`                                                                | with the hold, the screenshot before it               | `DEMO-OK`, `RECORD-OK`: 26.37 MiB, 4.68 MiB re-encoded, 396.4 s. Not committed: scene 6's screenshot showed the SPC charts still loading, hence the screenshot after the hold         |
+| **Committed recording** | `577d8ce`                                                                | the screenshot after the hold                         | `DEMO-OK`, `RECORD-OK` in 612 s: 26.50 MiB from Playwright, re-encoded to 4.64 MiB, 396.5 s, 960 × 540; screenshots 0.92 MiB; jobs accepted at 06:07; host 37.4 GiB free at the start |
+
+During the first recording's build the host fell to 24 GiB free: Colima's disk image had grown with the probe's and the recording's images, which Docker had already removed. `colima ssh -- sudo fstrim -av` returned 24.7 GiB to the host (40 GiB free); the later runs started at 37.4 GiB and up.

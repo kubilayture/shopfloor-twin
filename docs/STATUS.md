@@ -11,7 +11,7 @@ Phase 10's eight exit criteria (`docs/phases/phase-10-plan.md`, "Exit criteria")
 - **3, SC6:** not met, and not claimable by Claude: the owner's sign-off of Phases 4–10 (P10-11, #286).
 - **4, seeds:** every `pnpm verify` prints one seed per fast-check workspace (#276); the three uncached runs of record come with P10-10.
 - **5, documentation:** the API references, glossary and documentation index (#279), README, runbook and STATUS (#278) done; the architecture views and `scripts/check-architecture.ts` (#280) in progress.
-- **6, demo:** `pnpm demo` passed twice in a row (#281); the recording (#282) is next.
+- **6, demo:** `pnpm demo` passed twice in a row (#281); the recording, screenshots and captions in `docs/demo/` within the size limits, the video 6 min 36.5 s against the plan's 6 minutes (#282, a coordinator decision below); the closing gate's `pnpm demo` and the owner's approval of the recording to come.
 - **7, release:** P10-08 and P10-09 (#283, #284) not started.
 - **8, no regression:** the closing gate; no golden regenerated in Phase 10 so far.
 
@@ -29,11 +29,11 @@ Since the Phase 9 close (#246, PR #274, `d589ef7`, tag `phase-09`). Each entry i
 
 ## In progress
 
+- #282 (P10-07, branch `docs/282-demo-recording`): `pnpm demo:record` (the walkthrough with video, a screenshot per scene, WebVTT captions, the scripted re-encode); `docs/demo/` (video 4.64 MiB, 6 min 36.5 s, 960 × 540; screenshots 0.92 MiB); the README's screenshots.
 - #280 (P10-05) architecture views and `scripts/check-architecture.ts`.
 
 ## Next up
 
-- #282 (P10-07) the demo recording (after #278): `pnpm demo:record`, `docs/demo/`, the README's screenshots.
 - #283 (P10-08) the final report `docs/final-report.md` and ADR-0041 (Sparkplug B).
 - #284 (P10-09) release mechanics: version 1.0.0, CHANGELOG, the runbook's "Releasing". Its merge commit is the release candidate.
 - #285 (P10-10) Phase 10 close: the closing gate on the candidate, the final report's evidence; Phase 10 then "complete, pending the owner's sign-off".
@@ -60,6 +60,7 @@ None of these is claimed as met. `v1.0.0` is tagged only after the owner's sign-
   - ADR-0011's note of 2026-10-21 (#279): the local gate in place of green CI since PR #149, as practised;
   - #276: `pnpm verify` prints ten seed lines, the nine fast-check workspaces plus `@shopfloor/fc-seed`'s own suite (P10-10 records the nine); and the rerun after PR #287's review was `GATE_STEPS=verify` instead of a second full gate (the review's changes touched only `fc-seed`'s own tests, config and parsing);
   - #281's demo deviations: (1) the demo's own ERP dataset `config/erp/demo-v1.yaml` through `compose.demo.yml` (the default feed has exactly the SPC baseline's 100 units before shift B, so no drift could show an episode); (2) the planned start 06:15 and a timeline pause at 06:14 make production independent of when the walkthrough dispatches (inside the envelope), where the plan expected it to vary; (3) "by about 09:30" holds for the alarm, the first completed order and scene 8's carton, not for the SPC episode (11:51, after the baseline's 100 readings), so the walkthrough runs to about 12:30, 6.5 minutes of wall time;
+  - #282's recording length: the plan's limit is 6 minutes, but the walkthrough needs plant time 06:00 to 12:25 at 60×, at least 6 min 25 s, before any scene's work. Without cutting asserted scenes or editing the video, the limit is **at most 7 minutes** (`pnpm demo:record` refuses longer); the committed video is 6 min 36.5 s (`docs/demo.md`, "Length"). Also #282's 3 s hold on each scene's last view in the recording (no action on the page; scenes 6 and 8 otherwise showed for under a second);
   - #277's deviations: the fresh clone under `~/.cache/shopfloor-twin/fresh-clone/` instead of the OS temporary directory (Colima shares only the home directory with its VM); the harness reads the clone's `.env` in memory (for the admin's login and the S7 search), never prints or stores it.
 - **Install the Renovate GitHub app** for this repository (carried over from Phase 0).
 - **GitHub Actions** is disabled by the account's spending limit: every run since PR #149's merge fails at the billing check before any job starts. Merges are gated locally (`pnpm gate`, runbook "Continuous integration"). Raise the limit or keep the local gate; if Actions returns before the tag, one CI run on the candidate is added to the final report.
@@ -72,7 +73,7 @@ None of these is claimed as met. `v1.0.0` is tagged only after the owner's sign-
 - **Trust the dev CA** (#241): the web is at **<https://localhost:8443>** (HTTPS only; `http://localhost:8080` no longer answers). After `pnpm stack:up`, run `pnpm stack:ca` (or, without Node, `docker compose exec -T web cat /etc/nginx/tls/ca.pem > dev-ca.pem`) and trust the dev CA for SSL only (macOS: `security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db dev-ca.pem`, or in Keychain Access only "Secure Sockets Layer (SSL)" to Always Trust; Firefox: import under Authorities), then log in again; remove the trust when the project isn't in use. The MES (4700), the gateway (4900) and the database (5442) are published only by `pnpm stack:up:dev`. Optional new variables: `WEB_HTTPS_PORT` (8443, replaces `WEB_PORT`) and `MES_COOKIE_SECURE` (`on`; `off` only for the Vite dev server on plain HTTP). Runbook, "HTTPS and the dev CA" and "Upgrading a stack from before 1.0".
 - **Read the broker as `mosquitto_sub -i dev`** (#240): every broker user is bound to its client id, so `dev` connects only under the id `dev`, one session at a time.
 - **Publish GitHub releases for `phase-02` to `phase-09`** (optional; only `phase-00` and `phase-01` have one): publishing is the owner's; the runbook's "Releasing" (P10-09) will say how.
-- Optional: run `pnpm stack:up`, log in (above) and look at the plant at <https://localhost:8443>: the console at `/console` (admin), the order detail's OEE under `/orders`, the OEE dashboard's line card at `/oee`, and the other screens (README, "Screens"); or play the demo by hand (`docs/demo.md`, "Running it by hand"). No exit criterion depends on it (orders and cartons run only with `SIM_PRODUCTION=orders`). Codings, acknowledgements, shelves, comments and notes saved there are audited permanently. The default dev database already holds one smoke coding and its clear from #121's first local smoke run (Phase 5 report, Known issues).
+- Optional: run `pnpm stack:up`, log in (above) and look at the plant at <https://localhost:8443>: the console at `/console` (admin), the order detail's OEE under `/orders`, the OEE dashboard's line card at `/oee`, and the other screens (README, "Screens"); or watch the demo's recording (`docs/demo/shopfloor-twin-v1.webm`, approved or rejected in P10-11), or play the demo by hand (`docs/demo.md`, "Running it by hand"). No exit criterion depends on it (orders and cartons run only with `SIM_PRODUCTION=orders`). Codings, acknowledgements, shelves, comments and notes saved there are audited permanently. The default dev database already holds one smoke coding and its clear from #121's first local smoke run (Phase 5 report, Known issues).
 
 The Docker VM item of earlier phases (raise Colima to 4 GiB) is done: every Phase 9 suite ran on 4 CPUs and 3.81 GiB visible to Docker (Phase 9 report, "Owner items"), and #277's fresh-clone runs recorded the same VM (4 CPUs, 3.8 GiB; phase log).
 

@@ -184,4 +184,6 @@ Both runs showed the facts probe D1 gives inside the envelope: the alarm raised 
 | Second recording        | `a66eede`                                                                | with the hold, the screenshot before it               | `DEMO-OK`, `RECORD-OK`: 26.37 MiB, 4.68 MiB re-encoded, 396.4 s. Not committed: scene 6's screenshot showed the SPC charts still loading, hence the screenshot after the hold         |
 | **Committed recording** | `577d8ce`                                                                | the screenshot after the hold                         | `DEMO-OK`, `RECORD-OK` in 612 s: 26.50 MiB from Playwright, re-encoded to 4.64 MiB, 396.5 s, 960 × 540; screenshots 0.92 MiB; jobs accepted at 06:07; host 37.4 GiB free at the start |
 
+Then `pnpm demo` once, on `577d8ce`: `DEMO-OK` in 440 s, jobs accepted at 06:04. And `GATE_STEPS=verify` (`gate282`, `pr282`, `TURBO_FORCE=1`) on `f7fb86f`, the recording's commit: `GATE-OK`, verify 591.7 s.
+
 During the first recording's build the host fell to 24 GiB free: Colima's disk image had grown with the probe's and the recording's images, which Docker had already removed. `colima ssh -- sudo fstrim -av` returned 24.7 GiB to the host (40 GiB free); the later runs started at 37.4 GiB and up.

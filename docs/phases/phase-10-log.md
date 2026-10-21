@@ -185,4 +185,10 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
   - **Rebase** onto `6f345bf` (#280, PR #293) after the probe; no conflicts.
   - **Disk:** during the first recording's build the host fell to 24 GiB free, below the 25 GiB floor, as Colima's disk image grew. `colima ssh -- sudo fstrim -av` gave back 24.7 GiB (40 GiB free). The later runs started at 37.4 GiB or more.
   - **Found, not in scope:** the SPC page's point table shows a leak value as `3.3810000000000002` (an unrounded float; visible in `06-spc.png` and the video).
-  - **Gate** @@GATE@@
+  - **Runs** (all under the heavy lock, Node 26.11.1):
+    - the probe;
+    - three recordings (`2b80665` and `a66eede`, neither committed, then the committed `577d8ce`), each `DEMO-OK` and `RECORD-OK`;
+    - **`pnpm demo`** once on `577d8ce` (code; the docs uncommitted): `DEMO-OK` in 440 s, jobs accepted at 06:04, host 37.0 GiB free;
+    - **the gate** on `f7fb86f` (`GATE_STEPS=verify`, `GATE_PROJECT=gate282`, `GATE_TAG=pr282`, `TURBO_FORCE=1`; the rerun rows `e2e/src/demo*` and `e2e/browser/demo/` → `verify` and `pnpm demo`): `GATE-OK`, clean tree, host 36.7 GiB and Docker 72.4 GiB free at the start; verify 591.7 s, 55 turbo tasks, `e2e` unit tests 146 passed. Seeds: alarm-core 1310377009, contracts 1679792963, fc-seed 1286252341, mes-server 747483705, oee-core 236871270, shift-calendar 1988210397, sim-core 925056551, simulator 761826319, spc-core 456184667, trace-core 996604031.
+
+    The commit after the gate adds only these records (`pnpm format:check`), as #278 did. Images, projects and volumes are removed; no `:demo` image or demo container is left.

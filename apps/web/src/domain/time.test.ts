@@ -5,6 +5,7 @@ import {
   formatPlantTime,
   isRangeKey,
   plantTimeText,
+  wallTimeText,
 } from './time.ts';
 
 describe('time formatting', () => {
@@ -19,6 +20,11 @@ describe('time formatting', () => {
     expect(plantTimeText(undefined)).toBe('–');
     // Not a time (a malformed event line): as it came, never a thrown RangeError.
     expect(plantTimeText('soon')).toBe('soon');
+  });
+
+  it('labels a wall-clock time so it is never read as plant time (#295)', () => {
+    expect(wallTimeText('2026-10-22T07:12:03.000Z')).toBe('Thu 22 Oct, 10:12:03 (wall time)');
+    expect(wallTimeText('soon')).toBe('soon (wall time)');
   });
 
   it('formats durations for people', () => {

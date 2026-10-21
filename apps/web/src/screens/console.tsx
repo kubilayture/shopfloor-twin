@@ -455,10 +455,11 @@ function DriftPanel({ testers }: { readonly testers: readonly EquipmentDto[] }) 
           />
         </label>
         <label className="flex flex-col text-sm">
-          From (optional)
+          From (simulation time, optional; UTC, ISO 8601)
           <input
             className={inputClass}
             data-testid="drift-at"
+            placeholder="2026-10-12T05:00:00Z"
             value={at}
             onChange={(event) => {
               setAt(event.target.value);

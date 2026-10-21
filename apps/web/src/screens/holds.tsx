@@ -53,6 +53,7 @@ import {
   subjectText,
   type QualityFailure,
 } from '../domain/quality.ts';
+import { wallTimeText } from '../domain/time.ts';
 import { useLiveQuality, useQualityTopic } from '../live/live-context.tsx';
 import { upsertHold } from '../live/live-quality.ts';
 import { SubjectLink as TraceSubjectLink } from './trace-common.tsx';
@@ -1235,7 +1236,9 @@ function Incidents({ detail }: { readonly detail: HoldDetailDto }) {
                 {i.pass === null ? '' : ` (pass ${String(i.pass)})`}
               </td>
               <td className={cell}>{timeOf(i.consumedAt)}</td>
-              <td className={cell}>{timeOf(i.detectedAt)}</td>
+              <td className={cell}>
+                <time dateTime={i.detectedAt}>{wallTimeText(i.detectedAt)}</time>
+              </td>
               <td className={cell}>{i.message}</td>
             </tr>
           ))}

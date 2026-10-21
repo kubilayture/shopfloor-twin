@@ -34,7 +34,7 @@ import {
   newestOrder,
   type ActionDraft,
 } from '../domain/orders.ts';
-import { formatPlantTime } from '../domain/time.ts';
+import { formatPlantTime, wallTimeText } from '../domain/time.ts';
 import { mergeHolds } from '../domain/quality.ts';
 import {
   useLiveOrders,
@@ -326,18 +326,16 @@ function CommandRow({
           {command.attemptList.map((attempt) => (
             <li key={attempt.attempt} data-testid="command-attempt">
               Delivery {attempt.attempt}: written{' '}
-              <time dateTime={attempt.issuedAt}>{formatPlantTime(attempt.issuedAt)}</time>,{' '}
+              <time dateTime={attempt.issuedAt}>{wallTimeText(attempt.issuedAt)}</time>,{' '}
               {attempt.publishedAt ? (
                 <>
                   published{' '}
-                  <time dateTime={attempt.publishedAt}>{formatPlantTime(attempt.publishedAt)}</time>
+                  <time dateTime={attempt.publishedAt}>{wallTimeText(attempt.publishedAt)}</time>
                 </>
               ) : (
                 'never published'
               )}
-              , expires{' '}
-              <time dateTime={attempt.expiresAt}>{formatPlantTime(attempt.expiresAt)}</time> (wall
-              time)
+              , expires <time dateTime={attempt.expiresAt}>{wallTimeText(attempt.expiresAt)}</time>
             </li>
           ))}
         </ol>
@@ -351,7 +349,7 @@ function CommandRow({
               <span className="font-medium">{RESULT_TEXT[result.result]}</span>
               {result.code ? ` (${result.code})` : ''} from {result.equipment}, run{' '}
               {result.deviceEpoch}, for the delivery expiring{' '}
-              <time dateTime={result.expiresAt}>{formatPlantTime(result.expiresAt)}</time>
+              <time dateTime={result.expiresAt}>{wallTimeText(result.expiresAt)}</time>
               {result.acceptedSeq === null ? '' : `; accepted seq ${String(result.acceptedSeq)}`}
               {result.position === null ? '' : `, queue position ${String(result.position)}`}
               {result.seqAfterExpiry === null
@@ -559,11 +557,11 @@ function Incidents({
               </p>
               <p className="text-xs text-slate-700">
                 Detected{' '}
-                <time dateTime={incident.detectedAt}>{formatPlantTime(incident.detectedAt)}</time>
+                <time dateTime={incident.detectedAt}>{wallTimeText(incident.detectedAt)}</time>
                 {incident.closedAt ? (
                   <>
                     , closed{' '}
-                    <time dateTime={incident.closedAt}>{formatPlantTime(incident.closedAt)}</time>
+                    <time dateTime={incident.closedAt}>{wallTimeText(incident.closedAt)}</time>
                   </>
                 ) : null}
                 {incident.resolution ? ` (${incident.resolution})` : ''}
@@ -724,7 +722,7 @@ function History({ detail }: { readonly detail: OrderDetailDto }) {
             <li key={entry.id} data-testid="order-history-entry" data-action={entry.action}>
               <span className="font-medium">{entry.action}</span> by {entry.actor}
               {entry.authenticated ? '' : ' (not authenticated)'} at{' '}
-              <time dateTime={entry.at}>{formatPlantTime(entry.at)}</time>
+              <time dateTime={entry.at}>{wallTimeText(entry.at)}</time>
               {entry.plantAt ? <> (plant {formatPlantTime(entry.plantAt)})</> : null}
               {entry.requestId ? `, request ${entry.requestId}` : ''}
             </li>

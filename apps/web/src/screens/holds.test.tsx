@@ -264,6 +264,10 @@ describe('a hold’s detail', () => {
     expect(screen.getByTestId('hold-unit-1-7')).toBeTruthy();
     expect(screen.getByTestId('hold-transition-1').dataset.notification).toBe('sent');
     expect(screen.getByTestId('hold-incident-4')).toBeTruthy();
+    // Detected is a wall-clock time: labelled so (#295 review).
+    expect(screen.getByTestId('hold-incident-4').textContent).toContain(
+      'Thu 15 Oct, 08:51:00 (wall time)',
+    );
     expect(screen.getByTestId('hold-consumed').textContent).toBe('0');
     // A scope push applies at once and reads the detail again.
     const reads = server.reads(`/api/v1/quality/holds/${HOLD_ID}`).length;

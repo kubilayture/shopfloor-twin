@@ -45,6 +45,15 @@ export function plantTimeText(time: string | undefined): string {
   return Number.isFinite(Date.parse(time)) ? formatPlantTime(time) : time;
 }
 
+/**
+ * A wall-clock time (when the MES or a person did something, not the plant's simulated clock) in
+ * the plant's zone, labelled so it is never read as plant time (#295): `Thu 22 Oct, 09:12:03 (wall
+ * time)`. A demo's plant clock can run on another day than the wall clock.
+ */
+export function wallTimeText(time: string): string {
+  return `${Number.isFinite(Date.parse(time)) ? formatPlantTime(time) : time} (wall time)`;
+}
+
 export function formatClockTime(time: string | number): string {
   return clockTime.format(new Date(time));
 }

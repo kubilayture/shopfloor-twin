@@ -145,6 +145,21 @@ describe('order detail', () => {
         'PO-1001': detail(base, {
           commands: [lost, second],
           confirmations: [confirmation()],
+          history: [
+            {
+              id: 1,
+              // Wall time a week after the plant's clock: the demo's case (#295 review).
+              at: '2026-10-22T07:12:03.000Z',
+              plantAt: '2026-10-15T06:30:00.000Z',
+              actor: 'sam',
+              roles: ['supervisor'],
+              authenticated: true,
+              action: 'release',
+              before: null,
+              after: null,
+              requestId: null,
+            },
+          ],
           incidents: [
             {
               id: 3,
@@ -199,11 +214,24 @@ describe('order detail', () => {
     expect(within(first).getByTestId('command-result').textContent).toContain(
       'seq after expiry 51',
     );
-    // Times in plant time as the header shows them, never raw ISO (#295).
-    for (const id of ['command-result', 'command-attempt']) {
-      expect(within(first).getAllByTestId(id)[0]?.textContent).not.toMatch(/\d{4}-\d\d-\d\dT/);
-    }
-    expect(screen.getAllByTestId('order-incident')[0]?.textContent).not.toMatch(/\d{4}-\d\d-\d\dT/);
+    // Wall-clock times in the plant's zone, labelled as wall time, never raw ISO (#295).
+    expect(within(first).getByTestId('command-attempt').textContent).toBe(
+      'Delivery 1: written Thu 15 Oct, 09:00:00 (wall time), published Thu 15 Oct, 09:00:00 (wall time), expires Thu 15 Oct, 09:01:00 (wall time)',
+    );
+    expect(within(first).getByTestId('command-result').textContent).toContain(
+      'for the delivery expiring Thu 15 Oct, 09:01:00 (wall time); seq after expiry 51',
+    );
+    expect(
+      screen
+        .getAllByTestId('order-incident')
+        .map((item) => item.querySelectorAll('p')[1]?.textContent),
+    ).toEqual([
+      'Detected Thu 15 Oct, 09:07:00 (wall time)',
+      'Detected Thu 15 Oct, 09:05:00 (wall time)',
+    ]);
+    expect(screen.getByTestId('order-history-entry').textContent).toBe(
+      'release by sam at Thu 22 Oct, 10:12:03 (wall time) (plant Thu 15 Oct, 09:30:00)',
+    );
     expect(
       within(screen.getByTestId(`command-${second.commandId}`)).getByTestId('command-state')
         .textContent,

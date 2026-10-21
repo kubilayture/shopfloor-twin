@@ -14,6 +14,7 @@ import { fraction, multiply, toDecimal, type Fraction } from '@shopfloor/oee-cor
  * - Where the payload names no resolution (a trace reading, a telemetry value), at most
  *   `MAX_DECIMALS` decimals with trailing zeros dropped: it strips the binary noise and never hides
  *   an instrument step coarser than 10⁻⁶.
+ * - A value that is no finite number (NaN, ±Infinity) is shown as `–`.
  *
  * Rounding is half away from zero on the exact decimal value (`oee-core`'s `toDecimal`), never
  * `Number.toFixed`'s binary rounding (`1.005.toFixed(2)` is `1.00`). An SPC value with its exact
@@ -21,6 +22,9 @@ import { fraction, multiply, toDecimal, type Fraction } from '@shopfloor/oee-cor
  */
 
 export const MAX_DECIMALS = 6;
+
+/** What a value that is no finite number is shown as (NaN or ±Infinity in a payload). */
+export const NO_NUMBER = '–';
 
 const DECIMAL = /^(-?)(\d+)(?:\.(\d+))?(?:e([+-]\d+))?$/;
 
@@ -51,11 +55,13 @@ export function decimalsOf(step: number): number {
 
 /** A double with exactly `places` decimals, rounded half away from zero on its decimal value. */
 export function fixedText(value: number, places: number): string {
+  if (!Number.isFinite(value)) return NO_NUMBER;
   return toDecimal(decimalFraction(value), places);
 }
 
 /** A double whose precision nobody named: at most `MAX_DECIMALS` decimals, no trailing zeros. */
 export function plainText(value: number): string {
+  // No finite number: `fixedText`'s dash, which has no zero to drop.
   return fixedText(value, MAX_DECIMALS).replace(/\.?0+$/, '');
 }
 

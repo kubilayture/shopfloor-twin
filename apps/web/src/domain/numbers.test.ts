@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_DECIMALS,
+  NO_NUMBER,
   decimalFraction,
   decimalsOf,
   fixedText,
@@ -67,6 +68,16 @@ describe('number text (#295)', () => {
     expect(plainText(3.2)).toBe('3.2');
     expect(plainText(1 / 3)).toBe('0.333333');
     expect(plainText(-1.25)).toBe('-1.25');
+  });
+
+  it('shows a value that is no finite number as a dash, never throwing', () => {
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(fixedText(value, 3)).toBe(NO_NUMBER);
+      expect(plainText(value)).toBe(NO_NUMBER);
+    }
+    expect(NO_NUMBER).toBe('–');
+    const leak = spcPrecision(0.001);
+    expect(spcValueText({ value: Number.NaN, steps: 'garbage' }, leak, 3)).toBe(NO_NUMBER);
   });
 
   it('gives readings the resolution’s decimals and statistics one more', () => {

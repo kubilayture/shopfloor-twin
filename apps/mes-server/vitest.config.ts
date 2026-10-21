@@ -1,7 +1,10 @@
+import { fcSeed } from '@shopfloor/fc-seed';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // Records the run's fast-check seed; FC_SEED pins it (P10-01, runbook).
+    ...fcSeed,
     // End-to-end tests run in their own CI job (`test:e2e`), not with the unit and integration tests.
     exclude: ['**/node_modules/**', '**/*.e2e.test.ts'],
     // These files start processes and containers; in parallel they starve a 2-core CI runner.

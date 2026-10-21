@@ -17,8 +17,10 @@ COPY apps/web/package.json apps/web/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/oee-core/package.json packages/oee-core/
 COPY packages/eslint-config/package.json packages/eslint-config/
+COPY packages/fc-seed/package.json packages/fc-seed/
 COPY packages/tsconfig/package.json packages/tsconfig/
-# The build needs the app's dev dependencies (Vite, Tailwind); no lifecycle scripts.
+# The build needs the app's dev dependencies (Vite, Tailwind), which take in the dev dependencies
+# of its workspace packages (`contracts` → `fc-seed`); no lifecycle scripts.
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter @shopfloor/web...
 COPY packages/tsconfig/base.json packages/tsconfig/
 COPY packages/contracts/src packages/contracts/src

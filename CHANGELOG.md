@@ -426,6 +426,7 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ### Changed
 
+- Documentation pass 1 (#278, P10-03): the README has "Run it" (the quick-start block unchanged), "Screens", "Develop" and "Documentation"; the runbook leads with a table of every command and the current procedure, the dated upgrade notes for pre-1.0 stacks are in one section, "Upgrading a stack from before 1.0", and "Continuous integration" states that the local `pnpm gate` is the merge gate while GitHub Actions is unavailable; `docs/STATUS.md` is trimmed to the master plan's fixed layout for Phase 10, the history left to the phase logs and reports.
 - Documentation pass 2 (#279, P10-04): `docs/api/realtime.md` leads with `wss://localhost:8443/api/v1/ws` and the `__Host-sft_session` cookie; ADR-0011 gains a dated note (the local gate in place of green CI since PR #149, awaiting the owner's review); master plan section 5 links the architecture views and section 10 lists the real API documents and the new ones; stale lines fixed in `docs/dependencies.md`, `docs/simulation-model.md` and `docs/contracts/uns.md`; the Phase 10 plan's issue table links its issues.
 - **OEE under `scheduledTime: orders` in the MES (#175, ADR-0021 note):** the Idle `NO-ORDER` time per hour is read from the stored pieces and passed as `noOrderIdleMs`; it makes no downtime record. Schedule-mode runs are unchanged.
 - **`orders-01`'s `orders.json`** is in the ERP dataset schema (`orderNumber`, feed order by position); `events.sha256` and `summary.json` unchanged (#175).

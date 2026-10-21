@@ -79,3 +79,25 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
     - verify 588.2 s, smoke 272.4 s, reconcile 1,667.8 s (alarms, orders and quality OK);
     - none of the 12 secrets in the smoke's or the reconciliation's output.
   - **`pnpm test:fresh-clone`** on `8677604` (cached, project `fresh-475c124a`): `FRESH-CLONE-OK`. Total 207.1 s: `up` with build 48.1 s, smoke 154.2 s. None of the 13 secrets in the output, the cleanup's included. Nothing left behind.
+  - **Re-review of PR #289** (B1 closed; the m3 guard a blocker):
+    - **The bug:** `run()` refused a command `if (signals.stopping && cleaned === undefined)`. But `cleaned ??= (async () => { await run(down) … })()` calls its first `run()` before `cleaned` is assigned. So after a signal the cleanup's own `docker compose -p fresh-<hex> down --volumes` was refused, which would have left containers and volumes. And once `cleaned` was assigned, a main-flow step could start again. The reviewer reproduced the order: down refused, image-rm ran, next step ran.
+    - **The fix:** `run()` takes `cleanup: true`, passed only by the cleanup's down and image removals. A pure `mayStart(stopping, isCleanup)` decides.
+    - **Tests:** `mayStart`'s table; a fake `run` in the harness's `cleaned ??=` shape (the down runs while `cleaned` is still unassigned, the image removal runs, the next step is refused); a source check that the cleanup's two `run()` calls, and only they, carry the flag.
+    - **Mutants** (5, all killed): the guard keyed on `cleaned` again; `mayStart` ignoring the flag; `mayStart` always true; the flag dropped from the down; the flag dropped from the image removal.
+    - **Tests:** 54 in the three files; 102 across `e2e`'s unit tests.
+  - **Rebases:** onto `0fdf488` (#281, PR #290) and then `80d670f` (#279, PR #291).
+    - Conflicts: this log, where each wave's section was kept in order (#276, #281, #279, #277); the runbook's rerun table, keeping #281's demo row and #277's rows; and the scripts in both `package.json` files, keeping `demo`, `demo:probe` and `test:fresh-clone`.
+    - The gate below ran on `a9ad89d` (on `0fdf488`). The rebase onto `80d670f` changed only documentation and #279's `apps/erp-mock/src/api-doc.test.ts`, none of this branch's paths, so the gate wasn't rerun (coordinator's instruction); the fresh-clone runs are on the final head `edb3bf8`. A first gate277c, started before #281's rebase, was stopped in `verify`, before its smoke; nothing of it was left.
+  - **Gate** on `a9ad89d` (`GATE_STEPS=verify,smoke`, `GATE_PROJECT=gate277c`, `GATE_TAG=pr277c`, `TURBO_FORCE=1`, under the heavy lock; the rerun row for `e2e/src/fresh-clone*`), `GATE-OK`:
+    - free at the start: host 38.8 GiB, Docker 81.6 GiB;
+    - verify 594.4 s, smoke 264.4 s;
+    - none of the 12 secrets in the smoke's output.
+  - **`pnpm test:fresh-clone`** on `edb3bf8`:
+    - **Cached run** (project `fresh-ba7f78b3`): `FRESH-CLONE-OK`. Total 206.8 s: `up` with build 48.0 s, smoke 153.7 s. None of the 13 secrets in the output.
+    - **First SIGINT attempt** (project `fresh-259658d9`): the signal went to pnpm's `sh -c` wrapper, which ignores it, instead of `scripts/heavy.ts`. That run therefore completed, also `FRESH-CLONE-OK` in 207 s, with nothing left behind.
+  - **Manual SIGINT check** on `edb3bf8` (project `fresh-016903ba`), done the way Ctrl+C reaches it: SIGINT to `scripts/heavy.ts` (pid 33020, matched by its full command line), which passes it to the harness's process group. Sent at 49 s, right after `up`, with 9 containers running:
+    1. The harness printed `SIGINT: stopping the running command, then cleaning up`.
+    2. The cleanup's `docker compose -p fresh-016903ba down --volumes` ran, stopping and removing every container, the five `:fresh-016903ba` images were removed, and the BuildKit cache was pruned.
+    3. The main flow's next Compose call (`docker compose ls`, "before the smoke") was refused, so it logged a failure and started nothing.
+    4. The harness exited 130.
+    5. Afterwards there were 0 containers, 0 volumes, 0 networks and 0 images of the project, and no `run-*` directory under `~/.cache/shopfloor-twin/fresh-clone/`.

@@ -1,0 +1,501 @@
+# ShopFloor Twin v1.0: final report
+
+Written 2026-10-22 for P10-08 ([#283](https://github.com/kubilayture/shopfloor-twin/issues/283)) on `main` at `f8768d9`, before the closing gate, as the Phase 10 plan asks ("Final report (P10-08)"). **This is a draft of record with its evidence fields named, not yet a statement that any criterion is met.**
+
+- **Evidence fields** marked _to fill (P10-10)_ are filled by the Phase 10 close ([#285](https://github.com/kubilayture/shopfloor-twin/issues/285)) from the closing gate on the **candidate**: the merge commit of P10-09 ([#284](https://github.com/kubilayture/shopfloor-twin/issues/284)), the last commit that changes anything outside `docs/`, `*.md` and `CHANGELOG.md`. Each field names the command, the record and the probe that fills it. No field may be filled from a run on another commit.
+- **Owner fields** marked _owner (P10-11)_ are filled only from the owner's own comments on P10-11 ([#286](https://github.com/kubilayture/shopfloor-twin/issues/286)), by the docs-only pull request that records the sign-off (plan, "Success criterion 6 and the tag", step 4). A comment written from an agent session never counts, whatever its text.
+- **Success criterion 6 is not met** and this report doesn't claim it. No owner item below is claimed as met. `v1.0.0` is tagged by the owner after his sign-off, not before; Claude sets no version tag.
+
+## Contents
+
+1. [Summary](#summary)
+2. [Phase history](#phase-history)
+3. [Success criteria](#success-criteria)
+4. [The closing gate](#the-closing-gate)
+5. [Architecture](#architecture)
+6. [The Sparkplug B decision](#the-sparkplug-b-decision)
+7. [Metrics](#metrics)
+8. [Deviations from the master plan](#deviations-from-the-master-plan)
+9. [Known limits of v1.0](#known-limits-of-v10)
+10. [After v1.0](#after-v10)
+11. [Register of decisions awaiting the owner](#register-of-decisions-awaiting-the-owner)
+12. [Lessons learned](#lessons-learned)
+13. [Sign-off](#sign-off)
+
+## Summary
+
+ShopFloor Twin v1.0 is a simulated discrete-manufacturing plant (Orbis Components, Gebze: two CNCs, a washer, an assembly station, a leak tester and a packer making two variants of a hydraulic valve block) with a working MES core above it, built end to end in TypeScript the way it would be in a real plant. The simulator plays the shop floor: deterministic from a seed, it serves each machine over OPC UA (SignAndEncrypt, pinned certificates) and the washer over Modbus TCP. An edge gateway collects, normalises and publishes every fact into an MQTT Unified Namespace organised by the ISA-95 hierarchy, buffering through broker outages. The MES ingests it exactly once into TimescaleDB and derives equipment states, OEE, alarms, shifts, orders and execution, genealogy, SPC and quality holds; a web front (HTTPS only, five roles) shows them live, and a console steers the simulation. An ERP mock sends orders and receives confirmations and quality notifications.
+
+Every layer is checked against an independent ground truth the simulator writes from the same seed: four golden scenarios reconcile states, OEE, alarms, orders, genealogy, SPC, holds and order and line OEE exactly, in order, in bounded disorder and shuffled with duplicates; three live passes do the same at 60× through the real containers; resilience, performance, console, demo and fresh-clone suites run as their own commands. The work ran in eleven phases (0–10), each a plan, issues of one pull request each with an independent review, a log, a report and learning notes; 41 ADRs record the decisions.
+
+Two facts shape how the evidence below must be read. **GitHub Actions has not run since PR #149** (the account's spending limit, Phase 6): every result since then comes from the local gate on the owner's machine (`pnpm gate` and its sibling suites, recorded per commit in the phase logs), not from CI logs anyone can open. And **Claude closed Phases 4 to 9 under the owner's standing instruction of 2026-10-15 without the owner's review** (and, by their reports, Phases 2 and 3; see SC6): every decision the coordinator took in his place is in the [register](#register-of-decisions-awaiting-the-owner), none claimed as approved.
+
+### Goals against what was built
+
+| Goal (master plan section 1)                                                                                                                                      | What was built                                                                                                                                                                                                                                                                                                                                                                                                                         | Phases and reports                                                                                                                                             | Main ADRs                    |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| 1. A deterministic, configurable simulation of one plant with failures, micro-stops, changeovers, tool wear, quality drift, shifts and operators                  | `sim-core` (integer-millisecond kernel, per-entity xoshiro128\*\* streams), `plant-config`, machine state machines, buffers, routing, breakdowns and repairs, tool wear, leak test and rework, shifts and operators, lots and genealogy events, a weekly schedule and an orders mode, an injectable leak drift, console actions as event variants, YAML timelines and dispatch replay; byte-identical output per seed across platforms | [0](phases/phase-00-report.md), [1](phases/phase-01-report.md), [7](phases/phase-07-report.md), [8](phases/phase-08-report.md), [9](phases/phase-09-report.md) | 0006, 0007, 0030, 0033, 0037 |
+| 2. Machines exposed as real equipment: OPC UA per machine, one legacy Modbus TCP device                                                                           | Five OPC UA servers (companion model plus a project namespace, events with sequence numbers, `LoadProgram`, `LoadOrder`; SignAndEncrypt with a `pki` step, pinned leaf certificates, two users, read-only variables), WSH-01 on Modbus TCP with an event ring                                                                                                                                                                          | [2](phases/phase-02-report.md), [3](phases/phase-03-report.md), [9](phases/phase-09-report.md)                                                                 | 0008, 0009, 0010, 0013, 0038 |
+| 3. An edge gateway publishing an ISA-95 MQTT UNS                                                                                                                  | OPC UA collector with resync and gap incidents, Modbus poller, normalisation, a SQLite store-and-forward outbox, the command executor; UNS contract 1.5 with JSON Schemas and `Deduplicator`; Mosquitto dynamic security, every user bound to its client id                                                                                                                                                                            | [3](phases/phase-03-report.md), [7](phases/phase-07-report.md), [9](phases/phase-09-report.md)                                                                 | 0014, 0015, 0029, 0039       |
+| 4. An MES core: states and downtime, OEE (ISO 22400-2), alarms, orders from a mock ERP, routing execution, material and serial genealogy, quality and SPC, shifts | Twelve modules: ingest (ack after commit, anchors, gaps), equipment intervals, OEE in exact fractions with hourly aggregates and downtime coding, alarm lifecycle and KPIs, shift instances and reports, identity and one audit log, the ERP mock and orders with the `LoadOrder` command path, execution and confirmations, genealogy and cartons, SPC with Nelson rules, quality holds, order and line OEE with a derived bottleneck | [4](phases/phase-04-report.md) to [9](phases/phase-09-report.md)                                                                                               | 0016–0036                    |
+| 5. Interactive control: a simulation console to change speed, inject faults, starve material, release orders and act as the operator                              | `/console` behind an allowlisted `/sim/` proxy with `auth_request` and the control token (speed, pause, injections, lot block, absences, tool breakage, timelines); orders released and dispatched from the orders screens; the operator terminal                                                                                                                                                                                      | [7](phases/phase-07-report.md), [9](phases/phase-09-report.md)                                                                                                 | 0026, 0037, 0039             |
+| 6. Professional engineering: tests at every level, CI, typed contracts, ADRs, documentation updated every phase                                                   | 2,700+ tests in `pnpm verify` plus golden, end-to-end, live reconcile, resilience, performance, console, demo and fresh-clone suites; typed contracts with drift tests; 41 ADRs; a report, log and learning notes per phase; `docs/architecture.md` checked against the code. **CI is configured but has not run since PR #149**; the local gate stands in (ADR-0011 note)                                                             | every phase; [10](phases/phase-10-plan.md) for the release                                                                                                     | 0001, 0004, 0005, 0011, 0040 |
+
+The non-goals held: no PLC hardware, no real ERP, no cloud or high availability, local accounts instead of SSO, no Sparkplug B ([ADR-0041](adr/0041-no-sparkplug-b-in-v1x.md)), no native mobile app.
+
+## Phase history
+
+| Phase                           | Dates (report)                              | Report                                                                                            | Closed by                                          | Tag (commit)                                                 | Owner's sign-off                       |
+| ------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------ | -------------------------------------- |
+| 0 Foundations                   | 2026-10-10 to 2026-10-12, closed 2026-10-14 | [phase-00-report.md](phases/phase-00-report.md)                                                   | owner (learning step skipped)                      | `phase-00` (`78dec8e`)                                       | recorded in the Phase 0 log and report |
+| 1 Simulation core               | 2026-10-14                                  | [phase-01-report.md](phases/phase-01-report.md)                                                   | PR #45 (owner's realism sign-off)                  | `phase-01` (`c901ed5`)                                       | PR #45                                 |
+| 2 Device layer: OPC UA          | 2026-10-15                                  | [phase-02-report.md](phases/phase-02-report.md)                                                   | Claude, PR #69                                     | `phase-02` (`ebf13de`)                                       | **to confirm** (register O-3)          |
+| 3 Edge gateway and UNS          | 2026-10-15                                  | [phase-03-report.md](phases/phase-03-report.md)                                                   | Claude, PR #91                                     | `phase-03` (`4160edd`)                                       | **to confirm** (register O-3)          |
+| 4 MES foundation                | 2026-10-15 to 2026-10-16                    | [phase-04-report.md](phases/phase-04-report.md)                                                   | Claude, PR #114                                    | `phase-04` (`911fa22`)                                       | outstanding                            |
+| 5 OEE and downtime              | 2026-10-16                                  | [phase-05-report.md](phases/phase-05-report.md)                                                   | Claude, PR #137                                    | `phase-05` (`cfed3a0`, the last green CI on `main`)          | outstanding                            |
+| 6 Alarms and shifts             | 2026-10-16                                  | [phase-06-report.md](phases/phase-06-report.md)                                                   | Claude, PR #166                                    | `phase-06` (`7619a54`)                                       | outstanding                            |
+| 7 Orders, ERP, execution        | 2026-10-16 to 2026-10-17                    | [phase-07-report.md](phases/phase-07-report.md)                                                   | Claude, PR #193                                    | `phase-07` (`563e73a`)                                       | outstanding                            |
+| 8 Traceability, quality         | 2026-10-17 to 2026-10-18                    | [phase-08-report.md](phases/phase-08-report.md)                                                   | Claude, PR #227                                    | `phase-08` (`e30b789`)                                       | outstanding                            |
+| 9 Console, scenarios, hardening | 2026-10-18 to 2026-10-21                    | [phase-09-report.md](phases/phase-09-report.md) ([perf results](phases/phase-09-perf-results.md)) | Claude, PR #274                                    | `phase-09` (`d589ef7`, set by the coordinator; register O-2) | outstanding                            |
+| 10 Release 1.0                  | 2026-10-21 to _to fill (P10-10)_            | `phase-10-report.md` _(P10-10)_; [plan](phases/phase-10-plan.md), [log](phases/phase-10-log.md)   | _P10-10: "complete, pending the owner's sign-off"_ | `phase-10` and `v1.0.0`: _owner (P10-11)_                    | outstanding                            |
+
+Tags `phase-04` to `phase-09` were set by the coordinator at each close with the owner's git identity, where the reports said the owner would set them (STATUS, owner items). Phase 7 kept no phase log (its report says so). Learning notes exist for Phases 0–9 (`docs/learning/`); the owner skipped the learning step of Phases 0 and 1 by his own decision, and the optional "Owner's answers and notes" section of Phases 1 to 9 is still unfilled (the learning step is not a success criterion).
+
+## Success criteria
+
+| #   | Criterion (master plan section 1)                                                           | Status at this writing                                                                                                     | After P10-10                       |
+| --- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| 1   | The whole system starts with one command on a clean machine                                 | Harness and README in place (#277, PR #289); not yet of record on the candidate                                            | _to fill (P10-10)_                 |
+| 2   | The same seed and scenario always produce the same events and KPIs                          | Suites in every gate since Phase 1; not yet of record on the candidate; snapshot provenance pending the owner (#140, #172) | _to fill (P10-10)_                 |
+| 3   | OEE numbers match hand-calculated reference cases exactly                                   | Suites in every `verify`; not yet of record on the candidate                                                               | _to fill (P10-10)_                 |
+| 4   | A finished serial traces back to its raw-material lot, machines, operators and test results | Suites in every gate since Phase 8; not yet of record on the candidate                                                     | _to fill (P10-10)_                 |
+| 5   | Data survives a broker outage without loss                                                  | Suites since Phase 3 and Phase 9; not yet of record on the candidate                                                       | _to fill (P10-10)_                 |
+| 6   | Every phase closes with updated docs, a phase report and owner sign-off                     | **Not met**: the owner's sign-off of Phases 4–10 is outstanding                                                            | **not met** until _owner (P10-11)_ |
+
+The candidate commit: _to fill (P10-10)_. Each criterion's section names its claim, how it is proved (the plan's decision), the commands and tests, the evidence fields, its falsifiability probe and its honest limits. Each probe is a deliberate break in a throwaway worktree, never committed, showing that the check fails when the property doesn't hold (Phase 9's lesson: ask what would make a check fail before trusting it pass).
+
+### SC1: one command on a clean machine
+
+**Claim.** On a machine with Docker and Compose v2, git and a POSIX shell (no Node.js, no pnpm), a fresh clone starts the whole system with one command line, the README's quick-start block:
+
+```sh
+sh scripts/stack-init.sh && docker compose up -d --wait
+```
+
+`scripts/stack-init.sh` runs once: it writes `.env` from `.env.example` with a new random value for every `*_PASSWORD` and `*_TOKEN` key (mode 600, never overwriting), the same key rule as `scripts/gate.ts` (tested). "Starts" means `up --wait` returns 0 with every service healthy and the `pki` and `migrate` steps exited 0. Using the web in a browser also needs the stack's dev CA trusted, or its warning accepted once (README, "Run it").
+
+**How it is proved.** `FRESH_CLONE_NO_CACHE=1 pnpm test:fresh-clone` (`e2e/src/fresh-clone.ts`, under the heavy lock) on the candidate: a `git clone --no-local` of the commit (contained in `origin/main`) outside the repository, the README's marked block run verbatim in a Node-free shell, isolation by process environment (`COMPOSE_PROJECT_NAME=fresh-<hex>`, `IMAGE_TAG=fresh-<hex>`, free host ports), the placeholder-env resolution check before any build and again before the smoke, `build --no-cache --pull` before the README line, then the assertions of exit criterion 1 and cleanup with an explicit `-p` (plan, "The fresh-clone test").
+
+| Evidence field                                                                                                                       | Value              |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
+| Commit (the candidate, contained in `origin/main`)                                                                                   | _to fill (P10-10)_ |
+| Command and result line (`FRESH-CLONE-OK`), start time, duration, free host and Docker disk                                          | _to fill (P10-10)_ |
+| Record `e2e/results/fresh-clone/result.json`: init, build and `up` durations                                                         | _to fill (P10-10)_ |
+| Docker, Compose and VM figures; built image digests; the `db` and broker image digests (used as on the machine, not re-pulled)       | _to fill (P10-10)_ |
+| Services healthy; `pki` and `migrate` exited 0; `opcua-tools` not started                                                            | _to fill (P10-10)_ |
+| Published ports equal S8's set (8443, 1883, 4800, 4841–4845, 5020, 4600), each on `127.0.0.1`; 4700, 4900, 5442 unpublished          | _to fill (P10-10)_ |
+| The clone's `scripts/stack-smoke.sh` under the isolation environment                                                                 | _to fill (P10-10)_ |
+| Bootstrap admin over HTTPS trusting only the clone's CA: 403 `password-change-required`; after the change, six machines with a state | _to fill (P10-10)_ |
+| No generated secret in the harness's output (S7); no `shopfloor-twin` container created or recreated; everything removed             | _to fill (P10-10)_ |
+| **Probe:** the init with one required key removed from its output; Compose refuses to start, naming the key                          | _to fill (P10-10)_ |
+
+**Honest limits.** "One command" is one command line whose first part runs once: the stack needs per-stack secrets that can't be committed (S7) and that Compose can't generate for interpolated values. This is a deviation from the letter of section 1 ("`docker compose up` on a fresh clone"), recorded in master plan rev. 10 and in the register (R10-1). A one-shot secrets step with `*_FILE` reads would make `docker compose up` alone enough; it is deferred until after v1.0 ([After v1.0](#after-v10)). A truly clean Docker host is not simulated: images of other projects stay on the machine, and the `db` and broker images are used as they are (their digests recorded). The clone lives under `~/.cache/shopfloor-twin/fresh-clone/`, not the OS temporary directory, because Colima shares only the home directory with its VM (R10-9).
+
+### SC2: the same seed and scenario give the same events and KPIs
+
+**Claim.** A seed and a scenario fully determine the simulator's event log and its KPI summaries, byte for byte, across runs, processes, time zones and platforms; the MES's derived answers equal them.
+
+**How it is proved.** On the candidate: the gate's `golden` step (`pnpm test:golden`: the four goldens `week-01`, `alarms-01`, `orders-01`, `quality-01`, each with `events.sha256`, `summary.json`, `trace.json` and `line-oee.json` byte-identical, with their invariant checks) and `e2e` step (the golden reconciliations of states, OEE, alarms, orders, genealogy, SPC, holds and order and line OEE: `apps/mes-server/src/modules/equipment/reconciliation-*.e2e.test.ts`, `apps/mes-server/src/order-oee.e2e.test.ts`); the same-seed tests in `pnpm verify` (`apps/simulator/src/headless/headless.test.ts` "produces byte-identical output for the same seed and different output for another" and "writes identical bytes in separate processes, whatever the machine time zone"; `packages/sim-core/src/simulation.test.ts` "produces an identical trace on every run"; `apps/simulator/src/plant/line.test.ts` "is deterministic: …"); and the three uncached `verify` runs with recorded property seeds.
+
+| Evidence field                                                                                                                                                                   | Value                                                |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Commit                                                                                                                                                                           | _to fill (P10-10)_                                   |
+| `pnpm gate` record: `golden` result, the four goldens' invariant-check counts (Phase 9: 12,606, 1,985, 2,344, 4,760)                                                             | _to fill (P10-10)_                                   |
+| `e2e` record: reconciliation files and judgement counts (in order, bounded disorder, shuffled)                                                                                   | _to fill (P10-10)_                                   |
+| Same-seed tests passed in each of the three uncached `verify` runs                                                                                                               | _to fill (P10-10)_                                   |
+| Image digests of the gate's images                                                                                                                                               | _to fill (P10-10)_                                   |
+| One CI run on the candidate, only if the owner restores GitHub Actions before the tag (not required)                                                                             | _to fill (P10-10)_, else "none: Actions unavailable" |
+| **Probe:** in a throwaway worktree, `Math.random()` added to a cycle time in `sim-core`; the same-seed byte-identity test in `pnpm verify` and `pnpm test:golden` must both fail | _to fill (P10-10)_                                   |
+
+**Honest limits.** The master plan says "golden-scenario test in CI". The CI job exists (`.github/workflows/ci.yml`, `verify` runs `pnpm test:golden`) but GitHub Actions hasn't run since PR #149; the proof is the local gate on the owner's machine, recorded with its commit and image digests, not a CI log (rev. 10; R10-2). **The committed snapshots include two regenerations made without the owner's approval**, which master plan section 12 requires: #140 (`week-01` to `sim-summary/3`) and #172 (`week-01` and `alarms-01` to `sim-summary/4`); in both `events.sha256` is unchanged (`apps/simulator/golden/README.md`). SC2 is recorded as met by the test, **with the snapshots' provenance pending until the owner approves them** (G-1, G-2). No golden was regenerated in Phases 8, 9 or 10. Live runs are not byte-identical by design (the demo's production depends on when its `LoadOrder`s arrive); live passes compare facts with the live ground truth instead. A live injection posted for the current millisecond runs after that millisecond's processed events, so its replay can differ (ADR-0037).
+
+### SC3: OEE matches hand-calculated reference cases exactly
+
+**Claim.** Every OEE figure, for a machine, a work center, an order and the line, equals a hand calculation as an exact fraction and as a four-decimal string.
+
+**How it is proved.** `packages/oee-core/src/reference-cases.test.ts` and `order-line-reference-cases.test.ts` in the candidate's `pnpm verify` parse every table of [`docs/oee-reference-cases.md`](oee-reference-cases.md) (the machine and work-center cases of Phase 5 and the bottleneck, head-time, order, first-pass-yield and line cases B1–B4, H1–H21, O1–O11, F1, L1–L13 of Phase 9) and check totals, fractions and four-decimal strings; exactness is by construction (integer milliseconds, BigInt fractions, half-up rounding in integers, floating point banned from `oee-core` by a lint rule; ADR-0021). The values were checked independently with Python's `fractions` when written (Phase 5 and Phase 9 reports). The report counts the cases parsed per table, so a silently skipped table shows.
+
+| Evidence field                                                                                                                         | Value              |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| Commit                                                                                                                                 | _to fill (P10-10)_ |
+| Cases parsed per table, and tests passed in `oee-core` (Phase 9: 200 tests)                                                            | _to fill (P10-10)_ |
+| `oee-core` coverage (Phase 9: 100 / 98.4 lines / branches; floor 95 / 90)                                                              | _to fill (P10-10)_ |
+| **Probe:** one expected value in a copy of `docs/oee-reference-cases.md` changed in its fourth decimal fails `reference-cases.test.ts` | _to fill (P10-10)_ |
+
+**Honest limits.** The reconciliations can't catch a definition bug shared by the simulator and the MES, which both use `oee-core`; the reference cases and the independent Python checks are what guard the definitions (Phase 5 lesson). Per-order line OEE is not additive, and line OEE may exceed 1 by design (`aboveOne`, ADR-0036).
+
+### SC4: a finished serial traces back to lot, machines, operators and test results
+
+**Claim.** Any shipped serial (packed in a closed carton) traces back to its blank lot, component lots, machines, operators and leak-test values, and a lot traces forward to every affected carton.
+
+**How it is proved.** On the candidate: the genealogy reconciliations in the `e2e` step (`reconciliation-orders.e2e.test.ts`, `reconciliation-quality.e2e.test.ts` with `genealogy-reconcile.test-support.ts`: every unit's records, lots, operator, leak value and carton equal `trace.json`, in order, in bounded disorder and shuffled with duplicates); the live `quality` pass in the `reconcile` step with `e2e/browser/quality/final/1-trace-holds-close.spec.ts` "a serial traces back with its crew; holds from an SPC episode and a lot; the close is refused while held and allowed after release" on `/trace`; `pnpm test:trace-perf`; and the demo's scene 8 (`pnpm demo`: a packed serial of a closed carton back to its blank lot, component lots, machines, operators and leak value, and the lot forward to its cartons).
+
+| Evidence field                                                                                                              | Value              |
+| --------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| Commit                                                                                                                      | _to fill (P10-10)_ |
+| `e2e` record: genealogy reconciliation counts per golden and ordering                                                       | _to fill (P10-10)_ |
+| `reconcile` record: `quality` pass OK and the Playwright spec                                                               | _to fill (P10-10)_ |
+| `pnpm test:trace-perf` (`TRACE-PERF-OK`): backward and forward p50, p95, max (Phase 9: 3.12 ms and 26.10 ms p95 over HTTPS) | _to fill (P10-10)_ |
+| `pnpm demo` (`DEMO-OK`): scene 8's serial, carton, lots, operator and leak value                                            | _to fill (P10-10)_ |
+| **Probe:** the comparison run against a `trace.json` copy with one unit's blank lot changed fails                           | _to fill (P10-10)_ |
+
+**Honest limits.** Serials repeat across simulator runs (the part counter restarts): units are keyed by (device epoch, part id), a `serial-reused` incident is raised and the screens ask which unit (ADR-0034). The crew shown on a record is approximated from the product's ideal cycle before the cycle's completion, shown and not reconciled (ADR-0034). Genealogy lags execution by about a second, and an order whose packing machine stops reporting keeps its last carton open, with answers marked not final, until a fact proves the gap empty.
+
+### SC5: data survives a broker outage without loss
+
+**Claim.** With the broker stopped and restarted, the gateway's buffer is replayed and the MES stores every fact exactly once, with no gap.
+
+**How it is proved.** On the candidate: `apps/edge-gateway/src/uns.e2e.test.ts` "delivers every fact of every machine exactly once after dedup, through a broker outage and a gateway crash" in the `e2e` step; and `pnpm test:resilience` **twice in a row**, run R1 (broker restart, database restart, ERP mock stopped, WSH-01 silent; every listed answer equal to the live truth and final, no duplicate, no gap incident, every ERP message held once), with R2 (MES SIGTERM and SIGKILL) and R3 (detected loss: CNC-01 offline and the gateway killed, `exercised: true`, every lost fact accounted for) showing the suite can see loss when it happens.
+
+| Evidence field                                                                                                                                       | Value              |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| Commit                                                                                                                                               | _to fill (P10-10)_ |
+| `e2e` record: the gateway's outage test passed                                                                                                       | _to fill (P10-10)_ |
+| Resilience run 1 (`RESILIENCE-OK`): R1 faults, deliveries stored, lost 0, duplicates 0; R2; R3 lost facts per machine and `exercised`                | _to fill (P10-10)_ |
+| Resilience run 2, the same                                                                                                                           | _to fill (P10-10)_ |
+| **Probe:** in a throwaway worktree, the gateway made to drop outbox entries while the broker is down; the outage test in `uns.e2e.test.ts` must fail | _to fill (P10-10)_ |
+
+**Honest limits.** The gateway's responsibility ends at the broker's PUBACK; the broker keeps the MES's queue across a clean restart, but after a crash only up to its last autosave (a limit since Phase 3; [Known limits](#known-limits-of-v10)). OPC UA has no event history: facts raised while no gateway listens to a machine are detected and reported as gaps, not recovered (ADR-0009; R3 shows it). The resilience suite judges "settled" between faults by a stand-in (the MES's plant clock within 60 simulated seconds, every machine settled), not by `mes_ingest_oldest_pending_age_seconds`; it is a precondition, not a pass criterion, and moving it is after v1.0. R3's schedule was moved by the coordinator (R9-1).
+
+### SC6: every phase closes with updated docs, a report and owner sign-off
+
+**Claim and status: not met.** Every phase has its plan, report, learning notes, updated documents and tag (Phase 10's report and tags to come). The owner's sign-off is a different thing: his own approval of a phase close (master plan section 2, Definition of Done). **The coordinator can't meet SC6 and this report does not claim it.**
+
+- Phases 0 and 1: closed with the owner's involvement (the Phase 0 log records his decisions at the close; PR #45 records his realism sign-off of Phase 1).
+- Phases 2 and 3: the Phase 10 plan counts them as signed off by the owner, but their own reports say Claude closed them under the standing instruction of 2026-10-15 "without waiting for a review by the owner" (Phase 2) and "without the owner's review" (Phase 3). This report doesn't resolve the difference; it asks the owner to confirm or sign off (O-3).
+- Phases 4 to 9: closed by Claude under the standing instruction, each sign-off outstanding.
+- Phase 10: closed by P10-10 "complete, pending the owner's sign-off".
+
+**The only path** is P10-11 ([#286](https://github.com/kubilayture/shopfloor-twin/issues/286)): the owner's own comments signing off each phase, deciding the golden regenerations, answering the register and approving the demo recording; then a docs-only pull request recording each comment's URL and `created_at`, merged only on the owner's approval in chat or in his own review, with `git diff --stat <candidate> HEAD -- . ':!docs' ':!*.md'` empty; then the owner tags `v1.0.0` and `phase-10`. If the owner doesn't sign off, there is no `v1.0.0` and this row stays "not met". The table is under [Sign-off](#sign-off).
+
+## The closing gate
+
+P10-10 runs the plan's closing gate on the candidate, one suite after another, each record kept and nothing rerun silently (a failure is a finding, a recurring flake a fix issue), with the owner's dev stack stopped. Phase 9's sequence took 3.2 hours; this one about four.
+
+| #   | Command                                                           | Started (UTC)      | Result             | Duration           | Free host disk (start → end) |
+| --- | ----------------------------------------------------------------- | ------------------ | ------------------ | ------------------ | ---------------------------- |
+| 1   | `TURBO_FORCE=1 pnpm gate` (verify, golden, e2e, smoke, reconcile) | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 2   | `pnpm test:resilience`, run 1                                     | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 3   | `pnpm test:resilience`, run 2                                     | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 4   | `pnpm test:perf`                                                  | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 5   | `pnpm test:trace-perf`                                            | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 6   | `pnpm test:console`                                               | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 7   | `pnpm demo`                                                       | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 8   | `FRESH_CLONE_NO_CACHE=1 pnpm test:fresh-clone`                    | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 9   | `TURBO_FORCE=1 pnpm verify --concurrency=1`, run 1                | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 10  | the same, run 2                                                   | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 11  | the same, run 3                                                   | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+| 12  | `pnpm audit --prod`                                               | _to fill (P10-10)_ | _to fill (P10-10)_ | –                  | –                            |
+| 13  | The falsifiability probes (SC1 to SC5), in a throwaway worktree   | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_           |
+
+Environment: Node, Docker, Compose, the Colima VM (CPUs, memory visible to Docker, disk) and the host: _to fill (P10-10)_.
+
+**Property seeds** (P10-01, `@shopfloor/fc-seed`): each uncached `verify` prints one `fast-check seed <workspace>: <seed>` line for each of the nine workspaces that use fast-check (`apps/mes-server`, `apps/simulator`, `packages/alarm-core`, `contracts`, `oee-core`, `shift-calendar`, `sim-core`, `spc-core`, `trace-core`), plus one for `@shopfloor/fc-seed`'s own suite, which is expected and not counted (R10-7). `FC_SEED=<seed>` reproduces a run's generated values.
+
+| Workspace        | Run 1              | Run 2              | Run 3              |
+| ---------------- | ------------------ | ------------------ | ------------------ |
+| `mes-server`     | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ |
+| `simulator`      | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ |
+| `alarm-core`     | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ |
+| `contracts`      | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ |
+| `oee-core`       | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ |
+| `shift-calendar` | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ |
+| `sim-core`       | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ |
+| `spc-core`       | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ |
+| `trace-core`     | _to fill (P10-10)_ | _to fill (P10-10)_ | _to fill (P10-10)_ |
+
+**The demo recording** (P10-07, [`docs/demo.md`](demo.md), "The recording"): [`docs/demo/shopfloor-twin-v1.webm`](demo/shopfloor-twin-v1.webm), 6 min 35.0 s, 960 × 540, VP9, 5,020,720 bytes (4.79 MiB), SHA-256 `d884a72072e0b972f8218868bc3036fe5a1395e711ed003c8790f120c8024e92`, recorded by `pnpm demo:record` on `da16fbb` (main `29321ea` plus #282's code) on 2026-10-22; eight screenshots, 971,737 bytes together; captions `demo-v1.vtt`, 11 cues. It is the walkthrough test itself, with every scene asserted, nothing staged and no overlay in the pages. Its length exceeds the plan's 6 minutes (R10-11). The owner approves or rejects it as Phase 10's demo check: _owner (P10-11)_.
+
+## Architecture
+
+The views are in [`docs/architecture.md`](architecture.md) (P10-05, #280, PR #293), C4-style Mermaid flowcharts and sequence diagrams, each with a key; `scripts/check-architecture.ts` in `pnpm verify` fails when the container, module, import or package views drift from `docker-compose.yml`, `apps/mes-server/src/modules/*` and the workspace `package.json` files (12 services, 10 volumes, 12 modules with 39 import edges, 19 packages at its first gate).
+
+- [System context](architecture.md#1-system-context): the five roles, the system, the plant (the simulator standing in) and the ERP (the mock).
+- [Containers](architecture.md#2-containers) and their [trust boundaries](architecture.md#trust-boundaries): `db`, `broker`, `pki`, `simulator`, `gateway`, `opcua-tools`, `migrate`, `mes`, `erp`, `web`; the `default` and `edge` networks; protocols, ports and credentials. The [observability profile](architecture.md#3-observability-profile) (Prometheus, Grafana) as its own view.
+- [Components](architecture.md#4-components): the [MES modules](architecture.md#41-mes-modules) and their imports through `index.ts` (ADR-0005), the [gateway](architecture.md#42-edge-gateway), the [simulator](architecture.md#43-simulator), the [web](architecture.md#44-web); the [workspace packages](architecture.md#5-workspace-packages).
+- [Runtime views](architecture.md#6-runtime-views): start-up and the `pki` step; ingest; the `LoadOrder` round trip; confirmations; the alarm lifecycle; a quality hold; a traceability query; push and the console; a broker outage (store-and-forward); a gateway outage (detected loss, resync and replay).
+- [Deployment](architecture.md#7-deployment): one host, the Docker VM, a Compose project with published ports on `127.0.0.1`, the gate's disposable projects beside a dev stack.
+- [Cross-cutting concepts](architecture.md#8-cross-cutting-concepts): simulation time and epochs, finality, identity and roles, delivery guarantees, determinism, each with its ADRs.
+
+The contracts behind the arrows: [`contracts/uns.md`](contracts/uns.md) (1.5), [`contracts/opcua-address-space.md`](contracts/opcua-address-space.md) (1.3), [`contracts/modbus-register-map.md`](contracts/modbus-register-map.md) (map 2), [`contracts/simulator-control-api.md`](contracts/simulator-control-api.md) (1.11), [`api/mes.openapi.json`](api/mes.openapi.json), [`api/realtime.md`](api/realtime.md), [`api/erp-mock.md`](api/erp-mock.md), [`data-model.md`](data-model.md). The threat model and checklist S1–S10 are in [`security-review.md`](security-review.md).
+
+## The Sparkplug B decision
+
+The master plan's open decision "Whether to add Sparkplug B after v1.0" (section 12) is answered by [ADR-0041](adr/0041-no-sparkplug-b-in-v1x.md): **not in v1.x.** The UNS stays the ISA-95 topic tree with JSON envelopes and versioned schemas (section 5).
+
+- Sparkplug B prescribes its own namespace (`spBv1.0/<group>/<message type>/<edge node>[/<device>]`), which would replace or duplicate the tree the MES subscribes to, and Protobuf payloads with metric aliases, which would need a second definition beside the JSON Schemas and their contract tests.
+- What Sparkplug's births, deaths and `seq` give, the project already has with stronger guarantees: per-source sequences and device epochs with exactly-once dedup and gap incidents (ADR-0015, ADR-0017), retained state and alarm snapshots as anchors, the gateway's last will. Sparkplug's `seq` wraps at 256 per edge node and couldn't carry that accounting.
+- No consumer in the project needs it.
+- **If one ever does:** an optional egress bridge publishing a Sparkplug B view of the UNS for a named consumer, beside the UNS and never replacing it, read-only towards the plant (commands stay on ADR-0029's path), in its own Compose profile, with its own ADR, contract and phase.
+
+ADR-0041 is accepted by the coordinator and **awaits the owner's review** (R10-5); the master plan's open decision points to it and stays unticked until then.
+
+## Metrics
+
+Figures last recorded before the closing gate, each with its source; P10-10 replaces them with the candidate's.
+
+| Metric                        | Value                                                                                                                                                                                                                                                                                                                                                                                   | Source                                                                             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Tests in `pnpm verify`        | 2,733 uncached on `9dd1432` (#278's gate, 55 turbo tasks); Phase 9 close 2,654; Phase 8 2,102. Later Phase 10 PRs added tests (#280's architecture check, #282's recording checks, #297's display tests). Candidate: _to fill (P10-10)_                                                                                                                                                 | STATUS; Phase 9 report; Phase 10 log                                               |
+| Other suites                  | `pnpm test:golden` (4 goldens), `pnpm test:e2e` (gateway 11 tests; MES 51 and 3 gated at Phase 9), `pnpm test:reconcile` (3 live passes), `pnpm test:console` (15 tests on two simulator runs), `pnpm test:resilience` (R1–R3), `pnpm test:perf` (P1–P3), `pnpm test:trace-perf`, `pnpm demo` (8 scenes), `pnpm test:fresh-clone`                                                       | Phase 9 report; runbook                                                            |
+| Coverage (lines / branches)   | `oee-core` 100 / 98.4, `sim-core` 99.4 / 98.4, `alarm-core` 100 / 96.4, `spc-core` 99.6 / 94.0, `trace-core` 100 / 93.4, `shift-calendar` 100 / 91.4, `plant-config` 99.5 / 95.9, `pki` 97.3 / 86.7, simulator 88.5 / 82.4, `edge-gateway` 93.7 / 82.3, `mes-server` 95.7 / 85.3, `erp-mock` 98.1 / 91.6, web 95.3 / 85.8; every package above its floor. Candidate: _to fill (P10-10)_ | Phase 9 closing gate (`1cecd17`)                                                   |
+| Gate time                     | A full `pnpm gate` about 65 minutes (verify 587 s, golden 1.6 s, e2e 1,454 s, smoke 200 s, reconcile 1,665 s); the Phase 9 closing sequence 3.2 hours. Candidate: _to fill (P10-10)_                                                                                                                                                                                                    | Phase 9 report                                                                     |
+| Performance at 60× (ADR-0040) | T1 ingest lag p95 46.7 ms (100 % of 6,411 ≤ 250 ms); T2 drain 938.2 msg/s; T3 overview 229 ms, OEE dashboard 1,023 ms; T4 reads 17.1 ms, traces 7.7 ms; T5 MES 0.149 core; T6 three times the live rate at lag p95 21.0 ms; trace p95 3.12 ms backward, 26.10 ms forward. Candidate: _to fill (P10-10)_                                                                                 | Phase 9 closing run, [`phase-09-perf-results.md`](phases/phase-09-perf-results.md) |
+| Database                      | 75 MES tables in ten module schemas, `public.schema_migrations` and two continuous aggregates; migrations `0001` to `0033`; `week-01`'s trace load 58 MB (29,104 facts, 2,200 units)                                                                                                                                                                                                    | Phase 9 report; [`data-model.md`](data-model.md)                                   |
+| ADRs                          | 41 (0001–0041; 0004 superseded by 0011); amendments recorded in place                                                                                                                                                                                                                                                                                                                   | [`adr/README.md`](adr/README.md)                                                   |
+| Contracts                     | UNS 1.5 (ten JSON Schemas), OPC UA address space 1.3, Modbus register map 2, simulator control API 1.11, MES OpenAPI 3.1 (route matrix 94 routes at Phase 9), realtime JSON Schema, `sim-summary/4`, `sim-trace/1`, `sim-line-oee/1`                                                                                                                                                    | the contract documents; Phase 9 report                                             |
+| Documentation                 | Every document indexed with its update rule and checking test ([`docs/README.md`](README.md)); glossary 63 terms; architecture checked in `verify`                                                                                                                                                                                                                                      | P10-04, P10-05                                                                     |
+| Dependencies                  | `pnpm audit --prod` at the Phase 9 close: no known vulnerabilities (551 dependencies). Candidate: _to fill (P10-10)_                                                                                                                                                                                                                                                                    | Phase 9 report                                                                     |
+
+## Deviations from the master plan
+
+Over the whole project, each with the revision or ADR that records it. Phase-level deviations from phase plans are in each report and, where they await the owner, in the register.
+
+| Deviation                                                                                                                                                | Recorded in                                        |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| No branch protection (private repository on GitHub Free); first the owner's merge was the approval, then Claude merges after an independent review agent | ADR-0004 (rev. 3), superseded by ADR-0011 (rev. 6) |
+| Merge commits instead of squash-merge for Phase 0's first PRs; squash from then on (owner decision)                                                      | Phase 0 report and log                             |
+| Learning notes briefly in Turkish, then English                                                                                                          | Rev. 3, rev. 4                                     |
+| A weekly production schedule file for Phases 1–6, kept as a production mode beside orders                                                                | Rev. 5, rev. 7                                     |
+| Machine state `Stopped`; micro-stops classified only in the MES; an interim scheduled-time rule before orders                                            | Rev. 2, ADR-0021                                   |
+| Alarms as OPC UA state variables plus events, lifecycle in the MES, not Alarms & Conditions                                                              | ADR-0010                                           |
+| `prom-client` metrics, no OpenTelemetry tracing in v1                                                                                                    | ADR-0012, rev. 9                                   |
+| Commands to machines deferred from Phase 3 to Phase 7, as `LoadOrder` on `cmd/load-order`                                                                | Phase 3 plan, rev. 7, ADR-0029, ADR-0030           |
+| Identity (users, roles, login, audit) in Phase 7, read routes authenticated; separate database roles                                                     | Rev. 7, ADR-0026, ADR-0027                         |
+| Phases 7, 8 and 9 sized XL in waves; Phase 10 M                                                                                                          | Rev. 7, 8, 9, 10                                   |
+| Cartons formed by the MES with a shared packing rule; "shipped" means packed in a closed carton; lots and operator on cycle facts                        | Rev. 8, ADR-0033, ADR-0034                         |
+| Per-order and line OEE moved from Phase 8 to Phase 9                                                                                                     | Rev. 8, ADR-0036                                   |
+| CI replaced by the local gate since PR #149 (spending limit); "CI green" met by `pnpm gate`                                                              | Phase 6–9 reports, ADR-0011 note (R10-6)           |
+| SC1 verified by a one-time init plus `docker compose up -d --wait` in one command line                                                                   | Rev. 10 (R10-1)                                    |
+| SC2 verified by the local gate while Actions is unavailable                                                                                              | Rev. 10 (R10-2)                                    |
+| Phases 2–9 closed by Claude without the owner's review, under the standing instruction of 2026-10-15                                                     | Each report; SC6                                   |
+| Phase 10's tags `v1.0.0` and `phase-10` set by the owner after his sign-off, on the same commit                                                          | Phase 10 plan (R10-3)                              |
+| The Sparkplug B decision recorded in ADR-0041 and this report rather than "the Phase 10 report"                                                          | Rev. 10, ADR-0041                                  |
+| Phase 7 kept no phase log                                                                                                                                | Phase 7 report                                     |
+
+## Known limits of v1.0
+
+Nothing here is fixed in v1.0. Each was recorded by the report or ADR named.
+
+**From the ADRs (the Phase 9 report's list and earlier):**
+
+- ADR-0009: OPC UA has no event history; facts raised while no gateway listens are detected as gaps, not recovered. After a gateway crash the restarted gateway treats missed facts as history; the MES's dedup still sees the hole.
+- ADR-0015: an epoch from wall-clock seconds assumes a source doesn't restart twice within one second; a consumer that joins late can't tell whether earlier numbers were lost.
+- ADR-0029: a command whose outcome is unknown when its simulator run finishes stays `unknown` until the gateway sees a new epoch; a job fact raised while the gateway is cut off is known only through `cmd-res`.
+- ADR-0031: `short` is decided at completion and posted once; a suspect on a machine that stops reporting stays a suspect.
+- ADR-0032: with the defaults a stable process opens about 13 episodes per 1,000 readings (about 29 a week) for quality to acknowledge.
+- ADR-0033: material taken for a cycle still running at the end of a run is reported by no fact; a drift can't be cancelled through the control API.
+- ADR-0034: genealogy lags execution by a round; the two-CNC gap is closed by a global cut (one CNC that stops reporting holds back carton placement for later orders); a unit that keeps failing its rebuild stalls genealogy behind it until a person acts; the crew shown is approximate; serials repeat across runs.
+- ADR-0035: a close may be `genealogy-pending` for about a second; a lot hold's scope grows while the lot is used, so the ERP's counts are provisional (`scopeFinal`).
+- ADR-0036: per-order line OEE is not additive; a restart over the same plant time withdraws the finals of the re-lived hours; an order with jobs in two runs is never line-final.
+- ADR-0037: an injection or action posted live for the current millisecond runs after that millisecond's processed events, so its replay can differ.
+- ADR-0038: a renewed certificate, or removing a hand-copied duplicate pin, needs a restart of the simulator and the gateway; a CRL planted after the `pki` step works until the next run.
+- ADR-0039: the residual risks below; refusing MQTT subscriptions outside a role's reads would be stricter and is left open.
+- ADR-0040: T3 and T4 are measured client side; P3's extra load is telemetry, the cheapest class; `mes_ingest_pending_messages` is bounded by the receive maximum.
+
+**Carried from Phases 3 to 8, none fixed in v1.0** (Phase 10 plan, "Out of scope"):
+
+- no retention or compression policies on the hypertables (a policy must respect the continuous aggregates, the final hours, the append-only audit log, `control_limit`, `hold_transition` and the genealogy and quality tables; ADR-0018, ADR-0022);
+- the alarm KPI read is O(hours × occurrences) (ADR-0024 follow-up);
+- one transaction per ingested message (about 1,000 messages per second is ample at this plant's rate);
+- broker persistence only up to the last autosave: queued messages for the MES's session survive a broker crash only to then (a clean restart keeps them);
+- Vite's 500 KB chunk warning (the main chunk and the lazily loaded ECharts chunk);
+- scrap ingestion and coding not checked at paced speed (Phase 7 criterion 5);
+- `mes_app` can drop the two continuous aggregates after `SET ROLE mes_cagg` (derived data; the runbook has a forced refresh);
+- serials repeat across simulator runs;
+- aggregate dirty hours live in memory (the start-up catch-up covers a crash, not a write that bypasses the modules);
+- `prom-client` is deprecated upstream in favour of `@prometheus-io/client` (ADR-0012 follow-up);
+- an existing orders-mode database keeps pre-#175 `NO-ORDER` records until its intervals are recomputed (ADR-0031).
+
+**Phase 9 items moved past v1.0** (Phase 10 plan, "Out of scope"):
+
+- the resilience suite's pending stand-in, not `mes_ingest_oldest_pending_age_seconds` (a settle precondition, not a pass criterion; the suite passed twice on `1cecd17` with it);
+- the month-scale follow-ups of #245: `OrderOee.lineOrders` bounded to the open window, `GET /oee/line/orders` paginated, the `#finals` maps evicted (v1.0 is proven at shift and week scale, which T4 and T5 measure).
+
+**Security** ([`security-review.md`](security-review.md)): the accepted risks the checklist names (plaintext MQTT on loopback, S2; the ERP mock's one shared token, S7; Modbus 5020 without authentication, S8), and the residual risks outside the checklist: the dev CA's `*.localhost` scope while trusted; the `__Host-` cookie on other secure `localhost` ports; OPC UA password guesses not serialised per user and the connection cap; a CRL planted after the `pki` step; MQTT passwords briefly on `mosquitto_ctrl`'s argv; a leaked component password's denial of service; a multi-address attacker and the login ceiling (R9-7); Colima's single host address; Grafana's network not `internal`.
+
+**Operations:** GitHub Actions is disabled (the release rests on one machine's runs, recorded with commits and image digests); the Renovate app is not installed; the evidence of Phases 6–10 is local records, not CI logs. **Flakes to watch:** the ERP mock's readiness in the smoke (#241, #257); the `opcua-tools` S1 step once on `lkt-01` (#242). The closing gate's result for both: _to fill (P10-10)_.
+
+**Known issues of 1.0.0:** a rejection in P10-11 that the owner marks not release-blocking is listed here and goes to 1.0.1: _owner (P10-11)_.
+
+## After v1.0
+
+The backlog, none of it a v1 criterion:
+
+1. **Resilience stand-in** moved to `mes_ingest_oldest_pending_age_seconds` (two resilience runs to re-prove the judge).
+2. **Month-scale data:** `OrderOee.lineOrders` bounded, `GET /oee/line/orders` paginated, `#finals` evicted (#245).
+3. **Retention and compression policies** that respect the append-only and derived tables.
+4. **The alarm KPI read** bucketed by hour once (ADR-0024).
+5. **Batched ingest** if a faster plant or a longer outage needs it.
+6. **Broker durability** beyond autosave (persistence settings, or a broker with synchronous persistence).
+7. **`docker compose up` alone** (SC1's option (d)): a one-shot secrets step writing into a volume, every service reading `*_FILE`, as `pki` does for certificates.
+8. **Smaller items:** Vite's main chunk split by route; scrap at paced speed in a live pass; the `mes_cagg` role hardened; `prom-client` to `@prometheus-io/client`; MQTT TLS (cut in Phase 9); Grafana dashboards (cut in Phase 9); MQTT subscriptions limited to a role's reads (ADR-0039).
+9. **Process:** GitHub Actions restored, or the local gate kept by the owner's decision; Renovate installed; GitHub releases for `phase-02` to `phase-09` published by the owner (the runbook's "Releasing", P10-09).
+10. **Sparkplug B** only as ADR-0041's bridge, and only for a named consumer.
+
+## Register of decisions awaiting the owner
+
+One list of every decision the coordinator took in the owner's place, from Phases 4 to 10, and the owner items that only he can do. It is what P10-11 asks the owner to answer: for each, **approve**, or **reject with a reason** (a rejection becomes an issue, marked release-blocking or not). The "Owner's answer" column is filled only from his own comments on P10-11. Sources: STATUS ("Blockers and open questions for the owner"), the reports of Phases 4–9 ("Deviations", "Coordinator decisions", "Owner items"), the Phase 10 plan's decisions marked † and the Phase 10 log.
+
+### Sign-offs, tags and golden snapshots
+
+| ID  | Item                                                                                                                                                                                                                     | Recorded in                                       | Owner's answer   |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------- | ---------------- |
+| O-1 | Sign off Phases 4, 5, 6, 7, 8, 9 and 10, each separately (v1 SC6)                                                                                                                                                        | Each phase report; [Sign-off](#sign-off)          | _owner (P10-11)_ |
+| O-2 | Confirm or move the tags `phase-04` to `phase-09`, set by the coordinator at each close with the owner's git identity, where the reports said the owner would set them                                                   | STATUS; Phase 9 report                            | _owner (P10-11)_ |
+| O-3 | Phases 2 and 3: the Phase 10 plan counts them as signed off, their reports say Claude closed them without the owner's review; confirm they are signed off, or sign them off now                                          | Phase 2 and 3 reports; this report, SC6           | _owner (P10-11)_ |
+| G-1 | Approve or reject the golden regeneration #140: `week-01` to `sim-summary/3` (only the new `alarms` section, `analysisConfigSha256` and the schema line changed; `events.sha256` unchanged)                              | `apps/simulator/golden/README.md`; Phase 6 report | _owner (P10-11)_ |
+| G-2 | Approve or reject the golden regeneration #172: `week-01` and `alarms-01` to `sim-summary/4` (the schema line, an empty `orders` section, `analysisConfigSha256`, `oee.config.scheduledTime`; `events.sha256` unchanged) | `apps/simulator/golden/README.md`; Phase 7 report | _owner (P10-11)_ |
+| D-1 | Approve or reject the demo recording as Phase 10's demo check (`docs/demo/shopfloor-twin-v1.webm`, SHA-256 `d884a720…`)                                                                                                  | [`demo.md`](demo.md)                              | _owner (P10-11)_ |
+
+### Phase 4
+
+| ID   | Decision                                                                                                                                                                                                                                               | Recorded in                            | Owner's answer   |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------- | ---------------- |
+| R4-1 | The broker queue of 100,000 messages holds about 1 hour of the plant at 60×, not the plan's "about 5 hours" (measured about 25 messages/s)                                                                                                             | Phase 4 report, "Deviations"           | _owner (P10-11)_ |
+| R4-2 | UNS 1.1: optional `deviceEpoch` on snapshots and telemetry; the first anchor wins per (equipment, device epoch)                                                                                                                                        | `contracts/uns.md`, ADR-0017, ADR-0018 | _owner (P10-11)_ |
+| R4-3 | Hypertable chunks of 7 days, not 1 day; three extra tables (`ingest.component_status`, `ingest.state_anchor`, `equipment.interval_source`)                                                                                                             | Migration `0003`, ADR-0017, ADR-0018   | _owner (P10-11)_ |
+| R4-4 | Exit criterion 1 compared shift A's totals including provisional time whose shift-A piece was final in fact (finality per piece came with #113)                                                                                                        | Phase 4 report; #113                   | _owner (P10-11)_ |
+| R4-5 | Interface details: `GET /shifts/{date}/{shift}/totals`; web totals from the selected range; jsdom for web component tests; control API 1.1 `GET /ground-truth`; a Dockerfile `COPY` guard in `verify`; `data-model.md` diagrams only for `master_data` | Phase 4 report, "Deviations"           | _owner (P10-11)_ |
+
+### Phase 5
+
+| ID   | Decision                                                                                                                                                                     | Recorded in                    | Owner's answer   |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ---------------- |
+| R5-1 | A stream first seen above `seq` 1 holds finality back below its first number for the gap grace, then writes that history off without an incident                             | ADR-0017 note (#113)           | _owner (P10-11)_ |
+| R5-2 | The coding version is per (equipment, epoch): a write moves every record of that machine's version, and two operators coding different records of one machine conflict (409) | ADR-0023                       | _owner (P10-11)_ |
+| R5-3 | No downtime records in the `no-shift` bucket (PBT = 0 there)                                                                                                                 | ADR-0021 (#119)                | _owner (P10-11)_ |
+| R5-4 | The latency judge's `observed` option for values the 100 ms polls never saw, bounded by value floors                                                                         | Phase 5 log (#123)             | _owner (P10-11)_ |
+| R5-5 | Smaller: two migrations for #119; the bottleneck as a web constant (replaced by the derived bottleneck in Phase 9, #258); the `downtime` topic without a snapshot            | Phase 5 report, "Deviations"   | _owner (P10-11)_ |
+| R5-6 | The smoke wrote one coding and its clear into the owner's dev database once (#121); the rows are permanent by design until `pnpm stack:reset`                                | Phase 5 report, "Known issues" | _owner (P10-11)_ |
+
+### Phase 6
+
+| ID   | Decision                                                                                                                                                                            | Recorded in                      | Owner's answer   |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | ---------------- |
+| R6-1 | Exit criterion 2: alarm buckets after the machines' last facts stay provisional at the end of a run (values still equal the truth); the report offered acceptance with the sign-off | ADR-0024 "Known limit"           | _owner (P10-11)_ |
+| R6-2 | Alarm shift buckets key each `no-shift` stretch as `no-shift/{start}`; `kpi_revision` per (scope, epoch, hour) with finality on read; revision spans wider than the plan's rule     | ADR-0024                         | _owner (P10-11)_ |
+| R6-3 | MES-only operator measures in `GET /alarms/operator-kpi`, so `/alarms/kpi` stays byte-identical                                                                                     | ADR-0024                         | _owner (P10-11)_ |
+| R6-4 | An occurrence ended by a newer epoch is `closed` without acknowledgement; `occurrence_state` insert-only by trigger; flood episode id without `seq`                                 | ADR-0024                         | _owner (P10-11)_ |
+| R6-5 | The state table gains `Down → Down` (an injection held while down applies at the repair's end); Modbus register 17 `activeAlarms`                                                   | Phase 6 log (#140); register map | _owner (P10-11)_ |
+| R6-6 | RFC 9457 problem types for every write refusal; `content` counts recodes and acknowledgements only after the report is final                                                        | ADR-0023 note, ADR-0025          | _owner (P10-11)_ |
+| R6-7 | Checks narrowed: the live run posts shift A's 14 injections only; criterion 5's 405 checked in MES tests, note refusals in the live run, not the smoke                              | Phase 6 log (#143, #147)         | _owner (P10-11)_ |
+
+### Phase 7
+
+| ID   | Decision                                                                                                                                                                  | Recorded in                  | Owner's answer   |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ---------------- |
+| R7-1 | Exit criterion 5: scrap ingestion and coding not checked at paced speed (the paused simulator stepped on to Tuesday's shift A)                                            | PR #191                      | _owner (P10-11)_ |
+| R7-2 | Exit criterion 6's summary comparison also strips `oee.config.scheduledTime` (every OEE value asserted unchanged)                                                         | PR #183, PR #191             | _owner (P10-11)_ |
+| R7-3 | Settling `unknown`/`failed` by "received through", `failed` counted from the first unanswered delivery's `expiresAt`; a `failed` command blocks its CNC until settled     | ADR-0029 note (#174)         | _owner (P10-11)_ |
+| R7-4 | `Orders.close` needs all five operations signed off; WIP as a routing position; the scrap tree in its own `scrap.yaml`                                                    | ADR-0031                     | _owner (P10-11)_ |
+| R7-5 | Gate exceptions per PR (jobs on an earlier commit when a later one didn't touch their path); no phase log kept; the `orders` pass skips the overview's live check         | Phase 7 report, "Deviations" | _owner (P10-11)_ |
+| R7-6 | Smaller: `identity.audit_log` in #168; 11 web routes at #170; the smoke leaves one disabled `smoke-<hex>` user per run; legacy rows backfilled by SQL in their old shapes | PR #182, #185, #186          | _owner (P10-11)_ |
+
+### Phase 8
+
+| ID   | Decision                                                                                                                                                                                             | Recorded in                | Owner's answer   |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ---------------- |
+| R8-1 | SPC defaults without a rule on MR (`{ I: [1, 2, 5], MR: [], Xbar: [1, 2, 5], R: [1] }`), against round 1's rule 1 on MR and R (it nearly doubled in-control episodes)                                | ADR-0032, PR #210          | _owner (P10-11)_ |
+| R8-2 | The drift's `until` is 10:50Z, not the end of shift A; "clean" stricter than the plan (no rule fires for any counterfactual point in the window)                                                     | PR #213, ADR-0032          | _owner (P10-11)_ |
+| R8-3 | `traceConfigSha256` hashes the derived trace configuration, not the files' bytes                                                                                                                     | PR #213                    | _owner (P10-11)_ |
+| R8-4 | Genealogy: a sixth table `unit_record`; incidents kept, not derived; `material-mismatch` judged on final attribution; the crew approximated by the ideal cycle and shown on the serial page only     | ADR-0034, PR #219, PR #223 | _owner (P10-11)_ |
+| R8-5 | Holds: one open hold per subject and reason (409); a rejected hold no longer blocks the close; a hold on the order blocks before any unit exists; the terminal shows open or unacknowledged episodes | ADR-0035, PR #222, PR #224 | _owner (P10-11)_ |
+| R8-6 | Evidence narrowed: `pnpm test:trace-perf` not a gate step; baseline episodes not exercised live; the smoke checks no hold close refusal; e2e files run one at a time                                 | PR #219, #221, #225        | _owner (P10-11)_ |
+| R8-7 | Three PRs open at once in wave A, instead of two                                                                                                                                                     | Phase 8 plan               | _owner (P10-11)_ |
+
+### Phase 9
+
+| ID    | Decision                                                                                                                                                                                                                                                            | Recorded in                                   | Owner's answer   |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | ---------------- |
+| R9-1  | R3 schedule moved: CNC-01 offline 07:00–08:30 and the gateway killed 10:45–10:50; R3 fails unless it loses at least one fact (the plan's schedule lost nothing)                                                                                                     | ADR-0009 amendment (#243)                     | _owner (P10-11)_ |
+| R9-2  | Performance, T6's load: telemetry at three times the gateway's cadence, offered load ≥ 3 × P1's measured live rate                                                                                                                                                  | ADR-0040 "Coordinator decisions" (decision 1) | _owner (P10-11)_ |
+| R9-3  | Performance, T2: min(median 100 ms slope, mean) over the drain, the MES stopped 15 minutes instead of 5                                                                                                                                                             | ADR-0040 (decision 2)                         | _owner (P10-11)_ |
+| R9-4  | Performance, the pending check: the oldest pending delivery's age ≤ 1 s, the count diagnostic                                                                                                                                                                       | ADR-0040 (decision 3)                         | _owner (P10-11)_ |
+| R9-5  | Performance, "gateway buffer 0": the broker session up, the depth within one live window (≤ 200), nothing dropped                                                                                                                                                   | ADR-0040 (decision 4)                         | _owner (P10-11)_ |
+| R9-6  | Performance, T5 over every container's lifecycle; T1 with no duplicate; T4 every read 200 and each kind's p95                                                                                                                                                       | ADR-0040 (decision 5)                         | _owner (P10-11)_ |
+| R9-7  | The login ceiling, an accepted risk: two attacker addresses at their caps let a fresh-address login through about 15–37 % of the time                                                                                                                               | ADR-0039 "Login throttling", security review  | _owner (P10-11)_ |
+| R9-8  | Every MQTT user bound to its client id, reversing round 1 finding 20 (`dev` connects only as `-i dev`)                                                                                                                                                              | ADR-0039 MQTT                                 | _owner (P10-11)_ |
+| R9-9  | `/scenario/recorded` kept off the console (an oracle like `/ground-truth`)                                                                                                                                                                                          | ADR-0037 amendment                            | _owner (P10-11)_ |
+| R9-10 | `notBefore` in the head time: max(accepted, previous completed, `notBefore`)                                                                                                                                                                                        | ADR-0036 amendment                            | _owner (P10-11)_ |
+| R9-11 | Each golden's open order asserted open, not compared, in exit criterion 1                                                                                                                                                                                           | PR #252                                       | _owner (P10-11)_ |
+| R9-12 | The residual security risks outside the checklist ([Known limits](#known-limits-of-v10))                                                                                                                                                                            | `security-review.md`                          | _owner (P10-11)_ |
+| R9-13 | The resilience suite's pending stand-in, left past v1.0                                                                                                                                                                                                             | ADR-0040; Phase 10 plan                       | _owner (P10-11)_ |
+| R9-14 | The cut line used: Grafana dashboards, MQTT TLS (plaintext MQTT is S2's accepted risk), the order OEE column on the orders list; Grafana in its own profile, its network not `internal`                                                                             | ADR-0012, ADR-0039                            | _owner (P10-11)_ |
+| R9-15 | Smaller: control API minors to 1.11; recorded dispatch as `acceptedAt` and `afterEvents`; nginx compares `Origin` with the request's own `scheme://Host`; `/console` not served by `pnpm dev`; OPC UA SANs and X.509 user tokens off; the dev CA's name constraints | Phase 9 report, "Other deviations"            | _owner (P10-11)_ |
+
+### Phase 10
+
+| ID     | Decision                                                                                                                                                                                                                                                                                        | Recorded in                                   | Owner's answer   |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | ---------------- |
+| R10-1  | † SC1's "one command" is a one-time init plus `docker compose up -d --wait` in one command line, a deviation from the letter of section 1 ("`docker compose up` on a fresh clone"); option (d) deferred                                                                                         | Phase 10 plan; rev. 10                        | _owner (P10-11)_ |
+| R10-2  | † SC2 proved by the local gate, not CI, while Actions is unavailable                                                                                                                                                                                                                            | Phase 10 plan; rev. 10                        | _owner (P10-11)_ |
+| R10-3  | † SC6 and the tag: `v1.0.0` only after the owner's sign-off in his own comments; no version tag by Claude, release candidates included; the candidate named by its commit                                                                                                                       | Phase 10 plan                                 | _owner (P10-11)_ |
+| R10-4  | † Phase 10 started before Phase 9's sign-off (the sign-off gates the tag, not the work)                                                                                                                                                                                                         | Phase 10 plan                                 | _owner (P10-11)_ |
+| R10-5  | † Sparkplug B not in v1.x; a bridge beside the UNS if a consumer ever needs one                                                                                                                                                                                                                 | [ADR-0041](adr/0041-no-sparkplug-b-in-v1x.md) | _owner (P10-11)_ |
+| R10-6  | † ADR-0011 amended by a dated note: the local gate in place of green CI since PR #149                                                                                                                                                                                                           | ADR-0011 note of 2026-10-21 (#279)            | _owner (P10-11)_ |
+| R10-7  | #276: `pnpm verify` prints ten seed lines (the nine fast-check workspaces plus `fc-seed`'s own); the rerun after PR #287's review was `GATE_STEPS=verify` instead of a second full gate                                                                                                         | Phase 10 log (#276)                           | _owner (P10-11)_ |
+| R10-8  | #281's demo: its own ERP dataset `config/erp/demo-v1.yaml` through `compose.demo.yml`; a planned start 06:15 and a timeline pause at 06:14 make production independent of the dispatch time; "by about 09:30" holds for all but the SPC episode (11:51), so the walkthrough runs to about 12:30 | Phase 10 log (#281); `demo.md`                | _owner (P10-11)_ |
+| R10-9  | #277: the fresh clone under `~/.cache/shopfloor-twin/fresh-clone/` (Colima shares only the home directory); the harness reads the clone's `.env` in memory, never prints or stores it                                                                                                           | Phase 10 log (#277)                           | _owner (P10-11)_ |
+| R10-10 | #282: a 3 s hold on the last view of scenes 3 to 8 in the recording (no action on the page)                                                                                                                                                                                                     | Phase 10 log (#282); `demo.md`                | _owner (P10-11)_ |
+| R10-11 | #282: the recording's limit is at most 7 minutes, not the plan's 6 (the walkthrough needs plant time 06:00 to 12:25 at 60×); the committed video is 6 min 35.0 s                                                                                                                                | `demo.md`, "Length"                           | _owner (P10-11)_ |
+| R10-12 | #295 (P10-F2): the coordinator's scope addition of plant time for every console time and "(wall time)" labels, beside the precision fix                                                                                                                                                         | Phase 10 log (#295)                           | _owner (P10-11)_ |
+| R10-13 | GitHub releases for `phase-02` to `phase-09` left to the owner (publishing is his)                                                                                                                                                                                                              | Phase 10 plan; runbook "Releasing" (P10-09)   | _owner (P10-11)_ |
+| R10-14 | Decisions P10-09 and P10-10 add (the closing gate's findings, any rerun): _to fill (P10-10)_                                                                                                                                                                                                    | Phase 10 report                               | _owner (P10-11)_ |
+
+### Owner items outside the register
+
+Not decisions, but things only the owner can do; none is a success criterion and none is claimed as done:
+
+- decide on GitHub Actions billing (raise the limit or keep the local gate); if Actions returns before the tag, one CI run on the candidate is added to SC2;
+- install the Renovate GitHub app (since Phase 0);
+- his own dev stack: add the required secrets to his `.env` (or check it with `sh scripts/stack-init.sh`, which names missing keys and changes nothing), trust the dev CA for SSL only, read the broker as `mosquitto_sub -i dev` (STATUS);
+- optionally, play the demo live (`docs/demo.md`, "Running it by hand") or narrate the recording.
+
+The register holds 66 items: 6 sign-off, tag, snapshot and demo items (O-1 to O-3, G-1, G-2, D-1) and 60 decisions (Phase 4: 5, Phase 5: 6, Phase 6: 7, Phase 7: 6, Phase 8: 7, Phase 9: 15, Phase 10: 14, the last a placeholder for what P10-09 and P10-10 add).
+
+## Lessons learned
+
+Across the eleven phases; each phase report has its own.
+
+- **Reviews that run things find what reading doesn't.** From Phase 1 on, the defects that mattered were found by an independent reviewer running something: the real entry point (a start-up race, a hung shutdown), a failure (a poison message, a broker killed with facts in the outbox), a crafted interleaving, a probe against the real component, or a mutant of the code under test. Reading the diff alone mostly didn't find them.
+- **Ask what would make a check fail before trusting it pass.** An invariant that could never fail (Phase 1), a page check a frozen page passed (Phase 4), a latency judge a 4 s lag passed (Phase 5), an audit check that couldn't fail (Phase 6), a safety test passing with its behaviour removed (Phase 7, five PRs in Phase 8), five performance judges that couldn't fail or failed on correct behaviour (Phase 9). Mutants and pages built to cheat became the bar for a test, and this report's falsifiability probes come from it.
+- **Prove with the strongest equality against an independent truth.** Shift totals equal to the millisecond, OEE equal as fractions, every fact once with `published ∪ lost = emitted`, genealogy equal to `trace.json` in bounded disorder: a tolerance would have hidden the provisional-time question of Phase 4. Where both sides share a definition (`oee-core`), hand-calculated reference cases checked in Python guard it.
+- **Finality is where the bugs were.** The same defect class appeared in four modules (Phases 5 to 8): a bound read after the work it judges. "Capture the bound first, write revisions in the same transaction, publish the new bound after the commit" is now a rule; ordered and fully shuffled replays don't test it, bounded disorder does.
+- **Probe the platform before planning on it.** TimescaleDB's aggregate watermarks, node-opcua's revised queue sizes and writable defaults, `modbus-serial`'s silent `close()`, Mosquitto's session takeover, Colima's shared folders: each was found by an experiment, several only after code depended on them. Spikes and plan-review probes were the cheapest place to find them.
+- **Determinism is designed, not tested in.** Integer milliseconds, per-entity random streams, no raw float leaving the model (found when Linux and macOS goldens differed in Phase 1), an acceptance order and an event count for replay (Phase 9). Random property tests then found what fixed ones didn't (Phase 7's closing gate), which is why the seeds are now printed.
+- **A record beats reconstruction.** Phase 7 kept no log and its gate exceptions had to be dug out of PR prose; from Phase 8 every merge has a dated entry with its gate on a named commit, and every phase closes with one gate on one commit. Suites that aren't gate steps keep their own records with commits attached.
+- **Without CI, the gate is a discipline, and the machine is shared state.** Since PR #149 the local gate kept the merge bar, but its evidence lives in the repository's records rather than in logs anyone can open. Parallel agents turned fixed ports, folders and sleeps into failures and twice filled the VM's disk; the heavy lock, runtime ports, disk floors and cleanup per run made heavy suites safe beside each other.
+- **Defaults are attack surface, and throttles are denial-of-service tools.** Writable OPC UA variables, unbound MQTT users and a certificate watcher dropping pins were defaults nobody planned; each layer against password guessing opened a way to keep honest users out until a path back was designed and the cost written down.
+- **A criterion's verbs are the test plan.** "Seen through the console" is not "reached the simulator" (Phase 9); "one command on a clean machine" is not "the gate's smoke from a working tree" (Phase 10). Reading the criterion against the test word for word found both gaps.
+- **Tooling that writes must never default to data someone keeps.** The smoke's write into the owner's dev audit (Phase 5) is permanent; every write check since needs an opt-in and a disposable project, and the fresh-clone and demo harnesses isolate by process environment and refuse the dev project by name.
+- **Issue keywords close issues.** A PR body's "close: #177" closed an issue before its work began (Phase 7); PR text names issues as "see #N".
+- **The plan's biggest risk materialised.** Section 12 named the owner's review capacity first. Under the standing instruction, eight phases were closed and dozens of decisions taken without his review; the work didn't stop, but the review moved to the end. This register, one checklist and decisions grouped by phase, is the response; a later project would do better to keep the owner's sign-off inside each phase, even if brief.
+
+## Sign-off
+
+Filled only from the owner's own comments on P10-11 ([#286](https://github.com/kubilayture/shopfloor-twin/issues/286)), by the docs-only pull request that records them. Empty until then.
+
+| Phase   | Report                                          | Owner's comment (URL) | `created_at`     | Decision         |
+| ------- | ----------------------------------------------- | --------------------- | ---------------- | ---------------- |
+| 2 (O-3) | [phase-02-report.md](phases/phase-02-report.md) | _owner (P10-11)_      | _owner (P10-11)_ | _owner (P10-11)_ |
+| 3 (O-3) | [phase-03-report.md](phases/phase-03-report.md) | _owner (P10-11)_      | _owner (P10-11)_ | _owner (P10-11)_ |
+| 4       | [phase-04-report.md](phases/phase-04-report.md) | _owner (P10-11)_      | _owner (P10-11)_ | _owner (P10-11)_ |
+| 5       | [phase-05-report.md](phases/phase-05-report.md) | _owner (P10-11)_      | _owner (P10-11)_ | _owner (P10-11)_ |
+| 6       | [phase-06-report.md](phases/phase-06-report.md) | _owner (P10-11)_      | _owner (P10-11)_ | _owner (P10-11)_ |
+| 7       | [phase-07-report.md](phases/phase-07-report.md) | _owner (P10-11)_      | _owner (P10-11)_ | _owner (P10-11)_ |
+| 8       | [phase-08-report.md](phases/phase-08-report.md) | _owner (P10-11)_      | _owner (P10-11)_ | _owner (P10-11)_ |
+| 9       | [phase-09-report.md](phases/phase-09-report.md) | _owner (P10-11)_      | _owner (P10-11)_ | _owner (P10-11)_ |
+| 10      | `phase-10-report.md` _(P10-10)_                 | _owner (P10-11)_      | _owner (P10-11)_ | _owner (P10-11)_ |
+
+The register's answers, the golden decisions (G-1, G-2) and the demo approval (D-1) are recorded the same way, in the register's "Owner's answer" column. Then: the docs-only diff against the candidate (`git diff --stat <candidate> HEAD -- . ':!docs' ':!*.md'`, empty): _owner (P10-11)_; the CHANGELOG's 1.0.0 date: _owner (P10-11)_; `v1.0.0` and `phase-10` on the recording pull request's merge commit, set by the owner: _owner (P10-11)_.

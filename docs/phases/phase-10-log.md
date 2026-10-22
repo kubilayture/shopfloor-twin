@@ -232,4 +232,6 @@ Dated entries, one per merged pull request: what merged, what was learned, devia
       - frames at all nine logins show the password masked;
       - `pnpm demo:record` found none of the run's secrets (every user's password, every `*_PASSWORD` and `*_TOKEN`) in the captions or the record.
     - **Superseded before merge:** the first committed recording (`577d8ce`, now `7581e00`; SHA-256 `c365ab9a…`). Only the new one reaches `main`.
-    - **Gate** @@GATE3@@
+    - **Gate** on `5e7feb2`: `GATE_STEPS=verify`, `GATE_PROJECT=gate282c`, `GATE_TAG=pr282c`, `TURBO_FORCE=1`, under the heavy lock. Only the docs and the recording changed after the recording's run, so `verify` covers the formatting and the architecture check. Result: `GATE-OK`, clean tree, host 33.7 GiB and Docker 69.2 GiB free at the start; verify 583.9 s, `e2e` unit tests 150 passed, `check-architecture: OK`.
+      - Seeds: alarm-core 372951631, contracts 1474648615, fc-seed 316073676, mes-server 958039419, oee-core 1731747750, shift-calendar 1995654612, sim-core 658108226, simulator 2131241905, spc-core 1429618547, trace-core 1171562191.
+      - The commit after it adds only this record (`pnpm format:check`).

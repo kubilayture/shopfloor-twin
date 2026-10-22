@@ -800,7 +800,7 @@ How a version is released (#284, P10-09; Phase 10 plan, "Success criterion 6 and
 
 ### The release candidate
 
-The candidate is the last commit on `main` that changes anything outside `docs/` and `CHANGELOG.md`. Other Markdown files count as non-docs here: the README's quick-start block is what the fresh-clone test (SC1) runs, so a README change after the candidate makes a new candidate. For 1.0.0 the candidate was first #284's merge (`dd78dcd`); P10-F3 (#300, PR #301) moved it to `a32d71a`. After it, only a P10-F fix issue may change files outside `docs/` and `CHANGELOG.md`, and each such merge becomes the new candidate. Pull requests are squash-merged, so each one is a single commit on `main`'s first-parent line. Find the candidate with:
+The candidate is the last commit on `main` that changes anything outside `docs/` and `CHANGELOG.md`. Other Markdown files count as non-docs here: the README's quick-start block is what the fresh-clone test (SC1) runs, so a README change after the candidate makes a new candidate. For 1.0.0 the candidate was first #284's merge (`dd78dcd`); P10-F3 (#300, PR #301) moved it to `a32d71a`, where the closing gate ran, and P10-F4 (#303, PR #304), a fix of the demo recording harness found in the sign-off review, to `8aaf608` (the closing gate not rerun: no product code changed; final report, R10-17). After it, only a P10-F fix issue may change files outside `docs/` and `CHANGELOG.md`, and each such merge becomes the new candidate. Pull requests are squash-merged, so each one is a single commit on `main`'s first-parent line. Find the candidate with:
 
 ```bash
 git fetch origin

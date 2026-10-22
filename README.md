@@ -56,10 +56,10 @@ At <https://localhost:8443>, each behind the login and the roles' permissions:
 | Plant overview (operator, scene 1)                        | Simulation console (admin, scene 3)                |
 | --------------------------------------------------------- | -------------------------------------------------- |
 | ![Plant overview](docs/demo/01-overview.png)              | ![Simulation console](docs/demo/03-console.png)    |
-| **SPC: the leak test's drift episode (quality, scene 6)** | **Traceability: a lot forward (quality, scene 8)** |
-| ![SPC chart](docs/demo/06-spc.png)                        | ![Lot trace](docs/demo/08-trace.png)               |
+| **SPC: the leak test's drift episode (quality, scene 6)** | **Traceability: a serial back (quality, scene 8)** |
+| ![SPC chart](docs/demo/06-spc.png)                        | ![Serial trace](docs/demo/08-trace.png)            |
 
-The other scenes' screenshots: [an order's dispatch](docs/demo/02-orders.png), [downtime coding](docs/demo/04-alarms.png), [a completed order (scene 5)](docs/demo/05-oee.png) and [the close refused under a quality hold](docs/demo/07-hold.png). More on each screen: the runbook, "Run the web app", and [apps/web/README.md](apps/web/README.md).
+The other scenes' screenshots: [an order's dispatch](docs/demo/02-orders.png), [downtime coding](docs/demo/04-alarms.png), [the machines' OEE (scene 5)](docs/demo/05-oee.png) and [the close refused under a quality hold](docs/demo/07-hold.png). More on each screen: the runbook, "Run the web app", and [apps/web/README.md](apps/web/README.md).
 
 ## Develop
 

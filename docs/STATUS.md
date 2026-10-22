@@ -4,6 +4,8 @@
 
 **Release 1.0: candidate `a32d71a`, awaiting the owner's sign-off (P10-11, #286).** Phase 10 closed on 2026-10-22 (#285) "complete, pending the owner's sign-off": the closing gate passed in full on the candidate `a32d71a` (PR #301's merge, P10-F3), the last commit on `main` that changes anything outside `docs/` and `CHANGELOG.md`. No version tag exists: `v1.0.0` and `phase-10` are the owner's, after his sign-off (runbook, "Releasing"). Report: `docs/phases/phase-10-report.md`; final report: `docs/final-report.md`.
 
+**P10-F4 (#303) moves the candidate:** the P10-11 sign-off review found that the demo recording never showed scene 5's OEE content. The fix changes `e2e/src/demo*` and remakes the recording, so the candidate becomes #303's merge commit; the rerun table's rows for `e2e/src/demo*` (`verify`, `pnpm demo`, `pnpm demo:record`) passed on its branch (`docs/phases/phase-10-log.md`, "P10-F4 / #303").
+
 ## Exit criteria progress: 8 / 8 met (success criterion 6 itself not met, pending the owner)
 
 Proved by local runs on `a32d71a` (`docs/phases/phase-10-report.md`, "Outcome against exit criteria"). A first closing run on `dd78dcd` found `pnpm audit --prod` failing (two moderate advisories through `@shopfloor/fc-seed`'s production dependencies); P10-F3 (#300) fixed it and moved the candidate.
@@ -13,7 +15,7 @@ Proved by local runs on `a32d71a` (`docs/phases/phase-10-report.md`, "Outcome ag
 - **3, SC6:** stated **not met** in the final report: the owner's sign-off of Phases 4–10 (and Phases 2–3 to confirm, O-3) is his (P10-11, #286); no version tag.
 - **4, seeds:** three uncached `verify` runs, nine seeds each, recorded in the final report.
 - **5, documentation:** `check-architecture: OK` in every run; the README's block is the one the fresh clone ran; no document marked stale.
-- **6, demo:** `DEMO-OK` twice on #281 and once in the closing gate; the recording within the limits (6 min 35.0 s under R10-11); the owner's approval is D-1.
+- **6, demo:** `DEMO-OK` twice on #281, once in the closing gate and once on #303; the recording within the limits (6 min 41.3 s under R10-11, remade by #303 with every asserted view held at least 1 s); the owner's approval is D-1.
 - **7, release:** CHANGELOG `[1.0.0]`, version 1.0.0, the runbook's "Releasing" (#284); the final report complete except the owner's fields; ADR-0041.
 - **8, no regression:** every closing suite passed; goldens byte-identical, none regenerated in Phase 10; `pnpm audit --prod` clean on `a32d71a`.
 
@@ -38,7 +40,7 @@ Since the Phase 9 close (#246, PR #274, `d589ef7`, tag `phase-09`). Each entry i
 
 ## In progress
 
-- Nothing. Phase 10 is complete, pending the owner's sign-off.
+- #303 (P10-F4, branch `fix/303-demo-scene5`): `pnpm demo:record` holds every view a scene asserts (scene 5's OEE dashboard and its order's OEE section among them) and refuses a recording with one held under 1 s; `docs/demo/` remade on `62f5b0a` (video 5.44 MiB, 6 min 41.3 s, SHA-256 `5f9ce088…`; screenshots 0.95 MiB). Gate `verify` `GATE-OK`, `pnpm demo` `DEMO-OK`, `pnpm demo:record` `RECORD-OK`. Moves the candidate.
 
 ## Next up
 
@@ -65,12 +67,12 @@ None of these is claimed as met. `v1.0.0` is tagged only after the owner's sign-
   - ADR-0011's note of 2026-10-21 (#279): the local gate in place of green CI since PR #149, as practised;
   - #276: `pnpm verify` prints ten seed lines, the nine fast-check workspaces plus `@shopfloor/fc-seed`'s own suite (P10-10 records the nine); and the rerun after PR #287's review was `GATE_STEPS=verify` instead of a second full gate (the review's changes touched only `fc-seed`'s own tests, config and parsing);
   - #281's demo deviations: (1) the demo's own ERP dataset `config/erp/demo-v1.yaml` through `compose.demo.yml` (the default feed has exactly the SPC baseline's 100 units before shift B, so no drift could show an episode); (2) the planned start 06:15 and a timeline pause at 06:14 make production independent of when the walkthrough dispatches (inside the envelope), where the plan expected it to vary; (3) "by about 09:30" holds for the alarm, the first completed order and scene 8's carton, not for the SPC episode (11:51, after the baseline's 100 readings), so the walkthrough runs to about 12:30, 6.5 minutes of wall time;
-  - #282's recording length: the plan's limit is 6 minutes, but the walkthrough needs plant time 06:00 to 12:25 at 60×, at least 6 min 25 s, before any scene's work. Without cutting asserted scenes or editing the video, the limit is **at most 7 minutes** (`pnpm demo:record` refuses longer); the committed video is 6 min 35.0 s (`docs/demo.md`, "Length"). Also #282's 3 s hold on the last view of scenes 3 to 8 in the recording (no action on the page; scenes 6 and 8 otherwise showed for under a second);
+  - #282's recording length: the plan's limit is 6 minutes, but the walkthrough needs plant time 06:00 to 12:25 at 60×, at least 6 min 25 s, before any scene's work. Without cutting asserted scenes or editing the video, the limit is **at most 7 minutes** (`pnpm demo:record` refuses longer); the committed video is 6 min 41.3 s (`docs/demo.md`, "Length"). Also #282's 3 s hold on the last view of scenes 3 to 8 in the recording (no action on the page; scenes 6 and 8 otherwise showed for under a second), and #303's 2 s hold on every other asserted view, scenes 1 and 2 included (the dispatch's acceptance moves from about 06:04 to 06:08, inside probe D1's envelope), with scrolls to what a view asserts, in the recording only;
   - #277's deviations: the fresh clone under `~/.cache/shopfloor-twin/fresh-clone/` instead of the OS temporary directory (Colima shares only the home directory with its VM); the harness reads the clone's `.env` in memory (for the admin's login and the S7 search), never prints or stores it.
   - #295 (P10-F2): the precision rule and the scope addition of plant time on the console with "(wall time)" labels (R10-12, R10-15); the gate exceptions of Phase 10 (R10-16).
   - P10-09's decisions (R10-14): the product version read at start from the root `package.json`; two identical `version.ts` files; the docs-only pathspec `':!docs' ':!CHANGELOG.md'`, stricter than the plan's `*.md`; the GitHub release notes as the 1.0.0 section's summary (GitHub's 125,000-character limit).
   - P10-10's decisions (R10-14): the first closing run's audit finding fixed by P10-F3 (#300), which moved the candidate from `dd78dcd` to `a32d71a` and amended the plan's review decision M1 in form (`fc-seed`'s `vitest` and `fast-check` as peer and development dependencies), the whole gate and every probe run again; the forms of the SC2, SC4 and SC5 probes; named Compose projects per suite; a counting run of the OEE reference cases.
-- **Approve or reject the demo recording** as Phase 10's demo check (D-1): `docs/demo/shopfloor-twin-v1.webm`, SHA-256 `d884a720…`, 6 min 35.0 s (`docs/demo.md`).
+- **Approve or reject the demo recording** as Phase 10's demo check (D-1): `docs/demo/shopfloor-twin-v1.webm`, SHA-256 `5f9ce088…`, 6 min 41.3 s (`docs/demo.md`; remade by #303, which superseded `d884a720…`).
 - **Install the Renovate GitHub app** for this repository (carried over from Phase 0).
 - **GitHub Actions** is disabled by the account's spending limit: every run since PR #149's merge fails at the billing check before any job starts. Merges are gated locally (`pnpm gate`, runbook "Continuous integration"). Raise the limit or keep the local gate; if Actions returns before the tag, one CI run on the candidate is added to the final report.
 - **Existing dev stack: add the secrets to `.env`** (the repository's `.env` is the owner's; no check read it). Compose refuses to start without each required one (runbook, "Upgrading a stack from before 1.0"):

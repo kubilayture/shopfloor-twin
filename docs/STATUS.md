@@ -1,19 +1,21 @@
 # Status — updated 2026-10-22
 
-## Current phase: 10 – Release 1.0 (started 2026-10-21)
+## Current phase: 10 – Release 1.0 (started 2026-10-21): complete, pending the owner's sign-off
 
-## Exit criteria progress: 0 / 8 met
+**Release 1.0: candidate `a32d71a`, awaiting the owner's sign-off (P10-11, #286).** Phase 10 closed on 2026-10-22 (#285) "complete, pending the owner's sign-off": the closing gate passed in full on the candidate `a32d71a` (PR #301's merge, P10-F3), the last commit on `main` that changes anything outside `docs/` and `CHANGELOG.md`. No version tag exists: `v1.0.0` and `phase-10` are the owner's, after his sign-off (runbook, "Releasing"). Report: `docs/phases/phase-10-report.md`; final report: `docs/final-report.md`.
 
-Phase 10's eight exit criteria (`docs/phases/phase-10-plan.md`, "Exit criteria") are proved on the release candidate by the closing gate (P10-10, #285), so none is met before it. Where the work stands:
+## Exit criteria progress: 8 / 8 met (success criterion 6 itself not met, pending the owner)
 
-- **1, fresh clone:** `pnpm test:fresh-clone` and the README's quick-start block in place (#277); `FRESH-CLONE-OK` on the PR's commits, cached and with `FRESH_CLONE_NO_CACHE=1`, not yet of record (the closing run must be on a commit in `origin/main`).
-- **2, SC2 to SC5:** the suites exist and passed at the Phase 9 close; their records on the candidate and the falsifiability probes come with P10-10.
-- **3, SC6:** not met, and not claimable by Claude: the owner's sign-off of Phases 4–10 (and Phases 2–3 to confirm, O-3) (P10-11, #286).
-- **4, seeds:** every `pnpm verify` prints one seed per fast-check workspace (#276); the three uncached runs of record come with P10-10.
-- **5, documentation:** the API references, glossary and documentation index (#279), README, runbook and STATUS (#278), the architecture views and `scripts/check-architecture.ts` (#280) done.
-- **6, demo:** `pnpm demo` passed twice in a row (#281); the recording, screenshots and captions in `docs/demo/` within the size limits, the video 6 min 35.0 s against the plan's 6 minutes (#282, a coordinator decision below); the closing gate's `pnpm demo` and the owner's approval of the recording to come.
-- **7, release:** the final report `docs/final-report.md` and ADR-0041 (#283) on its branch, the evidence fields named for P10-10; P10-09 (#284) next.
-- **8, no regression:** the closing gate; no golden regenerated in Phase 10 so far.
+Proved by local runs on `a32d71a` (`docs/phases/phase-10-report.md`, "Outcome against exit criteria"). A first closing run on `dd78dcd` found `pnpm audit --prod` failing (two moderate advisories through `@shopfloor/fc-seed`'s production dependencies); P10-F3 (#300) fixed it and moved the candidate.
+
+- **1, fresh clone:** `FRESH-CLONE-OK` on `a32d71a` with `FRESH_CLONE_NO_CACHE=1`, contained in `origin/main`.
+- **2, SC2 to SC5:** every suite of the closing gate passed on `a32d71a`, and the five falsifiability probes failed as required; SC2 by the local gate, not CI, with the provenance of #140 and #172 pending the owner.
+- **3, SC6:** stated **not met** in the final report: the owner's sign-off of Phases 4–10 (and Phases 2–3 to confirm, O-3) is his (P10-11, #286); no version tag.
+- **4, seeds:** three uncached `verify` runs, nine seeds each, recorded in the final report.
+- **5, documentation:** `check-architecture: OK` in every run; the README's block is the one the fresh clone ran; no document marked stale.
+- **6, demo:** `DEMO-OK` twice on #281 and once in the closing gate; the recording within the limits (6 min 35.0 s under R10-11); the owner's approval is D-1.
+- **7, release:** CHANGELOG `[1.0.0]`, version 1.0.0, the runbook's "Releasing" (#284); the final report complete except the owner's fields; ADR-0041.
+- **8, no regression:** every closing suite passed; goldens byte-identical, none regenerated in Phase 10; `pnpm audit --prod` clean on `a32d71a`.
 
 ## Done since last update
 
@@ -29,22 +31,24 @@ Since the Phase 9 close (#246, PR #274, `d589ef7`, tag `phase-09`). Each entry i
 - #280 (P10-05, PR #293, `6f345bf`): `docs/architecture.md` as C4-style Mermaid views, `scripts/check-architecture.ts` in `pnpm verify`.
 - #295 (P10-F2, PR #297, `29321ea`): measured values at the characteristic's precision, plant time on the console, wall times labelled.
 - #282 (P10-07, PR #296, `f8768d9`): `pnpm demo:record`; `docs/demo/` (video 4.79 MiB, 6 min 35.0 s, 960 × 540, recorded on `da16fbb`; screenshots 0.93 MiB); the README's screenshots.
+- #283 (P10-08, PR #299, `3c1e18c`): `docs/final-report.md` with its evidence fields named and the register of 69 decisions awaiting the owner; ADR-0041 (no Sparkplug B in v1.x).
+- #284 (P10-09, PR #298, `dd78dcd`): one product version 1.0.0, the OpenAPI regenerated, CHANGELOG `[1.0.0]`, the runbook's "Releasing". The first candidate.
+- #300 (P10-F3, PR #301, `a32d71a`): `@shopfloor/fc-seed` takes `vitest` and `fast-check` as peer and development dependencies; Vitest 4.1.12; `pnpm audit --prod` clean. **The candidate.**
+- #285 (P10-10, this close): the closing gate on `dd78dcd` (first run, its audit finding) and on `a32d71a` (of record), the falsifiability probes, the final report's evidence, the phase report, the learning notes.
 
 ## In progress
 
-- #283 (P10-08, branch `docs/283-final-report`): `docs/final-report.md` (summary and goals, phase history, SC1–SC6 with their evidence fields for P10-10, the closing gate's table, architecture, metrics, deviations, known limits, after v1.0, the register of 69 items awaiting the owner, lessons, the sign-off table) and ADR-0041 (no Sparkplug B in v1.x; a bridge beside the UNS if a consumer needs one; awaiting the owner's review).
+- Nothing. Phase 10 is complete, pending the owner's sign-off.
 
 ## Next up
 
-- #284 (P10-09) release mechanics: version 1.0.0, CHANGELOG, the runbook's "Releasing". Its merge commit is the release candidate.
-- #285 (P10-10) Phase 10 close: the closing gate on the candidate, the final report's evidence; Phase 10 then "complete, pending the owner's sign-off".
-- #286 (P10-11) the owner's sign-off and the `v1.0.0` tag: the owner acts, Claude only records.
+- #286 (P10-11) **the owner's sign-off and the `v1.0.0` tag**: the owner acts in his own comments on #286; Claude only records them, in a docs-only pull request merged on the owner's approval, then the owner tags `v1.0.0` and `phase-10` (runbook, "Releasing"). Claude does not comment on, edit or tick #286.
 
 ## Blockers and open questions for the owner
 
 None of these is claimed as met. `v1.0.0` is tagged only after the owner's sign-off (P10-11, #286); Claude sets no version tag.
 
-- **Sign off Phases 4, 5, 6, 7, 8 and 9** (v1 success criterion 6): Claude closed each under the standing instruction of 2026-10-15 without the owner's review; reports in `docs/phases/phase-NN-report.md`. Phase 9 is complete with 9 of 9 exit criteria met by local runs on `1cecd17`; its tag `phase-09` was set on `d589ef7` by the coordinator at PR #274's merge, as for earlier phases (the Phase 9 report had the owner set it); the owner's sign-off confirms or moves it. Phase 10 will need the same sign-off (P10-11).
+- **Sign off Phases 4, 5, 6, 7, 8, 9 and 10** (v1 success criterion 6), each separately, in your own comments on #286: Claude closed each under the standing instruction of 2026-10-15 without the owner's review; reports in `docs/phases/phase-NN-report.md`. Phase 9 is complete with 9 of 9 exit criteria met by local runs on `1cecd17`; its tag `phase-09` was set on `d589ef7` by the coordinator at PR #274's merge, as for earlier phases (the Phase 9 report had the owner set it); the owner's sign-off confirms or moves it. Phase 10 is complete, pending your sign-off, with 8 of 8 exit criteria met by local runs on the candidate `a32d71a` (`docs/phases/phase-10-report.md`); its tags `phase-10` and `v1.0.0` are yours to set after the sign-off, on the commit that records it (runbook, "Releasing").
 - **Confirm or move the `phase-09` tag:** the coordinator set it on `d589ef7` at PR #274's merge with the owner's git identity, as for Phases 4–8, where the Phase 9 report said the owner would set it.
 - **Approve or reject the two golden-summary regenerations** made under the standing instruction (master plan section 12 requires the owner's approval; reasons in `apps/simulator/golden/README.md`):
   - #172: `week-01` and `alarms-01` to `sim-summary/4`: only the schema line, an empty `orders` section, `analysisConfigSha256` and `oee.config.scheduledTime` changed, `events.sha256` unchanged;
@@ -63,6 +67,10 @@ None of these is claimed as met. `v1.0.0` is tagged only after the owner's sign-
   - #281's demo deviations: (1) the demo's own ERP dataset `config/erp/demo-v1.yaml` through `compose.demo.yml` (the default feed has exactly the SPC baseline's 100 units before shift B, so no drift could show an episode); (2) the planned start 06:15 and a timeline pause at 06:14 make production independent of when the walkthrough dispatches (inside the envelope), where the plan expected it to vary; (3) "by about 09:30" holds for the alarm, the first completed order and scene 8's carton, not for the SPC episode (11:51, after the baseline's 100 readings), so the walkthrough runs to about 12:30, 6.5 minutes of wall time;
   - #282's recording length: the plan's limit is 6 minutes, but the walkthrough needs plant time 06:00 to 12:25 at 60×, at least 6 min 25 s, before any scene's work. Without cutting asserted scenes or editing the video, the limit is **at most 7 minutes** (`pnpm demo:record` refuses longer); the committed video is 6 min 35.0 s (`docs/demo.md`, "Length"). Also #282's 3 s hold on the last view of scenes 3 to 8 in the recording (no action on the page; scenes 6 and 8 otherwise showed for under a second);
   - #277's deviations: the fresh clone under `~/.cache/shopfloor-twin/fresh-clone/` instead of the OS temporary directory (Colima shares only the home directory with its VM); the harness reads the clone's `.env` in memory (for the admin's login and the S7 search), never prints or stores it.
+  - #295 (P10-F2): the precision rule and the scope addition of plant time on the console with "(wall time)" labels (R10-12, R10-15); the gate exceptions of Phase 10 (R10-16).
+  - P10-09's decisions (R10-14): the product version read at start from the root `package.json`; two identical `version.ts` files; the docs-only pathspec `':!docs' ':!CHANGELOG.md'`, stricter than the plan's `*.md`; the GitHub release notes as the 1.0.0 section's summary (GitHub's 125,000-character limit).
+  - P10-10's decisions (R10-14): the first closing run's audit finding fixed by P10-F3 (#300), which moved the candidate from `dd78dcd` to `a32d71a` and amended the plan's review decision M1 in form (`fc-seed`'s `vitest` and `fast-check` as peer and development dependencies), the whole gate and every probe run again; the forms of the SC2, SC4 and SC5 probes; named Compose projects per suite; a counting run of the OEE reference cases.
+- **Approve or reject the demo recording** as Phase 10's demo check (D-1): `docs/demo/shopfloor-twin-v1.webm`, SHA-256 `d884a720…`, 6 min 35.0 s (`docs/demo.md`).
 - **Install the Renovate GitHub app** for this repository (carried over from Phase 0).
 - **GitHub Actions** is disabled by the account's spending limit: every run since PR #149's merge fails at the billing check before any job starts. Merges are gated locally (`pnpm gate`, runbook "Continuous integration"). Raise the limit or keep the local gate; if Actions returns before the tag, one CI run on the candidate is added to the final report.
 - **Existing dev stack: add the secrets to `.env`** (the repository's `.env` is the owner's; no check read it). Compose refuses to start without each required one (runbook, "Upgrading a stack from before 1.0"):
@@ -73,7 +81,7 @@ None of these is claimed as met. `v1.0.0` is tagged only after the owner's sign-
   - `sh scripts/stack-init.sh` on the existing `.env` names any required key still missing, empty or `change-me`, by name only, and changes nothing.
 - **Trust the dev CA** (#241): the web is at **<https://localhost:8443>** (HTTPS only; `http://localhost:8080` no longer answers). After `pnpm stack:up`, run `pnpm stack:ca` (or, without Node, `docker compose exec -T web cat /etc/nginx/tls/ca.pem > dev-ca.pem`) and trust the dev CA for SSL only (macOS: `security add-trusted-cert -r trustRoot -p ssl -k ~/Library/Keychains/login.keychain-db dev-ca.pem`, or in Keychain Access only "Secure Sockets Layer (SSL)" to Always Trust; Firefox: import under Authorities), then log in again; remove the trust when the project isn't in use. The MES (4700), the gateway (4900) and the database (5442) are published only by `pnpm stack:up:dev`. Optional new variables: `WEB_HTTPS_PORT` (8443, replaces `WEB_PORT`) and `MES_COOKIE_SECURE` (`on`; `off` only for the Vite dev server on plain HTTP). Runbook, "HTTPS and the dev CA" and "Upgrading a stack from before 1.0".
 - **Read the broker as `mosquitto_sub -i dev`** (#240): every broker user is bound to its client id, so `dev` connects only under the id `dev`, one session at a time.
-- **Publish GitHub releases for `phase-02` to `phase-09`** (optional; only `phase-00` and `phase-01` have one): publishing is the owner's; the runbook's "Releasing" (P10-09) will say how.
+- **Publish GitHub releases for `phase-02` to `phase-09`** (optional; only `phase-00` and `phase-01` have one): publishing is the owner's; the runbook's "Releasing" ("Earlier phase releases") says how.
 - Optional: run `pnpm stack:up`, log in (above) and look at the plant at <https://localhost:8443>: the console at `/console` (admin), the order detail's OEE under `/orders`, the OEE dashboard's line card at `/oee`, and the other screens (README, "Screens"); or watch the demo's recording (`docs/demo/shopfloor-twin-v1.webm`, approved or rejected in P10-11), or play the demo by hand (`docs/demo.md`, "Running it by hand"). No exit criterion depends on it (orders and cartons run only with `SIM_PRODUCTION=orders`). Codings, acknowledgements, shelves, comments and notes saved there are audited permanently. The default dev database already holds one smoke coding and its clear from #121's first local smoke run (Phase 5 report, Known issues).
 
 The Docker VM item of earlier phases (raise Colima to 4 GiB) is done: every Phase 9 suite ran on 4 CPUs and 3.81 GiB visible to Docker (Phase 9 report, "Owner items"), and #277's fresh-clone runs recorded the same VM (4 CPUs, 3.8 GiB; phase log).
@@ -82,8 +90,8 @@ Project board: https://github.com/users/kubilayture/projects/1
 
 ## Health: CI on main, coverage, open bugs
 
-- CI on `main`: not running. GitHub Actions jobs fail at the billing check (spending limit) on every run since `ed8783b` (the merge of #149); the last green CI on `main` is `cfed3a0`, the Phase 5 close. Merges are gated locally by `pnpm gate` (runbook, "Merge gate" and "Continuous integration"), the other suites (`pnpm test:resilience`, `pnpm test:perf`, `pnpm test:trace-perf`, `pnpm test:console`, `pnpm demo`, `pnpm test:fresh-clone`) as their own commands. Every Phase 10 pull request so far passed its gate steps (phase log).
-- Tests: 2,733 in `pnpm verify` uncached on `9dd1432` (#278's gate; 55 turbo tasks, 0 cached; Phase 9 close: 2,654); Phase 10 added `@shopfloor/fc-seed`'s suite, the init and fresh-clone checks in `e2e`, the ERP mock's API document test and the demo's scene-log check. Beyond `verify`: `pnpm test:golden` (`week-01`, `alarms-01`, `orders-01`, `quality-01`, `line-oee.json` included), `pnpm test:e2e`, `pnpm test:reconcile` (live `alarms`, `orders` and `quality` passes), `pnpm test:console`, `pnpm test:resilience` (R1–R3), `pnpm test:perf` (P1–P3), `pnpm test:trace-perf`, `pnpm demo` and `pnpm test:fresh-clone`.
-- Coverage (lines / branches) at the Phase 9 close: `sim-core` 99.4 / 98.4 (floor 95 / 90), `oee-core` 100 / 98.4 (floor 95 / 90), `alarm-core` 100 / 96.4 (floor 95 / 90), `spc-core` 99.6 / 94.0 (floor 95 / 90), `trace-core` 100 / 93.4 (floor 95 / 90), `shift-calendar` 100 / 91.4, `plant-config` 99.5 / 95.9 (floor 90 / 85), `pki` 97.3 / 86.7, simulator 88.5 / 82.4, `edge-gateway` 93.7 / 82.3, `mes-server` 95.7 / 85.3, `erp-mock` 98.1 / 91.6 and web 95.3 / 85.8 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
-- Golden scenarios `week-01`, `alarms-01`, `orders-01` and `quality-01`: green locally (`pnpm test:golden`, `pnpm test:e2e` in the Phase 10 gates); no regeneration in Phases 9 and 10.
-- Open bugs: 0 (#288, P10-F1, fixed by PR #292: `pnpm verify` passes at the default concurrency). Flakes to watch: the ERP mock's readiness in the smoke and the `opcua-tools` S1 step once on `lkt-01` (from Phase 9).
+- CI on `main`: not running. GitHub Actions jobs fail at the billing check (spending limit) on every run since `ed8783b` (the merge of #149); the last green CI on `main` is `cfed3a0`, the Phase 5 close. Merges are gated locally by `pnpm gate` (runbook, "Merge gate" and "Continuous integration"), the other suites (`pnpm test:resilience`, `pnpm test:perf`, `pnpm test:trace-perf`, `pnpm test:console`, `pnpm demo`, `pnpm test:fresh-clone`) as their own commands. Every Phase 10 pull request passed its gate steps (phase log), and the closing gate passed in full on `a32d71a` (`docs/phases/phase-10-report.md`).
+- Tests: 2,804 in `pnpm verify` uncached on `a32d71a` (the closing gate, four runs; 55 turbo tasks, 0 cached; Phase 9 close: 2,654); Phase 10 added `@shopfloor/fc-seed`'s suite, the init and fresh-clone checks and the architecture check's tests in `e2e`, the ERP mock's API document test, the demo's scene-log and recording checks, the version tests and the display tests. Beyond `verify`: `pnpm test:golden` (`week-01`, `alarms-01`, `orders-01`, `quality-01`, `line-oee.json` included), `pnpm test:e2e`, `pnpm test:reconcile` (live `alarms`, `orders` and `quality` passes), `pnpm test:console`, `pnpm test:resilience` (R1–R3), `pnpm test:perf` (P1–P3), `pnpm test:trace-perf`, `pnpm demo` and `pnpm test:fresh-clone`.
+- Coverage (lines / branches) on `a32d71a` (the closing gate): `sim-core` 99.4 / 98.4 (floor 95 / 90), `oee-core` 100 / 98.4 (floor 95 / 90), `alarm-core` 100 / 96.4 (floor 95 / 90), `spc-core` 99.6 / 94.0 (floor 95 / 90), `trace-core` 100 / 93.4 (floor 95 / 90), `shift-calendar` 100 / 91.4, `plant-config` 99.5 / 95.9 (floor 90 / 85), `pki` 97.3 / 86.7, simulator 88.5 / 82.4, `edge-gateway` 93.8 / 82.7, `mes-server` 95.6 / 85.3, `erp-mock` 98.1 / 91.6 and web 95.4 / 86.1 (floor 80 / 70; entry points run as processes in tests and smoke runs and are not measured).
+- Golden scenarios `week-01`, `alarms-01`, `orders-01` and `quality-01`: green locally (`pnpm test:golden`, `pnpm test:e2e` in the Phase 10 gates and the closing gate on `a32d71a`); no regeneration in Phases 9 and 10.
+- Open bugs: 0 (P10-F1 #288, P10-F2 #295 and P10-F3 #300 fixed). `pnpm audit --prod`: no known vulnerabilities on `a32d71a`. Flakes to watch: the ERP mock's readiness in the smoke and the `opcua-tools` S1 step once on `lkt-01` (from Phase 9); neither recurred in either closing run.

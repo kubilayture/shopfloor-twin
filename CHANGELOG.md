@@ -4,9 +4,9 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 ## [Unreleased]
 
-## [1.0.0] - <date set at sign-off>
+## [1.0.0] - 2026-10-22
 
-The first release: everything from Phase 0 to Phase 10, the v1 scope of the master plan (`docs/project-plan.md`). The date is set, and `v1.0.0` tagged by the owner, only after his sign-off (P10-11, #286; runbook "Releasing"). By capability:
+The first release: everything from Phase 0 to Phase 10, the v1 scope of the master plan (`docs/project-plan.md`). The date is the sign-off date: the sign-off was decided by the coordinator under the owner's delegation of 2026-10-22, not by the owner's own review (P10-11, #286; `docs/final-report.md`, "Sign-off"); `v1.0.0` goes on the sign-off pull request's merge commit (runbook "Releasing"). By capability:
 
 - **Plant simulator:** a seeded, deterministic discrete-event simulation of six machines in two work centers (Cell M1, Line A1): states, cycles, buffers, changeovers, failures and alarms, telemetry, leak tests with lots and cartons, from a weekly schedule or production orders; its own ground truth; OPC UA servers (SignAndEncrypt), Modbus TCP for the washer and a control API with the simulation console. Four golden scenarios (`week-01`, `alarms-01`, `orders-01`, `quality-01`) whose committed snapshots (`events.sha256`, `summary.json`, `trace.json`, `line-oee.json`) a run must reproduce byte for byte.
 - **Edge gateway and Unified Namespace:** OPC UA and Modbus collection into the ISA-95 UNS on MQTT (contract 1.5), per-source sequences and device epochs, store-and-forward through broker outages, the command path for production orders; Mosquitto with dynamic security, every user bound to its client id.

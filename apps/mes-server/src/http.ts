@@ -144,7 +144,8 @@ export async function buildMesHttp({
           'terminal, scrap records and their coding; genealogy and traceability by serial, lot and carton; SPC ' +
           'characteristics, control limits, charts and signals; quality holds. ' +
           'Clients reach it through the HTTPS front of the stack, nginx (port 8443 by default, ' +
-          'ADR-0039), which proxies /api/; the MES itself is not published. Identity (ADR-0026): ' +
+          'ADR-0039), which proxies /api/; the MES itself is not published (except on loopback ' +
+          'with pnpm stack:up:dev). Identity (ADR-0026): ' +
           'login (POST /api/v1/session) sets the session cookie __Host-sft_session (Secure, ' +
           'HttpOnly, SameSite=Strict; sft_session only with MES_COOKIE_SECURE=off); with ' +
           'MES_AUTH=on, the default, every /api/v1 route but login and logout needs it (401) and ' +
